@@ -86,3 +86,15 @@ Tool failures are fed back into the agent loop. The system prompt explicitly pre
 Shuvi can launch an isolated Microsoft Edge or Google Chrome window with a dedicated temporary Shuvi profile. The root browser PID is registered as a managed process, and RAM accounting walks the descendant process tree so renderer/GPU/browser subprocess memory is included rather than counting only the launcher process.
 
 Shuvi can stop only process roots that it launched itself. Arbitrary system PIDs are rejected by the typed stop tool.
+
+
+## Chromium DevTools DOM control
+
+A managed Edge/Chrome session now starts with a localhost-only DevTools endpoint on a random port. Shuvi waits for the browser's `DevToolsActivePort` file, associates that port with the browser root PID, and exposes typed DOM operations:
+
+- `browser_dom_read` reads up to 25 exact CSS matches and returns compact attributes/text.
+- `browser_dom_click` refuses ambiguous selectors and only clicks when exactly one element matches.
+- `browser_dom_set_value` focuses one exact editable element, updates its value and dispatches input/change events.
+- `browser_navigate` navigates the managed page through CDP.
+
+CDP messages are sent to the local browser debugger only. The tool never exposes an arbitrary JavaScript execution interface to the model.
