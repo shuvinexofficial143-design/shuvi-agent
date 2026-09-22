@@ -321,6 +321,53 @@ fn http_client() -> Result<Client, String> {
         .map_err(|error| format!("HTTP client error: {error}"))
 }
 
+async fn send_with_retry(
+    request: reqwest::RequestBuilder,
+    label: &str,
+) -> Result<reqwest::Response, String> {
+    let mut last_error: Option<String> = None;
+
+    for attempt in 0..3_u32 {
+        let attempt_request = request
+            .try_clone()
+            .ok_or_else(|| format!("{label} request could not be cloned for retry."))?;
+
+        match attempt_request.send().await {
+            Ok(response) => {
+                let status = response.status();
+                let retryable = status.as_u16() == 429
+                    || matches!(status.as_u16(), 500 | 502 | 503 | 504);
+
+                if retryable && attempt < 2 {
+                    last_error = Some(format!("HTTP {status}"));
+                    let delay_ms = 350_u64.saturating_mul(1_u64 << attempt);
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                    continue;
+                }
+
+                return Ok(response);
+            }
+            Err(error) => {
+                let retryable = error.is_connect() || error.is_timeout() || error.is_request();
+
+                if retryable && attempt < 2 {
+                    last_error = Some(error.to_string());
+                    let delay_ms = 350_u64.saturating_mul(1_u64 << attempt);
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                    continue;
+                }
+
+                return Err(format!("{label} failed: {error}"));
+            }
+        }
+    }
+
+    Err(format!(
+        "{label} failed after retries: {}",
+        last_error.unwrap_or_else(|| "unknown network error".into())
+    ))
+}
+
 fn compact_error(body: &Value) -> String {
     body.pointer("/error/message")
         .and_then(Value::as_str)
@@ -491,10 +538,7 @@ async fn openai_compatible_chat(
         request = request.bearer_auth(key);
     }
 
-    let response = request
-        .send()
-        .await
-        .map_err(|error| format!("Provider request failed: {error}"))?;
+    let response = send_with_retry(request, "Provider request").await?;
 
     let status = response.status();
     let body: Value = response
@@ -547,12 +591,11 @@ async fn gemini_chat(input: ChatInput, api_key: Option<String>) -> Result<ChatRe
         payload["systemInstruction"] = json!({ "parts": system_parts });
     }
 
-    let response = http_client()?
+    let request = http_client()?
         .post(url)
-        .json(&payload)
-        .send()
-        .await
-        .map_err(|error| format!("Gemini request failed: {error}"))?;
+        .json(&payload);
+
+    let response = send_with_retry(request, "Gemini request").await?;
 
     let status = response.status();
     let body: Value = response
@@ -613,7 +656,7 @@ async fn anthropic_chat(
         })
         .collect::<Vec<_>>();
 
-    let response = http_client()?
+    let request = http_client()?
         .post("https://api.anthropic.com/v1/messages")
         .header("x-api-key", key)
         .header("anthropic-version", "2023-06-01")
@@ -622,10 +665,9 @@ async fn anthropic_chat(
             "max_tokens": 2048,
             "system": system,
             "messages": messages
-        }))
-        .send()
-        .await
-        .map_err(|error| format!("Anthropic request failed: {error}"))?;
+        }));
+
+    let response = send_with_retry(request, "Anthropic request").await?;
 
     let status = response.status();
     let body: Value = response
