@@ -3201,6 +3201,70 @@ fn get_workspace(app: AppHandle) -> Result<Option<String>, String> {
     read_workspace(&app)
 }
 
+#[tauri::command]
+fn export_diagnostics(
+    app: AppHandle,
+    state: State<'_, ActionState>,
+) -> Result<String, String> {
+    let runtime = current_runtime_status(state.inner())?;
+    let workspace = read_workspace(&app)?;
+    let recent_audit = read_audit(&app, 50)?;
+
+    let managed_roots = state
+        .managed_children
+        .lock()
+        .map_err(|_| "Managed-process state is unavailable.".to_string())?
+        .iter()
+        .copied()
+        .collect::<Vec<_>>();
+
+    let browser_sessions = state
+        .browser_sessions
+        .lock()
+        .map_err(|_| "Browser-session state is unavailable.".to_string())?
+        .iter()
+        .map(|(pid, session)| {
+            json!({
+                "root_pid": pid,
+                "devtools_port": session.port
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let report = json!({
+        "generated_at_ms": now_ms(),
+        "shuvi_version": env!("CARGO_PKG_VERSION"),
+        "platform": {
+            "os": std::env::consts::OS,
+            "arch": std::env::consts::ARCH
+        },
+        "runtime": runtime,
+        "workspace": workspace,
+        "managed_process_roots": managed_roots,
+        "managed_browser_sessions": browser_sessions,
+        "recent_audit": recent_audit,
+        "privacy_note": "API keys and credential-store secrets are intentionally excluded."
+    });
+
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not resolve app data directory: {error}"))?
+        .join("diagnostics");
+
+    fs::create_dir_all(&dir)
+        .map_err(|error| format!("Could not create diagnostics directory: {error}"))?;
+
+    let path = dir.join(format!("shuvi-diagnostics-{}.json", now_ms()));
+    let content = serde_json::to_string_pretty(&report)
+        .map_err(|error| format!("Could not encode diagnostics: {error}"))?;
+
+    fs::write(&path, content.as_bytes())
+        .map_err(|error| format!("Could not write diagnostics file: {error}"))?;
+
+    Ok(path.display().to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -3219,6 +3283,7 @@ pub fn run() {
             audit_log,
             set_workspace,
             get_workspace,
+            export_diagnostics,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Shuvi");
