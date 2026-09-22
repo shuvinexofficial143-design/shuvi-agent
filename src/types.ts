@@ -27,6 +27,9 @@ export type ChatResponse = {
 export type RuntimeStatus = {
   shuvi_memory_bytes: number;
   shuvi_memory_mb: number;
+  native_memory_mb: number;
+  managed_children_memory_mb: number;
+  managed_children_count: number;
   soft_limit_mb: number;
   hard_limit_mb: number;
   over_soft_limit: boolean;
