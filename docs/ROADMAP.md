@@ -25,7 +25,7 @@
 - [x] session-scoped read-tool permission grants
 - [x] session token usage meter when the selected provider reports usage
 - [ ] provider-aware cost estimates
-- [x] managed child-process RAM accounting
+- [x] managed process-tree RAM accounting including browser subprocesses
 - [x] audit log persisted locally
 
 ## v0.3 — computer use
@@ -36,7 +36,8 @@
 - [x] advanced UI Automation foundation: exact top-level window scoping, focus and semantic scroll
 - [ ] advanced UI Automation extras: menus, keyboard fallback, broader control patterns
 - [x] browser/app semantic automation foundation through window-scoped UI Automation + vision fallback
-- [ ] dedicated Chromium DevTools browser control
+- [x] isolated managed Edge/Chrome browser sessions with dedicated profile and RAM tracking
+- [ ] dedicated Chromium DevTools DOM control
 - [ ] fallback coordinate actions
 - [x] agent recovery guidance: refine selectors / inspect screen instead of blind retries
 - [ ] runtime retry/backoff and crash recovery
