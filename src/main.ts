@@ -38,6 +38,7 @@ root.innerHTML = `
       <div class="runtime-row"><span>Shuvi RAM</span><strong id="ramValue">-- MB</strong></div>
       <div class="meter"><div id="ramMeter"></div></div>
       <small id="ramHint">4 GB hard ceiling</small>
+      <small id="ramChildren" class="ram-children">0 managed apps</small>
     </div>
   </aside>
 
@@ -172,6 +173,12 @@ async function refreshRam(): Promise<void> {
       ? "Soft limit exceeded — heavy work should pause."
       : `${status.soft_limit_mb} MB soft / ${status.hard_limit_mb} MB hard`;
     hint.classList.toggle("warn", status.over_soft_limit);
+
+    const children = el<HTMLElement>("#ramChildren");
+    children.textContent =
+      status.managed_children_count === 0
+        ? "0 managed apps"
+        : `${status.managed_children_count} managed app${status.managed_children_count === 1 ? "" : "s"} · ${status.managed_children_memory_mb.toFixed(0)} MB`;
   } catch {
     el<HTMLElement>("#ramValue").textContent = "-- MB";
   }
