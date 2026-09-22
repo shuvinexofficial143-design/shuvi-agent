@@ -2121,15 +2121,17 @@ async fn execute_tool(action: PendingAction, state: &ActionState) -> Result<Acti
                 return Err("Shuvi can only stop process roots that it launched and is tracking.".into());
             }
 
+            let pid_string = pid.to_string();
+
             #[cfg(target_os = "windows")]
             let output = Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .args(["/PID", pid_string.as_str(), "/T", "/F"])
                 .output()
                 .map_err(|error| format!("Could not stop managed process: {error}"))?;
 
             #[cfg(not(target_os = "windows"))]
             let output = Command::new("kill")
-                .args(["-TERM", &pid.to_string()])
+                .args(["-TERM", pid_string.as_str()])
                 .output()
                 .map_err(|error| format!("Could not stop managed process: {error}"))?;
 
