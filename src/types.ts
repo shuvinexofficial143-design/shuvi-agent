@@ -11,10 +11,17 @@ export type ChatMessage = {
   content: string;
 };
 
+export type ToolProposal = {
+  tool: string;
+  arguments: Record<string, unknown>;
+  reason?: string | null;
+};
+
 export type ChatResponse = {
   content: string;
   provider: string;
   model: string;
+  tool_proposal: ToolProposal | null;
 };
 
 export type RuntimeStatus = {
@@ -36,6 +43,7 @@ export type PendingAction = {
 
 export type ActionResult = {
   success: boolean;
+  tool: string;
   stdout: string;
   stderr: string;
   exit_code: number | null;

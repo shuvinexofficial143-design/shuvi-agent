@@ -48,7 +48,7 @@ nav { display: grid; gap: 7px; }
 .status { color: #9aa4b6; font-size: 12px; display: flex; gap: 7px; align-items: center; }
 .status i { width: 7px; height: 7px; background: #79c993; border-radius: 50%; }
 .messages { flex: 1; overflow: auto; padding: 34px max(28px, calc((100vw - 230px - 820px) / 2)); }
-.empty-state { text-align: center; max-width: 520px; margin: 14vh auto 0; color: #8993a6; }
+.empty-state { text-align: center; max-width: 540px; margin: 14vh auto 0; color: #8993a6; }
 .empty-state .orb { width: 56px; height: 56px; margin: 0 auto 18px; font-size: 22px; }
 .empty-state h2 { color: #f5f7fb; margin: 0 0 8px; font-size: 25px; }
 .empty-state p { margin: 0; line-height: 1.6; }
@@ -59,6 +59,29 @@ nav { display: grid; gap: 7px; }
 }
 .message.assistant .avatar { background: #e4e8f0; color: #11151c; }
 .bubble { white-space: pre-wrap; line-height: 1.65; color: #d8dee9; padding-top: 5px; }
+.chat-permission {
+  width: min(820px, calc(100% - 56px));
+  margin: 0 auto 12px;
+  padding: 15px;
+  border: 1px solid #3a4251;
+  border-radius: 14px;
+  background: #121720;
+  box-shadow: 0 12px 40px rgba(0,0,0,.24);
+}
+.permission-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.permission-head > div { display: flex; align-items: center; gap: 10px; }
+.permission-step { color: #6f7a8d; font-size: 11px; }
+.permission-reason { color: #a6afbf; margin: 12px 0; line-height: 1.5; font-size: 13px; }
+.permission-detail {
+  white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto;
+  background: #090c11; border: 1px solid #222834; border-radius: 9px;
+  padding: 11px; color: #c6cfdd; font-size: 12px;
+}
 .composer {
   position: sticky; bottom: 0; display: grid; grid-template-columns: 1fr auto; gap: 10px;
   padding: 16px max(28px, calc((100vw - 230px - 820px) / 2)) 24px;
@@ -73,7 +96,7 @@ textarea:focus, input:focus, select:focus { border-color: #59657a; }
 .composer button, .primary {
   border: 0; border-radius: 11px; padding: 0 18px; background: #e5e9f1; color: #10131a; font-weight: 700;
 }
-.composer button:disabled { opacity: .55; }
+.composer button:disabled { opacity: .55; cursor: default; }
 .panel {
   width: min(820px, calc(100% - 56px)); margin: 32px auto; padding: 22px;
   border: 1px solid #222833; border-radius: 14px; background: #0f131a;

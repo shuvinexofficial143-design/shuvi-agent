@@ -1,5 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
+    fs,
+    path::Path,
     process::Command,
     sync::Mutex,
     time::Duration,
@@ -16,6 +18,29 @@ use uuid::Uuid;
 const KEYRING_SERVICE: &str = "Shuvi";
 const SOFT_LIMIT_MB: f64 = 3584.0;
 const HARD_LIMIT_MB: f64 = 4096.0;
+const MAX_READ_BYTES: u64 = 1_048_576;
+const MAX_WRITE_BYTES: usize = 2_097_152;
+const MAX_TOOL_OUTPUT_CHARS: usize = 120_000;
+
+const TOOL_PROTOCOL: &str = r#"You are Shuvi, a permission-first Windows desktop AI agent.
+If the user's request requires a computer action, choose ONE tool and respond ONLY with a JSON object:
+{"tool":"tool_name","arguments":{...},"reason":"short explanation"}
+
+Available tools:
+- list_directory: {"path":"absolute path"}
+- read_file: {"path":"absolute path"}
+- write_file: {"path":"absolute path","content":"complete file content"}
+- create_directory: {"path":"absolute path"}
+- launch_app: {"program":"executable or absolute path","args":["optional","arguments"]}
+- powershell: {"command":"PowerShell command"}
+
+Rules:
+- Use tools only when a computer action is required.
+- Never claim an action succeeded before Shuvi returns a tool result.
+- Prefer typed file/app tools over PowerShell.
+- Do not put tool JSON inside markdown fences.
+- For destructive/system/security-sensitive work, explain the intent in reason.
+- If no computer action is needed, answer normally."#;
 
 #[derive(Debug, Clone, Serialize)]
 struct ProviderDescriptor {
@@ -40,11 +65,20 @@ struct ChatInput {
     messages: Vec<ChatMessage>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ToolProposal {
+    tool: String,
+    arguments: Value,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct ChatResponse {
     content: String,
     provider: String,
     model: String,
+    tool_proposal: Option<ToolProposal>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -65,13 +99,25 @@ struct PendingActionView {
 }
 
 #[derive(Debug, Clone)]
+enum ToolAction {
+    ListDirectory { path: String },
+    ReadFile { path: String },
+    WriteFile { path: String, content: String },
+    CreateDirectory { path: String },
+    LaunchApp { program: String, args: Vec<String> },
+    PowerShell { command: String },
+}
+
+#[derive(Debug, Clone)]
 struct PendingAction {
-    command: String,
+    tool: String,
+    action: ToolAction,
 }
 
 #[derive(Debug, Clone, Serialize)]
 struct ActionResult {
     success: bool,
+    tool: String,
     stdout: String,
     stderr: String,
     exit_code: Option<i32>,
@@ -140,7 +186,7 @@ fn providers() -> Vec<ProviderDescriptor> {
             id: "custom",
             name: "Custom OpenAI-compatible",
             default_model: "model-name",
-            api_key_required: false,
+            api_key_required: true,
             custom_base_url: true,
         },
     ]
@@ -187,6 +233,38 @@ fn compact_error(body: &Value) -> String {
         .unwrap_or_else(|| body.to_string().chars().take(400).collect())
 }
 
+fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
+    let mut candidate = text.trim();
+
+    if let Some(stripped) = candidate.strip_prefix("~~~json") {
+        candidate = stripped.strip_suffix("~~~").unwrap_or(stripped).trim();
+    } else if let Some(stripped) = candidate.strip_prefix("~~~") {
+        candidate = stripped.strip_suffix("~~~").unwrap_or(stripped).trim();
+    }
+
+    let proposal: ToolProposal = serde_json::from_str(candidate).ok()?;
+
+    match proposal.tool.as_str() {
+        "list_directory"
+        | "read_file"
+        | "write_file"
+        | "create_directory"
+        | "launch_app"
+        | "powershell" => Some(proposal),
+        _ => None,
+    }
+}
+
+fn chat_response(content: String, provider: String, model: String) -> ChatResponse {
+    let tool_proposal = parse_tool_proposal(&content);
+    ChatResponse {
+        content,
+        provider,
+        model,
+        tool_proposal,
+    }
+}
+
 async fn openai_compatible_chat(
     input: ChatInput,
     api_key: Option<String>,
@@ -216,8 +294,7 @@ async fn openai_compatible_chat(
 
     let mut request = http_client()?.post(&url).json(&json!({
         "model": input.model,
-        "messages": input.messages,
-        "temperature": 0.2
+        "messages": input.messages
     }));
 
     if let Some(key) = api_key.filter(|key| !key.is_empty()) {
@@ -242,13 +319,10 @@ async fn openai_compatible_chat(
     let content = body
         .pointer("/choices/0/message/content")
         .and_then(Value::as_str)
-        .ok_or_else(|| "Provider response had no assistant text.".to_string())?;
+        .ok_or_else(|| "Provider response had no assistant text.".to_string())?
+        .to_string();
 
-    Ok(ChatResponse {
-        content: content.to_string(),
-        provider: input.provider,
-        model: input.model,
-    })
+    Ok(chat_response(content, input.provider, input.model))
 }
 
 async fn gemini_chat(input: ChatInput, api_key: Option<String>) -> Result<ChatResponse, String> {
@@ -314,11 +388,7 @@ async fn gemini_chat(input: ChatInput, api_key: Option<String>) -> Result<ChatRe
         return Err("Gemini returned an empty response.".into());
     }
 
-    Ok(ChatResponse {
-        content,
-        provider: input.provider,
-        model,
-    })
+    Ok(chat_response(content, input.provider, model))
 }
 
 async fn anthropic_chat(
@@ -394,11 +464,7 @@ async fn anthropic_chat(
         return Err("Anthropic returned an empty response.".into());
     }
 
-    Ok(ChatResponse {
-        content,
-        provider: input.provider,
-        model,
-    })
+    Ok(chat_response(content, input.provider, model))
 }
 
 async fn send_chat(input: ChatInput, api_key: Option<String>) -> Result<ChatResponse, String> {
@@ -443,7 +509,7 @@ fn ensure_memory_budget() -> Result<(), String> {
     }
 }
 
-fn classify_command(command: &str) -> RiskLevel {
+fn classify_powershell(command: &str) -> RiskLevel {
     let lower = command.to_ascii_lowercase();
 
     let high = [
@@ -469,6 +535,269 @@ fn classify_command(command: &str) -> RiskLevel {
     }
 }
 
+fn arg_string(arguments: &Value, name: &str) -> Result<String, String> {
+    arguments
+        .get(name)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| format!("Tool argument '{name}' must be a non-empty string."))
+}
+
+fn arg_string_array(arguments: &Value, name: &str) -> Result<Vec<String>, String> {
+    let Some(value) = arguments.get(name) else {
+        return Ok(Vec::new());
+    };
+
+    let items = value
+        .as_array()
+        .ok_or_else(|| format!("Tool argument '{name}' must be an array of strings."))?;
+
+    items
+        .iter()
+        .map(|item| {
+            item.as_str()
+                .map(str::to_string)
+                .ok_or_else(|| format!("Tool argument '{name}' must contain only strings."))
+        })
+        .collect()
+}
+
+fn absolute_path(value: String) -> Result<String, String> {
+    if !Path::new(&value).is_absolute() {
+        return Err("File tools require an absolute path.".into());
+    }
+    Ok(value)
+}
+
+fn stage_tool(proposal: ToolProposal, state: &ActionState) -> Result<PendingActionView, String> {
+    let tool = proposal.tool.clone();
+
+    let (action, summary, detail, risk) = match proposal.tool.as_str() {
+        "list_directory" => {
+            let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
+            (
+                ToolAction::ListDirectory { path: path.clone() },
+                "List directory".to_string(),
+                path,
+                RiskLevel::Low,
+            )
+        }
+        "read_file" => {
+            let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
+            (
+                ToolAction::ReadFile { path: path.clone() },
+                "Read file".to_string(),
+                path,
+                RiskLevel::Low,
+            )
+        }
+        "write_file" => {
+            let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
+            let content = arg_string(&proposal.arguments, "content")?;
+            if content.len() > MAX_WRITE_BYTES {
+                return Err("File content is larger than Shuvi's 2 MB write limit.".into());
+            }
+            (
+                ToolAction::WriteFile {
+                    path: path.clone(),
+                    content,
+                },
+                "Write file".to_string(),
+                path,
+                RiskLevel::Medium,
+            )
+        }
+        "create_directory" => {
+            let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
+            (
+                ToolAction::CreateDirectory { path: path.clone() },
+                "Create directory".to_string(),
+                path,
+                RiskLevel::Medium,
+            )
+        }
+        "launch_app" => {
+            let program = arg_string(&proposal.arguments, "program")?;
+            let args = arg_string_array(&proposal.arguments, "args")?;
+            (
+                ToolAction::LaunchApp {
+                    program: program.clone(),
+                    args: args.clone(),
+                },
+                "Launch application".to_string(),
+                format!("{program} {}", args.join(" ")).trim().to_string(),
+                RiskLevel::Medium,
+            )
+        }
+        "powershell" => {
+            let command = arg_string(&proposal.arguments, "command")?;
+            if command.len() > 8_000 {
+                return Err("PowerShell command is too long.".into());
+            }
+            let risk = classify_powershell(&command);
+            (
+                ToolAction::PowerShell {
+                    command: command.clone(),
+                },
+                "Run PowerShell".to_string(),
+                command,
+                risk,
+            )
+        }
+        _ => return Err("Unsupported tool.".into()),
+    };
+
+    let id = Uuid::new_v4().to_string();
+
+    state
+        .pending
+        .lock()
+        .map_err(|_| "Permission state is unavailable.".to_string())?
+        .insert(
+            id.clone(),
+            PendingAction {
+                tool: tool.clone(),
+                action,
+            },
+        );
+
+    Ok(PendingActionView {
+        id,
+        kind: tool,
+        summary,
+        detail,
+        risk,
+    })
+}
+
+fn truncate_output(value: String) -> String {
+    if value.chars().count() <= MAX_TOOL_OUTPUT_CHARS {
+        return value;
+    }
+
+    let shortened = value.chars().take(MAX_TOOL_OUTPUT_CHARS).collect::<String>();
+    format!("{shortened}\n[output truncated by Shuvi]")
+}
+
+fn execute_tool(action: PendingAction) -> Result<ActionResult, String> {
+    let tool = action.tool.clone();
+
+    match action.action {
+        ToolAction::ListDirectory { path } => {
+            let mut entries = Vec::new();
+
+            for entry in fs::read_dir(&path).map_err(|error| format!("Could not list directory: {error}"))? {
+                let entry = entry.map_err(|error| format!("Could not read directory entry: {error}"))?;
+                let file_type = entry.file_type().map_err(|error| format!("Could not inspect entry: {error}"))?;
+                let kind = if file_type.is_dir() {
+                    "dir"
+                } else if file_type.is_file() {
+                    "file"
+                } else {
+                    "other"
+                };
+
+                entries.push(format!("[{kind}] {}", entry.file_name().to_string_lossy()));
+
+                if entries.len() >= 500 {
+                    entries.push("[truncated at 500 entries]".into());
+                    break;
+                }
+            }
+
+            entries.sort();
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: entries.join("\n"),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::ReadFile { path } => {
+            let metadata = fs::metadata(&path)
+                .map_err(|error| format!("Could not inspect file: {error}"))?;
+
+            if metadata.len() > MAX_READ_BYTES {
+                return Err("File is larger than Shuvi's 1 MB direct-read limit.".into());
+            }
+
+            let content = fs::read_to_string(&path)
+                .map_err(|error| format!("Could not read UTF-8 text file: {error}"))?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: truncate_output(content),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::WriteFile { path, content } => {
+            fs::write(&path, content.as_bytes())
+                .map_err(|error| format!("Could not write file: {error}"))?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: format!("Wrote {} bytes to {path}.", content.len()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::CreateDirectory { path } => {
+            fs::create_dir_all(&path)
+                .map_err(|error| format!("Could not create directory: {error}"))?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: format!("Created directory {path}."),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::LaunchApp { program, args } => {
+            let child = Command::new(&program)
+                .args(&args)
+                .spawn()
+                .map_err(|error| format!("Could not launch application: {error}"))?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: format!("Launched {program} with PID {}.", child.id()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PowerShell { command } => {
+            #[cfg(target_os = "windows")]
+            let output = Command::new("powershell.exe")
+                .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", &command])
+                .output()
+                .map_err(|error| format!("Failed to start PowerShell: {error}"))?;
+
+            #[cfg(not(target_os = "windows"))]
+            let output = Command::new("sh")
+                .args(["-lc", &command])
+                .output()
+                .map_err(|error| format!("Failed to start shell: {error}"))?;
+
+            Ok(ActionResult {
+                success: output.status.success(),
+                tool,
+                stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                stderr: truncate_output(String::from_utf8_lossy(&output.stderr).to_string()),
+                exit_code: output.status.code(),
+            })
+        }
+    }
+}
+
 #[tauri::command]
 fn list_providers() -> Vec<ProviderDescriptor> {
     providers()
@@ -488,6 +817,7 @@ fn save_api_key(provider: String, api_key: String) -> Result<(), String> {
 #[tauri::command]
 fn delete_api_key(provider: String) -> Result<(), String> {
     let entry = key_entry(&provider)?;
+
     match entry.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(error) => Err(format!("Could not delete API key: {error}")),
@@ -495,8 +825,17 @@ fn delete_api_key(provider: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn chat(input: ChatInput) -> Result<ChatResponse, String> {
+async fn chat(mut input: ChatInput) -> Result<ChatResponse, String> {
     ensure_memory_budget()?;
+
+    input.messages.insert(
+        0,
+        ChatMessage {
+            role: "system".into(),
+            content: TOOL_PROTOCOL.into(),
+        },
+    );
+
     let key = load_api_key(&input.provider)?;
     send_chat(input, key).await
 }
@@ -507,41 +846,26 @@ fn runtime_status() -> Result<RuntimeStatus, String> {
 }
 
 #[tauri::command]
+fn prepare_tool(
+    proposal: ToolProposal,
+    state: State<'_, ActionState>,
+) -> Result<PendingActionView, String> {
+    ensure_memory_budget()?;
+    stage_tool(proposal, &state)
+}
+
+#[tauri::command]
 fn prepare_powershell(
     command: String,
     state: State<'_, ActionState>,
 ) -> Result<PendingActionView, String> {
-    ensure_memory_budget()?;
+    let proposal = ToolProposal {
+        tool: "powershell".into(),
+        arguments: json!({ "command": command }),
+        reason: Some("Manual PowerShell action".into()),
+    };
 
-    let trimmed = command.trim();
-    if trimmed.is_empty() {
-        return Err("Command cannot be empty.".into());
-    }
-    if trimmed.len() > 8_000 {
-        return Err("Command is too long.".into());
-    }
-
-    let risk = classify_command(trimmed);
-    let id = Uuid::new_v4().to_string();
-
-    state
-        .pending
-        .lock()
-        .map_err(|_| "Permission state is unavailable.".to_string())?
-        .insert(
-            id.clone(),
-            PendingAction {
-                command: trimmed.to_string(),
-            },
-        );
-
-    Ok(PendingActionView {
-        id,
-        kind: "powershell".into(),
-        summary: "Run a PowerShell command".into(),
-        detail: trimmed.to_string(),
-        risk,
-    })
+    stage_tool(proposal, &state)
 }
 
 #[tauri::command]
@@ -556,7 +880,7 @@ fn deny_action(action_id: String, state: State<'_, ActionState>) -> Result<(), S
 }
 
 #[tauri::command]
-fn execute_powershell(
+fn execute_action(
     action_id: String,
     state: State<'_, ActionState>,
 ) -> Result<ActionResult, String> {
@@ -569,30 +893,15 @@ fn execute_powershell(
         .remove(&action_id)
         .ok_or_else(|| "Action expired, was denied, or does not exist.".to_string())?;
 
-    #[cfg(target_os = "windows")]
-    let output = Command::new("powershell.exe")
-        .args([
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            &action.command,
-        ])
-        .output()
-        .map_err(|error| format!("Failed to start PowerShell: {error}"))?;
+    execute_tool(action)
+}
 
-    #[cfg(not(target_os = "windows"))]
-    let output = Command::new("sh")
-        .args(["-lc", &action.command])
-        .output()
-        .map_err(|error| format!("Failed to start shell: {error}"))?;
-
-    Ok(ActionResult {
-        success: output.status.success(),
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-        exit_code: output.status.code(),
-    })
+#[tauri::command]
+fn execute_powershell(
+    action_id: String,
+    state: State<'_, ActionState>,
+) -> Result<ActionResult, String> {
+    execute_action(action_id, state)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -605,8 +914,10 @@ pub fn run() {
             delete_api_key,
             chat,
             runtime_status,
+            prepare_tool,
             prepare_powershell,
             deny_action,
+            execute_action,
             execute_powershell,
         ])
         .run(tauri::generate_context!())

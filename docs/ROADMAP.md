@@ -9,18 +9,23 @@
 - [x] Ollama/custom endpoint support
 - [x] OS credential-store API keys
 - [x] RAM meter and 4 GB hard guard
-- [x] staged permission-gated PowerShell
+- [x] permission-gated PowerShell
 - [ ] CI verified green
 
-## v0.2 — agent loop
-- structured provider-neutral tool calls
-- filesystem read/list/write
-- app/process launcher
-- task cancellation
-- scoped permission grants
-- tool observation loop
-- token/cost meter
-- process-tree RAM accounting
+## v0.2 — real agent loop
+- [x] provider-neutral JSON tool proposal protocol
+- [x] directory listing
+- [x] UTF-8 file read
+- [x] file write
+- [x] directory creation
+- [x] application/process launcher
+- [x] tool observations returned to the model
+- [x] per-task maximum step guard
+- [ ] task cancellation while a provider request/tool is running
+- [ ] scoped permission grants
+- [ ] per-task token/cost meter
+- [ ] managed child-process RAM accounting
+- [ ] audit log persisted locally
 
 ## v0.3 — computer use
 - screenshot capture
