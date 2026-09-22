@@ -101,11 +101,19 @@ struct ToolProposal {
 }
 
 #[derive(Debug, Clone, Serialize)]
+struct UsageStats {
+    input_tokens: u64,
+    output_tokens: u64,
+    total_tokens: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct ChatResponse {
     content: String,
     provider: String,
     model: String,
     tool_proposal: Option<ToolProposal>,
+    usage: Option<UsageStats>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -339,14 +347,84 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
     }
 }
 
-fn chat_response(content: String, provider: String, model: String) -> ChatResponse {
+fn chat_response(
+    content: String,
+    provider: String,
+    model: String,
+    usage: Option<UsageStats>,
+) -> ChatResponse {
     let tool_proposal = parse_tool_proposal(&content);
     ChatResponse {
         content,
         provider,
         model,
         tool_proposal,
+        usage,
     }
+}
+
+fn usage_from_openai(body: &Value) -> Option<UsageStats> {
+    let usage = body.get("usage")?;
+    let input = usage
+        .get("prompt_tokens")
+        .and_then(Value::as_u64)
+        .or_else(|| usage.get("input_tokens").and_then(Value::as_u64))
+        .unwrap_or(0);
+    let output = usage
+        .get("completion_tokens")
+        .and_then(Value::as_u64)
+        .or_else(|| usage.get("output_tokens").and_then(Value::as_u64))
+        .unwrap_or(0);
+    let total = usage
+        .get("total_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(input.saturating_add(output));
+
+    Some(UsageStats {
+        input_tokens: input,
+        output_tokens: output,
+        total_tokens: total,
+    })
+}
+
+fn usage_from_gemini(body: &Value) -> Option<UsageStats> {
+    let usage = body.get("usageMetadata")?;
+    let input = usage
+        .get("promptTokenCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let output = usage
+        .get("candidatesTokenCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let total = usage
+        .get("totalTokenCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(input.saturating_add(output));
+
+    Some(UsageStats {
+        input_tokens: input,
+        output_tokens: output,
+        total_tokens: total,
+    })
+}
+
+fn usage_from_anthropic(body: &Value) -> Option<UsageStats> {
+    let usage = body.get("usage")?;
+    let input = usage
+        .get("input_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let output = usage
+        .get("output_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+
+    Some(UsageStats {
+        input_tokens: input,
+        output_tokens: output,
+        total_tokens: input.saturating_add(output),
+    })
 }
 
 async fn openai_compatible_chat(
@@ -406,7 +484,8 @@ async fn openai_compatible_chat(
         .ok_or_else(|| "Provider response had no assistant text.".to_string())?
         .to_string();
 
-    Ok(chat_response(content, input.provider, input.model))
+    let usage = usage_from_openai(&body);
+    Ok(chat_response(content, input.provider, input.model, usage))
 }
 
 async fn gemini_chat(input: ChatInput, api_key: Option<String>) -> Result<ChatResponse, String> {
@@ -472,7 +551,8 @@ async fn gemini_chat(input: ChatInput, api_key: Option<String>) -> Result<ChatRe
         return Err("Gemini returned an empty response.".into());
     }
 
-    Ok(chat_response(content, input.provider, model))
+    let usage = usage_from_gemini(&body);
+    Ok(chat_response(content, input.provider, model, usage))
 }
 
 async fn anthropic_chat(
@@ -548,7 +628,8 @@ async fn anthropic_chat(
         return Err("Anthropic returned an empty response.".into());
     }
 
-    Ok(chat_response(content, input.provider, model))
+    let usage = usage_from_anthropic(&body);
+    Ok(chat_response(content, input.provider, model, usage))
 }
 
 async fn send_chat(input: ChatInput, api_key: Option<String>) -> Result<ChatResponse, String> {
