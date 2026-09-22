@@ -123,3 +123,22 @@ During an active agent task, Shuvi writes an atomic local checkpoint containing 
 ## UI fallback policy
 
 The Windows UI layer now supports TogglePattern and ExpandCollapsePattern for checkboxes, toggles, menus and expandable controls. A keyboard fallback is available only after Shuvi resolves one exact semantic UI element and focuses it; the keystroke sequence is classified high risk and its actual content is not written into the audit detail. Semantic UI patterns remain preferred over keyboard simulation.
+
+
+## Premiere Pro specialization
+
+Shuvi treats Premiere Pro as a dedicated application specialization rather than relying only on generic mouse/UI automation.
+
+The first specialization layer now includes:
+- typed Windows detection of standard Adobe Premiere Pro installations;
+- a permission-gated typed Premiere launch action that can open an absolute .prproj project;
+- a UXP Manifest v5 plugin scaffold targeting Premiere Pro 25.6+;
+- a dockable Shuvi Premiere panel with read-only active project / active sequence inspection.
+
+The intended final control order is:
+1. Premiere-native UXP APIs for project, sequence, track, clip, effect and export operations;
+2. Windows UI Automation for Premiere controls that are not exposed through UXP;
+3. screen vision for state understanding;
+4. high-risk keyboard or coordinate fallbacks only when semantic/native controls are unavailable.
+
+Major timeline edits will be versioned/checkpointed before execution, and Shuvi's desktop permission/audit layer remains authoritative over sensitive changes.
