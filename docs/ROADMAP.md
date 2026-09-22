@@ -56,7 +56,7 @@
 ## v0.5 — installer
 - [x] NSIS Windows installer configuration + manual release workflow
 - [ ] installer build verified on Windows runner
-- first-run provider setup
+- [x] first-run provider/model/API-key setup
 - automatic updates
 - crash recovery
 - [x] privacy-safe diagnostics export
