@@ -36,6 +36,10 @@ Available tools:
 - launch_app: {"program":"executable or absolute path","args":["optional","arguments"]}
 - open_url: {"url":"https://example.com"}
 - browser_start: {"browser":"edge|chrome","url":"optional https:// page"}
+- browser_navigate: {"pid":1234,"url":"https://example.com"}
+- browser_dom_read: {"pid":1234,"selector":"CSS selector"}
+- browser_dom_click: {"pid":1234,"selector":"CSS selector"}
+- browser_dom_set_value: {"pid":1234,"selector":"CSS selector","value":"text"}
 - stop_managed_process: {"pid":1234}
 - capture_screen: {}
 - inspect_screen: {"prompt":"what should be understood from the current screen"}
@@ -68,6 +72,8 @@ Rules:
 - Treat git_push as a remote write and request it only after a successful commit when the user asked for a push.
 - Use run_project_task instead of raw shell commands when test/build/lint/typecheck is enough.
 - For browser/app UI work, prefer a Shuvi-managed browser when isolation matters, then use window-scoped ui_find/ui_click/ui_set_value/ui_focus/ui_scroll. If a semantic selector fails, use inspect_screen to understand the current state before trying another safe tool.
+- For managed Edge/Chrome sessions, prefer browser_dom_read/browser_dom_click/browser_dom_set_value/browser_navigate over visual coordinate actions because DOM selectors are more reliable.
+- browser_dom_click and browser_dom_set_value require selectors that match exactly one element; refine with browser_dom_read when ambiguous.
 - stop_managed_process may only target process roots that Shuvi launched itself.
 - When a tool fails, do not repeat the exact same failing action blindly. Use the observation to refine the selector, inspect the screen, or choose a different typed tool.
 - If no computer action is needed, answer normally."#;
@@ -152,6 +158,10 @@ enum ToolAction {
     LaunchApp { program: String, args: Vec<String> },
     OpenUrl { url: String },
     BrowserStart { browser: String, url: Option<String> },
+    BrowserNavigate { pid: u32, url: String },
+    BrowserDomRead { pid: u32, selector: String },
+    BrowserDomClick { pid: u32, selector: String },
+    BrowserDomSetValue { pid: u32, selector: String, value: String },
     StopManagedProcess { pid: u32 },
     CaptureScreen,
     InspectScreen { prompt: String, provider: ProviderContext },
@@ -211,10 +221,17 @@ struct RuntimeStatus {
     over_hard_limit: bool,
 }
 
+#[derive(Debug, Clone)]
+struct BrowserSession {
+    port: u16,
+    profile_dir: std::path::PathBuf,
+}
+
 #[derive(Default)]
 struct ActionState {
     pending: Mutex<HashMap<String, PendingAction>>,
     managed_children: Mutex<HashSet<u32>>,
+    browser_sessions: Mutex<HashMap<u32, BrowserSession>>,
 }
 
 fn providers() -> Vec<ProviderDescriptor> {
@@ -331,6 +348,10 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "launch_app"
         | "open_url"
         | "browser_start"
+        | "browser_navigate"
+        | "browser_dom_read"
+        | "browser_dom_click"
+        | "browser_dom_set_value"
         | "stop_managed_process"
         | "capture_screen"
         | "inspect_screen"
@@ -741,6 +762,15 @@ fn arg_string(arguments: &Value, name: &str) -> Result<String, String> {
         .ok_or_else(|| format!("Tool argument '{name}' must be a non-empty string."))
 }
 
+fn arg_u32(arguments: &Value, name: &str) -> Result<u32, String> {
+    arguments
+        .get(name)
+        .and_then(Value::as_u64)
+        .filter(|value| *value > 0 && *value <= u32::MAX as u64)
+        .map(|value| value as u32)
+        .ok_or_else(|| format!("Tool argument '{name}' must be a valid positive integer."))
+}
+
 fn arg_raw_string(arguments: &Value, name: &str) -> Result<String, String> {
     arguments
         .get(name)
@@ -921,6 +951,99 @@ fn find_browser_executable(browser: &str) -> Result<std::path::PathBuf, String> 
     }
 }
 
+fn browser_session(state: &ActionState, pid: u32) -> Result<BrowserSession, String> {
+    state
+        .browser_sessions
+        .lock()
+        .map_err(|_| "Browser-session state is unavailable.".to_string())?
+        .get(&pid)
+        .cloned()
+        .ok_or_else(|| "No Shuvi-managed DevTools browser session exists for that PID.".to_string())
+}
+
+fn cdp_command(port: u16, method: &str, params: Value) -> Result<Value, String> {
+    let payload = json!({
+        "id": 1,
+        "method": method,
+        "params": params
+    })
+    .to_string();
+
+    let encoded = BASE64.encode(payload.as_bytes());
+
+    let script = format!(
+        r#"$ErrorActionPreference = 'Stop'
+$targets = Invoke-RestMethod -UseBasicParsing -Uri 'http://127.0.0.1:{port}/json/list' -TimeoutSec 4
+$target = $targets | Where-Object {{ $_.type -eq 'page' -and $_.webSocketDebuggerUrl }} | Select-Object -First 1
+if (-not $target) {{ throw 'No debuggable browser page is available.' }}
+$ws = New-Object System.Net.WebSockets.ClientWebSocket
+$ws.ConnectAsync([Uri]$target.webSocketDebuggerUrl, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+$message = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{encoded}'))
+$bytes = [Text.Encoding]::UTF8.GetBytes($message)
+$sendSegment = [ArraySegment[byte]]::new($bytes)
+$ws.SendAsync($sendSegment, [Net.WebSockets.WebSocketMessageType]::Text, $true, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+while ($true) {{
+    $buffer = New-Object byte[] 65536
+    $builder = New-Object Text.StringBuilder
+    do {{
+        $recvSegment = [ArraySegment[byte]]::new($buffer)
+        $recv = $ws.ReceiveAsync($recvSegment, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+        if ($recv.MessageType -eq [Net.WebSockets.WebSocketMessageType]::Close) {{
+            throw 'DevTools WebSocket closed before a response arrived.'
+        }}
+        [void]$builder.Append([Text.Encoding]::UTF8.GetString($buffer, 0, $recv.Count))
+    }} while (-not $recv.EndOfMessage)
+    $text = $builder.ToString()
+    $obj = $text | ConvertFrom-Json
+    if ($obj.id -eq 1) {{
+        $ws.Dispose()
+        $text
+        break
+    }}
+}"#
+    );
+
+    let output = run_hidden_powershell(&script)?;
+    if !output.status.success() {
+        return Err(format!(
+            "DevTools command failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let response: Value = serde_json::from_str(&stdout)
+        .map_err(|error| format!("Invalid DevTools response: {error}; response={}", stdout.chars().take(500).collect::<String>()))?;
+
+    if let Some(error) = response.get("error") {
+        return Err(format!("DevTools returned an error: {}", error));
+    }
+
+    Ok(response)
+}
+
+fn cdp_eval(port: u16, expression: String) -> Result<Value, String> {
+    let response = cdp_command(
+        port,
+        "Runtime.evaluate",
+        json!({
+            "expression": expression,
+            "returnByValue": true,
+            "awaitPromise": true,
+            "userGesture": true
+        }),
+    )?;
+
+    if let Some(exception) = response.pointer("/result/exceptionDetails") {
+        return Err(format!("Browser JavaScript failed: {}", exception));
+    }
+
+    Ok(response
+        .pointer("/result/result/value")
+        .cloned()
+        .unwrap_or(Value::Null))
+}
+
 fn managed_tree_pids(system: &System, roots: &HashSet<u32>) -> HashSet<Pid> {
     let mut included = roots
         .iter()
@@ -1045,14 +1168,65 @@ fn stage_tool(
                 RiskLevel::Medium,
             )
         }
+        "browser_navigate" => {
+            let pid = arg_u32(&proposal.arguments, "pid")?;
+            let url = safe_web_url(arg_string(&proposal.arguments, "url")?)?;
+
+            (
+                ToolAction::BrowserNavigate { pid, url: url.clone() },
+                "Navigate managed browser".to_string(),
+                format!("Browser PID {pid} -> {url}"),
+                RiskLevel::Medium,
+            )
+        }
+        "browser_dom_read" => {
+            let pid = arg_u32(&proposal.arguments, "pid")?;
+            let selector = arg_string(&proposal.arguments, "selector")?;
+            if selector.len() > 2_000 {
+                return Err("CSS selector is too long.".into());
+            }
+
+            (
+                ToolAction::BrowserDomRead { pid, selector: selector.clone() },
+                "Read browser DOM".to_string(),
+                format!("Browser PID {pid} | selector={selector}"),
+                RiskLevel::Low,
+            )
+        }
+        "browser_dom_click" => {
+            let pid = arg_u32(&proposal.arguments, "pid")?;
+            let selector = arg_string(&proposal.arguments, "selector")?;
+            if selector.len() > 2_000 {
+                return Err("CSS selector is too long.".into());
+            }
+
+            (
+                ToolAction::BrowserDomClick { pid, selector: selector.clone() },
+                "Click browser DOM element".to_string(),
+                format!("Browser PID {pid} | selector={selector}"),
+                RiskLevel::Medium,
+            )
+        }
+        "browser_dom_set_value" => {
+            let pid = arg_u32(&proposal.arguments, "pid")?;
+            let selector = arg_string(&proposal.arguments, "selector")?;
+            let value = arg_raw_string(&proposal.arguments, "value")?;
+            if selector.len() > 2_000 {
+                return Err("CSS selector is too long.".into());
+            }
+            if value.len() > 8_000 {
+                return Err("Browser value is larger than Shuvi's 8 KB DOM input limit.".into());
+            }
+
+            (
+                ToolAction::BrowserDomSetValue { pid, selector: selector.clone(), value: value.clone() },
+                "Set browser DOM value".to_string(),
+                format!("Browser PID {pid} | selector={selector} | value_length={}", value.chars().count()),
+                RiskLevel::Medium,
+            )
+        }
         "stop_managed_process" => {
-            let pid = proposal
-                .arguments
-                .get("pid")
-                .and_then(Value::as_u64)
-                .filter(|value| *value > 0 && *value <= u32::MAX as u64)
-                .ok_or_else(|| "stop_managed_process requires a valid positive pid.".to_string())?
-                as u32;
+            let pid = arg_u32(&proposal.arguments, "pid")?;
 
             (
                 ToolAction::StopManagedProcess { pid },
@@ -2072,10 +2246,13 @@ async fn execute_tool(action: PendingAction, state: &ActionState) -> Result<Acti
             let executable = find_browser_executable(&browser)?;
             let profile_dir = std::env::temp_dir()
                 .join("Shuvi")
-                .join(format!("{}-profile", browser));
+                .join("browser-profiles")
+                .join(format!("{}-{}", browser, now_ms()));
 
             fs::create_dir_all(&profile_dir)
                 .map_err(|error| format!("Could not create managed browser profile: {error}"))?;
+
+            let devtools_file = profile_dir.join("DevToolsActivePort");
 
             let mut command = Command::new(&executable);
             command
@@ -2083,29 +2260,204 @@ async fn execute_tool(action: PendingAction, state: &ActionState) -> Result<Acti
                 .arg("--no-first-run")
                 .arg("--no-default-browser-check")
                 .arg("--disable-background-mode")
+                .arg("--remote-debugging-address=127.0.0.1")
+                .arg("--remote-debugging-port=0")
                 .arg(format!("--user-data-dir={}", profile_dir.display()));
 
             if let Some(url) = &url {
                 command.arg(url);
             }
 
-            let child = command
+            let mut child = command
                 .spawn()
                 .map_err(|error| format!("Could not start managed browser: {error}"))?;
 
             let child_pid = child.id();
+            let mut devtools_port = None;
+
+            for _ in 0..50 {
+                if let Ok(value) = fs::read_to_string(&devtools_file) {
+                    if let Some(first_line) = value.lines().next() {
+                        if let Ok(port) = first_line.trim().parse::<u16>() {
+                            devtools_port = Some(port);
+                            break;
+                        }
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+
+            let Some(port) = devtools_port else {
+                let _ = child.kill();
+                let _ = fs::remove_dir_all(&profile_dir);
+                return Err("Managed browser started, but its local DevTools endpoint did not become ready within 5 seconds.".into());
+            };
+
             state
                 .managed_children
                 .lock()
                 .map_err(|_| "Managed-process state is unavailable.".to_string())?
                 .insert(child_pid);
 
+            state
+                .browser_sessions
+                .lock()
+                .map_err(|_| "Browser-session state is unavailable.".to_string())?
+                .insert(
+                    child_pid,
+                    BrowserSession {
+                        port,
+                        profile_dir: profile_dir.clone(),
+                    },
+                );
+
             Ok(ActionResult {
                 success: true,
                 tool,
                 stdout: format!(
-                    "Started Shuvi-managed {browser} with root PID {child_pid}. Browser subprocesses are included in Shuvi's RAM accounting."
+                    "Started Shuvi-managed {browser} with root PID {child_pid} and local DevTools port {port}. Use this PID for browser DOM tools. Browser subprocesses are included in Shuvi's RAM accounting."
                 ),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::BrowserNavigate { pid, url } => {
+            let session = browser_session(state, pid)?;
+            let response = cdp_command(
+                session.port,
+                "Page.navigate",
+                json!({ "url": url }),
+            )?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: format!(
+                    "Navigated browser PID {pid}. DevTools response: {}",
+                    truncate_output(response.to_string())
+                ),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::BrowserDomRead { pid, selector } => {
+            let session = browser_session(state, pid)?;
+            let selector_json = serde_json::to_string(&selector)
+                .map_err(|error| format!("Could not encode CSS selector: {error}"))?;
+
+            let expression = format!(
+                r#"(() => {{
+  const selector = {selector_json};
+  const nodes = Array.from(document.querySelectorAll(selector)).slice(0, 25);
+  return nodes.map((el, index) => ({{
+    index,
+    tag: el.tagName,
+    id: el.id || null,
+    name: el.getAttribute('name'),
+    role: el.getAttribute('role'),
+    type: el.getAttribute('type'),
+    text: String(el.innerText || el.textContent || '').trim().slice(0, 500),
+    value: ('value' in el) ? String(el.value).slice(0, 500) : null,
+    href: el.href || null,
+    disabled: !!el.disabled
+  }}));
+}})()"#
+            );
+
+            let value = cdp_eval(session.port, expression)?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value)
+                    .unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::BrowserDomClick { pid, selector } => {
+            let session = browser_session(state, pid)?;
+            let selector_json = serde_json::to_string(&selector)
+                .map_err(|error| format!("Could not encode CSS selector: {error}"))?;
+
+            let expression = format!(
+                r#"(() => {{
+  const selector = {selector_json};
+  const nodes = Array.from(document.querySelectorAll(selector));
+  if (nodes.length === 0) throw new Error('No DOM element matched the selector.');
+  if (nodes.length > 1) throw new Error('Selector matched ' + nodes.length + ' elements. Refine it before clicking.');
+  const el = nodes[0];
+  if (el.disabled) throw new Error('Matching DOM element is disabled.');
+  el.scrollIntoView({{ block: 'center', inline: 'center' }});
+  el.click();
+  return {{
+    clicked: true,
+    tag: el.tagName,
+    id: el.id || null,
+    text: String(el.innerText || el.textContent || '').trim().slice(0, 300)
+  }};
+}})()"#
+            );
+
+            let value = cdp_eval(session.port, expression)?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value)
+                    .unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::BrowserDomSetValue { pid, selector, value } => {
+            let session = browser_session(state, pid)?;
+            let selector_json = serde_json::to_string(&selector)
+                .map_err(|error| format!("Could not encode CSS selector: {error}"))?;
+            let value_json = serde_json::to_string(&value)
+                .map_err(|error| format!("Could not encode DOM value: {error}"))?;
+
+            let expression = format!(
+                r#"(() => {{
+  const selector = {selector_json};
+  const newValue = {value_json};
+  const nodes = Array.from(document.querySelectorAll(selector));
+  if (nodes.length === 0) throw new Error('No DOM element matched the selector.');
+  if (nodes.length > 1) throw new Error('Selector matched ' + nodes.length + ' elements. Refine it before writing.');
+  const el = nodes[0];
+  if (el.disabled) throw new Error('Matching DOM element is disabled.');
+  el.focus();
+
+  if ('value' in el) {{
+    const proto = Object.getPrototypeOf(el);
+    const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (descriptor && descriptor.set) descriptor.set.call(el, newValue);
+    else el.value = newValue;
+  }} else if (el.isContentEditable) {{
+    el.textContent = newValue;
+  }} else {{
+    throw new Error('Matching DOM element is not value-editable.');
+  }}
+
+  el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+  el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+
+  return {{
+    changed: true,
+    tag: el.tagName,
+    id: el.id || null,
+    valueLength: newValue.length
+  }};
+}})()"#
+            );
+
+            let result = cdp_eval(session.port, expression)?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&result)
+                    .unwrap_or_else(|_| result.to_string()),
                 stderr: String::new(),
                 exit_code: Some(0),
             })
@@ -2141,6 +2493,15 @@ async fn execute_tool(action: PendingAction, state: &ActionState) -> Result<Acti
                     .lock()
                     .map_err(|_| "Managed-process state is unavailable.".to_string())?
                     .remove(&pid);
+
+                if let Some(session) = state
+                    .browser_sessions
+                    .lock()
+                    .map_err(|_| "Browser-session state is unavailable.".to_string())?
+                    .remove(&pid)
+                {
+                    let _ = fs::remove_dir_all(session.profile_dir);
+                }
             }
 
             Ok(ActionResult {
