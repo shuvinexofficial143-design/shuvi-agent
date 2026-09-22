@@ -8,7 +8,8 @@ import type {
   ProviderDescriptor,
   RuntimeStatus,
   ToolProposal,
-  AuditEntry
+  AuditEntry,
+  SessionCheckpoint
 } from "./types";
 
 const root = document.querySelector<HTMLDivElement>("#app");
@@ -87,6 +88,17 @@ root.innerHTML = `
         <div><h1>Ask Shuvi</h1><p id="activeProvider">Loading provider…</p></div>
         <span class="status"><i></i> Local runtime</span>
       </header>
+
+      <div id="resumeBanner" class="resume-banner hidden">
+        <div>
+          <strong>Interrupted task found</strong>
+          <p id="resumeSummary">Shuvi saved a safe checkpoint before the previous session ended.</p>
+        </div>
+        <div class="button-row">
+          <button id="resumeTask" class="primary" type="button">Resume</button>
+          <button id="discardTask" type="button">Discard</button>
+        </div>
+      </div>
 
       <div id="messages" class="messages">
         <div class="empty-state">
@@ -212,6 +224,9 @@ const onboardingBaseUrlLabel = el<HTMLElement>("#onboardingBaseUrlLabel");
 const onboardingKey = el<HTMLInputElement>("#onboardingKey");
 const onboardingKeyLabel = el<HTMLElement>("#onboardingKeyLabel");
 const onboardingStatus = el<HTMLElement>("#onboardingStatus");
+const resumeBanner = el<HTMLElement>("#resumeBanner");
+const resumeSummary = el<HTMLElement>("#resumeSummary");
+let savedCheckpoint: SessionCheckpoint | null = null;
 
 function selectedProvider(): ProviderDescriptor | undefined {
   return providers.find((provider) => provider.id === providerSelect.value);
@@ -281,6 +296,52 @@ function prepareOnboarding(): void {
 
   if (localStorage.getItem("shuvi.onboarded") !== "1") {
     onboarding.classList.remove("hidden");
+  }
+}
+
+function currentCheckpoint(): SessionCheckpoint {
+  return {
+    version: 1,
+    updated_at_ms: Date.now(),
+    provider: providerSelect.value,
+    model: modelInput.value.trim(),
+    base_url: baseUrlInput.value.trim() || null,
+    messages
+  };
+}
+
+async function saveActiveCheckpoint(): Promise<void> {
+  try {
+    await invoke("save_session_checkpoint", { checkpoint: currentCheckpoint() });
+  } catch {
+    // Recovery is best-effort and must never block the active task.
+  }
+}
+
+async function clearActiveCheckpoint(): Promise<void> {
+  try {
+    await invoke("clear_session_checkpoint");
+  } catch {
+    // Best-effort cleanup only.
+  }
+}
+
+async function loadRecoveryCheckpoint(): Promise<void> {
+  try {
+    savedCheckpoint = await invoke<SessionCheckpoint | null>("load_session_checkpoint");
+
+    if (!savedCheckpoint || savedCheckpoint.messages.length === 0) {
+      resumeBanner.classList.add("hidden");
+      return;
+    }
+
+    const ageMinutes = Math.max(0, Math.round((Date.now() - savedCheckpoint.updated_at_ms) / 60000));
+    const ageText = ageMinutes <= 1 ? "about a minute" : String(ageMinutes) + " minutes";
+    resumeSummary.textContent = "Saved " + ageText + " ago · " + savedCheckpoint.provider + " · " + String(savedCheckpoint.messages.length) + " messages";
+    resumeBanner.classList.remove("hidden");
+  } catch {
+    savedCheckpoint = null;
+    resumeBanner.classList.add("hidden");
   }
 }
 
@@ -366,6 +427,7 @@ async function boot(): Promise<void> {
     loadSavedProvider();
     prepareOnboarding();
     await loadWorkspace();
+    await loadRecoveryCheckpoint();
     await refreshRam();
     await refreshAudit();
     window.setInterval(() => void refreshRam(), 5000);
