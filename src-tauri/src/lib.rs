@@ -3,7 +3,7 @@ use std::{
     fs::{self, OpenOptions},
     io::{BufRead, BufReader, Write},
     path::Path,
-    process::Command,
+    process::{Command, Stdio},
     sync::Mutex,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -44,8 +44,12 @@ Available tools:
 - workspace_scan: {"path":"absolute workspace path"}
 - search_text: {"path":"absolute workspace path","query":"text to find"}
 - replace_text: {"path":"absolute file path","old":"exact old text","new":"replacement text"}
+- apply_patch: {"path":"absolute Git repository path","patch":"unified diff patch"}
+- run_project_task: {"path":"absolute project path","task":"test|build|lint|typecheck"}
 - git_status: {"path":"absolute repository path"}
 - git_diff: {"path":"absolute repository path"}
+- git_commit: {"path":"absolute repository path","message":"commit message"}
+- git_push: {"path":"absolute repository path"}
 - powershell: {"command":"PowerShell command"}
 
 Rules:
@@ -138,8 +142,12 @@ enum ToolAction {
     WorkspaceScan { path: String },
     SearchText { path: String, query: String },
     ReplaceText { path: String, old: String, new_value: String },
+    ApplyPatch { path: String, patch: String },
+    RunProjectTask { path: String, task: String },
     GitStatus { path: String },
     GitDiff { path: String },
+    GitCommit { path: String, message: String },
+    GitPush { path: String },
     PowerShell { command: String },
 }
 
@@ -309,8 +317,12 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "workspace_scan"
         | "search_text"
         | "replace_text"
+        | "apply_patch"
+        | "run_project_task"
         | "git_status"
         | "git_diff"
+        | "git_commit"
+        | "git_push"
         | "powershell" => Some(proposal),
         _ => None,
     }
@@ -660,7 +672,7 @@ fn ui_selector(
 }
 
 fn ps_single_quote(value: &str) -> String {
-    value.replace(''', "''")
+    value.replace("'", "''")
 }
 
 fn ui_condition_script(
@@ -948,6 +960,44 @@ fn stage_tool(
                 RiskLevel::Medium,
             )
         }
+        "apply_patch" => {
+            let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
+            let patch = arg_raw_string(&proposal.arguments, "patch")?;
+            if patch.trim().is_empty() {
+                return Err("apply_patch requires a non-empty unified diff.".into());
+            }
+            if patch.len() > 512_000 {
+                return Err("Patch is larger than Shuvi's 512 KB patch limit.".into());
+            }
+
+            (
+                ToolAction::ApplyPatch {
+                    path: path.clone(),
+                    patch: patch.clone(),
+                },
+                "Apply structured Git patch".to_string(),
+                format!("{} | patch_chars={}", path, patch.chars().count()),
+                RiskLevel::Medium,
+            )
+        }
+        "run_project_task" => {
+            let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
+            let task = arg_string(&proposal.arguments, "task")?.to_ascii_lowercase();
+
+            if !matches!(task.as_str(), "test" | "build" | "lint" | "typecheck") {
+                return Err("Project task must be test, build, lint, or typecheck.".into());
+            }
+
+            (
+                ToolAction::RunProjectTask {
+                    path: path.clone(),
+                    task: task.clone(),
+                },
+                "Run project task".to_string(),
+                format!("{path} | task={task}"),
+                RiskLevel::Medium,
+            )
+        }
         "git_status" => {
             let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
             (
@@ -964,6 +1014,32 @@ fn stage_tool(
                 "Read Git diff".to_string(),
                 path,
                 RiskLevel::Low,
+            )
+        }
+        "git_commit" => {
+            let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
+            let message = arg_string(&proposal.arguments, "message")?;
+            if message.len() > 500 {
+                return Err("Git commit message is too long.".into());
+            }
+
+            (
+                ToolAction::GitCommit {
+                    path: path.clone(),
+                    message: message.clone(),
+                },
+                "Stage and commit Git changes".to_string(),
+                format!("{path} | message={message}"),
+                RiskLevel::Medium,
+            )
+        }
+        "git_push" => {
+            let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
+            (
+                ToolAction::GitPush { path: path.clone() },
+                "Push Git commits to remote".to_string(),
+                path,
+                RiskLevel::High,
             )
         }
         "powershell" => {
@@ -1074,7 +1150,7 @@ fn capture_screen_png() -> Result<std::path::PathBuf, String> {
             .map_err(|error| format!("Could not create screenshot folder: {error}"))?;
 
         let path = dir.join(format!("screen-{}.png", now_ms()));
-        let ps_path = path.to_string_lossy().replace(''', "''");
+        let ps_path = path.to_string_lossy().replace("'", "''");
 
         let script = format!(
             r#"Add-Type -AssemblyName System.Windows.Forms
@@ -1447,6 +1523,154 @@ fn run_git(path: &str, args: &[&str]) -> Result<std::process::Output, String> {
         .args(args)
         .output()
         .map_err(|error| format!("Could not run Git: {error}"))
+}
+
+fn run_git_with_stdin(
+    path: &str,
+    args: &[&str],
+    input: &str,
+) -> Result<std::process::Output, String> {
+    if !Path::new(path).join(".git").exists() {
+        return Err("The selected path does not contain a .git repository.".into());
+    }
+
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Could not run Git: {error}"))?;
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin
+            .write_all(input.as_bytes())
+            .map_err(|error| format!("Could not send patch to Git: {error}"))?;
+    }
+
+    child
+        .wait_with_output()
+        .map_err(|error| format!("Could not wait for Git: {error}"))
+}
+
+fn project_task_command(path: &str, task: &str) -> Result<(String, Vec<String>), String> {
+    let root = Path::new(path);
+
+    if !root.is_dir() {
+        return Err("Project path is not a directory.".into());
+    }
+
+    if root.join("package.json").exists() {
+        let package_json = fs::read_to_string(root.join("package.json"))
+            .map_err(|error| format!("Could not read package.json: {error}"))?;
+        let package: Value = serde_json::from_str(&package_json)
+            .map_err(|error| format!("Invalid package.json: {error}"))?;
+
+        let scripts = package
+            .get("scripts")
+            .and_then(Value::as_object)
+            .ok_or_else(|| "package.json has no scripts object.".to_string())?;
+
+        let script_name = match task {
+            "test" => "test",
+            "build" => "build",
+            "lint" => "lint",
+            "typecheck" => {
+                if scripts.contains_key("typecheck") {
+                    "typecheck"
+                } else if scripts.contains_key("type-check") {
+                    "type-check"
+                } else {
+                    return Err("No typecheck/type-check script is defined in package.json.".into());
+                }
+            }
+            _ => return Err("Unsupported project task.".into()),
+        };
+
+        if !scripts.contains_key(script_name) {
+            return Err(format!("package.json does not define the '{script_name}' script."));
+        }
+
+        let manager = if root.join("pnpm-lock.yaml").exists() {
+            "pnpm"
+        } else if root.join("yarn.lock").exists() {
+            "yarn"
+        } else {
+            "npm"
+        };
+
+        #[cfg(target_os = "windows")]
+        let program = format!("{manager}.cmd");
+
+        #[cfg(not(target_os = "windows"))]
+        let program = manager.to_string();
+
+        let args = if manager == "yarn" {
+            vec![script_name.to_string()]
+        } else {
+            vec!["run".into(), script_name.to_string()]
+        };
+
+        return Ok((program, args));
+    }
+
+    if root.join("Cargo.toml").exists() {
+        let args = match task {
+            "test" => vec!["test".into()],
+            "build" => vec!["build".into()],
+            "lint" => vec!["clippy".into(), "--all-targets".into()],
+            "typecheck" => vec!["check".into()],
+            _ => return Err("Unsupported Rust project task.".into()),
+        };
+
+        return Ok(("cargo".into(), args));
+    }
+
+    Err("Shuvi currently supports typed project tasks for Node.js and Rust projects.".into())
+}
+
+fn workspace_config_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not resolve app data directory: {error}"))?;
+
+    fs::create_dir_all(&dir)
+        .map_err(|error| format!("Could not create Shuvi data directory: {error}"))?;
+
+    Ok(dir.join("workspace.txt"))
+}
+
+fn read_workspace(app: &AppHandle) -> Result<Option<String>, String> {
+    let path = workspace_config_path(app)?;
+
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let value = fs::read_to_string(path)
+        .map_err(|error| format!("Could not read workspace setting: {error}"))?
+        .trim()
+        .to_string();
+
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(value))
+    }
+}
+
+fn write_workspace(app: &AppHandle, path: &str) -> Result<(), String> {
+    let absolute = Path::new(path);
+
+    if !absolute.is_absolute() || !absolute.is_dir() {
+        return Err("Workspace must be an existing absolute directory.".into());
+    }
+
+    fs::write(workspace_config_path(app)?, path.as_bytes())
+        .map_err(|error| format!("Could not save workspace setting: {error}"))
 }
 
 fn truncate_output(value: String) -> String {
@@ -1835,6 +2059,56 @@ if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Patte
                 exit_code: Some(0),
             })
         }
+        ToolAction::ApplyPatch { path, patch } => {
+            let check = run_git_with_stdin(
+                &path,
+                &["apply", "--check", "--whitespace=nowarn", "-"],
+                &patch,
+            )?;
+
+            if !check.status.success() {
+                return Err(format!(
+                    "Patch validation failed: {}",
+                    String::from_utf8_lossy(&check.stderr)
+                ));
+            }
+
+            let output = run_git_with_stdin(
+                &path,
+                &["apply", "--whitespace=nowarn", "-"],
+                &patch,
+            )?;
+
+            Ok(ActionResult {
+                success: output.status.success(),
+                tool,
+                stdout: if output.status.success() {
+                    "Structured patch applied successfully.".into()
+                } else {
+                    truncate_output(String::from_utf8_lossy(&output.stdout).to_string())
+                },
+                stderr: truncate_output(String::from_utf8_lossy(&output.stderr).to_string()),
+                exit_code: output.status.code(),
+            })
+        }
+        ToolAction::RunProjectTask { path, task } => {
+            let (program, args) = project_task_command(&path, &task)?;
+
+            let output = Command::new(&program)
+                .args(&args)
+                .current_dir(&path)
+                .env("CI", "1")
+                .output()
+                .map_err(|error| format!("Could not run project task: {error}"))?;
+
+            Ok(ActionResult {
+                success: output.status.success(),
+                tool,
+                stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                stderr: truncate_output(String::from_utf8_lossy(&output.stderr).to_string()),
+                exit_code: output.status.code(),
+            })
+        }
         ToolAction::GitStatus { path } => {
             let output = run_git(&path, &["status", "--short", "--branch"])?;
             Ok(ActionResult {
@@ -1847,6 +2121,36 @@ if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Patte
         }
         ToolAction::GitDiff { path } => {
             let output = run_git(&path, &["diff", "--no-ext-diff", "--unified=3"])?;
+            Ok(ActionResult {
+                success: output.status.success(),
+                tool,
+                stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                stderr: truncate_output(String::from_utf8_lossy(&output.stderr).to_string()),
+                exit_code: output.status.code(),
+            })
+        }
+        ToolAction::GitCommit { path, message } => {
+            let add = run_git(&path, &["add", "-A"])?;
+            if !add.status.success() {
+                return Err(format!(
+                    "Git staging failed: {}",
+                    String::from_utf8_lossy(&add.stderr)
+                ));
+            }
+
+            let output = run_git(&path, &["commit", "-m", &message])?;
+
+            Ok(ActionResult {
+                success: output.status.success(),
+                tool,
+                stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                stderr: truncate_output(String::from_utf8_lossy(&output.stderr).to_string()),
+                exit_code: output.status.code(),
+            })
+        }
+        ToolAction::GitPush { path } => {
+            let output = run_git(&path, &["push"])?;
+
             Ok(ActionResult {
                 success: output.status.success(),
                 tool,
@@ -1909,14 +2213,21 @@ fn delete_api_key(provider: String) -> Result<(), String> {
 async fn chat(
     mut input: ChatInput,
     state: State<'_, ActionState>,
+    app: AppHandle,
 ) -> Result<ChatResponse, String> {
     ensure_memory_budget(state.inner())?;
+
+    let workspace = read_workspace(&app)?;
+    let workspace_context = workspace
+        .as_deref()
+        .map(|path| format!("\nCurrent Shuvi workspace: {path}\nUse this workspace when the user refers to 'the project' without giving another path."))
+        .unwrap_or_default();
 
     input.messages.insert(
         0,
         ChatMessage {
             role: "system".into(),
-            content: TOOL_PROTOCOL.into(),
+            content: format!("{TOOL_PROTOCOL}{workspace_context}"),
         },
     );
 
@@ -2054,6 +2365,16 @@ fn audit_log(app: AppHandle, limit: Option<usize>) -> Result<Vec<AuditEntry>, St
     read_audit(&app, limit.unwrap_or(30))
 }
 
+#[tauri::command]
+fn set_workspace(path: String, app: AppHandle) -> Result<(), String> {
+    write_workspace(&app, path.trim())
+}
+
+#[tauri::command]
+fn get_workspace(app: AppHandle) -> Result<Option<String>, String> {
+    read_workspace(&app)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -2070,6 +2391,8 @@ pub fn run() {
             execute_action,
             execute_powershell,
             audit_log,
+            set_workspace,
+            get_workspace,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Shuvi");
