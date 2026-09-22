@@ -21,7 +21,7 @@
 - [x] application/process launcher
 - [x] tool observations returned to the model
 - [x] per-task maximum step guard
-- [ ] task cancellation while a provider request/tool is running
+- [x] cooperative task cancellation between agent steps (active HTTP request finishes first)
 - [ ] scoped permission grants
 - [ ] per-task token/cost meter
 - [x] managed child-process RAM accounting
