@@ -38,12 +38,14 @@
 - [ ] failure recovery
 
 ## v0.4 — coding mode
-- workspace selection
-- repo map
-- patch-based file editing
-- terminal/test loop
-- git diff review
-- commit/push approval flow
+- [x] workspace tree scan with common heavy folders ignored
+- [x] workspace text search
+- [x] unambiguous exact-text file edit
+- [x] Git status and diff inspection
+- [ ] persistent workspace selection
+- [ ] structured patch/hunk editing
+- [ ] typed terminal/test loop
+- [ ] commit/push approval flow
 
 ## v0.5 — installer
 - Windows installer
