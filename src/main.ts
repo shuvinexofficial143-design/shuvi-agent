@@ -557,6 +557,7 @@ async function executePendingProposal(
     const result = await invoke<ActionResult>("execute_action", { actionId });
     void refreshAudit();
     messages.push(toolResultMessage(result));
+    await saveActiveCheckpoint();
     await runAgentStep(step + 1);
   } catch (error) {
     messages.push({
@@ -567,6 +568,7 @@ async function executePendingProposal(
         error: String(error)
       })}\n[/SHUVI_TOOL_RESULT]`
     });
+    await saveActiveCheckpoint();
     await runAgentStep(step + 1);
   }
 }
@@ -648,6 +650,7 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
             denied_by_user: true
           })}\n[/SHUVI_TOOL_RESULT]`
         });
+        await saveActiveCheckpoint();
         await runAgentStep(step + 1);
       }
     };
@@ -701,6 +704,7 @@ async function runAgentStep(step: number): Promise<void> {
 
     messages.push({ role: "assistant", content: response.content });
     renderMessages();
+    await saveActiveCheckpoint();
 
     if (response.tool_proposal) {
       await stageProposal(response.tool_proposal, step);
@@ -841,6 +845,7 @@ el<HTMLFormElement>("#chatForm").addEventListener("submit", async (event) => {
   messages.push({ role: "user", content });
   prompt.value = "";
   renderMessages();
+  await saveActiveCheckpoint();
 
   await runAgentStep(1);
 });
