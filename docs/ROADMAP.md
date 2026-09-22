@@ -23,7 +23,8 @@
 - [x] per-task maximum step guard
 - [x] cooperative task cancellation between agent steps (active HTTP request finishes first)
 - [x] session-scoped read-tool permission grants
-- [ ] per-task token/cost meter
+- [x] session token usage meter when the selected provider reports usage
+- [ ] provider-aware cost estimates
 - [x] managed child-process RAM accounting
 - [x] audit log persisted locally
 
