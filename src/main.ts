@@ -57,7 +57,7 @@ root.innerHTML = `
         <div class="empty-state">
           <div class="orb">S</div>
           <h2>What should we work on?</h2>
-<p>Shuvi can use files, apps, browser navigation and AI screen vision. Sensitive actions wait for your approval.</p>
+<p>Shuvi can use files, coding tools, apps, window-scoped UI control and AI screen vision. Sensitive actions wait for your approval.</p>
         </div>
       </div>
 
