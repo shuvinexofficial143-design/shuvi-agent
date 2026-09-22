@@ -33,12 +33,16 @@ Available tools:
 - write_file: {"path":"absolute path","content":"complete file content"}
 - create_directory: {"path":"absolute path"}
 - launch_app: {"program":"executable or absolute path","args":["optional","arguments"]}
+- open_url: {"url":"https://example.com"}
+- capture_screen: {}
+- list_processes: {}
 - powershell: {"command":"PowerShell command"}
 
 Rules:
 - Use tools only when a computer action is required.
 - Never claim an action succeeded before Shuvi returns a tool result.
-- Prefer typed file/app tools over PowerShell.
+- Prefer typed file/app/browser/screen tools over PowerShell.
+- capture_screen only captures an image and returns its local path; do not claim you can see its visual contents yet.
 - Do not put tool JSON inside markdown fences.
 - For destructive/system/security-sensitive work, explain the intent in reason.
 - If no computer action is needed, answer normally."#;
@@ -106,6 +110,9 @@ enum ToolAction {
     WriteFile { path: String, content: String },
     CreateDirectory { path: String },
     LaunchApp { program: String, args: Vec<String> },
+    OpenUrl { url: String },
+    CaptureScreen,
+    ListProcesses,
     PowerShell { command: String },
 }
 
@@ -265,6 +272,9 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "write_file"
         | "create_directory"
         | "launch_app"
+        | "open_url"
+        | "capture_screen"
+        | "list_processes"
         | "powershell" => Some(proposal),
         _ => None,
     }
@@ -609,6 +619,23 @@ fn absolute_path(value: String) -> Result<String, String> {
     Ok(value)
 }
 
+fn safe_web_url(value: String) -> Result<String, String> {
+    let lower = value.to_ascii_lowercase();
+    if !(lower.starts_with("https://") || lower.starts_with("http://")) {
+        return Err("Browser tool only accepts http:// or https:// URLs.".into());
+    }
+
+    if value.contains(['\r', '\n', '\0']) {
+        return Err("URL contains invalid control characters.".into());
+    }
+
+    if value.len() > 4096 {
+        return Err("URL is too long.".into());
+    }
+
+    Ok(value)
+}
+
 fn stage_tool(proposal: ToolProposal, state: &ActionState) -> Result<PendingActionView, String> {
     let tool = proposal.tool.clone();
 
@@ -669,6 +696,27 @@ fn stage_tool(proposal: ToolProposal, state: &ActionState) -> Result<PendingActi
                 RiskLevel::Medium,
             )
         }
+        "open_url" => {
+            let url = safe_web_url(arg_string(&proposal.arguments, "url")?)?;
+            (
+                ToolAction::OpenUrl { url: url.clone() },
+                "Open web page".to_string(),
+                url,
+                RiskLevel::Medium,
+            )
+        }
+        "capture_screen" => (
+            ToolAction::CaptureScreen,
+            "Capture screen".to_string(),
+            "Capture the current virtual desktop to a temporary PNG file.".to_string(),
+            RiskLevel::Low,
+        ),
+        "list_processes" => (
+            ToolAction::ListProcesses,
+            "List running processes".to_string(),
+            "Read process names, PIDs and memory usage.".to_string(),
+            RiskLevel::Low,
+        ),
         "powershell" => {
             let command = arg_string(&proposal.arguments, "command")?;
             if command.len() > 8_000 {
@@ -874,6 +922,125 @@ fn execute_tool(action: PendingAction, state: &ActionState) -> Result<ActionResu
                 success: true,
                 tool,
                 stdout: format!("Launched {program} with PID {child_pid}. Shuvi is now tracking its RAM usage."),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::OpenUrl { url } => {
+            #[cfg(target_os = "windows")]
+            let child = Command::new("explorer.exe")
+                .arg(&url)
+                .spawn()
+                .map_err(|error| format!("Could not open URL: {error}"))?;
+
+            #[cfg(target_os = "macos")]
+            let child = Command::new("open")
+                .arg(&url)
+                .spawn()
+                .map_err(|error| format!("Could not open URL: {error}"))?;
+
+            #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+            let child = Command::new("xdg-open")
+                .arg(&url)
+                .spawn()
+                .map_err(|error| format!("Could not open URL: {error}"))?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: format!("Opened {url} using the system browser (launcher PID {}).", child.id()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::CaptureScreen => {
+            #[cfg(target_os = "windows")]
+            {
+                let dir = std::env::temp_dir().join("Shuvi").join("screenshots");
+                fs::create_dir_all(&dir)
+                    .map_err(|error| format!("Could not create screenshot folder: {error}"))?;
+
+                let path = dir.join(format!("screen-{}.png", now_ms()));
+                let ps_path = path.to_string_lossy().replace(''', "''");
+
+                let script = format!(
+                    r#"Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
+$bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+$graphics.CopyFromScreen($bounds.Left, $bounds.Top, 0, 0, $bounds.Size)
+$bitmap.Save('{ps_path}', [System.Drawing.Imaging.ImageFormat]::Png)
+$graphics.Dispose()
+$bitmap.Dispose()"#
+                );
+
+                let output = Command::new("powershell.exe")
+                    .args([
+                        "-NoLogo",
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-WindowStyle",
+                        "Hidden",
+                        "-Command",
+                        &script,
+                    ])
+                    .output()
+                    .map_err(|error| format!("Could not capture screen: {error}"))?;
+
+                if !output.status.success() || !path.exists() {
+                    return Err(format!(
+                        "Screen capture failed: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    ));
+                }
+
+                let size = fs::metadata(&path)
+                    .map(|metadata| metadata.len())
+                    .unwrap_or_default();
+
+                return Ok(ActionResult {
+                    success: true,
+                    tool,
+                    stdout: format!(
+                        "Screenshot saved to {} ({} bytes). Visual analysis is not connected yet.",
+                        path.display(),
+                        size
+                    ),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                });
+            }
+
+            #[cfg(not(target_os = "windows"))]
+            {
+                Err("Screen capture is currently implemented for Windows only.".into())
+            }
+        }
+        ToolAction::ListProcesses => {
+            let mut system = System::new_all();
+            system.refresh_all();
+
+            let mut rows = system
+                .processes()
+                .iter()
+                .map(|(pid, process)| {
+                    format!(
+                        "PID={} | {} | {:.1} MB",
+                        pid.as_u32(),
+                        process.name().to_string_lossy(),
+                        process.memory() as f64 / 1024.0 / 1024.0
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            rows.sort();
+            rows.truncate(400);
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: rows.join("\n"),
                 stderr: String::new(),
                 exit_code: Some(0),
             })
