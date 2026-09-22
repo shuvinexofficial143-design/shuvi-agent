@@ -672,6 +672,7 @@ async function runAgentStep(step: number): Promise<void> {
       content: "I stopped this task because it reached Shuvi's 8-step safety limit."
     });
     renderMessages();
+    await clearActiveCheckpoint();
     setBusy(false);
     return;
   }
@@ -721,6 +722,33 @@ async function runAgentStep(step: number): Promise<void> {
     setBusy(false);
   }
 }
+
+el<HTMLButtonElement>("#resumeTask").addEventListener("click", async () => {
+  if (!savedCheckpoint || busy) return;
+
+  const checkpoint = savedCheckpoint;
+  savedCheckpoint = null;
+  resumeBanner.classList.add("hidden");
+
+  if (providers.some((provider) => provider.id === checkpoint.provider)) {
+    providerSelect.value = checkpoint.provider;
+    modelInput.value = checkpoint.model;
+    baseUrlInput.value = checkpoint.base_url ?? "";
+    applyProviderDefaults();
+  }
+
+  messages = checkpoint.messages;
+  renderMessages();
+  cancelRequested = false;
+  await saveActiveCheckpoint();
+  await runAgentStep(1);
+});
+
+el<HTMLButtonElement>("#discardTask").addEventListener("click", async () => {
+  savedCheckpoint = null;
+  resumeBanner.classList.add("hidden");
+  await clearActiveCheckpoint();
+});
 
 onboardingProvider.addEventListener("change", () => {
   onboardingKey.value = "";
