@@ -11,6 +11,15 @@ export type ChatMessage = {
   content: string;
 };
 
+export type SessionCheckpoint = {
+  version: number;
+  updated_at_ms: number;
+  provider: string;
+  model: string;
+  base_url: string | null;
+  messages: ChatMessage[];
+};
+
 export type ToolProposal = {
   tool: string;
   arguments: Record<string, unknown>;
