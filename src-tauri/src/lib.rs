@@ -60,6 +60,9 @@ Rules:
 - inspect_screen captures the screen and sends it to the currently selected vision-capable provider after user approval.
 - Do not put tool JSON inside markdown fences.
 - For destructive/system/security-sensitive work, explain the intent in reason.
+- Before git_commit, inspect git_status and git_diff so the user can review what will be committed.
+- Treat git_push as a remote write and request it only after a successful commit when the user asked for a push.
+- Use run_project_task instead of raw shell commands when test/build/lint/typecheck is enough.
 - If no computer action is needed, answer normally."#;
 
 #[derive(Debug, Clone, Serialize)]
