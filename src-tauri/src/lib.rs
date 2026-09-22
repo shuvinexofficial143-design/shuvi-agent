@@ -38,9 +38,11 @@ Available tools:
 - capture_screen: {}
 - inspect_screen: {"prompt":"what should be understood from the current screen"}
 - list_processes: {}
-- ui_find: {"name":"exact visible name","automation_id":"optional exact automation id"}
-- ui_click: {"name":"exact visible name","automation_id":"optional exact automation id"}
-- ui_set_value: {"name":"exact visible name","automation_id":"optional exact automation id","value":"text to enter"}
+- ui_find: {"name":"exact visible name","automation_id":"optional exact automation id","window":"optional exact top-level window name"}
+- ui_click: {"name":"exact visible name","automation_id":"optional exact automation id","window":"optional exact top-level window name"}
+- ui_set_value: {"name":"exact visible name","automation_id":"optional exact automation id","window":"optional exact top-level window name","value":"text to enter"}
+- ui_focus: {"name":"exact visible name","automation_id":"optional exact automation id","window":"optional exact top-level window name"}
+- ui_scroll: {"name":"exact visible name","automation_id":"optional exact automation id","window":"optional exact top-level window name","vertical":"small_increment|small_decrement|large_increment|large_decrement"}
 - workspace_scan: {"path":"absolute workspace path"}
 - search_text: {"path":"absolute workspace path","query":"text to find"}
 - replace_text: {"path":"absolute file path","old":"exact old text","new":"replacement text"}
@@ -63,6 +65,8 @@ Rules:
 - Before git_commit, inspect git_status and git_diff so the user can review what will be committed.
 - Treat git_push as a remote write and request it only after a successful commit when the user asked for a push.
 - Use run_project_task instead of raw shell commands when test/build/lint/typecheck is enough.
+- For browser/app UI work, prefer window-scoped ui_find/ui_click/ui_set_value/ui_focus/ui_scroll. If a semantic selector fails, use inspect_screen to understand the current state before trying another safe tool.
+- When a tool fails, do not repeat the exact same failing action blindly. Use the observation to refine the selector, inspect the screen, or choose a different typed tool.
 - If no computer action is needed, answer normally."#;
 
 #[derive(Debug, Clone, Serialize)]
@@ -139,9 +143,11 @@ enum ToolAction {
     CaptureScreen,
     InspectScreen { prompt: String, provider: ProviderContext },
     ListProcesses,
-    UiFind { name: Option<String>, automation_id: Option<String> },
-    UiClick { name: Option<String>, automation_id: Option<String> },
-    UiSetValue { name: Option<String>, automation_id: Option<String>, value: String },
+    UiFind { name: Option<String>, automation_id: Option<String>, window: Option<String> },
+    UiClick { name: Option<String>, automation_id: Option<String>, window: Option<String> },
+    UiSetValue { name: Option<String>, automation_id: Option<String>, window: Option<String>, value: String },
+    UiFocus { name: Option<String>, automation_id: Option<String>, window: Option<String> },
+    UiScroll { name: Option<String>, automation_id: Option<String>, window: Option<String>, vertical: String },
     WorkspaceScan { path: String },
     SearchText { path: String, query: String },
     ReplaceText { path: String, old: String, new_value: String },
@@ -317,6 +323,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "ui_find"
         | "ui_click"
         | "ui_set_value"
+        | "ui_focus"
+        | "ui_scroll"
         | "workspace_scan"
         | "search_text"
         | "replace_text"
@@ -663,15 +671,16 @@ fn arg_optional_string(arguments: &Value, name: &str) -> Option<String> {
 
 fn ui_selector(
     arguments: &Value,
-) -> Result<(Option<String>, Option<String>), String> {
+) -> Result<(Option<String>, Option<String>, Option<String>), String> {
     let name = arg_optional_string(arguments, "name");
     let automation_id = arg_optional_string(arguments, "automation_id");
+    let window = arg_optional_string(arguments, "window");
 
     if name.is_none() && automation_id.is_none() {
         return Err("UI tools require at least 'name' or 'automation_id'.".into());
     }
 
-    Ok((name, automation_id))
+    Ok((name, automation_id, window))
 }
 
 fn ps_single_quote(value: &str) -> String {
@@ -697,6 +706,17 @@ fn ui_condition_script(
             ps_single_quote(id)
         )),
         (None, None) => Err("Missing UI selector.".into()),
+    }
+}
+
+fn ui_root_script(window: Option<&str>) -> String {
+    if let Some(window_name) = window {
+        let escaped = ps_single_quote(window_name);
+        format!(
+            "$desktop = [System.Windows.Automation.AutomationElement]::RootElement\n$windowCondition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, '{escaped}')\n$windows = $desktop.FindAll([System.Windows.Automation.TreeScope]::Children, $windowCondition)\nif ($windows.Count -eq 0) {{ throw 'Requested top-level window was not found.' }}\nif ($windows.Count -gt 1) {{ throw ('Window selector matched ' + $windows.Count + ' windows. Use a more specific exact window name.') }}\n$root = $windows.Item(0)"
+        )
+    } else {
+        "$root = [System.Windows.Automation.AutomationElement]::RootElement".to_string()
     }
 }
 
@@ -869,46 +889,81 @@ fn stage_tool(
             RiskLevel::Low,
         ),
         "ui_find" => {
-            let (name, automation_id) = ui_selector(&proposal.arguments)?;
+            let (name, automation_id, window) = ui_selector(&proposal.arguments)?;
             let detail = format!(
-                "Find Windows UI element: name={:?}, automation_id={:?}",
-                name, automation_id
+                "Find Windows UI element: window={:?}, name={:?}, automation_id={:?}",
+                window, name, automation_id
             );
             (
-                ToolAction::UiFind { name, automation_id },
+                ToolAction::UiFind { name, automation_id, window },
                 "Find Windows UI element".to_string(),
                 detail,
                 RiskLevel::Low,
             )
         }
         "ui_click" => {
-            let (name, automation_id) = ui_selector(&proposal.arguments)?;
+            let (name, automation_id, window) = ui_selector(&proposal.arguments)?;
             let detail = format!(
-                "Invoke Windows UI element: name={:?}, automation_id={:?}",
-                name, automation_id
+                "Invoke Windows UI element: window={:?}, name={:?}, automation_id={:?}",
+                window, name, automation_id
             );
             (
-                ToolAction::UiClick { name, automation_id },
+                ToolAction::UiClick { name, automation_id, window },
                 "Click Windows UI element".to_string(),
                 detail,
                 RiskLevel::Medium,
             )
         }
         "ui_set_value" => {
-            let (name, automation_id) = ui_selector(&proposal.arguments)?;
+            let (name, automation_id, window) = ui_selector(&proposal.arguments)?;
             let value = arg_string(&proposal.arguments, "value")?;
             if value.len() > 20_000 {
                 return Err("UI value is too large.".into());
             }
             let detail = format!(
-                "Set Windows UI value: name={:?}, automation_id={:?}, value_length={}",
+                "Set Windows UI value: window={:?}, name={:?}, automation_id={:?}, value_length={}",
+                window,
                 name,
                 automation_id,
                 value.chars().count()
             );
             (
-                ToolAction::UiSetValue { name, automation_id, value },
+                ToolAction::UiSetValue { name, automation_id, window, value },
                 "Set Windows UI text/value".to_string(),
+                detail,
+                RiskLevel::Medium,
+            )
+        }
+        "ui_focus" => {
+            let (name, automation_id, window) = ui_selector(&proposal.arguments)?;
+            let detail = format!(
+                "Focus Windows UI element: window={:?}, name={:?}, automation_id={:?}",
+                window, name, automation_id
+            );
+            (
+                ToolAction::UiFocus { name, automation_id, window },
+                "Focus Windows UI element".to_string(),
+                detail,
+                RiskLevel::Medium,
+            )
+        }
+        "ui_scroll" => {
+            let (name, automation_id, window) = ui_selector(&proposal.arguments)?;
+            let vertical = arg_string(&proposal.arguments, "vertical")?.to_ascii_lowercase();
+            if !matches!(
+                vertical.as_str(),
+                "small_increment" | "small_decrement" | "large_increment" | "large_decrement"
+            ) {
+                return Err("ui_scroll vertical must be small_increment, small_decrement, large_increment, or large_decrement.".into());
+            }
+
+            let detail = format!(
+                "Scroll Windows UI element: window={:?}, name={:?}, automation_id={:?}, vertical={}",
+                window, name, automation_id, vertical
+            );
+            (
+                ToolAction::UiScroll { name, automation_id, window, vertical },
+                "Scroll Windows UI element".to_string(),
                 detail,
                 RiskLevel::Medium,
             )
@@ -1876,12 +1931,13 @@ async fn execute_tool(action: PendingAction, state: &ActionState) -> Result<Acti
                 exit_code: Some(0),
             })
         }
-        ToolAction::UiFind { name, automation_id } => {
+        ToolAction::UiFind { name, automation_id, window } => {
             let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
+            let root_script = ui_root_script(window.as_deref());
             let script = format!(
                 r#"Add-Type -AssemblyName UIAutomationClient
 {condition}
-$root = [System.Windows.Automation.AutomationElement]::RootElement
+{root_script}
 $matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
 $items = @()
 for ($i = 0; $i -lt [Math]::Min($matches.Count, 25); $i++) {{
@@ -1914,12 +1970,13 @@ $items | ConvertTo-Json -Compress"#
                 exit_code: output.status.code(),
             })
         }
-        ToolAction::UiClick { name, automation_id } => {
+        ToolAction::UiClick { name, automation_id, window } => {
             let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
+            let root_script = ui_root_script(window.as_deref());
             let script = format!(
                 r#"Add-Type -AssemblyName UIAutomationClient
 {condition}
-$root = [System.Windows.Automation.AutomationElement]::RootElement
+{root_script}
 $matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
 if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Use automation_id or a more specific selector.') }}
@@ -1953,13 +2010,14 @@ if ($e.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, 
                 exit_code: output.status.code(),
             })
         }
-        ToolAction::UiSetValue { name, automation_id, value } => {
+        ToolAction::UiSetValue { name, automation_id, window, value } => {
             let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
+            let root_script = ui_root_script(window.as_deref());
             let escaped_value = ps_single_quote(&value);
             let script = format!(
                 r#"Add-Type -AssemblyName UIAutomationClient
 {condition}
-$root = [System.Windows.Automation.AutomationElement]::RootElement
+{root_script}
 $matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
 if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Use automation_id or a more specific selector.') }}
@@ -1977,6 +2035,84 @@ if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Patte
             if !output.status.success() {
                 return Err(format!(
                     "UI value change failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                stderr: String::new(),
+                exit_code: output.status.code(),
+            })
+        }
+        ToolAction::UiFocus { name, automation_id, window } => {
+            let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
+            let root_script = ui_root_script(window.as_deref());
+            let script = format!(
+                r#"Add-Type -AssemblyName UIAutomationClient
+{condition}
+{root_script}
+$matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
+if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Use automation_id, window, or a more specific selector.') }}
+$e = $matches.Item(0)
+if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
+$e.SetFocus()
+'Focused element: ' + $e.Current.Name"#
+            );
+
+            let output = run_hidden_powershell(&script)?;
+            if !output.status.success() {
+                return Err(format!(
+                    "UI focus failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                stderr: String::new(),
+                exit_code: output.status.code(),
+            })
+        }
+        ToolAction::UiScroll { name, automation_id, window, vertical } => {
+            let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
+            let root_script = ui_root_script(window.as_deref());
+            let amount = match vertical.as_str() {
+                "small_increment" => "SmallIncrement",
+                "small_decrement" => "SmallDecrement",
+                "large_increment" => "LargeIncrement",
+                "large_decrement" => "LargeDecrement",
+                _ => return Err("Invalid scroll amount.".into()),
+            };
+
+            let script = format!(
+                r#"Add-Type -AssemblyName UIAutomationClient
+{condition}
+{root_script}
+$matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
+if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Use automation_id, window, or a more specific selector.') }}
+$e = $matches.Item(0)
+$pattern = $null
+if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern, [ref]$pattern)) {{
+    throw 'Matching element does not expose ScrollPattern.'
+}}
+([System.Windows.Automation.ScrollPattern]$pattern).Scroll(
+    [System.Windows.Automation.ScrollAmount]::NoAmount,
+    [System.Windows.Automation.ScrollAmount]::{amount}
+)
+'Scrolled element: ' + $e.Current.Name"#
+            );
+
+            let output = run_hidden_powershell(&script)?;
+            if !output.status.success() {
+                return Err(format!(
+                    "UI scroll failed: {}",
                     String::from_utf8_lossy(&output.stderr)
                 ));
             }
