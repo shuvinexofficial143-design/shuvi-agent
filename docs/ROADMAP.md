@@ -37,7 +37,7 @@
 - [ ] advanced UI Automation extras: menus, keyboard fallback, broader control patterns
 - [x] browser/app semantic automation foundation through window-scoped UI Automation + vision fallback
 - [x] isolated managed Edge/Chrome browser sessions with dedicated profile and RAM tracking
-- [ ] dedicated Chromium DevTools DOM control
+- [x] dedicated Chromium DevTools DOM read/click/value/navigation control
 - [ ] fallback coordinate actions
 - [x] agent recovery guidance: refine selectors / inspect screen instead of blind retries
 - [ ] runtime retry/backoff and crash recovery
