@@ -404,7 +404,12 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
     <pre class="permission-detail"></pre>
     <div class="button-row">
       <button id="chatApprove" class="primary">Allow once</button>
-      ${pendingAction.risk === "low" && (proposal.tool === "read_file" || proposal.tool === "list_directory")
+      ${pendingAction.risk === "low" && (
+        proposal.tool === "read_file" ||
+        proposal.tool === "list_directory" ||
+        proposal.tool === "ui_find" ||
+        proposal.tool === "list_processes"
+      )
         ? '<button id="chatAllowSession">Allow this read tool for session</button>'
         : ""}
       <button id="chatDeny">Deny</button>
