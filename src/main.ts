@@ -20,6 +20,7 @@ let providers: ProviderDescriptor[] = [];
 let messages: ChatMessage[] = [];
 let pendingAction: PendingAction | null = null;
 let busy = false;
+let cancelRequested = false;
 
 root.innerHTML = `
 <div class="shell">
@@ -62,6 +63,7 @@ root.innerHTML = `
 
       <form id="chatForm" class="composer">
         <textarea id="prompt" rows="2" placeholder="Message Shuvi…" required></textarea>
+        <button id="stopButton" class="stop-button hidden" type="button">Stop</button>
         <button id="sendButton" type="submit">Send</button>
       </form>
     </section>
@@ -299,8 +301,10 @@ function renderMessages(): void {
 function setBusy(value: boolean): void {
   busy = value;
   const send = el<HTMLButtonElement>("#sendButton");
+  const stop = el<HTMLButtonElement>("#stopButton");
   send.disabled = value;
   send.textContent = value ? "Working…" : "Send";
+  stop.classList.toggle("hidden", !value);
 }
 
 function toolResultMessage(result: ActionResult): ChatMessage {
@@ -421,6 +425,13 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
 }
 
 async function runAgentStep(step: number): Promise<void> {
+  if (cancelRequested) {
+    messages.push({ role: "assistant", content: "Task stopped." });
+    renderMessages();
+    setBusy(false);
+    return;
+  }
+
   if (step > MAX_AGENT_STEPS) {
     messages.push({
       role: "assistant",
@@ -442,6 +453,13 @@ async function runAgentStep(step: number): Promise<void> {
         messages
       }
     });
+
+    if (cancelRequested) {
+      messages.push({ role: "assistant", content: "Task stopped after the current provider request finished." });
+      renderMessages();
+      setBusy(false);
+      return;
+    }
 
     messages.push({ role: "assistant", content: response.content });
     renderMessages();
@@ -503,6 +521,7 @@ el<HTMLFormElement>("#chatForm").addEventListener("submit", async (event) => {
   if (!content) return;
 
   saveProviderSettings();
+  cancelRequested = false;
   messages.push({ role: "user", content });
   prompt.value = "";
   renderMessages();
@@ -592,6 +611,24 @@ function renderManualPending(): void {
 
 el<HTMLButtonElement>("#refreshAudit").addEventListener("click", () => {
   void refreshAudit();
+});
+
+el<HTMLButtonElement>("#stopButton").addEventListener("click", async () => {
+  cancelRequested = true;
+
+  if (pendingAction) {
+    const actionId = pendingAction.id;
+    clearChatPermission();
+
+    try {
+      await invoke("deny_action", { actionId });
+      void refreshAudit();
+    } catch {
+      // The action may already have expired. Cancellation still continues locally.
+    }
+  }
+
+  el<HTMLButtonElement>("#stopButton").textContent = "Stopping…";
 });
 
 document.querySelectorAll<HTMLButtonElement>(".nav").forEach((button) => {
