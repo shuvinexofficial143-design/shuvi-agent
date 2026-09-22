@@ -8,6 +8,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use keyring::Entry;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -35,6 +36,7 @@ Available tools:
 - launch_app: {"program":"executable or absolute path","args":["optional","arguments"]}
 - open_url: {"url":"https://example.com"}
 - capture_screen: {}
+- inspect_screen: {"prompt":"what should be understood from the current screen"}
 - list_processes: {}
 - powershell: {"command":"PowerShell command"}
 
@@ -42,7 +44,8 @@ Rules:
 - Use tools only when a computer action is required.
 - Never claim an action succeeded before Shuvi returns a tool result.
 - Prefer typed file/app/browser/screen tools over PowerShell.
-- capture_screen only captures an image and returns its local path; do not claim you can see its visual contents yet.
+- capture_screen only captures an image and returns its local path; do not infer visual contents from that path.
+- inspect_screen captures the screen and sends it to the currently selected vision-capable provider after user approval.
 - Do not put tool JSON inside markdown fences.
 - For destructive/system/security-sensitive work, explain the intent in reason.
 - If no computer action is needed, answer normally."#;
@@ -104,6 +107,13 @@ struct PendingActionView {
 }
 
 #[derive(Debug, Clone)]
+struct ProviderContext {
+    provider: String,
+    model: String,
+    base_url: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 enum ToolAction {
     ListDirectory { path: String },
     ReadFile { path: String },
@@ -112,6 +122,7 @@ enum ToolAction {
     LaunchApp { program: String, args: Vec<String> },
     OpenUrl { url: String },
     CaptureScreen,
+    InspectScreen { prompt: String, provider: ProviderContext },
     ListProcesses,
     PowerShell { command: String },
 }
@@ -274,6 +285,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "launch_app"
         | "open_url"
         | "capture_screen"
+        | "inspect_screen"
         | "list_processes"
         | "powershell" => Some(proposal),
         _ => None,
@@ -636,7 +648,11 @@ fn safe_web_url(value: String) -> Result<String, String> {
     Ok(value)
 }
 
-fn stage_tool(proposal: ToolProposal, state: &ActionState) -> Result<PendingActionView, String> {
+fn stage_tool(
+    proposal: ToolProposal,
+    provider_context: Option<ProviderContext>,
+    state: &ActionState,
+) -> Result<PendingActionView, String> {
     let tool = proposal.tool.clone();
 
     let (action, summary, detail, risk) = match proposal.tool.as_str() {
@@ -711,6 +727,22 @@ fn stage_tool(proposal: ToolProposal, state: &ActionState) -> Result<PendingActi
             "Capture the current virtual desktop to a temporary PNG file.".to_string(),
             RiskLevel::Low,
         ),
+        "inspect_screen" => {
+            let prompt = arg_string(&proposal.arguments, "prompt")?;
+            let provider = provider_context
+                .ok_or_else(|| "Screen inspection requires the active provider context.".to_string())?;
+            let detail = format!(
+                "Capture the current screen and send it to {}/{} for visual analysis: {}",
+                provider.provider, provider.model, prompt
+            );
+
+            (
+                ToolAction::InspectScreen { prompt, provider },
+                "Inspect current screen with AI vision".to_string(),
+                detail,
+                RiskLevel::Medium,
+            )
+        }
         "list_processes" => (
             ToolAction::ListProcesses,
             "List running processes".to_string(),
@@ -817,6 +849,260 @@ fn read_audit(app: &AppHandle, limit: usize) -> Result<Vec<AuditEntry>, String> 
     Ok(entries)
 }
 
+fn capture_screen_png() -> Result<std::path::PathBuf, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let dir = std::env::temp_dir().join("Shuvi").join("screenshots");
+        fs::create_dir_all(&dir)
+            .map_err(|error| format!("Could not create screenshot folder: {error}"))?;
+
+        let path = dir.join(format!("screen-{}.png", now_ms()));
+        let ps_path = path.to_string_lossy().replace(''', "''");
+
+        let script = format!(
+            r#"Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
+$bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+$graphics.CopyFromScreen($bounds.Left, $bounds.Top, 0, 0, $bounds.Size)
+$bitmap.Save('{ps_path}', [System.Drawing.Imaging.ImageFormat]::Png)
+$graphics.Dispose()
+$bitmap.Dispose()"#
+        );
+
+        let output = Command::new("powershell.exe")
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                &script,
+            ])
+            .output()
+            .map_err(|error| format!("Could not capture screen: {error}"))?;
+
+        if !output.status.success() || !path.exists() {
+            return Err(format!(
+                "Screen capture failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+
+        return Ok(path);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Screen capture is currently implemented for Windows only.".into())
+    }
+}
+
+async fn analyze_png_with_provider(
+    context: &ProviderContext,
+    prompt: &str,
+    path: &Path,
+) -> Result<String, String> {
+    let bytes = fs::read(path)
+        .map_err(|error| format!("Could not read captured screenshot: {error}"))?;
+
+    if bytes.len() > 12 * 1024 * 1024 {
+        return Err("Screenshot is larger than Shuvi's 12 MB vision limit.".into());
+    }
+
+    let encoded = BASE64.encode(bytes);
+    let key = load_api_key(&context.provider)?;
+
+    match context.provider.as_str() {
+        "gemini" => {
+            let api_key = key
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "No Gemini API key saved.".to_string())?;
+
+            let url = format!(
+                "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+                context.model, api_key
+            );
+
+            let response = http_client()?
+                .post(url)
+                .json(&json!({
+                    "contents": [{
+                        "role": "user",
+                        "parts": [
+                            { "text": prompt },
+                            {
+                                "inlineData": {
+                                    "mimeType": "image/png",
+                                    "data": encoded
+                                }
+                            }
+                        ]
+                    }]
+                }))
+                .send()
+                .await
+                .map_err(|error| format!("Gemini vision request failed: {error}"))?;
+
+            let status = response.status();
+            let body: Value = response
+                .json()
+                .await
+                .map_err(|error| format!("Invalid Gemini vision response: {error}"))?;
+
+            if !status.is_success() {
+                return Err(format!("Gemini vision returned {status}: {}", compact_error(&body)));
+            }
+
+            let parts = body
+                .pointer("/candidates/0/content/parts")
+                .and_then(Value::as_array)
+                .ok_or_else(|| "Gemini vision returned no candidate text.".to_string())?;
+
+            let text = parts
+                .iter()
+                .filter_map(|part| part.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("");
+
+            if text.is_empty() {
+                return Err("Gemini vision returned an empty response.".into());
+            }
+
+            Ok(text)
+        }
+        "anthropic" => {
+            let api_key = key
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "No Anthropic API key saved.".to_string())?;
+
+            let response = http_client()?
+                .post("https://api.anthropic.com/v1/messages")
+                .header("x-api-key", api_key)
+                .header("anthropic-version", "2023-06-01")
+                .json(&json!({
+                    "model": context.model,
+                    "max_tokens": 1600,
+                    "messages": [{
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/png",
+                                    "data": encoded
+                                }
+                            },
+                            { "type": "text", "text": prompt }
+                        ]
+                    }]
+                }))
+                .send()
+                .await
+                .map_err(|error| format!("Anthropic vision request failed: {error}"))?;
+
+            let status = response.status();
+            let body: Value = response
+                .json()
+                .await
+                .map_err(|error| format!("Invalid Anthropic vision response: {error}"))?;
+
+            if !status.is_success() {
+                return Err(format!("Anthropic vision returned {status}: {}", compact_error(&body)));
+            }
+
+            let text = body
+                .get("content")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|part| {
+                    if part.get("type").and_then(Value::as_str) == Some("text") {
+                        part.get("text").and_then(Value::as_str)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("");
+
+            if text.is_empty() {
+                return Err("Anthropic vision returned an empty response.".into());
+            }
+
+            Ok(text)
+        }
+        "deepseek" => Err(
+            "The selected DeepSeek text endpoint is not configured for screen vision. Choose Gemini, OpenAI, Claude, OpenRouter, Ollama vision, or a compatible vision endpoint.".into()
+        ),
+        "openai" | "openrouter" | "ollama" | "custom" => {
+            let url = match context.provider.as_str() {
+                "openai" => "https://api.openai.com/v1/chat/completions".to_string(),
+                "openrouter" => "https://openrouter.ai/api/v1/chat/completions".to_string(),
+                "ollama" => context
+                    .base_url
+                    .clone()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| "http://localhost:11434/v1/chat/completions".into()),
+                "custom" => context
+                    .base_url
+                    .clone()
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| "Custom vision provider requires a base URL.".to_string())?,
+                _ => unreachable!(),
+            };
+
+            let mut request = http_client()?.post(url).json(&json!({
+                "model": context.model,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        { "type": "text", "text": prompt },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": format!("data:image/png;base64,{encoded}")
+                            }
+                        }
+                    ]
+                }]
+            }));
+
+            if let Some(api_key) = key.filter(|value| !value.is_empty()) {
+                request = request.bearer_auth(api_key);
+            } else if context.provider != "ollama" {
+                return Err("No API key saved for the selected vision provider.".into());
+            }
+
+            let response = request
+                .send()
+                .await
+                .map_err(|error| format!("Vision request failed: {error}"))?;
+
+            let status = response.status();
+            let body: Value = response
+                .json()
+                .await
+                .map_err(|error| format!("Invalid vision response: {error}"))?;
+
+            if !status.is_success() {
+                return Err(format!("Vision provider returned {status}: {}", compact_error(&body)));
+            }
+
+            let text = body
+                .pointer("/choices/0/message/content")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "Vision provider returned no assistant text.".to_string())?;
+
+            Ok(text.to_string())
+        }
+        other => Err(format!("Provider '{other}' is not supported for screen vision.")),
+    }
+}
+
 fn truncate_output(value: String) -> String {
     if value.chars().count() <= MAX_TOOL_OUTPUT_CHARS {
         return value;
@@ -826,7 +1112,7 @@ fn truncate_output(value: String) -> String {
     format!("{shortened}\n[output truncated by Shuvi]")
 }
 
-fn execute_tool(action: PendingAction, state: &ActionState) -> Result<ActionResult, String> {
+async fn execute_tool(action: PendingAction, state: &ActionState) -> Result<ActionResult, String> {
     let tool = action.tool.clone();
 
     match action.action {
@@ -954,68 +1240,40 @@ fn execute_tool(action: PendingAction, state: &ActionState) -> Result<ActionResu
             })
         }
         ToolAction::CaptureScreen => {
-            #[cfg(target_os = "windows")]
-            {
-                let dir = std::env::temp_dir().join("Shuvi").join("screenshots");
-                fs::create_dir_all(&dir)
-                    .map_err(|error| format!("Could not create screenshot folder: {error}"))?;
+            let path = capture_screen_png()?;
+            let size = fs::metadata(&path)
+                .map(|metadata| metadata.len())
+                .unwrap_or_default();
 
-                let path = dir.join(format!("screen-{}.png", now_ms()));
-                let ps_path = path.to_string_lossy().replace(''', "''");
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: format!(
+                    "Screenshot saved to {} ({} bytes). Use inspect_screen when visual understanding is required.",
+                    path.display(),
+                    size
+                ),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::InspectScreen { prompt, provider } => {
+            let path = capture_screen_png()?;
+            let analysis = analyze_png_with_provider(&provider, &prompt, &path).await?;
 
-                let script = format!(
-                    r#"Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-$bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
-$bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
-$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-$graphics.CopyFromScreen($bounds.Left, $bounds.Top, 0, 0, $bounds.Size)
-$bitmap.Save('{ps_path}', [System.Drawing.Imaging.ImageFormat]::Png)
-$graphics.Dispose()
-$bitmap.Dispose()"#
-                );
-
-                let output = Command::new("powershell.exe")
-                    .args([
-                        "-NoLogo",
-                        "-NoProfile",
-                        "-NonInteractive",
-                        "-WindowStyle",
-                        "Hidden",
-                        "-Command",
-                        &script,
-                    ])
-                    .output()
-                    .map_err(|error| format!("Could not capture screen: {error}"))?;
-
-                if !output.status.success() || !path.exists() {
-                    return Err(format!(
-                        "Screen capture failed: {}",
-                        String::from_utf8_lossy(&output.stderr)
-                    ));
-                }
-
-                let size = fs::metadata(&path)
-                    .map(|metadata| metadata.len())
-                    .unwrap_or_default();
-
-                return Ok(ActionResult {
-                    success: true,
-                    tool,
-                    stdout: format!(
-                        "Screenshot saved to {} ({} bytes). Visual analysis is not connected yet.",
-                        path.display(),
-                        size
-                    ),
-                    stderr: String::new(),
-                    exit_code: Some(0),
-                });
-            }
-
-            #[cfg(not(target_os = "windows"))]
-            {
-                Err("Screen capture is currently implemented for Windows only.".into())
-            }
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: format!(
+                    "Screen analysis from {}/{}:\n{}\nScreenshot: {}",
+                    provider.provider,
+                    provider.model,
+                    analysis,
+                    path.display()
+                ),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
         }
         ToolAction::ListProcesses => {
             let mut system = System::new_all();
@@ -1122,10 +1380,20 @@ fn runtime_status(state: State<'_, ActionState>) -> Result<RuntimeStatus, String
 #[tauri::command]
 fn prepare_tool(
     proposal: ToolProposal,
+    provider: String,
+    model: String,
+    base_url: Option<String>,
     state: State<'_, ActionState>,
 ) -> Result<PendingActionView, String> {
     ensure_memory_budget(state.inner())?;
-    stage_tool(proposal, state.inner())
+
+    let provider_context = ProviderContext {
+        provider,
+        model,
+        base_url,
+    };
+
+    stage_tool(proposal, Some(provider_context), state.inner())
 }
 
 #[tauri::command]
@@ -1141,7 +1409,7 @@ fn prepare_powershell(
         reason: Some("Manual PowerShell action".into()),
     };
 
-    stage_tool(proposal, state.inner())
+    stage_tool(proposal, None, state.inner())
 }
 
 #[tauri::command]
@@ -1173,7 +1441,7 @@ fn deny_action(
 }
 
 #[tauri::command]
-fn execute_action(
+async fn execute_action(
     action_id: String,
     state: State<'_, ActionState>,
     app: AppHandle,
@@ -1190,7 +1458,7 @@ fn execute_action(
     let tool = action.tool.clone();
     let detail = action.detail.clone();
 
-    match execute_tool(action, state.inner()) {
+    match execute_tool(action, state.inner()).await {
         Ok(result) => {
             append_audit(
                 &app,
@@ -1221,12 +1489,12 @@ fn execute_action(
 }
 
 #[tauri::command]
-fn execute_powershell(
+async fn execute_powershell(
     action_id: String,
     state: State<'_, ActionState>,
     app: AppHandle,
 ) -> Result<ActionResult, String> {
-    execute_action(action_id, state, app)
+    execute_action(action_id, state, app).await
 }
 
 #[tauri::command]
