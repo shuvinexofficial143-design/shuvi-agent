@@ -70,3 +70,12 @@ Coding writes remain permission-gated:
 - `run_project_task` only exposes named test/build/lint/typecheck tasks for Node.js and Rust projects.
 - `git_commit` stages all repository changes and creates a commit only after explicit approval.
 - `git_push` is classified high risk because it writes to a remote repository.
+
+
+## UI and browser recovery
+
+Windows UI actions can now be scoped to an exact top-level window before Shuvi searches descendants. This reduces accidental interaction with controls in another app that happen to have the same visible name.
+
+The semantic UI layer now supports focus and ScrollPattern actions in addition to find, invoke/select and ValuePattern writes. For browser-like workflows, Shuvi should use exact window-scoped UI Automation first and screen vision only when semantic inspection is insufficient.
+
+Tool failures are fed back into the agent loop. The system prompt explicitly prevents blind repetition of the same failed action and instructs Shuvi to refine the selector, inspect the screen, or choose another typed tool.
