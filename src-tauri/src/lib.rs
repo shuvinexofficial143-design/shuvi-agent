@@ -52,6 +52,7 @@ Available tools:
 - ui_toggle: {"name":"exact visible name","automation_id":"optional exact automation id","window":"optional exact top-level window name"}
 - ui_expand_collapse: {"name":"exact visible name","automation_id":"optional exact automation id","window":"optional exact top-level window name","action":"expand|collapse"}
 - ui_send_keys: {"name":"exact visible name","automation_id":"optional exact automation id","window":"optional exact top-level window name","keys":"SendKeys sequence"}
+- pointer_click: {"x":123,"y":456,"button":"left|right|middle","clicks":1}
 - workspace_scan: {"path":"absolute workspace path"}
 - search_text: {"path":"absolute workspace path","query":"text to find"}
 - replace_text: {"path":"absolute file path","old":"exact old text","new":"replacement text"}
@@ -74,7 +75,7 @@ Rules:
 - Before git_commit, inspect git_status and git_diff so the user can review what will be committed.
 - Treat git_push as a remote write and request it only after a successful commit when the user asked for a push.
 - Use run_project_task instead of raw shell commands when test/build/lint/typecheck is enough.
-- For browser/app UI work, prefer a Shuvi-managed browser when isolation matters, then use window-scoped semantic UI tools first. Use ui_toggle and ui_expand_collapse for supported controls. ui_send_keys is a high-risk fallback only after an exact element is focused and semantic patterns are unavailable. If a semantic selector fails, use inspect_screen to understand the current state before trying another safe tool.
+- For browser/app UI work, prefer a Shuvi-managed browser when isolation matters, then use window-scoped semantic UI tools first. Use ui_toggle and ui_expand_collapse for supported controls. ui_send_keys is a high-risk fallback only after an exact element is focused and semantic patterns are unavailable. pointer_click is a final high-risk coordinate fallback: inspect_screen first, use coordinates only when semantic UI/DOM control cannot target the control, and never repeat a failed coordinate click blindly.
 - For managed Edge/Chrome sessions, prefer browser_dom_read/browser_dom_click/browser_dom_set_value/browser_navigate over visual coordinate actions because DOM selectors are more reliable.
 - browser_dom_click and browser_dom_set_value require selectors that match exactly one element; refine with browser_dom_read when ambiguous.
 - stop_managed_process may only target process roots that Shuvi launched itself.
@@ -187,6 +188,7 @@ enum ToolAction {
     UiToggle { name: Option<String>, automation_id: Option<String>, window: Option<String> },
     UiExpandCollapse { name: Option<String>, automation_id: Option<String>, window: Option<String>, action: String },
     UiSendKeys { name: Option<String>, automation_id: Option<String>, window: Option<String>, keys: String },
+    PointerClick { x: i32, y: i32, button: String, clicks: u32 },
     WorkspaceScan { path: String },
     SearchText { path: String, query: String },
     ReplaceText { path: String, old: String, new_value: String },
@@ -427,6 +429,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "ui_toggle"
         | "ui_expand_collapse"
         | "ui_send_keys"
+        | "pointer_click"
         | "workspace_scan"
         | "search_text"
         | "replace_text"
@@ -821,6 +824,15 @@ fn arg_string(arguments: &Value, name: &str) -> Result<String, String> {
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .ok_or_else(|| format!("Tool argument '{name}' must be a non-empty string."))
+}
+
+fn arg_i32(arguments: &Value, name: &str) -> Result<i32, String> {
+    arguments
+        .get(name)
+        .and_then(Value::as_i64)
+        .filter(|value| *value >= i32::MIN as i64 && *value <= i32::MAX as i64)
+        .map(|value| value as i32)
+        .ok_or_else(|| format!("Tool argument '{name}' must be a valid 32-bit integer."))
 }
 
 fn arg_u32(arguments: &Value, name: &str) -> Result<u32, String> {
@@ -1455,6 +1467,35 @@ fn stage_tool(
                 ToolAction::UiSendKeys { name, automation_id, window, keys },
                 "Send keyboard fallback".to_string(),
                 detail,
+                RiskLevel::High,
+            )
+        }
+        "pointer_click" => {
+            let x = arg_i32(&proposal.arguments, "x")?;
+            let y = arg_i32(&proposal.arguments, "y")?;
+            let button = arg_string(&proposal.arguments, "button")?.to_ascii_lowercase();
+            let clicks = proposal
+                .arguments
+                .get("clicks")
+                .and_then(Value::as_u64)
+                .unwrap_or(1);
+
+            if !matches!(button.as_str(), "left" | "right" | "middle") {
+                return Err("pointer_click button must be left, right, or middle.".into());
+            }
+            if !(1..=2).contains(&clicks) {
+                return Err("pointer_click clicks must be 1 or 2.".into());
+            }
+
+            (
+                ToolAction::PointerClick {
+                    x,
+                    y,
+                    button: button.clone(),
+                    clicks: clicks as u32,
+                },
+                "Coordinate pointer click".to_string(),
+                format!("{button} click x={x}, y={y}, clicks={clicks}"),
                 RiskLevel::High,
             )
         }
@@ -3079,6 +3120,68 @@ Start-Sleep -Milliseconds 80
                 stderr: String::new(),
                 exit_code: output.status.code(),
             })
+        }
+        ToolAction::PointerClick { x, y, button, clicks } => {
+            #[cfg(target_os = "windows")]
+            {
+                let down_flag = match button.as_str() {
+                    "left" => "0x0002",
+                    "right" => "0x0008",
+                    "middle" => "0x0020",
+                    _ => return Err("Invalid pointer button.".into()),
+                };
+                let up_flag = match button.as_str() {
+                    "left" => "0x0004",
+                    "right" => "0x0010",
+                    "middle" => "0x0040",
+                    _ => return Err("Invalid pointer button.".into()),
+                };
+
+                let script = format!(
+                    r#"Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class ShuviPointer {{
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
+}}
+"@
+Add-Type -AssemblyName System.Windows.Forms
+$bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
+if ({x} -lt $bounds.Left -or {x} -ge $bounds.Right -or {y} -lt $bounds.Top -or {y} -ge $bounds.Bottom) {{
+  throw 'Pointer target is outside the current virtual desktop.'
+}}
+if (-not [ShuviPointer]::SetCursorPos({x}, {y})) {{ throw 'Could not move pointer.' }}
+Start-Sleep -Milliseconds 80
+for ($i = 0; $i -lt {clicks}; $i++) {{
+  [ShuviPointer]::mouse_event({down_flag}, 0, 0, 0, [UIntPtr]::Zero)
+  [ShuviPointer]::mouse_event({up_flag}, 0, 0, 0, [UIntPtr]::Zero)
+  if ($i + 1 -lt {clicks}) {{ Start-Sleep -Milliseconds 120 }}
+}}
+'Pointer click completed at ({x}, {y}).'"#
+                );
+
+                let output = run_hidden_powershell(&script)?;
+                if !output.status.success() {
+                    return Err(format!(
+                        "Coordinate pointer click failed: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    ));
+                }
+
+                return Ok(ActionResult {
+                    success: true,
+                    tool,
+                    stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                    stderr: String::new(),
+                    exit_code: output.status.code(),
+                });
+            }
+
+            #[cfg(not(target_os = "windows"))]
+            {
+                Err("Coordinate pointer fallback is currently available on Windows only.".into())
+            }
         }
         ToolAction::WorkspaceScan { path } => {
             let root = Path::new(&path);
