@@ -56,7 +56,7 @@ root.innerHTML = `
         <div class="empty-state">
           <div class="orb">S</div>
           <h2>What should we work on?</h2>
-          <p>Shuvi can now propose local file, app and PowerShell actions. Nothing runs until you approve it.</p>
+<p>Shuvi can use files, apps, browser navigation and AI screen vision. Sensitive actions wait for your approval.</p>
         </div>
       </div>
 
@@ -325,7 +325,12 @@ function toolResultMessage(result: ActionResult): ChatMessage {
 
 async function stageProposal(proposal: ToolProposal, step: number): Promise<void> {
   try {
-    pendingAction = await invoke<PendingAction>("prepare_tool", { proposal });
+    pendingAction = await invoke<PendingAction>("prepare_tool", {
+      proposal,
+      provider: providerSelect.value,
+      model: modelInput.value.trim(),
+      baseUrl: baseUrlInput.value.trim() || null
+    });
 
     if (
       pendingAction.risk === "low" &&
