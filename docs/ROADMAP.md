@@ -54,7 +54,8 @@
 - [x] Git stage/commit and high-risk push approval flow
 
 ## v0.5 — installer
-- Windows installer
+- [x] NSIS Windows installer configuration + manual release workflow
+- [ ] installer build verified on Windows runner
 - first-run provider setup
 - automatic updates
 - crash recovery
