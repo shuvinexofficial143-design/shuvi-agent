@@ -98,3 +98,8 @@ A managed Edge/Chrome session now starts with a localhost-only DevTools endpoint
 - `browser_navigate` navigates the managed page through CDP.
 
 CDP messages are sent to the local browser debugger only. The tool never exposes an arbitrary JavaScript execution interface to the model.
+
+
+## Provider retry policy
+
+Normal text-provider requests retry up to two additional times for connection/time-out failures, HTTP 429, and common transient 5xx responses. Backoff is short and bounded (350 ms then 700 ms), so Shuvi does not create an uncontrolled retry loop or duplicate computer actions.
