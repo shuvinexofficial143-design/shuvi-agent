@@ -44,3 +44,17 @@ user request
   -> provider continuation
   -> final result
 ```
+
+
+## Computer-use foundation
+
+Shuvi now separates visual understanding from semantic UI control:
+
+- `capture_screen` creates a temporary local PNG after approval.
+- `inspect_screen` sends the captured screen only to the selected vision-capable provider after a medium-risk approval.
+- `ui_find` inspects the Windows UI Automation tree by exact visible name and/or AutomationId.
+- `ui_click` only invokes/selects an exact, unambiguous UI Automation match.
+- `ui_set_value` uses ValuePattern and does not write the entered value into the audit detail.
+- `open_url` accepts only HTTP/HTTPS URLs and hands them to the operating-system browser.
+
+Visual coordinate clicking is intentionally not used while a semantic UI Automation target is available.
