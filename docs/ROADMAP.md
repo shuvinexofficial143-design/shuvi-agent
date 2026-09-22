@@ -58,4 +58,4 @@
 - first-run provider setup
 - automatic updates
 - crash recovery
-- diagnostics export
+- [x] privacy-safe diagnostics export
