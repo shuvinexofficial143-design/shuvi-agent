@@ -38,7 +38,7 @@
 - [x] browser/app semantic automation foundation through window-scoped UI Automation + vision fallback
 - [x] isolated managed Edge/Chrome browser sessions with dedicated profile and RAM tracking
 - [x] dedicated Chromium DevTools DOM read/click/value/navigation control
-- [ ] fallback coordinate actions
+- [x] high-risk coordinate pointer fallback after semantic/vision targeting fails
 - [x] agent recovery guidance: refine selectors / inspect screen instead of blind retries
 - [x] transient provider retry/backoff for timeouts, connection errors, 429 and common 5xx responses
 - [x] crash recovery with atomic local task checkpoints + explicit resume/discard
@@ -60,3 +60,22 @@
 - automatic updates
 - crash recovery
 - [x] privacy-safe diagnostics export
+
+
+## v0.6 — Premiere Pro professional editing
+- [ ] Shuvi Premiere UXP bridge plugin
+- [ ] detect Premiere version / active project / active sequence
+- [ ] project + bin + media import management
+- [ ] sequence creation and timeline track inspection
+- [ ] professional trim/ripple/rolling edit operations
+- [ ] clip move/insert/overwrite/nest/multicam workflows
+- [ ] transitions, effects and effect-parameter control
+- [ ] keyframes, transforms, masks and speed changes
+- [ ] Lumetri color workflow and reusable grading presets
+- [ ] audio gain/mix/ducking and track-level workflows
+- [ ] captions/subtitles and graphics workflows
+- [ ] proxies and large-project media relink workflows
+- [ ] export presets / Media Encoder handoff
+- [ ] preview-analyze-correct editing loop using Shuvi vision
+- [ ] edit checkpoints/versioned project backups before major changes
+- [ ] reusable editing recipes for reels, long-form, ads and cinematic edits
