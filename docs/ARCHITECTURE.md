@@ -118,3 +118,8 @@ On first launch, Shuvi opens a local onboarding screen that asks the user to cho
 ## Crash recovery
 
 During an active agent task, Shuvi writes an atomic local checkpoint containing only provider/model selection and the bounded conversation/tool-observation history needed to resume reasoning. API keys are never included. Completed, cancelled, or safety-stopped tasks clear the checkpoint. On the next launch, Shuvi presents an explicit Resume or Discard choice instead of silently continuing computer actions.
+
+
+## UI fallback policy
+
+The Windows UI layer now supports TogglePattern and ExpandCollapsePattern for checkboxes, toggles, menus and expandable controls. A keyboard fallback is available only after Shuvi resolves one exact semantic UI element and focuses it; the keystroke sequence is classified high risk and its actual content is not written into the audit detail. Semantic UI patterns remain preferred over keyboard simulation.
