@@ -11,7 +11,7 @@ use keyring::Entry;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sysinfo::System;
+use sysinfo::{Pid, System};
 use tauri::State;
 use uuid::Uuid;
 
@@ -127,6 +127,9 @@ struct ActionResult {
 struct RuntimeStatus {
     shuvi_memory_bytes: u64,
     shuvi_memory_mb: f64,
+    native_memory_mb: f64,
+    managed_children_memory_mb: f64,
+    managed_children_count: usize,
     soft_limit_mb: f64,
     hard_limit_mb: f64,
     over_soft_limit: bool,
@@ -136,6 +139,7 @@ struct RuntimeStatus {
 #[derive(Default)]
 struct ActionState {
     pending: Mutex<HashMap<String, PendingAction>>,
+    managed_children: Mutex<HashSet<u32>>,
 }
 
 fn providers() -> Vec<ProviderDescriptor> {
@@ -478,7 +482,7 @@ async fn send_chat(input: ChatInput, api_key: Option<String>) -> Result<ChatResp
     }
 }
 
-fn current_runtime_status() -> Result<RuntimeStatus, String> {
+fn current_runtime_status(state: &ActionState) -> Result<RuntimeStatus, String> {
     let mut system = System::new_all();
     system.refresh_all();
 
@@ -487,12 +491,35 @@ fn current_runtime_status() -> Result<RuntimeStatus, String> {
         .process(pid)
         .ok_or_else(|| "Could not read Shuvi process memory.".to_string())?;
 
-    let bytes = process.memory();
+    let native_bytes = process.memory();
+
+    let mut managed = state
+        .managed_children
+        .lock()
+        .map_err(|_| "Managed-process state is unavailable.".to_string())?;
+
+    managed.retain(|child_pid| system.process(Pid::from_u32(*child_pid)).is_some());
+
+    let managed_children_bytes = managed
+        .iter()
+        .filter_map(|child_pid| system.process(Pid::from_u32(*child_pid)))
+        .map(|process| process.memory())
+        .fold(0_u64, u64::saturating_add);
+
+    let managed_children_count = managed.len();
+    drop(managed);
+
+    let bytes = native_bytes.saturating_add(managed_children_bytes);
     let mb = bytes as f64 / 1024.0 / 1024.0;
+    let native_mb = native_bytes as f64 / 1024.0 / 1024.0;
+    let managed_children_mb = managed_children_bytes as f64 / 1024.0 / 1024.0;
 
     Ok(RuntimeStatus {
         shuvi_memory_bytes: bytes,
         shuvi_memory_mb: mb,
+        native_memory_mb: native_mb,
+        managed_children_memory_mb: managed_children_mb,
+        managed_children_count,
         soft_limit_mb: SOFT_LIMIT_MB,
         hard_limit_mb: HARD_LIMIT_MB,
         over_soft_limit: mb >= SOFT_LIMIT_MB,
@@ -500,10 +527,10 @@ fn current_runtime_status() -> Result<RuntimeStatus, String> {
     })
 }
 
-fn ensure_memory_budget() -> Result<(), String> {
-    let status = current_runtime_status()?;
+fn ensure_memory_budget(state: &ActionState) -> Result<(), String> {
+    let status = current_runtime_status(state)?;
     if status.over_hard_limit {
-        Err("Shuvi is above the 4 GB hard RAM ceiling. Close heavy work before starting another action.".into())
+        Err("Shuvi and its managed child processes are above the 4 GB hard RAM ceiling. Close heavy work before starting another action.".into())
     } else {
         Ok(())
     }
@@ -681,7 +708,7 @@ fn truncate_output(value: String) -> String {
     format!("{shortened}\n[output truncated by Shuvi]")
 }
 
-fn execute_tool(action: PendingAction) -> Result<ActionResult, String> {
+fn execute_tool(action: PendingAction, state: &ActionState) -> Result<ActionResult, String> {
     let tool = action.tool.clone();
 
     match action.action {
@@ -766,10 +793,17 @@ fn execute_tool(action: PendingAction) -> Result<ActionResult, String> {
                 .spawn()
                 .map_err(|error| format!("Could not launch application: {error}"))?;
 
+            let child_pid = child.id();
+            state
+                .managed_children
+                .lock()
+                .map_err(|_| "Managed-process state is unavailable.".to_string())?
+                .insert(child_pid);
+
             Ok(ActionResult {
                 success: true,
                 tool,
-                stdout: format!("Launched {program} with PID {}.", child.id()),
+                stdout: format!("Launched {program} with PID {child_pid}. Shuvi is now tracking its RAM usage."),
                 stderr: String::new(),
                 exit_code: Some(0),
             })
@@ -825,8 +859,11 @@ fn delete_api_key(provider: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn chat(mut input: ChatInput) -> Result<ChatResponse, String> {
-    ensure_memory_budget()?;
+async fn chat(
+    mut input: ChatInput,
+    state: State<'_, ActionState>,
+) -> Result<ChatResponse, String> {
+    ensure_memory_budget(state.inner())?;
 
     input.messages.insert(
         0,
@@ -841,8 +878,8 @@ async fn chat(mut input: ChatInput) -> Result<ChatResponse, String> {
 }
 
 #[tauri::command]
-fn runtime_status() -> Result<RuntimeStatus, String> {
-    current_runtime_status()
+fn runtime_status(state: State<'_, ActionState>) -> Result<RuntimeStatus, String> {
+    current_runtime_status(state.inner())
 }
 
 #[tauri::command]
@@ -850,8 +887,8 @@ fn prepare_tool(
     proposal: ToolProposal,
     state: State<'_, ActionState>,
 ) -> Result<PendingActionView, String> {
-    ensure_memory_budget()?;
-    stage_tool(proposal, &state)
+    ensure_memory_budget(state.inner())?;
+    stage_tool(proposal, state.inner())
 }
 
 #[tauri::command]
@@ -859,13 +896,15 @@ fn prepare_powershell(
     command: String,
     state: State<'_, ActionState>,
 ) -> Result<PendingActionView, String> {
+    ensure_memory_budget(state.inner())?;
+
     let proposal = ToolProposal {
         tool: "powershell".into(),
         arguments: json!({ "command": command }),
         reason: Some("Manual PowerShell action".into()),
     };
 
-    stage_tool(proposal, &state)
+    stage_tool(proposal, state.inner())
 }
 
 #[tauri::command]
@@ -884,7 +923,7 @@ fn execute_action(
     action_id: String,
     state: State<'_, ActionState>,
 ) -> Result<ActionResult, String> {
-    ensure_memory_budget()?;
+    ensure_memory_budget(state.inner())?;
 
     let action = state
         .pending
@@ -893,7 +932,7 @@ fn execute_action(
         .remove(&action_id)
         .ok_or_else(|| "Action expired, was denied, or does not exist.".to_string())?;
 
-    execute_tool(action)
+    execute_tool(action, state.inner())
 }
 
 #[tauri::command]
