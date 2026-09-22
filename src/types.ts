@@ -51,3 +51,11 @@ export type ActionResult = {
   stderr: string;
   exit_code: number | null;
 };
+
+export type AuditEntry = {
+  timestamp_ms: number;
+  event: string;
+  tool: string;
+  detail: string;
+  success: boolean;
+};
