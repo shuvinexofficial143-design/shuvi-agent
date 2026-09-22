@@ -45,7 +45,7 @@ root.innerHTML = `
       <div class="runtime-row"><span>Shuvi RAM</span><strong id="ramValue">-- MB</strong></div>
       <div class="meter"><div id="ramMeter"></div></div>
       <small id="ramHint">4 GB hard ceiling</small>
-      <small id="ramChildren" class="ram-children">0 managed apps</small>
+      <small id="ramChildren" class="ram-children">0 managed processes</small>
       <small id="tokenMeter" class="ram-children">0 session tokens</small>
     </div>
   </aside>
@@ -221,8 +221,8 @@ async function refreshRam(): Promise<void> {
     const children = el<HTMLElement>("#ramChildren");
     children.textContent =
       status.managed_children_count === 0
-        ? "0 managed apps"
-        : `${status.managed_children_count} managed app${status.managed_children_count === 1 ? "" : "s"} · ${status.managed_children_memory_mb.toFixed(0)} MB`;
+        ? "0 managed processes"
+        : `${status.managed_children_count} managed process${status.managed_children_count === 1 ? "" : "es"} · ${status.managed_children_memory_mb.toFixed(0)} MB`;
   } catch {
     el<HTMLElement>("#ramValue").textContent = "-- MB";
   }
