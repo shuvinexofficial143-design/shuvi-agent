@@ -1,10 +1,11 @@
 use std::{
     collections::{HashMap, HashSet},
-    fs,
+    fs::{self, OpenOptions},
+    io::{BufRead, BufReader, Write},
     path::Path,
     process::Command,
     sync::Mutex,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use keyring::Entry;
@@ -12,7 +13,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sysinfo::{Pid, System};
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
 const KEYRING_SERVICE: &str = "Shuvi";
@@ -111,6 +112,7 @@ enum ToolAction {
 #[derive(Debug, Clone)]
 struct PendingAction {
     tool: String,
+    detail: String,
     action: ToolAction,
 }
 
@@ -121,6 +123,15 @@ struct ActionResult {
     stdout: String,
     stderr: String,
     exit_code: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AuditEntry {
+    timestamp_ms: u64,
+    event: String,
+    tool: String,
+    detail: String,
+    success: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -686,6 +697,7 @@ fn stage_tool(proposal: ToolProposal, state: &ActionState) -> Result<PendingActi
             id.clone(),
             PendingAction {
                 tool: tool.clone(),
+                detail: detail.clone(),
                 action,
             },
         );
@@ -697,6 +709,64 @@ fn stage_tool(proposal: ToolProposal, state: &ActionState) -> Result<PendingActi
         detail,
         risk,
     })
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64
+}
+
+fn audit_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not resolve app data directory: {error}"))?;
+
+    fs::create_dir_all(&dir)
+        .map_err(|error| format!("Could not create Shuvi data directory: {error}"))?;
+
+    Ok(dir.join("audit.jsonl"))
+}
+
+fn append_audit(app: &AppHandle, entry: &AuditEntry) -> Result<(), String> {
+    let path = audit_path(app)?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|error| format!("Could not open audit log: {error}"))?;
+
+    let line = serde_json::to_string(entry)
+        .map_err(|error| format!("Could not encode audit entry: {error}"))?;
+
+    writeln!(file, "{line}")
+        .map_err(|error| format!("Could not write audit log: {error}"))
+}
+
+fn read_audit(app: &AppHandle, limit: usize) -> Result<Vec<AuditEntry>, String> {
+    let path = audit_path(app)?;
+
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let file = OpenOptions::new()
+        .read(true)
+        .open(path)
+        .map_err(|error| format!("Could not open audit log: {error}"))?;
+
+    let mut entries = BufReader::new(file)
+        .lines()
+        .filter_map(Result::ok)
+        .filter_map(|line| serde_json::from_str::<AuditEntry>(&line).ok())
+        .collect::<Vec<_>>();
+
+    entries.reverse();
+    entries.truncate(limit.clamp(1, 200));
+    Ok(entries)
 }
 
 fn truncate_output(value: String) -> String {
@@ -908,12 +978,29 @@ fn prepare_powershell(
 }
 
 #[tauri::command]
-fn deny_action(action_id: String, state: State<'_, ActionState>) -> Result<(), String> {
-    state
+fn deny_action(
+    action_id: String,
+    state: State<'_, ActionState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let action = state
         .pending
         .lock()
         .map_err(|_| "Permission state is unavailable.".to_string())?
         .remove(&action_id);
+
+    if let Some(action) = action {
+        append_audit(
+            &app,
+            &AuditEntry {
+                timestamp_ms: now_ms(),
+                event: "denied".into(),
+                tool: action.tool,
+                detail: action.detail,
+                success: false,
+            },
+        )?;
+    }
 
     Ok(())
 }
@@ -922,6 +1009,7 @@ fn deny_action(action_id: String, state: State<'_, ActionState>) -> Result<(), S
 fn execute_action(
     action_id: String,
     state: State<'_, ActionState>,
+    app: AppHandle,
 ) -> Result<ActionResult, String> {
     ensure_memory_budget(state.inner())?;
 
@@ -932,15 +1020,51 @@ fn execute_action(
         .remove(&action_id)
         .ok_or_else(|| "Action expired, was denied, or does not exist.".to_string())?;
 
-    execute_tool(action, state.inner())
+    let tool = action.tool.clone();
+    let detail = action.detail.clone();
+
+    match execute_tool(action, state.inner()) {
+        Ok(result) => {
+            append_audit(
+                &app,
+                &AuditEntry {
+                    timestamp_ms: now_ms(),
+                    event: "executed".into(),
+                    tool,
+                    detail,
+                    success: result.success,
+                },
+            )?;
+            Ok(result)
+        }
+        Err(error) => {
+            append_audit(
+                &app,
+                &AuditEntry {
+                    timestamp_ms: now_ms(),
+                    event: "failed".into(),
+                    tool,
+                    detail,
+                    success: false,
+                },
+            )?;
+            Err(error)
+        }
+    }
 }
 
 #[tauri::command]
 fn execute_powershell(
     action_id: String,
     state: State<'_, ActionState>,
+    app: AppHandle,
 ) -> Result<ActionResult, String> {
-    execute_action(action_id, state)
+    execute_action(action_id, state, app)
+}
+
+#[tauri::command]
+fn audit_log(app: AppHandle, limit: Option<usize>) -> Result<Vec<AuditEntry>, String> {
+    read_audit(&app, limit.unwrap_or(30))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -958,6 +1082,7 @@ pub fn run() {
             deny_action,
             execute_action,
             execute_powershell,
+            audit_log,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Shuvi");
