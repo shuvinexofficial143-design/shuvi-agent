@@ -21,6 +21,9 @@ let messages: ChatMessage[] = [];
 let pendingAction: PendingAction | null = null;
 let busy = false;
 let cancelRequested = false;
+let sessionInputTokens = 0;
+let sessionOutputTokens = 0;
+let sessionTotalTokens = 0;
 const sessionAllowedTools = new Set<string>();
 
 root.innerHTML = `
@@ -43,6 +46,7 @@ root.innerHTML = `
       <div class="meter"><div id="ramMeter"></div></div>
       <small id="ramHint">4 GB hard ceiling</small>
       <small id="ramChildren" class="ram-children">0 managed apps</small>
+      <small id="tokenMeter" class="ram-children">0 session tokens</small>
     </div>
   </aside>
 
@@ -535,6 +539,14 @@ async function runAgentStep(step: number): Promise<void> {
         messages
       }
     });
+
+    if (response.usage) {
+      sessionInputTokens += response.usage.input_tokens;
+      sessionOutputTokens += response.usage.output_tokens;
+      sessionTotalTokens += response.usage.total_tokens;
+      el<HTMLElement>("#tokenMeter").textContent =
+        `${sessionTotalTokens.toLocaleString()} session tokens · ${sessionInputTokens.toLocaleString()} in / ${sessionOutputTokens.toLocaleString()} out`;
+    }
 
     if (cancelRequested) {
       messages.push({ role: "assistant", content: "Task stopped after the current provider request finished." });
