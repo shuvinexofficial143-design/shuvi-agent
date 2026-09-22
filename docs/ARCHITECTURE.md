@@ -113,3 +113,8 @@ Shuvi can export a local JSON diagnostics report containing runtime RAM metrics,
 ## First-run setup
 
 On first launch, Shuvi opens a local onboarding screen that asks the user to choose a provider and model, enter the required API key, and configure a custom endpoint when applicable. Provider secrets are written through the existing OS credential-store command; they are never saved into browser localStorage.
+
+
+## Crash recovery
+
+During an active agent task, Shuvi writes an atomic local checkpoint containing only provider/model selection and the bounded conversation/tool-observation history needed to resume reasoning. API keys are never included. Completed, cancelled, or safety-stopped tasks clear the checkpoint. On the next launch, Shuvi presents an explicit Resume or Discard choice instead of silently continuing computer actions.
