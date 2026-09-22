@@ -267,3 +267,32 @@ textarea:focus, input:focus, select:focus { border-color: #59657a; }
   background: #171c25;
   color: #dce2eb;
 }
+
+.resume-banner {
+  width: min(820px, calc(100% - 56px));
+  margin: 18px auto 0;
+  padding: 14px 16px;
+  border: 1px solid #3a4251;
+  border-radius: 13px;
+  background: #111720;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.resume-banner strong {
+  display: block;
+  font-size: 13px;
+}
+
+.resume-banner p {
+  margin: 5px 0 0;
+  color: #7e899c;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.resume-banner .button-row {
+  flex-shrink: 0;
+}
