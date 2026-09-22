@@ -35,6 +35,8 @@ Available tools:
 - create_directory: {"path":"absolute path"}
 - launch_app: {"program":"executable or absolute path","args":["optional","arguments"]}
 - open_url: {"url":"https://example.com"}
+- browser_start: {"browser":"edge|chrome","url":"optional https:// page"}
+- stop_managed_process: {"pid":1234}
 - capture_screen: {}
 - inspect_screen: {"prompt":"what should be understood from the current screen"}
 - list_processes: {}
@@ -65,7 +67,8 @@ Rules:
 - Before git_commit, inspect git_status and git_diff so the user can review what will be committed.
 - Treat git_push as a remote write and request it only after a successful commit when the user asked for a push.
 - Use run_project_task instead of raw shell commands when test/build/lint/typecheck is enough.
-- For browser/app UI work, prefer window-scoped ui_find/ui_click/ui_set_value/ui_focus/ui_scroll. If a semantic selector fails, use inspect_screen to understand the current state before trying another safe tool.
+- For browser/app UI work, prefer a Shuvi-managed browser when isolation matters, then use window-scoped ui_find/ui_click/ui_set_value/ui_focus/ui_scroll. If a semantic selector fails, use inspect_screen to understand the current state before trying another safe tool.
+- stop_managed_process may only target process roots that Shuvi launched itself.
 - When a tool fails, do not repeat the exact same failing action blindly. Use the observation to refine the selector, inspect the screen, or choose a different typed tool.
 - If no computer action is needed, answer normally."#;
 
@@ -148,6 +151,8 @@ enum ToolAction {
     CreateDirectory { path: String },
     LaunchApp { program: String, args: Vec<String> },
     OpenUrl { url: String },
+    BrowserStart { browser: String, url: Option<String> },
+    StopManagedProcess { pid: u32 },
     CaptureScreen,
     InspectScreen { prompt: String, provider: ProviderContext },
     ListProcesses,
@@ -325,6 +330,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "create_directory"
         | "launch_app"
         | "open_url"
+        | "browser_start"
+        | "stop_managed_process"
         | "capture_screen"
         | "inspect_screen"
         | "list_processes"
@@ -661,13 +668,14 @@ fn current_runtime_status(state: &ActionState) -> Result<RuntimeStatus, String> 
 
     managed.retain(|child_pid| system.process(Pid::from_u32(*child_pid)).is_some());
 
-    let managed_children_bytes = managed
+    let managed_tree = managed_tree_pids(&system, &managed);
+    let managed_children_bytes = managed_tree
         .iter()
-        .filter_map(|child_pid| system.process(Pid::from_u32(*child_pid)))
+        .filter_map(|pid| system.process(*pid))
         .map(|process| process.memory())
         .fold(0_u64, u64::saturating_add);
 
-    let managed_children_count = managed.len();
+    let managed_children_count = managed_tree.len();
     drop(managed);
 
     let bytes = native_bytes.saturating_add(managed_children_bytes);
@@ -868,6 +876,77 @@ fn safe_web_url(value: String) -> Result<String, String> {
     Ok(value)
 }
 
+fn find_browser_executable(browser: &str) -> Result<std::path::PathBuf, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let program_files = std::env::var_os("ProgramFiles").map(std::path::PathBuf::from);
+        let program_files_x86 = std::env::var_os("ProgramFiles(x86)").map(std::path::PathBuf::from);
+        let local_app_data = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from);
+
+        let mut candidates = Vec::new();
+
+        match browser {
+            "edge" => {
+                if let Some(root) = &program_files {
+                    candidates.push(root.join("Microsoft").join("Edge").join("Application").join("msedge.exe"));
+                }
+                if let Some(root) = &program_files_x86 {
+                    candidates.push(root.join("Microsoft").join("Edge").join("Application").join("msedge.exe"));
+                }
+            }
+            "chrome" => {
+                if let Some(root) = &program_files {
+                    candidates.push(root.join("Google").join("Chrome").join("Application").join("chrome.exe"));
+                }
+                if let Some(root) = &program_files_x86 {
+                    candidates.push(root.join("Google").join("Chrome").join("Application").join("chrome.exe"));
+                }
+                if let Some(root) = &local_app_data {
+                    candidates.push(root.join("Google").join("Chrome").join("Application").join("chrome.exe"));
+                }
+            }
+            _ => return Err("browser_start browser must be 'edge' or 'chrome'.".into()),
+        }
+
+        return candidates
+            .into_iter()
+            .find(|path| path.is_file())
+            .ok_or_else(|| format!("Could not find the {browser} executable on this Windows PC."));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = browser;
+        Err("Controlled browser sessions are currently implemented for Windows only.".into())
+    }
+}
+
+fn managed_tree_pids(system: &System, roots: &HashSet<u32>) -> HashSet<Pid> {
+    let mut included = roots
+        .iter()
+        .map(|pid| Pid::from_u32(*pid))
+        .filter(|pid| system.process(*pid).is_some())
+        .collect::<HashSet<_>>();
+
+    loop {
+        let before = included.len();
+
+        for (pid, process) in system.processes() {
+            if let Some(parent) = process.parent() {
+                if included.contains(&parent) {
+                    included.insert(*pid);
+                }
+            }
+        }
+
+        if included.len() == before {
+            break;
+        }
+    }
+
+    included
+}
+
 fn stage_tool(
     proposal: ToolProposal,
     provider_context: Option<ProviderContext>,
@@ -938,6 +1017,47 @@ fn stage_tool(
                 ToolAction::OpenUrl { url: url.clone() },
                 "Open web page".to_string(),
                 url,
+                RiskLevel::Medium,
+            )
+        }
+        "browser_start" => {
+            let browser = arg_string(&proposal.arguments, "browser")?.to_ascii_lowercase();
+            if !matches!(browser.as_str(), "edge" | "chrome") {
+                return Err("browser_start browser must be edge or chrome.".into());
+            }
+
+            let url = arg_optional_string(&proposal.arguments, "url")
+                .map(safe_web_url)
+                .transpose()?;
+
+            let detail = format!(
+                "Start a Shuvi-managed {} browser session{}",
+                browser,
+                url.as_deref()
+                    .map(|value| format!(" at {value}"))
+                    .unwrap_or_default()
+            );
+
+            (
+                ToolAction::BrowserStart { browser, url },
+                "Start managed browser".to_string(),
+                detail,
+                RiskLevel::Medium,
+            )
+        }
+        "stop_managed_process" => {
+            let pid = proposal
+                .arguments
+                .get("pid")
+                .and_then(Value::as_u64)
+                .filter(|value| *value > 0 && *value <= u32::MAX as u64)
+                .ok_or_else(|| "stop_managed_process requires a valid positive pid.".to_string())?
+                as u32;
+
+            (
+                ToolAction::StopManagedProcess { pid },
+                "Stop Shuvi-managed process".to_string(),
+                format!("Stop managed process tree rooted at PID {pid}"),
                 RiskLevel::Medium,
             )
         }
@@ -1946,6 +2066,87 @@ async fn execute_tool(action: PendingAction, state: &ActionState) -> Result<Acti
                 stdout: format!("Opened {url} using the system browser (launcher PID {}).", child.id()),
                 stderr: String::new(),
                 exit_code: Some(0),
+            })
+        }
+        ToolAction::BrowserStart { browser, url } => {
+            let executable = find_browser_executable(&browser)?;
+            let profile_dir = std::env::temp_dir()
+                .join("Shuvi")
+                .join(format!("{}-profile", browser));
+
+            fs::create_dir_all(&profile_dir)
+                .map_err(|error| format!("Could not create managed browser profile: {error}"))?;
+
+            let mut command = Command::new(&executable);
+            command
+                .arg("--new-window")
+                .arg("--no-first-run")
+                .arg("--no-default-browser-check")
+                .arg("--disable-background-mode")
+                .arg(format!("--user-data-dir={}", profile_dir.display()));
+
+            if let Some(url) = &url {
+                command.arg(url);
+            }
+
+            let child = command
+                .spawn()
+                .map_err(|error| format!("Could not start managed browser: {error}"))?;
+
+            let child_pid = child.id();
+            state
+                .managed_children
+                .lock()
+                .map_err(|_| "Managed-process state is unavailable.".to_string())?
+                .insert(child_pid);
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: format!(
+                    "Started Shuvi-managed {browser} with root PID {child_pid}. Browser subprocesses are included in Shuvi's RAM accounting."
+                ),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::StopManagedProcess { pid } => {
+            let is_managed_root = state
+                .managed_children
+                .lock()
+                .map_err(|_| "Managed-process state is unavailable.".to_string())?
+                .contains(&pid);
+
+            if !is_managed_root {
+                return Err("Shuvi can only stop process roots that it launched and is tracking.".into());
+            }
+
+            #[cfg(target_os = "windows")]
+            let output = Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .output()
+                .map_err(|error| format!("Could not stop managed process: {error}"))?;
+
+            #[cfg(not(target_os = "windows"))]
+            let output = Command::new("kill")
+                .args(["-TERM", &pid.to_string()])
+                .output()
+                .map_err(|error| format!("Could not stop managed process: {error}"))?;
+
+            if output.status.success() {
+                state
+                    .managed_children
+                    .lock()
+                    .map_err(|_| "Managed-process state is unavailable.".to_string())?
+                    .remove(&pid);
+            }
+
+            Ok(ActionResult {
+                success: output.status.success(),
+                tool,
+                stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                stderr: truncate_output(String::from_utf8_lossy(&output.stderr).to_string()),
+                exit_code: output.status.code(),
             })
         }
         ToolAction::CaptureScreen => {
