@@ -718,7 +718,7 @@ fn safe_web_url(value: String) -> Result<String, String> {
         return Err("Browser tool only accepts http:// or https:// URLs.".into());
     }
 
-    if value.contains(['\r', '\n', '\0']) {
+    if value.chars().any(|ch| matches!(ch, '\r' | '\n' | '\0')) {
         return Err("URL contains invalid control characters.".into());
     }
 
