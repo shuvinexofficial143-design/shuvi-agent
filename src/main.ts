@@ -25,7 +25,7 @@ let cancelRequested = false;
 let sessionInputTokens = 0;
 let sessionOutputTokens = 0;
 let sessionTotalTokens = 0;
-const sessionAllowedTools = new Set<string>();
+const sessionAllowedScopes = new Set<string>();
 
 root.innerHTML = `
 <div id="onboarding" class="onboarding hidden">
@@ -509,6 +509,57 @@ function toolResultMessage(result: ActionResult): ChatMessage {
   };
 }
 
+function normalizeScopePath(value: string): string {
+  return value.replaceAll("/", "\\").replace(/\\+$/, "").toLowerCase();
+}
+
+function sessionPermissionKey(proposal: ToolProposal): string {
+  const pathValue =
+    typeof proposal.arguments.path === "string"
+      ? proposal.arguments.path.trim()
+      : "";
+
+  if (pathValue) {
+    const normalizedPath = normalizeScopePath(pathValue);
+    const workspace = workspaceInput.value.trim();
+    const normalizedWorkspace = workspace ? normalizeScopePath(workspace) : "";
+
+    if (
+      normalizedWorkspace &&
+      (normalizedPath === normalizedWorkspace ||
+        normalizedPath.startsWith(normalizedWorkspace + "\\"))
+    ) {
+      return proposal.tool + "|workspace:" + normalizedWorkspace;
+    }
+
+    return proposal.tool + "|exact:" + normalizedPath;
+  }
+
+  const pid =
+    typeof proposal.arguments.pid === "number"
+      ? String(proposal.arguments.pid)
+      : "";
+  if (pid) return proposal.tool + "|pid:" + pid;
+
+  const windowName =
+    typeof proposal.arguments.window === "string"
+      ? proposal.arguments.window.trim().toLowerCase()
+      : "";
+  if (windowName) return proposal.tool + "|window:" + windowName;
+
+  return proposal.tool + "|session";
+}
+
+function sessionPermissionLabel(proposal: ToolProposal): string {
+  const key = sessionPermissionKey(proposal);
+
+  if (key.includes("|workspace:")) return "Allow in this workspace for session";
+  if (key.includes("|exact:")) return "Allow this path for session";
+  if (key.includes("|pid:")) return "Allow for this managed browser session";
+  if (key.includes("|window:")) return "Allow for this window session";
+  return "Allow this read tool for session";
+}
+
 async function stageProposal(proposal: ToolProposal, step: number): Promise<void> {
   try {
     pendingAction = await invoke<PendingAction>("prepare_tool", {
@@ -520,7 +571,7 @@ async function stageProposal(proposal: ToolProposal, step: number): Promise<void
 
     if (
       pendingAction.risk === "low" &&
-      sessionAllowedTools.has(proposal.tool) &&
+      sessionAllowedScopes.has(sessionPermissionKey(proposal)) &&
       !cancelRequested
     ) {
       await executePendingProposal(proposal, step);
@@ -603,7 +654,7 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
         proposal.tool === "git_status" ||
         proposal.tool === "git_diff"
       )
-        ? '<button id="chatAllowSession">Allow this read tool for session</button>'
+        ? '<button id="chatAllowSession"></button>'
         : ""}
       <button id="chatDeny">Deny</button>
     </div>
@@ -611,6 +662,9 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
 
   const reason = chatPermission.querySelector<HTMLElement>(".permission-reason");
   if (reason) reason.textContent = proposal.reason || "Shuvi requested this computer action.";
+
+  const sessionButton = chatPermission.querySelector<HTMLButtonElement>("#chatAllowSession");
+  if (sessionButton) sessionButton.textContent = sessionPermissionLabel(proposal);
 
   const detail = chatPermission.querySelector<HTMLElement>(".permission-detail");
   if (detail) detail.textContent = pendingAction.detail;
@@ -625,7 +679,7 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
   const allowSession = chatPermission.querySelector<HTMLButtonElement>("#chatAllowSession");
   if (allowSession) {
     allowSession.onclick = async () => {
-      sessionAllowedTools.add(proposal.tool);
+      sessionAllowedScopes.add(sessionPermissionKey(proposal));
       await executePendingProposal(proposal, step);
     };
   }
