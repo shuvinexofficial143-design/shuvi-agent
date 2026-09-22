@@ -79,3 +79,10 @@ Windows UI actions can now be scoped to an exact top-level window before Shuvi s
 The semantic UI layer now supports focus and ScrollPattern actions in addition to find, invoke/select and ValuePattern writes. For browser-like workflows, Shuvi should use exact window-scoped UI Automation first and screen vision only when semantic inspection is insufficient.
 
 Tool failures are fed back into the agent loop. The system prompt explicitly prevents blind repetition of the same failed action and instructs Shuvi to refine the selector, inspect the screen, or choose another typed tool.
+
+
+## Managed browser sessions
+
+Shuvi can launch an isolated Microsoft Edge or Google Chrome window with a dedicated temporary Shuvi profile. The root browser PID is registered as a managed process, and RAM accounting walks the descendant process tree so renderer/GPU/browser subprocess memory is included rather than counting only the launcher process.
+
+Shuvi can stop only process roots that it launched itself. Arbitrary system PIDs are rejected by the typed stop tool.
