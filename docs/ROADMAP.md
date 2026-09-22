@@ -28,11 +28,13 @@
 - [x] audit log persisted locally
 
 ## v0.3 — computer use
-- screenshot capture
-- Windows UI Automation
-- browser automation
-- fallback coordinate actions
-- failure recovery
+- [x] screenshot capture
+- [x] AI screen inspection through selected vision-capable provider
+- [x] open URL in system browser
+- [ ] Windows UI Automation
+- [ ] browser automation beyond opening URLs
+- [ ] fallback coordinate actions
+- [ ] failure recovery
 
 ## v0.4 — coding mode
 - workspace selection
