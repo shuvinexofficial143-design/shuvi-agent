@@ -41,6 +41,11 @@ Available tools:
 - ui_find: {"name":"exact visible name","automation_id":"optional exact automation id"}
 - ui_click: {"name":"exact visible name","automation_id":"optional exact automation id"}
 - ui_set_value: {"name":"exact visible name","automation_id":"optional exact automation id","value":"text to enter"}
+- workspace_scan: {"path":"absolute workspace path"}
+- search_text: {"path":"absolute workspace path","query":"text to find"}
+- replace_text: {"path":"absolute file path","old":"exact old text","new":"replacement text"}
+- git_status: {"path":"absolute repository path"}
+- git_diff: {"path":"absolute repository path"}
 - powershell: {"command":"PowerShell command"}
 
 Rules:
@@ -130,6 +135,11 @@ enum ToolAction {
     UiFind { name: Option<String>, automation_id: Option<String> },
     UiClick { name: Option<String>, automation_id: Option<String> },
     UiSetValue { name: Option<String>, automation_id: Option<String>, value: String },
+    WorkspaceScan { path: String },
+    SearchText { path: String, query: String },
+    ReplaceText { path: String, old: String, new_value: String },
+    GitStatus { path: String },
+    GitDiff { path: String },
     PowerShell { command: String },
 }
 
@@ -296,6 +306,11 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "ui_find"
         | "ui_click"
         | "ui_set_value"
+        | "workspace_scan"
+        | "search_text"
+        | "replace_text"
+        | "git_status"
+        | "git_diff"
         | "powershell" => Some(proposal),
         _ => None,
     }
@@ -614,6 +629,14 @@ fn arg_string(arguments: &Value, name: &str) -> Result<String, String> {
         .ok_or_else(|| format!("Tool argument '{name}' must be a non-empty string."))
 }
 
+fn arg_raw_string(arguments: &Value, name: &str) -> Result<String, String> {
+    arguments
+        .get(name)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| format!("Tool argument '{name}' must be a string."))
+}
+
 fn arg_optional_string(arguments: &Value, name: &str) -> Option<String> {
     arguments
         .get(name)
@@ -873,6 +896,74 @@ fn stage_tool(
                 "Set Windows UI text/value".to_string(),
                 detail,
                 RiskLevel::Medium,
+            )
+        }
+        "workspace_scan" => {
+            let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
+            (
+                ToolAction::WorkspaceScan { path: path.clone() },
+                "Scan coding workspace".to_string(),
+                path,
+                RiskLevel::Low,
+            )
+        }
+        "search_text" => {
+            let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
+            let query = arg_string(&proposal.arguments, "query")?;
+            if query.len() > 2_000 {
+                return Err("Search query is too long.".into());
+            }
+            (
+                ToolAction::SearchText { path: path.clone(), query: query.clone() },
+                "Search workspace text".to_string(),
+                format!("{} | query={}", path, query),
+                RiskLevel::Low,
+            )
+        }
+        "replace_text" => {
+            let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
+            let old = arg_raw_string(&proposal.arguments, "old")?;
+            let new_value = arg_raw_string(&proposal.arguments, "new")?;
+
+            if old.is_empty() {
+                return Err("replace_text requires non-empty old text.".into());
+            }
+            if old.len() > MAX_WRITE_BYTES || new_value.len() > MAX_WRITE_BYTES {
+                return Err("Replacement payload is too large.".into());
+            }
+
+            (
+                ToolAction::ReplaceText {
+                    path: path.clone(),
+                    old: old.clone(),
+                    new_value: new_value.clone(),
+                },
+                "Replace exact text in file".to_string(),
+                format!(
+                    "{} | old_chars={} | new_chars={}",
+                    path,
+                    old.chars().count(),
+                    new_value.chars().count()
+                ),
+                RiskLevel::Medium,
+            )
+        }
+        "git_status" => {
+            let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
+            (
+                ToolAction::GitStatus { path: path.clone() },
+                "Read Git status".to_string(),
+                path,
+                RiskLevel::Low,
+            )
+        }
+        "git_diff" => {
+            let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
+            (
+                ToolAction::GitDiff { path: path.clone() },
+                "Read Git diff".to_string(),
+                path,
+                RiskLevel::Low,
             )
         }
         "powershell" => {
@@ -1229,6 +1320,135 @@ async fn analyze_png_with_provider(
     }
 }
 
+fn is_ignored_workspace_dir(name: &str) -> bool {
+    matches!(
+        name,
+        ".git" | "node_modules" | "target" | "dist" | "build" | ".next" | ".cache" | ".venv" | "venv"
+    )
+}
+
+fn workspace_scan_recursive(
+    root: &Path,
+    current: &Path,
+    depth: usize,
+    output: &mut Vec<String>,
+) -> Result<(), String> {
+    if depth > 5 || output.len() >= 1200 {
+        return Ok(());
+    }
+
+    let mut entries = fs::read_dir(current)
+        .map_err(|error| format!("Could not scan workspace: {error}"))?
+        .filter_map(Result::ok)
+        .collect::<Vec<_>>();
+
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        if output.len() >= 1200 {
+            break;
+        }
+
+        let path = entry.path();
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        let relative = path.strip_prefix(root).unwrap_or(&path).display().to_string();
+
+        if path.is_dir() {
+            if is_ignored_workspace_dir(&file_name) {
+                continue;
+            }
+            output.push(format!("[dir] {relative}"));
+            workspace_scan_recursive(root, &path, depth + 1, output)?;
+        } else if path.is_file() {
+            let size = entry.metadata().map(|metadata| metadata.len()).unwrap_or_default();
+            output.push(format!("[file] {relative} | {size} bytes"));
+        }
+    }
+
+    Ok(())
+}
+
+fn search_text_recursive(
+    root: &Path,
+    current: &Path,
+    query: &str,
+    depth: usize,
+    matches: &mut Vec<String>,
+) -> Result<(), String> {
+    if depth > 7 || matches.len() >= 150 {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(current)
+        .map_err(|error| format!("Could not search workspace: {error}"))?
+        .filter_map(Result::ok)
+    {
+        if matches.len() >= 150 {
+            break;
+        }
+
+        let path = entry.path();
+        let file_name = entry.file_name().to_string_lossy().to_string();
+
+        if path.is_dir() {
+            if is_ignored_workspace_dir(&file_name) {
+                continue;
+            }
+            search_text_recursive(root, &path, query, depth + 1, matches)?;
+            continue;
+        }
+
+        if !path.is_file() {
+            continue;
+        }
+
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(_) => continue,
+        };
+
+        if metadata.len() > 768 * 1024 {
+            continue;
+        }
+
+        let content = match fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(_) => continue,
+        };
+
+        for (index, line) in content.lines().enumerate() {
+            if line.contains(query) {
+                let relative = path.strip_prefix(root).unwrap_or(&path).display();
+                matches.push(format!(
+                    "{}:{}: {}",
+                    relative,
+                    index + 1,
+                    line.chars().take(300).collect::<String>()
+                ));
+
+                if matches.len() >= 150 {
+                    break;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn run_git(path: &str, args: &[&str]) -> Result<std::process::Output, String> {
+    if !Path::new(path).join(".git").exists() {
+        return Err("The selected path does not contain a .git repository.".into());
+    }
+
+    Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(args)
+        .output()
+        .map_err(|error| format!("Could not run Git: {error}"))
+}
+
 fn truncate_output(value: String) -> String {
     if value.chars().count() <= MAX_TOOL_OUTPUT_CHARS {
         return value;
@@ -1539,6 +1759,99 @@ if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Patte
                 tool,
                 stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
                 stderr: String::new(),
+                exit_code: output.status.code(),
+            })
+        }
+        ToolAction::WorkspaceScan { path } => {
+            let root = Path::new(&path);
+            if !root.is_dir() {
+                return Err("Workspace path is not a directory.".into());
+            }
+
+            let mut output = Vec::new();
+            workspace_scan_recursive(root, root, 0, &mut output)?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: truncate_output(output.join("\n")),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::SearchText { path, query } => {
+            let root = Path::new(&path);
+            if !root.is_dir() {
+                return Err("Search path is not a directory.".into());
+            }
+
+            let mut matches = Vec::new();
+            search_text_recursive(root, root, &query, 0, &mut matches)?;
+
+            let stdout = if matches.is_empty() {
+                format!("No matches found for '{query}'.")
+            } else {
+                matches.join("\n")
+            };
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: truncate_output(stdout),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::ReplaceText { path, old, new_value } => {
+            let metadata = fs::metadata(&path)
+                .map_err(|error| format!("Could not inspect file: {error}"))?;
+
+            if metadata.len() > MAX_WRITE_BYTES as u64 {
+                return Err("File is larger than Shuvi's 2 MB edit limit.".into());
+            }
+
+            let source = fs::read_to_string(&path)
+                .map_err(|error| format!("Could not read UTF-8 text file: {error}"))?;
+
+            let count = source.matches(&old).count();
+            if count == 0 {
+                return Err("Exact old text was not found.".into());
+            }
+            if count > 1 {
+                return Err(format!(
+                    "Exact old text appears {count} times. Refine the old text so the edit is unambiguous."
+                ));
+            }
+
+            let updated = source.replacen(&old, &new_value, 1);
+            fs::write(&path, updated.as_bytes())
+                .map_err(|error| format!("Could not write edited file: {error}"))?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: format!("Applied one exact replacement in {path}."),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::GitStatus { path } => {
+            let output = run_git(&path, &["status", "--short", "--branch"])?;
+            Ok(ActionResult {
+                success: output.status.success(),
+                tool,
+                stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                stderr: truncate_output(String::from_utf8_lossy(&output.stderr).to_string()),
+                exit_code: output.status.code(),
+            })
+        }
+        ToolAction::GitDiff { path } => {
+            let output = run_git(&path, &["diff", "--no-ext-diff", "--unified=3"])?;
+            Ok(ActionResult {
+                success: output.status.success(),
+                tool,
+                stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                stderr: truncate_output(String::from_utf8_lossy(&output.stderr).to_string()),
                 exit_code: output.status.code(),
             })
         }
