@@ -40,7 +40,8 @@
 - [x] dedicated Chromium DevTools DOM read/click/value/navigation control
 - [ ] fallback coordinate actions
 - [x] agent recovery guidance: refine selectors / inspect screen instead of blind retries
-- [ ] runtime retry/backoff and crash recovery
+- [x] transient provider retry/backoff for timeouts, connection errors, 429 and common 5xx responses
+- [ ] crash recovery / resumable tasks
 
 ## v0.4 — coding mode
 - [x] workspace tree scan with common heavy folders ignored
