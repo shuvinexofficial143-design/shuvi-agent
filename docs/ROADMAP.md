@@ -31,7 +31,8 @@
 - [x] screenshot capture
 - [x] AI screen inspection through selected vision-capable provider
 - [x] open URL in system browser
-- [ ] Windows UI Automation
+- [x] Windows UI Automation foundation: exact element find, invoke/select, set value
+- [ ] advanced UI Automation: window scoping, scroll, menus, keyboard fallback
 - [ ] browser automation beyond opening URLs
 - [ ] fallback coordinate actions
 - [ ] failure recovery
