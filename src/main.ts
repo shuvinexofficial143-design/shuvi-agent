@@ -661,6 +661,7 @@ async function runAgentStep(step: number): Promise<void> {
   if (cancelRequested) {
     messages.push({ role: "assistant", content: "Task stopped." });
     renderMessages();
+    await clearActiveCheckpoint();
     setBusy(false);
     return;
   }
@@ -698,6 +699,7 @@ async function runAgentStep(step: number): Promise<void> {
     if (cancelRequested) {
       messages.push({ role: "assistant", content: "Task stopped after the current provider request finished." });
       renderMessages();
+      await clearActiveCheckpoint();
       setBusy(false);
       return;
     }
@@ -711,6 +713,7 @@ async function runAgentStep(step: number): Promise<void> {
       return;
     }
 
+    await clearActiveCheckpoint();
     setBusy(false);
   } catch (error) {
     messages.push({ role: "assistant", content: `Error: ${String(error)}` });
