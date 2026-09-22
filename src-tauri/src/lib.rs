@@ -38,6 +38,9 @@ Available tools:
 - capture_screen: {}
 - inspect_screen: {"prompt":"what should be understood from the current screen"}
 - list_processes: {}
+- ui_find: {"name":"exact visible name","automation_id":"optional exact automation id"}
+- ui_click: {"name":"exact visible name","automation_id":"optional exact automation id"}
+- ui_set_value: {"name":"exact visible name","automation_id":"optional exact automation id","value":"text to enter"}
 - powershell: {"command":"PowerShell command"}
 
 Rules:
@@ -124,6 +127,9 @@ enum ToolAction {
     CaptureScreen,
     InspectScreen { prompt: String, provider: ProviderContext },
     ListProcesses,
+    UiFind { name: Option<String>, automation_id: Option<String> },
+    UiClick { name: Option<String>, automation_id: Option<String> },
+    UiSetValue { name: Option<String>, automation_id: Option<String>, value: String },
     PowerShell { command: String },
 }
 
@@ -287,6 +293,9 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "capture_screen"
         | "inspect_screen"
         | "list_processes"
+        | "ui_find"
+        | "ui_click"
+        | "ui_set_value"
         | "powershell" => Some(proposal),
         _ => None,
     }
@@ -605,6 +614,78 @@ fn arg_string(arguments: &Value, name: &str) -> Result<String, String> {
         .ok_or_else(|| format!("Tool argument '{name}' must be a non-empty string."))
 }
 
+fn arg_optional_string(arguments: &Value, name: &str) -> Option<String> {
+    arguments
+        .get(name)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn ui_selector(
+    arguments: &Value,
+) -> Result<(Option<String>, Option<String>), String> {
+    let name = arg_optional_string(arguments, "name");
+    let automation_id = arg_optional_string(arguments, "automation_id");
+
+    if name.is_none() && automation_id.is_none() {
+        return Err("UI tools require at least 'name' or 'automation_id'.".into());
+    }
+
+    Ok((name, automation_id))
+}
+
+fn ps_single_quote(value: &str) -> String {
+    value.replace(''', "''")
+}
+
+fn ui_condition_script(
+    name: Option<&str>,
+    automation_id: Option<&str>,
+) -> Result<String, String> {
+    match (name, automation_id) {
+        (Some(name), Some(id)) => Ok(format!(
+            "$c1 = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, '{}')\n$c2 = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty, '{}')\n$condition = [System.Windows.Automation.AndCondition]::new($c1, $c2)",
+            ps_single_quote(name),
+            ps_single_quote(id)
+        )),
+        (Some(name), None) => Ok(format!(
+            "$condition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, '{}')",
+            ps_single_quote(name)
+        )),
+        (None, Some(id)) => Ok(format!(
+            "$condition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty, '{}')",
+            ps_single_quote(id)
+        )),
+        (None, None) => Err("Missing UI selector.".into()),
+    }
+}
+
+fn run_hidden_powershell(script: &str) -> Result<std::process::Output, String> {
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("powershell.exe")
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                script,
+            ])
+            .output()
+            .map_err(|error| format!("Failed to start PowerShell: {error}"))
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = script;
+        Err("Windows UI Automation is currently available on Windows only.".into())
+    }
+}
+
 fn arg_string_array(arguments: &Value, name: &str) -> Result<Vec<String>, String> {
     let Some(value) = arguments.get(name) else {
         return Ok(Vec::new());
@@ -749,6 +830,51 @@ fn stage_tool(
             "Read process names, PIDs and memory usage.".to_string(),
             RiskLevel::Low,
         ),
+        "ui_find" => {
+            let (name, automation_id) = ui_selector(&proposal.arguments)?;
+            let detail = format!(
+                "Find Windows UI element: name={:?}, automation_id={:?}",
+                name, automation_id
+            );
+            (
+                ToolAction::UiFind { name, automation_id },
+                "Find Windows UI element".to_string(),
+                detail,
+                RiskLevel::Low,
+            )
+        }
+        "ui_click" => {
+            let (name, automation_id) = ui_selector(&proposal.arguments)?;
+            let detail = format!(
+                "Invoke Windows UI element: name={:?}, automation_id={:?}",
+                name, automation_id
+            );
+            (
+                ToolAction::UiClick { name, automation_id },
+                "Click Windows UI element".to_string(),
+                detail,
+                RiskLevel::Medium,
+            )
+        }
+        "ui_set_value" => {
+            let (name, automation_id) = ui_selector(&proposal.arguments)?;
+            let value = arg_string(&proposal.arguments, "value")?;
+            if value.len() > 20_000 {
+                return Err("UI value is too large.".into());
+            }
+            let detail = format!(
+                "Set Windows UI value: name={:?}, automation_id={:?}, value_length={}",
+                name,
+                automation_id,
+                value.chars().count()
+            );
+            (
+                ToolAction::UiSetValue { name, automation_id, value },
+                "Set Windows UI text/value".to_string(),
+                detail,
+                RiskLevel::Medium,
+            )
+        }
         "powershell" => {
             let command = arg_string(&proposal.arguments, "command")?;
             if command.len() > 8_000 {
@@ -1301,6 +1427,119 @@ async fn execute_tool(action: PendingAction, state: &ActionState) -> Result<Acti
                 stdout: rows.join("\n"),
                 stderr: String::new(),
                 exit_code: Some(0),
+            })
+        }
+        ToolAction::UiFind { name, automation_id } => {
+            let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
+            let script = format!(
+                r#"Add-Type -AssemblyName UIAutomationClient
+{condition}
+$root = [System.Windows.Automation.AutomationElement]::RootElement
+$matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+$items = @()
+for ($i = 0; $i -lt [Math]::Min($matches.Count, 25); $i++) {{
+    $e = $matches.Item($i)
+    $items += [PSCustomObject]@{{
+        Name = $e.Current.Name
+        AutomationId = $e.Current.AutomationId
+        ControlType = $e.Current.ControlType.ProgrammaticName
+        ClassName = $e.Current.ClassName
+        IsEnabled = $e.Current.IsEnabled
+        Bounds = $e.Current.BoundingRectangle.ToString()
+    }}
+}}
+$items | ConvertTo-Json -Compress"#
+            );
+
+            let output = run_hidden_powershell(&script)?;
+            if !output.status.success() {
+                return Err(format!(
+                    "UI lookup failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                stderr: String::new(),
+                exit_code: output.status.code(),
+            })
+        }
+        ToolAction::UiClick { name, automation_id } => {
+            let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
+            let script = format!(
+                r#"Add-Type -AssemblyName UIAutomationClient
+{condition}
+$root = [System.Windows.Automation.AutomationElement]::RootElement
+$matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
+if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Use automation_id or a more specific selector.') }}
+$e = $matches.Item(0)
+if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
+$pattern = $null
+if ($e.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {{
+    ([System.Windows.Automation.InvokePattern]$pattern).Invoke()
+    'Invoked element: ' + $e.Current.Name
+}} elseif ($e.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) {{
+    ([System.Windows.Automation.SelectionItemPattern]$pattern).Select()
+    'Selected element: ' + $e.Current.Name
+}} else {{
+    throw 'Matching element does not expose InvokePattern or SelectionItemPattern.'
+}}"#
+            );
+
+            let output = run_hidden_powershell(&script)?;
+            if !output.status.success() {
+                return Err(format!(
+                    "UI click failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                stderr: String::new(),
+                exit_code: output.status.code(),
+            })
+        }
+        ToolAction::UiSetValue { name, automation_id, value } => {
+            let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
+            let escaped_value = ps_single_quote(&value);
+            let script = format!(
+                r#"Add-Type -AssemblyName UIAutomationClient
+{condition}
+$root = [System.Windows.Automation.AutomationElement]::RootElement
+$matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
+if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Use automation_id or a more specific selector.') }}
+$e = $matches.Item(0)
+if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
+$pattern = $null
+if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) {{
+    throw 'Matching element does not expose ValuePattern.'
+}}
+([System.Windows.Automation.ValuePattern]$pattern).SetValue('{escaped_value}')
+'Value set on element: ' + $e.Current.Name"#
+            );
+
+            let output = run_hidden_powershell(&script)?;
+            if !output.status.success() {
+                return Err(format!(
+                    "UI value change failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                stderr: String::new(),
+                exit_code: output.status.code(),
             })
         }
         ToolAction::PowerShell { command } => {
