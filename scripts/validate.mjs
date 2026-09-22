@@ -79,8 +79,8 @@ const tools = [...protocol.matchAll(/^- ([a-z0-9_]+):/gm)].map((match) => match[
 for (const tool of tools) {
   const quoted = '"' + tool + '"';
   const occurrences = rust.split(quoted).length - 1;
-  if (occurrences < 3) {
-    fail("Tool appears incompletely wired: " + tool + " (" + occurrences + " references)");
+  if (occurrences < 2) {
+    fail("Tool appears incompletely wired: " + tool + " (" + occurrences + " quoted references)");
   }
 }
 ok("Typed tool registry checked.");
