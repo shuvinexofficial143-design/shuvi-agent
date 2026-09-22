@@ -21,6 +21,7 @@ let messages: ChatMessage[] = [];
 let pendingAction: PendingAction | null = null;
 let busy = false;
 let cancelRequested = false;
+const sessionAllowedTools = new Set<string>();
 
 root.innerHTML = `
 <div class="shell">
@@ -325,6 +326,16 @@ function toolResultMessage(result: ActionResult): ChatMessage {
 async function stageProposal(proposal: ToolProposal, step: number): Promise<void> {
   try {
     pendingAction = await invoke<PendingAction>("prepare_tool", { proposal });
+
+    if (
+      pendingAction.risk === "low" &&
+      sessionAllowedTools.has(proposal.tool) &&
+      !cancelRequested
+    ) {
+      await executePendingProposal(proposal, step);
+      return;
+    }
+
     renderChatPermission(proposal, step);
   } catch (error) {
     messages.push({
@@ -340,6 +351,33 @@ function clearChatPermission(): void {
   pendingAction = null;
   chatPermission.classList.add("hidden");
   chatPermission.innerHTML = "";
+}
+
+async function executePendingProposal(
+  proposal: ToolProposal,
+  step: number
+): Promise<void> {
+  if (!pendingAction || cancelRequested) return;
+
+  const actionId = pendingAction.id;
+  clearChatPermission();
+
+  try {
+    const result = await invoke<ActionResult>("execute_action", { actionId });
+    void refreshAudit();
+    messages.push(toolResultMessage(result));
+    await runAgentStep(step + 1);
+  } catch (error) {
+    messages.push({
+      role: "user",
+      content: `[SHUVI_TOOL_RESULT]\n${JSON.stringify({
+        tool: proposal.tool,
+        success: false,
+        error: String(error)
+      })}\n[/SHUVI_TOOL_RESULT]`
+    });
+    await runAgentStep(step + 1);
+  }
 }
 
 function renderChatPermission(proposal: ToolProposal, step: number): void {
@@ -361,6 +399,9 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
     <pre class="permission-detail"></pre>
     <div class="button-row">
       <button id="chatApprove" class="primary">Allow once</button>
+      ${pendingAction.risk === "low" && (proposal.tool === "read_file" || proposal.tool === "list_directory")
+        ? '<button id="chatAllowSession">Allow this read tool for session</button>'
+        : ""}
       <button id="chatDeny">Deny</button>
     </div>
   `;
@@ -374,27 +415,15 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
   const approve = chatPermission.querySelector<HTMLButtonElement>("#chatApprove");
   if (approve) {
     approve.onclick = async () => {
-      if (!pendingAction) return;
+      await executePendingProposal(proposal, step);
+    };
+  }
 
-      const actionId = pendingAction.id;
-      clearChatPermission();
-
-      try {
-        const result = await invoke<ActionResult>("execute_action", { actionId });
-        void refreshAudit();
-        messages.push(toolResultMessage(result));
-        await runAgentStep(step + 1);
-      } catch (error) {
-        messages.push({
-          role: "user",
-          content: `[SHUVI_TOOL_RESULT]\n${JSON.stringify({
-            tool: proposal.tool,
-            success: false,
-            error: String(error)
-          })}\n[/SHUVI_TOOL_RESULT]`
-        });
-        await runAgentStep(step + 1);
-      }
+  const allowSession = chatPermission.querySelector<HTMLButtonElement>("#chatAllowSession");
+  if (allowSession) {
+    allowSession.onclick = async () => {
+      sessionAllowedTools.add(proposal.tool);
+      await executePendingProposal(proposal, step);
     };
   }
 
