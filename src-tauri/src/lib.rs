@@ -49,6 +49,9 @@ Available tools:
 - ui_set_value: {"name":"exact visible name","automation_id":"optional exact automation id","window":"optional exact top-level window name","value":"text to enter"}
 - ui_focus: {"name":"exact visible name","automation_id":"optional exact automation id","window":"optional exact top-level window name"}
 - ui_scroll: {"name":"exact visible name","automation_id":"optional exact automation id","window":"optional exact top-level window name","vertical":"small_increment|small_decrement|large_increment|large_decrement"}
+- ui_toggle: {"name":"exact visible name","automation_id":"optional exact automation id","window":"optional exact top-level window name"}
+- ui_expand_collapse: {"name":"exact visible name","automation_id":"optional exact automation id","window":"optional exact top-level window name","action":"expand|collapse"}
+- ui_send_keys: {"name":"exact visible name","automation_id":"optional exact automation id","window":"optional exact top-level window name","keys":"SendKeys sequence"}
 - workspace_scan: {"path":"absolute workspace path"}
 - search_text: {"path":"absolute workspace path","query":"text to find"}
 - replace_text: {"path":"absolute file path","old":"exact old text","new":"replacement text"}
@@ -71,7 +74,7 @@ Rules:
 - Before git_commit, inspect git_status and git_diff so the user can review what will be committed.
 - Treat git_push as a remote write and request it only after a successful commit when the user asked for a push.
 - Use run_project_task instead of raw shell commands when test/build/lint/typecheck is enough.
-- For browser/app UI work, prefer a Shuvi-managed browser when isolation matters, then use window-scoped ui_find/ui_click/ui_set_value/ui_focus/ui_scroll. If a semantic selector fails, use inspect_screen to understand the current state before trying another safe tool.
+- For browser/app UI work, prefer a Shuvi-managed browser when isolation matters, then use window-scoped semantic UI tools first. Use ui_toggle and ui_expand_collapse for supported controls. ui_send_keys is a high-risk fallback only after an exact element is focused and semantic patterns are unavailable. If a semantic selector fails, use inspect_screen to understand the current state before trying another safe tool.
 - For managed Edge/Chrome sessions, prefer browser_dom_read/browser_dom_click/browser_dom_set_value/browser_navigate over visual coordinate actions because DOM selectors are more reliable.
 - browser_dom_click and browser_dom_set_value require selectors that match exactly one element; refine with browser_dom_read when ambiguous.
 - stop_managed_process may only target process roots that Shuvi launched itself.
@@ -181,6 +184,9 @@ enum ToolAction {
     UiSetValue { name: Option<String>, automation_id: Option<String>, window: Option<String>, value: String },
     UiFocus { name: Option<String>, automation_id: Option<String>, window: Option<String> },
     UiScroll { name: Option<String>, automation_id: Option<String>, window: Option<String>, vertical: String },
+    UiToggle { name: Option<String>, automation_id: Option<String>, window: Option<String> },
+    UiExpandCollapse { name: Option<String>, automation_id: Option<String>, window: Option<String>, action: String },
+    UiSendKeys { name: Option<String>, automation_id: Option<String>, window: Option<String>, keys: String },
     WorkspaceScan { path: String },
     SearchText { path: String, query: String },
     ReplaceText { path: String, old: String, new_value: String },
@@ -418,6 +424,9 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "ui_set_value"
         | "ui_focus"
         | "ui_scroll"
+        | "ui_toggle"
+        | "ui_expand_collapse"
+        | "ui_send_keys"
         | "workspace_scan"
         | "search_text"
         | "replace_text"
@@ -1393,6 +1402,60 @@ fn stage_tool(
                 "Scroll Windows UI element".to_string(),
                 detail,
                 RiskLevel::Medium,
+            )
+        }
+        "ui_toggle" => {
+            let (name, automation_id, window) = ui_selector(&proposal.arguments)?;
+            let detail = format!(
+                "Toggle Windows UI element: window={:?}, name={:?}, automation_id={:?}",
+                window, name, automation_id
+            );
+
+            (
+                ToolAction::UiToggle { name, automation_id, window },
+                "Toggle Windows UI element".to_string(),
+                detail,
+                RiskLevel::Medium,
+            )
+        }
+        "ui_expand_collapse" => {
+            let (name, automation_id, window) = ui_selector(&proposal.arguments)?;
+            let action = arg_string(&proposal.arguments, "action")?.to_ascii_lowercase();
+
+            if !matches!(action.as_str(), "expand" | "collapse") {
+                return Err("ui_expand_collapse action must be expand or collapse.".into());
+            }
+
+            let detail = format!(
+                "{} Windows UI element: window={:?}, name={:?}, automation_id={:?}",
+                action, window, name, automation_id
+            );
+
+            (
+                ToolAction::UiExpandCollapse { name, automation_id, window, action },
+                "Expand/collapse Windows UI element".to_string(),
+                detail,
+                RiskLevel::Medium,
+            )
+        }
+        "ui_send_keys" => {
+            let (name, automation_id, window) = ui_selector(&proposal.arguments)?;
+            let keys = arg_raw_string(&proposal.arguments, "keys")?;
+
+            if keys.is_empty() || keys.len() > 2_000 {
+                return Err("ui_send_keys requires between 1 and 2000 characters.".into());
+            }
+
+            let detail = format!(
+                "Send keyboard fallback to Windows UI element: window={:?}, name={:?}, automation_id={:?}, keys_length={}",
+                window, name, automation_id, keys.chars().count()
+            );
+
+            (
+                ToolAction::UiSendKeys { name, automation_id, window, keys },
+                "Send keyboard fallback".to_string(),
+                detail,
+                RiskLevel::High,
             )
         }
         "workspace_scan" => {
@@ -2893,6 +2956,118 @@ if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ScrollPattern]::Patt
             if !output.status.success() {
                 return Err(format!(
                     "UI scroll failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                stderr: String::new(),
+                exit_code: output.status.code(),
+            })
+        }
+        ToolAction::UiToggle { name, automation_id, window } => {
+            let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
+            let root_script = ui_root_script(window.as_deref());
+            let script = format!(
+                r#"Add-Type -AssemblyName UIAutomationClient
+{condition}
+{root_script}
+$matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
+if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Refine the selector.') }}
+$e = $matches.Item(0)
+if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
+$pattern = $null
+if (-not $e.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$pattern)) {{
+    throw 'Matching element does not expose TogglePattern.'
+}}
+([System.Windows.Automation.TogglePattern]$pattern).Toggle()
+'Toggled element: ' + $e.Current.Name"#
+            );
+
+            let output = run_hidden_powershell(&script)?;
+            if !output.status.success() {
+                return Err(format!(
+                    "UI toggle failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                stderr: String::new(),
+                exit_code: output.status.code(),
+            })
+        }
+        ToolAction::UiExpandCollapse { name, automation_id, window, action } => {
+            let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
+            let root_script = ui_root_script(window.as_deref());
+            let method = if action == "expand" { "Expand" } else { "Collapse" };
+
+            let script = format!(
+                r#"Add-Type -AssemblyName UIAutomationClient
+{condition}
+{root_script}
+$matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
+if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Refine the selector.') }}
+$e = $matches.Item(0)
+if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
+$pattern = $null
+if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$pattern)) {{
+    throw 'Matching element does not expose ExpandCollapsePattern.'
+}}
+$expand = [System.Windows.Automation.ExpandCollapsePattern]$pattern
+$expand.{method}()
+'{method} completed for element: ' + $e.Current.Name"#
+            );
+
+            let output = run_hidden_powershell(&script)?;
+            if !output.status.success() {
+                return Err(format!(
+                    "UI expand/collapse failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                stderr: String::new(),
+                exit_code: output.status.code(),
+            })
+        }
+        ToolAction::UiSendKeys { name, automation_id, window, keys } => {
+            let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
+            let root_script = ui_root_script(window.as_deref());
+            let escaped_keys = ps_single_quote(&keys);
+
+            let script = format!(
+                r#"Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName System.Windows.Forms
+{condition}
+{root_script}
+$matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
+if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Refine the selector.') }}
+$e = $matches.Item(0)
+if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
+$e.SetFocus()
+Start-Sleep -Milliseconds 80
+[System.Windows.Forms.SendKeys]::SendWait('{escaped_keys}')
+'Keyboard fallback sent to element: ' + $e.Current.Name"#
+            );
+
+            let output = run_hidden_powershell(&script)?;
+            if !output.status.success() {
+                return Err(format!(
+                    "UI keyboard fallback failed: {}",
                     String::from_utf8_lossy(&output.stderr)
                 ));
             }
