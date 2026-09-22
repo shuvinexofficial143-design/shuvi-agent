@@ -34,6 +34,7 @@ root.innerHTML = `
     <nav>
       <button class="nav active" data-view="chat">Chat</button>
       <button class="nav" data-view="actions">Actions</button>
+      <button class="nav" data-view="workspace">Workspace</button>
       <button class="nav" data-view="provider">Provider</button>
     </nav>
 
@@ -98,6 +99,26 @@ root.innerHTML = `
       </div>
     </section>
 
+    <section class="view" id="view-workspace">
+      <header class="topbar">
+        <div><h1>Coding Workspace</h1><p>Set the project folder Shuvi should treat as the default coding workspace.</p></div>
+      </header>
+
+      <div class="panel form-grid">
+        <label>
+          Absolute project folder
+          <input id="workspaceInput" placeholder="C:\\Users\\you\\Projects\\my-app" autocomplete="off" />
+        </label>
+
+        <div class="button-row">
+          <button id="saveWorkspace" class="primary">Save workspace</button>
+        </div>
+
+        <p id="workspaceStatus" class="muted">No workspace loaded yet.</p>
+        <p class="workspace-note">Shuvi will still ask before edits, tests, commits, pushes, or other write actions.</p>
+      </div>
+    </section>
+
     <section class="view" id="view-provider">
       <header class="topbar">
         <div><h1>AI Provider</h1><p>Choose the brain without changing Shuvi's local tool layer.</p></div>
@@ -142,6 +163,8 @@ const apiKeyLabel = el<HTMLElement>("#apiKeyLabel");
 const settingsStatus = el<HTMLElement>("#settingsStatus");
 const activeProvider = el<HTMLElement>("#activeProvider");
 const chatPermission = el<HTMLElement>("#chatPermission");
+const workspaceInput = el<HTMLInputElement>("#workspaceInput");
+const workspaceStatus = el<HTMLElement>("#workspaceStatus");
 
 function selectedProvider(): ProviderDescriptor | undefined {
   return providers.find((provider) => provider.id === providerSelect.value);
@@ -234,6 +257,21 @@ async function refreshAudit(): Promise<void> {
   }
 }
 
+async function loadWorkspace(): Promise<void> {
+  try {
+    const workspace = await invoke<string | null>("get_workspace");
+
+    if (workspace) {
+      workspaceInput.value = workspace;
+      workspaceStatus.textContent = `Current workspace: ${workspace}`;
+    } else {
+      workspaceStatus.textContent = "No default workspace selected.";
+    }
+  } catch (error) {
+    workspaceStatus.textContent = `Could not load workspace: ${String(error)}`;
+  }
+}
+
 async function boot(): Promise<void> {
   try {
     providers = await invoke<ProviderDescriptor[]>("list_providers");
@@ -242,6 +280,7 @@ async function boot(): Promise<void> {
       .join("");
 
     loadSavedProvider();
+    await loadWorkspace();
     await refreshRam();
     await refreshAudit();
     window.setInterval(() => void refreshRam(), 5000);
@@ -519,6 +558,22 @@ async function runAgentStep(step: number): Promise<void> {
     setBusy(false);
   }
 }
+
+el<HTMLButtonElement>("#saveWorkspace").addEventListener("click", async () => {
+  const path = workspaceInput.value.trim();
+
+  if (!path) {
+    workspaceStatus.textContent = "Enter an absolute existing project folder.";
+    return;
+  }
+
+  try {
+    await invoke("set_workspace", { path });
+    workspaceStatus.textContent = `Current workspace: ${path}`;
+  } catch (error) {
+    workspaceStatus.textContent = String(error);
+  }
+});
 
 providerSelect.addEventListener("change", () => applyProviderDefaults(true));
 modelInput.addEventListener("input", () => applyProviderDefaults());
