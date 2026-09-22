@@ -53,6 +53,8 @@ Available tools:
 - ui_expand_collapse: {"name":"exact visible name","automation_id":"optional exact automation id","window":"optional exact top-level window name","action":"expand|collapse"}
 - ui_send_keys: {"name":"exact visible name","automation_id":"optional exact automation id","window":"optional exact top-level window name","keys":"SendKeys sequence"}
 - pointer_click: {"x":123,"y":456,"button":"left|right|middle","clicks":1}
+- premiere_detect: {}
+- premiere_launch: {"project":"optional absolute .prproj path"}
 - workspace_scan: {"path":"absolute workspace path"}
 - search_text: {"path":"absolute workspace path","query":"text to find"}
 - replace_text: {"path":"absolute file path","old":"exact old text","new":"replacement text"}
@@ -76,6 +78,7 @@ Rules:
 - Treat git_push as a remote write and request it only after a successful commit when the user asked for a push.
 - Use run_project_task instead of raw shell commands when test/build/lint/typecheck is enough.
 - For browser/app UI work, prefer a Shuvi-managed browser when isolation matters, then use window-scoped semantic UI tools first. Use ui_toggle and ui_expand_collapse for supported controls. ui_send_keys is a high-risk fallback only after an exact element is focused and semantic patterns are unavailable. pointer_click is a final high-risk coordinate fallback: inspect_screen first, use coordinates only when semantic UI/DOM control cannot target the control, and never repeat a failed coordinate click blindly.
+- For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Prefer the dedicated Premiere UXP bridge for timeline/project editing as it becomes available; use UI/vision fallbacks only for features not exposed through the bridge.
 - For managed Edge/Chrome sessions, prefer browser_dom_read/browser_dom_click/browser_dom_set_value/browser_navigate over visual coordinate actions because DOM selectors are more reliable.
 - browser_dom_click and browser_dom_set_value require selectors that match exactly one element; refine with browser_dom_read when ambiguous.
 - stop_managed_process may only target process roots that Shuvi launched itself.
@@ -189,6 +192,8 @@ enum ToolAction {
     UiExpandCollapse { name: Option<String>, automation_id: Option<String>, window: Option<String>, action: String },
     UiSendKeys { name: Option<String>, automation_id: Option<String>, window: Option<String>, keys: String },
     PointerClick { x: i32, y: i32, button: String, clicks: u32 },
+    PremiereDetect,
+    PremiereLaunch { project: Option<String> },
     WorkspaceScan { path: String },
     SearchText { path: String, query: String },
     ReplaceText { path: String, old: String, new_value: String },
@@ -430,6 +435,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "ui_expand_collapse"
         | "ui_send_keys"
         | "pointer_click"
+        | "premiere_detect"
+        | "premiere_launch"
         | "workspace_scan"
         | "search_text"
         | "replace_text"
@@ -979,6 +986,53 @@ fn safe_web_url(value: String) -> Result<String, String> {
     Ok(value)
 }
 
+fn find_premiere_installations() -> Result<Vec<std::path::PathBuf>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut roots = Vec::new();
+        if let Some(root) = std::env::var_os("ProgramFiles").map(std::path::PathBuf::from) {
+            roots.push(root.join("Adobe"));
+        }
+        if let Some(root) = std::env::var_os("ProgramFiles(x86)").map(std::path::PathBuf::from) {
+            roots.push(root.join("Adobe"));
+        }
+
+        let mut matches = Vec::new();
+
+        for root in roots {
+            let Ok(entries) = fs::read_dir(&root) else {
+                continue;
+            };
+
+            for entry in entries.filter_map(Result::ok) {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !name.to_ascii_lowercase().starts_with("adobe premiere pro") {
+                    continue;
+                }
+
+                let executable = path.join("Adobe Premiere Pro.exe");
+                if executable.is_file() {
+                    matches.push(executable);
+                }
+            }
+        }
+
+        matches.sort();
+        matches.dedup();
+        return Ok(matches);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Premiere detection is currently implemented for Windows only.".into())
+    }
+}
+
 fn find_browser_executable(browser: &str) -> Result<std::path::PathBuf, String> {
     #[cfg(target_os = "windows")]
     {
@@ -1497,6 +1551,42 @@ fn stage_tool(
                 "Coordinate pointer click".to_string(),
                 format!("{button} click x={x}, y={y}, clicks={clicks}"),
                 RiskLevel::High,
+            )
+        }
+        "premiere_detect" => (
+            ToolAction::PremiereDetect,
+            "Detect Adobe Premiere Pro".to_string(),
+            "Inspect installed Adobe Premiere Pro versions and executable paths.".to_string(),
+            RiskLevel::Low,
+        ),
+        "premiere_launch" => {
+            let project = arg_optional_string(&proposal.arguments, "project")
+                .map(absolute_path)
+                .transpose()?;
+
+            if let Some(path) = &project {
+                let extension = Path::new(path)
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+
+                if extension != "prproj" {
+                    return Err("premiere_launch project must be an absolute .prproj file path.".into());
+                }
+                if !Path::new(path).is_file() {
+                    return Err("Premiere project file does not exist.".into());
+                }
+            }
+
+            (
+                ToolAction::PremiereLaunch { project: project.clone() },
+                "Launch Adobe Premiere Pro".to_string(),
+                project
+                    .as_deref()
+                    .map(|path| format!("Launch Premiere with project {path}"))
+                    .unwrap_or_else(|| "Launch the newest detected Premiere installation.".to_string()),
+                RiskLevel::Medium,
             )
         }
         "workspace_scan" => {
@@ -3182,6 +3272,63 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             {
                 Err("Coordinate pointer fallback is currently available on Windows only.".into())
             }
+        }
+        ToolAction::PremiereDetect => {
+            let installations = find_premiere_installations()?;
+
+            let stdout = if installations.is_empty() {
+                "No Adobe Premiere Pro installation was detected in the standard Adobe Program Files folders.".to_string()
+            } else {
+                installations
+                    .iter()
+                    .enumerate()
+                    .map(|(index, path)| format!("{}: {}", index + 1, path.display()))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout,
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereLaunch { project } => {
+            let installations = find_premiere_installations()?;
+            let executable = installations
+                .last()
+                .cloned()
+                .ok_or_else(|| "Adobe Premiere Pro was not found in the standard Adobe Program Files folders.".to_string())?;
+
+            let mut command = Command::new(&executable);
+            if let Some(project) = &project {
+                command.arg(project);
+            }
+
+            let child = command
+                .spawn()
+                .map_err(|error| format!("Could not launch Adobe Premiere Pro: {error}"))?;
+
+            let child_pid = child.id();
+            state
+                .managed_children
+                .lock()
+                .map_err(|_| "Managed-process state is unavailable.".to_string())?
+                .insert(child_pid);
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: format!(
+                    "Launched Adobe Premiere Pro from {} with root PID {}. Shuvi is tracking the managed process tree.",
+                    executable.display(),
+                    child_pid
+                ),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
         }
         ToolAction::WorkspaceScan { path } => {
             let root = Path::new(&path);
