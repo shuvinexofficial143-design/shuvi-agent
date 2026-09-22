@@ -32,10 +32,13 @@
 - [x] AI screen inspection through selected vision-capable provider
 - [x] open URL in system browser
 - [x] Windows UI Automation foundation: exact element find, invoke/select, set value
-- [ ] advanced UI Automation: window scoping, scroll, menus, keyboard fallback
-- [ ] browser automation beyond opening URLs
+- [x] advanced UI Automation foundation: exact top-level window scoping, focus and semantic scroll
+- [ ] advanced UI Automation extras: menus, keyboard fallback, broader control patterns
+- [x] browser/app semantic automation foundation through window-scoped UI Automation + vision fallback
+- [ ] dedicated Chromium DevTools browser control
 - [ ] fallback coordinate actions
-- [ ] failure recovery
+- [x] agent recovery guidance: refine selectors / inspect screen instead of blind retries
+- [ ] runtime retry/backoff and crash recovery
 
 ## v0.4 — coding mode
 - [x] workspace tree scan with common heavy folders ignored
