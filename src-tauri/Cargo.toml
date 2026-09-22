@@ -1,0 +1,22 @@
+[package]
+name = "shuvi"
+version = "0.1.0"
+description = "Shuvi permission-first AI computer agent"
+authors = ["Shuvi"]
+edition = "2021"
+
+[lib]
+name = "shuvi_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+keyring = { version = "3", features = ["windows-native"] }
+sysinfo = "0.33"
+uuid = { version = "1", features = ["v4"] }

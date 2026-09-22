@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.vite/
+*.log
+.env
+.env.*
+!.env.example
+src-tauri/target/
+target/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.key
+*.pem
+secrets/
