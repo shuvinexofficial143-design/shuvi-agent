@@ -58,3 +58,15 @@ Shuvi now separates visual understanding from semantic UI control:
 - `open_url` accepts only HTTP/HTTPS URLs and hands them to the operating-system browser.
 
 Visual coordinate clicking is intentionally not used while a semantic UI Automation target is available.
+
+
+## Coding mode
+
+A user may persist one default coding workspace in Shuvi's local app-data directory. The selected path is injected into the agent system context, so phrases such as "the project" resolve to that workspace.
+
+Coding writes remain permission-gated:
+
+- `apply_patch` validates a unified diff with `git apply --check` before applying it.
+- `run_project_task` only exposes named test/build/lint/typecheck tasks for Node.js and Rust projects.
+- `git_commit` stages all repository changes and creates a commit only after explicit approval.
+- `git_push` is classified high risk because it writes to a remote repository.
