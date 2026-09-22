@@ -25,7 +25,7 @@
 - [ ] scoped permission grants
 - [ ] per-task token/cost meter
 - [x] managed child-process RAM accounting
-- [ ] audit log persisted locally
+- [x] audit log persisted locally
 
 ## v0.3 — computer use
 - screenshot capture
