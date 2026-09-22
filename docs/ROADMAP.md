@@ -42,10 +42,10 @@
 - [x] workspace text search
 - [x] unambiguous exact-text file edit
 - [x] Git status and diff inspection
-- [ ] persistent workspace selection
-- [ ] structured patch/hunk editing
-- [ ] typed terminal/test loop
-- [ ] commit/push approval flow
+- [x] persistent workspace selection
+- [x] structured patch/hunk editing through validated Git apply
+- [x] typed Node.js/Rust test, build, lint and typecheck loop
+- [x] Git stage/commit and high-risk push approval flow
 
 ## v0.5 — installer
 - Windows installer
