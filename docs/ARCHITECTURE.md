@@ -103,3 +103,8 @@ CDP messages are sent to the local browser debugger only. The tool never exposes
 ## Provider retry policy
 
 Normal text-provider requests retry up to two additional times for connection/time-out failures, HTTP 429, and common transient 5xx responses. Backoff is short and bounded (350 ms then 700 ms), so Shuvi does not create an uncontrolled retry loop or duplicate computer actions.
+
+
+## Diagnostics
+
+Shuvi can export a local JSON diagnostics report containing runtime RAM metrics, selected workspace path, managed process/browser metadata and the latest local audit entries. Credential-store API keys and other secrets are deliberately excluded.
