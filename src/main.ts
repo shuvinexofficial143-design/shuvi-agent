@@ -7,7 +7,8 @@ import type {
   PendingAction,
   ProviderDescriptor,
   RuntimeStatus,
-  ToolProposal
+  ToolProposal,
+  AuditEntry
 } from "./types";
 
 const root = document.querySelector<HTMLDivElement>("#app");
@@ -78,6 +79,19 @@ root.innerHTML = `
         <button id="prepareAction" class="primary standalone">Prepare action</button>
         <div id="pendingAction" class="pending hidden"></div>
         <pre id="actionOutput" class="output hidden"></pre>
+      </div>
+
+      <div class="panel">
+        <div class="audit-head">
+          <div>
+            <h2>Recent activity</h2>
+            <p>Stored only in Shuvi's local app-data folder.</p>
+          </div>
+          <button id="refreshAudit">Refresh</button>
+        </div>
+        <div id="auditList" class="audit-list">
+          <p class="muted">No activity loaded yet.</p>
+        </div>
       </div>
     </section>
 
@@ -184,6 +198,39 @@ async function refreshRam(): Promise<void> {
   }
 }
 
+function formatAuditTime(timestampMs: number): string {
+  return new Date(timestampMs).toLocaleString();
+}
+
+async function refreshAudit(): Promise<void> {
+  const list = el<HTMLElement>("#auditList");
+
+  try {
+    const entries = await invoke<AuditEntry[]>("audit_log", { limit: 30 });
+
+    if (!entries.length) {
+      list.innerHTML = '<p class="muted">No approved or denied actions yet.</p>';
+      return;
+    }
+
+    list.innerHTML = entries.map(() => '<article class="audit-item"><div class="audit-meta"></div><pre></pre></article>').join("");
+
+    list.querySelectorAll<HTMLElement>(".audit-item").forEach((item, index) => {
+      const entry = entries[index];
+      const meta = item.querySelector<HTMLElement>(".audit-meta");
+      const detail = item.querySelector<HTMLElement>("pre");
+
+      if (meta) {
+        meta.textContent = `${formatAuditTime(entry.timestamp_ms)} · ${entry.event} · ${entry.tool} · ${entry.success ? "success" : "not completed"}`;
+      }
+
+      if (detail) detail.textContent = entry.detail;
+    });
+  } catch (error) {
+    list.textContent = `Could not load audit log: ${String(error)}`;
+  }
+}
+
 async function boot(): Promise<void> {
   try {
     providers = await invoke<ProviderDescriptor[]>("list_providers");
@@ -193,6 +240,7 @@ async function boot(): Promise<void> {
 
     loadSavedProvider();
     await refreshRam();
+    await refreshAudit();
     window.setInterval(() => void refreshRam(), 5000);
   } catch (error) {
     settingsStatus.textContent = String(error);
@@ -329,6 +377,7 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
 
       try {
         const result = await invoke<ActionResult>("execute_action", { actionId });
+        void refreshAudit();
         messages.push(toolResultMessage(result));
         await runAgentStep(step + 1);
       } catch (error) {
@@ -355,6 +404,7 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
 
       try {
         await invoke("deny_action", { actionId });
+        void refreshAudit();
       } finally {
         messages.push({
           role: "user",
@@ -511,6 +561,7 @@ function renderManualPending(): void {
 
       try {
         const result = await invoke<ActionResult>("execute_action", { actionId });
+        void refreshAudit();
         output.textContent = [
           `tool: ${result.tool}`,
           `exit: ${result.exit_code ?? "unknown"}`,
@@ -534,9 +585,14 @@ function renderManualPending(): void {
       pendingAction = null;
       renderManualPending();
       await invoke("deny_action", { actionId });
+      void refreshAudit();
     };
   }
 }
+
+el<HTMLButtonElement>("#refreshAudit").addEventListener("click", () => {
+  void refreshAudit();
+});
 
 document.querySelectorAll<HTMLButtonElement>(".nav").forEach((button) => {
   button.addEventListener("click", () => {
