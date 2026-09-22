@@ -452,6 +452,7 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
         proposal.tool === "list_directory" ||
         proposal.tool === "ui_find" ||
         proposal.tool === "list_processes" ||
+        proposal.tool === "browser_dom_read" ||
         proposal.tool === "workspace_scan" ||
         proposal.tool === "search_text" ||
         proposal.tool === "git_status" ||
