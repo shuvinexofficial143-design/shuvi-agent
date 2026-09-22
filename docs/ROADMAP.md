@@ -63,8 +63,10 @@
 
 
 ## v0.6 — Premiere Pro professional editing
-- [ ] Shuvi Premiere UXP bridge plugin
-- [ ] detect Premiere version / active project / active sequence
+- [x] Premiere UXP bridge scaffold + dockable Shuvi panel
+- [x] Windows Premiere installation detection + typed launch
+- [x] read-only active project / active sequence inspection scaffold
+- [ ] live Shuvi desktop ↔ Premiere UXP command bridge
 - [ ] project + bin + media import management
 - [ ] sequence creation and timeline track inspection
 - [ ] professional trim/ripple/rolling edit operations
