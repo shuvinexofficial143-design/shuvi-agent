@@ -34,7 +34,7 @@
 - [x] open URL in system browser
 - [x] Windows UI Automation foundation: exact element find, invoke/select, set value
 - [x] advanced UI Automation foundation: exact top-level window scoping, focus and semantic scroll
-- [ ] advanced UI Automation extras: menus, keyboard fallback, broader control patterns
+- [x] advanced UI Automation extras: toggle, expand/collapse menus and high-risk exact-target keyboard fallback
 - [x] browser/app semantic automation foundation through window-scoped UI Automation + vision fallback
 - [x] isolated managed Edge/Chrome browser sessions with dedicated profile and RAM tracking
 - [x] dedicated Chromium DevTools DOM read/click/value/navigation control
