@@ -27,6 +27,37 @@ let sessionTotalTokens = 0;
 const sessionAllowedTools = new Set<string>();
 
 root.innerHTML = `
+<div id="onboarding" class="onboarding hidden">
+  <div class="onboarding-card">
+    <div class="orb onboarding-orb">S</div>
+    <h1>Set up Shuvi</h1>
+    <p>Choose the AI provider Shuvi should use. Your API key is stored in the operating-system credential store.</p>
+
+    <label>
+      Provider
+      <select id="onboardingProvider"></select>
+    </label>
+
+    <label>
+      Model
+      <input id="onboardingModel" autocomplete="off" />
+    </label>
+
+    <label id="onboardingBaseUrlLabel" class="hidden">
+      Base URL
+      <input id="onboardingBaseUrl" placeholder="https://example.com/v1/chat/completions" autocomplete="off" />
+    </label>
+
+    <label id="onboardingKeyLabel">
+      API key
+      <input id="onboardingKey" type="password" placeholder="Paste provider API key" autocomplete="off" />
+    </label>
+
+    <button id="completeOnboarding" class="primary onboarding-button">Start using Shuvi</button>
+    <p id="onboardingStatus" class="muted"></p>
+  </div>
+</div>
+
 <div class="shell">
   <aside class="sidebar">
     <div class="brand">
@@ -173,6 +204,14 @@ const activeProvider = el<HTMLElement>("#activeProvider");
 const chatPermission = el<HTMLElement>("#chatPermission");
 const workspaceInput = el<HTMLInputElement>("#workspaceInput");
 const workspaceStatus = el<HTMLElement>("#workspaceStatus");
+const onboarding = el<HTMLElement>("#onboarding");
+const onboardingProvider = el<HTMLSelectElement>("#onboardingProvider");
+const onboardingModel = el<HTMLInputElement>("#onboardingModel");
+const onboardingBaseUrl = el<HTMLInputElement>("#onboardingBaseUrl");
+const onboardingBaseUrlLabel = el<HTMLElement>("#onboardingBaseUrlLabel");
+const onboardingKey = el<HTMLInputElement>("#onboardingKey");
+const onboardingKeyLabel = el<HTMLElement>("#onboardingKeyLabel");
+const onboardingStatus = el<HTMLElement>("#onboardingStatus");
 
 function selectedProvider(): ProviderDescriptor | undefined {
   return providers.find((provider) => provider.id === providerSelect.value);
@@ -206,6 +245,43 @@ function saveProviderSettings(): void {
   localStorage.setItem("shuvi.baseUrl", baseUrlInput.value.trim());
   applyProviderDefaults();
   settingsStatus.textContent = "Provider settings saved.";
+}
+
+function selectedOnboardingProvider(): ProviderDescriptor | undefined {
+  return providers.find((provider) => provider.id === onboardingProvider.value);
+}
+
+function syncOnboardingProvider(forceModel = false): void {
+  const provider = selectedOnboardingProvider();
+  if (!provider) return;
+
+  if (forceModel || !onboardingModel.value) {
+    onboardingModel.value = provider.default_model;
+  }
+
+  onboardingKeyLabel.classList.toggle("hidden", !provider.api_key_required);
+  onboardingBaseUrlLabel.classList.toggle("hidden", !provider.custom_base_url);
+
+  if (provider.id === "ollama" && !onboardingBaseUrl.value) {
+    onboardingBaseUrl.value = "http://localhost:11434/v1/chat/completions";
+  }
+}
+
+function prepareOnboarding(): void {
+  onboardingProvider.innerHTML = providers
+    .map((provider) => `<option value="${provider.id}">${provider.name}</option>`)
+    .join("");
+
+  const savedProvider = localStorage.getItem("shuvi.provider");
+  if (savedProvider && providers.some((provider) => provider.id === savedProvider)) {
+    onboardingProvider.value = savedProvider;
+  }
+
+  syncOnboardingProvider(true);
+
+  if (localStorage.getItem("shuvi.onboarded") !== "1") {
+    onboarding.classList.remove("hidden");
+  }
 }
 
 async function refreshRam(): Promise<void> {
@@ -288,6 +364,7 @@ async function boot(): Promise<void> {
       .join("");
 
     loadSavedProvider();
+    prepareOnboarding();
     await loadWorkspace();
     await refreshRam();
     await refreshAudit();
@@ -575,6 +652,56 @@ async function runAgentStep(step: number): Promise<void> {
     setBusy(false);
   }
 }
+
+onboardingProvider.addEventListener("change", () => {
+  onboardingKey.value = "";
+  onboardingBaseUrl.value = "";
+  syncOnboardingProvider(true);
+});
+
+el<HTMLButtonElement>("#completeOnboarding").addEventListener("click", async () => {
+  const provider = selectedOnboardingProvider();
+  if (!provider) return;
+
+  const model = onboardingModel.value.trim() || provider.default_model;
+  const baseUrl = onboardingBaseUrl.value.trim();
+  const apiKey = onboardingKey.value.trim();
+
+  if (provider.custom_base_url && provider.id === "custom" && !baseUrl) {
+    onboardingStatus.textContent = "Custom provider needs a base URL.";
+    return;
+  }
+
+  if (provider.api_key_required && !apiKey) {
+    onboardingStatus.textContent = "Enter the provider API key.";
+    return;
+  }
+
+  onboardingStatus.textContent = "Saving provider…";
+
+  try {
+    if (provider.api_key_required) {
+      await invoke("save_api_key", { provider: provider.id, apiKey });
+    }
+
+    localStorage.setItem("shuvi.provider", provider.id);
+    localStorage.setItem("shuvi.model", model);
+    localStorage.setItem("shuvi.baseUrl", baseUrl);
+    localStorage.setItem("shuvi.onboarded", "1");
+
+    providerSelect.value = provider.id;
+    modelInput.value = model;
+    baseUrlInput.value = baseUrl;
+    onboardingKey.value = "";
+    applyProviderDefaults();
+
+    onboarding.classList.add("hidden");
+    onboardingStatus.textContent = "";
+    settingsStatus.textContent = `${provider.name} is ready.`;
+  } catch (error) {
+    onboardingStatus.textContent = `Setup failed: ${String(error)}`;
+  }
+});
 
 el<HTMLButtonElement>("#exportDiagnostics").addEventListener("click", async () => {
   const status = el<HTMLElement>("#diagnosticsStatus");
