@@ -93,6 +93,16 @@ struct ChatMessage {
     content: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SessionCheckpoint {
+    version: u32,
+    updated_at_ms: u64,
+    provider: String,
+    model: String,
+    base_url: Option<String>,
+    messages: Vec<ChatMessage>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct ChatInput {
     provider: String,
@@ -2106,6 +2116,89 @@ fn project_task_command(path: &str, task: &str) -> Result<(String, Vec<String>),
     Err("Shuvi currently supports typed project tasks for Node.js and Rust projects.".into())
 }
 
+fn session_checkpoint_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not resolve app data directory: {error}"))?;
+
+    fs::create_dir_all(&dir)
+        .map_err(|error| format!("Could not create Shuvi data directory: {error}"))?;
+
+    Ok(dir.join("session-checkpoint.json"))
+}
+
+fn write_session_checkpoint(
+    app: &AppHandle,
+    mut checkpoint: SessionCheckpoint,
+) -> Result<(), String> {
+    if checkpoint.messages.len() > 120 {
+        let keep_from = checkpoint.messages.len().saturating_sub(120);
+        checkpoint.messages = checkpoint.messages.split_off(keep_from);
+    }
+
+    checkpoint.version = 1;
+    checkpoint.updated_at_ms = now_ms();
+
+    let content = serde_json::to_vec_pretty(&checkpoint)
+        .map_err(|error| format!("Could not encode session checkpoint: {error}"))?;
+
+    if content.len() > 2 * 1024 * 1024 {
+        return Err("Session checkpoint is larger than Shuvi's 2 MB safety limit.".into());
+    }
+
+    let path = session_checkpoint_path(app)?;
+    let temp = path.with_extension("json.tmp");
+
+    fs::write(&temp, &content)
+        .map_err(|error| format!("Could not write temporary session checkpoint: {error}"))?;
+
+    if path.exists() {
+        let _ = fs::remove_file(&path);
+    }
+
+    fs::rename(&temp, &path)
+        .map_err(|error| format!("Could not finalize session checkpoint: {error}"))
+}
+
+fn read_session_checkpoint(app: &AppHandle) -> Result<Option<SessionCheckpoint>, String> {
+    let path = session_checkpoint_path(app)?;
+
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let metadata = fs::metadata(&path)
+        .map_err(|error| format!("Could not inspect session checkpoint: {error}"))?;
+
+    if metadata.len() > 2 * 1024 * 1024 {
+        return Err("Saved session checkpoint is unexpectedly large.".into());
+    }
+
+    let content = fs::read(&path)
+        .map_err(|error| format!("Could not read session checkpoint: {error}"))?;
+
+    let checkpoint: SessionCheckpoint = serde_json::from_slice(&content)
+        .map_err(|error| format!("Saved session checkpoint is invalid: {error}"))?;
+
+    if checkpoint.version != 1 {
+        return Err("Saved session checkpoint uses an unsupported version.".into());
+    }
+
+    Ok(Some(checkpoint))
+}
+
+fn remove_session_checkpoint(app: &AppHandle) -> Result<(), String> {
+    let path = session_checkpoint_path(app)?;
+
+    if path.exists() {
+        fs::remove_file(path)
+            .map_err(|error| format!("Could not clear session checkpoint: {error}"))?;
+    }
+
+    Ok(())
+}
+
 fn workspace_config_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     let dir = app
         .path()
@@ -3202,6 +3295,24 @@ fn get_workspace(app: AppHandle) -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
+fn save_session_checkpoint(
+    checkpoint: SessionCheckpoint,
+    app: AppHandle,
+) -> Result<(), String> {
+    write_session_checkpoint(&app, checkpoint)
+}
+
+#[tauri::command]
+fn load_session_checkpoint(app: AppHandle) -> Result<Option<SessionCheckpoint>, String> {
+    read_session_checkpoint(&app)
+}
+
+#[tauri::command]
+fn clear_session_checkpoint(app: AppHandle) -> Result<(), String> {
+    remove_session_checkpoint(&app)
+}
+
+#[tauri::command]
 fn export_diagnostics(
     app: AppHandle,
     state: State<'_, ActionState>,
@@ -3283,6 +3394,9 @@ pub fn run() {
             audit_log,
             set_workspace,
             get_workspace,
+            save_session_checkpoint,
+            load_session_checkpoint,
+            clear_session_checkpoint,
             export_diagnostics,
         ])
         .run(tauri::generate_context!())
