@@ -128,3 +128,69 @@ textarea:focus, input:focus, select:focus { border-color: #59657a; }
   .shell { grid-template-columns: 190px 1fr; }
   .sidebar { width: 190px; }
 }
+
+.ram-children {
+  display: block;
+  margin-top: 4px;
+}
+
+.stop-button {
+  min-width: 72px;
+  border: 1px solid #5c3438 !important;
+  background: #241518 !important;
+  color: #efb0b3 !important;
+}
+
+.audit-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.audit-head h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.audit-head p {
+  margin: 5px 0 0;
+  color: #747f92;
+  font-size: 12px;
+}
+
+.audit-head button {
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid #303746;
+  border-radius: 9px;
+  background: #171c25;
+  color: #dce2eb;
+}
+
+.audit-list {
+  display: grid;
+  gap: 10px;
+}
+
+.audit-item {
+  border: 1px solid #222834;
+  border-radius: 10px;
+  background: #0b0f15;
+  padding: 12px;
+}
+
+.audit-meta {
+  color: #8994a7;
+  font-size: 11px;
+  margin-bottom: 8px;
+}
+
+.audit-item pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #c8d0dd;
+  font-size: 12px;
+}
