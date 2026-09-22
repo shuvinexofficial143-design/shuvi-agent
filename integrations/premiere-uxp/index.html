@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Shuvi Premiere Bridge</title>
+    <style>
+      body {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 16px;
+        font-family: system-ui, sans-serif;
+        color: var(--uxp-host-text-color-secondary, #f3f3f3);
+        background: var(--uxp-host-background-color, #202020);
+      }
+      h1 { margin: 0 0 6px; font-size: 18px; }
+      p { line-height: 1.45; opacity: .8; }
+      button {
+        width: 100%;
+        margin: 12px 0;
+        min-height: 34px;
+      }
+      pre {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        padding: 10px;
+        border: 1px solid #555;
+        border-radius: 6px;
+        min-height: 110px;
+      }
+      .muted { font-size: 12px; opacity: .65; }
+    </style>
+  </head>
+  <body>
+    <h1>Shuvi Premiere Bridge</h1>
+    <p>Read-only development bridge foundation for Premiere Pro.</p>
+    <button id="inspect">Inspect active project / sequence</button>
+    <pre id="output">Bridge loaded. No write actions are enabled yet.</pre>
+    <p class="muted">Write/edit operations will be added behind Shuvi's permission system.</p>
+    <script src="main.js"></script>
+  </body>
+</html>
