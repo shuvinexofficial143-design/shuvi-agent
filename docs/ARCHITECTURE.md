@@ -108,3 +108,8 @@ Normal text-provider requests retry up to two additional times for connection/ti
 ## Diagnostics
 
 Shuvi can export a local JSON diagnostics report containing runtime RAM metrics, selected workspace path, managed process/browser metadata and the latest local audit entries. Credential-store API keys and other secrets are deliberately excluded.
+
+
+## First-run setup
+
+On first launch, Shuvi opens a local onboarding screen that asks the user to choose a provider and model, enter the required API key, and configure a custom endpoint when applicable. Provider secrets are written through the existing OS credential-store command; they are never saved into browser localStorage.
