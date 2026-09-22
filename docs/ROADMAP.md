@@ -24,7 +24,7 @@
 - [ ] task cancellation while a provider request/tool is running
 - [ ] scoped permission grants
 - [ ] per-task token/cost meter
-- [ ] managed child-process RAM accounting
+- [x] managed child-process RAM accounting
 - [ ] audit log persisted locally
 
 ## v0.3 — computer use
