@@ -194,3 +194,10 @@ textarea:focus, input:focus, select:focus { border-color: #59657a; }
   color: #c8d0dd;
   font-size: 12px;
 }
+
+.workspace-note {
+  margin: -4px 0 0;
+  color: #667287;
+  font-size: 12px;
+  line-height: 1.5;
+}
