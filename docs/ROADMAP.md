@@ -41,7 +41,7 @@
 - [ ] fallback coordinate actions
 - [x] agent recovery guidance: refine selectors / inspect screen instead of blind retries
 - [x] transient provider retry/backoff for timeouts, connection errors, 429 and common 5xx responses
-- [ ] crash recovery / resumable tasks
+- [x] crash recovery with atomic local task checkpoints + explicit resume/discard
 
 ## v0.4 — coding mode
 - [x] workspace tree scan with common heavy folders ignored
