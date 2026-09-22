@@ -100,6 +100,10 @@ root.innerHTML = `
         <div id="auditList" class="audit-list">
           <p class="muted">No activity loaded yet.</p>
         </div>
+        <div class="diagnostics-row">
+          <button id="exportDiagnostics">Export diagnostics</button>
+          <span id="diagnosticsStatus" class="muted"></span>
+        </div>
       </div>
     </section>
 
@@ -571,6 +575,18 @@ async function runAgentStep(step: number): Promise<void> {
     setBusy(false);
   }
 }
+
+el<HTMLButtonElement>("#exportDiagnostics").addEventListener("click", async () => {
+  const status = el<HTMLElement>("#diagnosticsStatus");
+  status.textContent = "Creating diagnostics…";
+
+  try {
+    const path = await invoke<string>("export_diagnostics");
+    status.textContent = `Saved locally: ${path}`;
+  } catch (error) {
+    status.textContent = `Diagnostics export failed: ${String(error)}`;
+  }
+});
 
 el<HTMLButtonElement>("#saveWorkspace").addEventListener("click", async () => {
   const path = workspaceInput.value.trim();
