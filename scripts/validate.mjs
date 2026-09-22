@@ -21,7 +21,11 @@ for (const path of [
   "src-tauri/Cargo.toml",
   "src-tauri/tauri.conf.json",
   "src-tauri/capabilities/default.json",
-  "src-tauri/src/lib.rs"
+  "integrations/premiere-uxp/manifest.json",
+  "src-tauri/src/lib.rs",
+  "integrations/premiere-uxp/manifest.json",
+  "integrations/premiere-uxp/index.html",
+  "integrations/premiere-uxp/main.js"
 ]) {
   try {
     statSync(join(root, path));
@@ -42,6 +46,17 @@ for (const path of [
   } catch (error) {
     fail("Invalid JSON in " + path + ": " + error.message);
   }
+}
+
+const premiereManifest = JSON.parse(read("integrations/premiere-uxp/manifest.json"));
+if (premiereManifest?.manifestVersion !== 5) fail("Premiere UXP manifestVersion must be 5.");
+if (premiereManifest?.host?.app !== "premierepro") fail("Premiere UXP host must target premierepro.");
+if (premiereManifest?.host?.minVersion !== "25.6.0") fail("Premiere UXP minimum host version must be 25.6.0.");
+if (!Array.isArray(premiereManifest?.entrypoints) ||
+    !premiereManifest.entrypoints.some((entry) => entry?.id === "shuvi-premiere-panel" && entry?.type === "panel")) {
+  fail("Premiere UXP Shuvi panel entrypoint is missing.");
+} else {
+  ok("Premiere UXP bridge scaffold checked.");
 }
 
 const tauri = JSON.parse(read("src-tauri/tauri.conf.json"));
