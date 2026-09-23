@@ -70,7 +70,7 @@
 - [x] active-project root item inspection + permission-gated media import
 - [ ] bin creation/move/relink project organization
 - [x] sequence-from-media creation + timeline track/clip inspection
-- [x] deterministic clip trim foundation (video/audio, exact track + clip index)\n- [ ] ripple/rolling edit operations
+- [x] deterministic clip trim foundation (video/audio, exact track + clip index)\n- [x] exact clip delete + ripple-delete foundation\n- [ ] rolling edit operations
 - [x] native insert/overwrite edit foundation with automatic .prproj backup
 - [x] same-track clip move + insert/overwrite foundations\n- [ ] vertical track moves, nest and multicam workflows
 - [ ] transitions, effects and effect-parameter control
@@ -79,7 +79,7 @@
 - [ ] audio gain/mix/ducking and track-level workflows
 - [ ] captions/subtitles and graphics workflows
 - [ ] proxies and large-project media relink workflows
-- [ ] export presets / Media Encoder handoff
+- [x] active-sequence export + optional preset + Media Encoder queue handoff foundation
 - [ ] preview-analyze-correct editing loop using Shuvi vision
-- [ ] edit checkpoints/versioned project backups before major changes
+- [x] timestamped .prproj backups before major sequence/timeline changes
 - [ ] reusable editing recipes for reels, long-form, ads and cinematic edits
