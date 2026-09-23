@@ -70,6 +70,7 @@ Available tools:
 - premiere_trim_clip: {"kind":"video|audio","track":0,"clip_index":0,"start_seconds":0.0,"end_seconds":5.0}
 - premiere_move_clip: {"kind":"video|audio","track":0,"clip_index":0,"delta_seconds":1.5}
 - premiere_delete_clip: {"kind":"video|audio","track":0,"clip_index":0,"ripple":true}
+- premiere_export_sequence: {"output":"absolute output media path","preset":"optional absolute .epr preset path","queue_to_ame":false}
 - premiere_save_project: {}
 - workspace_scan: {"path":"absolute workspace path"}
 - search_text: {"path":"absolute workspace path","query":"text to find"}
@@ -94,7 +95,7 @@ Rules:
 - Treat git_push as a remote write and request it only after a successful commit when the user asked for a push.
 - Use run_project_task instead of raw shell commands when test/build/lint/typecheck is enough.
 - For browser/app UI work, prefer a Shuvi-managed browser when isolation matters, then use window-scoped semantic UI tools first. Use ui_toggle and ui_expand_collapse for supported controls. ui_send_keys is a high-risk fallback only after an exact element is focused and semantic patterns are unavailable. pointer_click is a final high-risk coordinate fallback: inspect_screen first, use coordinates only when semantic UI/DOM control cannot target the control, and never repeat a failed coordinate click blindly.
-- For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_timeline/premiere_list_items for inspection and premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media/premiere_insert_media/premiere_save_project for native editing. premiere_insert_media, premiere_trim_clip, premiere_move_clip and premiere_delete_clip are high risk because they change the timeline; inspect the timeline first when practical. Use UI/vision fallbacks only for features not exposed through the bridge. Major sequence creation and timeline insert/overwrite actions automatically save and copy the current .prproj into a sibling 'Shuvi Backups' folder before editing when a normal project path is available.
+- For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_timeline/premiere_list_items for inspection and premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media/premiere_insert_media/premiere_save_project for native editing. premiere_insert_media, premiere_trim_clip, premiere_move_clip and premiere_delete_clip are high risk because they change the timeline; premiere_export_sequence is high risk because it writes media and may start encoding; inspect the timeline first when practical. Use UI/vision fallbacks only for features not exposed through the bridge. Major sequence creation and timeline insert/overwrite actions automatically save and copy the current .prproj into a sibling 'Shuvi Backups' folder before editing when a normal project path is available.
 - For managed Edge/Chrome sessions, prefer browser_dom_read/browser_dom_click/browser_dom_set_value/browser_navigate over visual coordinate actions because DOM selectors are more reliable.
 - browser_dom_click and browser_dom_set_value require selectors that match exactly one element; refine with browser_dom_read when ambiguous.
 - stop_managed_process may only target process roots that Shuvi launched itself.
@@ -222,6 +223,7 @@ enum ToolAction {
     PremiereTrimClip { kind: String, track: u32, clip_index: u32, start_seconds: Option<f64>, end_seconds: Option<f64> },
     PremiereMoveClip { kind: String, track: u32, clip_index: u32, delta_seconds: f64 },
     PremiereDeleteClip { kind: String, track: u32, clip_index: u32, ripple: bool },
+    PremiereExportSequence { output: String, preset: Option<String>, queue_to_ame: bool },
     PremiereSaveProject,
     WorkspaceScan { path: String },
     SearchText { path: String, query: String },
@@ -483,6 +485,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_trim_clip"
         | "premiere_move_clip"
         | "premiere_delete_clip"
+        | "premiere_export_sequence"
         | "premiere_save_project"
         | "workspace_scan"
         | "search_text"
@@ -1870,6 +1873,47 @@ fn stage_tool(
                 },
                 if ripple { "Ripple-delete Premiere clip".to_string() } else { "Delete Premiere clip".to_string() },
                 format!("Delete {kind} track {track}, clip #{clip_index}, ripple={ripple}"),
+                RiskLevel::High,
+            )
+        }
+        "premiere_export_sequence" => {
+            let output = absolute_path(arg_string(&proposal.arguments, "output")?)?;
+            let output_parent = Path::new(&output)
+                .parent()
+                .ok_or_else(|| "Premiere export output path has no parent directory.".to_string())?;
+            if !output_parent.is_dir() {
+                return Err("Premiere export output parent directory does not exist.".into());
+            }
+
+            let preset = arg_optional_string(&proposal.arguments, "preset")
+                .map(absolute_path)
+                .transpose()?;
+
+            if let Some(path) = &preset {
+                if !Path::new(path).is_file() {
+                    return Err("Premiere export preset file does not exist.".into());
+                }
+            }
+
+            let queue_to_ame = proposal.arguments
+                .get("queue_to_ame")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+
+            (
+                ToolAction::PremiereExportSequence {
+                    output: output.clone(),
+                    preset: preset.clone(),
+                    queue_to_ame,
+                },
+                if queue_to_ame {
+                    "Queue Premiere export to Media Encoder".to_string()
+                } else {
+                    "Export active Premiere sequence".to_string()
+                },
+                format!(
+                    "Export active sequence to {output}; preset={preset:?}; queue_to_ame={queue_to_ame}"
+                ),
                 RiskLevel::High,
             )
         }
@@ -3897,6 +3941,24 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "backup": backup,
                     "result": value
                 })).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereExportSequence { output, preset, queue_to_ame } => {
+            let value = state.premiere_bridge.request(
+                "export_sequence",
+                json!({
+                    "output": output,
+                    "preset": preset,
+                    "queueToAme": queue_to_ame
+                }),
+                Duration::from_secs(45),
+            ).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
                 stderr: String::new(),
                 exit_code: Some(0),
             })
