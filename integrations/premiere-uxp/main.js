@@ -641,6 +641,77 @@ async function trimClip(argumentsValue) {
   };
 }
 
+async function moveClip(argumentsValue) {
+  const kind =
+    typeof argumentsValue?.kind === "string"
+      ? argumentsValue.kind.toLowerCase()
+      : "";
+  const trackIndex = Number(argumentsValue?.track ?? 0);
+  const clipIndex = Number(argumentsValue?.clipIndex ?? 0);
+  const deltaSeconds = Number(argumentsValue?.deltaSeconds);
+
+  if (kind !== "video" && kind !== "audio") {
+    throw new Error("Move kind must be video or audio.");
+  }
+  if (!Number.isInteger(trackIndex) || trackIndex < 0) {
+    throw new Error("Track index must be a non-negative integer.");
+  }
+  if (!Number.isInteger(clipIndex) || clipIndex < 0) {
+    throw new Error("Clip index must be a non-negative integer.");
+  }
+  if (!Number.isFinite(deltaSeconds) || deltaSeconds === 0 || Math.abs(deltaSeconds) > 36000) {
+    throw new Error("deltaSeconds must be finite, non-zero and within ±10 hours.");
+  }
+
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+
+  const track =
+    kind === "video"
+      ? await sequence.getVideoTrack(trackIndex)
+      : await sequence.getAudioTrack(trackIndex);
+  if (!track) throw new Error("Requested Premiere track was not found.");
+
+  const items = await sortedClipItems(track);
+  const item = items[clipIndex];
+  if (!item) {
+    throw new Error(
+      "Clip index " + clipIndex + " was not found on " + kind + " track " + trackIndex + "."
+    );
+  }
+
+  const before = await item.getStartTime();
+  const nextStart = (before?.seconds ?? 0) + deltaSeconds;
+  if (nextStart < 0) {
+    throw new Error("Move would place the clip before sequence time zero.");
+  }
+
+  let transactionSucceeded = false;
+  project.lockedAccess(() => {
+    const action = item.createMoveAction(
+      premiere.TickTime.createWithSeconds(deltaSeconds)
+    );
+    transactionSucceeded = project.executeTransaction((compoundAction) => {
+      compoundAction.addAction(action);
+    }, "Shuvi: Move Clip");
+  });
+
+  if (!transactionSucceeded) {
+    throw new Error("Premiere rejected the clip move transaction.");
+  }
+
+  return {
+    moved: true,
+    kind,
+    track: trackIndex,
+    clipIndex,
+    deltaSeconds,
+    previousStartSeconds: before?.seconds ?? null,
+    newStartSeconds: nextStart
+  };
+}
+
 async function executeCommand(command) {
   switch (command.action) {
     case "inspect_context":
@@ -661,6 +732,8 @@ async function executeCommand(command) {
       return await insertMedia(command.arguments || {});
     case "trim_clip":
       return await trimClip(command.arguments || {});
+    case "move_clip":
+      return await moveClip(command.arguments || {});
     default:
       throw new Error("Unsupported Shuvi Premiere command: " + command.action);
   }
