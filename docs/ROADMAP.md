@@ -68,7 +68,7 @@
 - [x] read-only active project / active sequence inspection scaffold
 - [x] authenticated localhost Shuvi desktop ↔ Premiere UXP command bridge + pairing UI
 - [x] active-project root item inspection + permission-gated media import
-- [ ] bin creation/move/relink project organization
+- [x] recursive project tree + bin creation + rename/move + media relink foundation
 - [x] sequence-from-media creation + timeline track/clip inspection
 - [x] deterministic clip trim foundation (video/audio, exact track + clip index)\n- [x] exact clip delete + ripple-delete foundation\n- [ ] rolling edit operations
 - [x] native insert/overwrite edit foundation with automatic .prproj backup
@@ -77,8 +77,8 @@
 - [x] generic effect-parameter keyframe foundation\n- [ ] transform recipes, masks and speed changes
 - [ ] Lumetri color workflow and reusable grading presets
 - [x] audio effect discovery/add + parameter inspection/static value/keyframe foundation\n- [x] track mute control\n- [ ] gain/mix/ducking recipes and track-level automation
-- [ ] captions/subtitles and graphics workflows
-- [ ] proxies and large-project media relink workflows
+- [x] MOGRT insertion from file path or Creative Cloud Library\n- [ ] captions/subtitles and editable graphics parameter workflows
+- [x] proxy attach + offline/relink inspection foundation\n- [ ] batch proxy/relink recipes for large projects
 - [x] active-sequence export + optional preset + Media Encoder queue handoff foundation
 - [ ] preview-analyze-correct editing loop using Shuvi vision
 - [x] timestamped .prproj backups before major sequence/timeline changes
