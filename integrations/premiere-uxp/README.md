@@ -86,3 +86,13 @@ Plans always return applied=false and executable=false. Pitch preservation and r
 Every operation using the shared major-edit backup helper now fails closed when a saved, non-empty local .prproj cannot be backed up. The helper checks project identity/path before and after saving, streams a uniquely named copy, flushes it, detects size/mtime changes during copying and writes a versioned checkpoint.json sidecar. Existing action results retain the backup path string. A save itself may persist unsaved project changes; the subsequent timeline edit is not sent when checkpoint creation fails.
 
 Limits: 2 GiB per source project, 1,000 .prproj backups or 20 GiB per backup folder, and a 10,000-entry scan bound. Reaching a limit stops editing and asks the user to review/archive backups; no existing backup is automatically deleted. Backup folders must resolve directly beside the project. These checks reduce project-switch risk during saving, but do not lock Premiere's active project across the later command dispatch; a complete project/sequence identity guard remains pending.
+
+## Bridge lifecycle limits
+
+The bridge still binds only 127.0.0.1:17361 and keeps the existing command/result JSON fields. Both desktop and UXP have explicit native action allowlists checked for consistency. Pairing rotates on start and expires after eight hours; restart/pair again after expiry. Restart/stop clears outstanding commands.
+
+At most 32 commands may be outstanding, including dispatched work and unconsumed results. Only an issued, dispatched, unexpired ID can complete once. Unknown, early, duplicate and late results receive HTTP 409. Cancelling/dropping a desktop request removes its queue entry; an edit already dispatched into Premiere cannot be rolled back or interrupted by this mechanism. Timeout/reconnect errors therefore require inspection before retrying.
+
+Limits: 16 simultaneous client handlers; 16 KiB headers; 256 KiB HTTP bodies/responses; 240 KiB desktop commands and panel result bodies; 2-second request read deadline/socket write timeout; command deadlines capped at 300 seconds. Content-Length must be valid and unambiguous; chunked and truncated requests are rejected. Oversized/unserializable results return a small uncertainty error. The panel snapshots the token for each command and never posts a contradictory execution failure merely because delivery failed.
+
+Node transport mocks cover delivery loss, re-pair/unpair and Unicode/cyclic payloads. Rust queue/parser/token tests are included in Windows CI; local execution and real Premiere reconnect/timeout verification remain pending.

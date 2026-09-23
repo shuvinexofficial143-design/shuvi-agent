@@ -1,8 +1,7 @@
 use std::{
-    collections::{HashMap, VecDeque},
     io::{Read, Write},
     net::{TcpListener, TcpStream},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}},
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -10,6 +9,69 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
+use super::premiere_bridge_queue::CommandQueue;
+
+pub const ALLOWED_ACTIONS: &[&str] = &[
+    "inspect_clip_speed",
+    "plan_clip_speed",
+    "inspect_context",
+    "list_root_items",
+    "project_tree",
+    "create_bin",
+    "rename_project_item",
+    "move_project_item",
+    "relink_media",
+    "set_source_inout",
+    "clear_source_inout",
+    "create_subclip",
+    "list_transcription_languages",
+    "transcribe_item",
+    "export_transcript",
+    "import_transcript",
+    "attach_proxy",
+    "insert_mogrt_path",
+    "insert_mogrt_library",
+    "import_media",
+    "create_sequence_from_media",
+    "create_subsequence",
+    "insert_project_item",
+    "save_project",
+    "inspect_timeline",
+    "caption_tracks",
+    "set_caption_track_name",
+    "set_caption_track_mute",
+    "set_playhead",
+    "set_track_mute",
+    "set_clip_enabled",
+    "list_video_transitions",
+    "add_video_transition",
+    "list_video_effects",
+    "inspect_clip_effects",
+    "add_video_effect",
+    "set_effect_param",
+    "set_video_param_named",
+    "add_effect_keyframe",
+    "add_video_keyframe_named",
+    "apply_video_recipe",
+    "list_audio_effects",
+    "inspect_audio_clip_effects",
+    "add_audio_effect",
+    "set_audio_effect_param",
+    "set_audio_param_named",
+    "add_audio_effect_keyframe",
+    "add_audio_keyframe_named",
+    "apply_audio_recipe",
+    "list_markers",
+    "add_marker",
+    "remove_marker",
+    "insert_media",
+    "trim_clip",
+    "roll_edit",
+    "move_clip",
+    "clone_clip",
+    "delete_clip",
+    "export_sequence",
+];
 
 pub const PREMIERE_BRIDGE_PORT: u16 = 17_361;
 
@@ -44,8 +106,9 @@ pub struct PremiereBridgeShared {
     server_started: Mutex<bool>,
     enabled: Mutex<bool>,
     token: Mutex<Option<String>>,
-    commands: Mutex<VecDeque<PremiereBridgeCommand>>,
-    results: Mutex<HashMap<String, PremiereBridgeResult>>,
+    token_created: Mutex<Option<std::time::Instant>>,
+    active_clients: AtomicUsize,
+    work: Mutex<CommandQueue>,
     last_seen_ms: Mutex<Option<u64>>,
 }
 
@@ -81,9 +144,12 @@ impl PremiereBridgeShared {
                             continue;
                         };
                         let shared = Arc::clone(&shared);
+                        if shared.active_clients.fetch_update(Ordering::AcqRel, Ordering::Relaxed,
+                            |count| (count < 16).then_some(count + 1)).is_err() { continue; }
+                        let guard = ClientGuard(Arc::clone(&shared));
                         let _ = thread::Builder::new()
                             .name("shuvi-premiere-client".into())
-                            .spawn(move || handle_client(stream, shared));
+                            .spawn(move || { let _guard = guard; handle_client(stream, shared); });
                     }
                 })
                 .map_err(|error| format!("Could not start Premiere bridge thread: {error}"))?;
@@ -92,6 +158,7 @@ impl PremiereBridgeShared {
         }
 
         let token = Uuid::new_v4().simple().to_string();
+        *self.token_created.lock().map_err(|_| "Premiere token clock is unavailable.".to_string())? = Some(std::time::Instant::now());
 
         *self
             .token
@@ -109,15 +176,8 @@ impl PremiereBridgeShared {
             .lock()
             .map_err(|_| "Premiere bridge state is unavailable.".to_string())? = None;
 
-        self.commands
-            .lock()
-            .map_err(|_| "Premiere bridge command queue is unavailable.".to_string())?
-            .clear();
-
-        self.results
-            .lock()
-            .map_err(|_| "Premiere bridge result queue is unavailable.".to_string())?
-            .clear();
+        self.work.lock()
+            .map_err(|_| "Premiere bridge work queue is unavailable.".to_string())?.clear();
 
         drop(started);
         self.status()
@@ -139,15 +199,8 @@ impl PremiereBridgeShared {
             .lock()
             .map_err(|_| "Premiere bridge state is unavailable.".to_string())? = None;
 
-        self.commands
-            .lock()
-            .map_err(|_| "Premiere bridge command queue is unavailable.".to_string())?
-            .clear();
-
-        self.results
-            .lock()
-            .map_err(|_| "Premiere bridge result queue is unavailable.".to_string())?
-            .clear();
+        self.work.lock()
+            .map_err(|_| "Premiere bridge work queue is unavailable.".to_string())?.clear();
 
         self.status()
     }
@@ -157,6 +210,8 @@ impl PremiereBridgeShared {
             .enabled
             .lock()
             .map_err(|_| "Premiere bridge state is unavailable.".to_string())?;
+
+        let enabled = enabled && self.token_is_current();
 
         let server_started = *self
             .server_started
@@ -174,11 +229,11 @@ impl PremiereBridgeShared {
             .lock()
             .map_err(|_| "Premiere bridge state is unavailable.".to_string())?;
 
-        let queued_commands = self
-            .commands
-            .lock()
-            .map_err(|_| "Premiere bridge command queue is unavailable.".to_string())?
-            .len();
+        let queued_commands = {
+            let mut work = self.work.lock().map_err(|_| "Premiere bridge work queue is unavailable.".to_string())?;
+            work.cleanup(std::time::Instant::now());
+            work.queued_len()
+        };
 
         let paired = enabled
             && last_seen_ms
@@ -190,7 +245,7 @@ impl PremiereBridgeShared {
             server_started,
             paired,
             port: PREMIERE_BRIDGE_PORT,
-            token,
+            token: if enabled { token } else { None },
             last_seen_ms,
             queued_commands,
         })
@@ -202,6 +257,9 @@ impl PremiereBridgeShared {
         arguments: Value,
         timeout: Duration,
     ) -> Result<Value, String> {
+        if !ALLOWED_ACTIONS.contains(&action) {
+            return Err("Premiere action is not in the native command allowlist.".into());
+        }
         let status = self.status()?;
 
         if !status.enabled {
@@ -222,59 +280,51 @@ impl PremiereBridgeShared {
             arguments,
         };
 
-        {
-            let mut queue = self
-                .commands
-                .lock()
-                .map_err(|_| "Premiere bridge command queue is unavailable.".to_string())?;
-
-            if queue.len() >= 32 {
-                return Err("Premiere bridge command queue is full.".into());
-            }
-
-            queue.push_back(command);
+        if timeout.is_zero() || timeout > Duration::from_secs(300) {
+            return Err("Premiere command timeout must be between 1 ms and 300 seconds.".into());
         }
-
-        let started = std::time::Instant::now();
-
+        let encoded = serde_json::to_vec(&command).map_err(|e| format!("Invalid Premiere command: {e}"))?;
+        if encoded.len() > 240 * 1024 {
+            return Err("Premiere command exceeds the 240 KiB payload limit.".into());
+        }
+        {
+            let mut work = self.work.lock().map_err(|_| "Premiere work queue is unavailable.".to_string())?;
+            if !self.authenticate(status.token.as_deref()) {
+                return Err("Premiere bridge session changed before enqueueing.".into());
+            }
+            work.enqueue(command, timeout)?;
+        }
+        // Dropping/cancelling this future removes both queued work and results.
+        let _guard = PendingGuard { shared: self, id: id.clone() };
         loop {
-            if let Some(result) = self
-                .results
-                .lock()
-                .map_err(|_| "Premiere bridge result queue is unavailable.".to_string())?
-                .remove(&id)
-            {
-                if result.success {
-                    return Ok(result.data.unwrap_or(Value::Null));
-                }
-
-                return Err(result
-                    .error
-                    .filter(|value| !value.trim().is_empty())
-                    .unwrap_or_else(|| "Premiere bridge command failed without an error message.".into()));
+            if !self.authenticate(status.token.as_deref()) {
+                return Err("Premiere pairing ended or expired. Inspect before retrying any dispatched edit.".into());
             }
-
-            if started.elapsed() >= timeout {
-                if let Ok(mut queue) = self.commands.lock() {
-                    queue.retain(|command| command.id != id);
-                }
-                return Err(format!(
-                    "Premiere bridge timed out waiting for '{action}' after {} seconds.",
-                    timeout.as_secs()
-                ));
+            let result = {
+                let mut work = self.work.lock().map_err(|_| "Premiere work queue is unavailable.".to_string())?;
+                work.take_result(&id)?
+            };
+            if let Some(result) = result {
+                if result.success { return Ok(result.data.unwrap_or(Value::Null)); }
+                return Err(result.error.filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| "Premiere command failed without an error message.".into()));
             }
-
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 
     fn authenticate(&self, supplied: Option<&str>) -> bool {
-        if !self.enabled.lock().map(|value| *value).unwrap_or(false) {
+        if !self.enabled.lock().map(|value| *value).unwrap_or(false) || !self.token_is_current() {
             return false;
         }
 
         let expected = self.token.lock().ok().and_then(|value| value.clone());
         expected.as_deref().is_some_and(|value| Some(value) == supplied)
+    }
+
+    fn token_is_current(&self) -> bool {
+        self.token_created.lock().ok().and_then(|value| *value)
+            .is_some_and(|created| created.elapsed() < Duration::from_secs(8 * 60 * 60))
     }
 
     fn mark_seen(&self) {
@@ -284,6 +334,21 @@ impl PremiereBridgeShared {
     }
 }
 
+struct PendingGuard<'a> {
+    shared: &'a PremiereBridgeShared,
+    id: String,
+}
+impl Drop for PendingGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut work) = self.shared.work.lock() { work.remove(&self.id); }
+    }
+}
+
+struct ClientGuard(Arc<PremiereBridgeShared>);
+impl Drop for ClientGuard {
+    fn drop(&mut self) { self.0.active_clients.fetch_sub(1, Ordering::AcqRel); }
+}
+
 struct HttpRequest {
     method: String,
     path: String,
@@ -291,87 +356,67 @@ struct HttpRequest {
     body: Vec<u8>,
 }
 
-fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
-    stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .map_err(|error| format!("Could not configure Premiere bridge socket: {error}"))?;
+const MAX_BODY_BYTES: usize = 256 * 1024;
+const MAX_HEADER_BYTES: usize = 16 * 1024;
 
+fn parse_headers(headers: &str) -> Result<(String, String, Option<String>, usize), String> {
+    let mut lines = headers.split("\r\n");
+    let parts: Vec<_> = lines.next().unwrap_or_default().split_whitespace().collect();
+    if parts.len() != 3 || !matches!(parts[2], "HTTP/1.1" | "HTTP/1.0") {
+        return Err("Malformed Premiere HTTP request line.".into());
+    }
+    let mut token = None;
+    let mut length = None;
+    for line in lines.filter(|line| !line.is_empty()) {
+        let (name, value) = line.split_once(':').ok_or("Malformed HTTP header.")?;
+        let value = value.trim();
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            return Err("Chunked Premiere bridge requests are unsupported.".into());
+        }
+        if name.eq_ignore_ascii_case("content-length") {
+            if length.is_some() { return Err("Duplicate Content-Length.".into()); }
+            if value.is_empty() || !value.bytes().all(|v| v.is_ascii_digit()) { return Err("Invalid Content-Length.".into()); }
+            let size = value.parse::<usize>().map_err(|_| "Invalid Content-Length.".to_string())?;
+            if size > MAX_BODY_BYTES { return Err("Premiere request body exceeds 256 KiB.".into()); }
+            length = Some(size);
+        }
+        if name.eq_ignore_ascii_case("x-shuvi-token") {
+            if token.is_some() { return Err("Duplicate pairing token header.".into()); }
+            token = Some(value.to_string());
+        }
+    }
+    if parts[0] == "POST" && length.is_none() { return Err("POST requires Content-Length.".into()); }
+    Ok((parts[0].to_string(), parts[1].to_string(), token, length.unwrap_or(0)))
+}
+
+fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
     let mut buffer = Vec::new();
     let mut chunk = [0_u8; 4096];
-    let mut header_end = None;
-    let mut content_length = 0_usize;
-
+    let mut parsed = None;
     loop {
-        let read = stream
-            .read(&mut chunk)
-            .map_err(|error| format!("Could not read Premiere bridge request: {error}"))?;
-
-        if read == 0 {
-            break;
+        let remaining = deadline.checked_duration_since(std::time::Instant::now())
+            .filter(|d| !d.is_zero()).ok_or("Premiere request read deadline exceeded.")?;
+        stream.set_read_timeout(Some(remaining)).map_err(|e| format!("Socket timeout: {e}"))?;
+        let count = stream.read(&mut chunk).map_err(|e| format!("Could not read Premiere request: {e}"))?;
+        if count == 0 { return Err("Truncated Premiere HTTP request.".into()); }
+        buffer.extend_from_slice(&chunk[..count]);
+        if buffer.len() > MAX_BODY_BYTES + MAX_HEADER_BYTES { return Err("Premiere request exceeds payload limits.".into()); }
+        if parsed.is_none() {
+            if let Some(end) = buffer.windows(4).position(|window| window == b"\r\n\r\n").map(|index| index + 4) {
+                if end > MAX_HEADER_BYTES { return Err("Premiere headers exceed 16 KiB.".into()); }
+                let headers = std::str::from_utf8(&buffer[..end]).map_err(|_| "HTTP headers must be UTF-8.".to_string())?;
+                parsed = Some((end, parse_headers(headers)?));
+            } else if buffer.len() > MAX_HEADER_BYTES { return Err("Premiere headers exceed 16 KiB.".into()); }
         }
-
-        buffer.extend_from_slice(&chunk[..read]);
-
-        if buffer.len() > 256 * 1024 {
-            return Err("Premiere bridge request exceeded 256 KB.".into());
-        }
-
-        if header_end.is_none() {
-            header_end = buffer
-                .windows(4)
-                .position(|window| window == b"\r\n\r\n")
-                .map(|index| index + 4);
-
-            if let Some(end) = header_end {
-                let headers = String::from_utf8_lossy(&buffer[..end]);
-                content_length = headers
-                    .lines()
-                    .find_map(|line| {
-                        let (name, value) = line.split_once(':')?;
-                        if name.trim().eq_ignore_ascii_case("content-length") {
-                            value.trim().parse::<usize>().ok()
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or(0);
-            }
-        }
-
-        if let Some(end) = header_end {
-            if buffer.len() >= end.saturating_add(content_length) {
-                break;
+        if let Some((end, (method, path, token, length))) = &parsed {
+            let expected = end + length;
+            if buffer.len() >= expected {
+                if buffer.len() != expected { return Err("Unexpected trailing HTTP data.".into()); }
+                return Ok(HttpRequest { method: method.clone(), path: path.clone(), token: token.clone(), body: buffer[*end..expected].to_vec() });
             }
         }
     }
-
-    let end = header_end.ok_or_else(|| "Malformed Premiere bridge HTTP request.".to_string())?;
-    let headers = String::from_utf8_lossy(&buffer[..end]);
-    let mut lines = headers.lines();
-    let request_line = lines
-        .next()
-        .ok_or_else(|| "Missing Premiere bridge request line.".to_string())?;
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or_default().to_string();
-    let path = parts.next().unwrap_or_default().to_string();
-
-    let token = lines.find_map(|line| {
-        let (name, value) = line.split_once(':')?;
-        if name.trim().eq_ignore_ascii_case("x-shuvi-token") {
-            Some(value.trim().to_string())
-        } else {
-            None
-        }
-    });
-
-    let body_end = end.saturating_add(content_length).min(buffer.len());
-
-    Ok(HttpRequest {
-        method,
-        path,
-        token,
-        body: buffer[end..body_end].to_vec(),
-    })
 }
 
 fn write_response(
@@ -379,6 +424,8 @@ fn write_response(
     status: &str,
     body: &str,
 ) -> Result<(), String> {
+    stream.set_write_timeout(Some(Duration::from_secs(2))).map_err(|e| format!("Socket write timeout: {e}"))?;
+    if body.len() > MAX_BODY_BYTES { return Err("Premiere response exceeds 256 KiB.".into()); }
     let response = format!(
         "HTTP/1.1 {status}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, X-Shuvi-Token\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{}",
         body.as_bytes().len(),
@@ -435,11 +482,9 @@ fn handle_client(mut stream: TcpStream, shared: Arc<PremiereBridgeShared>) {
             );
         }
         ("GET", "/command") => {
-            let command = shared
-                .commands
-                .lock()
-                .ok()
-                .and_then(|mut queue| queue.pop_front());
+            let command = shared.work.lock().ok().and_then(|mut work| {
+                if shared.authenticate(request.token.as_deref()) { work.dispatch() } else { None }
+            });
 
             let body = serde_json::to_string(&command).unwrap_or_else(|_| "null".into());
             let _ = write_response(&mut stream, "200 OK", &body);
@@ -449,13 +494,16 @@ fn handle_client(mut stream: TcpStream, shared: Arc<PremiereBridgeShared>) {
 
             match parsed {
                 Ok(result) if !result.id.trim().is_empty() => {
-                    if let Ok(mut results) = shared.results.lock() {
-                        if results.len() > 100 {
-                            results.clear();
-                        }
-                        results.insert(result.id.clone(), result);
+                    let outcome = shared.work.lock()
+                        .map_err(|_| "Premiere work queue is unavailable.".to_string())
+                        .and_then(|mut work| {
+                            if !shared.authenticate(request.token.as_deref()) { return Err("Pairing session changed.".into()); }
+                            work.complete(result)
+                        });
+                    match outcome {
+                        Ok(()) => { let _ = write_response(&mut stream, "200 OK", r#"{"ok":true}"#); }
+                        Err(error) => { let _ = write_response(&mut stream, "409 Conflict", &json!({"ok":false,"error":error}).to_string()); }
                     }
-                    let _ = write_response(&mut stream, "200 OK", r#"{"ok":true}"#);
                 }
                 Ok(_) => {
                     let _ = write_response(
@@ -481,5 +529,48 @@ fn handle_client(mut stream: TcpStream, shared: Arc<PremiereBridgeShared>) {
                 r#"{"ok":false,"error":"Unknown Premiere bridge route."}"#,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn headers_reject_ambiguous_oversized_and_invalid_framing() {
+        for headers in [
+            "POST /result HTTP/1.1\r\n\r\n",
+            "POST /result HTTP/1.1\r\nContent-Length: nope\r\n\r\n",
+            "POST /result HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\n",
+            "POST /result HTTP/1.1\r\nContent-Length: 999999999\r\n\r\n",
+            "POST /result HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n",
+            "GET /command HTTP/1.1\r\nX-Shuvi-Token: a\r\nX-Shuvi-Token: b\r\n\r\n",
+        ] { assert!(parse_headers(headers).is_err(), "accepted {headers}"); }
+        let (_, _, token, length) = parse_headers("POST /result HTTP/1.1\r\ncontent-length: 4\r\nx-shuvi-token: test\r\n\r\n").unwrap();
+        assert_eq!(token.as_deref(), Some("test"));
+        assert_eq!(length, 4);
+    }
+
+    #[test]
+    fn pairing_expires_and_rotation_rejects_old_token() {
+        let shared = PremiereBridgeShared::default();
+        *shared.enabled.lock().unwrap() = true;
+        *shared.token.lock().unwrap() = Some("first".into());
+        *shared.token_created.lock().unwrap() = Some(std::time::Instant::now());
+        assert!(shared.authenticate(Some("first")));
+        *shared.token.lock().unwrap() = Some("second".into());
+        assert!(!shared.authenticate(Some("first")));
+        *shared.token_created.lock().unwrap() = Some(std::time::Instant::now() - Duration::from_secs(8 * 60 * 60 + 1));
+        assert!(!shared.authenticate(Some("second")));
+    }
+
+    #[test]
+    fn dropped_request_guard_removes_pending_command() {
+        let shared = PremiereBridgeShared::default();
+        shared.work.lock().unwrap().enqueue(PremiereBridgeCommand {
+            id: "test".into(), action: "inspect_context".into(), arguments: json!({}),
+        }, Duration::from_secs(1)).unwrap();
+        drop(PendingGuard { shared: &shared, id: "test".into() });
+        assert_eq!(shared.work.lock().unwrap().queued_len(), 0);
     }
 }

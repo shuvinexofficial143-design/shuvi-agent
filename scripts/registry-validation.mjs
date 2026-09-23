@@ -2,7 +2,7 @@ import ts from "typescript";
 
 // A deliberately scoped structural check for Shuvi's Rust registry convention.
 // This complements (and does not replace) cargo check and runtime tests.
-export function validateRegistries({ rust, main, uxp }) {
+export function validateRegistries({ rust, main, uxp, bridge }) {
   const errors = [];
   const section = (start, end) => {
     const from = rust.indexOf(start);
@@ -69,6 +69,12 @@ export function validateRegistries({ rust, main, uxp }) {
   });
   const routeSet = duplicate(routes, "Premiere UXP route");
   if (!routes.length) errors.push("Premiere executeCommand routes are missing.");
+  if (bridge !== undefined) {
+    const block = bridge.match(/pub const ALLOWED_ACTIONS: &\[&str\] = &\[([\s\S]*?)\];/)?.[1] ?? "";
+    const allowed = duplicate([...block.matchAll(/"([a-z_]+)"/g)].map(m => m[1]), "desktop Premiere allowlist action");
+    for (const route of routeSet) if (!allowed.has(route)) errors.push(`UXP route missing desktop allowlist: ${route}`);
+    for (const action of allowed) if (!routeSet.has(action)) errors.push(`Desktop allowlist action has no UXP route: ${action}`);
+  }
   const requests = [...rust.matchAll(/\.premiere_bridge\s*\.request\(\s*("[a-z0-9_]+"|[a-z_]+)\s*,/g)];
   for (const request of requests) {
     let actions;

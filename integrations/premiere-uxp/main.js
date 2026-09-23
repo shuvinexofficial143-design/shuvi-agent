@@ -23,8 +23,8 @@ function setStatus(text, connected = false) {
   status.classList.toggle("connected", connected);
 }
 
-async function bridgeFetch(path, options = {}, timeoutMs = 2500) {
-  if (!bridgeToken) throw new Error("Enter the Shuvi pairing token first.");
+async function bridgeFetch(path, options = {}, timeoutMs = 2500, sessionToken = bridgeToken) {
+  if (!sessionToken) throw new Error("Enter the Shuvi pairing token first.");
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -34,7 +34,7 @@ async function bridgeFetch(path, options = {}, timeoutMs = 2500) {
       ...options,
       headers: {
         "Content-Type": "application/json",
-        "X-Shuvi-Token": bridgeToken,
+        "X-Shuvi-Token": sessionToken,
         ...(options.headers || {})
       },
       signal: controller.signal
@@ -3709,19 +3709,31 @@ async function executeCommand(command) {
   }
 }
 
-async function postResult(command, success, data, error) {
+function utf8ByteLength(text) {
+  let bytes = 0;
+  for (const char of text) {
+    const point = char.codePointAt(0);
+    bytes += point <= 0x7f ? 1 : point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4;
+  }
+  return bytes;
+}
+
+async function postResult(command, success, data, error, sessionToken) {
+  let body;
+  try {
+    body = JSON.stringify({ id: command.id, success, data: success ? data : null, error: success ? null : String(error || "Unknown Premiere bridge error") });
+    if (utf8ByteLength(body) > 240 * 1024) throw new Error("Result exceeds 240 KiB");
+  } catch {
+    body = JSON.stringify({ id: command.id, success: false, data: null, error: "Result could not be serialized within 240 KiB. The operation may have completed; inspect Premiere before retrying." });
+  }
   await bridgeFetch(
     "/result",
     {
       method: "POST",
-      body: JSON.stringify({
-        id: command.id,
-        success,
-        data: success ? data : null,
-        error: success ? null : String(error || "Unknown Premiere bridge error")
-      })
+      body
     },
-    4000
+    4000,
+    sessionToken
   );
 }
 
@@ -3729,21 +3741,31 @@ async function pollBridge() {
   if (!bridgeToken || busy) return;
 
   busy = true;
+  const sessionToken = bridgeToken;
   try {
-    const command = await bridgeFetch("/command");
+    const command = await bridgeFetch("/command", {}, 2500, sessionToken);
+    if (bridgeToken !== sessionToken) return;
 
     setStatus("Connected to Shuvi", true);
 
     if (command && command.id && command.action) {
       show("Running: " + command.action);
 
+      let data = null;
+      let commandError = null;
       try {
-        const data = await executeCommand(command);
-        await postResult(command, true, data, null);
-        show(JSON.stringify(data, null, 2));
+        data = await executeCommand(command);
       } catch (error) {
-        await postResult(command, false, null, error);
-        show("Command failed: " + String(error));
+        commandError = String(error);
+      }
+      // A delivery failure is not an execution failure. Never re-run the edit
+      // or post a contradictory second result with a newly paired token.
+      try {
+        await postResult(command, commandError === null, data, commandError, sessionToken);
+        show(commandError === null ? JSON.stringify(data, null, 2) : "Command failed: " + commandError);
+      } catch (error) {
+        show("Result delivery unconfirmed; the command may have completed. Inspect Premiere before retrying. " + String(error));
+        setStatus("Result delivery unconfirmed", false);
       }
     }
   } catch (error) {

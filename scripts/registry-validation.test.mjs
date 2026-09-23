@@ -4,12 +4,14 @@ import test from "node:test";
 import { validateRegistries } from "./registry-validation.mjs";
 
 const source = {
+  bridge: readFileSync(new URL("../src-tauri/src/premiere_bridge.rs", import.meta.url), "utf8"),
   rust: readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8"),
   main: readFileSync(new URL("../src/main.ts", import.meta.url), "utf8"),
   uxp: readFileSync(new URL("../integrations/premiere-uxp/main.js", import.meta.url), "utf8")
 };
 test("current registries are complete", () => assert.deepEqual(validateRegistries(source), []));
 const cases = [
+  ["missing desktop allowlist action", "bridge", s => s.replace('    "inspect_context",', ''), /UXP route missing desktop allowlist: inspect_context/],
   ["duplicate protocol tool", "rust", s => s.replace("Available tools:", "Available tools:\n- premiere_context: {}"), /Duplicate TOOL_PROTOCOL/],
   ["missing proposal allowlist", "rust", s => s.replace('| "premiere_context"', ""), /missing proposal allowlist: premiere_context/],
   ["missing permission stage", "rust", s => s.replace('"premiere_context" => (', '"missing_context" => ('), /missing permission staging: premiere_context/],

@@ -160,3 +160,17 @@ Next priority: checkpoint enforcement and bridge lifecycle safety before adding 
 
 Estimate after Module M: code complete approximately 50%; runtime verified 0% this session; production readiness not established.
 Next module: bridge pending-command/result lifecycle, bounded connections/payloads and cancellation cleanup.
+
+### Module N — bridge lifecycle and transport hardening
+- [x] Desktop action allowlist validated against UXP routes.
+- [x] Bound all outstanding commands, track dispatch ownership and reject unknown/duplicate/early/expired results.
+- [x] Clean up cancelled requests and stale queued commands; interrupt waiters on bridge reset/stop.
+- [x] Eight-hour pairing lifetime with start-triggered token rotation.
+- [x] Bounded client threads, payloads, header parsing and socket deadlines; reject ambiguous/truncated framing.
+- [x] Snapshot UXP pairing token; keep execution failure separate from result delivery uncertainty.
+- [x] Four panel transport mocks and an allowlist regression added; 21 Node tests, validation and frontend build passed.
+- [ ] Six Rust lifecycle/header/token tests added but not run locally (Rust unavailable).
+- [ ] Real Premiere pair/unpair/reconnect, long command and late-result acceptance checks.
+
+Estimate after Module N: code complete approximately 53%; runtime verified 0% this session; production readiness not established. These estimates do not count unsupported speed writes as implemented.
+Next module: native keyframe/transition lifecycle through existing named parameter resolution, then deterministic target guards and other pending professional workflows above.

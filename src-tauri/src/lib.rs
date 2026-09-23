@@ -21,6 +21,7 @@ mod premiere_checkpoint;
 mod premiere_speed;
 use premiere_speed::SpeedRequest;
 
+mod premiere_bridge_queue;
 mod premiere_bridge;
 use premiere_bridge::{PremiereBridgeShared, PremiereBridgeStatus};
 

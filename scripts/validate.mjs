@@ -30,7 +30,8 @@ for (const path of [
   "integrations/premiere-uxp/main.js",
   "integrations/premiere-uxp/speed-workflows.js",
   "src-tauri/src/premiere_speed.rs",
-  "src-tauri/src/premiere_checkpoint.rs"
+  "src-tauri/src/premiere_checkpoint.rs",
+  "src-tauri/src/premiere_bridge_queue.rs"
 ]) {
   try {
     statSync(join(root, path));
@@ -125,7 +126,7 @@ for (const tool of tools) {
 ok("Typed tool registry checked.");
 
 const premiereUxp = read("integrations/premiere-uxp/main.js");
-for (const error of validateRegistries({ rust, main, uxp: premiereUxp })) fail(error);
+for (const error of validateRegistries({ rust, main, uxp: premiereUxp, bridge: premiereBridgeRust })) fail(error);
 const premiereBridgeActions = [
   ...rust.matchAll(/\.premiere_bridge\s*\.request\(\s*"([a-z0-9_]+)"/g)
 ].map((match) => match[1]);
