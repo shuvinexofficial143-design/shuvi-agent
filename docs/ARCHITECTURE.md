@@ -156,3 +156,8 @@ The bridge intentionally exposes only fixed routes (`/health`, `/command`, `/res
 Native Premiere timeline writes now use deterministic track/clip targeting exposed by the read-only timeline inspector. Insert/overwrite, trim, clip move and sequence creation are permission-gated, execute through Premiere's undoable transaction model where the API supports it, and create a timestamped sibling `Shuvi Backups` copy of the current `.prproj` before the major edit when a normal project path is available.
 
 Timeline inspection reports stable clip indexes sorted by start time so Shuvi can inspect first, then target the intended clip rather than guessing from screen coordinates.
+
+
+## Premiere export
+
+The Premiere bridge can export the active sequence either immediately in Premiere or queue it to Adobe Media Encoder, with an optional Premiere export preset path. Export is classified high risk because it writes media files and can start a long-running encode.
