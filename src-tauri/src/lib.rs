@@ -17,6 +17,7 @@ use sysinfo::{Pid, System};
 use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
+mod premiere_checkpoint;
 mod premiere_speed;
 use premiere_speed::SpeedRequest;
 
@@ -154,7 +155,7 @@ Rules:
 - Treat git_push as a remote write and request it only after a successful commit when the user asked for a push.
 - Use run_project_task instead of raw shell commands when test/build/lint/typecheck is enough.
 - For browser/app UI work, prefer a Shuvi-managed browser when isolation matters, then use window-scoped semantic UI tools first. Use ui_toggle and ui_expand_collapse for supported controls. ui_send_keys is a high-risk fallback only after an exact element is focused and semantic patterns are unavailable. pointer_click is a final high-risk coordinate fallback: inspect_screen first, use coordinates only when semantic UI/DOM control cannot target the control, and never repeat a failed coordinate click blindly.
-- For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_timeline/premiere_list_items/premiere_project_tree for inspection, premiere_set_playhead for non-destructive navigation, premiere_inspect_frame for playhead-positioned visual review and premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media/premiere_insert_media/premiere_save_project for native editing. premiere_insert_media, premiere_trim_clip, premiere_roll_edit, premiere_move_clip, premiere_clone_clip, premiere_delete_clip, premiere_add_video_transition, premiere_add_video_effect, premiere_set_effect_param, premiere_add_effect_keyframe, premiere_add_audio_effect, premiere_set_audio_effect_param and premiere_add_audio_effect_keyframe are high risk because they change the timeline or effect state; premiere_insert_mogrt_path and premiere_insert_mogrt_library are high risk because they add graphics to the timeline; premiere_export_sequence is high risk because it writes media and may start encoding; inspect the timeline first when practical. Use UI/vision fallbacks only for features not exposed through the bridge. Major sequence creation and timeline insert/overwrite actions automatically save and copy the current .prproj into a sibling 'Shuvi Backups' folder before editing when a normal project path is available.
+- For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_timeline/premiere_list_items/premiere_project_tree for inspection, premiere_set_playhead for non-destructive navigation, premiere_inspect_frame for playhead-positioned visual review and premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media/premiere_insert_media/premiere_save_project for native editing. premiere_insert_media, premiere_trim_clip, premiere_roll_edit, premiere_move_clip, premiere_clone_clip, premiere_delete_clip, premiere_add_video_transition, premiere_add_video_effect, premiere_set_effect_param, premiere_add_effect_keyframe, premiere_add_audio_effect, premiere_set_audio_effect_param and premiere_add_audio_effect_keyframe are high risk because they change the timeline or effect state; premiere_insert_mogrt_path and premiere_insert_mogrt_library are high risk because they add graphics to the timeline; premiere_export_sequence is high risk because it writes media and may start encoding; inspect the timeline first when practical. Use UI/vision fallbacks only for features not exposed through the bridge. Major sequence creation and timeline insert/overwrite actions automatically save and copy the current .prproj into a sibling 'Shuvi Backups' folder before editing; the edit is refused if a saved local project cannot be checkpointed.
 - premiere_plan_speed is a read-only planner. Supply only fields for the chosen mode. It returns applied=false/executable=false because the reviewed UXP API has no documented speed write action. Never describe a plan as an applied edit, and never invoke blind UI to execute it. Inspect timeline/clip speed first.
 - Saved Premiere recipes are local reusable video/audio named-parameter recipes. Inspect a clip's effect chain first, save a recipe only after exact selectors are known, and apply saved recipes as high-risk backed-up edits.
 - Use premiere_review_frames for a bounded multi-frame visual review before/after major grading, motion, transition or graphics changes; the normal agent loop can then use the returned observations to decide whether another backed-up edit is needed.
@@ -4704,58 +4705,22 @@ fn write_workspace(app: &AppHandle, path: &str) -> Result<(), String> {
         .map_err(|error| format!("Could not save workspace setting: {error}"))
 }
 
-async fn backup_premiere_project(state: &ActionState) -> Result<Option<String>, String> {
-    state
-        .premiere_bridge
-        .request("save_project", json!({}), Duration::from_secs(15))
-        .await?;
-
-    let context = state
-        .premiere_bridge
-        .request("inspect_context", json!({}), Duration::from_secs(8))
-        .await?;
-
-    let Some(project_path) = context
-        .get("projectPath")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return Ok(None);
-    };
-
-    let source = Path::new(project_path);
-    if !source.is_file() {
-        return Ok(None);
+async fn backup_premiere_project(state: &ActionState) -> Result<String, String> {
+    let before = state.premiere_bridge.request("inspect_context", json!({}), Duration::from_secs(8)).await?;
+    let path = before.get("projectPath").and_then(Value::as_str).filter(|p| !p.trim().is_empty())
+        .ok_or_else(|| "Save the active Premiere project to a .prproj file before this edit.".to_string())?;
+    if !Path::new(path).is_absolute() || !Path::new(path).is_file() {
+        return Err("Premiere project must exist at an absolute local path before this edit.".into());
     }
-
-    let parent = source
-        .parent()
-        .ok_or_else(|| "Premiere project path has no parent directory.".to_string())?;
-    let backup_dir = parent.join("Shuvi Backups");
-    fs::create_dir_all(&backup_dir)
-        .map_err(|error| format!("Could not create Premiere backup directory: {error}"))?;
-
-    let stem = source
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or("PremiereProject");
-    let extension = source
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or("prproj");
-
-    let backup_path = backup_dir.join(format!(
-        "{}.shuvi-{}.{}",
-        stem,
-        now_ms(),
-        extension
-    ));
-
-    fs::copy(source, &backup_path)
-        .map_err(|error| format!("Could not back up Premiere project: {error}"))?;
-
-    Ok(Some(backup_path.display().to_string()))
+    let saved = state.premiere_bridge.request("save_project", json!({}), Duration::from_secs(15)).await?;
+    let after = state.premiere_bridge.request("inspect_context", json!({}), Duration::from_secs(8)).await?;
+    if saved.get("saved").and_then(Value::as_bool) != Some(true)
+        || saved.get("projectPath").and_then(Value::as_str) != Some(path)
+        || after.get("projectPath").and_then(Value::as_str) != Some(path)
+        || before.get("projectGuid") != after.get("projectGuid") {
+        return Err("Active Premiere project changed or did not save; no edit was sent. Inspect and retry.".into());
+    }
+    premiere_checkpoint::create_checkpoint(Path::new(path), now_ms())
 }
 
 fn truncate_output(value: String) -> String {

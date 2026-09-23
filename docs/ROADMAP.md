@@ -146,3 +146,17 @@ Progress estimates are provisional scope estimates, not measured product certifi
 
 Estimate after Module B: code complete approximately 48%; runtime verified 0% this session; production readiness not established.
 Next priority: checkpoint enforcement and bridge lifecycle safety before adding further destructive edits.
+
+### Module M — required edit checkpoints
+- [x] Replace optional backup success with a required checkpoint path for all 39 existing major-edit callers.
+- [x] Refuse unsaved/missing/empty/non-.prproj sources; compare project identity and save result before copying.
+- [x] Stream and flush uniquely reserved backup files; detect project size/mtime changes during copy.
+- [x] Persist versioned checkpoint sidecars; keep the existing backup path in action results.
+- [x] Bound source size, folder scans, backup count and storage; stop at retention limits without deleting old backups.
+- [x] Available Node tests (16), registry validation and frontend build passed.
+- [ ] Three checkpoint Rust unit tests added; execution pending Windows CI because local Rust is unavailable.
+- [ ] Real Premiere save/checkpoint/edit verification on a disposable project.
+- [ ] Carry project/sequence identity through command execution to eliminate the remaining active-project switch window.
+
+Estimate after Module M: code complete approximately 50%; runtime verified 0% this session; production readiness not established.
+Next module: bridge pending-command/result lifecycle, bounded connections/payloads and cancellation cleanup.

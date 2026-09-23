@@ -30,7 +30,7 @@ Implemented typed bridge commands:
 - insert or overwrite media at an exact sequence time/track
 - save the active project
 
-Shuvi's desktop agent creates a timestamped sibling `Shuvi Backups` copy of the current `.prproj` before major sequence creation and insert/overwrite edits when a normal project file path is available.
+Shuvi's desktop agent creates a timestamped sibling `Shuvi Backups` copy of the current `.prproj` before major sequence creation and insert/overwrite edits only after a saved local project is available; otherwise the edit is refused.
 
 - trim exact video/audio clips by track + timeline clip index
 - move clips on the same track by a signed time delta
@@ -80,3 +80,9 @@ Run npm run validate, npm test and npm run build from the repository root. Valid
 premiere_inspect_clip_speed returns native speed/reverse and source/sequence bounds. premiere_plan_speed accepts a typed request with mode rate, duration, preset, ramp or freeze and returns a reviewable plan only. Omit fields belonging to other modes. Rate is a source-time multiplier; ramp points use increasing source_offset_seconds spanning the inspected source range. Ramp duration integrates a rate that varies linearly in source time. This does not reproduce Premiere time-remapping curves.
 
 Plans always return applied=false and executable=false. Pitch preservation and reverse are recorded intent, not implemented edits. Adobe's reviewed [video clip](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/videocliptrackitem) and [audio clip](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/audiocliptrackitem) references expose speed/reverse getters but no speed-changing action (reviewed 2026-09-23). Native writes need a separately validated adapter and the existing high-risk permission/checkpoint path.
+
+## Required edit checkpoints
+
+Every operation using the shared major-edit backup helper now fails closed when a saved, non-empty local .prproj cannot be backed up. The helper checks project identity/path before and after saving, streams a uniquely named copy, flushes it, detects size/mtime changes during copying and writes a versioned checkpoint.json sidecar. Existing action results retain the backup path string. A save itself may persist unsaved project changes; the subsequent timeline edit is not sent when checkpoint creation fails.
+
+Limits: 2 GiB per source project, 1,000 .prproj backups or 20 GiB per backup folder, and a 10,000-entry scan bound. Reaching a limit stops editing and asks the user to review/archive backups; no existing backup is automatically deleted. Backup folders must resolve directly beside the project. These checks reduce project-switch risk during saving, but do not lock Premiere's active project across the later command dispatch; a complete project/sequence identity guard remains pending.
