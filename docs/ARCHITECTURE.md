@@ -161,3 +161,10 @@ Timeline inspection reports stable clip indexes sorted by start time so Shuvi ca
 ## Premiere export
 
 The Premiere bridge can export the active sequence either immediately in Premiere or queue it to Adobe Media Encoder, with an optional Premiere export preset path. Export is classified high risk because it writes media files and can start a long-running encode.
+
+
+## Premiere effects and keyframes
+
+The native Premiere bridge now exposes installed video transitions and video filters by Adobe match name, reads a selected video clip's component chain, inspects component parameters, applies static parameter changes and can add time-based keyframes for parameters that advertise keyframe support.
+
+Effect writes are high-risk typed actions. Shuvi creates a timestamped `.prproj` backup before adding transitions/effects, changing effect parameters or adding keyframes. Clip targeting stays deterministic: video track index + clip index from the sorted timeline inspector, then component index + parameter index from effect inspection.
