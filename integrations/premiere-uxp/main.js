@@ -3358,6 +3358,118 @@ async function createSubsequence(argumentsValue) {
   };
 }
 
+async function captionTracks() {
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+
+  const count = await sequence.getCaptionTrackCount();
+  const tracks = [];
+
+  for (let index = 0; index < count; index += 1) {
+    const track = await sequence.getCaptionTrack(index);
+    if (!track) continue;
+
+    let resolvedIndex = index;
+    let muted = null;
+
+    try {
+      resolvedIndex = await track.getIndex();
+    } catch {
+      resolvedIndex = index;
+    }
+
+    try {
+      muted = Boolean(await track.isMuted());
+    } catch {
+      muted = null;
+    }
+
+    tracks.push({
+      index: resolvedIndex,
+      id: track.id ?? null,
+      name: track.name || null,
+      muted
+    });
+  }
+
+  return {
+    count,
+    tracks
+  };
+}
+
+async function setCaptionTrackName(argumentsValue) {
+  const trackIndex = Number(argumentsValue?.track ?? 0);
+  const name =
+    typeof argumentsValue?.name === "string"
+      ? argumentsValue.name.trim()
+      : "";
+
+  if (!Number.isInteger(trackIndex) || trackIndex < 0) {
+    throw new Error("Caption track index must be a non-negative integer.");
+  }
+  if (!name) throw new Error("Caption track name is required.");
+
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+
+  const track = await sequence.getCaptionTrack(trackIndex);
+  if (!track) throw new Error("Requested Premiere caption track was not found.");
+  if (typeof track.createSetNameAction !== "function") {
+    throw new Error("This Premiere version does not expose caption track rename actions; Premiere 26.3+ is required.");
+  }
+
+  let transactionSucceeded = false;
+  project.lockedAccess(() => {
+    const action = track.createSetNameAction(name);
+    transactionSucceeded = project.executeTransaction((compoundAction) => {
+      compoundAction.addAction(action);
+    }, "Shuvi: Rename Caption Track");
+  });
+
+  if (!transactionSucceeded) {
+    throw new Error("Premiere rejected the caption track rename transaction.");
+  }
+
+  return {
+    renamed: true,
+    track: trackIndex,
+    name
+  };
+}
+
+async function setCaptionTrackMute(argumentsValue) {
+  const trackIndex = Number(argumentsValue?.track ?? 0);
+  const muted = argumentsValue?.muted;
+
+  if (!Number.isInteger(trackIndex) || trackIndex < 0) {
+    throw new Error("Caption track index must be a non-negative integer.");
+  }
+  if (typeof muted !== "boolean") {
+    throw new Error("muted must be a boolean.");
+  }
+
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+
+  const track = await sequence.getCaptionTrack(trackIndex);
+  if (!track) throw new Error("Requested Premiere caption track was not found.");
+
+  const success = await track.setMute(muted);
+  if (!success) {
+    throw new Error("Premiere could not change the caption track mute state.");
+  }
+
+  return {
+    changed: true,
+    track: trackIndex,
+    muted
+  };
+}
+
 async function executeCommand(command) {
   switch (command.action) {
     case "inspect_context":
@@ -3404,6 +3516,12 @@ async function executeCommand(command) {
       return await saveProject();
     case "inspect_timeline":
       return await inspectTimeline();
+    case "caption_tracks":
+      return await captionTracks();
+    case "set_caption_track_name":
+      return await setCaptionTrackName(command.arguments || {});
+    case "set_caption_track_mute":
+      return await setCaptionTrackMute(command.arguments || {});
     case "set_playhead":
       return await setPlayhead(command.arguments || {});
     case "set_track_mute":
