@@ -4,7 +4,7 @@ use std::{
     io::{BufRead, BufReader, Write},
     path::Path,
     process::{Command, Stdio},
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -16,6 +16,9 @@ use serde_json::{json, Value};
 use sysinfo::{Pid, System};
 use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
+
+mod premiere_bridge;
+use premiere_bridge::{PremiereBridgeShared, PremiereBridgeStatus};
 
 const KEYRING_SERVICE: &str = "Shuvi";
 const SOFT_LIMIT_MB: f64 = 3584.0;
@@ -55,6 +58,11 @@ Available tools:
 - pointer_click: {"x":123,"y":456,"button":"left|right|middle","clicks":1}
 - premiere_detect: {}
 - premiere_launch: {"project":"optional absolute .prproj path"}
+- premiere_bridge_start: {}
+- premiere_bridge_status: {}
+- premiere_context: {}
+- premiere_list_items: {}
+- premiere_import_media: {"paths":["absolute media path 1","absolute media path 2"]}
 - workspace_scan: {"path":"absolute workspace path"}
 - search_text: {"path":"absolute workspace path","query":"text to find"}
 - replace_text: {"path":"absolute file path","old":"exact old text","new":"replacement text"}
@@ -78,7 +86,7 @@ Rules:
 - Treat git_push as a remote write and request it only after a successful commit when the user asked for a push.
 - Use run_project_task instead of raw shell commands when test/build/lint/typecheck is enough.
 - For browser/app UI work, prefer a Shuvi-managed browser when isolation matters, then use window-scoped semantic UI tools first. Use ui_toggle and ui_expand_collapse for supported controls. ui_send_keys is a high-risk fallback only after an exact element is focused and semantic patterns are unavailable. pointer_click is a final high-risk coordinate fallback: inspect_screen first, use coordinates only when semantic UI/DOM control cannot target the control, and never repeat a failed coordinate click blindly.
-- For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Prefer the dedicated Premiere UXP bridge for timeline/project editing as it becomes available; use UI/vision fallbacks only for features not exposed through the bridge.
+- For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_list_items/premiere_import_media through the dedicated UXP bridge; use UI/vision fallbacks only for features not exposed through the bridge.
 - For managed Edge/Chrome sessions, prefer browser_dom_read/browser_dom_click/browser_dom_set_value/browser_navigate over visual coordinate actions because DOM selectors are more reliable.
 - browser_dom_click and browser_dom_set_value require selectors that match exactly one element; refine with browser_dom_read when ambiguous.
 - stop_managed_process may only target process roots that Shuvi launched itself.
@@ -194,6 +202,11 @@ enum ToolAction {
     PointerClick { x: i32, y: i32, button: String, clicks: u32 },
     PremiereDetect,
     PremiereLaunch { project: Option<String> },
+    PremiereBridgeStart,
+    PremiereBridgeStatus,
+    PremiereContext,
+    PremiereListItems,
+    PremiereImportMedia { paths: Vec<String> },
     WorkspaceScan { path: String },
     SearchText { path: String, query: String },
     ReplaceText { path: String, old: String, new_value: String },
@@ -255,6 +268,7 @@ struct ActionState {
     pending: Mutex<HashMap<String, PendingAction>>,
     managed_children: Mutex<HashSet<u32>>,
     browser_sessions: Mutex<HashMap<u32, BrowserSession>>,
+    premiere_bridge: Arc<PremiereBridgeShared>,
 }
 
 fn providers() -> Vec<ProviderDescriptor> {
@@ -437,6 +451,11 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "pointer_click"
         | "premiere_detect"
         | "premiere_launch"
+        | "premiere_bridge_start"
+        | "premiere_bridge_status"
+        | "premiere_context"
+        | "premiere_list_items"
+        | "premiere_import_media"
         | "workspace_scan"
         | "search_text"
         | "replace_text"
@@ -1586,6 +1605,55 @@ fn stage_tool(
                     .as_deref()
                     .map(|path| format!("Launch Premiere with project {path}"))
                     .unwrap_or_else(|| "Launch the newest detected Premiere installation.".to_string()),
+                RiskLevel::Medium,
+            )
+        }
+        "premiere_bridge_start" => (
+            ToolAction::PremiereBridgeStart,
+            "Start Premiere bridge".to_string(),
+            "Start Shuvi's authenticated localhost bridge for the Premiere UXP panel.".to_string(),
+            RiskLevel::Medium,
+        ),
+        "premiere_bridge_status" => (
+            ToolAction::PremiereBridgeStatus,
+            "Read Premiere bridge status".to_string(),
+            "Check whether the Premiere UXP bridge is enabled and paired.".to_string(),
+            RiskLevel::Low,
+        ),
+        "premiere_context" => (
+            ToolAction::PremiereContext,
+            "Inspect Premiere project context".to_string(),
+            "Read the active Premiere project, active sequence and basic timeline metadata through the paired UXP bridge.".to_string(),
+            RiskLevel::Low,
+        ),
+        "premiere_list_items" => (
+            ToolAction::PremiereListItems,
+            "List Premiere root project items".to_string(),
+            "Read top-level project items from the active Premiere project through the paired UXP bridge.".to_string(),
+            RiskLevel::Low,
+        ),
+        "premiere_import_media" => {
+            let paths = arg_string_array(&proposal.arguments, "paths")?;
+            if paths.is_empty() {
+                return Err("premiere_import_media requires at least one media path.".into());
+            }
+            if paths.len() > 100 {
+                return Err("Premiere import is limited to 100 files per action.".into());
+            }
+
+            let mut validated = Vec::with_capacity(paths.len());
+            for path in paths {
+                let absolute = absolute_path(path)?;
+                if !Path::new(&absolute).is_file() {
+                    return Err(format!("Premiere media file does not exist: {absolute}"));
+                }
+                validated.push(absolute);
+            }
+
+            (
+                ToolAction::PremiereImportMedia { paths: validated.clone() },
+                "Import media into Premiere".to_string(),
+                format!("Import {} media file(s) into the active Premiere project root.", validated.len()),
                 RiskLevel::Medium,
             )
         }
@@ -3330,6 +3398,86 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 exit_code: Some(0),
             })
         }
+        ToolAction::PremiereBridgeStart => {
+            let status = state.premiere_bridge.start()?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: format!(
+                    "Premiere bridge enabled on 127.0.0.1:{}; paired={}. Open the Shuvi Premiere Bridge panel and pair it from Shuvi's Premiere settings.",
+                    status.port,
+                    status.paired
+                ),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereBridgeStatus => {
+            let status = state.premiere_bridge.status()?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: format!(
+                    "Premiere bridge: enabled={}, server_started={}, paired={}, port={}, queued_commands={}",
+                    status.enabled,
+                    status.server_started,
+                    status.paired,
+                    status.port,
+                    status.queued_commands
+                ),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereContext => {
+            let value = state
+                .premiere_bridge
+                .request("inspect_context", json!({}), Duration::from_secs(8))
+                .await?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value)
+                    .unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereListItems => {
+            let value = state
+                .premiere_bridge
+                .request("list_root_items", json!({}), Duration::from_secs(8))
+                .await?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value)
+                    .unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereImportMedia { paths } => {
+            let value = state
+                .premiere_bridge
+                .request(
+                    "import_media",
+                    json!({ "paths": paths }),
+                    Duration::from_secs(30),
+                )
+                .await?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value)
+                    .unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
         ToolAction::WorkspaceScan { path } => {
             let root = Path::new(&path);
             if !root.is_dir() {
@@ -3738,6 +3886,27 @@ fn clear_session_checkpoint(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn premiere_bridge_start(
+    state: State<'_, ActionState>,
+) -> Result<PremiereBridgeStatus, String> {
+    state.premiere_bridge.start()
+}
+
+#[tauri::command]
+fn premiere_bridge_status(
+    state: State<'_, ActionState>,
+) -> Result<PremiereBridgeStatus, String> {
+    state.premiere_bridge.status()
+}
+
+#[tauri::command]
+fn premiere_bridge_stop(
+    state: State<'_, ActionState>,
+) -> Result<PremiereBridgeStatus, String> {
+    state.premiere_bridge.stop()
+}
+
+#[tauri::command]
 fn export_diagnostics(
     app: AppHandle,
     state: State<'_, ActionState>,
@@ -3822,6 +3991,9 @@ pub fn run() {
             save_session_checkpoint,
             load_session_checkpoint,
             clear_session_checkpoint,
+            premiere_bridge_start,
+            premiere_bridge_status,
+            premiere_bridge_stop,
             export_diagnostics,
         ])
         .run(tauri::generate_context!())
