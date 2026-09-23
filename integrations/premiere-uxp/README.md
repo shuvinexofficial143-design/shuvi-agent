@@ -16,3 +16,18 @@ Planned architecture:
 4. Before destructive or large timeline changes, Shuvi will create a version/checkpoint and ask for permission where appropriate.
 
 During development, load this folder with Adobe UXP Developer Tool while Premiere Pro developer mode is enabled.
+
+
+## Current native command bridge
+
+Implemented typed bridge commands:
+- inspect active project / active sequence
+- inspect video/audio tracks and clip timing
+- list root project items
+- create root bins using Premiere undoable transactions
+- import media
+- create a sequence from media
+- insert or overwrite media at an exact sequence time/track
+- save the active project
+
+Shuvi's desktop agent creates a timestamped sibling `Shuvi Backups` copy of the current `.prproj` before major sequence creation and insert/overwrite edits when a normal project file path is available.
