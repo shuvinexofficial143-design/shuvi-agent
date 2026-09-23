@@ -188,3 +188,14 @@ Media relink and proxy attachment use Premiere's native ClipProjectItem APIs. Be
 ## Premiere Motion Graphics templates
 
 Shuvi can insert a MOGRT either from an absolute `.mogrt` file path or by Creative Cloud Library name + element name through SequenceEditor. Both variants target an explicit timeline time and track indexes, are high risk, and create a project backup first.
+
+
+## Premiere parameter recipes
+
+Shuvi can now resolve Premiere video/audio components and parameters by exact native match/display names instead of relying only on numeric indexes. Multi-setting recipes can atomically apply up to 64 named static changes and/or keyframes to one clip inside a single Premiere transaction. This is the foundation for reusable Motion/Transform, Lumetri-style grading and audio processing recipes without hardcoding one Premiere language/version's component indexes.
+
+Recipe writes are high risk and create a timestamped project backup first. The agent should inspect the clip's native component chain before applying a recipe so it uses names actually exposed by the current Premiere installation.
+
+## Premiere visual review
+
+`premiere_inspect_frame` moves the native Premiere playhead to an exact time, waits briefly for the Program Monitor to update, captures the current screen and sends that image to the selected vision-capable provider. This creates a direct edit → preview → visual-analysis foundation while keeping any corrective edit as a separate permission-gated typed action.
