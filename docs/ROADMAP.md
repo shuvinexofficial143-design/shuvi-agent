@@ -66,8 +66,9 @@
 - [x] Premiere UXP bridge scaffold + dockable Shuvi panel
 - [x] Windows Premiere installation detection + typed launch
 - [x] read-only active project / active sequence inspection scaffold
-- [ ] live Shuvi desktop ↔ Premiere UXP command bridge
-- [ ] project + bin + media import management
+- [x] authenticated localhost Shuvi desktop ↔ Premiere UXP command bridge + pairing UI
+- [x] active-project root item inspection + permission-gated media import
+- [ ] bin creation/move/relink project organization
 - [ ] sequence creation and timeline track inspection
 - [ ] professional trim/ripple/rolling edit operations
 - [ ] clip move/insert/overwrite/nest/multicam workflows
