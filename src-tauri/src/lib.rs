@@ -71,6 +71,9 @@ Available tools:
 - premiere_rename_project_item: {"item_id":"project item id","name":"new name"}
 - premiere_move_project_item: {"item_id":"project item id","target_bin_id":"destination bin id"}
 - premiere_relink_media: {"item_id":"clip project item id","new_path":"absolute replacement media path","override_compatibility":false}
+- premiere_set_source_inout: {"item_id":"clip project item id","in_seconds":1.0,"out_seconds":8.0}
+- premiere_clear_source_inout: {"item_id":"clip project item id"}
+- premiere_create_subclip: {"item_id":"clip project item id","name":"subclip name","start_seconds":1.0,"end_seconds":8.0,"hard_boundaries":true,"take_video":true,"take_audio":true}
 - premiere_attach_proxy: {"item_id":"clip project item id","proxy_path":"absolute proxy media path"}
 - premiere_batch_relink: {"items":[{"item_id":"clip project item id","new_path":"absolute replacement media path","override_compatibility":false}]}
 - premiere_batch_attach_proxy: {"items":[{"item_id":"clip project item id","proxy_path":"absolute proxy media path"}]}
@@ -296,6 +299,9 @@ enum ToolAction {
     PremiereRenameProjectItem { item_id: String, name: String },
     PremiereMoveProjectItem { item_id: String, target_bin_id: String },
     PremiereRelinkMedia { item_id: String, new_path: String, override_compatibility: bool },
+    PremiereSetSourceInOut { item_id: String, in_seconds: f64, out_seconds: f64 },
+    PremiereClearSourceInOut { item_id: String },
+    PremiereCreateSubclip { item_id: String, name: String, start_seconds: f64, end_seconds: f64, hard_boundaries: bool, take_video: bool, take_audio: bool },
     PremiereAttachProxy { item_id: String, proxy_path: String },
     PremiereBatchRelink { items: Vec<Value> },
     PremiereBatchAttachProxy { items: Vec<Value> },
@@ -608,6 +614,9 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_rename_project_item"
         | "premiere_move_project_item"
         | "premiere_relink_media"
+        | "premiere_set_source_inout"
+        | "premiere_clear_source_inout"
+        | "premiere_create_subclip"
         | "premiere_attach_proxy"
         | "premiere_batch_relink"
         | "premiere_batch_attach_proxy"
@@ -2804,6 +2813,103 @@ fn stage_tool(
                 },
                 "Relink Premiere media".to_string(),
                 format!("Relink clip project item {item_id} to {new_path}; override_compatibility={override_compatibility}."),
+                RiskLevel::High,
+            )
+        }
+        "premiere_set_source_inout" => {
+            let item_id = arg_string(&proposal.arguments, "item_id")?;
+            if item_id.chars().count() > 240 {
+                return Err("Premiere project item id is too long.".into());
+            }
+
+            let in_seconds = proposal.arguments
+                .get("in_seconds")
+                .and_then(Value::as_f64)
+                .ok_or_else(|| "premiere_set_source_inout requires in_seconds.".to_string())?;
+            let out_seconds = proposal.arguments
+                .get("out_seconds")
+                .and_then(Value::as_f64)
+                .ok_or_else(|| "premiere_set_source_inout requires out_seconds.".to_string())?;
+
+            if !in_seconds.is_finite() || !out_seconds.is_finite()
+                || in_seconds < 0.0 || out_seconds <= in_seconds || out_seconds > 86_400.0 {
+                return Err("Premiere source in/out must be finite, non-negative, and out_seconds must be later than in_seconds.".into());
+            }
+
+            (
+                ToolAction::PremiereSetSourceInOut {
+                    item_id: item_id.clone(),
+                    in_seconds,
+                    out_seconds,
+                },
+                "Set Premiere source in/out".to_string(),
+                format!("Set source item {item_id} in={in_seconds:.3}s out={out_seconds:.3}s."),
+                RiskLevel::Medium,
+            )
+        }
+        "premiere_clear_source_inout" => {
+            let item_id = arg_string(&proposal.arguments, "item_id")?;
+            if item_id.chars().count() > 240 {
+                return Err("Premiere project item id is too long.".into());
+            }
+
+            (
+                ToolAction::PremiereClearSourceInOut { item_id: item_id.clone() },
+                "Clear Premiere source in/out".to_string(),
+                format!("Clear source in/out points for project item {item_id}."),
+                RiskLevel::Medium,
+            )
+        }
+        "premiere_create_subclip" => {
+            let item_id = arg_string(&proposal.arguments, "item_id")?;
+            let name = arg_string(&proposal.arguments, "name")?;
+            if item_id.chars().count() > 240 || name.chars().count() > 240 {
+                return Err("Premiere subclip item id/name is too long.".into());
+            }
+
+            let start_seconds = proposal.arguments
+                .get("start_seconds")
+                .and_then(Value::as_f64)
+                .ok_or_else(|| "premiere_create_subclip requires start_seconds.".to_string())?;
+            let end_seconds = proposal.arguments
+                .get("end_seconds")
+                .and_then(Value::as_f64)
+                .ok_or_else(|| "premiere_create_subclip requires end_seconds.".to_string())?;
+
+            if !start_seconds.is_finite() || !end_seconds.is_finite()
+                || start_seconds < 0.0 || end_seconds <= start_seconds || end_seconds > 86_400.0 {
+                return Err("Premiere subclip start/end must be finite, non-negative, and end_seconds must be later than start_seconds.".into());
+            }
+
+            let hard_boundaries = proposal.arguments
+                .get("hard_boundaries")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            let take_video = proposal.arguments
+                .get("take_video")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            let take_audio = proposal.arguments
+                .get("take_audio")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+
+            if !take_video && !take_audio {
+                return Err("Premiere subclip must include video and/or audio.".into());
+            }
+
+            (
+                ToolAction::PremiereCreateSubclip {
+                    item_id: item_id.clone(),
+                    name: name.clone(),
+                    start_seconds,
+                    end_seconds,
+                    hard_boundaries,
+                    take_video,
+                    take_audio,
+                },
+                "Create Premiere subclip".to_string(),
+                format!("Create subclip '{name}' from {item_id}, {start_seconds:.3}s–{end_seconds:.3}s."),
                 RiskLevel::High,
             )
         }
@@ -6158,6 +6264,75 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 tool,
                 stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value}))
                     .unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereSetSourceInOut { item_id, in_seconds, out_seconds } => {
+            let backup = backup_premiere_project(state).await?;
+            let result = state.premiere_bridge.request(
+                "set_source_inout",
+                json!({
+                    "itemId": item_id,
+                    "inSeconds": in_seconds,
+                    "outSeconds": out_seconds
+                }),
+                Duration::from_secs(20),
+            ).await?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "backup": backup,
+                    "result": result
+                })).unwrap_or_else(|_| result.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereClearSourceInOut { item_id } => {
+            let backup = backup_premiere_project(state).await?;
+            let result = state.premiere_bridge.request(
+                "clear_source_inout",
+                json!({ "itemId": item_id }),
+                Duration::from_secs(20),
+            ).await?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "backup": backup,
+                    "result": result
+                })).unwrap_or_else(|_| result.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereCreateSubclip { item_id, name, start_seconds, end_seconds, hard_boundaries, take_video, take_audio } => {
+            let backup = backup_premiere_project(state).await?;
+            let result = state.premiere_bridge.request(
+                "create_subclip",
+                json!({
+                    "itemId": item_id,
+                    "name": name,
+                    "startSeconds": start_seconds,
+                    "endSeconds": end_seconds,
+                    "hardBoundaries": hard_boundaries,
+                    "takeVideo": take_video,
+                    "takeAudio": take_audio
+                }),
+                Duration::from_secs(30),
+            ).await?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "backup": backup,
+                    "result": result
+                })).unwrap_or_else(|_| result.to_string()),
                 stderr: String::new(),
                 exit_code: Some(0),
             })
