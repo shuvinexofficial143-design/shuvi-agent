@@ -72,6 +72,9 @@ Available tools:
 - premiere_move_clip: {"kind":"video|audio","track":0,"clip_index":0,"delta_seconds":1.5}
 - premiere_delete_clip: {"kind":"video|audio","track":0,"clip_index":0,"ripple":true}
 - premiere_set_track_mute: {"kind":"video|audio","track":0,"muted":true}
+- premiere_set_clip_enabled: {"kind":"video|audio","track":0,"clip_index":0,"enabled":true}
+- premiere_list_video_transitions: {}
+- premiere_add_video_transition: {"track":0,"clip_index":0,"match_name":"transition match name","duration_seconds":0.5,"position":"start|end","force_single_sided":false}
 - premiere_export_sequence: {"output":"absolute output media path","preset":"optional absolute .epr preset path","queue_to_ame":false}
 - premiere_save_project: {}
 - workspace_scan: {"path":"absolute workspace path"}
@@ -97,7 +100,7 @@ Rules:
 - Treat git_push as a remote write and request it only after a successful commit when the user asked for a push.
 - Use run_project_task instead of raw shell commands when test/build/lint/typecheck is enough.
 - For browser/app UI work, prefer a Shuvi-managed browser when isolation matters, then use window-scoped semantic UI tools first. Use ui_toggle and ui_expand_collapse for supported controls. ui_send_keys is a high-risk fallback only after an exact element is focused and semantic patterns are unavailable. pointer_click is a final high-risk coordinate fallback: inspect_screen first, use coordinates only when semantic UI/DOM control cannot target the control, and never repeat a failed coordinate click blindly.
-- For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_timeline/premiere_list_items for inspection, premiere_set_playhead for non-destructive navigation and premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media/premiere_insert_media/premiere_save_project for native editing. premiere_insert_media, premiere_trim_clip, premiere_move_clip and premiere_delete_clip are high risk because they change the timeline; premiere_export_sequence is high risk because it writes media and may start encoding; inspect the timeline first when practical. Use UI/vision fallbacks only for features not exposed through the bridge. Major sequence creation and timeline insert/overwrite actions automatically save and copy the current .prproj into a sibling 'Shuvi Backups' folder before editing when a normal project path is available.
+- For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_timeline/premiere_list_items for inspection, premiere_set_playhead for non-destructive navigation and premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media/premiere_insert_media/premiere_save_project for native editing. premiere_insert_media, premiere_trim_clip, premiere_move_clip, premiere_delete_clip and premiere_add_video_transition are high risk because they change the timeline; premiere_export_sequence is high risk because it writes media and may start encoding; inspect the timeline first when practical. Use UI/vision fallbacks only for features not exposed through the bridge. Major sequence creation and timeline insert/overwrite actions automatically save and copy the current .prproj into a sibling 'Shuvi Backups' folder before editing when a normal project path is available.
 - For managed Edge/Chrome sessions, prefer browser_dom_read/browser_dom_click/browser_dom_set_value/browser_navigate over visual coordinate actions because DOM selectors are more reliable.
 - browser_dom_click and browser_dom_set_value require selectors that match exactly one element; refine with browser_dom_read when ambiguous.
 - stop_managed_process may only target process roots that Shuvi launched itself.
@@ -219,6 +222,9 @@ enum ToolAction {
     PremiereTimeline,
     PremiereSetPlayhead { seconds: f64 },
     PremiereSetTrackMute { kind: String, track: u32, muted: bool },
+    PremiereSetClipEnabled { kind: String, track: u32, clip_index: u32, enabled: bool },
+    PremiereListVideoTransitions,
+    PremiereAddVideoTransition { track: u32, clip_index: u32, match_name: String, duration_seconds: f64, position: String, force_single_sided: bool },
     PremiereListItems,
     PremiereCreateBin { name: String },
     PremiereImportMedia { paths: Vec<String> },
@@ -483,6 +489,9 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_timeline"
         | "premiere_set_playhead"
         | "premiere_set_track_mute"
+        | "premiere_set_clip_enabled"
+        | "premiere_list_video_transitions"
+        | "premiere_add_video_transition"
         | "premiere_list_items"
         | "premiere_create_bin"
         | "premiere_import_media"
@@ -1704,6 +1713,85 @@ fn stage_tool(
                 if muted { "Mute Premiere track".to_string() } else { "Unmute Premiere track".to_string() },
                 format!("Set {kind} track {track} muted={muted}."),
                 RiskLevel::Medium,
+            )
+        }
+        "premiere_set_clip_enabled" => {
+            let kind = arg_string(&proposal.arguments, "kind")?.to_ascii_lowercase();
+            if !matches!(kind.as_str(), "video" | "audio") {
+                return Err("premiere_set_clip_enabled kind must be video or audio.".into());
+            }
+            let track = proposal.arguments.get("track").and_then(Value::as_u64).unwrap_or(0);
+            let clip_index = proposal.arguments.get("clip_index").and_then(Value::as_u64).unwrap_or(0);
+            if track > 128 || clip_index > 10_000 {
+                return Err("Premiere clip target is outside Shuvi's safety limits.".into());
+            }
+            let enabled = proposal.arguments
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| "premiere_set_clip_enabled requires enabled=true|false.".to_string())?;
+
+            (
+                ToolAction::PremiereSetClipEnabled {
+                    kind: kind.clone(),
+                    track: track as u32,
+                    clip_index: clip_index as u32,
+                    enabled,
+                },
+                if enabled { "Enable Premiere clip".to_string() } else { "Disable Premiere clip".to_string() },
+                format!("Set {kind} track {track}, clip #{clip_index} enabled={enabled}"),
+                RiskLevel::Medium,
+            )
+        }
+        "premiere_list_video_transitions" => (
+            ToolAction::PremiereListVideoTransitions,
+            "List Premiere video transitions".to_string(),
+            "Read installed Premiere video transition match names.".to_string(),
+            RiskLevel::Low,
+        ),
+        "premiere_add_video_transition" => {
+            let track = proposal.arguments.get("track").and_then(Value::as_u64).unwrap_or(0);
+            let clip_index = proposal.arguments.get("clip_index").and_then(Value::as_u64).unwrap_or(0);
+            if track > 128 || clip_index > 10_000 {
+                return Err("Premiere transition target is outside Shuvi's safety limits.".into());
+            }
+
+            let match_name = arg_string(&proposal.arguments, "match_name")?;
+            if match_name.chars().count() > 240 {
+                return Err("Premiere transition match name is too long.".into());
+            }
+
+            let duration_seconds = proposal.arguments
+                .get("duration_seconds")
+                .and_then(Value::as_f64)
+                .ok_or_else(|| "premiere_add_video_transition requires duration_seconds.".to_string())?;
+            if !duration_seconds.is_finite() || duration_seconds <= 0.0 || duration_seconds > 60.0 {
+                return Err("Premiere transition duration must be greater than 0 and at most 60 seconds.".into());
+            }
+
+            let position = arg_string(&proposal.arguments, "position")?.to_ascii_lowercase();
+            if !matches!(position.as_str(), "start" | "end") {
+                return Err("Premiere transition position must be start or end.".into());
+            }
+
+            let force_single_sided = proposal.arguments
+                .get("force_single_sided")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+
+            (
+                ToolAction::PremiereAddVideoTransition {
+                    track: track as u32,
+                    clip_index: clip_index as u32,
+                    match_name: match_name.clone(),
+                    duration_seconds,
+                    position: position.clone(),
+                    force_single_sided,
+                },
+                "Add Premiere video transition".to_string(),
+                format!(
+                    "Add transition '{match_name}' to video track {track}, clip #{clip_index}, position={position}, duration={duration_seconds:.3}s, single_sided={force_single_sided}"
+                ),
+                RiskLevel::High,
             )
         }
         "premiere_list_items" => (
@@ -3842,6 +3930,71 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 success: true,
                 tool,
                 stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereSetClipEnabled { kind, track, clip_index, enabled } => {
+            let backup = backup_premiere_project(state).await?;
+            let value = state.premiere_bridge.request(
+                "set_clip_enabled",
+                json!({
+                    "kind": kind,
+                    "track": track,
+                    "clipIndex": clip_index,
+                    "enabled": enabled
+                }),
+                Duration::from_secs(20),
+            ).await?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "backup": backup,
+                    "result": value
+                })).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereListVideoTransitions => {
+            let value = state.premiere_bridge.request(
+                "list_video_transitions",
+                json!({}),
+                Duration::from_secs(12),
+            ).await?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereAddVideoTransition { track, clip_index, match_name, duration_seconds, position, force_single_sided } => {
+            let backup = backup_premiere_project(state).await?;
+            let value = state.premiere_bridge.request(
+                "add_video_transition",
+                json!({
+                    "track": track,
+                    "clipIndex": clip_index,
+                    "matchName": match_name,
+                    "durationSeconds": duration_seconds,
+                    "position": position,
+                    "forceSingleSided": force_single_sided
+                }),
+                Duration::from_secs(30),
+            ).await?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "backup": backup,
+                    "result": value
+                })).unwrap_or_else(|_| value.to_string()),
                 stderr: String::new(),
                 exit_code: Some(0),
             })
