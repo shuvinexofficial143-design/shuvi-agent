@@ -52,3 +52,9 @@ Shuvi's desktop agent creates a timestamped sibling `Shuvi Backups` copy of the 
 - rename and move project items between bins
 - relink clip media and attach proxies with desktop-side backup protection
 - insert Motion Graphics templates from .mogrt paths or Creative Cloud Libraries
+
+- set video/audio effect parameters by exact component + parameter names
+- keyframe video/audio parameters by exact native names
+- apply atomic named video/audio parameter recipes for grading, transform and mix workflows
+- perform adjacent-clip rolling edits with project backup protection
+- inspect an exact Premiere playhead frame through Shuvi's selected vision provider
