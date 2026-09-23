@@ -52,6 +52,24 @@ async function bridgeFetch(path, options = {}, timeoutMs = 2500) {
   }
 }
 
+function plainTickTime(value) {
+  if (!value) return null;
+  return {
+    seconds: typeof value.seconds === "number" ? value.seconds : null,
+    ticks: typeof value.ticks === "string" ? value.ticks : null
+  };
+}
+
+function plainFrameSize(value) {
+  if (!value) return null;
+  return {
+    x: typeof value.x === "number" ? value.x : null,
+    y: typeof value.y === "number" ? value.y : null,
+    width: typeof value.width === "number" ? value.width : null,
+    height: typeof value.height === "number" ? value.height : null
+  };
+}
+
 async function requireProject() {
   const project = await premiere.Project.getActiveProject();
   if (!project) throw new Error("No active Premiere project.");
@@ -79,9 +97,9 @@ async function inspectActiveContext() {
       videoTracks,
       audioTracks,
       captionTracks,
-      frameSize,
-      playerPosition,
-      endTime
+      frameSize: plainFrameSize(frameSize),
+      playerPosition: plainTickTime(playerPosition),
+      endTime: plainTickTime(endTime)
     ] = await Promise.all([
       sequence.getVideoTrackCount(),
       sequence.getAudioTrackCount(),
@@ -157,12 +175,17 @@ async function createBin(argumentsValue) {
   const project = await requireProject();
   const root = await project.getRootItem();
 
+  let transactionSucceeded = false;
   project.lockedAccess(() => {
     const action = root.createBinAction(name, true);
-    project.executeTransaction((compoundAction) => {
+    transactionSucceeded = project.executeTransaction((compoundAction) => {
       compoundAction.addAction(action);
     }, "Shuvi: Create Bin");
   });
+
+  if (!transactionSucceeded) {
+    throw new Error("Premiere could not create the requested bin.");
+  }
 
   const items = await root.getItems();
   const bins = items
@@ -452,6 +475,7 @@ async function insertMedia(argumentsValue) {
   const editor = premiere.SequenceEditor.getEditor(sequence);
   const time = premiere.TickTime.createWithSeconds(seconds);
 
+  let transactionSucceeded = false;
   project.lockedAccess(() => {
     const action =
       mode === "insert"
@@ -469,10 +493,14 @@ async function insertMedia(argumentsValue) {
             audioTrack
           );
 
-    project.executeTransaction((compoundAction) => {
+    transactionSucceeded = project.executeTransaction((compoundAction) => {
       compoundAction.addAction(action);
     }, mode === "insert" ? "Shuvi: Insert Media" : "Shuvi: Overwrite Media");
   });
+
+  if (!transactionSucceeded) {
+    throw new Error("Premiere rejected the timeline edit transaction.");
+  }
 
   return {
     edited: true,
