@@ -73,8 +73,8 @@
 - [x] deterministic clip trim foundation (video/audio, exact track + clip index)\n- [x] exact clip delete + ripple-delete foundation\n- [ ] rolling edit operations
 - [x] native insert/overwrite edit foundation with automatic .prproj backup
 - [x] same-track clip move + insert/overwrite foundations\n- [ ] vertical track moves, nest and multicam workflows
-- [ ] transitions, effects and effect-parameter control
-- [ ] keyframes, transforms, masks and speed changes
+- [x] video transition foundation + installed transition discovery\n- [x] video effect discovery/add + parameter inspection/static value control\n- [ ] broader effect types/preset workflows
+- [x] generic effect-parameter keyframe foundation\n- [ ] transform recipes, masks and speed changes
 - [ ] Lumetri color workflow and reusable grading presets
 - [ ] audio gain/mix/ducking and track-level workflows
 - [ ] captions/subtitles and graphics workflows
