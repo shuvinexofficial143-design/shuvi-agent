@@ -71,6 +71,8 @@ Available tools:
 - premiere_move_project_item: {"item_id":"project item id","target_bin_id":"destination bin id"}
 - premiere_relink_media: {"item_id":"clip project item id","new_path":"absolute replacement media path","override_compatibility":false}
 - premiere_attach_proxy: {"item_id":"clip project item id","proxy_path":"absolute proxy media path"}
+- premiere_batch_relink: {"items":[{"item_id":"clip project item id","new_path":"absolute replacement media path","override_compatibility":false}]}
+- premiere_batch_attach_proxy: {"items":[{"item_id":"clip project item id","proxy_path":"absolute proxy media path"}]}
 - premiere_insert_mogrt_path: {"path":"absolute .mogrt path","seconds":0,"video_track":0,"audio_track":0}
 - premiere_insert_mogrt_library: {"library_name":"library","element_name":"template","seconds":0,"video_track":0,"audio_track":0}
 - premiere_import_media: {"paths":["absolute media path 1","absolute media path 2"]}
@@ -104,6 +106,7 @@ Available tools:
 - premiere_list_saved_recipes: {}
 - premiere_save_recipe: {"name":"recipe name","kind":"video|audio","settings":[{"component_match_name":"optional exact match name","component_display_name":"optional exact display name","param_display_name":"exact parameter display name","value":1.0,"seconds":"optional keyframe time"}]}
 - premiere_apply_saved_recipe: {"name":"recipe name","track":0,"clip_index":0}
+- premiere_apply_saved_recipe_batch: {"name":"recipe name","targets":[{"track":0,"clip_index":0}]}
 - premiere_delete_recipe: {"name":"recipe name"}
 - premiere_list_markers: {}
 - premiere_add_marker: {"name":"marker name","marker_type":"Comment|Chapter|Segmentation|WebLink","seconds":10.0,"duration_seconds":0.0,"comments":"optional notes"}
@@ -279,6 +282,7 @@ enum ToolAction {
     PremiereListSavedRecipes,
     PremiereSaveRecipe { name: String, kind: String, settings: Vec<Value> },
     PremiereApplySavedRecipe { name: String, track: u32, clip_index: u32 },
+    PremiereApplySavedRecipeBatch { name: String, targets: Vec<Value> },
     PremiereDeleteRecipe { name: String },
     PremiereListMarkers,
     PremiereAddMarker { name: String, marker_type: String, seconds: f64, duration_seconds: f64, comments: String },
@@ -290,6 +294,8 @@ enum ToolAction {
     PremiereMoveProjectItem { item_id: String, target_bin_id: String },
     PremiereRelinkMedia { item_id: String, new_path: String, override_compatibility: bool },
     PremiereAttachProxy { item_id: String, proxy_path: String },
+    PremiereBatchRelink { items: Vec<Value> },
+    PremiereBatchAttachProxy { items: Vec<Value> },
     PremiereInsertMogrtPath { path: String, seconds: f64, video_track: u32, audio_track: u32 },
     PremiereInsertMogrtLibrary { library_name: String, element_name: String, seconds: f64, video_track: u32, audio_track: u32 },
     PremiereImportMedia { paths: Vec<String> },
@@ -587,6 +593,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_list_saved_recipes"
         | "premiere_save_recipe"
         | "premiere_apply_saved_recipe"
+        | "premiere_apply_saved_recipe_batch"
         | "premiere_delete_recipe"
         | "premiere_list_markers"
         | "premiere_add_marker"
@@ -598,6 +605,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_move_project_item"
         | "premiere_relink_media"
         | "premiere_attach_proxy"
+        | "premiere_batch_relink"
+        | "premiere_batch_attach_proxy"
         | "premiere_insert_mogrt_path"
         | "premiere_insert_mogrt_library"
         | "premiere_import_media"
@@ -2542,6 +2551,50 @@ fn stage_tool(
                 RiskLevel::High,
             )
         }
+        "premiere_apply_saved_recipe_batch" => {
+            let name = arg_string(&proposal.arguments, "name")?;
+            if name.chars().count() > 120 {
+                return Err("Premiere recipe name is too long.".into());
+            }
+
+            let targets = proposal.arguments
+                .get("targets")
+                .and_then(Value::as_array)
+                .cloned()
+                .ok_or_else(|| "premiere_apply_saved_recipe_batch requires a targets array.".to_string())?;
+
+            if targets.is_empty() || targets.len() > 100 {
+                return Err("Premiere batch recipe apply requires between 1 and 100 targets.".into());
+            }
+
+            let mut validated = Vec::with_capacity(targets.len());
+            for target in targets {
+                let object = target
+                    .as_object()
+                    .ok_or_else(|| "Each Premiere batch recipe target must be an object.".to_string())?;
+
+                let track = object.get("track").and_then(Value::as_u64).unwrap_or(0);
+                let clip_index = object.get("clip_index").and_then(Value::as_u64).unwrap_or(0);
+                if track > 128 || clip_index > 10_000 {
+                    return Err("Premiere batch recipe target is outside Shuvi's safety limits.".into());
+                }
+
+                validated.push(json!({
+                    "track": track,
+                    "clipIndex": clip_index
+                }));
+            }
+
+            (
+                ToolAction::PremiereApplySavedRecipeBatch {
+                    name: name.clone(),
+                    targets: validated.clone(),
+                },
+                "Apply saved Premiere recipe to multiple clips".to_string(),
+                format!("Apply saved recipe '{name}' to {} clip target(s).", validated.len()),
+                RiskLevel::High,
+            )
+        }
         "premiere_delete_recipe" => {
             let name = arg_string(&proposal.arguments, "name")?;
             if name.chars().count() > 120 {
@@ -2783,6 +2836,122 @@ fn stage_tool(
                 },
                 "Insert Premiere library Motion Graphics template".to_string(),
                 format!("Insert MOGRT '{element_name}' from library '{library_name}' at {seconds:.3}s."),
+                RiskLevel::High,
+            )
+        }
+        "premiere_batch_relink" => {
+            let items = proposal.arguments
+                .get("items")
+                .and_then(Value::as_array)
+                .cloned()
+                .ok_or_else(|| "premiere_batch_relink requires an items array.".to_string())?;
+
+            if items.is_empty() || items.len() > 100 {
+                return Err("Premiere batch relink requires between 1 and 100 items.".into());
+            }
+
+            let mut validated = Vec::with_capacity(items.len());
+            for item in items {
+                let object = item
+                    .as_object()
+                    .ok_or_else(|| "Each batch relink item must be an object.".to_string())?;
+
+                let item_id = object
+                    .get("item_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| "Each batch relink item requires item_id.".to_string())?
+                    .to_string();
+
+                if item_id.chars().count() > 240 {
+                    return Err("Premiere batch relink item id is too long.".into());
+                }
+
+                let new_path_raw = object
+                    .get("new_path")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| "Each batch relink item requires new_path.".to_string())?
+                    .to_string();
+                let new_path = absolute_path(new_path_raw)?;
+
+                if !Path::new(&new_path).is_file() {
+                    return Err(format!("Premiere batch relink media file does not exist: {new_path}"));
+                }
+
+                let override_compatibility = object
+                    .get("override_compatibility")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+
+                validated.push(json!({
+                    "itemId": item_id,
+                    "newPath": new_path,
+                    "overrideCompatibility": override_compatibility
+                }));
+            }
+
+            (
+                ToolAction::PremiereBatchRelink { items: validated.clone() },
+                "Batch relink Premiere media".to_string(),
+                format!("Relink {} Premiere project item(s).", validated.len()),
+                RiskLevel::High,
+            )
+        }
+        "premiere_batch_attach_proxy" => {
+            let items = proposal.arguments
+                .get("items")
+                .and_then(Value::as_array)
+                .cloned()
+                .ok_or_else(|| "premiere_batch_attach_proxy requires an items array.".to_string())?;
+
+            if items.is_empty() || items.len() > 100 {
+                return Err("Premiere batch proxy attach requires between 1 and 100 items.".into());
+            }
+
+            let mut validated = Vec::with_capacity(items.len());
+            for item in items {
+                let object = item
+                    .as_object()
+                    .ok_or_else(|| "Each batch proxy item must be an object.".to_string())?;
+
+                let item_id = object
+                    .get("item_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| "Each batch proxy item requires item_id.".to_string())?
+                    .to_string();
+
+                if item_id.chars().count() > 240 {
+                    return Err("Premiere batch proxy item id is too long.".into());
+                }
+
+                let proxy_path_raw = object
+                    .get("proxy_path")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| "Each batch proxy item requires proxy_path.".to_string())?
+                    .to_string();
+                let proxy_path = absolute_path(proxy_path_raw)?;
+
+                if !Path::new(&proxy_path).is_file() {
+                    return Err(format!("Premiere proxy file does not exist: {proxy_path}"));
+                }
+
+                validated.push(json!({
+                    "itemId": item_id,
+                    "proxyPath": proxy_path
+                }));
+            }
+
+            (
+                ToolAction::PremiereBatchAttachProxy { items: validated.clone() },
+                "Batch attach Premiere proxies".to_string(),
+                format!("Attach proxies to {} Premiere project item(s).", validated.len()),
                 RiskLevel::High,
             )
         }
@@ -5640,6 +5809,77 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 exit_code: Some(0),
             })
         }
+        ToolAction::PremiereApplySavedRecipeBatch { name, targets } => {
+            let recipes = read_premiere_recipes(app)?;
+            let recipe = recipes
+                .into_iter()
+                .find(|recipe| recipe.name.eq_ignore_ascii_case(&name))
+                .ok_or_else(|| format!("Saved Premiere recipe '{name}' was not found."))?;
+
+            validate_premiere_saved_recipe_settings(&recipe.settings)?;
+            let backup = backup_premiere_project(state).await?;
+            let action = if recipe.kind == "video" {
+                "apply_video_recipe"
+            } else if recipe.kind == "audio" {
+                "apply_audio_recipe"
+            } else {
+                return Err(format!("Saved Premiere recipe '{}' has invalid kind '{}'.", recipe.name, recipe.kind));
+            };
+
+            let total = targets.len();
+            let mut results = Vec::with_capacity(total);
+            let mut failures = 0_usize;
+
+            for target in targets {
+                let track = target.get("track").and_then(Value::as_u64).unwrap_or(0);
+                let clip_index = target.get("clipIndex").and_then(Value::as_u64).unwrap_or(0);
+                match state.premiere_bridge.request(
+                    action,
+                    json!({
+                        "track": track,
+                        "clipIndex": clip_index,
+                        "settings": recipe.settings.clone()
+                    }),
+                    Duration::from_secs(45),
+                ).await {
+                    Ok(result) => results.push(json!({
+                        "track": track,
+                        "clipIndex": clip_index,
+                        "success": true,
+                        "result": result
+                    })),
+                    Err(error) => {
+                        failures += 1;
+                        results.push(json!({
+                            "track": track,
+                            "clipIndex": clip_index,
+                            "success": false,
+                            "error": error
+                        }));
+                    }
+                }
+            }
+
+            Ok(ActionResult {
+                success: failures == 0,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "recipe": recipe.name,
+                    "kind": recipe.kind,
+                    "backup": backup,
+                    "total": total,
+                    "succeeded": total.saturating_sub(failures),
+                    "failed": failures,
+                    "targets": results
+                })).unwrap_or_default(),
+                stderr: if failures == 0 {
+                    String::new()
+                } else {
+                    format!("{failures} of {total} Premiere recipe applications failed; successful earlier targets were not rolled back.")
+                },
+                exit_code: Some(if failures == 0 { 0 } else { 1 }),
+            })
+        }
         ToolAction::PremiereDeleteRecipe { name } => {
             let mut recipes = read_premiere_recipes(app)?;
             let before = recipes.len();
@@ -5868,6 +6108,100 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     .unwrap_or_else(|_| value.to_string()),
                 stderr: String::new(),
                 exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereBatchRelink { items } => {
+            let backup = backup_premiere_project(state).await?;
+            let total = items.len();
+            let mut results = Vec::with_capacity(total);
+            let mut failures = 0_usize;
+
+            for item in items {
+                let item_id = item.get("itemId").and_then(Value::as_str).unwrap_or_default().to_string();
+                match state.premiere_bridge.request(
+                    "relink_media",
+                    item.clone(),
+                    Duration::from_secs(30),
+                ).await {
+                    Ok(result) => results.push(json!({
+                        "itemId": item_id,
+                        "success": true,
+                        "result": result
+                    })),
+                    Err(error) => {
+                        failures += 1;
+                        results.push(json!({
+                            "itemId": item_id,
+                            "success": false,
+                            "error": error
+                        }));
+                    }
+                }
+            }
+
+            Ok(ActionResult {
+                success: failures == 0,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "backup": backup,
+                    "total": total,
+                    "succeeded": total.saturating_sub(failures),
+                    "failed": failures,
+                    "items": results
+                })).unwrap_or_default(),
+                stderr: if failures == 0 {
+                    String::new()
+                } else {
+                    format!("{failures} of {total} Premiere relink operations failed; successful earlier items were not rolled back.")
+                },
+                exit_code: Some(if failures == 0 { 0 } else { 1 }),
+            })
+        }
+        ToolAction::PremiereBatchAttachProxy { items } => {
+            let backup = backup_premiere_project(state).await?;
+            let total = items.len();
+            let mut results = Vec::with_capacity(total);
+            let mut failures = 0_usize;
+
+            for item in items {
+                let item_id = item.get("itemId").and_then(Value::as_str).unwrap_or_default().to_string();
+                match state.premiere_bridge.request(
+                    "attach_proxy",
+                    item.clone(),
+                    Duration::from_secs(30),
+                ).await {
+                    Ok(result) => results.push(json!({
+                        "itemId": item_id,
+                        "success": true,
+                        "result": result
+                    })),
+                    Err(error) => {
+                        failures += 1;
+                        results.push(json!({
+                            "itemId": item_id,
+                            "success": false,
+                            "error": error
+                        }));
+                    }
+                }
+            }
+
+            Ok(ActionResult {
+                success: failures == 0,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "backup": backup,
+                    "total": total,
+                    "succeeded": total.saturating_sub(failures),
+                    "failed": failures,
+                    "items": results
+                })).unwrap_or_default(),
+                stderr: if failures == 0 {
+                    String::new()
+                } else {
+                    format!("{failures} of {total} Premiere proxy operations failed; successful earlier items were not rolled back.")
+                },
+                exit_code: Some(if failures == 0 { 0 } else { 1 }),
             })
         }
         ToolAction::PremiereImportMedia { paths } => {
