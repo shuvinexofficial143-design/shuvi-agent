@@ -177,3 +177,14 @@ The UXP bridge now mirrors the video-effect architecture for audio clips: instal
 ## Premiere sequence markers
 
 Shuvi can inspect, add and remove active-sequence markers through Premiere's native Markers API. Marker reads expose deterministic indexes sorted by sequence time. Marker deletion is high-risk and creates a project backup before removal; marker creation remains permission-gated.
+
+
+## Premiere project organization
+
+The Premiere bridge can now walk the project-bin tree with bounded depth/item limits and expose stable project-item ids plus media path, offline state, proxy state and sequence state. Shuvi can rename and move project items through Premiere undoable project transactions.
+
+Media relink and proxy attachment use Premiere's native ClipProjectItem APIs. Because those operations are not undoable in Premiere's API, Shuvi classifies them high risk and writes a timestamped `.prproj` backup before the operation.
+
+## Premiere Motion Graphics templates
+
+Shuvi can insert a MOGRT either from an absolute `.mogrt` file path or by Creative Cloud Library name + element name through SequenceEditor. Both variants target an explicit timeline time and track indexes, are high risk, and create a project backup first.
