@@ -2305,6 +2305,171 @@ async function cloneClip(argumentsValue) {
   };
 }
 
+async function resolveNamedVideoParam(argumentsValue) {
+  const trackIndex = Number(argumentsValue?.track ?? 0);
+  const clipIndex = Number(argumentsValue?.clipIndex ?? 0);
+  const componentMatchName =
+    typeof argumentsValue?.componentMatchName === "string" && argumentsValue.componentMatchName.trim()
+      ? argumentsValue.componentMatchName.trim()
+      : null;
+  const componentDisplayName =
+    typeof argumentsValue?.componentDisplayName === "string" && argumentsValue.componentDisplayName.trim()
+      ? argumentsValue.componentDisplayName.trim()
+      : null;
+  const paramDisplayName =
+    typeof argumentsValue?.paramDisplayName === "string"
+      ? argumentsValue.paramDisplayName.trim()
+      : "";
+
+  if (!componentMatchName && !componentDisplayName) {
+    throw new Error("A component match name or display name is required.");
+  }
+  if (!paramDisplayName) {
+    throw new Error("A parameter display name is required.");
+  }
+
+  const target = await getVideoClipTarget(trackIndex, clipIndex);
+  const chain = await target.item.getComponentChain();
+  const componentCount = await chain.getComponentCount();
+  const componentMatches = [];
+
+  for (let componentIndex = 0; componentIndex < componentCount; componentIndex += 1) {
+    const component = await chain.getComponentAtIndex(componentIndex);
+    const [matchName, displayName] = await Promise.all([
+      component.getMatchName(),
+      component.getDisplayName()
+    ]);
+
+    const matchOk = componentMatchName == null || matchName === componentMatchName;
+    const displayOk = componentDisplayName == null || displayName === componentDisplayName;
+
+    if (matchOk && displayOk) {
+      componentMatches.push({ component, componentIndex, matchName, displayName });
+    }
+  }
+
+  if (componentMatches.length === 0) {
+    throw new Error("No Premiere video component matched the requested exact selector.");
+  }
+  if (componentMatches.length > 1) {
+    throw new Error(
+      "Video component selector matched " + componentMatches.length + " components. Refine the selector."
+    );
+  }
+
+  const selected = componentMatches[0];
+  const paramCount = await selected.component.getParamCount();
+  const paramMatches = [];
+
+  for (let paramIndex = 0; paramIndex < paramCount; paramIndex += 1) {
+    const param = await selected.component.getParam(paramIndex);
+    if ((param.displayName || "") === paramDisplayName) {
+      paramMatches.push({ param, paramIndex });
+    }
+  }
+
+  if (paramMatches.length === 0) {
+    throw new Error("No Premiere video parameter matched display name: " + paramDisplayName);
+  }
+  if (paramMatches.length > 1) {
+    throw new Error(
+      "Video parameter name matched " + paramMatches.length + " parameters. Use index-based effect control."
+    );
+  }
+
+  return {
+    ...target,
+    component: selected.component,
+    componentIndex: selected.componentIndex,
+    componentMatchName: selected.matchName,
+    componentDisplayName: selected.displayName,
+    param: paramMatches[0].param,
+    paramIndex: paramMatches[0].paramIndex,
+    paramDisplayName
+  };
+}
+
+async function setVideoParamNamed(argumentsValue) {
+  const value = argumentsValue?.value;
+  const target = await resolveNamedVideoParam(argumentsValue);
+
+  if (await target.param.isTimeVarying()) {
+    throw new Error("This parameter is time-varying. Use the named keyframe command instead.");
+  }
+
+  const keyframe = await target.param.createKeyframe(value);
+  let transactionSucceeded = false;
+
+  target.project.lockedAccess(() => {
+    const action = target.param.createSetValueAction(keyframe, true);
+    transactionSucceeded = target.project.executeTransaction((compoundAction) => {
+      compoundAction.addAction(action);
+    }, "Shuvi: Set Named Video Parameter");
+  });
+
+  if (!transactionSucceeded) {
+    throw new Error("Premiere rejected the named video parameter transaction.");
+  }
+
+  return {
+    changed: true,
+    track: Number(argumentsValue?.track ?? 0),
+    clipIndex: Number(argumentsValue?.clipIndex ?? 0),
+    componentIndex: target.componentIndex,
+    componentMatchName: target.componentMatchName,
+    componentDisplayName: target.componentDisplayName,
+    paramIndex: target.paramIndex,
+    paramDisplayName: target.paramDisplayName,
+    value: plainEffectValue(value)
+  };
+}
+
+async function addVideoKeyframeNamed(argumentsValue) {
+  const seconds = Number(argumentsValue?.seconds);
+  const value = argumentsValue?.value;
+
+  if (!Number.isFinite(seconds) || seconds < 0 || seconds > 86400) {
+    throw new Error("Named video keyframe seconds must be between 0 and 86400.");
+  }
+
+  const target = await resolveNamedVideoParam(argumentsValue);
+
+  if (!(await target.param.areKeyframesSupported())) {
+    throw new Error("This named Premiere video parameter does not support keyframes.");
+  }
+
+  const keyframe = await target.param.createKeyframe(value);
+  keyframe.position = premiere.TickTime.createWithSeconds(seconds);
+  const alreadyTimeVarying = Boolean(await target.param.isTimeVarying());
+  let transactionSucceeded = false;
+
+  target.project.lockedAccess(() => {
+    transactionSucceeded = target.project.executeTransaction((compoundAction) => {
+      if (!alreadyTimeVarying) {
+        compoundAction.addAction(target.param.createSetTimeVaryingAction(true));
+      }
+      compoundAction.addAction(target.param.createAddKeyframeAction(keyframe));
+    }, "Shuvi: Add Named Video Keyframe");
+  });
+
+  if (!transactionSucceeded) {
+    throw new Error("Premiere rejected the named video keyframe transaction.");
+  }
+
+  return {
+    added: true,
+    track: Number(argumentsValue?.track ?? 0),
+    clipIndex: Number(argumentsValue?.clipIndex ?? 0),
+    componentIndex: target.componentIndex,
+    componentMatchName: target.componentMatchName,
+    componentDisplayName: target.componentDisplayName,
+    paramIndex: target.paramIndex,
+    paramDisplayName: target.paramDisplayName,
+    seconds,
+    value: plainEffectValue(value)
+  };
+}
+
 async function executeCommand(command) {
   switch (command.action) {
     case "inspect_context":
@@ -2353,8 +2518,12 @@ async function executeCommand(command) {
       return await addVideoEffect(command.arguments || {});
     case "set_effect_param":
       return await setEffectParam(command.arguments || {});
+    case "set_video_param_named":
+      return await setVideoParamNamed(command.arguments || {});
     case "add_effect_keyframe":
       return await addEffectKeyframe(command.arguments || {});
+    case "add_video_keyframe_named":
+      return await addVideoKeyframeNamed(command.arguments || {});
     case "list_audio_effects":
       return await listAudioEffects();
     case "inspect_audio_clip_effects":
