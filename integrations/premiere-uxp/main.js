@@ -3166,6 +3166,198 @@ async function exportTranscript(argumentsValue) {
   };
 }
 
+async function listTranscriptionLanguages() {
+  if (!premiere.Transcript || typeof premiere.Transcript.querySupportedLanguages !== "function") {
+    throw new Error("This Premiere version does not expose querySupportedLanguages; Premiere 26.3+ is required.");
+  }
+
+  const languages = premiere.Transcript.querySupportedLanguages();
+  const values = Array.isArray(languages) ? languages : [];
+
+  return {
+    count: values.length,
+    languages: values.map((language) => ({
+      displayString: language?.displayString || null,
+      languageCode: language?.languageCode || null,
+      locale: language?.locale || null,
+      packAvailable:
+        language?.languageCode &&
+        typeof premiere.Transcript.isLanguagePackAvailable === "function"
+          ? Boolean(premiere.Transcript.isLanguagePackAvailable(language.languageCode))
+          : null
+    }))
+  };
+}
+
+async function importTranscript(argumentsValue) {
+  const itemId =
+    typeof argumentsValue?.itemId === "string"
+      ? argumentsValue.itemId.trim()
+      : "";
+  const transcriptJson =
+    typeof argumentsValue?.transcriptJson === "string"
+      ? argumentsValue.transcriptJson
+      : "";
+
+  if (!itemId || !transcriptJson.trim()) {
+    throw new Error("itemId and transcriptJson are required.");
+  }
+
+  const { project, clip } = await requireClipProjectItemById(itemId);
+  if (!premiere.Transcript ||
+      typeof premiere.Transcript.importFromJSON !== "function" ||
+      typeof premiere.Transcript.createImportTextSegmentsAction !== "function") {
+    throw new Error("This Premiere version does not expose transcript import APIs.");
+  }
+
+  const textSegments = premiere.Transcript.importFromJSON(transcriptJson);
+  let transactionSucceeded = false;
+
+  project.lockedAccess(() => {
+    const action = premiere.Transcript.createImportTextSegmentsAction(
+      textSegments,
+      clip
+    );
+    transactionSucceeded = project.executeTransaction((compoundAction) => {
+      compoundAction.addAction(action);
+    }, "Shuvi: Import Transcript");
+  });
+
+  if (!transactionSucceeded) {
+    throw new Error("Premiere rejected the transcript import transaction.");
+  }
+
+  return {
+    imported: true,
+    itemId,
+    chars: transcriptJson.length
+  };
+}
+
+async function resolveSubsequenceTarget(sequence, target) {
+  const kind =
+    typeof target?.kind === "string"
+      ? target.kind.toLowerCase()
+      : "";
+  const trackIndex = Number(target?.track ?? 0);
+  const clipIndex = Number(target?.clipIndex ?? 0);
+
+  if (kind !== "video" && kind !== "audio") {
+    throw new Error("Subsequence target kind must be video or audio.");
+  }
+  if (!Number.isInteger(trackIndex) || trackIndex < 0 ||
+      !Number.isInteger(clipIndex) || clipIndex < 0) {
+    throw new Error("Subsequence track and clip indexes must be non-negative integers.");
+  }
+
+  const track =
+    kind === "video"
+      ? await sequence.getVideoTrack(trackIndex)
+      : await sequence.getAudioTrack(trackIndex);
+  if (!track) {
+    throw new Error("Requested subsequence track was not found.");
+  }
+
+  const items = await sortedClipItems(track);
+  const item = items[clipIndex];
+  if (!item) {
+    throw new Error(
+      "Clip index " + clipIndex + " was not found on " + kind + " track " + trackIndex + "."
+    );
+  }
+
+  return { item, kind, trackIndex, clipIndex };
+}
+
+async function replaceSequenceSelection(sequence, items) {
+  const selection = await sequence.getSelection();
+  const existing = await selection.getTrackItems();
+
+  for (const item of existing) {
+    selection.removeItem(item);
+  }
+  for (const item of items) {
+    selection.addItem(item, false);
+  }
+
+  const result = sequence.setSelection(selection);
+  if (result && typeof result.then === "function") {
+    return await result;
+  }
+  return result;
+}
+
+async function createSubsequence(argumentsValue) {
+  const targets = Array.isArray(argumentsValue?.targets)
+    ? argumentsValue.targets
+    : [];
+
+  if (!targets.length || targets.length > 64) {
+    throw new Error("Subsequence creation requires between 1 and 64 targets.");
+  }
+
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+
+  const previousSelection = await sequence.getSelection();
+  const previousItems = await previousSelection.getTrackItems();
+  const resolved = [];
+
+  for (const target of targets) {
+    resolved.push(await resolveSubsequenceTarget(sequence, target));
+  }
+
+  const uniqueItems = [];
+  const seen = new Set();
+  for (const entry of resolved) {
+    const key = entry.kind + ":" + entry.trackIndex + ":" + entry.clipIndex;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    uniqueItems.push(entry.item);
+  }
+
+  if (!uniqueItems.length) {
+    throw new Error("No unique Premiere clips were resolved for the subsequence.");
+  }
+
+  const selectionSet = await replaceSequenceSelection(sequence, uniqueItems);
+  if (selectionSet === false) {
+    throw new Error("Premiere could not set the exact subsequence selection.");
+  }
+
+  let newSequence;
+  try {
+    newSequence = await sequence.createSubsequence(true);
+  } finally {
+    try {
+      await replaceSequenceSelection(sequence, previousItems);
+    } catch {
+      // Best-effort restore of the user's prior selection.
+    }
+  }
+
+  if (!newSequence) {
+    throw new Error("Premiere did not return a new subsequence.");
+  }
+
+  let projectItemId = null;
+  try {
+    const projectItem = await newSequence.getProjectItem();
+    projectItemId = await projectItem.getId();
+  } catch {
+    projectItemId = null;
+  }
+
+  return {
+    created: true,
+    selectedClipCount: uniqueItems.length,
+    sequenceGuid: newSequence.guid || null,
+    sequenceName: newSequence.name || null,
+    projectItemId
+  };
+}
+
 async function executeCommand(command) {
   switch (command.action) {
     case "inspect_context":
@@ -3188,10 +3380,14 @@ async function executeCommand(command) {
       return await clearSourceInOut(command.arguments || {});
     case "create_subclip":
       return await createSubclip(command.arguments || {});
+    case "list_transcription_languages":
+      return await listTranscriptionLanguages();
     case "transcribe_item":
       return await transcribeItem(command.arguments || {});
     case "export_transcript":
       return await exportTranscript(command.arguments || {});
+    case "import_transcript":
+      return await importTranscript(command.arguments || {});
     case "attach_proxy":
       return await attachProxy(command.arguments || {});
     case "insert_mogrt_path":
@@ -3202,6 +3398,8 @@ async function executeCommand(command) {
       return await importMedia(command.arguments || {});
     case "create_sequence_from_media":
       return await createSequenceFromMedia(command.arguments || {});
+    case "create_subsequence":
+      return await createSubsequence(command.arguments || {});
     case "save_project":
       return await saveProject();
     case "inspect_timeline":
