@@ -23,6 +23,7 @@ for (const path of [
   "src-tauri/capabilities/default.json",
   "integrations/premiere-uxp/manifest.json",
   "src-tauri/src/lib.rs",
+  "src-tauri/src/premiere_bridge.rs",
   "integrations/premiere-uxp/manifest.json",
   "integrations/premiere-uxp/index.html",
   "integrations/premiere-uxp/main.js"
@@ -52,6 +53,12 @@ const premiereManifest = JSON.parse(read("integrations/premiere-uxp/manifest.jso
 if (premiereManifest?.manifestVersion !== 5) fail("Premiere UXP manifestVersion must be 5.");
 if (premiereManifest?.host?.app !== "premierepro") fail("Premiere UXP host must target premierepro.");
 if (premiereManifest?.host?.minVersion !== "25.6.0") fail("Premiere UXP minimum host version must be 25.6.0.");
+const premiereDomains = premiereManifest?.requiredPermissions?.network?.domains;
+if (!Array.isArray(premiereDomains) || !premiereDomains.includes("http://127.0.0.1:17361")) {
+  fail("Premiere bridge localhost permission is missing.");
+} else {
+  ok("Premiere bridge localhost permission checked.");
+}
 if (!Array.isArray(premiereManifest?.entrypoints) ||
     !premiereManifest.entrypoints.some((entry) => entry?.id === "shuvi-premiere-panel" && entry?.type === "panel")) {
   fail("Premiere UXP Shuvi panel entrypoint is missing.");
@@ -70,6 +77,13 @@ if (!Array.isArray(tauri?.bundle?.targets) || !tauri.bundle.targets.includes("ns
 
 const main = read("src/main.ts");
 const rust = read("src-tauri/src/lib.rs");
+const premiereBridgeRust = read("src-tauri/src/premiere_bridge.rs");
+if (!premiereBridgeRust.includes("127.0.0.1") ||
+    !premiereBridgeRust.includes("X-Shuvi-Token") && !premiereBridgeRust.includes("x-shuvi-token")) {
+  fail("Premiere bridge must stay localhost-only and token-authenticated.");
+} else {
+  ok("Premiere bridge localhost/token safety checked.");
+}
 
 const invokes = [...main.matchAll(/invoke(?:<[^>]+>)?\("([a-z0-9_]+)"/g)]
   .map((match) => match[1]);
