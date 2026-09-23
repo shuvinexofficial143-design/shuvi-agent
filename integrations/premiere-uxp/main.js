@@ -1792,14 +1792,337 @@ async function removeMarker(argumentsValue) {
   };
 }
 
+function asProjectItem(item) {
+  try {
+    return premiere.ProjectItem.cast(item);
+  } catch {
+    return null;
+  }
+}
+
+function asFolderItem(item) {
+  try {
+    return premiere.FolderItem.cast(item);
+  } catch {
+    return null;
+  }
+}
+
+function asClipProjectItem(item) {
+  try {
+    return premiere.ClipProjectItem.cast(item);
+  } catch {
+    return null;
+  }
+}
+
+async function projectItemId(item) {
+  const projectItem = asProjectItem(item);
+  if (!projectItem) return null;
+  try {
+    return await projectItem.getId();
+  } catch {
+    return null;
+  }
+}
+
+async function findProjectItemById(folder, wantedId, depth = 0) {
+  if (depth > 16) return null;
+
+  const folderId = await projectItemId(folder);
+  if (folderId === wantedId) return folder;
+
+  const items = await folder.getItems();
+  for (const item of items) {
+    const id = await projectItemId(item);
+    if (id === wantedId) return item;
+
+    const childFolder = asFolderItem(item);
+    if (childFolder) {
+      const nested = await findProjectItemById(childFolder, wantedId, depth + 1);
+      if (nested) return nested;
+    }
+  }
+
+  return null;
+}
+
+async function serializeProjectTreeItem(item, depth, budget) {
+  if (budget.remaining <= 0) return null;
+  budget.remaining -= 1;
+
+  const id = await projectItemId(item);
+  const folder = asFolderItem(item);
+  const clip = asClipProjectItem(item);
+
+  const result = {
+    id,
+    name: item?.name || null,
+    type: item?.type ?? null,
+    kind: folder ? "bin" : clip ? "clip" : "projectItem"
+  };
+
+  if (clip) {
+    try {
+      result.mediaPath = await clip.getMediaFilePath();
+    } catch {
+      result.mediaPath = null;
+    }
+    try {
+      result.offline = Boolean(await clip.isOffline());
+    } catch {
+      result.offline = null;
+    }
+    try {
+      result.hasProxy = Boolean(await clip.hasProxy());
+    } catch {
+      result.hasProxy = null;
+    }
+    try {
+      result.proxyPath = await clip.getProxyPath();
+    } catch {
+      result.proxyPath = null;
+    }
+    try {
+      result.canProxy = Boolean(await clip.canProxy());
+    } catch {
+      result.canProxy = null;
+    }
+    try {
+      result.canChangeMediaPath = Boolean(await clip.canChangeMediaPath());
+    } catch {
+      result.canChangeMediaPath = null;
+    }
+    try {
+      result.isSequence = Boolean(await clip.isSequence());
+    } catch {
+      result.isSequence = null;
+    }
+  }
+
+  if (folder && depth < 8) {
+    const children = await folder.getItems();
+    result.childCount = children.length;
+    result.children = [];
+
+    for (const child of children) {
+      if (budget.remaining <= 0) break;
+      const serialized = await serializeProjectTreeItem(child, depth + 1, budget);
+      if (serialized) result.children.push(serialized);
+    }
+    result.childrenTruncated = result.children.length < children.length;
+  }
+
+  return result;
+}
+
+async function projectTree() {
+  const project = await requireProject();
+  const root = await project.getRootItem();
+  const budget = { remaining: 2000 };
+  const tree = await serializeProjectTreeItem(root, 0, budget);
+
+  return {
+    projectName: project.name || null,
+    maxDepth: 8,
+    itemLimit: 2000,
+    truncated: budget.remaining <= 0,
+    tree
+  };
+}
+
+async function renameProjectItem(argumentsValue) {
+  const itemId =
+    typeof argumentsValue?.itemId === "string"
+      ? argumentsValue.itemId.trim()
+      : "";
+  const name =
+    typeof argumentsValue?.name === "string"
+      ? argumentsValue.name.trim()
+      : "";
+
+  if (!itemId || !name) throw new Error("itemId and name are required.");
+
+  const project = await requireProject();
+  const root = await project.getRootItem();
+  const item = await findProjectItemById(root, itemId);
+  if (!item) throw new Error("Premiere project item id was not found.");
+
+  const projectItem = asProjectItem(item);
+  if (!projectItem) throw new Error("Requested item cannot be renamed through ProjectItem.");
+
+  let transactionSucceeded = false;
+  project.lockedAccess(() => {
+    const action = projectItem.createSetNameAction(name);
+    transactionSucceeded = project.executeTransaction((compoundAction) => {
+      compoundAction.addAction(action);
+    }, "Shuvi: Rename Project Item");
+  });
+
+  if (!transactionSucceeded) {
+    throw new Error("Premiere rejected the project item rename transaction.");
+  }
+
+  return {
+    renamed: true,
+    itemId,
+    name
+  };
+}
+
+async function moveProjectItem(argumentsValue) {
+  const itemId =
+    typeof argumentsValue?.itemId === "string"
+      ? argumentsValue.itemId.trim()
+      : "";
+  const targetBinId =
+    typeof argumentsValue?.targetBinId === "string"
+      ? argumentsValue.targetBinId.trim()
+      : "";
+
+  if (!itemId || !targetBinId) {
+    throw new Error("itemId and targetBinId are required.");
+  }
+  if (itemId === targetBinId) {
+    throw new Error("A project item cannot be moved into itself.");
+  }
+
+  const project = await requireProject();
+  const root = await project.getRootItem();
+  const [item, targetCandidate] = await Promise.all([
+    findProjectItemById(root, itemId),
+    findProjectItemById(root, targetBinId)
+  ]);
+
+  if (!item) throw new Error("Premiere source project item id was not found.");
+  if (!targetCandidate) throw new Error("Premiere destination bin id was not found.");
+
+  const projectItem = asProjectItem(item);
+  const targetBin = asFolderItem(targetCandidate);
+  if (!projectItem) throw new Error("Requested source cannot be moved as a ProjectItem.");
+  if (!targetBin) throw new Error("Requested destination is not a Premiere bin.");
+
+  const sourceParent = await projectItem.getParentBin();
+  if (!sourceParent) throw new Error("Premiere source item has no movable parent bin.");
+
+  let transactionSucceeded = false;
+  project.lockedAccess(() => {
+    const action = sourceParent.createMoveItemAction(projectItem, targetBin);
+    transactionSucceeded = project.executeTransaction((compoundAction) => {
+      compoundAction.addAction(action);
+    }, "Shuvi: Move Project Item");
+  });
+
+  if (!transactionSucceeded) {
+    throw new Error("Premiere rejected the project item move transaction.");
+  }
+
+  return {
+    moved: true,
+    itemId,
+    targetBinId
+  };
+}
+
+async function relinkMedia(argumentsValue) {
+  const itemId =
+    typeof argumentsValue?.itemId === "string"
+      ? argumentsValue.itemId.trim()
+      : "";
+  const newPath =
+    typeof argumentsValue?.newPath === "string"
+      ? argumentsValue.newPath.trim()
+      : "";
+  const overrideCompatibility = Boolean(argumentsValue?.overrideCompatibility);
+
+  if (!itemId || !newPath) {
+    throw new Error("itemId and newPath are required.");
+  }
+
+  const project = await requireProject();
+  const root = await project.getRootItem();
+  const item = await findProjectItemById(root, itemId);
+  if (!item) throw new Error("Premiere clip project item id was not found.");
+
+  const clip = asClipProjectItem(item);
+  if (!clip) throw new Error("Requested item is not a clip project item.");
+
+  if (!(await clip.canChangeMediaPath())) {
+    throw new Error("Premiere reports that this project item's media path cannot be changed.");
+  }
+
+  const previousPath = await clip.getMediaFilePath();
+  const success = await clip.changeMediaFilePath(newPath, overrideCompatibility);
+  if (!success) throw new Error("Premiere could not relink the requested media.");
+
+  return {
+    relinked: true,
+    itemId,
+    previousPath,
+    newPath,
+    overrideCompatibility
+  };
+}
+
+async function attachProxy(argumentsValue) {
+  const itemId =
+    typeof argumentsValue?.itemId === "string"
+      ? argumentsValue.itemId.trim()
+      : "";
+  const proxyPath =
+    typeof argumentsValue?.proxyPath === "string"
+      ? argumentsValue.proxyPath.trim()
+      : "";
+
+  if (!itemId || !proxyPath) {
+    throw new Error("itemId and proxyPath are required.");
+  }
+
+  const project = await requireProject();
+  const root = await project.getRootItem();
+  const item = await findProjectItemById(root, itemId);
+  if (!item) throw new Error("Premiere clip project item id was not found.");
+
+  const clip = asClipProjectItem(item);
+  if (!clip) throw new Error("Requested item is not a clip project item.");
+
+  if (!(await clip.canProxy())) {
+    throw new Error("Premiere reports that this project item cannot use a proxy.");
+  }
+
+  const previousProxyPath = (await clip.hasProxy())
+    ? await clip.getProxyPath()
+    : null;
+
+  const success = await clip.attachProxy(proxyPath, false, false);
+  if (!success) throw new Error("Premiere could not attach the requested proxy.");
+
+  return {
+    attached: true,
+    itemId,
+    previousProxyPath,
+    proxyPath
+  };
+}
+
 async function executeCommand(command) {
   switch (command.action) {
     case "inspect_context":
       return await inspectActiveContext();
     case "list_root_items":
       return await listRootItems();
+    case "project_tree":
+      return await projectTree();
     case "create_bin":
       return await createBin(command.arguments || {});
+    case "rename_project_item":
+      return await renameProjectItem(command.arguments || {});
+    case "move_project_item":
+      return await moveProjectItem(command.arguments || {});
+    case "relink_media":
+      return await relinkMedia(command.arguments || {});
+    case "attach_proxy":
+      return await attachProxy(command.arguments || {});
     case "import_media":
       return await importMedia(command.arguments || {});
     case "create_sequence_from_media":
