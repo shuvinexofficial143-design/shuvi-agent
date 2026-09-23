@@ -63,6 +63,7 @@ Available tools:
 - premiere_context: {}
 - premiere_timeline: {}
 - premiere_set_playhead: {"seconds":12.5}
+- premiere_inspect_frame: {"seconds":12.5,"prompt":"what should Shuvi evaluate in the Premiere Program Monitor"}
 - premiere_list_items: {}
 - premiere_project_tree: {}
 - premiere_create_bin: {"name":"bin name"}
@@ -128,7 +129,7 @@ Rules:
 - Treat git_push as a remote write and request it only after a successful commit when the user asked for a push.
 - Use run_project_task instead of raw shell commands when test/build/lint/typecheck is enough.
 - For browser/app UI work, prefer a Shuvi-managed browser when isolation matters, then use window-scoped semantic UI tools first. Use ui_toggle and ui_expand_collapse for supported controls. ui_send_keys is a high-risk fallback only after an exact element is focused and semantic patterns are unavailable. pointer_click is a final high-risk coordinate fallback: inspect_screen first, use coordinates only when semantic UI/DOM control cannot target the control, and never repeat a failed coordinate click blindly.
-- For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_timeline/premiere_list_items/premiere_project_tree for inspection, premiere_set_playhead for non-destructive navigation and premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media/premiere_insert_media/premiere_save_project for native editing. premiere_insert_media, premiere_trim_clip, premiere_roll_edit, premiere_move_clip, premiere_clone_clip, premiere_delete_clip, premiere_add_video_transition, premiere_add_video_effect, premiere_set_effect_param, premiere_add_effect_keyframe, premiere_add_audio_effect, premiere_set_audio_effect_param and premiere_add_audio_effect_keyframe are high risk because they change the timeline or effect state; premiere_insert_mogrt_path and premiere_insert_mogrt_library are high risk because they add graphics to the timeline; premiere_export_sequence is high risk because it writes media and may start encoding; inspect the timeline first when practical. Use UI/vision fallbacks only for features not exposed through the bridge. Major sequence creation and timeline insert/overwrite actions automatically save and copy the current .prproj into a sibling 'Shuvi Backups' folder before editing when a normal project path is available.
+- For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_timeline/premiere_list_items/premiere_project_tree for inspection, premiere_set_playhead for non-destructive navigation, premiere_inspect_frame for playhead-positioned visual review and premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media/premiere_insert_media/premiere_save_project for native editing. premiere_insert_media, premiere_trim_clip, premiere_roll_edit, premiere_move_clip, premiere_clone_clip, premiere_delete_clip, premiere_add_video_transition, premiere_add_video_effect, premiere_set_effect_param, premiere_add_effect_keyframe, premiere_add_audio_effect, premiere_set_audio_effect_param and premiere_add_audio_effect_keyframe are high risk because they change the timeline or effect state; premiere_insert_mogrt_path and premiere_insert_mogrt_library are high risk because they add graphics to the timeline; premiere_export_sequence is high risk because it writes media and may start encoding; inspect the timeline first when practical. Use UI/vision fallbacks only for features not exposed through the bridge. Major sequence creation and timeline insert/overwrite actions automatically save and copy the current .prproj into a sibling 'Shuvi Backups' folder before editing when a normal project path is available.
 - For managed Edge/Chrome sessions, prefer browser_dom_read/browser_dom_click/browser_dom_set_value/browser_navigate over visual coordinate actions because DOM selectors are more reliable.
 - browser_dom_click and browser_dom_set_value require selectors that match exactly one element; refine with browser_dom_read when ambiguous.
 - stop_managed_process may only target process roots that Shuvi launched itself.
@@ -249,6 +250,7 @@ enum ToolAction {
     PremiereContext,
     PremiereTimeline,
     PremiereSetPlayhead { seconds: f64 },
+    PremiereInspectFrame { seconds: f64, prompt: String, provider: ProviderContext },
     PremiereSetTrackMute { kind: String, track: u32, muted: bool },
     PremiereSetClipEnabled { kind: String, track: u32, clip_index: u32, enabled: bool },
     PremiereListVideoTransitions,
@@ -544,6 +546,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_context"
         | "premiere_timeline"
         | "premiere_set_playhead"
+        | "premiere_inspect_frame"
         | "premiere_set_track_mute"
         | "premiere_set_clip_enabled"
         | "premiere_list_video_transitions"
@@ -1776,6 +1779,35 @@ fn stage_tool(
                 "Move Premiere playhead".to_string(),
                 format!("Move active sequence playhead to {seconds:.3}s."),
                 RiskLevel::Low,
+            )
+        }
+        "premiere_inspect_frame" => {
+            let seconds = proposal.arguments
+                .get("seconds")
+                .and_then(Value::as_f64)
+                .ok_or_else(|| "premiere_inspect_frame requires seconds.".to_string())?;
+            if !seconds.is_finite() || seconds < 0.0 || seconds > 86_400.0 {
+                return Err("Premiere frame-inspection time must be between 0 and 86400 seconds.".into());
+            }
+
+            let prompt = arg_string(&proposal.arguments, "prompt")?;
+            if prompt.chars().count() > 4_000 {
+                return Err("Premiere frame-inspection prompt is too long.".into());
+            }
+
+            let provider = provider_context
+                .ok_or_else(|| "Premiere frame inspection requires the active provider context.".to_string())?;
+
+            (
+                ToolAction::PremiereInspectFrame { seconds, prompt: prompt.clone(), provider: provider.clone() },
+                "Inspect Premiere frame with AI vision".to_string(),
+                format!(
+                    "Move Premiere playhead to {seconds:.3}s, capture the current screen, and send it to {}/{} for visual analysis: {}",
+                    provider.provider,
+                    provider.model,
+                    prompt
+                ),
+                RiskLevel::Medium,
             )
         }
         "premiere_set_track_mute" => {
@@ -4869,6 +4901,32 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 success: true,
                 tool,
                 stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereInspectFrame { seconds, prompt, provider } => {
+            state.premiere_bridge.request(
+                "set_playhead",
+                json!({ "seconds": seconds }),
+                Duration::from_secs(8),
+            ).await?;
+
+            tokio::time::sleep(Duration::from_millis(450)).await;
+
+            let path = capture_screen_png()?;
+            let analysis = analyze_png_with_provider(&provider, &prompt, &path).await?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: format!(
+                    "Premiere frame analysis at {seconds:.3}s from {}/{}:\n{}\nScreenshot: {}",
+                    provider.provider,
+                    provider.model,
+                    analysis,
+                    path.display()
+                ),
                 stderr: String::new(),
                 exit_code: Some(0),
             })
