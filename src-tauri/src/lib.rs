@@ -91,7 +91,7 @@ Rules:
 - Treat git_push as a remote write and request it only after a successful commit when the user asked for a push.
 - Use run_project_task instead of raw shell commands when test/build/lint/typecheck is enough.
 - For browser/app UI work, prefer a Shuvi-managed browser when isolation matters, then use window-scoped semantic UI tools first. Use ui_toggle and ui_expand_collapse for supported controls. ui_send_keys is a high-risk fallback only after an exact element is focused and semantic patterns are unavailable. pointer_click is a final high-risk coordinate fallback: inspect_screen first, use coordinates only when semantic UI/DOM control cannot target the control, and never repeat a failed coordinate click blindly.
-- For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_timeline/premiere_list_items for inspection and premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media/premiere_insert_media/premiere_save_project for native editing. premiere_insert_media is high risk because it changes the timeline; inspect the timeline first when practical. Use UI/vision fallbacks only for features not exposed through the bridge.
+- For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_timeline/premiere_list_items for inspection and premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media/premiere_insert_media/premiere_save_project for native editing. premiere_insert_media is high risk because it changes the timeline; inspect the timeline first when practical. Use UI/vision fallbacks only for features not exposed through the bridge. Major sequence creation and timeline insert/overwrite actions automatically save and copy the current .prproj into a sibling 'Shuvi Backups' folder before editing when a normal project path is available.
 - For managed Edge/Chrome sessions, prefer browser_dom_read/browser_dom_click/browser_dom_set_value/browser_navigate over visual coordinate actions because DOM selectors are more reliable.
 - browser_dom_click and browser_dom_set_value require selectors that match exactly one element; refine with browser_dom_read when ambiguous.
 - stop_managed_process may only target process roots that Shuvi launched itself.
@@ -2611,6 +2611,60 @@ fn write_workspace(app: &AppHandle, path: &str) -> Result<(), String> {
         .map_err(|error| format!("Could not save workspace setting: {error}"))
 }
 
+async fn backup_premiere_project(state: &ActionState) -> Result<Option<String>, String> {
+    state
+        .premiere_bridge
+        .request("save_project", json!({}), Duration::from_secs(15))
+        .await?;
+
+    let context = state
+        .premiere_bridge
+        .request("inspect_context", json!({}), Duration::from_secs(8))
+        .await?;
+
+    let Some(project_path) = context
+        .get("projectPath")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+
+    let source = Path::new(project_path);
+    if !source.is_file() {
+        return Ok(None);
+    }
+
+    let parent = source
+        .parent()
+        .ok_or_else(|| "Premiere project path has no parent directory.".to_string())?;
+    let backup_dir = parent.join("Shuvi Backups");
+    fs::create_dir_all(&backup_dir)
+        .map_err(|error| format!("Could not create Premiere backup directory: {error}"))?;
+
+    let stem = source
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("PremiereProject");
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("prproj");
+
+    let backup_path = backup_dir.join(format!(
+        "{}.shuvi-{}.{}",
+        stem,
+        now_ms(),
+        extension
+    ));
+
+    fs::copy(source, &backup_path)
+        .map_err(|error| format!("Could not back up Premiere project: {error}"))?;
+
+    Ok(Some(backup_path.display().to_string()))
+}
+
 fn truncate_output(value: String) -> String {
     if value.chars().count() <= MAX_TOOL_OUTPUT_CHARS {
         return value;
@@ -3617,6 +3671,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereCreateSequenceFromMedia { name, paths } => {
+            let backup = backup_premiere_project(state).await?;
             let value = state
                 .premiere_bridge
                 .request(
@@ -3629,13 +3684,17 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             Ok(ActionResult {
                 success: true,
                 tool,
-                stdout: serde_json::to_string_pretty(&value)
-                    .unwrap_or_else(|_| value.to_string()),
+                stdout: serde_json::to_string_pretty(&json!({
+                    "backup": backup,
+                    "result": value
+                }))
+                .unwrap_or_else(|_| value.to_string()),
                 stderr: String::new(),
                 exit_code: Some(0),
             })
         }
         ToolAction::PremiereInsertMedia { path, seconds, video_track, audio_track, mode } => {
+            let backup = backup_premiere_project(state).await?;
             let value = state.premiere_bridge.request(
                 "insert_media",
                 json!({
@@ -3650,7 +3709,10 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             Ok(ActionResult {
                 success: true,
                 tool,
-                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stdout: serde_json::to_string_pretty(&json!({
+                    "backup": backup,
+                    "result": value
+                })).unwrap_or_else(|_| value.to_string()),
                 stderr: String::new(),
                 exit_code: Some(0),
             })
