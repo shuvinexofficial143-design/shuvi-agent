@@ -2867,6 +2867,102 @@ async function applyAudioRecipe(argumentsValue) {
   };
 }
 
+async function rollEdit(argumentsValue) {
+  const kind =
+    typeof argumentsValue?.kind === "string"
+      ? argumentsValue.kind.toLowerCase()
+      : "";
+  const trackIndex = Number(argumentsValue?.track ?? 0);
+  const leftClipIndex = Number(argumentsValue?.leftClipIndex);
+  const rightClipIndex = Number(argumentsValue?.rightClipIndex);
+  const boundarySeconds = Number(argumentsValue?.boundarySeconds);
+
+  if (kind !== "video" && kind !== "audio") {
+    throw new Error("Roll-edit kind must be video or audio.");
+  }
+  if (!Number.isInteger(trackIndex) || trackIndex < 0) {
+    throw new Error("Track index must be a non-negative integer.");
+  }
+  if (!Number.isInteger(leftClipIndex) || leftClipIndex < 0 ||
+      !Number.isInteger(rightClipIndex) || rightClipIndex < 0) {
+    throw new Error("Roll-edit clip indexes must be non-negative integers.");
+  }
+  if (rightClipIndex !== leftClipIndex + 1) {
+    throw new Error("Roll edit requires adjacent timeline clip indexes.");
+  }
+  if (!Number.isFinite(boundarySeconds) || boundarySeconds < 0 || boundarySeconds > 86400) {
+    throw new Error("Roll-edit boundary must be between 0 and 86400 seconds.");
+  }
+
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+
+  const track =
+    kind === "video"
+      ? await sequence.getVideoTrack(trackIndex)
+      : await sequence.getAudioTrack(trackIndex);
+  if (!track) throw new Error("Requested Premiere track was not found.");
+
+  const items = await sortedClipItems(track);
+  const left = items[leftClipIndex];
+  const right = items[rightClipIndex];
+
+  if (!left || !right) {
+    throw new Error("One or both roll-edit clips were not found.");
+  }
+
+  const [leftStart, leftEnd, rightStart, rightEnd] = await Promise.all([
+    left.getStartTime(),
+    left.getEndTime(),
+    right.getStartTime(),
+    right.getEndTime()
+  ]);
+
+  const leftStartSeconds = leftStart?.seconds ?? 0;
+  const leftEndSeconds = leftEnd?.seconds ?? 0;
+  const rightStartSeconds = rightStart?.seconds ?? 0;
+  const rightEndSeconds = rightEnd?.seconds ?? 0;
+
+  if (boundarySeconds <= leftStartSeconds || boundarySeconds >= rightEndSeconds) {
+    throw new Error(
+      "Roll-edit boundary must stay after the left clip start and before the right clip end."
+    );
+  }
+
+  let transactionSucceeded = false;
+  project.lockedAccess(() => {
+    const leftAction = left.createSetEndAction(
+      premiere.TickTime.createWithSeconds(boundarySeconds)
+    );
+    const rightAction = right.createSetStartAction(
+      premiere.TickTime.createWithSeconds(boundarySeconds)
+    );
+
+    transactionSucceeded = project.executeTransaction((compoundAction) => {
+      compoundAction.addAction(leftAction);
+      compoundAction.addAction(rightAction);
+    }, "Shuvi: Roll Edit");
+  });
+
+  if (!transactionSucceeded) {
+    throw new Error("Premiere rejected the rolling edit transaction.");
+  }
+
+  return {
+    rolled: true,
+    kind,
+    track: trackIndex,
+    leftClipIndex,
+    rightClipIndex,
+    previousBoundary: {
+      leftEndSeconds,
+      rightStartSeconds
+    },
+    boundarySeconds
+  };
+}
+
 async function executeCommand(command) {
   switch (command.action) {
     case "inspect_context":
@@ -2949,6 +3045,8 @@ async function executeCommand(command) {
       return await insertMedia(command.arguments || {});
     case "trim_clip":
       return await trimClip(command.arguments || {});
+    case "roll_edit":
+      return await rollEdit(command.arguments || {});
     case "move_clip":
       return await moveClip(command.arguments || {});
     case "clone_clip":
