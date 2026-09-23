@@ -70,6 +70,7 @@ Available tools:
 - premiere_trim_clip: {"kind":"video|audio","track":0,"clip_index":0,"start_seconds":0.0,"end_seconds":5.0}
 - premiere_move_clip: {"kind":"video|audio","track":0,"clip_index":0,"delta_seconds":1.5}
 - premiere_delete_clip: {"kind":"video|audio","track":0,"clip_index":0,"ripple":true}
+- premiere_set_track_mute: {"kind":"video|audio","track":0,"muted":true}
 - premiere_export_sequence: {"output":"absolute output media path","preset":"optional absolute .epr preset path","queue_to_ame":false}
 - premiere_save_project: {}
 - workspace_scan: {"path":"absolute workspace path"}
@@ -223,6 +224,7 @@ enum ToolAction {
     PremiereTrimClip { kind: String, track: u32, clip_index: u32, start_seconds: Option<f64>, end_seconds: Option<f64> },
     PremiereMoveClip { kind: String, track: u32, clip_index: u32, delta_seconds: f64 },
     PremiereDeleteClip { kind: String, track: u32, clip_index: u32, ripple: bool },
+    PremiereSetTrackMute { kind: String, track: u32, muted: bool },
     PremiereExportSequence { output: String, preset: Option<String>, queue_to_ame: bool },
     PremiereSaveProject,
     WorkspaceScan { path: String },
@@ -485,6 +487,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_trim_clip"
         | "premiere_move_clip"
         | "premiere_delete_clip"
+        | "premiere_set_track_mute"
         | "premiere_export_sequence"
         | "premiere_save_project"
         | "workspace_scan"
@@ -1874,6 +1877,33 @@ fn stage_tool(
                 if ripple { "Ripple-delete Premiere clip".to_string() } else { "Delete Premiere clip".to_string() },
                 format!("Delete {kind} track {track}, clip #{clip_index}, ripple={ripple}"),
                 RiskLevel::High,
+            )
+        }
+        "premiere_set_track_mute" => {
+            let kind = arg_string(&proposal.arguments, "kind")?.to_ascii_lowercase();
+            if !matches!(kind.as_str(), "video" | "audio") {
+                return Err("premiere_set_track_mute kind must be video or audio.".into());
+            }
+
+            let track = proposal.arguments.get("track").and_then(Value::as_u64).unwrap_or(0);
+            if track > 128 {
+                return Err("Premiere track index is outside Shuvi's safety limit.".into());
+            }
+
+            let muted = proposal.arguments
+                .get("muted")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| "premiere_set_track_mute requires a boolean muted value.".to_string())?;
+
+            (
+                ToolAction::PremiereSetTrackMute {
+                    kind: kind.clone(),
+                    track: track as u32,
+                    muted,
+                },
+                if muted { "Mute Premiere track".to_string() } else { "Unmute Premiere track".to_string() },
+                format!("Set {kind} track {track} muted={muted}"),
+                RiskLevel::Medium,
             )
         }
         "premiere_export_sequence" => {
@@ -3941,6 +3971,25 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "backup": backup,
                     "result": value
                 })).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereSetTrackMute { kind, track, muted } => {
+            let value = state.premiere_bridge.request(
+                "set_track_mute",
+                json!({
+                    "kind": kind,
+                    "track": track,
+                    "muted": muted
+                }),
+                Duration::from_secs(10),
+            ).await?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
                 stderr: String::new(),
                 exit_code: Some(0),
             })
