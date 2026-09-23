@@ -719,7 +719,10 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
         proposal.tool === "workspace_scan" ||
         proposal.tool === "search_text" ||
         proposal.tool === "git_status" ||
-        proposal.tool === "git_diff"
+        proposal.tool === "git_diff" ||
+        proposal.tool === "premiere_bridge_status" ||
+        proposal.tool === "premiere_context" ||
+        proposal.tool === "premiere_list_items"
       )
         ? '<button id="chatAllowSession"></button>'
         : ""}
