@@ -2470,6 +2470,169 @@ async function addVideoKeyframeNamed(argumentsValue) {
   };
 }
 
+async function resolveNamedAudioParam(argumentsValue) {
+  const trackIndex = Number(argumentsValue?.track ?? 0);
+  const clipIndex = Number(argumentsValue?.clipIndex ?? 0);
+  const componentMatchName =
+    typeof argumentsValue?.componentMatchName === "string" && argumentsValue.componentMatchName.trim()
+      ? argumentsValue.componentMatchName.trim()
+      : null;
+  const componentDisplayName =
+    typeof argumentsValue?.componentDisplayName === "string" && argumentsValue.componentDisplayName.trim()
+      ? argumentsValue.componentDisplayName.trim()
+      : null;
+  const paramDisplayName =
+    typeof argumentsValue?.paramDisplayName === "string"
+      ? argumentsValue.paramDisplayName.trim()
+      : "";
+
+  if (!componentMatchName && !componentDisplayName) {
+    throw new Error("An audio component match name or display name is required.");
+  }
+  if (!paramDisplayName) {
+    throw new Error("An audio parameter display name is required.");
+  }
+
+  const target = await getAudioClipTarget(trackIndex, clipIndex);
+  const chain = await target.item.getComponentChain();
+  const componentCount = await chain.getComponentCount();
+  const componentMatches = [];
+
+  for (let componentIndex = 0; componentIndex < componentCount; componentIndex += 1) {
+    const component = await chain.getComponentAtIndex(componentIndex);
+    const [matchName, displayName] = await Promise.all([
+      component.getMatchName(),
+      component.getDisplayName()
+    ]);
+
+    const matchOk = componentMatchName == null || matchName === componentMatchName;
+    const displayOk = componentDisplayName == null || displayName === componentDisplayName;
+    if (matchOk && displayOk) {
+      componentMatches.push({ component, componentIndex, matchName, displayName });
+    }
+  }
+
+  if (componentMatches.length === 0) {
+    throw new Error("No Premiere audio component matched the requested exact selector.");
+  }
+  if (componentMatches.length > 1) {
+    throw new Error(
+      "Audio component selector matched " + componentMatches.length + " components. Refine the selector."
+    );
+  }
+
+  const selected = componentMatches[0];
+  const paramCount = await selected.component.getParamCount();
+  const paramMatches = [];
+
+  for (let paramIndex = 0; paramIndex < paramCount; paramIndex += 1) {
+    const param = await selected.component.getParam(paramIndex);
+    if ((param.displayName || "") === paramDisplayName) {
+      paramMatches.push({ param, paramIndex });
+    }
+  }
+
+  if (paramMatches.length === 0) {
+    throw new Error("No Premiere audio parameter matched display name: " + paramDisplayName);
+  }
+  if (paramMatches.length > 1) {
+    throw new Error(
+      "Audio parameter name matched " + paramMatches.length + " parameters. Use index-based audio effect control."
+    );
+  }
+
+  return {
+    ...target,
+    component: selected.component,
+    componentIndex: selected.componentIndex,
+    componentMatchName: selected.matchName,
+    componentDisplayName: selected.displayName,
+    param: paramMatches[0].param,
+    paramIndex: paramMatches[0].paramIndex,
+    paramDisplayName
+  };
+}
+
+async function setAudioParamNamed(argumentsValue) {
+  const value = argumentsValue?.value;
+  const target = await resolveNamedAudioParam(argumentsValue);
+
+  if (await target.param.isTimeVarying()) {
+    throw new Error("This named audio parameter is time-varying. Use the named audio keyframe command instead.");
+  }
+
+  const keyframe = await target.param.createKeyframe(value);
+  let transactionSucceeded = false;
+
+  target.project.lockedAccess(() => {
+    const action = target.param.createSetValueAction(keyframe, true);
+    transactionSucceeded = target.project.executeTransaction((compoundAction) => {
+      compoundAction.addAction(action);
+    }, "Shuvi: Set Named Audio Parameter");
+  });
+
+  if (!transactionSucceeded) {
+    throw new Error("Premiere rejected the named audio parameter transaction.");
+  }
+
+  return {
+    changed: true,
+    track: Number(argumentsValue?.track ?? 0),
+    clipIndex: Number(argumentsValue?.clipIndex ?? 0),
+    componentIndex: target.componentIndex,
+    componentMatchName: target.componentMatchName,
+    componentDisplayName: target.componentDisplayName,
+    paramIndex: target.paramIndex,
+    paramDisplayName: target.paramDisplayName,
+    value: plainEffectValue(value)
+  };
+}
+
+async function addAudioKeyframeNamed(argumentsValue) {
+  const seconds = Number(argumentsValue?.seconds);
+  const value = argumentsValue?.value;
+
+  if (!Number.isFinite(seconds) || seconds < 0 || seconds > 86400) {
+    throw new Error("Named audio keyframe seconds must be between 0 and 86400.");
+  }
+
+  const target = await resolveNamedAudioParam(argumentsValue);
+  if (!(await target.param.areKeyframesSupported())) {
+    throw new Error("This named Premiere audio parameter does not support keyframes.");
+  }
+
+  const keyframe = await target.param.createKeyframe(value);
+  keyframe.position = premiere.TickTime.createWithSeconds(seconds);
+  const alreadyTimeVarying = Boolean(await target.param.isTimeVarying());
+  let transactionSucceeded = false;
+
+  target.project.lockedAccess(() => {
+    transactionSucceeded = target.project.executeTransaction((compoundAction) => {
+      if (!alreadyTimeVarying) {
+        compoundAction.addAction(target.param.createSetTimeVaryingAction(true));
+      }
+      compoundAction.addAction(target.param.createAddKeyframeAction(keyframe));
+    }, "Shuvi: Add Named Audio Keyframe");
+  });
+
+  if (!transactionSucceeded) {
+    throw new Error("Premiere rejected the named audio keyframe transaction.");
+  }
+
+  return {
+    added: true,
+    track: Number(argumentsValue?.track ?? 0),
+    clipIndex: Number(argumentsValue?.clipIndex ?? 0),
+    componentIndex: target.componentIndex,
+    componentMatchName: target.componentMatchName,
+    componentDisplayName: target.componentDisplayName,
+    paramIndex: target.paramIndex,
+    paramDisplayName: target.paramDisplayName,
+    seconds,
+    value: plainEffectValue(value)
+  };
+}
+
 async function executeCommand(command) {
   switch (command.action) {
     case "inspect_context":
@@ -2532,8 +2695,12 @@ async function executeCommand(command) {
       return await addAudioEffect(command.arguments || {});
     case "set_audio_effect_param":
       return await setAudioEffectParam(command.arguments || {});
+    case "set_audio_param_named":
+      return await setAudioParamNamed(command.arguments || {});
     case "add_audio_effect_keyframe":
       return await addAudioEffectKeyframe(command.arguments || {});
+    case "add_audio_keyframe_named":
+      return await addAudioKeyframeNamed(command.arguments || {});
     case "list_markers":
       return await listMarkers();
     case "add_marker":
