@@ -43,3 +43,7 @@ Shuvi's desktop agent creates a timestamped sibling `Shuvi Backups` copy of the 
 - add video effects and transitions through Premiere transactions
 - set non-time-varying effect parameters
 - enable time-varying parameters and add effect keyframes
+
+- discover and add native audio effects by Premiere display name
+- inspect audio effect chains, change static parameters, and add keyframes
+- list/add/remove sequence markers for edit planning, review notes and beat/scene cues
