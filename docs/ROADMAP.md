@@ -68,7 +68,7 @@
 - [x] read-only active project / active sequence inspection scaffold
 - [x] authenticated localhost Shuvi desktop ↔ Premiere UXP command bridge + pairing UI
 - [x] active-project root item inspection + permission-gated media import
-- [x] recursive project tree + bin creation + rename/move + media relink foundation
+- [x] recursive project tree + bin creation + rename/move + media relink foundation\n- [x] source in/out controls + Premiere 26.3+ subclip creation foundation
 - [x] sequence-from-media creation + timeline track/clip inspection
 - [x] deterministic clip trim foundation (video/audio, exact track + clip index)
 - [x] exact clip delete + ripple-delete foundation
@@ -83,19 +83,19 @@
 - [x] named multi-parameter video recipe foundation for transform/effect workflows
 - [ ] masks and speed changes
 - [x] reusable named video parameter recipe foundation for Lumetri-style grading workflows
-- [ ] saved grading preset library + color-specific recipes
+- [x] persistent reusable local video/audio recipe library + batch recipe apply\n- [ ] curated color-specific preset packs
 - [x] audio effect discovery/add + parameter inspection/static value/keyframe foundation
 - [x] track mute control
 - [x] reusable named audio parameter recipe foundation
 - [ ] automatic gain/mix/ducking analysis recipes and track-level automation
 - [x] MOGRT insertion from file path or Creative Cloud Library
-- [ ] captions/subtitles and editable graphics parameter workflows
+- [x] clip transcription + bounded transcript export foundation\n- [ ] caption-track/subtitle generation and editable graphics parameter workflows
 - [x] proxy attach + offline/relink inspection foundation
-- [ ] batch proxy/relink recipes for large projects
+- [x] batch proxy attach and batch media relink workflows with partial-failure reporting
 - [x] active-sequence export + optional preset + Media Encoder queue handoff foundation
 - [x] playhead-aware Premiere frame inspection through Shuvi vision
-- [ ] automatic multi-frame preview-analyze-correct loop
+- [x] bounded multi-frame Premiere vision review foundation\n- [ ] automatic review→edit→re-review convergence loop
 - [x] timestamped .prproj backups before major sequence/timeline changes
 - [x] sequence marker list/add/remove foundation for edit planning
 - [x] atomic reusable parameter-recipe execution foundation
-- [ ] saved high-level recipes for reels, long-form, ads and cinematic edits
+- [x] saved high-level parameter recipe library foundation\n- [ ] curated reels, long-form, ads and cinematic recipe packs
