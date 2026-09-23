@@ -70,6 +70,8 @@ Available tools:
 - premiere_move_project_item: {"item_id":"project item id","target_bin_id":"destination bin id"}
 - premiere_relink_media: {"item_id":"clip project item id","new_path":"absolute replacement media path","override_compatibility":false}
 - premiere_attach_proxy: {"item_id":"clip project item id","proxy_path":"absolute proxy media path"}
+- premiere_insert_mogrt_path: {"path":"absolute .mogrt path","seconds":0,"video_track":0,"audio_track":0}
+- premiere_insert_mogrt_library: {"library_name":"library","element_name":"template","seconds":0,"video_track":0,"audio_track":0}
 - premiere_import_media: {"paths":["absolute media path 1","absolute media path 2"]}
 - premiere_create_sequence_from_media: {"name":"sequence name","paths":["absolute media path 1","absolute media path 2"]}
 - premiere_insert_media: {"path":"absolute media path","seconds":0,"video_track":0,"audio_track":0,"mode":"insert|overwrite"}
@@ -118,7 +120,7 @@ Rules:
 - Treat git_push as a remote write and request it only after a successful commit when the user asked for a push.
 - Use run_project_task instead of raw shell commands when test/build/lint/typecheck is enough.
 - For browser/app UI work, prefer a Shuvi-managed browser when isolation matters, then use window-scoped semantic UI tools first. Use ui_toggle and ui_expand_collapse for supported controls. ui_send_keys is a high-risk fallback only after an exact element is focused and semantic patterns are unavailable. pointer_click is a final high-risk coordinate fallback: inspect_screen first, use coordinates only when semantic UI/DOM control cannot target the control, and never repeat a failed coordinate click blindly.
-- For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_timeline/premiere_list_items/premiere_project_tree for inspection, premiere_set_playhead for non-destructive navigation and premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media/premiere_insert_media/premiere_save_project for native editing. premiere_insert_media, premiere_trim_clip, premiere_move_clip, premiere_delete_clip, premiere_add_video_transition, premiere_add_video_effect, premiere_set_effect_param, premiere_add_effect_keyframe, premiere_add_audio_effect, premiere_set_audio_effect_param and premiere_add_audio_effect_keyframe are high risk because they change the timeline or effect state; premiere_export_sequence is high risk because it writes media and may start encoding; inspect the timeline first when practical. Use UI/vision fallbacks only for features not exposed through the bridge. Major sequence creation and timeline insert/overwrite actions automatically save and copy the current .prproj into a sibling 'Shuvi Backups' folder before editing when a normal project path is available.
+- For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_timeline/premiere_list_items/premiere_project_tree for inspection, premiere_set_playhead for non-destructive navigation and premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media/premiere_insert_media/premiere_save_project for native editing. premiere_insert_media, premiere_trim_clip, premiere_move_clip, premiere_delete_clip, premiere_add_video_transition, premiere_add_video_effect, premiere_set_effect_param, premiere_add_effect_keyframe, premiere_add_audio_effect, premiere_set_audio_effect_param and premiere_add_audio_effect_keyframe are high risk because they change the timeline or effect state; premiere_insert_mogrt_path and premiere_insert_mogrt_library are high risk because they add graphics to the timeline; premiere_export_sequence is high risk because it writes media and may start encoding; inspect the timeline first when practical. Use UI/vision fallbacks only for features not exposed through the bridge. Major sequence creation and timeline insert/overwrite actions automatically save and copy the current .prproj into a sibling 'Shuvi Backups' folder before editing when a normal project path is available.
 - For managed Edge/Chrome sessions, prefer browser_dom_read/browser_dom_click/browser_dom_set_value/browser_navigate over visual coordinate actions because DOM selectors are more reliable.
 - browser_dom_click and browser_dom_set_value require selectors that match exactly one element; refine with browser_dom_read when ambiguous.
 - stop_managed_process may only target process roots that Shuvi launched itself.
@@ -263,6 +265,8 @@ enum ToolAction {
     PremiereMoveProjectItem { item_id: String, target_bin_id: String },
     PremiereRelinkMedia { item_id: String, new_path: String, override_compatibility: bool },
     PremiereAttachProxy { item_id: String, proxy_path: String },
+    PremiereInsertMogrtPath { path: String, seconds: f64, video_track: u32, audio_track: u32 },
+    PremiereInsertMogrtLibrary { library_name: String, element_name: String, seconds: f64, video_track: u32, audio_track: u32 },
     PremiereImportMedia { paths: Vec<String> },
     PremiereCreateSequenceFromMedia { name: String, paths: Vec<String> },
     PremiereInsertMedia { path: String, seconds: f64, video_track: u32, audio_track: u32, mode: String },
@@ -548,6 +552,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_move_project_item"
         | "premiere_relink_media"
         | "premiere_attach_proxy"
+        | "premiere_insert_mogrt_path"
+        | "premiere_insert_mogrt_library"
         | "premiere_import_media"
         | "premiere_create_sequence_from_media"
         | "premiere_insert_media"
@@ -2244,6 +2250,72 @@ fn stage_tool(
                 ToolAction::PremiereAttachProxy { item_id: item_id.clone(), proxy_path: proxy_path.clone() },
                 "Attach Premiere proxy".to_string(),
                 format!("Attach proxy {proxy_path} to clip project item {item_id}."),
+                RiskLevel::High,
+            )
+        }
+        "premiere_insert_mogrt_path" => {
+            let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
+            if !Path::new(&path).is_file() {
+                return Err("Premiere MOGRT file does not exist.".into());
+            }
+            let extension = Path::new(&path)
+                .extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if extension != "mogrt" {
+                return Err("premiere_insert_mogrt_path requires a .mogrt file.".into());
+            }
+
+            let seconds = proposal.arguments.get("seconds").and_then(Value::as_f64).unwrap_or(0.0);
+            let video_track = proposal.arguments.get("video_track").and_then(Value::as_u64).unwrap_or(0);
+            let audio_track = proposal.arguments.get("audio_track").and_then(Value::as_u64).unwrap_or(0);
+            if !seconds.is_finite() || seconds < 0.0 || seconds > 86_400.0 {
+                return Err("Premiere MOGRT insert time must be between 0 and 86400 seconds.".into());
+            }
+            if video_track > 128 || audio_track > 128 {
+                return Err("Premiere MOGRT track index is outside Shuvi's safety limit.".into());
+            }
+
+            (
+                ToolAction::PremiereInsertMogrtPath {
+                    path: path.clone(),
+                    seconds,
+                    video_track: video_track as u32,
+                    audio_track: audio_track as u32,
+                },
+                "Insert Premiere Motion Graphics template".to_string(),
+                format!("Insert MOGRT {path} at {seconds:.3}s on V{video_track}/A{audio_track}."),
+                RiskLevel::High,
+            )
+        }
+        "premiere_insert_mogrt_library" => {
+            let library_name = arg_string(&proposal.arguments, "library_name")?;
+            let element_name = arg_string(&proposal.arguments, "element_name")?;
+            if library_name.chars().count() > 240 || element_name.chars().count() > 240 {
+                return Err("Premiere MOGRT library/element name is too long.".into());
+            }
+
+            let seconds = proposal.arguments.get("seconds").and_then(Value::as_f64).unwrap_or(0.0);
+            let video_track = proposal.arguments.get("video_track").and_then(Value::as_u64).unwrap_or(0);
+            let audio_track = proposal.arguments.get("audio_track").and_then(Value::as_u64).unwrap_or(0);
+            if !seconds.is_finite() || seconds < 0.0 || seconds > 86_400.0 {
+                return Err("Premiere MOGRT insert time must be between 0 and 86400 seconds.".into());
+            }
+            if video_track > 128 || audio_track > 128 {
+                return Err("Premiere MOGRT track index is outside Shuvi's safety limit.".into());
+            }
+
+            (
+                ToolAction::PremiereInsertMogrtLibrary {
+                    library_name: library_name.clone(),
+                    element_name: element_name.clone(),
+                    seconds,
+                    video_track: video_track as u32,
+                    audio_track: audio_track as u32,
+                },
+                "Insert Premiere library Motion Graphics template".to_string(),
+                format!("Insert MOGRT '{element_name}' from library '{library_name}' at {seconds:.3}s."),
                 RiskLevel::High,
             )
         }
@@ -4795,6 +4867,49 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 "attach_proxy",
                 json!({ "itemId": item_id, "proxyPath": proxy_path }),
                 Duration::from_secs(30),
+            ).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value}))
+                    .unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereInsertMogrtPath { path, seconds, video_track, audio_track } => {
+            let backup = backup_premiere_project(state).await?;
+            let value = state.premiere_bridge.request(
+                "insert_mogrt_path",
+                json!({
+                    "path": path,
+                    "seconds": seconds,
+                    "videoTrack": video_track,
+                    "audioTrack": audio_track
+                }),
+                Duration::from_secs(45),
+            ).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value}))
+                    .unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereInsertMogrtLibrary { library_name, element_name, seconds, video_track, audio_track } => {
+            let backup = backup_premiere_project(state).await?;
+            let value = state.premiere_bridge.request(
+                "insert_mogrt_library",
+                json!({
+                    "libraryName": library_name,
+                    "elementName": element_name,
+                    "seconds": seconds,
+                    "videoTrack": video_track,
+                    "audioTrack": audio_track
+                }),
+                Duration::from_secs(45),
             ).await?;
             Ok(ActionResult {
                 success: true,
