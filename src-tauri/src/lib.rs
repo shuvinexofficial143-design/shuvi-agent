@@ -61,10 +61,13 @@ Available tools:
 - premiere_bridge_start: {}
 - premiere_bridge_status: {}
 - premiere_context: {}
+- premiere_timeline: {}
 - premiere_list_items: {}
 - premiere_create_bin: {"name":"bin name"}
 - premiere_import_media: {"paths":["absolute media path 1","absolute media path 2"]}
 - premiere_create_sequence_from_media: {"name":"sequence name","paths":["absolute media path 1","absolute media path 2"]}
+- premiere_insert_media: {"path":"absolute media path","seconds":0,"video_track":0,"audio_track":0,"mode":"insert|overwrite"}
+- premiere_save_project: {}
 - workspace_scan: {"path":"absolute workspace path"}
 - search_text: {"path":"absolute workspace path","query":"text to find"}
 - replace_text: {"path":"absolute file path","old":"exact old text","new":"replacement text"}
@@ -88,7 +91,7 @@ Rules:
 - Treat git_push as a remote write and request it only after a successful commit when the user asked for a push.
 - Use run_project_task instead of raw shell commands when test/build/lint/typecheck is enough.
 - For browser/app UI work, prefer a Shuvi-managed browser when isolation matters, then use window-scoped semantic UI tools first. Use ui_toggle and ui_expand_collapse for supported controls. ui_send_keys is a high-risk fallback only after an exact element is focused and semantic patterns are unavailable. pointer_click is a final high-risk coordinate fallback: inspect_screen first, use coordinates only when semantic UI/DOM control cannot target the control, and never repeat a failed coordinate click blindly.
-- For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_list_items/premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media through the dedicated UXP bridge; use UI/vision fallbacks only for features not exposed through the bridge.
+- For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_timeline/premiere_list_items for inspection and premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media/premiere_insert_media/premiere_save_project for native editing. premiere_insert_media is high risk because it changes the timeline; inspect the timeline first when practical. Use UI/vision fallbacks only for features not exposed through the bridge.
 - For managed Edge/Chrome sessions, prefer browser_dom_read/browser_dom_click/browser_dom_set_value/browser_navigate over visual coordinate actions because DOM selectors are more reliable.
 - browser_dom_click and browser_dom_set_value require selectors that match exactly one element; refine with browser_dom_read when ambiguous.
 - stop_managed_process may only target process roots that Shuvi launched itself.
@@ -207,10 +210,13 @@ enum ToolAction {
     PremiereBridgeStart,
     PremiereBridgeStatus,
     PremiereContext,
+    PremiereTimeline,
     PremiereListItems,
     PremiereCreateBin { name: String },
     PremiereImportMedia { paths: Vec<String> },
     PremiereCreateSequenceFromMedia { name: String, paths: Vec<String> },
+    PremiereInsertMedia { path: String, seconds: f64, video_track: u32, audio_track: u32, mode: String },
+    PremiereSaveProject,
     WorkspaceScan { path: String },
     SearchText { path: String, query: String },
     ReplaceText { path: String, old: String, new_value: String },
@@ -458,10 +464,13 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_bridge_start"
         | "premiere_bridge_status"
         | "premiere_context"
+        | "premiere_timeline"
         | "premiere_list_items"
         | "premiere_create_bin"
         | "premiere_import_media"
         | "premiere_create_sequence_from_media"
+        | "premiere_insert_media"
+        | "premiere_save_project"
         | "workspace_scan"
         | "search_text"
         | "replace_text"
@@ -1632,6 +1641,12 @@ fn stage_tool(
             "Read the active Premiere project, active sequence and basic timeline metadata through the paired UXP bridge.".to_string(),
             RiskLevel::Low,
         ),
+        "premiere_timeline" => (
+            ToolAction::PremiereTimeline,
+            "Inspect Premiere timeline".to_string(),
+            "Read active sequence tracks and clip metadata through the paired Premiere UXP bridge.".to_string(),
+            RiskLevel::Low,
+        ),
         "premiere_list_items" => (
             ToolAction::PremiereListItems,
             "List Premiere root project items".to_string(),
@@ -1713,6 +1728,43 @@ fn stage_tool(
                 RiskLevel::Medium,
             )
         }
+        "premiere_insert_media" => {
+            let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
+            if !Path::new(&path).is_file() {
+                return Err("Premiere media file does not exist.".into());
+            }
+            let seconds = proposal.arguments.get("seconds").and_then(Value::as_f64).unwrap_or(0.0);
+            if !seconds.is_finite() || seconds < 0.0 {
+                return Err("premiere_insert_media seconds must be zero or greater.".into());
+            }
+            let video_track = proposal.arguments.get("video_track").and_then(Value::as_u64).unwrap_or(0);
+            let audio_track = proposal.arguments.get("audio_track").and_then(Value::as_u64).unwrap_or(0);
+            if video_track > 128 || audio_track > 128 {
+                return Err("Premiere track index is outside Shuvi's safety limit.".into());
+            }
+            let mode = arg_string(&proposal.arguments, "mode")?.to_ascii_lowercase();
+            if !matches!(mode.as_str(), "insert" | "overwrite") {
+                return Err("premiere_insert_media mode must be insert or overwrite.".into());
+            }
+            (
+                ToolAction::PremiereInsertMedia {
+                    path: path.clone(),
+                    seconds,
+                    video_track: video_track as u32,
+                    audio_track: audio_track as u32,
+                    mode: mode.clone(),
+                },
+                "Edit Premiere timeline".to_string(),
+                format!("{mode} media at {seconds:.3}s on V{video_track}/A{audio_track}: {path}"),
+                RiskLevel::High,
+            )
+        }
+        "premiere_save_project" => (
+            ToolAction::PremiereSaveProject,
+            "Save active Premiere project".to_string(),
+            "Save the currently active Premiere project through the paired UXP bridge.".to_string(),
+            RiskLevel::Medium,
+        ),
         "workspace_scan" => {
             let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
             (
@@ -3500,6 +3552,17 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 exit_code: Some(0),
             })
         }
+        ToolAction::PremiereTimeline => {
+            let value = state.premiere_bridge
+                .request("inspect_timeline", json!({}), Duration::from_secs(12)).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
         ToolAction::PremiereListItems => {
             let value = state
                 .premiere_bridge
@@ -3568,6 +3631,37 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 tool,
                 stdout: serde_json::to_string_pretty(&value)
                     .unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereInsertMedia { path, seconds, video_track, audio_track, mode } => {
+            let value = state.premiere_bridge.request(
+                "insert_media",
+                json!({
+                    "path": path,
+                    "seconds": seconds,
+                    "videoTrack": video_track,
+                    "audioTrack": audio_track,
+                    "mode": mode
+                }),
+                Duration::from_secs(30),
+            ).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereSaveProject => {
+            let value = state.premiere_bridge
+                .request("save_project", json!({}), Duration::from_secs(15)).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
                 stderr: String::new(),
                 exit_code: Some(0),
             })
