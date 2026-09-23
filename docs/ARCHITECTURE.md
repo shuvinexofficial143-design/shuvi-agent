@@ -168,3 +168,12 @@ The Premiere bridge can export the active sequence either immediately in Premier
 The native Premiere bridge now exposes installed video transitions and video filters by Adobe match name, reads a selected video clip's component chain, inspects component parameters, applies static parameter changes and can add time-based keyframes for parameters that advertise keyframe support.
 
 Effect writes are high-risk typed actions. Shuvi creates a timestamped `.prproj` backup before adding transitions/effects, changing effect parameters or adding keyframes. Clip targeting stays deterministic: video track index + clip index from the sorted timeline inspector, then component index + parameter index from effect inspection.
+
+
+## Premiere audio effects
+
+The UXP bridge now mirrors the video-effect architecture for audio clips: installed audio effects can be discovered by display name, appended to a deterministic audio clip target, inspected by component/parameter index, changed for static parameters, and keyframed when the parameter supports animation. Shuvi backs up the project before audio-effect writes.
+
+## Premiere sequence markers
+
+Shuvi can inspect, add and remove active-sequence markers through Premiere's native Markers API. Marker reads expose deterministic indexes sorted by sequence time. Marker deletion is high-risk and creates a project backup before removal; marker creation remains permission-gated.
