@@ -1,4 +1,4 @@
-const { entrypoints } = require("uxp");
+const { entrypoints, host, versions } = require("uxp");
 const premiere = require("premierepro");
 
 const BRIDGE_BASE = "http://127.0.0.1:17361";
@@ -52,11 +52,19 @@ async function bridgeFetch(path, options = {}, timeoutMs = 2500) {
   }
 }
 
+async function requireProject() {
+  const project = await premiere.Project.getActiveProject();
+  if (!project) throw new Error("No active Premiere project.");
+  return project;
+}
+
 async function inspectActiveContext() {
   const project = await premiere.Project.getActiveProject();
 
   if (!project) {
     return {
+      premiereVersion: host?.version || null,
+      uxpVersion: versions?.uxp || null,
       projectDetected: false,
       sequenceDetected: false
     };
@@ -96,6 +104,8 @@ async function inspectActiveContext() {
   }
 
   return {
+    premiereVersion: host?.version || null,
+    uxpVersion: versions?.uxp || null,
     projectDetected: true,
     projectGuid: project.guid || null,
     projectName: project.name || null,
@@ -107,9 +117,7 @@ async function inspectActiveContext() {
 }
 
 async function listRootItems() {
-  const project = await premiere.Project.getActiveProject();
-  if (!project) throw new Error("No active Premiere project.");
-
+  const project = await requireProject();
   const root = await project.getRootItem();
   const items = await root.getItems();
 
@@ -137,6 +145,40 @@ async function listRootItems() {
   };
 }
 
+async function createBin(argumentsValue) {
+  const name =
+    typeof argumentsValue?.name === "string"
+      ? argumentsValue.name.trim()
+      : "";
+
+  if (!name) throw new Error("Bin name is required.");
+  if (name.length > 120) throw new Error("Bin name is too long.");
+
+  const project = await requireProject();
+  const root = await project.getRootItem();
+
+  project.lockedAccess(() => {
+    const action = root.createBinAction(name, true);
+    project.executeTransaction((compoundAction) => {
+      compoundAction.addAction(action);
+    }, "Shuvi: Create Bin");
+  });
+
+  const items = await root.getItems();
+  const bins = items
+    .filter((item) => typeof item?.name === "string" && item.name.toLowerCase().startsWith(name.toLowerCase()))
+    .map((item) => ({
+      name: item.name,
+      type: item.type ?? null
+    }));
+
+  return {
+    created: true,
+    requestedName: name,
+    matchingRootItems: bins.slice(-10)
+  };
+}
+
 async function importMedia(argumentsValue) {
   const paths = Array.isArray(argumentsValue?.paths)
     ? argumentsValue.paths.filter((value) => typeof value === "string" && value.trim())
@@ -145,9 +187,7 @@ async function importMedia(argumentsValue) {
   if (!paths.length) throw new Error("No media paths were supplied.");
   if (paths.length > 100) throw new Error("A maximum of 100 files can be imported per command.");
 
-  const project = await premiere.Project.getActiveProject();
-  if (!project) throw new Error("No active Premiere project.");
-
+  const project = await requireProject();
   const root = await project.getRootItem();
   const success = await project.importFiles(paths, true, root, false);
 
@@ -159,14 +199,127 @@ async function importMedia(argumentsValue) {
   };
 }
 
+function normalizeMediaPath(value) {
+  return String(value || "")
+    .replaceAll("/", "\\")
+    .replace(/\\+$/, "")
+    .toLowerCase();
+}
+
+async function collectClipMedia(folder, output, depth = 0) {
+  if (depth > 8 || output.length >= 1000) return;
+
+  const items = await folder.getItems();
+
+  for (const item of items) {
+    if (output.length >= 1000) break;
+
+    try {
+      const clip = premiere.ClipProjectItem.cast(item);
+      const mediaPath = await clip.getMediaFilePath();
+
+      if (mediaPath) {
+        output.push({
+          clip,
+          mediaPath,
+          normalizedPath: normalizeMediaPath(mediaPath),
+          name: clip.name || item.name || null
+        });
+        continue;
+      }
+    } catch {
+      // Not a media clip.
+    }
+
+    try {
+      const childFolder = premiere.FolderItem.cast(item);
+      await collectClipMedia(childFolder, output, depth + 1);
+    } catch {
+      // Not a folder.
+    }
+  }
+}
+
+async function findClipItemsForPaths(project, root, paths) {
+  const wanted = new Map(paths.map((path) => [normalizeMediaPath(path), path]));
+  const media = [];
+  await collectClipMedia(root, media);
+
+  const matches = new Map();
+  for (const item of media) {
+    if (wanted.has(item.normalizedPath) && !matches.has(item.normalizedPath)) {
+      matches.set(item.normalizedPath, item.clip);
+    }
+  }
+
+  return {
+    clips: paths
+      .map((path) => matches.get(normalizeMediaPath(path)))
+      .filter(Boolean),
+    missing: paths.filter((path) => !matches.has(normalizeMediaPath(path)))
+  };
+}
+
+async function createSequenceFromMedia(argumentsValue) {
+  const name =
+    typeof argumentsValue?.name === "string"
+      ? argumentsValue.name.trim()
+      : "";
+  const paths = Array.isArray(argumentsValue?.paths)
+    ? argumentsValue.paths.filter((value) => typeof value === "string" && value.trim())
+    : [];
+
+  if (!name) throw new Error("Sequence name is required.");
+  if (!paths.length) throw new Error("At least one media path is required.");
+  if (paths.length > 50) throw new Error("A maximum of 50 media files can be used per sequence command.");
+
+  const project = await requireProject();
+  const root = await project.getRootItem();
+
+  let resolved = await findClipItemsForPaths(project, root, paths);
+
+  if (resolved.missing.length) {
+    const imported = await project.importFiles(resolved.missing, true, root, false);
+    if (!imported) throw new Error("Premiere could not import all missing media.");
+    resolved = await findClipItemsForPaths(project, root, paths);
+  }
+
+  if (resolved.missing.length) {
+    throw new Error(
+      "Premiere could not resolve imported media: " + resolved.missing.join(", ")
+    );
+  }
+
+  const sequence = await project.createSequenceFromMedia(
+    name,
+    resolved.clips,
+    root
+  );
+
+  if (!sequence) throw new Error("Premiere did not return the created sequence.");
+
+  await project.setActiveSequence(sequence);
+
+  return {
+    created: true,
+    sequenceGuid: sequence.guid || null,
+    sequenceName: sequence.name || name,
+    mediaCount: resolved.clips.length
+  };
+}
+
 async function executeCommand(command) {
   switch (command.action) {
     case "inspect_context":
       return await inspectActiveContext();
     case "list_root_items":
       return await listRootItems();
+    case "create_bin":
+      return await createBin(command.arguments || {});
     case "import_media":
       return await importMedia(command.arguments || {});
+    case "create_sequence_from_media":
+      return await createSequenceFromMedia(command.arguments || {});
     default:
       throw new Error("Unsupported Shuvi Premiere command: " + command.action);
   }
@@ -265,7 +418,7 @@ entrypoints.setup({
         if (bridgeToken) startPolling();
       },
       hide() {
-        // Keep the short polling loop active while Premiere is running so Shuvi can finish a task.
+        // Keep polling while Premiere is running so Shuvi can finish an approved task.
       },
       destroy() {
         if (pollTimer) clearInterval(pollTimer);
