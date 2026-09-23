@@ -1052,6 +1052,311 @@ async function addVideoTransition(argumentsValue) {
   };
 }
 
+function plainEffectValue(value) {
+  if (value == null) return null;
+  if (typeof value === "number" || typeof value === "string" || typeof value === "boolean") {
+    return value;
+  }
+  if (Array.isArray(value)) return value.slice(0, 32).map(plainEffectValue);
+  if (typeof value === "object") {
+    const result = {};
+    for (const [key, entry] of Object.entries(value).slice(0, 32)) {
+      const plain = plainEffectValue(entry);
+      if (plain !== undefined) result[key] = plain;
+    }
+    return result;
+  }
+  return String(value);
+}
+
+async function getVideoClipTarget(trackIndex, clipIndex) {
+  if (!Number.isInteger(trackIndex) || trackIndex < 0) {
+    throw new Error("Video track index must be a non-negative integer.");
+  }
+  if (!Number.isInteger(clipIndex) || clipIndex < 0) {
+    throw new Error("Clip index must be a non-negative integer.");
+  }
+
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+
+  const track = await sequence.getVideoTrack(trackIndex);
+  if (!track) throw new Error("Requested Premiere video track was not found.");
+
+  const items = await sortedClipItems(track);
+  const item = items[clipIndex];
+  if (!item) {
+    throw new Error(
+      "Clip index " + clipIndex + " was not found on video track " + trackIndex + "."
+    );
+  }
+
+  return { project, sequence, track, item };
+}
+
+async function listVideoEffects() {
+  const [matchNames, displayNames] = await Promise.all([
+    premiere.VideoFilterFactory.getMatchNames(),
+    premiere.VideoFilterFactory.getDisplayNames()
+  ]);
+
+  const matches = Array.isArray(matchNames) ? matchNames : [];
+  const displays = Array.isArray(displayNames) ? displayNames : [];
+
+  return {
+    count: matches.length,
+    truncated: matches.length > 1500,
+    effects: matches.slice(0, 1500).map((matchName, index) => ({
+      matchName,
+      displayName: displays[index] || null
+    }))
+  };
+}
+
+async function inspectClipEffects(argumentsValue) {
+  const trackIndex = Number(argumentsValue?.track ?? 0);
+  const clipIndex = Number(argumentsValue?.clipIndex ?? 0);
+  const { item } = await getVideoClipTarget(trackIndex, clipIndex);
+  const chain = await item.getComponentChain();
+  const componentCount = await chain.getComponentCount();
+  const components = [];
+
+  for (let componentIndex = 0; componentIndex < componentCount && componentIndex < 128; componentIndex += 1) {
+    const component = await chain.getComponentAtIndex(componentIndex);
+    const [matchName, displayName] = await Promise.all([
+      component.getMatchName(),
+      component.getDisplayName()
+    ]);
+    const paramCount = await component.getParamCount();
+    const params = [];
+
+    for (let paramIndex = 0; paramIndex < paramCount && paramIndex < 128; paramIndex += 1) {
+      const param = await component.getParam(paramIndex);
+      let startValue = null;
+      let keyframesSupported = false;
+      let timeVarying = false;
+      let keyframeCount = 0;
+
+      try {
+        const start = await param.getStartValue();
+        startValue = plainEffectValue(start?.value ?? start);
+      } catch {
+        startValue = null;
+      }
+
+      try {
+        keyframesSupported = Boolean(await param.areKeyframesSupported());
+      } catch {
+        keyframesSupported = false;
+      }
+
+      try {
+        timeVarying = Boolean(await param.isTimeVarying());
+      } catch {
+        timeVarying = false;
+      }
+
+      if (keyframesSupported) {
+        try {
+          const times = await param.getKeyframeListAsTickTimes();
+          keyframeCount = Array.isArray(times) ? times.length : 0;
+        } catch {
+          keyframeCount = 0;
+        }
+      }
+
+      params.push({
+        paramIndex,
+        displayName: param.displayName || null,
+        startValue,
+        keyframesSupported,
+        timeVarying,
+        keyframeCount
+      });
+    }
+
+    components.push({
+      componentIndex,
+      matchName,
+      displayName,
+      paramCount,
+      params,
+      paramsTruncated: paramCount > 128
+    });
+  }
+
+  return {
+    track: trackIndex,
+    clipIndex,
+    componentCount,
+    components,
+    componentsTruncated: componentCount > 128
+  };
+}
+
+async function addVideoEffect(argumentsValue) {
+  const trackIndex = Number(argumentsValue?.track ?? 0);
+  const clipIndex = Number(argumentsValue?.clipIndex ?? 0);
+  const matchName =
+    typeof argumentsValue?.matchName === "string"
+      ? argumentsValue.matchName.trim()
+      : "";
+
+  if (!matchName) throw new Error("Video effect matchName is required.");
+
+  const installed = await premiere.VideoFilterFactory.getMatchNames();
+  if (!Array.isArray(installed) || !installed.includes(matchName)) {
+    throw new Error("Installed Premiere video effect was not found: " + matchName);
+  }
+
+  const { project, item } = await getVideoClipTarget(trackIndex, clipIndex);
+  const chain = await item.getComponentChain();
+  const component = await premiere.VideoFilterFactory.createComponent(matchName);
+
+  let transactionSucceeded = false;
+  project.lockedAccess(() => {
+    const action = chain.createAppendComponentAction(component);
+    transactionSucceeded = project.executeTransaction((compoundAction) => {
+      compoundAction.addAction(action);
+    }, "Shuvi: Add Video Effect");
+  });
+
+  if (!transactionSucceeded) {
+    throw new Error("Premiere rejected the video effect transaction.");
+  }
+
+  return {
+    added: true,
+    track: trackIndex,
+    clipIndex,
+    matchName
+  };
+}
+
+async function resolveEffectParam(trackIndex, clipIndex, componentIndex, paramIndex) {
+  if (!Number.isInteger(componentIndex) || componentIndex < 0) {
+    throw new Error("Component index must be a non-negative integer.");
+  }
+  if (!Number.isInteger(paramIndex) || paramIndex < 0) {
+    throw new Error("Parameter index must be a non-negative integer.");
+  }
+
+  const target = await getVideoClipTarget(trackIndex, clipIndex);
+  const chain = await target.item.getComponentChain();
+  const componentCount = await chain.getComponentCount();
+  if (componentIndex >= componentCount) {
+    throw new Error("Requested effect component index was not found.");
+  }
+
+  const component = await chain.getComponentAtIndex(componentIndex);
+  const paramCount = await component.getParamCount();
+  if (paramIndex >= paramCount) {
+    throw new Error("Requested effect parameter index was not found.");
+  }
+
+  const param = await component.getParam(paramIndex);
+  return { ...target, component, param };
+}
+
+async function setEffectParam(argumentsValue) {
+  const trackIndex = Number(argumentsValue?.track ?? 0);
+  const clipIndex = Number(argumentsValue?.clipIndex ?? 0);
+  const componentIndex = Number(argumentsValue?.componentIndex ?? 0);
+  const paramIndex = Number(argumentsValue?.paramIndex ?? 0);
+  const value = argumentsValue?.value;
+
+  const { project, component, param } = await resolveEffectParam(
+    trackIndex,
+    clipIndex,
+    componentIndex,
+    paramIndex
+  );
+
+  if (await param.isTimeVarying()) {
+    throw new Error("This parameter is time-varying. Use the keyframe command instead.");
+  }
+
+  const keyframe = await param.createKeyframe(value);
+  let transactionSucceeded = false;
+
+  project.lockedAccess(() => {
+    const action = param.createSetValueAction(keyframe, true);
+    transactionSucceeded = project.executeTransaction((compoundAction) => {
+      compoundAction.addAction(action);
+    }, "Shuvi: Set Effect Parameter");
+  });
+
+  if (!transactionSucceeded) {
+    throw new Error("Premiere rejected the effect parameter transaction.");
+  }
+
+  return {
+    changed: true,
+    track: trackIndex,
+    clipIndex,
+    componentIndex,
+    paramIndex,
+    componentMatchName: await component.getMatchName(),
+    paramDisplayName: param.displayName || null,
+    value: plainEffectValue(value)
+  };
+}
+
+async function addEffectKeyframe(argumentsValue) {
+  const trackIndex = Number(argumentsValue?.track ?? 0);
+  const clipIndex = Number(argumentsValue?.clipIndex ?? 0);
+  const componentIndex = Number(argumentsValue?.componentIndex ?? 0);
+  const paramIndex = Number(argumentsValue?.paramIndex ?? 0);
+  const seconds = Number(argumentsValue?.seconds);
+  const value = argumentsValue?.value;
+
+  if (!Number.isFinite(seconds) || seconds < 0 || seconds > 86400) {
+    throw new Error("Keyframe seconds must be between 0 and 86400.");
+  }
+
+  const { project, component, param } = await resolveEffectParam(
+    trackIndex,
+    clipIndex,
+    componentIndex,
+    paramIndex
+  );
+
+  if (!(await param.areKeyframesSupported())) {
+    throw new Error("This Premiere effect parameter does not support keyframes.");
+  }
+
+  const keyframe = await param.createKeyframe(value);
+  keyframe.position = premiere.TickTime.createWithSeconds(seconds);
+  const alreadyTimeVarying = Boolean(await param.isTimeVarying());
+
+  let transactionSucceeded = false;
+  project.lockedAccess(() => {
+    transactionSucceeded = project.executeTransaction((compoundAction) => {
+      if (!alreadyTimeVarying) {
+        compoundAction.addAction(param.createSetTimeVaryingAction(true));
+      }
+      compoundAction.addAction(param.createAddKeyframeAction(keyframe));
+    }, "Shuvi: Add Effect Keyframe");
+  });
+
+  if (!transactionSucceeded) {
+    throw new Error("Premiere rejected the effect keyframe transaction.");
+  }
+
+  return {
+    added: true,
+    track: trackIndex,
+    clipIndex,
+    componentIndex,
+    paramIndex,
+    componentMatchName: await component.getMatchName(),
+    paramDisplayName: param.displayName || null,
+    seconds,
+    value: plainEffectValue(value)
+  };
+}
+
 async function executeCommand(command) {
   switch (command.action) {
     case "inspect_context":
@@ -1078,6 +1383,16 @@ async function executeCommand(command) {
       return await listVideoTransitions();
     case "add_video_transition":
       return await addVideoTransition(command.arguments || {});
+    case "list_video_effects":
+      return await listVideoEffects();
+    case "inspect_clip_effects":
+      return await inspectClipEffects(command.arguments || {});
+    case "add_video_effect":
+      return await addVideoEffect(command.arguments || {});
+    case "set_effect_param":
+      return await setEffectParam(command.arguments || {});
+    case "add_effect_keyframe":
+      return await addEffectKeyframe(command.arguments || {});
     case "insert_media":
       return await insertMedia(command.arguments || {});
     case "trim_clip":
