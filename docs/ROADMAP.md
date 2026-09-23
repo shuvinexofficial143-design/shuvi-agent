@@ -69,8 +69,9 @@
 - [x] authenticated localhost Shuvi desktop ↔ Premiere UXP command bridge + pairing UI
 - [x] active-project root item inspection + permission-gated media import
 - [ ] bin creation/move/relink project organization
-- [ ] sequence creation and timeline track inspection
+- [x] sequence-from-media creation + timeline track/clip inspection
 - [ ] professional trim/ripple/rolling edit operations
+- [x] native insert/overwrite edit foundation with automatic .prproj backup
 - [ ] clip move/insert/overwrite/nest/multicam workflows
 - [ ] transitions, effects and effect-parameter control
 - [ ] keyframes, transforms, masks and speed changes
