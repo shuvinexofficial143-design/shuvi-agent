@@ -2963,6 +2963,150 @@ async function rollEdit(argumentsValue) {
   };
 }
 
+async function requireClipProjectItemById(itemId) {
+  const project = await requireProject();
+  const root = await project.getRootItem();
+  const item = await findProjectItemById(root, itemId);
+  if (!item) throw new Error("Premiere clip project item id was not found.");
+
+  const clip = asClipProjectItem(item);
+  if (!clip) throw new Error("Requested project item is not a clip project item.");
+
+  return { project, clip };
+}
+
+async function setSourceInOut(argumentsValue) {
+  const itemId =
+    typeof argumentsValue?.itemId === "string"
+      ? argumentsValue.itemId.trim()
+      : "";
+  const inSeconds = Number(argumentsValue?.inSeconds);
+  const outSeconds = Number(argumentsValue?.outSeconds);
+
+  if (!itemId) throw new Error("itemId is required.");
+  if (!Number.isFinite(inSeconds) || !Number.isFinite(outSeconds) ||
+      inSeconds < 0 || outSeconds <= inSeconds || outSeconds > 86400) {
+    throw new Error("Source in/out values are invalid.");
+  }
+
+  const { project, clip } = await requireClipProjectItemById(itemId);
+  let transactionSucceeded = false;
+
+  project.lockedAccess(() => {
+    const action = clip.createSetInOutPointsAction(
+      premiere.TickTime.createWithSeconds(inSeconds),
+      premiere.TickTime.createWithSeconds(outSeconds)
+    );
+
+    transactionSucceeded = project.executeTransaction((compoundAction) => {
+      compoundAction.addAction(action);
+    }, "Shuvi: Set Source In/Out");
+  });
+
+  if (!transactionSucceeded) {
+    throw new Error("Premiere rejected the source in/out transaction.");
+  }
+
+  return {
+    changed: true,
+    itemId,
+    inSeconds,
+    outSeconds
+  };
+}
+
+async function clearSourceInOut(argumentsValue) {
+  const itemId =
+    typeof argumentsValue?.itemId === "string"
+      ? argumentsValue.itemId.trim()
+      : "";
+
+  if (!itemId) throw new Error("itemId is required.");
+
+  const { project, clip } = await requireClipProjectItemById(itemId);
+  let transactionSucceeded = false;
+
+  project.lockedAccess(() => {
+    const action = clip.createClearInOutPointsAction();
+    transactionSucceeded = project.executeTransaction((compoundAction) => {
+      compoundAction.addAction(action);
+    }, "Shuvi: Clear Source In/Out");
+  });
+
+  if (!transactionSucceeded) {
+    throw new Error("Premiere rejected the source in/out clear transaction.");
+  }
+
+  return {
+    changed: true,
+    itemId
+  };
+}
+
+async function createSubclip(argumentsValue) {
+  const itemId =
+    typeof argumentsValue?.itemId === "string"
+      ? argumentsValue.itemId.trim()
+      : "";
+  const name =
+    typeof argumentsValue?.name === "string"
+      ? argumentsValue.name.trim()
+      : "";
+  const startSeconds = Number(argumentsValue?.startSeconds);
+  const endSeconds = Number(argumentsValue?.endSeconds);
+  const hardBoundaries = argumentsValue?.hardBoundaries !== false;
+  const takeVideo = argumentsValue?.takeVideo !== false;
+  const takeAudio = argumentsValue?.takeAudio !== false;
+
+  if (!itemId || !name) throw new Error("itemId and subclip name are required.");
+  if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) ||
+      startSeconds < 0 || endSeconds <= startSeconds || endSeconds > 86400) {
+    throw new Error("Subclip start/end values are invalid.");
+  }
+  if (!takeVideo && !takeAudio) {
+    throw new Error("Subclip must include video and/or audio.");
+  }
+
+  const { project, clip } = await requireClipProjectItemById(itemId);
+
+  if (typeof clip.createSubClipAction !== "function") {
+    throw new Error("This Premiere version does not expose createSubClipAction; Premiere 26.3+ is required.");
+  }
+
+  let transactionSucceeded = false;
+  project.lockedAccess(() => {
+    const action = clip.createSubClipAction(
+      name,
+      premiere.TickTime.createWithSeconds(startSeconds),
+      premiere.TickTime.createWithSeconds(endSeconds),
+      hardBoundaries,
+      {
+        takeVideo,
+        takeAudio
+      }
+    );
+
+    transactionSucceeded = project.executeTransaction((compoundAction) => {
+      compoundAction.addAction(action);
+    }, "Shuvi: Create Subclip");
+  });
+
+  if (!transactionSucceeded) {
+    throw new Error("Premiere rejected the subclip transaction.");
+  }
+
+  return {
+    created: true,
+    itemId,
+    name,
+    startSeconds,
+    endSeconds,
+    hardBoundaries,
+    takeVideo,
+    takeAudio
+  };
+}
+
 async function executeCommand(command) {
   switch (command.action) {
     case "inspect_context":
@@ -2979,6 +3123,12 @@ async function executeCommand(command) {
       return await moveProjectItem(command.arguments || {});
     case "relink_media":
       return await relinkMedia(command.arguments || {});
+    case "set_source_inout":
+      return await setSourceInOut(command.arguments || {});
+    case "clear_source_inout":
+      return await clearSourceInOut(command.arguments || {});
+    case "create_subclip":
+      return await createSubclip(command.arguments || {});
     case "attach_proxy":
       return await attachProxy(command.arguments || {});
     case "insert_mogrt_path":
