@@ -87,7 +87,9 @@ Available tools:
 - premiere_inspect_clip_effects: {"track":0,"clip_index":0}
 - premiere_add_video_effect: {"track":0,"clip_index":0,"match_name":"video effect match name"}
 - premiere_set_effect_param: {"track":0,"clip_index":0,"component_index":0,"param_index":0,"value":1.0}
+- premiere_set_video_param_named: {"track":0,"clip_index":0,"component_match_name":"optional exact match name","component_display_name":"optional exact display name","param_display_name":"exact parameter display name","value":1.0}
 - premiere_add_effect_keyframe: {"track":0,"clip_index":0,"component_index":0,"param_index":0,"seconds":1.0,"value":1.0}
+- premiere_add_video_keyframe_named: {"track":0,"clip_index":0,"component_match_name":"optional exact match name","component_display_name":"optional exact display name","param_display_name":"exact parameter display name","seconds":1.0,"value":1.0}
 - premiere_list_audio_effects: {}
 - premiere_inspect_audio_clip_effects: {"track":0,"clip_index":0}
 - premiere_add_audio_effect: {"track":0,"clip_index":0,"display_name":"audio effect display name"}
@@ -250,7 +252,9 @@ enum ToolAction {
     PremiereInspectClipEffects { track: u32, clip_index: u32 },
     PremiereAddVideoEffect { track: u32, clip_index: u32, match_name: String },
     PremiereSetEffectParam { track: u32, clip_index: u32, component_index: u32, param_index: u32, value: Value },
+    PremiereSetVideoParamNamed { track: u32, clip_index: u32, component_match_name: Option<String>, component_display_name: Option<String>, param_display_name: String, value: Value },
     PremiereAddEffectKeyframe { track: u32, clip_index: u32, component_index: u32, param_index: u32, seconds: f64, value: Value },
+    PremiereAddVideoKeyframeNamed { track: u32, clip_index: u32, component_match_name: Option<String>, component_display_name: Option<String>, param_display_name: String, seconds: f64, value: Value },
     PremiereListAudioEffects,
     PremiereInspectAudioClipEffects { track: u32, clip_index: u32 },
     PremiereAddAudioEffect { track: u32, clip_index: u32, display_name: String },
@@ -538,7 +542,9 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_inspect_clip_effects"
         | "premiere_add_video_effect"
         | "premiere_set_effect_param"
+        | "premiere_set_video_param_named"
         | "premiere_add_effect_keyframe"
+        | "premiere_add_video_keyframe_named"
         | "premiere_list_audio_effects"
         | "premiere_inspect_audio_clip_effects"
         | "premiere_add_audio_effect"
@@ -1970,6 +1976,98 @@ fn stage_tool(
                 "Add Premiere effect keyframe".to_string(),
                 format!(
                     "Add keyframe at {seconds:.3}s to video track {track}, clip #{clip_index}, component #{component_index}, parameter #{param_index}."
+                ),
+                RiskLevel::High,
+            )
+        }
+        "premiere_set_video_param_named" => {
+            let track = proposal.arguments.get("track").and_then(Value::as_u64).unwrap_or(0);
+            let clip_index = proposal.arguments.get("clip_index").and_then(Value::as_u64).unwrap_or(0);
+            if track > 128 || clip_index > 10_000 {
+                return Err("Premiere named video parameter target is outside Shuvi's safety limits.".into());
+            }
+
+            let component_match_name = arg_optional_string(&proposal.arguments, "component_match_name");
+            let component_display_name = arg_optional_string(&proposal.arguments, "component_display_name");
+            if component_match_name.is_none() && component_display_name.is_none() {
+                return Err("premiere_set_video_param_named requires component_match_name or component_display_name.".into());
+            }
+            for value in [component_match_name.as_ref(), component_display_name.as_ref()].into_iter().flatten() {
+                if value.chars().count() > 240 {
+                    return Err("Premiere component selector is too long.".into());
+                }
+            }
+
+            let param_display_name = arg_string(&proposal.arguments, "param_display_name")?;
+            if param_display_name.chars().count() > 240 {
+                return Err("Premiere parameter display name is too long.".into());
+            }
+
+            let value = proposal.arguments
+                .get("value")
+                .cloned()
+                .ok_or_else(|| "premiere_set_video_param_named requires value.".to_string())?;
+            if !matches!(value, Value::Bool(_) | Value::Number(_) | Value::String(_)) {
+                return Err("Named Premiere parameter value must be a boolean, number, or string.".into());
+            }
+
+            (
+                ToolAction::PremiereSetVideoParamNamed {
+                    track: track as u32,
+                    clip_index: clip_index as u32,
+                    component_match_name: component_match_name.clone(),
+                    component_display_name: component_display_name.clone(),
+                    param_display_name: param_display_name.clone(),
+                    value: value.clone(),
+                },
+                "Set Premiere video parameter by name".to_string(),
+                format!(
+                    "Set named video parameter '{param_display_name}' on track {track}, clip #{clip_index}; component_match={component_match_name:?}, component_display={component_display_name:?}."
+                ),
+                RiskLevel::High,
+            )
+        }
+        "premiere_add_video_keyframe_named" => {
+            let track = proposal.arguments.get("track").and_then(Value::as_u64).unwrap_or(0);
+            let clip_index = proposal.arguments.get("clip_index").and_then(Value::as_u64).unwrap_or(0);
+            if track > 128 || clip_index > 10_000 {
+                return Err("Premiere named video keyframe target is outside Shuvi's safety limits.".into());
+            }
+
+            let component_match_name = arg_optional_string(&proposal.arguments, "component_match_name");
+            let component_display_name = arg_optional_string(&proposal.arguments, "component_display_name");
+            if component_match_name.is_none() && component_display_name.is_none() {
+                return Err("premiere_add_video_keyframe_named requires component_match_name or component_display_name.".into());
+            }
+            let param_display_name = arg_string(&proposal.arguments, "param_display_name")?;
+            let seconds = proposal.arguments
+                .get("seconds")
+                .and_then(Value::as_f64)
+                .ok_or_else(|| "premiere_add_video_keyframe_named requires seconds.".to_string())?;
+            if !seconds.is_finite() || seconds < 0.0 || seconds > 86_400.0 {
+                return Err("Premiere named keyframe seconds must be between 0 and 86400.".into());
+            }
+            let value = proposal.arguments
+                .get("value")
+                .cloned()
+                .ok_or_else(|| "premiere_add_video_keyframe_named requires value.".to_string())?;
+            if !matches!(value, Value::Bool(_) | Value::Number(_) | Value::String(_)) {
+                return Err("Named Premiere keyframe value must be a boolean, number, or string.".into());
+            }
+
+            (
+                ToolAction::PremiereAddVideoKeyframeNamed {
+                    track: track as u32,
+                    clip_index: clip_index as u32,
+                    component_match_name: component_match_name.clone(),
+                    component_display_name: component_display_name.clone(),
+                    param_display_name: param_display_name.clone(),
+                    seconds,
+                    value: value.clone(),
+                },
+                "Add Premiere video keyframe by name".to_string(),
+                format!(
+                    "Add named keyframe '{param_display_name}' at {seconds:.3}s on track {track}, clip #{clip_index}."
                 ),
                 RiskLevel::High,
             )
@@ -4665,6 +4763,53 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "backup": backup,
                     "result": result
                 })).unwrap_or_else(|_| result.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereSetVideoParamNamed { track, clip_index, component_match_name, component_display_name, param_display_name, value } => {
+            let backup = backup_premiere_project(state).await?;
+            let result = state.premiere_bridge.request(
+                "set_video_param_named",
+                json!({
+                    "track": track,
+                    "clipIndex": clip_index,
+                    "componentMatchName": component_match_name,
+                    "componentDisplayName": component_display_name,
+                    "paramDisplayName": param_display_name,
+                    "value": value
+                }),
+                Duration::from_secs(30),
+            ).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": result}))
+                    .unwrap_or_else(|_| result.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereAddVideoKeyframeNamed { track, clip_index, component_match_name, component_display_name, param_display_name, seconds, value } => {
+            let backup = backup_premiere_project(state).await?;
+            let result = state.premiere_bridge.request(
+                "add_video_keyframe_named",
+                json!({
+                    "track": track,
+                    "clipIndex": clip_index,
+                    "componentMatchName": component_match_name,
+                    "componentDisplayName": component_display_name,
+                    "paramDisplayName": param_display_name,
+                    "seconds": seconds,
+                    "value": value
+                }),
+                Duration::from_secs(30),
+            ).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": result}))
+                    .unwrap_or_else(|_| result.to_string()),
                 stderr: String::new(),
                 exit_code: Some(0),
             })
