@@ -174,3 +174,21 @@ Next module: bridge pending-command/result lifecycle, bounded connections/payloa
 
 Estimate after Module N: code complete approximately 53%; runtime verified 0% this session; production readiness not established. These estimates do not count unsupported speed writes as implemented.
 Next module: native keyframe/transition lifecycle through existing named parameter resolution, then deterministic target guards and other pending professional workflows above.
+
+### Modules 1–2 / C — named keyframe and transition lifecycle
+- [x] Read native keyframe tick positions for exact named video/audio parameters with bounded results.
+- [x] Remove one exact inspected keyframe and set linear/hold/bezier interpolation through native transactions.
+- [x] Require the inspected project/sequence/media/clip timing/parameter signature; reject stale and ambiguous targets.
+- [x] Preserve high-risk permission, audit and mandatory checkpoint integration.
+- [x] Serialize native project/sequence GUIDs to strings in bridge observations.
+- [x] Inspect bounded keyframe values and known temporal interpolation where available.
+- [x] Bounded [start,end) range deletion with exact-count guard and explicit all-keys opt-in.
+- [x] Native video transition removal for one explicit clip start/end with high-risk approval and checkpoint.
+- [x] Twelve mocked lifecycle tests added; 33 Node tests, validation and frontend build passed.
+- [ ] Actual Premiere video/audio keyframe inspection, removal, interpolation and undo verification.
+- [ ] Broader keyframe value update operations, transforms/PointF, effect enable/remove and masks.
+- [ ] Real Premiere transition add/remove and range-deletion/undo verification.
+
+Estimate after Modules 1–2: code complete approximately 56%; runtime verified 0% this session; production readiness not established (0% acceptance-verified).
+
+Next: optional shared project/sequence/clip target expectations for existing destructive tools, preserving legacy callers. Then timeline/link/nesting capabilities, effects and curated recipes, audio, captions, MOGRT, diagnostics, review state and export. Rust check/tests and actual Premiere disposable-project verification remain pending.

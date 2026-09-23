@@ -53,6 +53,12 @@ async function bridgeFetch(path, options = {}, timeoutMs = 2500, sessionToken = 
   }
 }
 
+function plainGuid(value) {
+  if (value == null) return null;
+  const text = String(value);
+  return text && text !== "[object Object]" ? text : null;
+}
+
 function plainTickTime(value) {
   if (!value) return null;
   return {
@@ -111,7 +117,7 @@ async function inspectActiveContext() {
     ]);
 
     sequenceInfo = {
-      guid: sequence.guid || null,
+      guid: plainGuid(sequence.guid),
       name: sequence.name || null,
       videoTracks,
       audioTracks,
@@ -126,7 +132,7 @@ async function inspectActiveContext() {
     premiereVersion: host?.version || null,
     uxpVersion: versions?.uxp || null,
     projectDetected: true,
-    projectGuid: project.guid || null,
+    projectGuid: plainGuid(project.guid),
     projectName: project.name || null,
     projectPath: project.path || null,
     sequenceDetected: Boolean(sequence),
@@ -326,7 +332,7 @@ async function createSequenceFromMedia(argumentsValue) {
 
   return {
     created: true,
-    sequenceGuid: sequence.guid || null,
+    sequenceGuid: plainGuid(sequence.guid),
     sequenceName: sequence.name || name,
     mediaCount: resolved.clips.length
   };
@@ -443,7 +449,7 @@ async function inspectTimeline() {
   }
 
   return {
-    sequenceGuid: sequence.guid || null,
+    sequenceGuid: plainGuid(sequence.guid),
     sequenceName: sequence.name || null,
     truncated: itemBudget <= 0,
     videoTracks,
@@ -3353,7 +3359,7 @@ async function createSubsequence(argumentsValue) {
   return {
     created: true,
     selectedClipCount: uniqueItems.length,
-    sequenceGuid: newSequence.guid || null,
+    sequenceGuid: plainGuid(newSequence.guid),
     sequenceName: newSequence.name || null,
     projectItemId
   };
@@ -3559,6 +3565,137 @@ async function insertProjectItem(argumentsValue) {
   };
 }
 
+async function resolveKeyframeTarget(argumentsValue) {
+  if (argumentsValue.kind !== "video" && argumentsValue.kind !== "audio") throw new Error("Keyframe kind must be video or audio.");
+  const target = argumentsValue.kind === "video"
+    ? await resolveNamedVideoParam(argumentsValue) : await resolveNamedAudioParam(argumentsValue);
+  if (typeof target.param.getKeyframeListAsTickTimes !== "function" || !(await target.param.areKeyframesSupported())) {
+    throw new Error("This Premiere parameter does not expose native keyframe inspection.");
+  }
+  const [name, start, end, sourceIn, sourceOut, projectItem] = await Promise.all([
+    target.item.getName(), target.item.getStartTime(), target.item.getEndTime(),
+    target.item.getInPoint(), target.item.getOutPoint(), target.item.getProjectItem()
+  ]);
+  const projectItemIdValue = await projectItemId(projectItem);
+  const ticks = [start, end, sourceIn, sourceOut].map(time => time?.ticks);
+  const projectGuid = plainGuid(target.project.guid);
+  const sequenceGuid = plainGuid(target.sequence.guid);
+  if (!projectGuid || !sequenceGuid || !projectItemIdValue || ticks.some(value => typeof value !== "string")) {
+    throw new Error("Native identity/timing is unavailable; cannot safely identify the keyframe target.");
+  }
+  const signature = JSON.stringify([
+    projectGuid, sequenceGuid, argumentsValue.kind,
+    argumentsValue.track, argumentsValue.clipIndex, projectItemIdValue, name, ...ticks,
+    target.componentIndex, target.componentMatchName, target.componentDisplayName,
+    target.paramIndex, target.paramDisplayName
+  ]);
+  const times = await target.param.getKeyframeListAsTickTimes();
+  if (!Array.isArray(times) || times.length > 10000) throw new Error("Keyframe list exceeds the 10,000-key inspection safety limit.");
+  return { ...target, signature, times };
+}
+
+async function inspectKeyframes(argumentsValue) {
+  const target = await resolveKeyframeTarget(argumentsValue);
+  const keyframes = [];
+  for (const time of target.times.slice(0, 256)) {
+    const entry = { ...plainTickTime(time), value: null, valueAvailable: false, interpolation: null };
+    try {
+      const value = plainEffectValue(await target.param.getValueAtTime(time));
+      if (utf8ByteLength(JSON.stringify(value)) <= 256) {
+        entry.value = value;
+        entry.valueAvailable = true;
+      }
+    } catch { /* Some native parameter types cannot be read or serialized. */ }
+    try {
+      const keyframe = await target.param.getKeyframePtr(time);
+      const mode = await keyframe.getTemporalInterpolationMode();
+      entry.interpolation = ["LINEAR", "HOLD", "BEZIER"].find(name => premiere.Constants.InterpolationMode?.[name] === mode)?.toLowerCase() ?? null;
+    } catch { /* Report unavailable instead of guessing an interpolation mode. */ }
+    keyframes.push(entry);
+  }
+  return {
+    targetSignature: target.signature,
+    componentMatchName: target.componentMatchName, paramDisplayName: target.paramDisplayName,
+    timeDomain: "native_parameter_ticks", total: target.times.length,
+    truncated: target.times.length > 256,
+    keyframes,
+    supportedEdits: {
+      remove: typeof target.param.createRemoveKeyframeAction === "function",
+      interpolation: typeof target.param.createSetInterpolationAtKeyframeAction === "function"
+    }
+  };
+}
+
+async function removeKeyframeRange(argumentsValue) {
+  const { startSeconds, endSeconds, expectedCount, allowRemoveAll = false } = argumentsValue;
+  if (typeof startSeconds !== "number" || typeof endSeconds !== "number" ||
+      !Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || startSeconds < 0 || endSeconds <= startSeconds || endSeconds > 86400) {
+    throw new Error("Keyframe range requires 0 <= start < end <= 86400 in native parameter seconds.");
+  }
+  if (!Number.isInteger(expectedCount) || expectedCount < 1 || expectedCount > 256 || typeof allowRemoveAll !== "boolean") throw new Error("Range requires an expected count from 1 to 256 and a boolean all-keys policy.");
+  const target = await resolveKeyframeTarget(argumentsValue);
+  if (argumentsValue.expectedSignature !== target.signature) throw new Error("Premiere keyframe target changed; inspect again.");
+  if (target.times.some(time => !Number.isFinite(time.seconds) || typeof time.ticks !== "string")) throw new Error("Native keyframe timing is unavailable.");
+  const selected = target.times.filter(time => time.seconds >= startSeconds && time.seconds < endSeconds);
+  if (selected.length !== expectedCount) throw new Error("Keyframe count changed or does not match the inspected range; no keys removed.");
+  if (selected.length === target.times.length && !allowRemoveAll) throw new Error("Range would remove every keyframe; explicitly approve allow_remove_all or narrow the range.");
+  if (typeof target.param.createRemoveKeyframeAction !== "function") throw new Error("Native keyframe removal is unsupported.");
+  let succeeded = false;
+  target.project.lockedAccess(() => {
+    // Enumerate exact keys to give deterministic [start,end) semantics rather
+    // than assuming undocumented endpoint inclusion of the native range API.
+    const actions = selected.map(time => target.param.createRemoveKeyframeAction(time, true));
+    succeeded = target.project.executeTransaction(compound => {
+      for (const action of actions) compound.addAction(action);
+    }, "Shuvi: Remove Inspected Keyframe Range");
+  });
+  if (!succeeded) throw new Error("Premiere rejected the keyframe range transaction.");
+  return { removed: true, count: selected.length, ticks: selected.map(time => time.ticks), startSeconds, endSeconds, endExclusive: true };
+}
+
+async function removeVideoTransition(argumentsValue) {
+  const { track, clipIndex, position } = argumentsValue;
+  if (position !== "start" && position !== "end") throw new Error("Transition position must be start or end.");
+  const target = await getVideoClipTarget(track, clipIndex);
+  const nativePosition = premiere.Constants.TransitionPosition?.[position === "start" ? "START" : "END"];
+  if (typeof nativePosition !== "number" || typeof target.item.createRemoveVideoTransitionAction !== "function") throw new Error("Native transition removal is unsupported by this Premiere installation.");
+  let succeeded = false;
+  target.project.lockedAccess(() => {
+    const action = target.item.createRemoveVideoTransitionAction(nativePosition);
+    succeeded = target.project.executeTransaction(compound => compound.addAction(action), "Shuvi: Remove Video Transition");
+  });
+  if (!succeeded) throw new Error("Premiere rejected the transition removal transaction.");
+  return { transactionSucceeded: true, track, clipIndex, position, warning: "Native transaction accepted; transition presence/details were not independently inspected." };
+}
+
+async function editKeyframe(argumentsValue) {
+  if (!["remove", "interpolation"].includes(argumentsValue.operation)) throw new Error("Keyframe operation must be remove or interpolation.");
+  if (typeof argumentsValue.ticks !== "string" || !/^-?\d{1,30}$/.test(argumentsValue.ticks)) throw new Error("Use exact ticks returned by keyframe inspection.");
+  const target = await resolveKeyframeTarget(argumentsValue);
+  if (argumentsValue.expectedSignature !== target.signature) throw new Error("Premiere keyframe target changed; inspect again before editing.");
+  const matches = target.times.filter(time => time.ticks === argumentsValue.ticks);
+  if (matches.length !== 1) throw new Error("Requested native keyframe is missing or ambiguous; inspect again.");
+  const time = matches[0];
+  const operation = argumentsValue.operation;
+  let mode = null;
+  if (operation === "interpolation") {
+    const name = { linear: "LINEAR", hold: "HOLD", bezier: "BEZIER" }[argumentsValue.interpolation];
+    mode = name ? premiere.Constants.InterpolationMode?.[name] : undefined;
+    if (typeof mode !== "number" || typeof target.param.createSetInterpolationAtKeyframeAction !== "function") {
+      throw new Error("Requested interpolation is unsupported by this Premiere installation.");
+    }
+  } else if (typeof target.param.createRemoveKeyframeAction !== "function") throw new Error("Native keyframe removal is unsupported.");
+  let succeeded = false;
+  target.project.lockedAccess(() => {
+    const action = operation === "remove"
+      ? target.param.createRemoveKeyframeAction(time, true)
+      : target.param.createSetInterpolationAtKeyframeAction(time, mode, true);
+    succeeded = target.project.executeTransaction(compound => compound.addAction(action), "Shuvi: Edit Named Keyframe");
+  });
+  if (!succeeded) throw new Error("Premiere rejected the keyframe edit transaction.");
+  return { edited: true, operation, ticks: argumentsValue.ticks, interpolation: operation === "interpolation" ? argumentsValue.interpolation : null, targetSignature: target.signature };
+}
+
 async function inspectClipSpeed(argumentsValue) {
   const project = await requireProject();
   const sequence = await project.getActiveSequence();
@@ -3570,7 +3707,7 @@ async function inspectClipSpeed(argumentsValue) {
     typeof item.isSpeedReversed === "function" ? item.isSpeedReversed() : null
   ]);
   return {
-    projectGuid: project.guid || null, sequenceGuid: sequence.guid || null,
+    projectGuid: plainGuid(project.guid), sequenceGuid: plainGuid(sequence.guid),
     kind, track: trackIndex, clipIndex, name,
     startSeconds: start?.seconds ?? null, endSeconds: end?.seconds ?? null,
     sourceInSeconds: sourceIn?.seconds ?? null, sourceOutSeconds: sourceOut?.seconds ?? null,
@@ -3586,6 +3723,14 @@ async function planClipSpeed(argumentsValue) {
 
 async function executeCommand(command) {
   switch (command.action) {
+    case "remove_keyframe_range":
+      return await removeKeyframeRange(command.arguments || {});
+    case "remove_video_transition":
+      return await removeVideoTransition(command.arguments || {});
+    case "inspect_keyframes":
+      return await inspectKeyframes(command.arguments || {});
+    case "edit_keyframe":
+      return await editKeyframe(command.arguments || {});
     case "inspect_clip_speed":
       return await inspectClipSpeed(command.arguments || {});
     case "plan_clip_speed":

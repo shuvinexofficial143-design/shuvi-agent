@@ -12,6 +12,10 @@ use uuid::Uuid;
 use super::premiere_bridge_queue::CommandQueue;
 
 pub const ALLOWED_ACTIONS: &[&str] = &[
+    "remove_keyframe_range",
+    "remove_video_transition",
+    "inspect_keyframes",
+    "edit_keyframe",
     "inspect_clip_speed",
     "plan_clip_speed",
     "inspect_context",

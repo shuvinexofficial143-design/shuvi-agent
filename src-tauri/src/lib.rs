@@ -17,6 +17,8 @@ use sysinfo::{Pid, System};
 use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
+mod premiere_keyframes;
+use premiere_keyframes::ParameterTarget;
 mod premiere_checkpoint;
 mod premiere_speed;
 use premiere_speed::SpeedRequest;
@@ -66,6 +68,10 @@ Available tools:
 - premiere_bridge_start: {}
 - premiere_bridge_status: {}
 - premiere_context: {}
+- premiere_remove_keyframe_range: {"target":{"kind":"video|audio","track":0,"clip_index":0,"component_match_name":"exact component match name or supply component_display_name","param_display_name":"exact parameter name"},"start_seconds":0,"end_seconds":2,"expected_count":1,"expected_signature":"targetSignature from inspection","allow_remove_all":false}
+- premiere_remove_video_transition: {"track":0,"clip_index":0,"position":"start|end"}
+- premiere_inspect_keyframes: {"target":{"kind":"video|audio","track":0,"clip_index":0,"component_match_name":"exact native match name or supply component_display_name","param_display_name":"exact parameter name"}}
+- premiere_edit_keyframe: {"target":{"kind":"video|audio","track":0,"clip_index":0,"component_match_name":"exact native match name or supply component_display_name","param_display_name":"exact parameter name"},"ticks":"exact ticks from inspection","expected_signature":"targetSignature from inspection","operation":"remove|interpolation","interpolation":"only for interpolation: linear|hold|bezier"}
 - premiere_inspect_clip_speed: {"kind":"video|audio","track":0,"clip_index":0}
 - premiere_plan_speed: {"kind":"video|audio","track":0,"clip_index":0,"request":{"mode":"rate|duration|preset|ramp|freeze","rate":"rate mode: multiplier 0.01..100","duration_seconds":"duration/freeze mode: positive seconds","source_seconds":"freeze mode: source time","preset":"preset mode: normal|slow_motion|fast_motion","points":"ramp mode: [{source_offset_seconds:0,rate:1},...]","reverse":"optional boolean","preserve_audio_pitch":"optional boolean"}}
 - premiere_timeline: {}
@@ -157,6 +163,7 @@ Rules:
 - Use run_project_task instead of raw shell commands when test/build/lint/typecheck is enough.
 - For browser/app UI work, prefer a Shuvi-managed browser when isolation matters, then use window-scoped semantic UI tools first. Use ui_toggle and ui_expand_collapse for supported controls. ui_send_keys is a high-risk fallback only after an exact element is focused and semantic patterns are unavailable. pointer_click is a final high-risk coordinate fallback: inspect_screen first, use coordinates only when semantic UI/DOM control cannot target the control, and never repeat a failed coordinate click blindly.
 - For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_timeline/premiere_list_items/premiere_project_tree for inspection, premiere_set_playhead for non-destructive navigation, premiere_inspect_frame for playhead-positioned visual review and premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media/premiere_insert_media/premiere_save_project for native editing. premiere_insert_media, premiere_trim_clip, premiere_roll_edit, premiere_move_clip, premiere_clone_clip, premiere_delete_clip, premiere_add_video_transition, premiere_add_video_effect, premiere_set_effect_param, premiere_add_effect_keyframe, premiere_add_audio_effect, premiere_set_audio_effect_param and premiere_add_audio_effect_keyframe are high risk because they change the timeline or effect state; premiere_insert_mogrt_path and premiere_insert_mogrt_library are high risk because they add graphics to the timeline; premiere_export_sequence is high risk because it writes media and may start encoding; inspect the timeline first when practical. Use UI/vision fallbacks only for features not exposed through the bridge. Major sequence creation and timeline insert/overwrite actions automatically save and copy the current .prproj into a sibling 'Shuvi Backups' folder before editing; the edit is refused if a saved local project cannot be checkpointed.
+- Inspect premiere_inspect_keyframes before premiere_edit_keyframe and copy the returned targetSignature and exact native ticks. A stale target is rejected. Keyframe edits are high-risk and require a project checkpoint. Do not convert keyframe ticks to timeline seconds.
 - premiere_plan_speed is a read-only planner. Supply only fields for the chosen mode. It returns applied=false/executable=false because the reviewed UXP API has no documented speed write action. Never describe a plan as an applied edit, and never invoke blind UI to execute it. Inspect timeline/clip speed first.
 - Saved Premiere recipes are local reusable video/audio named-parameter recipes. Inspect a clip's effect chain first, save a recipe only after exact selectors are known, and apply saved recipes as high-risk backed-up edits.
 - Use premiere_review_frames for a bounded multi-frame visual review before/after major grading, motion, transition or graphics changes; the normal agent loop can then use the returned observations to decide whether another backed-up edit is needed.
@@ -278,6 +285,10 @@ enum ToolAction {
     PremiereBridgeStart,
     PremiereBridgeStatus,
     PremiereContext,
+    PremiereRemoveKeyframeRange { target: ParameterTarget, start_seconds: f64, end_seconds: f64, expected_count: u32, expected_signature: String, allow_remove_all: bool },
+    PremiereRemoveVideoTransition { track: u32, clip_index: u32, position: String },
+    PremiereInspectKeyframes { target: ParameterTarget },
+    PremiereEditKeyframe { target: ParameterTarget, ticks: String, expected_signature: String, operation: String, interpolation: Option<String> },
     PremiereInspectClipSpeed { kind: String, track: u32, clip_index: u32 },
     PremierePlanSpeed { kind: String, track: u32, clip_index: u32, request: SpeedRequest },
     PremiereTimeline,
@@ -604,6 +615,10 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_bridge_start"
         | "premiere_bridge_status"
         | "premiere_context"
+        | "premiere_remove_keyframe_range"
+        | "premiere_remove_video_transition"
+        | "premiere_inspect_keyframes"
+        | "premiere_edit_keyframe"
         | "premiere_inspect_clip_speed"
         | "premiere_plan_speed"
         | "premiere_timeline"
@@ -1841,6 +1856,73 @@ fn stage_tool(
             "Read the active Premiere project, active sequence and basic timeline metadata through the paired UXP bridge.".to_string(),
             RiskLevel::Low,
         ),
+        "premiere_remove_keyframe_range" => {
+            let target: ParameterTarget = serde_json::from_value(proposal.arguments.get("target").cloned().unwrap_or(Value::Null))
+                .map_err(|error| format!("Invalid keyframe target: {error}"))?;
+            target.validate()?;
+            let start_seconds = proposal.arguments.get("start_seconds").and_then(Value::as_f64).ok_or("Numeric start_seconds required.")?;
+            let end_seconds = proposal.arguments.get("end_seconds").and_then(Value::as_f64).ok_or("Numeric end_seconds required.")?;
+            if !start_seconds.is_finite() || !end_seconds.is_finite() || start_seconds < 0.0 || end_seconds <= start_seconds || end_seconds > 86400.0 {
+                return Err("Keyframe range requires 0 <= start < end <= 86400.".into());
+            }
+            let expected_count = proposal.arguments.get("expected_count").and_then(Value::as_u64)
+                .filter(|v| (1..=256).contains(v)).ok_or("Expected keyframe count must be 1–256.")? as u32;
+            let expected_signature = arg_string(&proposal.arguments, "expected_signature")?;
+            if expected_signature.len() > 8192 { return Err("Keyframe signature is too long.".into()); }
+            let allow_remove_all = match proposal.arguments.get("allow_remove_all") {
+                None => false,
+                Some(value) => value.as_bool().ok_or("allow_remove_all must be boolean.")?,
+            };
+            let detail = format!("Remove exactly {expected_count} keys in native parameter range [{start_seconds}, {end_seconds}) from '{}' on {} track {}, clip {}; allow removing every key={allow_remove_all}.", target.param_display_name, target.kind, target.track, target.clip_index);
+            (ToolAction::PremiereRemoveKeyframeRange { target, start_seconds, end_seconds, expected_count, expected_signature, allow_remove_all },
+                "Remove inspected Premiere keyframe range".to_string(), detail, RiskLevel::High)
+        }
+        "premiere_remove_video_transition" => {
+            let track = proposal.arguments.get("track").and_then(Value::as_u64).filter(|v| *v <= 128).ok_or("Video track must be 0–128.")? as u32;
+            let clip_index = proposal.arguments.get("clip_index").and_then(Value::as_u64).filter(|v| *v <= 10000).ok_or("Clip index must be 0–10000.")? as u32;
+            let position = arg_string(&proposal.arguments, "position")?;
+            if !matches!(position.as_str(), "start" | "end") { return Err("Transition position must be start or end.".into()); }
+            let detail = format!("Remove only the {position} video transition from V{track}, clip {clip_index}; checkpoint required.");
+            (ToolAction::PremiereRemoveVideoTransition { track, clip_index, position },
+                "Remove Premiere video transition".to_string(), detail, RiskLevel::High)
+        }
+        "premiere_inspect_keyframes" => {
+            let target: ParameterTarget = serde_json::from_value(proposal.arguments.get("target").cloned().unwrap_or(Value::Null))
+                .map_err(|error| format!("Invalid keyframe target: {error}"))?;
+            target.validate()?;
+            (
+                ToolAction::PremiereInspectKeyframes { target },
+                "Inspect named Premiere keyframes".to_string(),
+                "Read native keyframe ticks and an exact clip/parameter signature.".to_string(),
+                RiskLevel::Low,
+            )
+        }
+        "premiere_edit_keyframe" => {
+            let target: ParameterTarget = serde_json::from_value(proposal.arguments.get("target").cloned().unwrap_or(Value::Null))
+                .map_err(|error| format!("Invalid keyframe target: {error}"))?;
+            target.validate()?;
+            let ticks = arg_string(&proposal.arguments, "ticks")?;
+            let digits = ticks.strip_prefix('-').unwrap_or(&ticks);
+            if digits.is_empty() || digits.len() > 30 || !digits.bytes().all(|v| v.is_ascii_digit()) {
+                return Err("Copy exact native ticks from keyframe inspection.".into());
+            }
+            let expected_signature = arg_string(&proposal.arguments, "expected_signature")?;
+            if expected_signature.len() > 8192 { return Err("Keyframe target signature is too long.".into()); }
+            let operation = arg_string(&proposal.arguments, "operation")?;
+            let interpolation = arg_optional_string(&proposal.arguments, "interpolation");
+            if !matches!(operation.as_str(), "remove" | "interpolation")
+                || operation == "remove" && interpolation.is_some()
+                || operation == "interpolation" && !matches!(interpolation.as_deref(), Some("linear" | "hold" | "bezier")) {
+                return Err("Choose remove or interpolation with linear/hold/bezier.".into());
+            }
+            let detail = format!("{operation} keyframe at native ticks {ticks} on {} track {}, clip {}, parameter '{}'. Requires unchanged inspected target and checkpoint.", target.kind, target.track, target.clip_index, target.param_display_name);
+            (
+                ToolAction::PremiereEditKeyframe { target, ticks, expected_signature, operation, interpolation },
+                "Edit named Premiere keyframe".to_string(),
+                detail,
+                RiskLevel::High,
+            )
+        }
         "premiere_inspect_clip_speed" => {
             let kind = arg_string(&proposal.arguments, "kind")?;
             let track = proposal.arguments.get("track").and_then(Value::as_u64)
@@ -5664,6 +5746,36 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 stderr: String::new(),
                 exit_code: Some(0),
             })
+        }
+        ToolAction::PremiereRemoveKeyframeRange { target, start_seconds, end_seconds, expected_count, expected_signature, allow_remove_all } => {
+            let backup = backup_premiere_project(state).await?;
+            let mut arguments = target.bridge_arguments();
+            arguments["startSeconds"] = json!(start_seconds);
+            arguments["endSeconds"] = json!(end_seconds);
+            arguments["expectedCount"] = json!(expected_count);
+            arguments["expectedSignature"] = json!(expected_signature);
+            arguments["allowRemoveAll"] = json!(allow_remove_all);
+            let value = state.premiere_bridge.request("remove_keyframe_range", arguments, Duration::from_secs(30)).await?;
+            Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value})).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
+        }
+        ToolAction::PremiereRemoveVideoTransition { track, clip_index, position } => {
+            let backup = backup_premiere_project(state).await?;
+            let value = state.premiere_bridge.request("remove_video_transition", json!({"track":track,"clipIndex":clip_index,"position":position}), Duration::from_secs(20)).await?;
+            Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value})).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
+        }
+        ToolAction::PremiereInspectKeyframes { target } => {
+            let value = state.premiere_bridge.request("inspect_keyframes", target.bridge_arguments(), Duration::from_secs(20)).await?;
+            Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&value).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
+        }
+        ToolAction::PremiereEditKeyframe { target, ticks, expected_signature, operation, interpolation } => {
+            let backup = backup_premiere_project(state).await?;
+            let mut arguments = target.bridge_arguments();
+            arguments["ticks"] = json!(ticks);
+            arguments["expectedSignature"] = json!(expected_signature);
+            arguments["operation"] = json!(operation);
+            arguments["interpolation"] = json!(interpolation);
+            let value = state.premiere_bridge.request("edit_keyframe", arguments, Duration::from_secs(20)).await?;
+            Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value})).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
         }
         ToolAction::PremiereInspectClipSpeed { kind, track, clip_index } => {
             let value = state.premiere_bridge.request(

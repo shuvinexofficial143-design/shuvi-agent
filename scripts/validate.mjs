@@ -31,7 +31,8 @@ for (const path of [
   "integrations/premiere-uxp/speed-workflows.js",
   "src-tauri/src/premiere_speed.rs",
   "src-tauri/src/premiere_checkpoint.rs",
-  "src-tauri/src/premiere_bridge_queue.rs"
+  "src-tauri/src/premiere_bridge_queue.rs",
+  "src-tauri/src/premiere_keyframes.rs"
 ]) {
   try {
     statSync(join(root, path));
