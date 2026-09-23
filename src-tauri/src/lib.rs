@@ -74,6 +74,8 @@ Available tools:
 - premiere_set_source_inout: {"item_id":"clip project item id","in_seconds":1.0,"out_seconds":8.0}
 - premiere_clear_source_inout: {"item_id":"clip project item id"}
 - premiere_create_subclip: {"item_id":"clip project item id","name":"subclip name","start_seconds":1.0,"end_seconds":8.0,"hard_boundaries":true,"take_video":true,"take_audio":true}
+- premiere_transcribe_item: {"item_id":"clip project item id","language":"optional language code such as en-US"}
+- premiere_export_transcript: {"item_id":"clip project item id"}
 - premiere_attach_proxy: {"item_id":"clip project item id","proxy_path":"absolute proxy media path"}
 - premiere_batch_relink: {"items":[{"item_id":"clip project item id","new_path":"absolute replacement media path","override_compatibility":false}]}
 - premiere_batch_attach_proxy: {"items":[{"item_id":"clip project item id","proxy_path":"absolute proxy media path"}]}
@@ -302,6 +304,8 @@ enum ToolAction {
     PremiereSetSourceInOut { item_id: String, in_seconds: f64, out_seconds: f64 },
     PremiereClearSourceInOut { item_id: String },
     PremiereCreateSubclip { item_id: String, name: String, start_seconds: f64, end_seconds: f64, hard_boundaries: bool, take_video: bool, take_audio: bool },
+    PremiereTranscribeItem { item_id: String, language: Option<String> },
+    PremiereExportTranscript { item_id: String },
     PremiereAttachProxy { item_id: String, proxy_path: String },
     PremiereBatchRelink { items: Vec<Value> },
     PremiereBatchAttachProxy { items: Vec<Value> },
@@ -617,6 +621,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_set_source_inout"
         | "premiere_clear_source_inout"
         | "premiere_create_subclip"
+        | "premiere_transcribe_item"
+        | "premiere_export_transcript"
         | "premiere_attach_proxy"
         | "premiere_batch_relink"
         | "premiere_batch_attach_proxy"
@@ -2911,6 +2917,40 @@ fn stage_tool(
                 "Create Premiere subclip".to_string(),
                 format!("Create subclip '{name}' from {item_id}, {start_seconds:.3}s–{end_seconds:.3}s."),
                 RiskLevel::High,
+            )
+        }
+        "premiere_transcribe_item" => {
+            let item_id = arg_string(&proposal.arguments, "item_id")?;
+            if item_id.chars().count() > 240 {
+                return Err("Premiere project item id is too long.".into());
+            }
+
+            let language = arg_optional_string(&proposal.arguments, "language");
+            if language.as_ref().is_some_and(|value| value.chars().count() > 40) {
+                return Err("Premiere transcription language code is too long.".into());
+            }
+
+            (
+                ToolAction::PremiereTranscribeItem {
+                    item_id: item_id.clone(),
+                    language: language.clone(),
+                },
+                "Transcribe Premiere clip audio".to_string(),
+                format!("Generate transcript for project item {item_id}; language={language:?}."),
+                RiskLevel::Medium,
+            )
+        }
+        "premiere_export_transcript" => {
+            let item_id = arg_string(&proposal.arguments, "item_id")?;
+            if item_id.chars().count() > 240 {
+                return Err("Premiere project item id is too long.".into());
+            }
+
+            (
+                ToolAction::PremiereExportTranscript { item_id: item_id.clone() },
+                "Read Premiere clip transcript".to_string(),
+                format!("Export transcript for project item {item_id}."),
+                RiskLevel::Low,
             )
         }
         "premiere_attach_proxy" => {
@@ -6333,6 +6373,41 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "backup": backup,
                     "result": result
                 })).unwrap_or_else(|_| result.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereTranscribeItem { item_id, language } => {
+            let value = state.premiere_bridge.request(
+                "transcribe_item",
+                json!({
+                    "itemId": item_id,
+                    "language": language
+                }),
+                Duration::from_secs(180),
+            ).await?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereExportTranscript { item_id } => {
+            let value = state.premiere_bridge.request(
+                "export_transcript",
+                json!({ "itemId": item_id }),
+                Duration::from_secs(30),
+            ).await?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: truncate_output(
+                    serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string())
+                ),
                 stderr: String::new(),
                 exit_code: Some(0),
             })
