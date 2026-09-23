@@ -17,6 +17,9 @@ use sysinfo::{Pid, System};
 use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
+mod premiere_speed;
+use premiere_speed::SpeedRequest;
+
 mod premiere_bridge;
 use premiere_bridge::{PremiereBridgeShared, PremiereBridgeStatus};
 
@@ -61,6 +64,8 @@ Available tools:
 - premiere_bridge_start: {}
 - premiere_bridge_status: {}
 - premiere_context: {}
+- premiere_inspect_clip_speed: {"kind":"video|audio","track":0,"clip_index":0}
+- premiere_plan_speed: {"kind":"video|audio","track":0,"clip_index":0,"request":{"mode":"rate|duration|preset|ramp|freeze","rate":"rate mode: multiplier 0.01..100","duration_seconds":"duration/freeze mode: positive seconds","source_seconds":"freeze mode: source time","preset":"preset mode: normal|slow_motion|fast_motion","points":"ramp mode: [{source_offset_seconds:0,rate:1},...]","reverse":"optional boolean","preserve_audio_pitch":"optional boolean"}}
 - premiere_timeline: {}
 - premiere_caption_tracks: {}
 - premiere_set_caption_track_name: {"track":0,"name":"Captions"}
@@ -150,6 +155,7 @@ Rules:
 - Use run_project_task instead of raw shell commands when test/build/lint/typecheck is enough.
 - For browser/app UI work, prefer a Shuvi-managed browser when isolation matters, then use window-scoped semantic UI tools first. Use ui_toggle and ui_expand_collapse for supported controls. ui_send_keys is a high-risk fallback only after an exact element is focused and semantic patterns are unavailable. pointer_click is a final high-risk coordinate fallback: inspect_screen first, use coordinates only when semantic UI/DOM control cannot target the control, and never repeat a failed coordinate click blindly.
 - For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_timeline/premiere_list_items/premiere_project_tree for inspection, premiere_set_playhead for non-destructive navigation, premiere_inspect_frame for playhead-positioned visual review and premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media/premiere_insert_media/premiere_save_project for native editing. premiere_insert_media, premiere_trim_clip, premiere_roll_edit, premiere_move_clip, premiere_clone_clip, premiere_delete_clip, premiere_add_video_transition, premiere_add_video_effect, premiere_set_effect_param, premiere_add_effect_keyframe, premiere_add_audio_effect, premiere_set_audio_effect_param and premiere_add_audio_effect_keyframe are high risk because they change the timeline or effect state; premiere_insert_mogrt_path and premiere_insert_mogrt_library are high risk because they add graphics to the timeline; premiere_export_sequence is high risk because it writes media and may start encoding; inspect the timeline first when practical. Use UI/vision fallbacks only for features not exposed through the bridge. Major sequence creation and timeline insert/overwrite actions automatically save and copy the current .prproj into a sibling 'Shuvi Backups' folder before editing when a normal project path is available.
+- premiere_plan_speed is a read-only planner. Supply only fields for the chosen mode. It returns applied=false/executable=false because the reviewed UXP API has no documented speed write action. Never describe a plan as an applied edit, and never invoke blind UI to execute it. Inspect timeline/clip speed first.
 - Saved Premiere recipes are local reusable video/audio named-parameter recipes. Inspect a clip's effect chain first, save a recipe only after exact selectors are known, and apply saved recipes as high-risk backed-up edits.
 - Use premiere_review_frames for a bounded multi-frame visual review before/after major grading, motion, transition or graphics changes; the normal agent loop can then use the returned observations to decide whether another backed-up edit is needed.
 - For managed Edge/Chrome sessions, prefer browser_dom_read/browser_dom_click/browser_dom_set_value/browser_navigate over visual coordinate actions because DOM selectors are more reliable.
@@ -270,6 +276,8 @@ enum ToolAction {
     PremiereBridgeStart,
     PremiereBridgeStatus,
     PremiereContext,
+    PremiereInspectClipSpeed { kind: String, track: u32, clip_index: u32 },
+    PremierePlanSpeed { kind: String, track: u32, clip_index: u32, request: SpeedRequest },
     PremiereTimeline,
     PremiereCaptionTracks,
     PremiereSetCaptionTrackName { track: u32, name: String },
@@ -594,6 +602,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_bridge_start"
         | "premiere_bridge_status"
         | "premiere_context"
+        | "premiere_inspect_clip_speed"
+        | "premiere_plan_speed"
         | "premiere_timeline"
         | "premiere_caption_tracks"
         | "premiere_set_caption_track_name"
@@ -1829,6 +1839,45 @@ fn stage_tool(
             "Read the active Premiere project, active sequence and basic timeline metadata through the paired UXP bridge.".to_string(),
             RiskLevel::Low,
         ),
+        "premiere_inspect_clip_speed" => {
+            let kind = arg_string(&proposal.arguments, "kind")?;
+            let track = proposal.arguments.get("track").and_then(Value::as_u64)
+                .filter(|value| *value <= 128)
+                .ok_or_else(|| "track must be a bounded non-negative integer.".to_string())? as u32;
+            let clip_index = proposal.arguments.get("clip_index").and_then(Value::as_u64)
+                .filter(|value| *value <= 10000)
+                .ok_or_else(|| "clip_index must be a bounded non-negative integer.".to_string())? as u32;
+            if !matches!(kind.as_str(), "video" | "audio") || track > 128 || clip_index > 10000 {
+                return Err("Speed inspection requires video/audio and bounded track/clip indexes.".into());
+            }
+            (
+                ToolAction::PremiereInspectClipSpeed { kind, track, clip_index },
+                "Inspect Premiere clip speed".to_string(),
+                "Read the exact clip; no speed or timeline modification will be performed.".to_string(),
+                RiskLevel::Low,
+            )
+        }
+        "premiere_plan_speed" => {
+            let kind = arg_string(&proposal.arguments, "kind")?;
+            let track = proposal.arguments.get("track").and_then(Value::as_u64)
+                .filter(|value| *value <= 128)
+                .ok_or_else(|| "track must be a bounded non-negative integer.".to_string())? as u32;
+            let clip_index = proposal.arguments.get("clip_index").and_then(Value::as_u64)
+                .filter(|value| *value <= 10000)
+                .ok_or_else(|| "clip_index must be a bounded non-negative integer.".to_string())? as u32;
+            if !matches!(kind.as_str(), "video" | "audio") || track > 128 || clip_index > 10000 {
+                return Err("Speed inspection requires video/audio and bounded track/clip indexes.".into());
+            }
+            let request: SpeedRequest = serde_json::from_value(proposal.arguments.get("request").cloned().unwrap_or(Value::Null))
+                .map_err(|error| format!("Invalid typed speed plan: {error}"))?;
+            request.validate()?;
+            (
+                ToolAction::PremierePlanSpeed { kind, track, clip_index, request },
+                "Plan unsupported Premiere speed workflow".to_string(),
+                "Read the exact clip; no speed or timeline modification will be performed.".to_string(),
+                RiskLevel::Low,
+            )
+        }
         "premiere_timeline" => (
             ToolAction::PremiereTimeline,
             "Inspect Premiere timeline".to_string(),
@@ -5649,6 +5698,22 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 stderr: String::new(),
                 exit_code: Some(0),
             })
+        }
+        ToolAction::PremiereInspectClipSpeed { kind, track, clip_index } => {
+            let value = state.premiere_bridge.request(
+                "inspect_clip_speed",
+                json!({"kind": kind, "track": track, "clipIndex": clip_index}),
+                Duration::from_secs(15),
+            ).await?;
+            Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&value).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
+        }
+        ToolAction::PremierePlanSpeed { kind, track, clip_index, request } => {
+            let value = state.premiere_bridge.request(
+                "plan_clip_speed",
+                json!({"kind": kind, "track": track, "clipIndex": clip_index, "request": request}),
+                Duration::from_secs(15),
+            ).await?;
+            Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&value).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
         }
         ToolAction::PremiereTimeline => {
             let value = state.premiere_bridge

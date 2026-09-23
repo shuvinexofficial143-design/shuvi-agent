@@ -1,5 +1,6 @@
 const { entrypoints, host, versions } = require("uxp");
 const premiere = require("premierepro");
+const { planSpeed, SPEED_CAPABILITY } = require("./speed-workflows.js");
 
 const BRIDGE_BASE = "http://127.0.0.1:17361";
 let bridgeToken = "";
@@ -3558,8 +3559,37 @@ async function insertProjectItem(argumentsValue) {
   };
 }
 
+async function inspectClipSpeed(argumentsValue) {
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+  const { item, kind, trackIndex, clipIndex } = await resolveSubsequenceTarget(sequence, argumentsValue);
+  const [name, start, end, sourceIn, sourceOut, nativeSpeed, reversed] = await Promise.all([
+    item.getName(), item.getStartTime(), item.getEndTime(), item.getInPoint(), item.getOutPoint(),
+    typeof item.getSpeed === "function" ? item.getSpeed() : null,
+    typeof item.isSpeedReversed === "function" ? item.isSpeedReversed() : null
+  ]);
+  return {
+    projectGuid: project.guid || null, sequenceGuid: sequence.guid || null,
+    kind, track: trackIndex, clipIndex, name,
+    startSeconds: start?.seconds ?? null, endSeconds: end?.seconds ?? null,
+    sourceInSeconds: sourceIn?.seconds ?? null, sourceOutSeconds: sourceOut?.seconds ?? null,
+    nativeSpeed, reversed: reversed === null ? null : Boolean(reversed),
+    speedWrite: SPEED_CAPABILITY
+  };
+}
+
+async function planClipSpeed(argumentsValue) {
+  const snapshot = await inspectClipSpeed(argumentsValue);
+  return planSpeed(snapshot, argumentsValue.request);
+}
+
 async function executeCommand(command) {
   switch (command.action) {
+    case "inspect_clip_speed":
+      return await inspectClipSpeed(command.arguments || {});
+    case "plan_clip_speed":
+      return await planClipSpeed(command.arguments || {});
     case "inspect_context":
       return await inspectActiveContext();
     case "list_root_items":

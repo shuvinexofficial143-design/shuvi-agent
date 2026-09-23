@@ -222,3 +222,7 @@ Shuvi can set or clear ClipProjectItem source in/out points and, on Premiere 26.
 ## Registry validation
 
 The validator syntax-parses the frontend and UXP panel and checks each protocol tool through the proposal allowlist, permission stage, typed action and execution arm. It detects duplicate UXP routes and missing direct/closed recipe-dispatch bridge routes. Rust checks follow this repository's explicit match-arm convention and complement cargo check; they are not a general Rust parser. Regression fixtures deliberately remove or duplicate wiring to verify detection. No model-supplied JavaScript is exposed by this work.
+
+## Speed planning adapter
+
+Speed requests deserialize into a closed Rust schema with bounded numeric inputs before entering the UXP allowlist. The UXP adapter reads the exact clip and delegates calculations to the pure speed-workflows.js planner. It returns project/sequence identity, clip bounds, a versioned plan and an explicit unsupported execution capability. Planning never creates a transaction or invokes UI. Source-span calculations are estimates and do not infer undocumented native speed units or reconstruct existing remapping curves.

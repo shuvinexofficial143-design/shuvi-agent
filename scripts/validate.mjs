@@ -27,7 +27,9 @@ for (const path of [
   "src-tauri/src/premiere_bridge.rs",
   "integrations/premiere-uxp/manifest.json",
   "integrations/premiere-uxp/index.html",
-  "integrations/premiere-uxp/main.js"
+  "integrations/premiere-uxp/main.js",
+  "integrations/premiere-uxp/speed-workflows.js",
+  "src-tauri/src/premiere_speed.rs"
 ]) {
   try {
     statSync(join(root, path));

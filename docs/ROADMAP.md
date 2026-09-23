@@ -83,7 +83,8 @@
 - [ ] broader effect types/preset workflows
 - [x] generic effect-parameter keyframe foundation
 - [x] named multi-parameter video recipe foundation for transform/effect workflows
-- [ ] masks and speed changes
+- [x] native speed inspection + typed rate/duration/preset/ramp/freeze planning boundary
+- [ ] native speed/time-remapping writes and masks (not exposed in reviewed public clip API)
 - [x] reusable named video parameter recipe foundation for Lumetri-style grading workflows
 - [x] persistent reusable local video/audio recipe library + batch recipe apply
 - [ ] curated color-specific preset packs
@@ -133,3 +134,15 @@ Progress estimates are provisional scope estimates, not measured product certifi
 - [ ] J/K: bounded iterative review state and structured multi-stage editorial recipes.
 - [ ] L/M/N: export path/overwrite safeguards, required checkpoints and bridge lifecycle hardening.
 - [ ] O: broader runtime/unit coverage, recipe schema fixtures and Windows Rust CI verification.
+
+### Module B — speed workflow boundary
+- [x] Native video/audio clip speed, reverse and source-span inspection through an exact track/clip target.
+- [x] Typed, read-only plans for multiplier, target duration, normal/slow/fast presets, freeze intent and 2–32-point source-time ramps.
+- [x] Explicit unsupported capability, applied=false and executable=false; no invented native setter or blind UI fallback.
+- [x] Bounds, incompatible-field rejection, pitch/reverse intent and warnings about rounding, existing remapping and linked A/V.
+- [x] Six Node planning/native-route mock tests added (16 total passing), validation and frontend build passed.
+- [ ] Real Premiere speed inspection verification; native execution intentionally unavailable pending a documented supported adapter.
+- [ ] Rust speed schema unit test execution (added to Windows CI; local Rust unavailable).
+
+Estimate after Module B: code complete approximately 48%; runtime verified 0% this session; production readiness not established.
+Next priority: checkpoint enforcement and bridge lifecycle safety before adding further destructive edits.

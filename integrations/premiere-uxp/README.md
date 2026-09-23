@@ -74,3 +74,9 @@ Shuvi's desktop agent creates a timestamped sibling `Shuvi Backups` copy of the 
 ## Verification
 
 Run npm run validate, npm test and npm run build from the repository root. Validation syntax-parses this panel and checks its routes against desktop requests. Tests use source fixtures/mocks; they do not prove Adobe runtime compatibility. Full disposable-project Premiere verification is pending. The Rust toolchain was unavailable locally during the 2026-09-23 continuation; see Windows CI for cargo check.
+
+## Speed workflow boundary
+
+premiere_inspect_clip_speed returns native speed/reverse and source/sequence bounds. premiere_plan_speed accepts a typed request with mode rate, duration, preset, ramp or freeze and returns a reviewable plan only. Omit fields belonging to other modes. Rate is a source-time multiplier; ramp points use increasing source_offset_seconds spanning the inspected source range. Ramp duration integrates a rate that varies linearly in source time. This does not reproduce Premiere time-remapping curves.
+
+Plans always return applied=false and executable=false. Pitch preservation and reverse are recorded intent, not implemented edits. Adobe's reviewed [video clip](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/videocliptrackitem) and [audio clip](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/audiocliptrackitem) references expose speed/reverse getters but no speed-changing action (reviewed 2026-09-23). Native writes need a separately validated adapter and the existing high-risk permission/checkpoint path.
