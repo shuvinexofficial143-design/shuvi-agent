@@ -792,6 +792,55 @@ async function deleteClip(argumentsValue) {
   };
 }
 
+async function exportSequence(argumentsValue) {
+  const output =
+    typeof argumentsValue?.output === "string"
+      ? argumentsValue.output.trim()
+      : "";
+  const preset =
+    typeof argumentsValue?.preset === "string"
+      ? argumentsValue.preset.trim()
+      : "";
+  const queueToAme = Boolean(argumentsValue?.queueToAme);
+
+  if (!output) throw new Error("Export output path is required.");
+
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+
+  const manager = premiere.EncoderManager.getManager();
+
+  if (queueToAme && !manager.isAMEInstalled) {
+    throw new Error("Adobe Media Encoder is not installed.");
+  }
+
+  const exportType = queueToAme
+    ? premiere.Constants.ExportType.QUEUE_TO_AME
+    : premiere.Constants.ExportType.IMMEDIATELY;
+
+  const success = await manager.exportSequence(
+    sequence,
+    exportType,
+    output,
+    preset,
+    true
+  );
+
+  if (!success) {
+    throw new Error("Premiere rejected the export request.");
+  }
+
+  return {
+    accepted: true,
+    sequenceName: sequence.name || null,
+    output,
+    preset: preset || null,
+    queueToAme,
+    ameInstalled: Boolean(manager.isAMEInstalled)
+  };
+}
+
 async function executeCommand(command) {
   switch (command.action) {
     case "inspect_context":
@@ -816,6 +865,8 @@ async function executeCommand(command) {
       return await moveClip(command.arguments || {});
     case "delete_clip":
       return await deleteClip(command.arguments || {});
+    case "export_sequence":
+      return await exportSequence(command.arguments || {});
     default:
       throw new Error("Unsupported Shuvi Premiere command: " + command.action);
   }
