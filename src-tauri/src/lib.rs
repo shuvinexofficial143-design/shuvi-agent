@@ -62,6 +62,9 @@ Available tools:
 - premiere_bridge_status: {}
 - premiere_context: {}
 - premiere_timeline: {}
+- premiere_caption_tracks: {}
+- premiere_set_caption_track_name: {"track":0,"name":"Captions"}
+- premiere_set_caption_track_mute: {"track":0,"muted":true}
 - premiere_set_playhead: {"seconds":12.5}
 - premiere_inspect_frame: {"seconds":12.5,"prompt":"what should Shuvi evaluate in the Premiere Program Monitor"}
 - premiere_review_frames: {"seconds":[0,5,10],"prompt":"compare continuity, color, framing and edit quality across these Premiere frames"}
@@ -267,6 +270,9 @@ enum ToolAction {
     PremiereBridgeStatus,
     PremiereContext,
     PremiereTimeline,
+    PremiereCaptionTracks,
+    PremiereSetCaptionTrackName { track: u32, name: String },
+    PremiereSetCaptionTrackMute { track: u32, muted: bool },
     PremiereSetPlayhead { seconds: f64 },
     PremiereInspectFrame { seconds: f64, prompt: String, provider: ProviderContext },
     PremiereReviewFrames { seconds: Vec<f64>, prompt: String, provider: ProviderContext },
@@ -587,6 +593,9 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_bridge_status"
         | "premiere_context"
         | "premiere_timeline"
+        | "premiere_caption_tracks"
+        | "premiere_set_caption_track_name"
+        | "premiere_set_caption_track_mute"
         | "premiere_set_playhead"
         | "premiere_inspect_frame"
         | "premiere_review_frames"
@@ -1823,6 +1832,54 @@ fn stage_tool(
             "Read active sequence tracks and clip metadata through the paired Premiere UXP bridge.".to_string(),
             RiskLevel::Low,
         ),
+        "premiere_caption_tracks" => (
+            ToolAction::PremiereCaptionTracks,
+            "Inspect Premiere caption tracks".to_string(),
+            "Read active-sequence caption track names, indexes and mute state.".to_string(),
+            RiskLevel::Low,
+        ),
+        "premiere_set_caption_track_name" => {
+            let track = proposal.arguments.get("track").and_then(Value::as_u64).unwrap_or(0);
+            if track > 128 {
+                return Err("Premiere caption track index is outside Shuvi's safety limit.".into());
+            }
+
+            let name = arg_string(&proposal.arguments, "name")?;
+            if name.chars().count() > 240 {
+                return Err("Premiere caption track name is too long.".into());
+            }
+
+            (
+                ToolAction::PremiereSetCaptionTrackName {
+                    track: track as u32,
+                    name: name.clone(),
+                },
+                "Rename Premiere caption track".to_string(),
+                format!("Rename caption track {track} to '{name}'."),
+                RiskLevel::Medium,
+            )
+        }
+        "premiere_set_caption_track_mute" => {
+            let track = proposal.arguments.get("track").and_then(Value::as_u64).unwrap_or(0);
+            if track > 128 {
+                return Err("Premiere caption track index is outside Shuvi's safety limit.".into());
+            }
+
+            let muted = proposal.arguments
+                .get("muted")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| "premiere_set_caption_track_mute requires muted=true|false.".to_string())?;
+
+            (
+                ToolAction::PremiereSetCaptionTrackMute {
+                    track: track as u32,
+                    muted,
+                },
+                if muted { "Mute Premiere caption track".to_string() } else { "Unmute Premiere caption track".to_string() },
+                format!("Set caption track {track} muted={muted}."),
+                RiskLevel::Medium,
+            )
+        }
         "premiere_set_playhead" => {
             let seconds = proposal.arguments
                 .get("seconds")
@@ -5558,6 +5615,55 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
         ToolAction::PremiereTimeline => {
             let value = state.premiere_bridge
                 .request("inspect_timeline", json!({}), Duration::from_secs(12)).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereCaptionTracks => {
+            let value = state.premiere_bridge.request(
+                "caption_tracks",
+                json!({}),
+                Duration::from_secs(12),
+            ).await?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereSetCaptionTrackName { track, name } => {
+            let backup = backup_premiere_project(state).await?;
+            let value = state.premiere_bridge.request(
+                "set_caption_track_name",
+                json!({ "track": track, "name": name }),
+                Duration::from_secs(20),
+            ).await?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "backup": backup,
+                    "result": value
+                })).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereSetCaptionTrackMute { track, muted } => {
+            let value = state.premiere_bridge.request(
+                "set_caption_track_mute",
+                json!({ "track": track, "muted": muted }),
+                Duration::from_secs(12),
+            ).await?;
+
             Ok(ActionResult {
                 success: true,
                 tool,
