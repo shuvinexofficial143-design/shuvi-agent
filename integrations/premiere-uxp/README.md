@@ -67,6 +67,7 @@ Shuvi's desktop agent creates a timestamped sibling `Shuvi Backups` copy of the 
 
 - list supported transcription languages and import transcript JSON
 - discover caption tracks, rename tracks (26.3+ API guarded), and set track mute
+- parse/serialize bounded SRT, adapt explicitly timed transcript JSON to structured captions, and report native caption-import capability honestly
 - create a subsequence from explicit video/audio clip targets while restoring selection
 - insert/overwrite a project item, including a sequence project item
 - clone clips with native time and track offsets
@@ -148,3 +149,11 @@ premiere_plan_audio_automation accepts an exact named audio target and request. 
 The planner rejects unsupported keyframes, already-animated parameters, stale baselines and invalid values. Ducking merges overlaps and gaps whose attack/release envelopes overlap, holding the reduced level across those gaps. Boundaries are clipped to the supplied duration; an interval ending at duration stays ducked rather than adding an instantaneous recovery. Limits are 128 regions and 64 output keys.
 
 Results contain settings and expected for the existing premiere_apply_audio_recipe/checkpoint workflow, and can be saved in the existing audio recipe library. Planning is separate from execution. Inspect the actual Volume/Gain/Pan component parameters first; the supplied value_unit is not autodetected. Interpolation follows native defaults and requires post-apply keyframe inspection and listening. Dialogue input is supplied, automaticSpeechDetection=false; no speech analyzer or automatic mixing is claimed.
+
+## Structured captions / SRT
+
+`caption-workflows.js` provides the pure caption layer. Cues are `{start,end,text}` in seconds. SRT parsing handles BOM, LF/CRLF/CR, multiline text, strict timestamps, deterministic sorting and overlap reporting. Serialization re-numbers cues and emits sorted timing. Merge behavior is off by default and runs only when `mergeAdjacent=true` is explicitly requested. Hard limits: 1 MiB file, 5,000 cues, 8,000 characters per cue, 512 KiB cue text and 24 hours.
+
+Transcript adaptation is intentionally conservative because Adobe documents `Transcript.exportToJSON` but not a stable public JSON schema. Shuvi only adapts recognized segment arrays when every cue contains explicit start/end seconds and text. Otherwise it returns `supported=false` and leaves the transcript available for inspection. `premiere_export_transcript` now includes bounded caption/SRT previews when adaptation is safe.
+
+Adobe UXP docs reviewed 2026-09-23 expose caption-track discovery, name and mute plus transcript APIs, but no documented native caption creation, caption-text editing or SRT-import action. The capability object therefore reports native creation/editing/import unsupported and SRT generation supported. Import remains an explicit external-SRT boundary; do not replace this with blind UI clicks.

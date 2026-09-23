@@ -85,3 +85,28 @@ export type PremiereBridgeStatus = {
   last_seen_ms: number | null;
   queued_commands: number;
 };
+
+
+export type StructuredCaptionSegment = {
+  start: number;
+  end: number;
+  text: string;
+};
+
+export type PremiereCaptionCapability = {
+  schema_version: 1;
+  native_caption_creation: false;
+  native_caption_text_editing: false;
+  caption_track_discovery: true;
+  caption_track_rename: "premiere_26_3_plus";
+  caption_track_mute: true;
+  srt_generation: true;
+  transcript_timing_adapter: true;
+  import_adapter: {
+    supported: false;
+    mode: "external_srt_boundary";
+    reason: string;
+    fallback: string;
+  };
+  reviewed: string;
+};

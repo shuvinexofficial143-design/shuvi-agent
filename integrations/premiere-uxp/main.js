@@ -5,6 +5,7 @@ const { planSpeed, SPEED_CAPABILITY } = require("./speed-workflows.js");
 const { buildRecipePlan } = require("./recipe-plans.js");
 
 const { buildAudioPlan } = require("./audio-plans.js");
+const { adaptTranscriptTiming, captionCapability } = require("./caption-workflows.js");
 
 const BRIDGE_BASE = "http://127.0.0.1:17361";
 let bridgeToken = "";
@@ -3276,11 +3277,41 @@ async function exportTranscript(argumentsValue) {
   }
 
   const previewLimit = 80000;
+  const captionAdaptation = adaptTranscriptTiming(transcriptJson);
+  let captions = captionAdaptation;
+  if (captionAdaptation.supported) {
+    const segmentPreview = [];
+    let previewChars = 0;
+    for (const segment of captionAdaptation.segments) {
+      const cost = segment.text.length + 64;
+      if (segmentPreview.length >= 128 || previewChars + cost > 30000) break;
+      segmentPreview.push(segment);
+      previewChars += cost;
+    }
+    const srtPreviewLimit = 60000;
+    captions = {
+      supported: true,
+      schemaVersion: captionAdaptation.schemaVersion,
+      source: captionAdaptation.source,
+      segmentCount: captionAdaptation.segments.length,
+      segmentsTruncated: segmentPreview.length < captionAdaptation.segments.length,
+      segments: segmentPreview,
+      overlapCount: captionAdaptation.overlaps.length,
+      overlapsTruncated: captionAdaptation.overlaps.length > 64,
+      overlaps: captionAdaptation.overlaps.slice(0, 64),
+      srtChars: captionAdaptation.srt.length,
+      srtTruncated: captionAdaptation.srt.length > srtPreviewLimit,
+      srt: captionAdaptation.srt.slice(0, srtPreviewLimit),
+      capability: captionAdaptation.capability
+    };
+  }
+
   return {
     itemId,
     chars: transcriptJson.length,
     truncated: transcriptJson.length > previewLimit,
-    transcriptJson: transcriptJson.slice(0, previewLimit)
+    transcriptJson: transcriptJson.slice(0, previewLimit),
+    captions
   };
 }
 
@@ -3511,7 +3542,8 @@ async function captionTracks() {
 
   return {
     count,
-    tracks
+    tracks,
+    capabilities: captionCapability()
   };
 }
 

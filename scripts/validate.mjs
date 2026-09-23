@@ -38,7 +38,8 @@ for (const path of [
   "src-tauri/src/premiere_audio.rs",
   "integrations/premiere-uxp/audio-plans.js",
   "src-tauri/src/premiere_recipes.rs",
-  "integrations/premiere-uxp/recipe-plans.js"
+  "integrations/premiere-uxp/recipe-plans.js",
+  "integrations/premiere-uxp/caption-workflows.js"
 ]) {
   try {
     statSync(join(root, path));

@@ -243,3 +243,17 @@ Estimate: code complete approximately 63%; runtime verified 0% this session; pro
 - [ ] Real Premiere audio units/interpolation/audition verification and connected dialogue analyzer. Structured transcript adaptation follows with captions.
 
 Estimate: code complete approximately 65%; runtime verified 0% this session; production readiness not established. Next: structured caption/SRT and transcript timing boundary.
+
+### Module F — structured captions / SRT / transcript timing
+- [x] Pure structured caption layer with bounded {start,end,text} validation and deterministic time sorting.
+- [x] Strict SRT parser/serializer with UTF-8 BOM, LF/CRLF/CR normalization, multiline cues, malformed timestamp rejection and 24-hour timing bound.
+- [x] 1 MiB file, 5,000-segment, 8,000-char-per-cue and 512 KiB total-text limits; zero/negative/sub-millisecond durations rejected.
+- [x] Overlap detection/reporting; adjacent merging remains disabled unless explicitly requested with a bounded gap.
+- [x] Transcript JSON adapter accepts only recognized segment arrays with explicit numeric seconds (or {seconds}) + text; unknown Premiere JSON shapes return supported=false instead of guessed timing.
+- [x] Transcript export now includes a bounded structured-caption/SRT preview and caption capability object without expanding the localhost bridge limits.
+- [x] Reviewed current Adobe UXP Transcript/Sequence/CaptionTrack docs: caption discovery/name/mute and transcript import/export exist, but no documented native caption creation/text editing/SRT import API was found. Native creation/import stays unsupported with an explicit external-SRT adapter boundary; no GUI-click fallback.
+- [x] Fourteen caption regression tests cover normal/multiline/BOM/malformed/missing-number/overlap/duration/text/segment/line-ending/round-trip/merge/transcript/capability cases.
+- [ ] Real Premiere transcript JSON shape verification and manual SRT import acceptance on a disposable project.
+- [ ] Native caption creation/text-editing/import only if a future documented UXP API exposes it safely.
+
+Estimate after Module F: code complete approximately 67%; runtime verified 0% this session; production readiness not established. Next: Module G — inspected MOGRT editable-property workflows.
