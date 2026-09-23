@@ -34,3 +34,6 @@ Shuvi's desktop agent creates a timestamped sibling `Shuvi Backups` copy of the 
 
 - trim exact video/audio clips by track + timeline clip index
 - move clips on the same track by a signed time delta
+
+- delete or ripple-delete exact clips by deterministic track/clip index
+- export the active sequence immediately or queue it to Adobe Media Encoder, with an optional export preset
