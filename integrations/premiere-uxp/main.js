@@ -342,7 +342,26 @@ async function saveProject() {
   };
 }
 
-async function summarizeTrackItem(item) {
+async function sortedClipItems(track) {
+  const items = await track.getTrackItems(
+    premiere.Constants.TrackItemType.CLIP,
+    false
+  );
+
+  const timed = [];
+  for (const item of items) {
+    const start = await item.getStartTime();
+    timed.push({
+      item,
+      startSeconds: start?.seconds ?? Number.POSITIVE_INFINITY
+    });
+  }
+
+  timed.sort((a, b) => a.startSeconds - b.startSeconds);
+  return timed.map((entry) => entry.item);
+}
+
+async function summarizeTrackItem(item, clipIndex) {
   const [
     name,
     start,
@@ -362,6 +381,7 @@ async function summarizeTrackItem(item) {
   ]);
 
   return {
+    clipIndex,
     name,
     trackIndex,
     startSeconds: start?.seconds ?? null,
@@ -385,11 +405,11 @@ async function inspectTimeline() {
 
   for (let index = 0; index < videoTrackCount && itemBudget > 0; index += 1) {
     const track = await sequence.getVideoTrack(index);
-    const items = await track.getTrackItems(premiere.Constants.TrackItemType.CLIP, false);
+    const items = await sortedClipItems(track);
     const summaries = [];
 
-    for (const item of items.slice(0, itemBudget)) {
-      summaries.push(await summarizeTrackItem(item));
+    for (const [clipIndex, item] of items.slice(0, itemBudget).entries()) {
+      summaries.push(await summarizeTrackItem(item, clipIndex));
       itemBudget -= 1;
       if (itemBudget <= 0) break;
     }
@@ -404,11 +424,11 @@ async function inspectTimeline() {
 
   for (let index = 0; index < audioTrackCount && itemBudget > 0; index += 1) {
     const track = await sequence.getAudioTrack(index);
-    const items = await track.getTrackItems(premiere.Constants.TrackItemType.CLIP, false);
+    const items = await sortedClipItems(track);
     const summaries = [];
 
-    for (const item of items.slice(0, itemBudget)) {
-      summaries.push(await summarizeTrackItem(item));
+    for (const [clipIndex, item] of items.slice(0, itemBudget).entries()) {
+      summaries.push(await summarizeTrackItem(item, clipIndex));
       itemBudget -= 1;
       if (itemBudget <= 0) break;
     }
@@ -513,6 +533,114 @@ async function insertMedia(argumentsValue) {
   };
 }
 
+async function trimClip(argumentsValue) {
+  const kind =
+    typeof argumentsValue?.kind === "string"
+      ? argumentsValue.kind.toLowerCase()
+      : "";
+  const trackIndex = Number(argumentsValue?.track ?? 0);
+  const clipIndex = Number(argumentsValue?.clipIndex ?? 0);
+  const startSeconds =
+    argumentsValue?.startSeconds == null
+      ? null
+      : Number(argumentsValue.startSeconds);
+  const endSeconds =
+    argumentsValue?.endSeconds == null
+      ? null
+      : Number(argumentsValue.endSeconds);
+
+  if (kind !== "video" && kind !== "audio") {
+    throw new Error("Trim kind must be video or audio.");
+  }
+  if (!Number.isInteger(trackIndex) || trackIndex < 0) {
+    throw new Error("Track index must be a non-negative integer.");
+  }
+  if (!Number.isInteger(clipIndex) || clipIndex < 0) {
+    throw new Error("Clip index must be a non-negative integer.");
+  }
+  if (startSeconds == null && endSeconds == null) {
+    throw new Error("Provide startSeconds and/or endSeconds.");
+  }
+  if (startSeconds != null && (!Number.isFinite(startSeconds) || startSeconds < 0)) {
+    throw new Error("startSeconds must be zero or greater.");
+  }
+  if (endSeconds != null && (!Number.isFinite(endSeconds) || endSeconds < 0)) {
+    throw new Error("endSeconds must be zero or greater.");
+  }
+  if (startSeconds != null && endSeconds != null && startSeconds >= endSeconds) {
+    throw new Error("startSeconds must be earlier than endSeconds.");
+  }
+
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+
+  const track =
+    kind === "video"
+      ? await sequence.getVideoTrack(trackIndex)
+      : await sequence.getAudioTrack(trackIndex);
+  if (!track) throw new Error("Requested Premiere track was not found.");
+
+  const items = await sortedClipItems(track);
+  const item = items[clipIndex];
+  if (!item) {
+    throw new Error(
+      "Clip index " + clipIndex + " was not found on " + kind + " track " + trackIndex + "."
+    );
+  }
+
+  const currentStart = await item.getStartTime();
+  const currentEnd = await item.getEndTime();
+  const nextStart = startSeconds == null ? currentStart?.seconds : startSeconds;
+  const nextEnd = endSeconds == null ? currentEnd?.seconds : endSeconds;
+
+  if (
+    typeof nextStart !== "number" ||
+    typeof nextEnd !== "number" ||
+    nextStart >= nextEnd
+  ) {
+    throw new Error("Requested trim would create an invalid clip duration.");
+  }
+
+  let transactionSucceeded = false;
+  project.lockedAccess(() => {
+    const actions = [];
+
+    if (startSeconds != null) {
+      actions.push(
+        item.createSetStartAction(
+          premiere.TickTime.createWithSeconds(startSeconds)
+        )
+      );
+    }
+
+    if (endSeconds != null) {
+      actions.push(
+        item.createSetEndAction(
+          premiere.TickTime.createWithSeconds(endSeconds)
+        )
+      );
+    }
+
+    transactionSucceeded = project.executeTransaction((compoundAction) => {
+      for (const action of actions) compoundAction.addAction(action);
+    }, "Shuvi: Trim Clip");
+  });
+
+  if (!transactionSucceeded) {
+    throw new Error("Premiere rejected the trim transaction.");
+  }
+
+  return {
+    trimmed: true,
+    kind,
+    track: trackIndex,
+    clipIndex,
+    startSeconds: nextStart,
+    endSeconds: nextEnd
+  };
+}
+
 async function executeCommand(command) {
   switch (command.action) {
     case "inspect_context":
@@ -531,6 +659,8 @@ async function executeCommand(command) {
       return await inspectTimeline();
     case "insert_media":
       return await insertMedia(command.arguments || {});
+    case "trim_clip":
+      return await trimClip(command.arguments || {});
     default:
       throw new Error("Unsupported Shuvi Premiere command: " + command.action);
   }
