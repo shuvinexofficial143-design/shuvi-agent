@@ -61,7 +61,7 @@ export function validateRegistries({ rust, main, uxp, bridge }) {
   });
   const routes = [];
   visit(parse("premiere-uxp/main.js", uxp, ts.ScriptKind.JS), node => {
-    if (ts.isFunctionDeclaration(node) && node.name?.text === "executeCommand") {
+    if (ts.isFunctionDeclaration(node) && ["executeCommand", "dispatchNativeCommand"].includes(node.name?.text)) {
       visit(node, child => {
         if (ts.isCaseClause(child) && ts.isStringLiteral(child.expression)) routes.push(child.expression.text);
       });
@@ -75,7 +75,7 @@ export function validateRegistries({ rust, main, uxp, bridge }) {
     for (const route of routeSet) if (!allowed.has(route)) errors.push(`UXP route missing desktop allowlist: ${route}`);
     for (const action of allowed) if (!routeSet.has(action)) errors.push(`Desktop allowlist action has no UXP route: ${action}`);
   }
-  const requests = [...rust.matchAll(/\.premiere_bridge\s*\.request\(\s*("[a-z0-9_]+"|[a-z_]+)\s*,/g)];
+  const requests = [...rust.matchAll(/(?:\.premiere_bridge|\bpremiere_bridge)\s*\.request\(\s*("[a-z0-9_]+"|[a-z_]+)\s*,/g)];
   for (const request of requests) {
     let actions;
     if (request[1].startsWith('"')) actions = [JSON.parse(request[1])];

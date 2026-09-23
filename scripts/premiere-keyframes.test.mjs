@@ -133,3 +133,49 @@ test("transition removal rejects both-ends, missing API and failed transaction",
   await assert.rejects(f.panel.removeVideoTransition(request), /unsupported/);
   assert.equal(f.actions.length, 0);
 });
+
+async function expectedTarget(f) {
+  const sequence = await f.project.getActiveSequence();
+  return {project_guid: "project-id", sequence_guid: "sequence-id", clips: [{kind: "video", track: 0, clip_index: 0,
+    signature: await f.panel.clipTargetSignature(f.project, sequence, f.item, "video", 0, 0)}]};
+}
+
+test("matching optional expectations permit a native edit", async () => {
+  const f = fixture();
+  await f.panel.executeCommand({action: "remove_video_transition", arguments: {track: 0, clipIndex: 0, position: "start", _expected: await expectedTarget(f)}});
+  assert.equal(f.actions.length, 1);
+});
+
+for (const change of ["project", "sequence", "path", "clip"]) test(change + " changes fail before mutation and guard state resets", async () => {
+  const f = fixture();
+  const expected = await expectedTarget(f);
+  if (change === "project") expected.project_guid = "other";
+  if (change === "sequence") expected.sequence_guid = "other";
+  if (change === "path") expected.project_path = "other.prproj";
+  if (change === "clip") f.item.getStartTime = async () => ({ticks: "5", seconds: 0.05});
+  const command = {action: "remove_video_transition", arguments: {track: 0, clipIndex: 0, position: "start", _expected: expected}};
+  await assert.rejects(f.panel.executeCommand(command), /changed/);
+  assert.equal(f.actions.length, 0);
+  delete command.arguments._expected;
+  await f.panel.executeCommand(command);
+  assert.equal(f.actions.length, 1);
+});
+
+test("clip expectations must cover the edited target and both roll targets", async () => {
+  const f = fixture(); const expected = await expectedTarget(f);
+  await assert.rejects(f.panel.executeCommand({action: "remove_video_transition", arguments: {track: 0, clipIndex: 1, position: "start", _expected: expected}}), /cover/);
+  await assert.rejects(f.panel.executeCommand({action: "roll_edit", arguments: {kind: "video", track: 0, leftClipIndex: 0, rightClipIndex: 1, _expected: expected}}), /cover/);
+  assert.equal(f.actions.length, 0);
+});
+
+test("timeline produces inspectable signatures and plain project/sequence expectations", async () => {
+  const f = fixture(); const sequence = await f.project.getActiveSequence();
+  sequence.getVideoTrackCount = async () => 1; sequence.getAudioTrackCount = async () => 0;
+  const track = await sequence.getVideoTrack(0); track.isMuted = async () => false;
+  f.item.getDuration = async () => ({seconds: 10}); f.item.getSpeed = async () => 1;
+  f.item.isDisabled = async () => false; f.item.getTrackIndex = async () => 0;
+  const timeline = await f.panel.executeCommand({action: "inspect_timeline", arguments: {}});
+  assert.equal(timeline.expected.project_guid, "project-id");
+  assert.equal(timeline.expected.sequence_guid, "sequence-id");
+  assert.equal(timeline.videoTracks[0].items[0].targetSignature, (await expectedTarget(f)).clips[0].signature);
+});

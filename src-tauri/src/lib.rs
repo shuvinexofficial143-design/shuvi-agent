@@ -17,6 +17,8 @@ use sysinfo::{Pid, System};
 use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
+mod premiere_target;
+use premiere_target::{PremiereClient, PremiereExpectation};
 mod premiere_keyframes;
 use premiere_keyframes::ParameterTarget;
 mod premiere_checkpoint;
@@ -163,6 +165,7 @@ Rules:
 - Use run_project_task instead of raw shell commands when test/build/lint/typecheck is enough.
 - For browser/app UI work, prefer a Shuvi-managed browser when isolation matters, then use window-scoped semantic UI tools first. Use ui_toggle and ui_expand_collapse for supported controls. ui_send_keys is a high-risk fallback only after an exact element is focused and semantic patterns are unavailable. pointer_click is a final high-risk coordinate fallback: inspect_screen first, use coordinates only when semantic UI/DOM control cannot target the control, and never repeat a failed coordinate click blindly.
 - For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_timeline/premiere_list_items/premiere_project_tree for inspection, premiere_set_playhead for non-destructive navigation, premiere_inspect_frame for playhead-positioned visual review and premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media/premiere_insert_media/premiere_save_project for native editing. premiere_insert_media, premiere_trim_clip, premiere_roll_edit, premiere_move_clip, premiere_clone_clip, premiere_delete_clip, premiere_add_video_transition, premiere_add_video_effect, premiere_set_effect_param, premiere_add_effect_keyframe, premiere_add_audio_effect, premiere_set_audio_effect_param and premiere_add_audio_effect_keyframe are high risk because they change the timeline or effect state; premiere_insert_mogrt_path and premiere_insert_mogrt_library are high risk because they add graphics to the timeline; premiere_export_sequence is high risk because it writes media and may start encoding; inspect the timeline first when practical. Use UI/vision fallbacks only for features not exposed through the bridge. Major sequence creation and timeline insert/overwrite actions automatically save and copy the current .prproj into a sibling 'Shuvi Backups' folder before editing; the edit is refused if a saved local project cannot be checkpointed.
+- Premiere tools accept optional arguments.expected: {project_guid, project_path?, sequence_guid?, clips:[{kind,track,clip_index,signature}]}. Copy project/sequence identity and each clip targetSignature from premiere_timeline. Include every edited clip for clip guards. Stale expectations are rejected; legacy callers without expected remain compatible. Never discard an expectation after rejection to force an edit.
 - Inspect premiere_inspect_keyframes before premiere_edit_keyframe and copy the returned targetSignature and exact native ticks. A stale target is rejected. Keyframe edits are high-risk and require a project checkpoint. Do not convert keyframe ticks to timeline seconds.
 - premiere_plan_speed is a read-only planner. Supply only fields for the chosen mode. It returns applied=false/executable=false because the reviewed UXP API has no documented speed write action. Never describe a plan as an applied edit, and never invoke blind UI to execute it. Inspect timeline/clip speed first.
 - Saved Premiere recipes are local reusable video/audio named-parameter recipes. Inspect a clip's effect chain first, save a recipe only after exact selectors are known, and apply saved recipes as high-risk backed-up edits.
@@ -370,6 +373,7 @@ enum ToolAction {
 
 #[derive(Debug, Clone)]
 struct PendingAction {
+    premiere_expectation: Option<PremiereExpectation>,
     tool: String,
     detail: String,
     action: ToolAction,
@@ -1452,6 +1456,12 @@ fn stage_tool(
     state: &ActionState,
 ) -> Result<PendingActionView, String> {
     let tool = proposal.tool.clone();
+    let premiere_expectation = if let Some(value) = proposal.arguments.get("expected") {
+        if !tool.starts_with("premiere_") { return Err("Premiere expectations only apply to Premiere tools.".into()); }
+        let expected: PremiereExpectation = serde_json::from_value(value.clone()).map_err(|e| format!("Invalid Premiere expectation: {e}"))?;
+        expected.validate()?;
+        Some(expected)
+    } else { None };
 
     let (action, summary, detail, risk) = match proposal.tool.as_str() {
         "list_directory" => {
@@ -3979,6 +3989,7 @@ fn stage_tool(
         .insert(
             id.clone(),
             PendingAction {
+                premiere_expectation,
                 tool: tool.clone(),
                 detail: detail.clone(),
                 action,
@@ -4788,15 +4799,15 @@ fn write_workspace(app: &AppHandle, path: &str) -> Result<(), String> {
         .map_err(|error| format!("Could not save workspace setting: {error}"))
 }
 
-async fn backup_premiere_project(state: &ActionState) -> Result<String, String> {
-    let before = state.premiere_bridge.request("inspect_context", json!({}), Duration::from_secs(8)).await?;
+async fn backup_premiere_project(premiere_bridge: &PremiereClient<'_>) -> Result<String, String> {
+    let before = premiere_bridge.request("inspect_context", json!({}), Duration::from_secs(8)).await?;
     let path = before.get("projectPath").and_then(Value::as_str).filter(|p| !p.trim().is_empty())
         .ok_or_else(|| "Save the active Premiere project to a .prproj file before this edit.".to_string())?;
     if !Path::new(path).is_absolute() || !Path::new(path).is_file() {
         return Err("Premiere project must exist at an absolute local path before this edit.".into());
     }
-    let saved = state.premiere_bridge.request("save_project", json!({}), Duration::from_secs(15)).await?;
-    let after = state.premiere_bridge.request("inspect_context", json!({}), Duration::from_secs(8)).await?;
+    let saved = premiere_bridge.request("save_project", json!({}), Duration::from_secs(15)).await?;
+    let after = premiere_bridge.request("inspect_context", json!({}), Duration::from_secs(8)).await?;
     if saved.get("saved").and_then(Value::as_bool) != Some(true)
         || saved.get("projectPath").and_then(Value::as_str) != Some(path)
         || after.get("projectPath").and_then(Value::as_str) != Some(path)
@@ -4817,6 +4828,7 @@ fn truncate_output(value: String) -> String {
 
 async fn execute_tool(action: PendingAction, state: &ActionState, app: &AppHandle) -> Result<ActionResult, String> {
     let tool = action.tool.clone();
+    let premiere_bridge = PremiereClient { bridge: &state.premiere_bridge, expected: action.premiere_expectation.as_ref() };
 
     match action.action {
         ToolAction::ListDirectory { path } => {
@@ -5733,8 +5745,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereContext => {
-            let value = state
-                .premiere_bridge
+            let value = premiere_bridge
                 .request("inspect_context", json!({}), Duration::from_secs(8))
                 .await?;
 
@@ -5748,37 +5759,37 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereRemoveKeyframeRange { target, start_seconds, end_seconds, expected_count, expected_signature, allow_remove_all } => {
-            let backup = backup_premiere_project(state).await?;
+            let backup = backup_premiere_project(&premiere_bridge).await?;
             let mut arguments = target.bridge_arguments();
             arguments["startSeconds"] = json!(start_seconds);
             arguments["endSeconds"] = json!(end_seconds);
             arguments["expectedCount"] = json!(expected_count);
             arguments["expectedSignature"] = json!(expected_signature);
             arguments["allowRemoveAll"] = json!(allow_remove_all);
-            let value = state.premiere_bridge.request("remove_keyframe_range", arguments, Duration::from_secs(30)).await?;
+            let value = premiere_bridge.request("remove_keyframe_range", arguments, Duration::from_secs(30)).await?;
             Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value})).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
         }
         ToolAction::PremiereRemoveVideoTransition { track, clip_index, position } => {
-            let backup = backup_premiere_project(state).await?;
-            let value = state.premiere_bridge.request("remove_video_transition", json!({"track":track,"clipIndex":clip_index,"position":position}), Duration::from_secs(20)).await?;
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request("remove_video_transition", json!({"track":track,"clipIndex":clip_index,"position":position}), Duration::from_secs(20)).await?;
             Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value})).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
         }
         ToolAction::PremiereInspectKeyframes { target } => {
-            let value = state.premiere_bridge.request("inspect_keyframes", target.bridge_arguments(), Duration::from_secs(20)).await?;
+            let value = premiere_bridge.request("inspect_keyframes", target.bridge_arguments(), Duration::from_secs(20)).await?;
             Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&value).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
         }
         ToolAction::PremiereEditKeyframe { target, ticks, expected_signature, operation, interpolation } => {
-            let backup = backup_premiere_project(state).await?;
+            let backup = backup_premiere_project(&premiere_bridge).await?;
             let mut arguments = target.bridge_arguments();
             arguments["ticks"] = json!(ticks);
             arguments["expectedSignature"] = json!(expected_signature);
             arguments["operation"] = json!(operation);
             arguments["interpolation"] = json!(interpolation);
-            let value = state.premiere_bridge.request("edit_keyframe", arguments, Duration::from_secs(20)).await?;
+            let value = premiere_bridge.request("edit_keyframe", arguments, Duration::from_secs(20)).await?;
             Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value})).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
         }
         ToolAction::PremiereInspectClipSpeed { kind, track, clip_index } => {
-            let value = state.premiere_bridge.request(
+            let value = premiere_bridge.request(
                 "inspect_clip_speed",
                 json!({"kind": kind, "track": track, "clipIndex": clip_index}),
                 Duration::from_secs(15),
@@ -5786,7 +5797,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&value).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
         }
         ToolAction::PremierePlanSpeed { kind, track, clip_index, request } => {
-            let value = state.premiere_bridge.request(
+            let value = premiere_bridge.request(
                 "plan_clip_speed",
                 json!({"kind": kind, "track": track, "clipIndex": clip_index, "request": request}),
                 Duration::from_secs(15),
@@ -5794,7 +5805,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&value).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
         }
         ToolAction::PremiereTimeline => {
-            let value = state.premiere_bridge
+            let value = premiere_bridge
                 .request("inspect_timeline", json!({}), Duration::from_secs(12)).await?;
             Ok(ActionResult {
                 success: true,
@@ -5805,7 +5816,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereCaptionTracks => {
-            let value = state.premiere_bridge.request(
+            let value = premiere_bridge.request(
                 "caption_tracks",
                 json!({}),
                 Duration::from_secs(12),
@@ -5820,8 +5831,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereSetCaptionTrackName { track, name } => {
-            let backup = backup_premiere_project(state).await?;
-            let value = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
                 "set_caption_track_name",
                 json!({ "track": track, "name": name }),
                 Duration::from_secs(20),
@@ -5839,7 +5850,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereSetCaptionTrackMute { track, muted } => {
-            let value = state.premiere_bridge.request(
+            let value = premiere_bridge.request(
                 "set_caption_track_mute",
                 json!({ "track": track, "muted": muted }),
                 Duration::from_secs(12),
@@ -5854,7 +5865,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereSetPlayhead { seconds } => {
-            let value = state.premiere_bridge.request(
+            let value = premiere_bridge.request(
                 "set_playhead",
                 json!({ "seconds": seconds }),
                 Duration::from_secs(8),
@@ -5868,7 +5879,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereInspectFrame { seconds, prompt, provider } => {
-            state.premiere_bridge.request(
+            premiere_bridge.request(
                 "set_playhead",
                 json!({ "seconds": seconds }),
                 Duration::from_secs(8),
@@ -5900,7 +5911,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
 
             for seconds in seconds {
                 let review = async {
-                    state.premiere_bridge.request(
+                    premiere_bridge.request(
                         "set_playhead",
                         json!({ "seconds": seconds }),
                         Duration::from_secs(8),
@@ -5955,7 +5966,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereSetTrackMute { kind, track, muted } => {
-            let value = state.premiere_bridge.request(
+            let value = premiere_bridge.request(
                 "set_track_mute",
                 json!({ "kind": kind, "track": track, "muted": muted }),
                 Duration::from_secs(10),
@@ -5969,8 +5980,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereSetClipEnabled { kind, track, clip_index, enabled } => {
-            let backup = backup_premiere_project(state).await?;
-            let value = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
                 "set_clip_enabled",
                 json!({
                     "kind": kind,
@@ -5993,7 +6004,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereListVideoTransitions => {
-            let value = state.premiere_bridge.request(
+            let value = premiere_bridge.request(
                 "list_video_transitions",
                 json!({}),
                 Duration::from_secs(12),
@@ -6008,8 +6019,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereAddVideoTransition { track, clip_index, match_name, duration_seconds, position, force_single_sided } => {
-            let backup = backup_premiere_project(state).await?;
-            let value = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
                 "add_video_transition",
                 json!({
                     "track": track,
@@ -6034,7 +6045,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereListVideoEffects => {
-            let value = state.premiere_bridge.request(
+            let value = premiere_bridge.request(
                 "list_video_effects",
                 json!({}),
                 Duration::from_secs(12),
@@ -6048,7 +6059,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereInspectClipEffects { track, clip_index } => {
-            let value = state.premiere_bridge.request(
+            let value = premiere_bridge.request(
                 "inspect_clip_effects",
                 json!({
                     "track": track,
@@ -6065,8 +6076,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereAddVideoEffect { track, clip_index, match_name } => {
-            let backup = backup_premiere_project(state).await?;
-            let value = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
                 "add_video_effect",
                 json!({
                     "track": track,
@@ -6087,8 +6098,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereSetEffectParam { track, clip_index, component_index, param_index, value } => {
-            let backup = backup_premiere_project(state).await?;
-            let result = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let result = premiere_bridge.request(
                 "set_effect_param",
                 json!({
                     "track": track,
@@ -6111,8 +6122,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereAddEffectKeyframe { track, clip_index, component_index, param_index, seconds, value } => {
-            let backup = backup_premiere_project(state).await?;
-            let result = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let result = premiere_bridge.request(
                 "add_effect_keyframe",
                 json!({
                     "track": track,
@@ -6136,8 +6147,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereSetVideoParamNamed { track, clip_index, component_match_name, component_display_name, param_display_name, value } => {
-            let backup = backup_premiere_project(state).await?;
-            let result = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let result = premiere_bridge.request(
                 "set_video_param_named",
                 json!({
                     "track": track,
@@ -6159,8 +6170,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereAddVideoKeyframeNamed { track, clip_index, component_match_name, component_display_name, param_display_name, seconds, value } => {
-            let backup = backup_premiere_project(state).await?;
-            let result = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let result = premiere_bridge.request(
                 "add_video_keyframe_named",
                 json!({
                     "track": track,
@@ -6183,8 +6194,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereApplyVideoRecipe { track, clip_index, settings } => {
-            let backup = backup_premiere_project(state).await?;
-            let result = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let result = premiere_bridge.request(
                 "apply_video_recipe",
                 json!({
                     "track": track,
@@ -6204,7 +6215,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereListAudioEffects => {
-            let value = state.premiere_bridge.request(
+            let value = premiere_bridge.request(
                 "list_audio_effects",
                 json!({}),
                 Duration::from_secs(12),
@@ -6218,7 +6229,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereInspectAudioClipEffects { track, clip_index } => {
-            let value = state.premiere_bridge.request(
+            let value = premiere_bridge.request(
                 "inspect_audio_clip_effects",
                 json!({
                     "track": track,
@@ -6235,8 +6246,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereAddAudioEffect { track, clip_index, display_name } => {
-            let backup = backup_premiere_project(state).await?;
-            let value = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
                 "add_audio_effect",
                 json!({
                     "track": track,
@@ -6257,8 +6268,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereSetAudioEffectParam { track, clip_index, component_index, param_index, value } => {
-            let backup = backup_premiere_project(state).await?;
-            let result = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let result = premiere_bridge.request(
                 "set_audio_effect_param",
                 json!({
                     "track": track,
@@ -6281,8 +6292,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereAddAudioEffectKeyframe { track, clip_index, component_index, param_index, seconds, value } => {
-            let backup = backup_premiere_project(state).await?;
-            let result = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let result = premiere_bridge.request(
                 "add_audio_effect_keyframe",
                 json!({
                     "track": track,
@@ -6306,8 +6317,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereSetAudioParamNamed { track, clip_index, component_match_name, component_display_name, param_display_name, value } => {
-            let backup = backup_premiere_project(state).await?;
-            let result = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let result = premiere_bridge.request(
                 "set_audio_param_named",
                 json!({
                     "track": track,
@@ -6329,8 +6340,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereAddAudioKeyframeNamed { track, clip_index, component_match_name, component_display_name, param_display_name, seconds, value } => {
-            let backup = backup_premiere_project(state).await?;
-            let result = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let result = premiere_bridge.request(
                 "add_audio_keyframe_named",
                 json!({
                     "track": track,
@@ -6353,8 +6364,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereApplyAudioRecipe { track, clip_index, settings } => {
-            let backup = backup_premiere_project(state).await?;
-            let result = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let result = premiere_bridge.request(
                 "apply_audio_recipe",
                 json!({
                     "track": track,
@@ -6416,7 +6427,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 .ok_or_else(|| format!("Saved Premiere recipe '{name}' was not found."))?;
 
             validate_premiere_saved_recipe_settings(&recipe.settings)?;
-            let backup = backup_premiere_project(state).await?;
+            let backup = backup_premiere_project(&premiere_bridge).await?;
             let action = if recipe.kind == "video" {
                 "apply_video_recipe"
             } else if recipe.kind == "audio" {
@@ -6425,7 +6436,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 return Err(format!("Saved Premiere recipe '{}' has invalid kind '{}'.", recipe.name, recipe.kind));
             };
 
-            let result = state.premiere_bridge.request(
+            let result = premiere_bridge.request(
                 action,
                 json!({
                     "track": track,
@@ -6456,7 +6467,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 .ok_or_else(|| format!("Saved Premiere recipe '{name}' was not found."))?;
 
             validate_premiere_saved_recipe_settings(&recipe.settings)?;
-            let backup = backup_premiere_project(state).await?;
+            let backup = backup_premiere_project(&premiere_bridge).await?;
             let action = if recipe.kind == "video" {
                 "apply_video_recipe"
             } else if recipe.kind == "audio" {
@@ -6472,7 +6483,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             for target in targets {
                 let track = target.get("track").and_then(Value::as_u64).unwrap_or(0);
                 let clip_index = target.get("clipIndex").and_then(Value::as_u64).unwrap_or(0);
-                match state.premiere_bridge.request(
+                match premiere_bridge.request(
                     action,
                     json!({
                         "track": track,
@@ -6539,7 +6550,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereListMarkers => {
-            let value = state.premiere_bridge.request(
+            let value = premiere_bridge.request(
                 "list_markers",
                 json!({}),
                 Duration::from_secs(12),
@@ -6553,7 +6564,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereAddMarker { name, marker_type, seconds, duration_seconds, comments } => {
-            let value = state.premiere_bridge.request(
+            let value = premiere_bridge.request(
                 "add_marker",
                 json!({
                     "name": name,
@@ -6573,8 +6584,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereRemoveMarker { marker_index } => {
-            let backup = backup_premiere_project(state).await?;
-            let value = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
                 "remove_marker",
                 json!({ "markerIndex": marker_index }),
                 Duration::from_secs(20),
@@ -6591,7 +6602,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereProjectTree => {
-            let value = state.premiere_bridge.request(
+            let value = premiere_bridge.request(
                 "project_tree",
                 json!({}),
                 Duration::from_secs(20),
@@ -6605,8 +6616,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereListItems => {
-            let value = state
-                .premiere_bridge
+            let value = premiere_bridge
                 .request("list_root_items", json!({}), Duration::from_secs(8))
                 .await?;
 
@@ -6620,8 +6630,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereCreateBin { name } => {
-            let value = state
-                .premiere_bridge
+            let value = premiere_bridge
                 .request(
                     "create_bin",
                     json!({ "name": name }),
@@ -6639,8 +6648,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereRenameProjectItem { item_id, name } => {
-            let backup = backup_premiere_project(state).await?;
-            let value = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
                 "rename_project_item",
                 json!({ "itemId": item_id, "name": name }),
                 Duration::from_secs(20),
@@ -6655,8 +6664,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereMoveProjectItem { item_id, target_bin_id } => {
-            let backup = backup_premiere_project(state).await?;
-            let value = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
                 "move_project_item",
                 json!({ "itemId": item_id, "targetBinId": target_bin_id }),
                 Duration::from_secs(20),
@@ -6671,8 +6680,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereRelinkMedia { item_id, new_path, override_compatibility } => {
-            let backup = backup_premiere_project(state).await?;
-            let value = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
                 "relink_media",
                 json!({
                     "itemId": item_id,
@@ -6691,8 +6700,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereSetSourceInOut { item_id, in_seconds, out_seconds } => {
-            let backup = backup_premiere_project(state).await?;
-            let result = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let result = premiere_bridge.request(
                 "set_source_inout",
                 json!({
                     "itemId": item_id,
@@ -6714,8 +6723,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereClearSourceInOut { item_id } => {
-            let backup = backup_premiere_project(state).await?;
-            let result = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let result = premiere_bridge.request(
                 "clear_source_inout",
                 json!({ "itemId": item_id }),
                 Duration::from_secs(20),
@@ -6733,8 +6742,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereCreateSubclip { item_id, name, start_seconds, end_seconds, hard_boundaries, take_video, take_audio } => {
-            let backup = backup_premiere_project(state).await?;
-            let result = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let result = premiere_bridge.request(
                 "create_subclip",
                 json!({
                     "itemId": item_id,
@@ -6760,7 +6769,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereTranscribeItem { item_id, language } => {
-            let value = state.premiere_bridge.request(
+            let value = premiere_bridge.request(
                 "transcribe_item",
                 json!({
                     "itemId": item_id,
@@ -6778,7 +6787,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereExportTranscript { item_id } => {
-            let value = state.premiere_bridge.request(
+            let value = premiere_bridge.request(
                 "export_transcript",
                 json!({ "itemId": item_id }),
                 Duration::from_secs(30),
@@ -6795,7 +6804,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereListTranscriptionLanguages => {
-            let value = state.premiere_bridge.request(
+            let value = premiere_bridge.request(
                 "list_transcription_languages",
                 json!({}),
                 Duration::from_secs(12),
@@ -6810,8 +6819,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereImportTranscript { item_id, transcript_json } => {
-            let backup = backup_premiere_project(state).await?;
-            let value = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
                 "import_transcript",
                 json!({
                     "itemId": item_id,
@@ -6832,8 +6841,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereAttachProxy { item_id, proxy_path } => {
-            let backup = backup_premiere_project(state).await?;
-            let value = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
                 "attach_proxy",
                 json!({ "itemId": item_id, "proxyPath": proxy_path }),
                 Duration::from_secs(30),
@@ -6848,8 +6857,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereInsertMogrtPath { path, seconds, video_track, audio_track } => {
-            let backup = backup_premiere_project(state).await?;
-            let value = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
                 "insert_mogrt_path",
                 json!({
                     "path": path,
@@ -6869,8 +6878,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereInsertMogrtLibrary { library_name, element_name, seconds, video_track, audio_track } => {
-            let backup = backup_premiere_project(state).await?;
-            let value = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
                 "insert_mogrt_library",
                 json!({
                     "libraryName": library_name,
@@ -6891,14 +6900,14 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereBatchRelink { items } => {
-            let backup = backup_premiere_project(state).await?;
+            let backup = backup_premiere_project(&premiere_bridge).await?;
             let total = items.len();
             let mut results = Vec::with_capacity(total);
             let mut failures = 0_usize;
 
             for item in items {
                 let item_id = item.get("itemId").and_then(Value::as_str).unwrap_or_default().to_string();
-                match state.premiere_bridge.request(
+                match premiere_bridge.request(
                     "relink_media",
                     item.clone(),
                     Duration::from_secs(30),
@@ -6938,14 +6947,14 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereBatchAttachProxy { items } => {
-            let backup = backup_premiere_project(state).await?;
+            let backup = backup_premiere_project(&premiere_bridge).await?;
             let total = items.len();
             let mut results = Vec::with_capacity(total);
             let mut failures = 0_usize;
 
             for item in items {
                 let item_id = item.get("itemId").and_then(Value::as_str).unwrap_or_default().to_string();
-                match state.premiere_bridge.request(
+                match premiere_bridge.request(
                     "attach_proxy",
                     item.clone(),
                     Duration::from_secs(30),
@@ -6985,8 +6994,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereImportMedia { paths } => {
-            let value = state
-                .premiere_bridge
+            let value = premiere_bridge
                 .request(
                     "import_media",
                     json!({ "paths": paths }),
@@ -7004,9 +7012,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereCreateSequenceFromMedia { name, paths } => {
-            let backup = backup_premiere_project(state).await?;
-            let value = state
-                .premiere_bridge
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge
                 .request(
                     "create_sequence_from_media",
                     json!({ "name": name, "paths": paths }),
@@ -7027,8 +7034,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereCreateSubsequence { targets } => {
-            let backup = backup_premiere_project(state).await?;
-            let value = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
                 "create_subsequence",
                 json!({ "targets": targets }),
                 Duration::from_secs(30),
@@ -7046,8 +7053,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereInsertProjectItem { item_id, seconds, video_track, audio_track, mode } => {
-            let backup = backup_premiere_project(state).await?;
-            let value = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
                 "insert_project_item",
                 json!({
                     "itemId": item_id,
@@ -7071,8 +7078,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereInsertMedia { path, seconds, video_track, audio_track, mode } => {
-            let backup = backup_premiere_project(state).await?;
-            let value = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
                 "insert_media",
                 json!({
                     "path": path,
@@ -7095,8 +7102,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereTrimClip { kind, track, clip_index, start_seconds, end_seconds } => {
-            let backup = backup_premiere_project(state).await?;
-            let value = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
                 "trim_clip",
                 json!({
                     "kind": kind,
@@ -7119,8 +7126,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereRollEdit { kind, track, left_clip_index, right_clip_index, boundary_seconds } => {
-            let backup = backup_premiere_project(state).await?;
-            let value = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
                 "roll_edit",
                 json!({
                     "kind": kind,
@@ -7142,8 +7149,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereMoveClip { kind, track, clip_index, delta_seconds } => {
-            let backup = backup_premiere_project(state).await?;
-            let value = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
                 "move_clip",
                 json!({
                     "kind": kind,
@@ -7165,8 +7172,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereCloneClip { kind, track, clip_index, time_offset_seconds, video_track_offset, audio_track_offset, align_to_video, insert } => {
-            let backup = backup_premiere_project(state).await?;
-            let value = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
                 "clone_clip",
                 json!({
                     "kind": kind,
@@ -7191,8 +7198,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereDeleteClip { kind, track, clip_index, ripple } => {
-            let backup = backup_premiere_project(state).await?;
-            let value = state.premiere_bridge.request(
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
                 "delete_clip",
                 json!({
                     "kind": kind,
@@ -7214,7 +7221,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereExportSequence { output, preset, queue_to_ame } => {
-            let value = state.premiere_bridge.request(
+            let value = premiere_bridge.request(
                 "export_sequence",
                 json!({
                     "output": output,
@@ -7232,7 +7239,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereSaveProject => {
-            let value = state.premiere_bridge
+            let value = premiere_bridge
                 .request("save_project", json!({}), Duration::from_secs(15)).await?;
             Ok(ActionResult {
                 success: true,

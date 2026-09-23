@@ -192,3 +192,13 @@ Next module: native keyframe/transition lifecycle through existing named paramet
 Estimate after Modules 1–2: code complete approximately 56%; runtime verified 0% this session; production readiness not established (0% acceptance-verified).
 
 Next: optional shared project/sequence/clip target expectations for existing destructive tools, preserving legacy callers. Then timeline/link/nesting capabilities, effects and curated recipes, audio, captions, MOGRT, diagnostics, review state and export. Rust check/tests and actual Premiere disposable-project verification remain pending.
+
+### Module A/M — optional stale-target expectations
+- [x] Typed optional project GUID/path, sequence GUID and up to 64 unique clip expectations; existing callers remain compatible.
+- [x] Timeline exposes plain project/sequence expectations and bounded signatures from native media identity and clip timing.
+- [x] Per-action desktop client carries guards through checkpoint and edit requests; old panels without capability version 1 are rejected.
+- [x] Panel rejects project/sequence/clip changes and incomplete clip coverage before dispatch; project/sequence identity is rechecked when handlers acquire the project.
+- [x] Seven new mocked tests; 40 Node tests, registry validation and frontend build pass.
+- [ ] Rust compile/test execution and disposable-project Premiere runtime verification.
+
+Estimate: code complete approximately 58%; runtime verified 0% this session; production readiness not established. Signatures are conservative snapshots, not native stable clip UUIDs or a lock against concurrent human edits. Next: timeline vertical/link-aware capability work, followed by effect lifecycle.

@@ -6,6 +6,7 @@ const BRIDGE_BASE = "http://127.0.0.1:17361";
 let bridgeToken = "";
 let pollTimer = null;
 let busy = false;
+let activeExpectation = null;
 
 function el(id) {
   return document.getElementById(id);
@@ -80,7 +81,77 @@ function plainFrameSize(value) {
 async function requireProject() {
   const project = await premiere.Project.getActiveProject();
   if (!project) throw new Error("No active Premiere project.");
+  if (activeExpectation) await assertExpectedProject(project, activeExpectation);
   return project;
+}
+
+async function assertExpectedProject(project, expected) {
+  if (!expected.project_guid || plainGuid(project.guid) !== expected.project_guid ||
+      (expected.project_path != null && project.path !== expected.project_path)) {
+    throw new Error("Expected Premiere project changed. Inspect again before editing.");
+  }
+  const sequence = await project.getActiveSequence();
+  if (expected.sequence_guid != null && plainGuid(sequence?.guid) !== expected.sequence_guid) {
+    throw new Error("Expected Premiere sequence changed. Inspect again before editing.");
+  }
+  return sequence;
+}
+
+async function clipTargetSignature(project, sequence, item, kind, track, clipIndex) {
+  const [name, start, end, input, output, media] = await Promise.all([
+    item.getName(), item.getStartTime(), item.getEndTime(), item.getInPoint(), item.getOutPoint(), item.getProjectItem()
+  ]);
+  const projectGuid = plainGuid(project.guid), sequenceGuid = plainGuid(sequence.guid);
+  const times = [start, end, input, output].map(time => plainTickTime(time)?.ticks);
+  const mediaId = await projectItemId(media);
+  if (!projectGuid || !sequenceGuid || !mediaId || times.some(time => time == null)) {
+    throw new Error("Native clip identity is unavailable; inspect a supported target.");
+  }
+  const signature = JSON.stringify([projectGuid, project.path || null, sequenceGuid, kind, track, clipIndex, mediaId, name, ...times]);
+  if (signature.length > 4096) throw new Error("Native clip identity exceeds the supported bound.");
+  return signature;
+}
+
+function commandClipTargets(command) {
+  const args = command.arguments || {};
+  if (command.action === "create_subsequence") return args.targets || [];
+  if (command.action === "roll_edit") return [
+    {kind: args.kind, track: args.track, clipIndex: args.leftClipIndex},
+    {kind: args.kind, track: args.track, clipIndex: args.rightClipIndex}
+  ];
+  return Number.isInteger(args.clipIndex) ? [{kind: args.kind || (command.action.includes("audio") ? "audio" : "video"), track: args.track, clipIndex: args.clipIndex}] : [];
+}
+
+async function assertExpectedTargets(command) {
+  const expected = command.arguments?._expected;
+  if (expected == null) return;
+  const project = await requireProject();
+  const sequence = await assertExpectedProject(project, expected);
+  const clips = expected.clips || [];
+  if (!Array.isArray(clips) || clips.length > 64 || (clips.length && !expected.sequence_guid)) {
+    throw new Error("Invalid clip expectations.");
+  }
+  if (clips.length) for (const target of commandClipTargets(command)) {
+    if (!clips.some(clip => clip.kind === target.kind && clip.track === target.track && clip.clip_index === target.clipIndex)) {
+      throw new Error("Clip expectations do not cover the command target.");
+    }
+  }
+  for (const clip of clips) {
+    const {item} = await resolveSubsequenceTarget(sequence, {kind: clip.kind, track: clip.track, clipIndex: clip.clip_index});
+    const signature = await clipTargetSignature(project, sequence, item, clip.kind, clip.track, clip.clip_index);
+    if (signature !== clip.signature) throw new Error("Expected Premiere clip changed. Inspect again before editing.");
+  }
+}
+
+async function executeCommand(command) {
+  const previous = activeExpectation;
+  activeExpectation = command.arguments?._expected || null;
+  try {
+    await assertExpectedTargets(command);
+    return await dispatchNativeCommand(command);
+  } finally {
+    activeExpectation = previous;
+  }
 }
 
 async function inspectActiveContext() {
@@ -88,7 +159,8 @@ async function inspectActiveContext() {
 
   if (!project) {
     return {
-      premiereVersion: host?.version || null,
+      capabilities: { targetExpectations: 1 },
+    premiereVersion: host?.version || null,
       uxpVersion: versions?.uxp || null,
       projectDetected: false,
       sequenceDetected: false
@@ -129,6 +201,7 @@ async function inspectActiveContext() {
   }
 
   return {
+    capabilities: { targetExpectations: 1 },
     premiereVersion: host?.version || null,
     uxpVersion: versions?.uxp || null,
     projectDetected: true,
@@ -368,7 +441,7 @@ async function sortedClipItems(track) {
   return timed.map((entry) => entry.item);
 }
 
-async function summarizeTrackItem(item, clipIndex) {
+async function summarizeTrackItem(item, clipIndex, context = null) {
   const [
     name,
     start,
@@ -387,7 +460,12 @@ async function summarizeTrackItem(item, clipIndex) {
     item.getTrackIndex()
   ]);
 
+  let targetSignature = null;
+  if (context) {
+    try { targetSignature = await clipTargetSignature(context.project, context.sequence, item, context.kind, trackIndex, clipIndex); } catch {}
+  }
   return {
+    targetSignature,
     clipIndex,
     name,
     trackIndex,
@@ -416,7 +494,7 @@ async function inspectTimeline() {
     const summaries = [];
 
     for (const [clipIndex, item] of items.slice(0, itemBudget).entries()) {
-      summaries.push(await summarizeTrackItem(item, clipIndex));
+      summaries.push(await summarizeTrackItem(item, clipIndex, {project, sequence, kind: "video"}));
       itemBudget -= 1;
       if (itemBudget <= 0) break;
     }
@@ -435,7 +513,7 @@ async function inspectTimeline() {
     const summaries = [];
 
     for (const [clipIndex, item] of items.slice(0, itemBudget).entries()) {
-      summaries.push(await summarizeTrackItem(item, clipIndex));
+      summaries.push(await summarizeTrackItem(item, clipIndex, {project, sequence, kind: "audio"}));
       itemBudget -= 1;
       if (itemBudget <= 0) break;
     }
@@ -451,6 +529,7 @@ async function inspectTimeline() {
   return {
     sequenceGuid: plainGuid(sequence.guid),
     sequenceName: sequence.name || null,
+    expected: {project_guid: plainGuid(project.guid), project_path: project.path || null, sequence_guid: plainGuid(sequence.guid), clips: []},
     truncated: itemBudget <= 0,
     videoTracks,
     audioTracks
@@ -3721,7 +3800,7 @@ async function planClipSpeed(argumentsValue) {
   return planSpeed(snapshot, argumentsValue.request);
 }
 
-async function executeCommand(command) {
+async function dispatchNativeCommand(command) {
   switch (command.action) {
     case "remove_keyframe_range":
       return await removeKeyframeRange(command.arguments || {});
