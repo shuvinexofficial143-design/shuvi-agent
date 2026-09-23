@@ -62,7 +62,9 @@ Available tools:
 - premiere_bridge_status: {}
 - premiere_context: {}
 - premiere_list_items: {}
+- premiere_create_bin: {"name":"bin name"}
 - premiere_import_media: {"paths":["absolute media path 1","absolute media path 2"]}
+- premiere_create_sequence_from_media: {"name":"sequence name","paths":["absolute media path 1","absolute media path 2"]}
 - workspace_scan: {"path":"absolute workspace path"}
 - search_text: {"path":"absolute workspace path","query":"text to find"}
 - replace_text: {"path":"absolute file path","old":"exact old text","new":"replacement text"}
@@ -86,7 +88,7 @@ Rules:
 - Treat git_push as a remote write and request it only after a successful commit when the user asked for a push.
 - Use run_project_task instead of raw shell commands when test/build/lint/typecheck is enough.
 - For browser/app UI work, prefer a Shuvi-managed browser when isolation matters, then use window-scoped semantic UI tools first. Use ui_toggle and ui_expand_collapse for supported controls. ui_send_keys is a high-risk fallback only after an exact element is focused and semantic patterns are unavailable. pointer_click is a final high-risk coordinate fallback: inspect_screen first, use coordinates only when semantic UI/DOM control cannot target the control, and never repeat a failed coordinate click blindly.
-- For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_list_items/premiere_import_media through the dedicated UXP bridge; use UI/vision fallbacks only for features not exposed through the bridge.
+- For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_list_items/premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media through the dedicated UXP bridge; use UI/vision fallbacks only for features not exposed through the bridge.
 - For managed Edge/Chrome sessions, prefer browser_dom_read/browser_dom_click/browser_dom_set_value/browser_navigate over visual coordinate actions because DOM selectors are more reliable.
 - browser_dom_click and browser_dom_set_value require selectors that match exactly one element; refine with browser_dom_read when ambiguous.
 - stop_managed_process may only target process roots that Shuvi launched itself.
@@ -206,7 +208,9 @@ enum ToolAction {
     PremiereBridgeStatus,
     PremiereContext,
     PremiereListItems,
+    PremiereCreateBin { name: String },
     PremiereImportMedia { paths: Vec<String> },
+    PremiereCreateSequenceFromMedia { name: String, paths: Vec<String> },
     WorkspaceScan { path: String },
     SearchText { path: String, query: String },
     ReplaceText { path: String, old: String, new_value: String },
@@ -455,7 +459,9 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_bridge_status"
         | "premiere_context"
         | "premiere_list_items"
+        | "premiere_create_bin"
         | "premiere_import_media"
+        | "premiere_create_sequence_from_media"
         | "workspace_scan"
         | "search_text"
         | "replace_text"
@@ -1632,6 +1638,19 @@ fn stage_tool(
             "Read top-level project items from the active Premiere project through the paired UXP bridge.".to_string(),
             RiskLevel::Low,
         ),
+        "premiere_create_bin" => {
+            let name = arg_string(&proposal.arguments, "name")?;
+            if name.chars().count() > 120 {
+                return Err("Premiere bin name is too long.".into());
+            }
+
+            (
+                ToolAction::PremiereCreateBin { name: name.clone() },
+                "Create Premiere bin".to_string(),
+                format!("Create project bin '{name}' in the active Premiere project root."),
+                RiskLevel::Medium,
+            )
+        }
         "premiere_import_media" => {
             let paths = arg_string_array(&proposal.arguments, "paths")?;
             if paths.is_empty() {
@@ -1654,6 +1673,43 @@ fn stage_tool(
                 ToolAction::PremiereImportMedia { paths: validated.clone() },
                 "Import media into Premiere".to_string(),
                 format!("Import {} media file(s) into the active Premiere project root.", validated.len()),
+                RiskLevel::Medium,
+            )
+        }
+        "premiere_create_sequence_from_media" => {
+            let name = arg_string(&proposal.arguments, "name")?;
+            if name.chars().count() > 120 {
+                return Err("Premiere sequence name is too long.".into());
+            }
+
+            let paths = arg_string_array(&proposal.arguments, "paths")?;
+            if paths.is_empty() {
+                return Err("premiere_create_sequence_from_media requires at least one media path.".into());
+            }
+            if paths.len() > 50 {
+                return Err("Sequence creation is limited to 50 media files per action.".into());
+            }
+
+            let mut validated = Vec::with_capacity(paths.len());
+            for path in paths {
+                let absolute = absolute_path(path)?;
+                if !Path::new(&absolute).is_file() {
+                    return Err(format!("Premiere media file does not exist: {absolute}"));
+                }
+                validated.push(absolute);
+            }
+
+            (
+                ToolAction::PremiereCreateSequenceFromMedia {
+                    name: name.clone(),
+                    paths: validated.clone(),
+                },
+                "Create Premiere sequence from media".to_string(),
+                format!(
+                    "Create sequence '{}' from {} media file(s) in the active Premiere project.",
+                    name,
+                    validated.len()
+                ),
                 RiskLevel::Medium,
             )
         }
@@ -3459,6 +3515,25 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 exit_code: Some(0),
             })
         }
+        ToolAction::PremiereCreateBin { name } => {
+            let value = state
+                .premiere_bridge
+                .request(
+                    "create_bin",
+                    json!({ "name": name }),
+                    Duration::from_secs(8),
+                )
+                .await?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value)
+                    .unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
         ToolAction::PremiereImportMedia { paths } => {
             let value = state
                 .premiere_bridge
@@ -3466,6 +3541,25 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "import_media",
                     json!({ "paths": paths }),
                     Duration::from_secs(30),
+                )
+                .await?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value)
+                    .unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereCreateSequenceFromMedia { name, paths } => {
+            let value = state
+                .premiere_bridge
+                .request(
+                    "create_sequence_from_media",
+                    json!({ "name": name, "paths": paths }),
+                    Duration::from_secs(45),
                 )
                 .await?;
 
