@@ -149,3 +149,10 @@ Major timeline edits will be versioned/checkpointed before execution, and Shuvi'
 The Shuvi desktop runtime hosts a loopback-only HTTP bridge on 127.0.0.1:17361. Starting the bridge rotates a random temporary pairing token. The Premiere UXP panel must present that token in the `X-Shuvi-Token` header before it can poll for commands or post results.
 
 The bridge intentionally exposes only fixed routes (`/health`, `/command`, `/result`) and a bounded command queue. The agent does not receive the pairing token in ordinary Premiere tool observations. The current native command set includes project/sequence inspection, top-level project-item listing, and permission-gated media import.
+
+
+## Premiere timeline edit safety
+
+Native Premiere timeline writes now use deterministic track/clip targeting exposed by the read-only timeline inspector. Insert/overwrite, trim, clip move and sequence creation are permission-gated, execute through Premiere's undoable transaction model where the API supports it, and create a timestamped sibling `Shuvi Backups` copy of the current `.prproj` before the major edit when a normal project path is available.
+
+Timeline inspection reports stable clip indexes sorted by start time so Shuvi can inspect first, then target the intended clip rather than guessing from screen coordinates.
