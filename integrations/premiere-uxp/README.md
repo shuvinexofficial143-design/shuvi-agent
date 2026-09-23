@@ -37,3 +37,9 @@ Shuvi's desktop agent creates a timestamped sibling `Shuvi Backups` copy of the 
 
 - delete or ripple-delete exact clips by deterministic track/clip index
 - export the active sequence immediately or queue it to Adobe Media Encoder, with an optional export preset
+
+- discover installed video transitions and effects by Adobe match name
+- inspect a video clip's effect/component chain and parameter indexes
+- add video effects and transitions through Premiere transactions
+- set non-time-varying effect parameters
+- enable time-varying parameters and add effect keyframes
