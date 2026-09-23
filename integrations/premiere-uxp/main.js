@@ -2214,6 +2214,97 @@ async function insertMogrtFromLibrary(argumentsValue) {
   };
 }
 
+async function cloneClip(argumentsValue) {
+  const kind =
+    typeof argumentsValue?.kind === "string"
+      ? argumentsValue.kind.toLowerCase()
+      : "";
+  const trackIndex = Number(argumentsValue?.track ?? 0);
+  const clipIndex = Number(argumentsValue?.clipIndex ?? 0);
+  const timeOffsetSeconds = Number(argumentsValue?.timeOffsetSeconds ?? 0);
+  const videoTrackOffset = Number(argumentsValue?.videoTrackOffset ?? 0);
+  const audioTrackOffset = Number(argumentsValue?.audioTrackOffset ?? 0);
+  const alignToVideo = argumentsValue?.alignToVideo !== false;
+  const insert = Boolean(argumentsValue?.insert);
+
+  if (kind !== "video" && kind !== "audio") {
+    throw new Error("Clone kind must be video or audio.");
+  }
+  if (!Number.isInteger(trackIndex) || trackIndex < 0) {
+    throw new Error("Track index must be a non-negative integer.");
+  }
+  if (!Number.isInteger(clipIndex) || clipIndex < 0) {
+    throw new Error("Clip index must be a non-negative integer.");
+  }
+  if (!Number.isFinite(timeOffsetSeconds) || Math.abs(timeOffsetSeconds) > 36000) {
+    throw new Error("Clone time offset must be finite and within ±10 hours.");
+  }
+  if (!Number.isInteger(videoTrackOffset) || Math.abs(videoTrackOffset) > 128 ||
+      !Number.isInteger(audioTrackOffset) || Math.abs(audioTrackOffset) > 128) {
+    throw new Error("Clone vertical track offsets must be integers within ±128.");
+  }
+
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+
+  const track =
+    kind === "video"
+      ? await sequence.getVideoTrack(trackIndex)
+      : await sequence.getAudioTrack(trackIndex);
+  if (!track) throw new Error("Requested Premiere track was not found.");
+
+  const items = await sortedClipItems(track);
+  const item = items[clipIndex];
+  if (!item) {
+    throw new Error(
+      "Clip index " + clipIndex + " was not found on " + kind + " track " + trackIndex + "."
+    );
+  }
+
+  const start = await item.getStartTime();
+  const destinationSeconds = (start?.seconds ?? 0) + timeOffsetSeconds;
+  if (destinationSeconds < 0) {
+    throw new Error("Clone would place the copied clip before sequence time zero.");
+  }
+
+  const editor = premiere.SequenceEditor.getEditor(sequence);
+  let transactionSucceeded = false;
+
+  project.lockedAccess(() => {
+    const action = editor.createCloneTrackItemAction(
+      item,
+      premiere.TickTime.createWithSeconds(timeOffsetSeconds),
+      videoTrackOffset,
+      audioTrackOffset,
+      alignToVideo,
+      insert
+    );
+
+    transactionSucceeded = project.executeTransaction((compoundAction) => {
+      compoundAction.addAction(action);
+    }, "Shuvi: Clone Clip");
+  });
+
+  if (!transactionSucceeded) {
+    throw new Error("Premiere rejected the clip clone transaction.");
+  }
+
+  return {
+    cloned: true,
+    kind,
+    track: trackIndex,
+    clipIndex,
+    sourceStartSeconds: start?.seconds ?? null,
+    destinationSeconds,
+    timeOffsetSeconds,
+    videoTrackOffset,
+    audioTrackOffset,
+    alignToVideo,
+    insert
+  };
+}
+
 async function executeCommand(command) {
   switch (command.action) {
     case "inspect_context":
@@ -2286,6 +2377,8 @@ async function executeCommand(command) {
       return await trimClip(command.arguments || {});
     case "move_clip":
       return await moveClip(command.arguments || {});
+    case "clone_clip":
+      return await cloneClip(command.arguments || {});
     case "delete_clip":
       return await deleteClip(command.arguments || {});
     case "export_sequence":
