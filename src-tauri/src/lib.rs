@@ -74,8 +74,10 @@ Available tools:
 - premiere_set_source_inout: {"item_id":"clip project item id","in_seconds":1.0,"out_seconds":8.0}
 - premiere_clear_source_inout: {"item_id":"clip project item id"}
 - premiere_create_subclip: {"item_id":"clip project item id","name":"subclip name","start_seconds":1.0,"end_seconds":8.0,"hard_boundaries":true,"take_video":true,"take_audio":true}
+- premiere_list_transcription_languages: {}
 - premiere_transcribe_item: {"item_id":"clip project item id","language":"optional language code such as en-US"}
 - premiere_export_transcript: {"item_id":"clip project item id"}
+- premiere_import_transcript: {"item_id":"clip project item id","transcript_path":"absolute transcript .json path"}
 - premiere_attach_proxy: {"item_id":"clip project item id","proxy_path":"absolute proxy media path"}
 - premiere_batch_relink: {"items":[{"item_id":"clip project item id","new_path":"absolute replacement media path","override_compatibility":false}]}
 - premiere_batch_attach_proxy: {"items":[{"item_id":"clip project item id","proxy_path":"absolute proxy media path"}]}
@@ -83,6 +85,7 @@ Available tools:
 - premiere_insert_mogrt_library: {"library_name":"library","element_name":"template","seconds":0,"video_track":0,"audio_track":0}
 - premiere_import_media: {"paths":["absolute media path 1","absolute media path 2"]}
 - premiere_create_sequence_from_media: {"name":"sequence name","paths":["absolute media path 1","absolute media path 2"]}
+- premiere_create_subsequence: {"targets":[{"kind":"video|audio","track":0,"clip_index":0}]}
 - premiere_insert_media: {"path":"absolute media path","seconds":0,"video_track":0,"audio_track":0,"mode":"insert|overwrite"}
 - premiere_trim_clip: {"kind":"video|audio","track":0,"clip_index":0,"start_seconds":0.0,"end_seconds":5.0}
 - premiere_roll_edit: {"kind":"video|audio","track":0,"left_clip_index":0,"right_clip_index":1,"boundary_seconds":5.0}
@@ -304,8 +307,10 @@ enum ToolAction {
     PremiereSetSourceInOut { item_id: String, in_seconds: f64, out_seconds: f64 },
     PremiereClearSourceInOut { item_id: String },
     PremiereCreateSubclip { item_id: String, name: String, start_seconds: f64, end_seconds: f64, hard_boundaries: bool, take_video: bool, take_audio: bool },
+    PremiereListTranscriptionLanguages,
     PremiereTranscribeItem { item_id: String, language: Option<String> },
     PremiereExportTranscript { item_id: String },
+    PremiereImportTranscript { item_id: String, transcript_json: String },
     PremiereAttachProxy { item_id: String, proxy_path: String },
     PremiereBatchRelink { items: Vec<Value> },
     PremiereBatchAttachProxy { items: Vec<Value> },
@@ -313,6 +318,7 @@ enum ToolAction {
     PremiereInsertMogrtLibrary { library_name: String, element_name: String, seconds: f64, video_track: u32, audio_track: u32 },
     PremiereImportMedia { paths: Vec<String> },
     PremiereCreateSequenceFromMedia { name: String, paths: Vec<String> },
+    PremiereCreateSubsequence { targets: Vec<Value> },
     PremiereInsertMedia { path: String, seconds: f64, video_track: u32, audio_track: u32, mode: String },
     PremiereTrimClip { kind: String, track: u32, clip_index: u32, start_seconds: Option<f64>, end_seconds: Option<f64> },
     PremiereRollEdit { kind: String, track: u32, left_clip_index: u32, right_clip_index: u32, boundary_seconds: f64 },
@@ -621,8 +627,10 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_set_source_inout"
         | "premiere_clear_source_inout"
         | "premiere_create_subclip"
+        | "premiere_list_transcription_languages"
         | "premiere_transcribe_item"
         | "premiere_export_transcript"
+        | "premiere_import_transcript"
         | "premiere_attach_proxy"
         | "premiere_batch_relink"
         | "premiere_batch_attach_proxy"
@@ -630,6 +638,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_insert_mogrt_library"
         | "premiere_import_media"
         | "premiere_create_sequence_from_media"
+        | "premiere_create_subsequence"
         | "premiere_insert_media"
         | "premiere_trim_clip"
         | "premiere_roll_edit"
@@ -2953,6 +2962,45 @@ fn stage_tool(
                 RiskLevel::Low,
             )
         }
+        "premiere_list_transcription_languages" => (
+            ToolAction::PremiereListTranscriptionLanguages,
+            "List Premiere transcription languages".to_string(),
+            "Read supported Premiere transcription language codes when the installed Premiere version exposes them.".to_string(),
+            RiskLevel::Low,
+        ),
+        "premiere_import_transcript" => {
+            let item_id = arg_string(&proposal.arguments, "item_id")?;
+            if item_id.chars().count() > 240 {
+                return Err("Premiere project item id is too long.".into());
+            }
+
+            let transcript_path = absolute_path(arg_string(&proposal.arguments, "transcript_path")?)?;
+            let path = Path::new(&transcript_path);
+            if !path.is_file() {
+                return Err("Premiere transcript JSON file does not exist.".into());
+            }
+
+            let metadata = fs::metadata(path)
+                .map_err(|error| format!("Could not inspect transcript file: {error}"))?;
+            if metadata.len() > 1024 * 1024 {
+                return Err("Premiere transcript import is limited to 1 MB per action.".into());
+            }
+
+            let transcript_json = fs::read_to_string(path)
+                .map_err(|error| format!("Could not read transcript JSON as UTF-8: {error}"))?;
+            let _: Value = serde_json::from_str(&transcript_json)
+                .map_err(|error| format!("Transcript file is not valid JSON: {error}"))?;
+
+            (
+                ToolAction::PremiereImportTranscript {
+                    item_id: item_id.clone(),
+                    transcript_json,
+                },
+                "Import transcript into Premiere clip".to_string(),
+                format!("Import transcript JSON from {transcript_path} into project item {item_id}."),
+                RiskLevel::High,
+            )
+        }
         "premiere_attach_proxy" => {
             let item_id = arg_string(&proposal.arguments, "item_id")?;
             let proxy_path = absolute_path(arg_string(&proposal.arguments, "proxy_path")?)?;
@@ -3211,6 +3259,53 @@ fn stage_tool(
                     validated.len()
                 ),
                 RiskLevel::Medium,
+            )
+        }
+        "premiere_create_subsequence" => {
+            let targets = proposal.arguments
+                .get("targets")
+                .and_then(Value::as_array)
+                .cloned()
+                .ok_or_else(|| "premiere_create_subsequence requires a targets array.".to_string())?;
+
+            if targets.is_empty() || targets.len() > 64 {
+                return Err("Premiere subsequence creation requires between 1 and 64 clip targets.".into());
+            }
+
+            let mut validated = Vec::with_capacity(targets.len());
+            for target in targets {
+                let object = target
+                    .as_object()
+                    .ok_or_else(|| "Each Premiere subsequence target must be an object.".to_string())?;
+
+                let kind = object
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .map(str::to_ascii_lowercase)
+                    .ok_or_else(|| "Each Premiere subsequence target requires kind.".to_string())?;
+                if !matches!(kind.as_str(), "video" | "audio") {
+                    return Err("Premiere subsequence target kind must be video or audio.".into());
+                }
+
+                let track = object.get("track").and_then(Value::as_u64).unwrap_or(0);
+                let clip_index = object.get("clip_index").and_then(Value::as_u64).unwrap_or(0);
+                if track > 128 || clip_index > 10_000 {
+                    return Err("Premiere subsequence target is outside Shuvi's safety limits.".into());
+                }
+
+                validated.push(json!({
+                    "kind": kind,
+                    "track": track,
+                    "clipIndex": clip_index
+                }));
+            }
+
+            (
+                ToolAction::PremiereCreateSubsequence { targets: validated.clone() },
+                "Create Premiere subsequence from selected clips".to_string(),
+                format!("Create a new Premiere subsequence from {} exact clip target(s).", validated.len()),
+                RiskLevel::High,
             )
         }
         "premiere_insert_media" => {
@@ -6412,6 +6507,43 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 exit_code: Some(0),
             })
         }
+        ToolAction::PremiereListTranscriptionLanguages => {
+            let value = state.premiere_bridge.request(
+                "list_transcription_languages",
+                json!({}),
+                Duration::from_secs(12),
+            ).await?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereImportTranscript { item_id, transcript_json } => {
+            let backup = backup_premiere_project(state).await?;
+            let value = state.premiere_bridge.request(
+                "import_transcript",
+                json!({
+                    "itemId": item_id,
+                    "transcriptJson": transcript_json
+                }),
+                Duration::from_secs(30),
+            ).await?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "backup": backup,
+                    "result": value
+                })).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
         ToolAction::PremiereAttachProxy { item_id, proxy_path } => {
             let backup = backup_premiere_project(state).await?;
             let value = state.premiere_bridge.request(
@@ -6603,6 +6735,25 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "result": value
                 }))
                 .unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereCreateSubsequence { targets } => {
+            let backup = backup_premiere_project(state).await?;
+            let value = state.premiere_bridge.request(
+                "create_subsequence",
+                json!({ "targets": targets }),
+                Duration::from_secs(30),
+            ).await?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "backup": backup,
+                    "result": value
+                })).unwrap_or_else(|_| value.to_string()),
                 stderr: String::new(),
                 exit_code: Some(0),
             })
