@@ -89,6 +89,7 @@ Available tools:
 - premiere_import_media: {"paths":["absolute media path 1","absolute media path 2"]}
 - premiere_create_sequence_from_media: {"name":"sequence name","paths":["absolute media path 1","absolute media path 2"]}
 - premiere_create_subsequence: {"targets":[{"kind":"video|audio","track":0,"clip_index":0}]}
+- premiere_insert_project_item: {"item_id":"project item id","seconds":0,"video_track":0,"audio_track":0,"mode":"insert|overwrite"}
 - premiere_insert_media: {"path":"absolute media path","seconds":0,"video_track":0,"audio_track":0,"mode":"insert|overwrite"}
 - premiere_trim_clip: {"kind":"video|audio","track":0,"clip_index":0,"start_seconds":0.0,"end_seconds":5.0}
 - premiere_roll_edit: {"kind":"video|audio","track":0,"left_clip_index":0,"right_clip_index":1,"boundary_seconds":5.0}
@@ -325,6 +326,7 @@ enum ToolAction {
     PremiereImportMedia { paths: Vec<String> },
     PremiereCreateSequenceFromMedia { name: String, paths: Vec<String> },
     PremiereCreateSubsequence { targets: Vec<Value> },
+    PremiereInsertProjectItem { item_id: String, seconds: f64, video_track: u32, audio_track: u32, mode: String },
     PremiereInsertMedia { path: String, seconds: f64, video_track: u32, audio_track: u32, mode: String },
     PremiereTrimClip { kind: String, track: u32, clip_index: u32, start_seconds: Option<f64>, end_seconds: Option<f64> },
     PremiereRollEdit { kind: String, track: u32, left_clip_index: u32, right_clip_index: u32, boundary_seconds: f64 },
@@ -648,6 +650,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_import_media"
         | "premiere_create_sequence_from_media"
         | "premiere_create_subsequence"
+        | "premiere_insert_project_item"
         | "premiere_insert_media"
         | "premiere_trim_clip"
         | "premiere_roll_edit"
@@ -3362,6 +3365,41 @@ fn stage_tool(
                 ToolAction::PremiereCreateSubsequence { targets: validated.clone() },
                 "Create Premiere subsequence from selected clips".to_string(),
                 format!("Create a new Premiere subsequence from {} exact clip target(s).", validated.len()),
+                RiskLevel::High,
+            )
+        }
+        "premiere_insert_project_item" => {
+            let item_id = arg_string(&proposal.arguments, "item_id")?;
+            if item_id.chars().count() > 240 {
+                return Err("Premiere project item id is too long.".into());
+            }
+
+            let seconds = proposal.arguments.get("seconds").and_then(Value::as_f64).unwrap_or(0.0);
+            if !seconds.is_finite() || seconds < 0.0 || seconds > 86_400.0 {
+                return Err("Premiere project-item insert time must be between 0 and 86400 seconds.".into());
+            }
+
+            let video_track = proposal.arguments.get("video_track").and_then(Value::as_u64).unwrap_or(0);
+            let audio_track = proposal.arguments.get("audio_track").and_then(Value::as_u64).unwrap_or(0);
+            if video_track > 128 || audio_track > 128 {
+                return Err("Premiere project-item track index is outside Shuvi's safety limit.".into());
+            }
+
+            let mode = arg_string(&proposal.arguments, "mode")?.to_ascii_lowercase();
+            if !matches!(mode.as_str(), "insert" | "overwrite") {
+                return Err("premiere_insert_project_item mode must be insert or overwrite.".into());
+            }
+
+            (
+                ToolAction::PremiereInsertProjectItem {
+                    item_id: item_id.clone(),
+                    seconds,
+                    video_track: video_track as u32,
+                    audio_track: audio_track as u32,
+                    mode: mode.clone(),
+                },
+                "Insert Premiere project item".to_string(),
+                format!("Insert project item {item_id} at {seconds:.3}s on V{video_track}/A{audio_track} using {mode}."),
                 RiskLevel::High,
             )
         }
@@ -6850,6 +6888,31 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let value = state.premiere_bridge.request(
                 "create_subsequence",
                 json!({ "targets": targets }),
+                Duration::from_secs(30),
+            ).await?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "backup": backup,
+                    "result": value
+                })).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereInsertProjectItem { item_id, seconds, video_track, audio_track, mode } => {
+            let backup = backup_premiere_project(state).await?;
+            let value = state.premiere_bridge.request(
+                "insert_project_item",
+                json!({
+                    "itemId": item_id,
+                    "seconds": seconds,
+                    "videoTrack": video_track,
+                    "audioTrack": audio_track,
+                    "mode": mode
+                }),
                 Duration::from_secs(30),
             ).await?;
 
