@@ -4,6 +4,8 @@ const { planSpeed, SPEED_CAPABILITY } = require("./speed-workflows.js");
 
 const { buildRecipePlan } = require("./recipe-plans.js");
 
+const { buildAudioPlan } = require("./audio-plans.js");
+
 const BRIDGE_BASE = "http://127.0.0.1:17361";
 let bridgeToken = "";
 let pollTimer = null;
@@ -3828,6 +3830,16 @@ async function planClipSpeed(argumentsValue) {
   return planSpeed(snapshot, argumentsValue.request);
 }
 
+async function planAudioAutomation(args) {
+  if (args.kind !== "audio") throw new Error("Audio automation requires an audio target.");
+  const target = await resolveNamedAudioParam(args);
+  const value = await target.param.getStartValue();
+  const inspected = {current: value?.value ?? value, timeVarying: Boolean(await target.param.isTimeVarying()), keyframesSupported: Boolean(await target.param.areKeyframesSupported())};
+  const plan = buildAudioPlan(args.request, {component_match_name: target.componentMatchName, component_display_name: target.componentDisplayName, param_display_name: target.paramDisplayName}, inspected);
+  const signature = await clipTargetSignature(target.project, target.sequence, target.item, "audio", args.track, args.clipIndex);
+  return {...plan, expected: {project_guid: plainGuid(target.project.guid), project_path: target.project.path || null, sequence_guid: plainGuid(target.sequence.guid), clips: [{kind: "audio", track: args.track, clip_index: args.clipIndex, signature}]}};
+}
+
 async function planVideoRecipe(args) {
   const request = args.request;
   if (!request || !Array.isArray(request.bindings) || !request.bindings.length || request.bindings.length > 16) throw new Error("Recipe requires 1–16 named bindings.");
@@ -3954,6 +3966,8 @@ async function dispatchNativeCommand(command) {
       return await insertProjectItem(command.arguments || {});
     case "save_project":
       return await saveProject();
+    case "plan_audio_automation":
+      return await planAudioAutomation(command.arguments);
     case "plan_video_recipe":
       return await planVideoRecipe(command.arguments);
     case "timeline_capabilities":

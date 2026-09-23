@@ -6,6 +6,9 @@ import assert from "node:assert/strict";
 const recipes = {module: {exports: {}}}; vm.createContext(recipes);
 vm.runInContext(readFileSync(new URL("../integrations/premiere-uxp/recipe-plans.js", import.meta.url), "utf8"), recipes);
 
+const audioPlans = {module: {exports: {}}}; vm.createContext(audioPlans);
+vm.runInContext(readFileSync(new URL("../integrations/premiere-uxp/audio-plans.js", import.meta.url), "utf8"), audioPlans);
+
 function fixture(kind = "video") {
   const actions = [];
   const times = [{ ticks: "100", seconds: 1 }, { ticks: "200", seconds: 2 }];
@@ -33,7 +36,7 @@ function fixture(kind = "video") {
     lockedAccess: callback => callback(), executeTransaction: callback => { callback({ addAction: action => actions.push(action) }); return true; } };
   const premiere = { Project: { getActiveProject: async () => project }, ProjectItem: { cast: item => item },
     Constants: { TrackItemType: { CLIP: 1 }, InterpolationMode: { LINEAR: 0, HOLD: 1, BEZIER: 2 }, TransitionPosition: { START: 0, END: 1 } } };
-  const panel = { require: name => name === "./recipe-plans.js" ? recipes.module.exports : name === "premierepro" ? premiere : name === "uxp" ? { entrypoints: { setup() {} } } : {} };
+  const panel = { require: name => name === "./audio-plans.js" ? audioPlans.module.exports : name === "./recipe-plans.js" ? recipes.module.exports : name === "premierepro" ? premiere : name === "uxp" ? { entrypoints: { setup() {} } } : {} };
   vm.createContext(panel);
   vm.runInContext(readFileSync(new URL("../integrations/premiere-uxp/main.js", import.meta.url), "utf8"), panel);
   const args = { kind, track: 0, clipIndex: 0, componentMatchName: "effect.exact", paramDisplayName: "Amount" };
@@ -260,4 +263,11 @@ test("recipe planning inspects exact parameter and returns an expectation withou
  const f = fixture(); f.param.getStartValue = async () => ({value: 100}); f.param.isTimeVarying = async () => false;
  const result = await f.panel.executeCommand({action: "plan_video_recipe", arguments: {track: 0, clipIndex: 0, request: {preset: "zoom_in", start_seconds: 0, end_seconds: 1, bindings: [{role: "scale", component_match_name: "effect.exact", param_display_name: "Amount", start_value: 100, end_value: 110}]}}});
  assert.equal(result.settings.length, 2); assert.equal(result.expected.clips.length, 1); assert.equal(result.applied, false); assert.equal(f.actions.length, 0);
+});
+
+test("audio automation route resolves named audio parameter without edits", async () => {
+ const f = fixture("audio"); f.param.getStartValue = async () => ({value: 1}); f.param.isTimeVarying = async () => false;
+ const result = await f.panel.executeCommand({action: "plan_audio_automation", arguments: {...f.args, request: {mode: "duck", duration_seconds: 10, baseline: 1, value_unit: "linear_amplitude", reduction_db: 12, attack_seconds: 0.2, release_seconds: 0.5, regions: [{start: 2, end: 5}]}}});
+ assert.equal(result.applied, false); assert.equal(result.expected.clips[0].kind, "audio"); assert.equal(f.actions.length, 0);
+ assert.equal(result.settings[0].param_display_name, "Amount");
 });

@@ -233,3 +233,13 @@ Estimate: code complete approximately 60%; runtime verified 0% this session; pro
 - [ ] Native parameter unit calibration, host interpolation/visual verification, and end-to-end color/frame-review acceptance.
 
 Estimate: code complete approximately 63%; runtime verified 0% this session; production readiness not established. Next: separate dialogue input, ducking plan and named audio execution.
+
+### Module E — named audio automation and ducking plans
+- [x] Typed read-only planner resolves an exact audio parameter and checks keyframe support, current baseline and absence of existing automation.
+- [x] Supplied dialogue regions, bounded attack/release, overlap/short-gap merging and dB/linear-amplitude or explicit native target values.
+- [x] Fade-in/out and pan endpoint plans use the existing named audio recipe execution path; no speech-detection claim or automatic application.
+- [x] At most 128 input regions and 64 output keys; native time/value units explicit; returns clip expectations and audition/interpolation warnings.
+- [x] Seven new tests; 62 Node tests, registry validation and frontend build pass.
+- [ ] Real Premiere audio units/interpolation/audition verification and connected dialogue analyzer. Structured transcript adaptation follows with captions.
+
+Estimate: code complete approximately 65%; runtime verified 0% this session; production readiness not established. Next: structured caption/SRT and transcript timing boundary.
