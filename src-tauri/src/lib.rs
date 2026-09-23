@@ -85,6 +85,9 @@ Available tools:
 - premiere_add_audio_effect: {"track":0,"clip_index":0,"display_name":"audio effect display name"}
 - premiere_set_audio_effect_param: {"track":0,"clip_index":0,"component_index":0,"param_index":0,"value":1.0}
 - premiere_add_audio_effect_keyframe: {"track":0,"clip_index":0,"component_index":0,"param_index":0,"seconds":1.0,"value":1.0}
+- premiere_list_markers: {}
+- premiere_add_marker: {"name":"marker name","marker_type":"Comment|Chapter|Segmentation|WebLink","seconds":10.0,"duration_seconds":0.0,"comments":"optional notes"}
+- premiere_remove_marker: {"marker_index":0}
 - premiere_export_sequence: {"output":"absolute output media path","preset":"optional absolute .epr preset path","queue_to_ame":false}
 - premiere_save_project: {}
 - workspace_scan: {"path":"absolute workspace path"}
@@ -245,6 +248,9 @@ enum ToolAction {
     PremiereAddAudioEffect { track: u32, clip_index: u32, display_name: String },
     PremiereSetAudioEffectParam { track: u32, clip_index: u32, component_index: u32, param_index: u32, value: Value },
     PremiereAddAudioEffectKeyframe { track: u32, clip_index: u32, component_index: u32, param_index: u32, seconds: f64, value: Value },
+    PremiereListMarkers,
+    PremiereAddMarker { name: String, marker_type: String, seconds: f64, duration_seconds: f64, comments: String },
+    PremiereRemoveMarker { marker_index: u32 },
     PremiereListItems,
     PremiereCreateBin { name: String },
     PremiereImportMedia { paths: Vec<String> },
@@ -522,6 +528,9 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_add_audio_effect"
         | "premiere_set_audio_effect_param"
         | "premiere_add_audio_effect_keyframe"
+        | "premiere_list_markers"
+        | "premiere_add_marker"
+        | "premiere_remove_marker"
         | "premiere_list_items"
         | "premiere_create_bin"
         | "premiere_import_media"
@@ -2055,6 +2064,77 @@ fn stage_tool(
                 format!(
                     "Add audio keyframe at {seconds:.3}s to audio track {track}, clip #{clip_index}, component #{component_index}, parameter #{param_index}."
                 ),
+                RiskLevel::High,
+            )
+        }
+        "premiere_list_markers" => (
+            ToolAction::PremiereListMarkers,
+            "List Premiere sequence markers".to_string(),
+            "Read markers from the active Premiere sequence.".to_string(),
+            RiskLevel::Low,
+        ),
+        "premiere_add_marker" => {
+            let name = arg_string(&proposal.arguments, "name")?;
+            if name.chars().count() > 240 {
+                return Err("Premiere marker name is too long.".into());
+            }
+
+            let marker_type_raw = arg_string(&proposal.arguments, "marker_type")?.to_ascii_lowercase();
+            let marker_type = match marker_type_raw.as_str() {
+                "comment" => "Comment",
+                "chapter" => "Chapter",
+                "segmentation" => "Segmentation",
+                "weblink" | "web_link" | "web link" => "WebLink",
+                _ => return Err("Premiere marker_type must be Comment, Chapter, Segmentation, or WebLink.".into()),
+            }.to_string();
+
+            let seconds = proposal.arguments
+                .get("seconds")
+                .and_then(Value::as_f64)
+                .ok_or_else(|| "premiere_add_marker requires seconds.".to_string())?;
+            let duration_seconds = proposal.arguments
+                .get("duration_seconds")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+
+            if !seconds.is_finite() || seconds < 0.0 || seconds > 86_400.0 {
+                return Err("Premiere marker seconds must be between 0 and 86400.".into());
+            }
+            if !duration_seconds.is_finite() || duration_seconds < 0.0 || duration_seconds > 86_400.0 {
+                return Err("Premiere marker duration must be between 0 and 86400 seconds.".into());
+            }
+
+            let comments = arg_optional_string(&proposal.arguments, "comments").unwrap_or_default();
+            if comments.chars().count() > 5_000 {
+                return Err("Premiere marker comments are too long.".into());
+            }
+
+            (
+                ToolAction::PremiereAddMarker {
+                    name: name.clone(),
+                    marker_type: marker_type.clone(),
+                    seconds,
+                    duration_seconds,
+                    comments,
+                },
+                "Add Premiere sequence marker".to_string(),
+                format!("Add {marker_type} marker '{name}' at {seconds:.3}s."),
+                RiskLevel::Medium,
+            )
+        }
+        "premiere_remove_marker" => {
+            let marker_index = proposal.arguments
+                .get("marker_index")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| "premiere_remove_marker requires marker_index.".to_string())?;
+            if marker_index > 10_000 {
+                return Err("Premiere marker index is outside Shuvi's safety limit.".into());
+            }
+
+            (
+                ToolAction::PremiereRemoveMarker { marker_index: marker_index as u32 },
+                "Remove Premiere sequence marker".to_string(),
+                format!("Remove active-sequence marker #{marker_index}."),
                 RiskLevel::High,
             )
         }
@@ -4463,6 +4543,58 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "backup": backup,
                     "result": result
                 })).unwrap_or_else(|_| result.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereListMarkers => {
+            let value = state.premiere_bridge.request(
+                "list_markers",
+                json!({}),
+                Duration::from_secs(12),
+            ).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereAddMarker { name, marker_type, seconds, duration_seconds, comments } => {
+            let value = state.premiere_bridge.request(
+                "add_marker",
+                json!({
+                    "name": name,
+                    "markerType": marker_type,
+                    "seconds": seconds,
+                    "durationSeconds": duration_seconds,
+                    "comments": comments
+                }),
+                Duration::from_secs(20),
+            ).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereRemoveMarker { marker_index } => {
+            let backup = backup_premiere_project(state).await?;
+            let value = state.premiere_bridge.request(
+                "remove_marker",
+                json!({ "markerIndex": marker_index }),
+                Duration::from_secs(20),
+            ).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "backup": backup,
+                    "result": value
+                })).unwrap_or_else(|_| value.to_string()),
                 stderr: String::new(),
                 exit_code: Some(0),
             })
