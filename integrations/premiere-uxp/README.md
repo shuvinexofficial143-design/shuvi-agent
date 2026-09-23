@@ -47,3 +47,8 @@ Shuvi's desktop agent creates a timestamped sibling `Shuvi Backups` copy of the 
 - discover and add native audio effects by Premiere display name
 - inspect audio effect chains, change static parameters, and add keyframes
 - list/add/remove sequence markers for edit planning, review notes and beat/scene cues
+
+- inspect the recursive project tree with stable ids, media/offline/proxy state
+- rename and move project items between bins
+- relink clip media and attach proxies with desktop-side backup protection
+- insert Motion Graphics templates from .mogrt paths or Creative Cloud Libraries
