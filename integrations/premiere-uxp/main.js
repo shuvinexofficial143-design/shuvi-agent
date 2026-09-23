@@ -2105,6 +2105,115 @@ async function attachProxy(argumentsValue) {
   };
 }
 
+function summarizeInsertedTrackItems(items) {
+  const values = Array.isArray(items) ? items : [];
+  return values.map((item, index) => ({
+    index,
+    name: item?.name || null,
+    trackIndex: item?.trackIndex ?? null
+  }));
+}
+
+async function insertMogrtFromPath(argumentsValue) {
+  const path =
+    typeof argumentsValue?.path === "string"
+      ? argumentsValue.path.trim()
+      : "";
+  const seconds = Number(argumentsValue?.seconds ?? 0);
+  const videoTrack = Number(argumentsValue?.videoTrack ?? 0);
+  const audioTrack = Number(argumentsValue?.audioTrack ?? 0);
+
+  if (!path) throw new Error("MOGRT path is required.");
+  if (!Number.isFinite(seconds) || seconds < 0 || seconds > 86400) {
+    throw new Error("MOGRT insert time must be between 0 and 86400 seconds.");
+  }
+  if (!Number.isInteger(videoTrack) || videoTrack < 0 ||
+      !Number.isInteger(audioTrack) || audioTrack < 0) {
+    throw new Error("MOGRT track indexes must be non-negative integers.");
+  }
+
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+
+  const editor = premiere.SequenceEditor.getEditor(sequence);
+  const items = await editor.insertMogrtFromPath(
+    path,
+    premiere.TickTime.createWithSeconds(seconds),
+    videoTrack,
+    audioTrack
+  );
+
+  const inserted = summarizeInsertedTrackItems(items);
+  if (!inserted.length) {
+    throw new Error("Premiere did not insert the requested MOGRT.");
+  }
+
+  return {
+    inserted: true,
+    source: "path",
+    path,
+    seconds,
+    videoTrack,
+    audioTrack,
+    items: inserted
+  };
+}
+
+async function insertMogrtFromLibrary(argumentsValue) {
+  const libraryName =
+    typeof argumentsValue?.libraryName === "string"
+      ? argumentsValue.libraryName.trim()
+      : "";
+  const elementName =
+    typeof argumentsValue?.elementName === "string"
+      ? argumentsValue.elementName.trim()
+      : "";
+  const seconds = Number(argumentsValue?.seconds ?? 0);
+  const videoTrack = Number(argumentsValue?.videoTrack ?? 0);
+  const audioTrack = Number(argumentsValue?.audioTrack ?? 0);
+
+  if (!libraryName || !elementName) {
+    throw new Error("MOGRT libraryName and elementName are required.");
+  }
+  if (!Number.isFinite(seconds) || seconds < 0 || seconds > 86400) {
+    throw new Error("MOGRT insert time must be between 0 and 86400 seconds.");
+  }
+  if (!Number.isInteger(videoTrack) || videoTrack < 0 ||
+      !Number.isInteger(audioTrack) || audioTrack < 0) {
+    throw new Error("MOGRT track indexes must be non-negative integers.");
+  }
+
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+
+  const editor = premiere.SequenceEditor.getEditor(sequence);
+  const items = await editor.insertMogrtFromLibrary(
+    libraryName,
+    elementName,
+    premiere.TickTime.createWithSeconds(seconds),
+    videoTrack,
+    audioTrack
+  );
+
+  const inserted = summarizeInsertedTrackItems(items);
+  if (!inserted.length) {
+    throw new Error("Premiere did not insert the requested library MOGRT.");
+  }
+
+  return {
+    inserted: true,
+    source: "library",
+    libraryName,
+    elementName,
+    seconds,
+    videoTrack,
+    audioTrack,
+    items: inserted
+  };
+}
+
 async function executeCommand(command) {
   switch (command.action) {
     case "inspect_context":
@@ -2123,6 +2232,10 @@ async function executeCommand(command) {
       return await relinkMedia(command.arguments || {});
     case "attach_proxy":
       return await attachProxy(command.arguments || {});
+    case "insert_mogrt_path":
+      return await insertMogrtFromPath(command.arguments || {});
+    case "insert_mogrt_library":
+      return await insertMogrtFromLibrary(command.arguments || {});
     case "import_media":
       return await importMedia(command.arguments || {});
     case "create_sequence_from_media":
