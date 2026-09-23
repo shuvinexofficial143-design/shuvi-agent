@@ -31,3 +31,6 @@ Implemented typed bridge commands:
 - save the active project
 
 Shuvi's desktop agent creates a timestamped sibling `Shuvi Backups` copy of the current `.prproj` before major sequence creation and insert/overwrite edits when a normal project file path is available.
+
+- trim exact video/audio clips by track + timeline clip index
+- move clips on the same track by a signed time delta
