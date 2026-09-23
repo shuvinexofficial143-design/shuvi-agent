@@ -3470,6 +3470,94 @@ async function setCaptionTrackMute(argumentsValue) {
   };
 }
 
+async function insertProjectItem(argumentsValue) {
+  const itemId =
+    typeof argumentsValue?.itemId === "string"
+      ? argumentsValue.itemId.trim()
+      : "";
+  const seconds = Number(argumentsValue?.seconds ?? 0);
+  const videoTrack = Number(argumentsValue?.videoTrack ?? 0);
+  const audioTrack = Number(argumentsValue?.audioTrack ?? 0);
+  const mode =
+    typeof argumentsValue?.mode === "string"
+      ? argumentsValue.mode.toLowerCase()
+      : "insert";
+
+  if (!itemId) throw new Error("Project item id is required.");
+  if (!Number.isFinite(seconds) || seconds < 0 || seconds > 86400) {
+    throw new Error("Timeline seconds must be between 0 and 86400.");
+  }
+  if (!Number.isInteger(videoTrack) || videoTrack < 0 ||
+      !Number.isInteger(audioTrack) || audioTrack < 0) {
+    throw new Error("Timeline track indexes must be non-negative integers.");
+  }
+  if (mode !== "insert" && mode !== "overwrite") {
+    throw new Error("Mode must be insert or overwrite.");
+  }
+
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+
+  const root = await project.getRootItem();
+  const item = await findProjectItemById(root, itemId);
+  if (!item) throw new Error("Premiere project item id was not found.");
+
+  const projectItem = asProjectItem(item);
+  if (!projectItem) throw new Error("Requested item cannot be inserted as a ProjectItem.");
+
+  const editor = premiere.SequenceEditor.getEditor(sequence);
+  const time = premiere.TickTime.createWithSeconds(seconds);
+  let transactionSucceeded = false;
+
+  project.lockedAccess(() => {
+    const action =
+      mode === "insert"
+        ? editor.createInsertProjectItemAction(
+            projectItem,
+            time,
+            videoTrack,
+            audioTrack,
+            true
+          )
+        : editor.createOverwriteItemAction(
+            projectItem,
+            time,
+            videoTrack,
+            audioTrack
+          );
+
+    transactionSucceeded = project.executeTransaction((compoundAction) => {
+      compoundAction.addAction(action);
+    }, mode === "insert" ? "Shuvi: Insert Project Item" : "Shuvi: Overwrite Project Item");
+  });
+
+  if (!transactionSucceeded) {
+    throw new Error("Premiere rejected the project-item timeline transaction.");
+  }
+
+  let isSequence = null;
+  const clip = asClipProjectItem(item);
+  if (clip) {
+    try {
+      isSequence = Boolean(await clip.isSequence());
+    } catch {
+      isSequence = null;
+    }
+  }
+
+  return {
+    edited: true,
+    itemId,
+    itemName: item?.name || null,
+    isSequence,
+    mode,
+    seconds,
+    videoTrack,
+    audioTrack
+  };
+}
+
 async function executeCommand(command) {
   switch (command.action) {
     case "inspect_context":
@@ -3512,6 +3600,8 @@ async function executeCommand(command) {
       return await createSequenceFromMedia(command.arguments || {});
     case "create_subsequence":
       return await createSubsequence(command.arguments || {});
+    case "insert_project_item":
+      return await insertProjectItem(command.arguments || {});
     case "save_project":
       return await saveProject();
     case "inspect_timeline":
