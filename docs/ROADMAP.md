@@ -70,9 +70,9 @@
 - [x] active-project root item inspection + permission-gated media import
 - [ ] bin creation/move/relink project organization
 - [x] sequence-from-media creation + timeline track/clip inspection
-- [ ] professional trim/ripple/rolling edit operations
+- [x] deterministic clip trim foundation (video/audio, exact track + clip index)\n- [ ] ripple/rolling edit operations
 - [x] native insert/overwrite edit foundation with automatic .prproj backup
-- [ ] clip move/insert/overwrite/nest/multicam workflows
+- [x] same-track clip move + insert/overwrite foundations\n- [ ] vertical track moves, nest and multicam workflows
 - [ ] transitions, effects and effect-parameter control
 - [ ] keyframes, transforms, masks and speed changes
 - [ ] Lumetri color workflow and reusable grading presets
