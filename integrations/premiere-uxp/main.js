@@ -308,6 +308,183 @@ async function createSequenceFromMedia(argumentsValue) {
   };
 }
 
+async function saveProject() {
+  const project = await requireProject();
+  const success = await project.save();
+  if (!success) throw new Error("Premiere could not save the active project.");
+  return {
+    saved: true,
+    projectName: project.name || null,
+    projectPath: project.path || null
+  };
+}
+
+async function summarizeTrackItem(item) {
+  const [
+    name,
+    start,
+    end,
+    duration,
+    speed,
+    disabled,
+    trackIndex
+  ] = await Promise.all([
+    item.getName(),
+    item.getStartTime(),
+    item.getEndTime(),
+    item.getDuration(),
+    item.getSpeed(),
+    item.isDisabled(),
+    item.getTrackIndex()
+  ]);
+
+  return {
+    name,
+    trackIndex,
+    startSeconds: start?.seconds ?? null,
+    endSeconds: end?.seconds ?? null,
+    durationSeconds: duration?.seconds ?? null,
+    speed,
+    disabled
+  };
+}
+
+async function inspectTimeline() {
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+
+  const videoTrackCount = await sequence.getVideoTrackCount();
+  const audioTrackCount = await sequence.getAudioTrackCount();
+  const videoTracks = [];
+  const audioTracks = [];
+  let itemBudget = 240;
+
+  for (let index = 0; index < videoTrackCount && itemBudget > 0; index += 1) {
+    const track = await sequence.getVideoTrack(index);
+    const items = await track.getTrackItems(premiere.Constants.TrackItemType.CLIP, false);
+    const summaries = [];
+
+    for (const item of items.slice(0, itemBudget)) {
+      summaries.push(await summarizeTrackItem(item));
+      itemBudget -= 1;
+      if (itemBudget <= 0) break;
+    }
+
+    videoTracks.push({
+      index,
+      name: track.name || null,
+      muted: await track.isMuted(),
+      items: summaries
+    });
+  }
+
+  for (let index = 0; index < audioTrackCount && itemBudget > 0; index += 1) {
+    const track = await sequence.getAudioTrack(index);
+    const items = await track.getTrackItems(premiere.Constants.TrackItemType.CLIP, false);
+    const summaries = [];
+
+    for (const item of items.slice(0, itemBudget)) {
+      summaries.push(await summarizeTrackItem(item));
+      itemBudget -= 1;
+      if (itemBudget <= 0) break;
+    }
+
+    audioTracks.push({
+      index,
+      name: track.name || null,
+      muted: await track.isMuted(),
+      items: summaries
+    });
+  }
+
+  return {
+    sequenceGuid: sequence.guid || null,
+    sequenceName: sequence.name || null,
+    truncated: itemBudget <= 0,
+    videoTracks,
+    audioTracks
+  };
+}
+
+async function resolveOneClip(project, root, path) {
+  let resolved = await findClipItemsForPaths(project, root, [path]);
+
+  if (resolved.missing.length) {
+    const imported = await project.importFiles([path], true, root, false);
+    if (!imported) throw new Error("Premiere could not import the media file.");
+    resolved = await findClipItemsForPaths(project, root, [path]);
+  }
+
+  if (resolved.missing.length || !resolved.clips[0]) {
+    throw new Error("Premiere could not resolve media after import: " + path);
+  }
+
+  return resolved.clips[0];
+}
+
+async function insertMedia(argumentsValue) {
+  const path =
+    typeof argumentsValue?.path === "string"
+      ? argumentsValue.path.trim()
+      : "";
+  const seconds = Number(argumentsValue?.seconds ?? 0);
+  const videoTrack = Number(argumentsValue?.videoTrack ?? 0);
+  const audioTrack = Number(argumentsValue?.audioTrack ?? 0);
+  const mode =
+    typeof argumentsValue?.mode === "string"
+      ? argumentsValue.mode.toLowerCase()
+      : "insert";
+
+  if (!path) throw new Error("Media path is required.");
+  if (!Number.isFinite(seconds) || seconds < 0) throw new Error("Timeline seconds must be zero or greater.");
+  if (!Number.isInteger(videoTrack) || videoTrack < 0) throw new Error("Video track index must be a non-negative integer.");
+  if (!Number.isInteger(audioTrack) || audioTrack < 0) throw new Error("Audio track index must be a non-negative integer.");
+  if (mode !== "insert" && mode !== "overwrite") throw new Error("Mode must be insert or overwrite.");
+
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+
+  const root = await project.getRootItem();
+  const clip = await resolveOneClip(project, root, path);
+  const projectItem = premiere.ProjectItem.cast(clip);
+  const editor = premiere.SequenceEditor.getEditor(sequence);
+  const time = premiere.TickTime.createWithSeconds(seconds);
+
+  project.lockedAccess(() => {
+    const action =
+      mode === "insert"
+        ? editor.createInsertProjectItemAction(
+            projectItem,
+            time,
+            videoTrack,
+            audioTrack,
+            true
+          )
+        : editor.createOverwriteItemAction(
+            projectItem,
+            time,
+            videoTrack,
+            audioTrack
+          );
+
+    project.executeTransaction((compoundAction) => {
+      compoundAction.addAction(action);
+    }, mode === "insert" ? "Shuvi: Insert Media" : "Shuvi: Overwrite Media");
+  });
+
+  return {
+    edited: true,
+    mode,
+    path,
+    sequenceName: sequence.name || null,
+    seconds,
+    videoTrack,
+    audioTrack
+  };
+}
+
 async function executeCommand(command) {
   switch (command.action) {
     case "inspect_context":
@@ -320,6 +497,12 @@ async function executeCommand(command) {
       return await importMedia(command.arguments || {});
     case "create_sequence_from_media":
       return await createSequenceFromMedia(command.arguments || {});
+    case "save_project":
+      return await saveProject();
+    case "inspect_timeline":
+      return await inspectTimeline();
+    case "insert_media":
+      return await insertMedia(command.arguments || {});
     default:
       throw new Error("Unsupported Shuvi Premiere command: " + command.action);
   }
