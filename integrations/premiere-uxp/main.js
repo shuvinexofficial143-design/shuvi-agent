@@ -900,6 +900,158 @@ async function setTrackMute(argumentsValue) {
   };
 }
 
+async function setClipEnabled(argumentsValue) {
+  const kind =
+    typeof argumentsValue?.kind === "string"
+      ? argumentsValue.kind.toLowerCase()
+      : "";
+  const trackIndex = Number(argumentsValue?.track ?? 0);
+  const clipIndex = Number(argumentsValue?.clipIndex ?? 0);
+  const enabled = argumentsValue?.enabled;
+
+  if (kind !== "video" && kind !== "audio") {
+    throw new Error("Clip kind must be video or audio.");
+  }
+  if (!Number.isInteger(trackIndex) || trackIndex < 0) {
+    throw new Error("Track index must be a non-negative integer.");
+  }
+  if (!Number.isInteger(clipIndex) || clipIndex < 0) {
+    throw new Error("Clip index must be a non-negative integer.");
+  }
+  if (typeof enabled !== "boolean") {
+    throw new Error("enabled must be a boolean.");
+  }
+
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+
+  const track =
+    kind === "video"
+      ? await sequence.getVideoTrack(trackIndex)
+      : await sequence.getAudioTrack(trackIndex);
+  if (!track) throw new Error("Requested Premiere track was not found.");
+
+  const items = await sortedClipItems(track);
+  const item = items[clipIndex];
+  if (!item) {
+    throw new Error(
+      "Clip index " + clipIndex + " was not found on " + kind + " track " + trackIndex + "."
+    );
+  }
+
+  let transactionSucceeded = false;
+  project.lockedAccess(() => {
+    const action = item.createSetDisabledAction(!enabled);
+    transactionSucceeded = project.executeTransaction((compoundAction) => {
+      compoundAction.addAction(action);
+    }, enabled ? "Shuvi: Enable Clip" : "Shuvi: Disable Clip");
+  });
+
+  if (!transactionSucceeded) {
+    throw new Error("Premiere rejected the clip enable/disable transaction.");
+  }
+
+  return {
+    changed: true,
+    kind,
+    track: trackIndex,
+    clipIndex,
+    enabled
+  };
+}
+
+async function listVideoTransitions() {
+  const matchNames = await premiere.TransitionFactory.getVideoTransitionMatchNames();
+  const values = Array.isArray(matchNames) ? matchNames : [];
+
+  return {
+    count: values.length,
+    transitions: values.slice(0, 1000)
+  };
+}
+
+async function addVideoTransition(argumentsValue) {
+  const trackIndex = Number(argumentsValue?.track ?? 0);
+  const clipIndex = Number(argumentsValue?.clipIndex ?? 0);
+  const matchName =
+    typeof argumentsValue?.matchName === "string"
+      ? argumentsValue.matchName.trim()
+      : "";
+  const durationSeconds = Number(argumentsValue?.durationSeconds);
+  const position =
+    typeof argumentsValue?.position === "string"
+      ? argumentsValue.position.toLowerCase()
+      : "";
+  const forceSingleSided = Boolean(argumentsValue?.forceSingleSided);
+
+  if (!Number.isInteger(trackIndex) || trackIndex < 0) {
+    throw new Error("Video track index must be a non-negative integer.");
+  }
+  if (!Number.isInteger(clipIndex) || clipIndex < 0) {
+    throw new Error("Clip index must be a non-negative integer.");
+  }
+  if (!matchName) throw new Error("Transition matchName is required.");
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0 || durationSeconds > 60) {
+    throw new Error("Transition duration must be greater than 0 and at most 60 seconds.");
+  }
+  if (position !== "start" && position !== "end") {
+    throw new Error("Transition position must be start or end.");
+  }
+
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+
+  const track = await sequence.getVideoTrack(trackIndex);
+  if (!track) throw new Error("Requested Premiere video track was not found.");
+
+  const items = await sortedClipItems(track);
+  const item = items[clipIndex];
+  if (!item) {
+    throw new Error(
+      "Clip index " + clipIndex + " was not found on video track " + trackIndex + "."
+    );
+  }
+
+  const installed = await premiere.TransitionFactory.getVideoTransitionMatchNames();
+  if (!installed.includes(matchName)) {
+    throw new Error("Installed Premiere transition was not found: " + matchName);
+  }
+
+  let transactionSucceeded = false;
+  project.lockedAccess(() => {
+    const transition = premiere.TransitionFactory.createVideoTransition(matchName);
+    const options = new premiere.AddTransitionOptions()
+      .setApplyToStart(position === "start")
+      .setDuration(premiere.TickTime.createWithSeconds(durationSeconds))
+      .setForceSingleSided(forceSingleSided);
+
+    const action = item.createAddVideoTransitionAction(
+      transition,
+      options
+    );
+
+    transactionSucceeded = project.executeTransaction((compoundAction) => {
+      compoundAction.addAction(action);
+    }, "Shuvi: Add Video Transition");
+  });
+
+  if (!transactionSucceeded) {
+    throw new Error("Premiere rejected the video transition transaction.");
+  }
+
+  return {
+    added: true,
+    track: trackIndex,
+    clipIndex,
+    matchName,
+    durationSeconds,
+    position,
+    forceSingleSided
+  };
+}
+
 async function executeCommand(command) {
   switch (command.action) {
     case "inspect_context":
@@ -920,6 +1072,12 @@ async function executeCommand(command) {
       return await setPlayhead(command.arguments || {});
     case "set_track_mute":
       return await setTrackMute(command.arguments || {});
+    case "set_clip_enabled":
+      return await setClipEnabled(command.arguments || {});
+    case "list_video_transitions":
+      return await listVideoTransitions();
+    case "add_video_transition":
+      return await addVideoTransition(command.arguments || {});
     case "insert_media":
       return await insertMedia(command.arguments || {});
     case "trim_clip":
