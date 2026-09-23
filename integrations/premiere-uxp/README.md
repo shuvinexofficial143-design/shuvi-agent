@@ -58,3 +58,9 @@ Shuvi's desktop agent creates a timestamped sibling `Shuvi Backups` copy of the 
 - apply atomic named video/audio parameter recipes for grading, transform and mix workflows
 - perform adjacent-clip rolling edits with project backup protection
 - inspect an exact Premiere playhead frame through Shuvi's selected vision provider
+
+- save/list/delete reusable local video or audio parameter recipes and apply them to one or many clips
+- batch relink offline media and batch attach proxies with per-item results
+- review up to eight Premiere frames with Shuvi vision at explicit playhead timestamps
+- set/clear source in/out points and create Premiere 26.3+ subclips
+- transcribe clip project items and read a bounded transcript JSON preview
