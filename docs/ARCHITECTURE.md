@@ -142,3 +142,10 @@ The intended final control order is:
 4. high-risk keyboard or coordinate fallbacks only when semantic/native controls are unavailable.
 
 Major timeline edits will be versioned/checkpointed before execution, and Shuvi's desktop permission/audit layer remains authoritative over sensitive changes.
+
+
+## Premiere localhost bridge
+
+The Shuvi desktop runtime hosts a loopback-only HTTP bridge on 127.0.0.1:17361. Starting the bridge rotates a random temporary pairing token. The Premiere UXP panel must present that token in the `X-Shuvi-Token` header before it can poll for commands or post results.
+
+The bridge intentionally exposes only fixed routes (`/health`, `/command`, `/result`) and a bounded command queue. The agent does not receive the pairing token in ordinary Premiere tool observations. The current native command set includes project/sequence inspection, top-level project-item listing, and permission-gated media import.
