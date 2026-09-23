@@ -75,6 +75,11 @@ Available tools:
 - premiere_set_clip_enabled: {"kind":"video|audio","track":0,"clip_index":0,"enabled":true}
 - premiere_list_video_transitions: {}
 - premiere_add_video_transition: {"track":0,"clip_index":0,"match_name":"transition match name","duration_seconds":0.5,"position":"start|end","force_single_sided":false}
+- premiere_list_video_effects: {}
+- premiere_inspect_clip_effects: {"track":0,"clip_index":0}
+- premiere_add_video_effect: {"track":0,"clip_index":0,"match_name":"video effect match name"}
+- premiere_set_effect_param: {"track":0,"clip_index":0,"component_index":0,"param_index":0,"value":1.0}
+- premiere_add_effect_keyframe: {"track":0,"clip_index":0,"component_index":0,"param_index":0,"seconds":1.0,"value":1.0}
 - premiere_export_sequence: {"output":"absolute output media path","preset":"optional absolute .epr preset path","queue_to_ame":false}
 - premiere_save_project: {}
 - workspace_scan: {"path":"absolute workspace path"}
@@ -100,7 +105,7 @@ Rules:
 - Treat git_push as a remote write and request it only after a successful commit when the user asked for a push.
 - Use run_project_task instead of raw shell commands when test/build/lint/typecheck is enough.
 - For browser/app UI work, prefer a Shuvi-managed browser when isolation matters, then use window-scoped semantic UI tools first. Use ui_toggle and ui_expand_collapse for supported controls. ui_send_keys is a high-risk fallback only after an exact element is focused and semantic patterns are unavailable. pointer_click is a final high-risk coordinate fallback: inspect_screen first, use coordinates only when semantic UI/DOM control cannot target the control, and never repeat a failed coordinate click blindly.
-- For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_timeline/premiere_list_items for inspection, premiere_set_playhead for non-destructive navigation and premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media/premiere_insert_media/premiere_save_project for native editing. premiere_insert_media, premiere_trim_clip, premiere_move_clip, premiere_delete_clip and premiere_add_video_transition are high risk because they change the timeline; premiere_export_sequence is high risk because it writes media and may start encoding; inspect the timeline first when practical. Use UI/vision fallbacks only for features not exposed through the bridge. Major sequence creation and timeline insert/overwrite actions automatically save and copy the current .prproj into a sibling 'Shuvi Backups' folder before editing when a normal project path is available.
+- For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_timeline/premiere_list_items for inspection, premiere_set_playhead for non-destructive navigation and premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media/premiere_insert_media/premiere_save_project for native editing. premiere_insert_media, premiere_trim_clip, premiere_move_clip, premiere_delete_clip, premiere_add_video_transition, premiere_add_video_effect, premiere_set_effect_param and premiere_add_effect_keyframe are high risk because they change the timeline or effect state; premiere_export_sequence is high risk because it writes media and may start encoding; inspect the timeline first when practical. Use UI/vision fallbacks only for features not exposed through the bridge. Major sequence creation and timeline insert/overwrite actions automatically save and copy the current .prproj into a sibling 'Shuvi Backups' folder before editing when a normal project path is available.
 - For managed Edge/Chrome sessions, prefer browser_dom_read/browser_dom_click/browser_dom_set_value/browser_navigate over visual coordinate actions because DOM selectors are more reliable.
 - browser_dom_click and browser_dom_set_value require selectors that match exactly one element; refine with browser_dom_read when ambiguous.
 - stop_managed_process may only target process roots that Shuvi launched itself.
@@ -225,6 +230,11 @@ enum ToolAction {
     PremiereSetClipEnabled { kind: String, track: u32, clip_index: u32, enabled: bool },
     PremiereListVideoTransitions,
     PremiereAddVideoTransition { track: u32, clip_index: u32, match_name: String, duration_seconds: f64, position: String, force_single_sided: bool },
+    PremiereListVideoEffects,
+    PremiereInspectClipEffects { track: u32, clip_index: u32 },
+    PremiereAddVideoEffect { track: u32, clip_index: u32, match_name: String },
+    PremiereSetEffectParam { track: u32, clip_index: u32, component_index: u32, param_index: u32, value: Value },
+    PremiereAddEffectKeyframe { track: u32, clip_index: u32, component_index: u32, param_index: u32, seconds: f64, value: Value },
     PremiereListItems,
     PremiereCreateBin { name: String },
     PremiereImportMedia { paths: Vec<String> },
@@ -492,6 +502,11 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_set_clip_enabled"
         | "premiere_list_video_transitions"
         | "premiere_add_video_transition"
+        | "premiere_list_video_effects"
+        | "premiere_inspect_clip_effects"
+        | "premiere_add_video_effect"
+        | "premiere_set_effect_param"
+        | "premiere_add_effect_keyframe"
         | "premiere_list_items"
         | "premiere_create_bin"
         | "premiere_import_media"
@@ -1790,6 +1805,123 @@ fn stage_tool(
                 "Add Premiere video transition".to_string(),
                 format!(
                     "Add transition '{match_name}' to video track {track}, clip #{clip_index}, position={position}, duration={duration_seconds:.3}s, single_sided={force_single_sided}"
+                ),
+                RiskLevel::High,
+            )
+        }
+        "premiere_list_video_effects" => (
+            ToolAction::PremiereListVideoEffects,
+            "List Premiere video effects".to_string(),
+            "Read installed Premiere video effect match names.".to_string(),
+            RiskLevel::Low,
+        ),
+        "premiere_inspect_clip_effects" => {
+            let track = proposal.arguments.get("track").and_then(Value::as_u64).unwrap_or(0);
+            let clip_index = proposal.arguments.get("clip_index").and_then(Value::as_u64).unwrap_or(0);
+            if track > 128 || clip_index > 10_000 {
+                return Err("Premiere effect inspection target is outside Shuvi's safety limits.".into());
+            }
+            (
+                ToolAction::PremiereInspectClipEffects {
+                    track: track as u32,
+                    clip_index: clip_index as u32,
+                },
+                "Inspect Premiere clip effects".to_string(),
+                format!("Inspect video track {track}, clip #{clip_index} effect chain and parameters."),
+                RiskLevel::Low,
+            )
+        }
+        "premiere_add_video_effect" => {
+            let track = proposal.arguments.get("track").and_then(Value::as_u64).unwrap_or(0);
+            let clip_index = proposal.arguments.get("clip_index").and_then(Value::as_u64).unwrap_or(0);
+            if track > 128 || clip_index > 10_000 {
+                return Err("Premiere video effect target is outside Shuvi's safety limits.".into());
+            }
+            let match_name = arg_string(&proposal.arguments, "match_name")?;
+            if match_name.chars().count() > 240 {
+                return Err("Premiere video effect match name is too long.".into());
+            }
+            (
+                ToolAction::PremiereAddVideoEffect {
+                    track: track as u32,
+                    clip_index: clip_index as u32,
+                    match_name: match_name.clone(),
+                },
+                "Add Premiere video effect".to_string(),
+                format!("Add video effect '{match_name}' to video track {track}, clip #{clip_index}."),
+                RiskLevel::High,
+            )
+        }
+        "premiere_set_effect_param" => {
+            let track = proposal.arguments.get("track").and_then(Value::as_u64).unwrap_or(0);
+            let clip_index = proposal.arguments.get("clip_index").and_then(Value::as_u64).unwrap_or(0);
+            let component_index = proposal.arguments.get("component_index").and_then(Value::as_u64).unwrap_or(0);
+            let param_index = proposal.arguments.get("param_index").and_then(Value::as_u64).unwrap_or(0);
+            if track > 128 || clip_index > 10_000 || component_index > 512 || param_index > 512 {
+                return Err("Premiere effect parameter target is outside Shuvi's safety limits.".into());
+            }
+            let value = proposal.arguments
+                .get("value")
+                .cloned()
+                .ok_or_else(|| "premiere_set_effect_param requires value.".to_string())?;
+            if !matches!(value, Value::Bool(_) | Value::Number(_) | Value::String(_)) {
+                return Err("Effect parameter value must be a boolean, number, or string.".into());
+            }
+            if value.as_str().is_some_and(|text| text.chars().count() > 5_000) {
+                return Err("Effect parameter string is too long.".into());
+            }
+            (
+                ToolAction::PremiereSetEffectParam {
+                    track: track as u32,
+                    clip_index: clip_index as u32,
+                    component_index: component_index as u32,
+                    param_index: param_index as u32,
+                    value: value.clone(),
+                },
+                "Set Premiere effect parameter".to_string(),
+                format!(
+                    "Set video track {track}, clip #{clip_index}, component #{component_index}, parameter #{param_index}."
+                ),
+                RiskLevel::High,
+            )
+        }
+        "premiere_add_effect_keyframe" => {
+            let track = proposal.arguments.get("track").and_then(Value::as_u64).unwrap_or(0);
+            let clip_index = proposal.arguments.get("clip_index").and_then(Value::as_u64).unwrap_or(0);
+            let component_index = proposal.arguments.get("component_index").and_then(Value::as_u64).unwrap_or(0);
+            let param_index = proposal.arguments.get("param_index").and_then(Value::as_u64).unwrap_or(0);
+            if track > 128 || clip_index > 10_000 || component_index > 512 || param_index > 512 {
+                return Err("Premiere keyframe target is outside Shuvi's safety limits.".into());
+            }
+            let seconds = proposal.arguments
+                .get("seconds")
+                .and_then(Value::as_f64)
+                .ok_or_else(|| "premiere_add_effect_keyframe requires seconds.".to_string())?;
+            if !seconds.is_finite() || seconds < 0.0 || seconds > 86_400.0 {
+                return Err("Premiere keyframe seconds must be between 0 and 86400.".into());
+            }
+            let value = proposal.arguments
+                .get("value")
+                .cloned()
+                .ok_or_else(|| "premiere_add_effect_keyframe requires value.".to_string())?;
+            if !matches!(value, Value::Bool(_) | Value::Number(_) | Value::String(_)) {
+                return Err("Effect keyframe value must be a boolean, number, or string.".into());
+            }
+            if value.as_str().is_some_and(|text| text.chars().count() > 5_000) {
+                return Err("Effect keyframe string is too long.".into());
+            }
+            (
+                ToolAction::PremiereAddEffectKeyframe {
+                    track: track as u32,
+                    clip_index: clip_index as u32,
+                    component_index: component_index as u32,
+                    param_index: param_index as u32,
+                    seconds,
+                    value: value.clone(),
+                },
+                "Add Premiere effect keyframe".to_string(),
+                format!(
+                    "Add keyframe at {seconds:.3}s to video track {track}, clip #{clip_index}, component #{component_index}, parameter #{param_index}."
                 ),
                 RiskLevel::High,
             )
@@ -3995,6 +4127,108 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "backup": backup,
                     "result": value
                 })).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereListVideoEffects => {
+            let value = state.premiere_bridge.request(
+                "list_video_effects",
+                json!({}),
+                Duration::from_secs(12),
+            ).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereInspectClipEffects { track, clip_index } => {
+            let value = state.premiere_bridge.request(
+                "inspect_clip_effects",
+                json!({
+                    "track": track,
+                    "clipIndex": clip_index
+                }),
+                Duration::from_secs(15),
+            ).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereAddVideoEffect { track, clip_index, match_name } => {
+            let backup = backup_premiere_project(state).await?;
+            let value = state.premiere_bridge.request(
+                "add_video_effect",
+                json!({
+                    "track": track,
+                    "clipIndex": clip_index,
+                    "matchName": match_name
+                }),
+                Duration::from_secs(30),
+            ).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "backup": backup,
+                    "result": value
+                })).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereSetEffectParam { track, clip_index, component_index, param_index, value } => {
+            let backup = backup_premiere_project(state).await?;
+            let result = state.premiere_bridge.request(
+                "set_effect_param",
+                json!({
+                    "track": track,
+                    "clipIndex": clip_index,
+                    "componentIndex": component_index,
+                    "paramIndex": param_index,
+                    "value": value
+                }),
+                Duration::from_secs(30),
+            ).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "backup": backup,
+                    "result": result
+                })).unwrap_or_else(|_| result.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereAddEffectKeyframe { track, clip_index, component_index, param_index, seconds, value } => {
+            let backup = backup_premiere_project(state).await?;
+            let result = state.premiere_bridge.request(
+                "add_effect_keyframe",
+                json!({
+                    "track": track,
+                    "clipIndex": clip_index,
+                    "componentIndex": component_index,
+                    "paramIndex": param_index,
+                    "seconds": seconds,
+                    "value": value
+                }),
+                Duration::from_secs(30),
+            ).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "backup": backup,
+                    "result": result
+                })).unwrap_or_else(|_| result.to_string()),
                 stderr: String::new(),
                 exit_code: Some(0),
             })
