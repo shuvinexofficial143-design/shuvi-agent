@@ -105,6 +105,12 @@ const protocol =
   rust.match(/const TOOL_PROTOCOL: &str = r#"([\s\S]*?)"#;/)?.[1] ?? "";
 const tools = [...protocol.matchAll(/^- ([a-z0-9_]+):/gm)].map((match) => match[1]);
 
+const seenTools = new Set();
+for (const tool of tools) {
+  if (seenTools.has(tool)) fail("Duplicate typed tool in TOOL_PROTOCOL: " + tool);
+  seenTools.add(tool);
+}
+
 for (const tool of tools) {
   const quoted = '"' + tool + '"';
   const occurrences = rust.split(quoted).length - 1;
@@ -113,6 +119,18 @@ for (const tool of tools) {
   }
 }
 ok("Typed tool registry checked.");
+
+const premiereUxp = read("integrations/premiere-uxp/main.js");
+const premiereBridgeActions = [
+  ...rust.matchAll(/\.premiere_bridge\s*\.request\(\s*"([a-z0-9_]+)"/g)
+].map((match) => match[1]);
+
+for (const action of new Set(premiereBridgeActions)) {
+  if (!premiereUxp.includes('case "' + action + '":')) {
+    fail("Premiere bridge action has no UXP command route: " + action);
+  }
+}
+ok("Premiere desktop/UXP bridge action routing checked.");
 
 const secretPatterns = [
   /sk-[A-Za-z0-9_-]{20,}/g,
