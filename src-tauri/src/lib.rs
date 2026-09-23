@@ -101,6 +101,10 @@ Available tools:
 - premiere_add_audio_effect_keyframe: {"track":0,"clip_index":0,"component_index":0,"param_index":0,"seconds":1.0,"value":1.0}
 - premiere_add_audio_keyframe_named: {"track":0,"clip_index":0,"component_match_name":"optional exact match name","component_display_name":"optional exact display name","param_display_name":"exact parameter display name","seconds":1.0,"value":1.0}
 - premiere_apply_audio_recipe: {"track":0,"clip_index":0,"settings":[{"component_match_name":"optional exact match name","component_display_name":"optional exact display name","param_display_name":"exact parameter display name","value":1.0,"seconds":"optional keyframe time"}]}
+- premiere_list_saved_recipes: {}
+- premiere_save_recipe: {"name":"recipe name","kind":"video|audio","settings":[{"component_match_name":"optional exact match name","component_display_name":"optional exact display name","param_display_name":"exact parameter display name","value":1.0,"seconds":"optional keyframe time"}]}
+- premiere_apply_saved_recipe: {"name":"recipe name","track":0,"clip_index":0}
+- premiere_delete_recipe: {"name":"recipe name"}
 - premiere_list_markers: {}
 - premiere_add_marker: {"name":"marker name","marker_type":"Comment|Chapter|Segmentation|WebLink","seconds":10.0,"duration_seconds":0.0,"comments":"optional notes"}
 - premiere_remove_marker: {"marker_index":0}
@@ -130,6 +134,7 @@ Rules:
 - Use run_project_task instead of raw shell commands when test/build/lint/typecheck is enough.
 - For browser/app UI work, prefer a Shuvi-managed browser when isolation matters, then use window-scoped semantic UI tools first. Use ui_toggle and ui_expand_collapse for supported controls. ui_send_keys is a high-risk fallback only after an exact element is focused and semantic patterns are unavailable. pointer_click is a final high-risk coordinate fallback: inspect_screen first, use coordinates only when semantic UI/DOM control cannot target the control, and never repeat a failed coordinate click blindly.
 - For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_timeline/premiere_list_items/premiere_project_tree for inspection, premiere_set_playhead for non-destructive navigation, premiere_inspect_frame for playhead-positioned visual review and premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media/premiere_insert_media/premiere_save_project for native editing. premiere_insert_media, premiere_trim_clip, premiere_roll_edit, premiere_move_clip, premiere_clone_clip, premiere_delete_clip, premiere_add_video_transition, premiere_add_video_effect, premiere_set_effect_param, premiere_add_effect_keyframe, premiere_add_audio_effect, premiere_set_audio_effect_param and premiere_add_audio_effect_keyframe are high risk because they change the timeline or effect state; premiere_insert_mogrt_path and premiere_insert_mogrt_library are high risk because they add graphics to the timeline; premiere_export_sequence is high risk because it writes media and may start encoding; inspect the timeline first when practical. Use UI/vision fallbacks only for features not exposed through the bridge. Major sequence creation and timeline insert/overwrite actions automatically save and copy the current .prproj into a sibling 'Shuvi Backups' folder before editing when a normal project path is available.
+- Saved Premiere recipes are local reusable video/audio named-parameter recipes. Inspect a clip's effect chain first, save a recipe only after exact selectors are known, and apply saved recipes as high-risk backed-up edits.
 - For managed Edge/Chrome sessions, prefer browser_dom_read/browser_dom_click/browser_dom_set_value/browser_navigate over visual coordinate actions because DOM selectors are more reliable.
 - browser_dom_click and browser_dom_set_value require selectors that match exactly one element; refine with browser_dom_read when ambiguous.
 - stop_managed_process may only target process roots that Shuvi launched itself.
@@ -271,6 +276,10 @@ enum ToolAction {
     PremiereAddAudioEffectKeyframe { track: u32, clip_index: u32, component_index: u32, param_index: u32, seconds: f64, value: Value },
     PremiereAddAudioKeyframeNamed { track: u32, clip_index: u32, component_match_name: Option<String>, component_display_name: Option<String>, param_display_name: String, seconds: f64, value: Value },
     PremiereApplyAudioRecipe { track: u32, clip_index: u32, settings: Vec<Value> },
+    PremiereListSavedRecipes,
+    PremiereSaveRecipe { name: String, kind: String, settings: Vec<Value> },
+    PremiereApplySavedRecipe { name: String, track: u32, clip_index: u32 },
+    PremiereDeleteRecipe { name: String },
     PremiereListMarkers,
     PremiereAddMarker { name: String, marker_type: String, seconds: f64, duration_seconds: f64, comments: String },
     PremiereRemoveMarker { marker_index: u32 },
@@ -319,6 +328,14 @@ struct ActionResult {
     stdout: String,
     stderr: String,
     exit_code: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PremiereSavedRecipe {
+    name: String,
+    kind: String,
+    settings: Vec<Value>,
+    updated_at_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -567,6 +584,10 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_add_audio_effect_keyframe"
         | "premiere_add_audio_keyframe_named"
         | "premiere_apply_audio_recipe"
+        | "premiere_list_saved_recipes"
+        | "premiere_save_recipe"
+        | "premiere_apply_saved_recipe"
+        | "premiere_delete_recipe"
         | "premiere_list_markers"
         | "premiere_add_marker"
         | "premiere_remove_marker"
@@ -2462,6 +2483,78 @@ fn stage_tool(
                 RiskLevel::High,
             )
         }
+        "premiere_list_saved_recipes" => (
+            ToolAction::PremiereListSavedRecipes,
+            "List saved Premiere recipes".to_string(),
+            "Read Shuvi's local reusable Premiere recipe library.".to_string(),
+            RiskLevel::Low,
+        ),
+        "premiere_save_recipe" => {
+            let name = arg_string(&proposal.arguments, "name")?;
+            if name.chars().count() > 120 {
+                return Err("Premiere recipe name is too long.".into());
+            }
+
+            let kind = arg_string(&proposal.arguments, "kind")?.to_ascii_lowercase();
+            if !matches!(kind.as_str(), "video" | "audio") {
+                return Err("Premiere saved recipe kind must be video or audio.".into());
+            }
+
+            let settings = proposal.arguments
+                .get("settings")
+                .and_then(Value::as_array)
+                .cloned()
+                .ok_or_else(|| "premiere_save_recipe requires a settings array.".to_string())?;
+
+            validate_premiere_saved_recipe_settings(&settings)?;
+
+            (
+                ToolAction::PremiereSaveRecipe {
+                    name: name.clone(),
+                    kind: kind.clone(),
+                    settings: settings.clone(),
+                },
+                "Save reusable Premiere recipe".to_string(),
+                format!("Save {kind} recipe '{name}' with {} setting(s).", settings.len()),
+                RiskLevel::Medium,
+            )
+        }
+        "premiere_apply_saved_recipe" => {
+            let name = arg_string(&proposal.arguments, "name")?;
+            if name.chars().count() > 120 {
+                return Err("Premiere recipe name is too long.".into());
+            }
+
+            let track = proposal.arguments.get("track").and_then(Value::as_u64).unwrap_or(0);
+            let clip_index = proposal.arguments.get("clip_index").and_then(Value::as_u64).unwrap_or(0);
+            if track > 128 || clip_index > 10_000 {
+                return Err("Premiere saved recipe target is outside Shuvi's safety limits.".into());
+            }
+
+            (
+                ToolAction::PremiereApplySavedRecipe {
+                    name: name.clone(),
+                    track: track as u32,
+                    clip_index: clip_index as u32,
+                },
+                "Apply saved Premiere recipe".to_string(),
+                format!("Apply saved recipe '{name}' to track {track}, clip #{clip_index}."),
+                RiskLevel::High,
+            )
+        }
+        "premiere_delete_recipe" => {
+            let name = arg_string(&proposal.arguments, "name")?;
+            if name.chars().count() > 120 {
+                return Err("Premiere recipe name is too long.".into());
+            }
+
+            (
+                ToolAction::PremiereDeleteRecipe { name: name.clone() },
+                "Delete saved Premiere recipe".to_string(),
+                format!("Delete local Premiere recipe '{name}'."),
+                RiskLevel::Medium,
+            )
+        }
         "premiere_list_markers" => (
             ToolAction::PremiereListMarkers,
             "List Premiere sequence markers".to_string(),
@@ -3760,6 +3853,128 @@ fn project_task_command(path: &str, task: &str) -> Result<(String, Vec<String>),
     Err("Shuvi currently supports typed project tasks for Node.js and Rust projects.".into())
 }
 
+fn validate_premiere_saved_recipe_settings(settings: &[Value]) -> Result<(), String> {
+    if settings.is_empty() || settings.len() > 64 {
+        return Err("Premiere recipe requires between 1 and 64 settings.".into());
+    }
+
+    for setting in settings {
+        let object = setting
+            .as_object()
+            .ok_or_else(|| "Each Premiere recipe setting must be an object.".to_string())?;
+
+        let has_component = object
+            .get("component_match_name")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+            || object
+                .get("component_display_name")
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.trim().is_empty());
+
+        if !has_component {
+            return Err("Each Premiere recipe setting requires component_match_name or component_display_name.".into());
+        }
+
+        for key in ["component_match_name", "component_display_name", "param_display_name"] {
+            if let Some(value) = object.get(key).and_then(Value::as_str) {
+                if value.trim().is_empty() && key == "param_display_name" {
+                    return Err("Each Premiere recipe setting requires param_display_name.".into());
+                }
+                if value.chars().count() > 240 {
+                    return Err(format!("Premiere recipe field '{key}' is too long."));
+                }
+            } else if key == "param_display_name" {
+                return Err("Each Premiere recipe setting requires param_display_name.".into());
+            }
+        }
+
+        let value = object
+            .get("value")
+            .ok_or_else(|| "Each Premiere recipe setting requires value.".to_string())?;
+
+        if !matches!(value, Value::Bool(_) | Value::Number(_) | Value::String(_)) {
+            return Err("Premiere recipe values must be booleans, numbers, or strings.".into());
+        }
+
+        if value.as_str().is_some_and(|text| text.chars().count() > 5_000) {
+            return Err("Premiere recipe string value is too long.".into());
+        }
+
+        if let Some(seconds) = object.get("seconds") {
+            let seconds = seconds
+                .as_f64()
+                .ok_or_else(|| "Premiere recipe seconds must be numeric.".to_string())?;
+            if !seconds.is_finite() || seconds < 0.0 || seconds > 86_400.0 {
+                return Err("Premiere recipe keyframe seconds must be between 0 and 86400.".into());
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn premiere_recipes_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not resolve app data directory: {error}"))?
+        .join("premiere");
+
+    fs::create_dir_all(&dir)
+        .map_err(|error| format!("Could not create Premiere recipe directory: {error}"))?;
+
+    Ok(dir.join("recipes.json"))
+}
+
+fn read_premiere_recipes(app: &AppHandle) -> Result<Vec<PremiereSavedRecipe>, String> {
+    let path = premiere_recipes_path(app)?;
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let metadata = fs::metadata(&path)
+        .map_err(|error| format!("Could not inspect Premiere recipes: {error}"))?;
+    if metadata.len() > 2 * 1024 * 1024 {
+        return Err("Premiere recipe library is unexpectedly larger than 2 MB.".into());
+    }
+
+    let content = fs::read(&path)
+        .map_err(|error| format!("Could not read Premiere recipes: {error}"))?;
+    let recipes: Vec<PremiereSavedRecipe> = serde_json::from_slice(&content)
+        .map_err(|error| format!("Premiere recipe library is invalid: {error}"))?;
+
+    Ok(recipes)
+}
+
+fn write_premiere_recipes(
+    app: &AppHandle,
+    recipes: &[PremiereSavedRecipe],
+) -> Result<(), String> {
+    if recipes.len() > 250 {
+        return Err("Premiere recipe library is limited to 250 recipes.".into());
+    }
+
+    let path = premiere_recipes_path(app)?;
+    let temp = path.with_extension("json.tmp");
+    let content = serde_json::to_vec_pretty(recipes)
+        .map_err(|error| format!("Could not encode Premiere recipes: {error}"))?;
+
+    if content.len() > 2 * 1024 * 1024 {
+        return Err("Premiere recipe library would exceed Shuvi's 2 MB limit.".into());
+    }
+
+    fs::write(&temp, &content)
+        .map_err(|error| format!("Could not write temporary Premiere recipe library: {error}"))?;
+
+    if path.exists() {
+        let _ = fs::remove_file(&path);
+    }
+
+    fs::rename(&temp, &path)
+        .map_err(|error| format!("Could not finalize Premiere recipe library: {error}"))
+}
+
 fn session_checkpoint_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     let dir = app
         .path()
@@ -3948,7 +4163,7 @@ fn truncate_output(value: String) -> String {
     format!("{shortened}\n[output truncated by Shuvi]")
 }
 
-async fn execute_tool(action: PendingAction, state: &ActionState) -> Result<ActionResult, String> {
+async fn execute_tool(action: PendingAction, state: &ActionState, app: &AppHandle) -> Result<ActionResult, String> {
     let tool = action.tool.clone();
 
     match action.action {
@@ -5350,6 +5565,100 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 exit_code: Some(0),
             })
         }
+        ToolAction::PremiereListSavedRecipes => {
+            let recipes = read_premiere_recipes(app)?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&recipes)
+                    .map_err(|error| format!("Could not encode Premiere recipes: {error}"))?,
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereSaveRecipe { name, kind, settings } => {
+            validate_premiere_saved_recipe_settings(&settings)?;
+            let mut recipes = read_premiere_recipes(app)?;
+            let name_key = name.to_ascii_lowercase();
+
+            recipes.retain(|recipe| recipe.name.to_ascii_lowercase() != name_key);
+            recipes.push(PremiereSavedRecipe {
+                name: name.clone(),
+                kind: kind.clone(),
+                settings,
+                updated_at_ms: now_ms(),
+            });
+            recipes.sort_by(|a, b| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()));
+
+            write_premiere_recipes(app, &recipes)?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: format!("Saved {kind} Premiere recipe '{name}'."),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereApplySavedRecipe { name, track, clip_index } => {
+            let recipes = read_premiere_recipes(app)?;
+            let recipe = recipes
+                .into_iter()
+                .find(|recipe| recipe.name.eq_ignore_ascii_case(&name))
+                .ok_or_else(|| format!("Saved Premiere recipe '{name}' was not found."))?;
+
+            validate_premiere_saved_recipe_settings(&recipe.settings)?;
+            let backup = backup_premiere_project(state).await?;
+            let action = if recipe.kind == "video" {
+                "apply_video_recipe"
+            } else if recipe.kind == "audio" {
+                "apply_audio_recipe"
+            } else {
+                return Err(format!("Saved Premiere recipe '{}' has invalid kind '{}'.", recipe.name, recipe.kind));
+            };
+
+            let result = state.premiere_bridge.request(
+                action,
+                json!({
+                    "track": track,
+                    "clipIndex": clip_index,
+                    "settings": recipe.settings
+                }),
+                Duration::from_secs(45),
+            ).await?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "recipe": recipe.name,
+                    "kind": recipe.kind,
+                    "backup": backup,
+                    "result": result
+                })).unwrap_or_else(|_| result.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereDeleteRecipe { name } => {
+            let mut recipes = read_premiere_recipes(app)?;
+            let before = recipes.len();
+            recipes.retain(|recipe| !recipe.name.eq_ignore_ascii_case(&name));
+
+            if recipes.len() == before {
+                return Err(format!("Saved Premiere recipe '{name}' was not found."));
+            }
+
+            write_premiere_recipes(app, &recipes)?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: format!("Deleted local Premiere recipe '{name}'."),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
         ToolAction::PremiereListMarkers => {
             let value = state.premiere_bridge.request(
                 "list_markers",
@@ -6110,7 +6419,7 @@ async fn execute_action(
     let tool = action.tool.clone();
     let detail = action.detail.clone();
 
-    match execute_tool(action, state.inner()).await {
+    match execute_tool(action, state.inner(), &app).await {
         Ok(result) => {
             append_audit(
                 &app,
