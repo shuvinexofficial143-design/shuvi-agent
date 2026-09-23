@@ -3107,6 +3107,65 @@ async function createSubclip(argumentsValue) {
   };
 }
 
+async function transcribeItem(argumentsValue) {
+  const itemId =
+    typeof argumentsValue?.itemId === "string"
+      ? argumentsValue.itemId.trim()
+      : "";
+  const language =
+    typeof argumentsValue?.language === "string" && argumentsValue.language.trim()
+      ? argumentsValue.language.trim()
+      : null;
+
+  if (!itemId) throw new Error("itemId is required.");
+  if (!premiere.Transcript || typeof premiere.Transcript.transcribeClipProjectItem !== "function") {
+    throw new Error("This Premiere version does not expose Transcript.transcribeClipProjectItem.");
+  }
+
+  const { clip } = await requireClipProjectItemById(itemId);
+
+  const success = language
+    ? await premiere.Transcript.transcribeClipProjectItem(clip, { language })
+    : await premiere.Transcript.transcribeClipProjectItem(clip);
+
+  if (!success) {
+    throw new Error("Premiere did not complete transcription for the requested clip.");
+  }
+
+  return {
+    transcribed: true,
+    itemId,
+    language
+  };
+}
+
+async function exportTranscript(argumentsValue) {
+  const itemId =
+    typeof argumentsValue?.itemId === "string"
+      ? argumentsValue.itemId.trim()
+      : "";
+
+  if (!itemId) throw new Error("itemId is required.");
+  if (!premiere.Transcript || typeof premiere.Transcript.exportToJSON !== "function") {
+    throw new Error("This Premiere version does not expose Transcript.exportToJSON.");
+  }
+
+  const { clip } = await requireClipProjectItemById(itemId);
+  const transcriptJson = await premiere.Transcript.exportToJSON(clip);
+
+  if (typeof transcriptJson !== "string" || !transcriptJson.trim()) {
+    throw new Error("No Premiere transcript is available for the requested clip.");
+  }
+
+  const previewLimit = 80000;
+  return {
+    itemId,
+    chars: transcriptJson.length,
+    truncated: transcriptJson.length > previewLimit,
+    transcriptJson: transcriptJson.slice(0, previewLimit)
+  };
+}
+
 async function executeCommand(command) {
   switch (command.action) {
     case "inspect_context":
@@ -3129,6 +3188,10 @@ async function executeCommand(command) {
       return await clearSourceInOut(command.arguments || {});
     case "create_subclip":
       return await createSubclip(command.arguments || {});
+    case "transcribe_item":
+      return await transcribeItem(command.arguments || {});
+    case "export_transcript":
+      return await exportTranscript(command.arguments || {});
     case "attach_proxy":
       return await attachProxy(command.arguments || {});
     case "insert_mogrt_path":
