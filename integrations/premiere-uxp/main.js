@@ -2633,6 +2633,123 @@ async function addAudioKeyframeNamed(argumentsValue) {
   };
 }
 
+async function applyVideoRecipe(argumentsValue) {
+  const trackIndex = Number(argumentsValue?.track ?? 0);
+  const clipIndex = Number(argumentsValue?.clipIndex ?? 0);
+  const settings = Array.isArray(argumentsValue?.settings)
+    ? argumentsValue.settings
+    : [];
+
+  if (!settings.length || settings.length > 64) {
+    throw new Error("Video recipe requires between 1 and 64 settings.");
+  }
+
+  const prepared = [];
+  let project = null;
+  const timeVaryingNeeded = new Set();
+
+  for (let index = 0; index < settings.length; index += 1) {
+    const setting = settings[index] || {};
+    const target = await resolveNamedVideoParam({
+      track: trackIndex,
+      clipIndex,
+      componentMatchName: setting.component_match_name ?? setting.componentMatchName ?? null,
+      componentDisplayName: setting.component_display_name ?? setting.componentDisplayName ?? null,
+      paramDisplayName: setting.param_display_name ?? setting.paramDisplayName ?? ""
+    });
+
+    project = project || target.project;
+
+    const value = setting.value;
+    const hasSeconds = setting.seconds != null;
+    const seconds = hasSeconds ? Number(setting.seconds) : null;
+
+    if (hasSeconds) {
+      if (!Number.isFinite(seconds) || seconds < 0 || seconds > 86400) {
+        throw new Error("Video recipe setting #" + index + " has invalid keyframe seconds.");
+      }
+      if (!(await target.param.areKeyframesSupported())) {
+        throw new Error(
+          "Video recipe parameter does not support keyframes: " + target.paramDisplayName
+        );
+      }
+
+      const keyframe = await target.param.createKeyframe(value);
+      keyframe.position = premiere.TickTime.createWithSeconds(seconds);
+
+      const uniqueParamKey = target.componentIndex + ":" + target.paramIndex;
+      const isTimeVarying = Boolean(await target.param.isTimeVarying());
+
+      if (!isTimeVarying && !timeVaryingNeeded.has(uniqueParamKey)) {
+        prepared.push({
+          action: target.param.createSetTimeVaryingAction(true),
+          summary: null
+        });
+        timeVaryingNeeded.add(uniqueParamKey);
+      }
+
+      prepared.push({
+        action: target.param.createAddKeyframeAction(keyframe),
+        summary: {
+          componentIndex: target.componentIndex,
+          componentMatchName: target.componentMatchName,
+          componentDisplayName: target.componentDisplayName,
+          paramIndex: target.paramIndex,
+          paramDisplayName: target.paramDisplayName,
+          seconds,
+          value: plainEffectValue(value)
+        }
+      });
+    } else {
+      if (await target.param.isTimeVarying()) {
+        throw new Error(
+          "Video recipe parameter is already time-varying; provide seconds for: " +
+          target.paramDisplayName
+        );
+      }
+
+      const keyframe = await target.param.createKeyframe(value);
+      prepared.push({
+        action: target.param.createSetValueAction(keyframe, true),
+        summary: {
+          componentIndex: target.componentIndex,
+          componentMatchName: target.componentMatchName,
+          componentDisplayName: target.componentDisplayName,
+          paramIndex: target.paramIndex,
+          paramDisplayName: target.paramDisplayName,
+          seconds: null,
+          value: plainEffectValue(value)
+        }
+      });
+    }
+  }
+
+  if (!project) throw new Error("No active Premiere project for video recipe.");
+
+  let transactionSucceeded = false;
+  project.lockedAccess(() => {
+    transactionSucceeded = project.executeTransaction((compoundAction) => {
+      for (const entry of prepared) {
+        compoundAction.addAction(entry.action);
+      }
+    }, "Shuvi: Apply Video Recipe");
+  });
+
+  if (!transactionSucceeded) {
+    throw new Error("Premiere rejected the video parameter recipe transaction.");
+  }
+
+  return {
+    applied: true,
+    track: trackIndex,
+    clipIndex,
+    settingCount: settings.length,
+    settings: prepared
+      .map((entry) => entry.summary)
+      .filter((entry) => entry != null)
+  };
+}
+
 async function executeCommand(command) {
   switch (command.action) {
     case "inspect_context":
@@ -2687,6 +2804,8 @@ async function executeCommand(command) {
       return await addEffectKeyframe(command.arguments || {});
     case "add_video_keyframe_named":
       return await addVideoKeyframeNamed(command.arguments || {});
+    case "apply_video_recipe":
+      return await applyVideoRecipe(command.arguments || {});
     case "list_audio_effects":
       return await listAudioEffects();
     case "inspect_audio_clip_effects":
