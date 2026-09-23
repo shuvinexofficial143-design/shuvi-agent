@@ -75,3 +75,13 @@ export type AuditEntry = {
   detail: string;
   success: boolean;
 };
+
+export type PremiereBridgeStatus = {
+  enabled: boolean;
+  server_started: boolean;
+  paired: boolean;
+  port: number;
+  token: string | null;
+  last_seen_ms: number | null;
+  queued_commands: number;
+};
