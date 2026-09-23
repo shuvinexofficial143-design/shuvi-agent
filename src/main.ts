@@ -9,7 +9,8 @@ import type {
   RuntimeStatus,
   ToolProposal,
   AuditEntry,
-  SessionCheckpoint
+  SessionCheckpoint,
+  PremiereBridgeStatus
 } from "./types";
 
 const root = document.querySelector<HTMLDivElement>("#app");
@@ -70,6 +71,7 @@ root.innerHTML = `
       <button class="nav active" data-view="chat">Chat</button>
       <button class="nav" data-view="actions">Actions</button>
       <button class="nav" data-view="workspace">Workspace</button>
+      <button class="nav" data-view="premiere">Premiere Pro</button>
       <button class="nav" data-view="provider">Provider</button>
     </nav>
 
@@ -170,6 +172,40 @@ root.innerHTML = `
       </div>
     </section>
 
+    <section class="view" id="view-premiere">
+      <header class="topbar">
+        <div><h1>Premiere Pro</h1><p>Pair Shuvi with the Premiere UXP panel for native project and timeline control.</p></div>
+      </header>
+
+      <div class="panel form-grid">
+        <div class="premiere-status-row">
+          <div>
+            <strong id="premiereBridgeState">Bridge stopped</strong>
+            <p id="premiereBridgeDetail" class="muted">Start the bridge, then paste the temporary token into the Shuvi Premiere Bridge panel.</p>
+          </div>
+          <span id="premierePairBadge" class="premiere-pair-badge">NOT PAIRED</span>
+        </div>
+
+        <label>
+          Temporary pairing token
+          <input id="premiereBridgeToken" readonly placeholder="Start bridge to generate a token" />
+        </label>
+
+        <div class="button-row">
+          <button id="startPremiereBridge" class="primary">Start / rotate token</button>
+          <button id="refreshPremiereBridge">Refresh status</button>
+          <button id="stopPremiereBridge">Stop bridge</button>
+        </div>
+
+        <div class="premiere-help">
+          <strong>Pairing steps</strong>
+          <p>1. Open Premiere Pro 25.6+ and load the Shuvi Premiere Bridge UXP panel.</p>
+          <p>2. Start the bridge here and copy the temporary token into the Premiere panel.</p>
+          <p>3. Press Connect in Premiere. Once paired, Shuvi can use native typed Premiere commands.</p>
+        </div>
+      </div>
+    </section>
+
     <section class="view" id="view-provider">
       <header class="topbar">
         <div><h1>AI Provider</h1><p>Choose the brain without changing Shuvi's local tool layer.</p></div>
@@ -226,6 +262,10 @@ const onboardingKeyLabel = el<HTMLElement>("#onboardingKeyLabel");
 const onboardingStatus = el<HTMLElement>("#onboardingStatus");
 const resumeBanner = el<HTMLElement>("#resumeBanner");
 const resumeSummary = el<HTMLElement>("#resumeSummary");
+const premiereBridgeState = el<HTMLElement>("#premiereBridgeState");
+const premiereBridgeDetail = el<HTMLElement>("#premiereBridgeDetail");
+const premierePairBadge = el<HTMLElement>("#premierePairBadge");
+const premiereBridgeToken = el<HTMLInputElement>("#premiereBridgeToken");
 let savedCheckpoint: SessionCheckpoint | null = null;
 
 function selectedProvider(): ProviderDescriptor | undefined {
@@ -402,6 +442,32 @@ async function refreshAudit(): Promise<void> {
   }
 }
 
+function renderPremiereBridgeStatus(status: PremiereBridgeStatus): void {
+  premiereBridgeState.textContent = status.enabled
+    ? status.paired
+      ? "Premiere bridge connected"
+      : "Premiere bridge waiting for panel"
+    : "Premiere bridge stopped";
+
+  premierePairBadge.textContent = status.paired ? "PAIRED" : "NOT PAIRED";
+  premierePairBadge.classList.toggle("paired", status.paired);
+
+  premiereBridgeToken.value = status.token ?? "";
+  premiereBridgeDetail.textContent = status.enabled
+    ? `localhost:${status.port} · ${status.queued_commands} queued command${status.queued_commands === 1 ? "" : "s"}`
+    : "Start the bridge, then paste the temporary token into the Shuvi Premiere Bridge panel.";
+}
+
+async function refreshPremiereBridge(): Promise<void> {
+  try {
+    const status = await invoke<PremiereBridgeStatus>("premiere_bridge_status");
+    renderPremiereBridgeStatus(status);
+  } catch (error) {
+    premiereBridgeState.textContent = "Premiere bridge unavailable";
+    premiereBridgeDetail.textContent = String(error);
+  }
+}
+
 async function loadWorkspace(): Promise<void> {
   try {
     const workspace = await invoke<string | null>("get_workspace");
@@ -430,6 +496,7 @@ async function boot(): Promise<void> {
     await loadRecoveryCheckpoint();
     await refreshRam();
     await refreshAudit();
+    await refreshPremiereBridge();
     window.setInterval(() => void refreshRam(), 5000);
   } catch (error) {
     settingsStatus.textContent = String(error);
@@ -854,6 +921,29 @@ el<HTMLButtonElement>("#completeOnboarding").addEventListener("click", async () 
   }
 });
 
+el<HTMLButtonElement>("#startPremiereBridge").addEventListener("click", async () => {
+  try {
+    const status = await invoke<PremiereBridgeStatus>("premiere_bridge_start");
+    renderPremiereBridgeStatus(status);
+  } catch (error) {
+    premiereBridgeState.textContent = "Could not start Premiere bridge";
+    premiereBridgeDetail.textContent = String(error);
+  }
+});
+
+el<HTMLButtonElement>("#refreshPremiereBridge").addEventListener("click", () => {
+  void refreshPremiereBridge();
+});
+
+el<HTMLButtonElement>("#stopPremiereBridge").addEventListener("click", async () => {
+  try {
+    const status = await invoke<PremiereBridgeStatus>("premiere_bridge_stop");
+    renderPremiereBridgeStatus(status);
+  } catch (error) {
+    premiereBridgeDetail.textContent = String(error);
+  }
+});
+
 el<HTMLButtonElement>("#exportDiagnostics").addEventListener("click", async () => {
   const status = el<HTMLElement>("#diagnosticsStatus");
   status.textContent = "Creating diagnostics…";
@@ -1044,7 +1134,10 @@ document.querySelectorAll<HTMLButtonElement>(".nav").forEach((button) => {
 
     button.classList.add("active");
     const viewName = button.dataset.view;
-    if (viewName) el<HTMLElement>(`#view-${viewName}`).classList.add("active");
+    if (viewName) {
+      el<HTMLElement>(`#view-${viewName}`).classList.add("active");
+      if (viewName === "premiere") void refreshPremiereBridge();
+    }
   });
 });
 
