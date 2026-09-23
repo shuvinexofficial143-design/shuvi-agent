@@ -64,7 +64,12 @@ Available tools:
 - premiere_timeline: {}
 - premiere_set_playhead: {"seconds":12.5}
 - premiere_list_items: {}
+- premiere_project_tree: {}
 - premiere_create_bin: {"name":"bin name"}
+- premiere_rename_project_item: {"item_id":"project item id","name":"new name"}
+- premiere_move_project_item: {"item_id":"project item id","target_bin_id":"destination bin id"}
+- premiere_relink_media: {"item_id":"clip project item id","new_path":"absolute replacement media path","override_compatibility":false}
+- premiere_attach_proxy: {"item_id":"clip project item id","proxy_path":"absolute proxy media path"}
 - premiere_import_media: {"paths":["absolute media path 1","absolute media path 2"]}
 - premiere_create_sequence_from_media: {"name":"sequence name","paths":["absolute media path 1","absolute media path 2"]}
 - premiere_insert_media: {"path":"absolute media path","seconds":0,"video_track":0,"audio_track":0,"mode":"insert|overwrite"}
@@ -113,7 +118,7 @@ Rules:
 - Treat git_push as a remote write and request it only after a successful commit when the user asked for a push.
 - Use run_project_task instead of raw shell commands when test/build/lint/typecheck is enough.
 - For browser/app UI work, prefer a Shuvi-managed browser when isolation matters, then use window-scoped semantic UI tools first. Use ui_toggle and ui_expand_collapse for supported controls. ui_send_keys is a high-risk fallback only after an exact element is focused and semantic patterns are unavailable. pointer_click is a final high-risk coordinate fallback: inspect_screen first, use coordinates only when semantic UI/DOM control cannot target the control, and never repeat a failed coordinate click blindly.
-- For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_timeline/premiere_list_items for inspection, premiere_set_playhead for non-destructive navigation and premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media/premiere_insert_media/premiere_save_project for native editing. premiere_insert_media, premiere_trim_clip, premiere_move_clip, premiere_delete_clip, premiere_add_video_transition, premiere_add_video_effect, premiere_set_effect_param, premiere_add_effect_keyframe, premiere_add_audio_effect, premiere_set_audio_effect_param and premiere_add_audio_effect_keyframe are high risk because they change the timeline or effect state; premiere_export_sequence is high risk because it writes media and may start encoding; inspect the timeline first when practical. Use UI/vision fallbacks only for features not exposed through the bridge. Major sequence creation and timeline insert/overwrite actions automatically save and copy the current .prproj into a sibling 'Shuvi Backups' folder before editing when a normal project path is available.
+- For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_timeline/premiere_list_items/premiere_project_tree for inspection, premiere_set_playhead for non-destructive navigation and premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media/premiere_insert_media/premiere_save_project for native editing. premiere_insert_media, premiere_trim_clip, premiere_move_clip, premiere_delete_clip, premiere_add_video_transition, premiere_add_video_effect, premiere_set_effect_param, premiere_add_effect_keyframe, premiere_add_audio_effect, premiere_set_audio_effect_param and premiere_add_audio_effect_keyframe are high risk because they change the timeline or effect state; premiere_export_sequence is high risk because it writes media and may start encoding; inspect the timeline first when practical. Use UI/vision fallbacks only for features not exposed through the bridge. Major sequence creation and timeline insert/overwrite actions automatically save and copy the current .prproj into a sibling 'Shuvi Backups' folder before editing when a normal project path is available.
 - For managed Edge/Chrome sessions, prefer browser_dom_read/browser_dom_click/browser_dom_set_value/browser_navigate over visual coordinate actions because DOM selectors are more reliable.
 - browser_dom_click and browser_dom_set_value require selectors that match exactly one element; refine with browser_dom_read when ambiguous.
 - stop_managed_process may only target process roots that Shuvi launched itself.
@@ -252,7 +257,12 @@ enum ToolAction {
     PremiereAddMarker { name: String, marker_type: String, seconds: f64, duration_seconds: f64, comments: String },
     PremiereRemoveMarker { marker_index: u32 },
     PremiereListItems,
+    PremiereProjectTree,
     PremiereCreateBin { name: String },
+    PremiereRenameProjectItem { item_id: String, name: String },
+    PremiereMoveProjectItem { item_id: String, target_bin_id: String },
+    PremiereRelinkMedia { item_id: String, new_path: String, override_compatibility: bool },
+    PremiereAttachProxy { item_id: String, proxy_path: String },
     PremiereImportMedia { paths: Vec<String> },
     PremiereCreateSequenceFromMedia { name: String, paths: Vec<String> },
     PremiereInsertMedia { path: String, seconds: f64, video_track: u32, audio_track: u32, mode: String },
@@ -532,7 +542,12 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_add_marker"
         | "premiere_remove_marker"
         | "premiere_list_items"
+        | "premiere_project_tree"
         | "premiere_create_bin"
+        | "premiere_rename_project_item"
+        | "premiere_move_project_item"
+        | "premiere_relink_media"
+        | "premiere_attach_proxy"
         | "premiere_import_media"
         | "premiere_create_sequence_from_media"
         | "premiere_insert_media"
@@ -2144,6 +2159,12 @@ fn stage_tool(
             "Read top-level project items from the active Premiere project through the paired UXP bridge.".to_string(),
             RiskLevel::Low,
         ),
+        "premiere_project_tree" => (
+            ToolAction::PremiereProjectTree,
+            "Inspect Premiere project tree".to_string(),
+            "Read bins, project items, media paths, offline/proxy state and stable project-item ids.".to_string(),
+            RiskLevel::Low,
+        ),
         "premiere_create_bin" => {
             let name = arg_string(&proposal.arguments, "name")?;
             if name.chars().count() > 120 {
@@ -2155,6 +2176,75 @@ fn stage_tool(
                 "Create Premiere bin".to_string(),
                 format!("Create project bin '{name}' in the active Premiere project root."),
                 RiskLevel::Medium,
+            )
+        }
+        "premiere_rename_project_item" => {
+            let item_id = arg_string(&proposal.arguments, "item_id")?;
+            let name = arg_string(&proposal.arguments, "name")?;
+            if item_id.chars().count() > 240 || name.chars().count() > 240 {
+                return Err("Premiere project item id/name is too long.".into());
+            }
+            (
+                ToolAction::PremiereRenameProjectItem { item_id: item_id.clone(), name: name.clone() },
+                "Rename Premiere project item".to_string(),
+                format!("Rename project item {item_id} to '{name}'."),
+                RiskLevel::Medium,
+            )
+        }
+        "premiere_move_project_item" => {
+            let item_id = arg_string(&proposal.arguments, "item_id")?;
+            let target_bin_id = arg_string(&proposal.arguments, "target_bin_id")?;
+            if item_id.chars().count() > 240 || target_bin_id.chars().count() > 240 {
+                return Err("Premiere project item/bin id is too long.".into());
+            }
+            if item_id == target_bin_id {
+                return Err("Premiere project item cannot be moved into itself.".into());
+            }
+            (
+                ToolAction::PremiereMoveProjectItem { item_id: item_id.clone(), target_bin_id: target_bin_id.clone() },
+                "Move Premiere project item".to_string(),
+                format!("Move project item {item_id} into bin {target_bin_id}."),
+                RiskLevel::High,
+            )
+        }
+        "premiere_relink_media" => {
+            let item_id = arg_string(&proposal.arguments, "item_id")?;
+            let new_path = absolute_path(arg_string(&proposal.arguments, "new_path")?)?;
+            if item_id.chars().count() > 240 {
+                return Err("Premiere project item id is too long.".into());
+            }
+            if !Path::new(&new_path).is_file() {
+                return Err("Replacement media file does not exist.".into());
+            }
+            let override_compatibility = proposal.arguments
+                .get("override_compatibility")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            (
+                ToolAction::PremiereRelinkMedia {
+                    item_id: item_id.clone(),
+                    new_path: new_path.clone(),
+                    override_compatibility,
+                },
+                "Relink Premiere media".to_string(),
+                format!("Relink clip project item {item_id} to {new_path}; override_compatibility={override_compatibility}."),
+                RiskLevel::High,
+            )
+        }
+        "premiere_attach_proxy" => {
+            let item_id = arg_string(&proposal.arguments, "item_id")?;
+            let proxy_path = absolute_path(arg_string(&proposal.arguments, "proxy_path")?)?;
+            if item_id.chars().count() > 240 {
+                return Err("Premiere project item id is too long.".into());
+            }
+            if !Path::new(&proxy_path).is_file() {
+                return Err("Proxy media file does not exist.".into());
+            }
+            (
+                ToolAction::PremiereAttachProxy { item_id: item_id.clone(), proxy_path: proxy_path.clone() },
+                "Attach Premiere proxy".to_string(),
+                format!("Attach proxy {proxy_path} to clip project item {item_id}."),
+                RiskLevel::High,
             )
         }
         "premiere_import_media" => {
@@ -4599,6 +4689,20 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 exit_code: Some(0),
             })
         }
+        ToolAction::PremiereProjectTree => {
+            let value = state.premiere_bridge.request(
+                "project_tree",
+                json!({}),
+                Duration::from_secs(20),
+            ).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
         ToolAction::PremiereListItems => {
             let value = state
                 .premiere_bridge
@@ -4628,6 +4732,74 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 success: true,
                 tool,
                 stdout: serde_json::to_string_pretty(&value)
+                    .unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereRenameProjectItem { item_id, name } => {
+            let backup = backup_premiere_project(state).await?;
+            let value = state.premiere_bridge.request(
+                "rename_project_item",
+                json!({ "itemId": item_id, "name": name }),
+                Duration::from_secs(20),
+            ).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value}))
+                    .unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereMoveProjectItem { item_id, target_bin_id } => {
+            let backup = backup_premiere_project(state).await?;
+            let value = state.premiere_bridge.request(
+                "move_project_item",
+                json!({ "itemId": item_id, "targetBinId": target_bin_id }),
+                Duration::from_secs(20),
+            ).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value}))
+                    .unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereRelinkMedia { item_id, new_path, override_compatibility } => {
+            let backup = backup_premiere_project(state).await?;
+            let value = state.premiere_bridge.request(
+                "relink_media",
+                json!({
+                    "itemId": item_id,
+                    "newPath": new_path,
+                    "overrideCompatibility": override_compatibility
+                }),
+                Duration::from_secs(30),
+            ).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value}))
+                    .unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereAttachProxy { item_id, proxy_path } => {
+            let backup = backup_premiere_project(state).await?;
+            let value = state.premiere_bridge.request(
+                "attach_proxy",
+                json!({ "itemId": item_id, "proxyPath": proxy_path }),
+                Duration::from_secs(30),
+            ).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value}))
                     .unwrap_or_else(|_| value.to_string()),
                 stderr: String::new(),
                 exit_code: Some(0),
