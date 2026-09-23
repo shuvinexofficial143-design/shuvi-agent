@@ -222,3 +222,14 @@ Code estimate remains approximately 58%; this module tightens existing behavior 
 - [ ] Real Premiere removal and undo verification; stable instance identity beyond conservative signatures.
 
 Estimate: code complete approximately 60%; runtime verified 0% this session; production readiness not established. Next: reusable motion/color recipe construction using inspected parameter selectors.
+
+### Modules C/D — motion and color recipe construction
+- [x] Typed read-only planner inspects exact named video parameters and emits settings for existing saved/apply recipe tools plus optional target expectations.
+- [x] Zoom/push/pull, directional slides, Ken Burns, fades, deterministic sampled handheld and static transform roles; native value endpoints/units supplied explicitly.
+- [x] Eight curated color packs: Natural Correction, Cinematic Contrast, Warm/Cool Cinematic, Soft Wedding, High Contrast Reel, Neutral Product and Social Media Punch.
+- [x] Color offsets require explicit native unit/min/max and inspected current values; unsupported/missing/animated static parameters report skipped roles.
+- [x] Plans never edit; require frame review; no assumed parameter indexes, perfect grading or automatic coordinate conversion.
+- [x] Six new planner/native-route tests; 55 Node tests, registry validation and frontend build pass.
+- [ ] Native parameter unit calibration, host interpolation/visual verification, and end-to-end color/frame-review acceptance.
+
+Estimate: code complete approximately 63%; runtime verified 0% this session; production readiness not established. Next: separate dialogue input, ducking plan and named audio execution.

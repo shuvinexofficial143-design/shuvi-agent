@@ -3,6 +3,9 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import assert from "node:assert/strict";
 
+const recipes = {module: {exports: {}}}; vm.createContext(recipes);
+vm.runInContext(readFileSync(new URL("../integrations/premiere-uxp/recipe-plans.js", import.meta.url), "utf8"), recipes);
+
 function fixture(kind = "video") {
   const actions = [];
   const times = [{ ticks: "100", seconds: 1 }, { ticks: "200", seconds: 2 }];
@@ -30,7 +33,7 @@ function fixture(kind = "video") {
     lockedAccess: callback => callback(), executeTransaction: callback => { callback({ addAction: action => actions.push(action) }); return true; } };
   const premiere = { Project: { getActiveProject: async () => project }, ProjectItem: { cast: item => item },
     Constants: { TrackItemType: { CLIP: 1 }, InterpolationMode: { LINEAR: 0, HOLD: 1, BEZIER: 2 }, TransitionPosition: { START: 0, END: 1 } } };
-  const panel = { require: name => name === "premierepro" ? premiere : name === "uxp" ? { entrypoints: { setup() {} } } : {} };
+  const panel = { require: name => name === "./recipe-plans.js" ? recipes.module.exports : name === "premierepro" ? premiere : name === "uxp" ? { entrypoints: { setup() {} } } : {} };
   vm.createContext(panel);
   vm.runInContext(readFileSync(new URL("../integrations/premiere-uxp/main.js", import.meta.url), "utf8"), panel);
   const args = { kind, track: 0, clipIndex: 0, componentMatchName: "effect.exact", paramDisplayName: "Amount" };
@@ -251,4 +254,10 @@ test("component lifecycle exposes missing removal API and rejected transaction",
   assert.equal(f.actions.length, 0);
   f.chain.createRemoveComponentAction = () => ({}); f.project.executeTransaction = () => false;
   await assert.rejects(f.panel.removeEffect({...f.args, expectedSignature: inspected.targetSignature}), /rejected/);
+});
+
+test("recipe planning inspects exact parameter and returns an expectation without editing", async () => {
+ const f = fixture(); f.param.getStartValue = async () => ({value: 100}); f.param.isTimeVarying = async () => false;
+ const result = await f.panel.executeCommand({action: "plan_video_recipe", arguments: {track: 0, clipIndex: 0, request: {preset: "zoom_in", start_seconds: 0, end_seconds: 1, bindings: [{role: "scale", component_match_name: "effect.exact", param_display_name: "Amount", start_value: 100, end_value: 110}]}}});
+ assert.equal(result.settings.length, 2); assert.equal(result.expected.clips.length, 1); assert.equal(result.applied, false); assert.equal(f.actions.length, 0);
 });

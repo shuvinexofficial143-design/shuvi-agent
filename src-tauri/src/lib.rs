@@ -17,6 +17,8 @@ use sysinfo::{Pid, System};
 use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
+mod premiere_recipes;
+use premiere_recipes::RecipePlanRequest;
 mod premiere_effects;
 use premiere_effects::ComponentTarget;
 mod premiere_target;
@@ -80,6 +82,7 @@ Available tools:
 - premiere_edit_keyframe: {"target":{"kind":"video|audio","track":0,"clip_index":0,"component_match_name":"exact native match name or supply component_display_name","param_display_name":"exact parameter name"},"ticks":"exact ticks from inspection","expected_signature":"targetSignature from inspection","operation":"remove|interpolation","interpolation":"only for interpolation: linear|hold|bezier"}
 - premiere_inspect_clip_speed: {"kind":"video|audio","track":0,"clip_index":0}
 - premiere_plan_speed: {"kind":"video|audio","track":0,"clip_index":0,"request":{"mode":"rate|duration|preset|ramp|freeze","rate":"rate mode: multiplier 0.01..100","duration_seconds":"duration/freeze mode: positive seconds","source_seconds":"freeze mode: source time","preset":"preset mode: normal|slow_motion|fast_motion","points":"ramp mode: [{source_offset_seconds:0,rate:1},...]","reverse":"optional boolean","preserve_audio_pitch":"optional boolean"}}
+- premiere_plan_video_recipe: {"track":0,"clip_index":0,"request":{"preset":"zoom_in","start_seconds":0,"end_seconds":2,"bindings":[{"role":"scale","component_match_name":"discovered","param_display_name":"discovered","start_value":100,"end_value":110}]}}
 - premiere_timeline_capabilities: {}
 - premiere_timeline: {}
 - premiere_caption_tracks: {}
@@ -301,6 +304,7 @@ enum ToolAction {
     PremierePlanSpeed { kind: String, track: u32, clip_index: u32, request: SpeedRequest },
     PremiereInspectEffectLifecycle { target: ComponentTarget },
     PremiereRemoveEffect { target: ComponentTarget, expected_signature: String },
+    PremierePlanVideoRecipe { track: u32, clip_index: u32, request: RecipePlanRequest },
     PremiereTimelineCapabilities,
     PremiereTimeline,
     PremiereCaptionTracks,
@@ -635,6 +639,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_edit_keyframe"
         | "premiere_inspect_clip_speed"
         | "premiere_plan_speed"
+        | "premiere_plan_video_recipe"
         | "premiere_timeline_capabilities"
         | "premiere_timeline"
         | "premiere_caption_tracks"
@@ -1995,6 +2000,13 @@ fn stage_tool(
                 "Read the exact clip; no speed or timeline modification will be performed.".to_string(),
                 RiskLevel::Low,
             )
+        }
+        "premiere_plan_video_recipe" => {
+            let track = proposal.arguments.get("track").and_then(Value::as_u64).filter(|v| *v <= 128).ok_or("Track must be 0–128.")? as u32;
+            let clip_index = proposal.arguments.get("clip_index").and_then(Value::as_u64).filter(|v| *v <= 10000).ok_or("Clip index must be 0–10000.")? as u32;
+            let request: RecipePlanRequest = serde_json::from_value(proposal.arguments.get("request").cloned().unwrap_or(Value::Null)).map_err(|e| format!("Invalid recipe plan: {e}"))?;
+            request.validate()?;
+            (ToolAction::PremierePlanVideoRecipe {track, clip_index, request}, "Plan inspected video recipe".into(), "Inspect exact native selectors and construct motion/color settings; no edit.".into(), RiskLevel::Low)
         }
         "premiere_timeline_capabilities" => (
             ToolAction::PremiereTimelineCapabilities, "Inspect timeline capabilities".into(), "Read native timeline capabilities without editing.".into(), RiskLevel::Low
@@ -5840,6 +5852,10 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let mut arguments = target.bridge_arguments(); arguments["expectedSignature"] = json!(expected_signature);
             let value = premiere_bridge.request("remove_effect", arguments, Duration::from_secs(20)).await?;
             Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&json!({"backup":backup,"result":value})).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
+        }
+        ToolAction::PremierePlanVideoRecipe { track, clip_index, request } => {
+            let value = premiere_bridge.request("plan_video_recipe", json!({"track":track,"clipIndex":clip_index,"request":request}), Duration::from_secs(30)).await?;
+            Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&value).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
         }
         ToolAction::PremiereTimelineCapabilities => {
             let value = premiere_bridge.request("timeline_capabilities", json!({}), Duration::from_secs(12)).await?;

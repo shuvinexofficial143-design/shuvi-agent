@@ -40,7 +40,7 @@ pub const ALLOWED_ACTIONS: &[&str] = &[
     "create_subsequence",
     "insert_project_item",
     "save_project",
-    "inspect_timeline", "timeline_capabilities",
+    "inspect_timeline", "timeline_capabilities", "plan_video_recipe",
     "caption_tracks",
     "set_caption_track_name",
     "set_caption_track_mute",

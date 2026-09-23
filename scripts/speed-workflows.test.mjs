@@ -52,6 +52,7 @@ test("native route reads the inspected clip and never starts an edit transaction
     executeTransaction: () => { throw new Error("Planner attempted a write"); } };
   const premiere = { Project: { getActiveProject: async () => project }, Constants: { TrackItemType: { CLIP: 1 } } };
   const panel = { require: name => {
+    if (name === "./recipe-plans.js") return {};
     if (name === "uxp") return { entrypoints: { setup() {} } };
     if (name === "premierepro") return premiere;
     if (name === "./speed-workflows.js") return context.module.exports;

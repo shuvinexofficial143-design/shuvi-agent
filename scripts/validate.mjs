@@ -34,7 +34,9 @@ for (const path of [
   "src-tauri/src/premiere_bridge_queue.rs",
   "src-tauri/src/premiere_keyframes.rs",
   "src-tauri/src/premiere_target.rs",
-  "src-tauri/src/premiere_effects.rs"
+  "src-tauri/src/premiere_effects.rs",
+  "src-tauri/src/premiere_recipes.rs",
+  "integrations/premiere-uxp/recipe-plans.js"
 ]) {
   try {
     statSync(join(root, path));

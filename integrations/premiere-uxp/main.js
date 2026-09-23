@@ -2,6 +2,8 @@ const { entrypoints, host, versions } = require("uxp");
 const premiere = require("premierepro");
 const { planSpeed, SPEED_CAPABILITY } = require("./speed-workflows.js");
 
+const { buildRecipePlan } = require("./recipe-plans.js");
+
 const BRIDGE_BASE = "http://127.0.0.1:17361";
 let bridgeToken = "";
 let pollTimer = null;
@@ -3826,6 +3828,26 @@ async function planClipSpeed(argumentsValue) {
   return planSpeed(snapshot, argumentsValue.request);
 }
 
+async function planVideoRecipe(args) {
+  const request = args.request;
+  if (!request || !Array.isArray(request.bindings) || !request.bindings.length || request.bindings.length > 16) throw new Error("Recipe requires 1–16 named bindings.");
+  const target = await getVideoClipTarget(args.track, args.clipIndex);
+  const bindings = [];
+  for (const binding of request.bindings) {
+    try {
+      const resolved = await resolveNamedVideoParam({track: args.track, clipIndex: args.clipIndex,
+        componentMatchName: binding.component_match_name, componentDisplayName: binding.component_display_name, paramDisplayName: binding.param_display_name});
+      const current = await resolved.param.getStartValue();
+      bindings.push({...binding, current: current?.value ?? current,
+        timeVarying: Boolean(await resolved.param.isTimeVarying()), keyframesSupported: Boolean(await resolved.param.areKeyframesSupported())});
+    } catch (error) { bindings.push({...binding, unsupported: String(error?.message || error)}); }
+  }
+  const plan = buildRecipePlan(request, bindings);
+  const signature = await clipTargetSignature(target.project, target.sequence, target.item, "video", args.track, args.clipIndex);
+  return {...plan, expected: {project_guid: plainGuid(target.project.guid), project_path: target.project.path || null, sequence_guid: plainGuid(target.sequence.guid),
+    clips: [{kind: "video", track: args.track, clip_index: args.clipIndex, signature}]}};
+}
+
 async function resolveLifecycleComponent(args) {
   if (!["video", "audio"].includes(args.kind) || !(args.componentMatchName || args.componentDisplayName)) throw new Error("Exact named video/audio component target required.");
   const target = args.kind === "video" ? await getVideoClipTarget(args.track, args.clipIndex) : await getAudioClipTarget(args.track, args.clipIndex);
@@ -3932,6 +3954,8 @@ async function dispatchNativeCommand(command) {
       return await insertProjectItem(command.arguments || {});
     case "save_project":
       return await saveProject();
+    case "plan_video_recipe":
+      return await planVideoRecipe(command.arguments);
     case "timeline_capabilities":
       return await timelineCapabilities();
     case "inspect_timeline":
