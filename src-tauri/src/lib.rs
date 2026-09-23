@@ -77,6 +77,7 @@ Available tools:
 - premiere_insert_media: {"path":"absolute media path","seconds":0,"video_track":0,"audio_track":0,"mode":"insert|overwrite"}
 - premiere_trim_clip: {"kind":"video|audio","track":0,"clip_index":0,"start_seconds":0.0,"end_seconds":5.0}
 - premiere_move_clip: {"kind":"video|audio","track":0,"clip_index":0,"delta_seconds":1.5}
+- premiere_clone_clip: {"kind":"video|audio","track":0,"clip_index":0,"time_offset_seconds":0.0,"video_track_offset":1,"audio_track_offset":0,"align_to_video":true,"insert":false}
 - premiere_delete_clip: {"kind":"video|audio","track":0,"clip_index":0,"ripple":true}
 - premiere_set_track_mute: {"kind":"video|audio","track":0,"muted":true}
 - premiere_set_clip_enabled: {"kind":"video|audio","track":0,"clip_index":0,"enabled":true}
@@ -120,7 +121,7 @@ Rules:
 - Treat git_push as a remote write and request it only after a successful commit when the user asked for a push.
 - Use run_project_task instead of raw shell commands when test/build/lint/typecheck is enough.
 - For browser/app UI work, prefer a Shuvi-managed browser when isolation matters, then use window-scoped semantic UI tools first. Use ui_toggle and ui_expand_collapse for supported controls. ui_send_keys is a high-risk fallback only after an exact element is focused and semantic patterns are unavailable. pointer_click is a final high-risk coordinate fallback: inspect_screen first, use coordinates only when semantic UI/DOM control cannot target the control, and never repeat a failed coordinate click blindly.
-- For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_timeline/premiere_list_items/premiere_project_tree for inspection, premiere_set_playhead for non-destructive navigation and premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media/premiere_insert_media/premiere_save_project for native editing. premiere_insert_media, premiere_trim_clip, premiere_move_clip, premiere_delete_clip, premiere_add_video_transition, premiere_add_video_effect, premiere_set_effect_param, premiere_add_effect_keyframe, premiere_add_audio_effect, premiere_set_audio_effect_param and premiere_add_audio_effect_keyframe are high risk because they change the timeline or effect state; premiere_insert_mogrt_path and premiere_insert_mogrt_library are high risk because they add graphics to the timeline; premiere_export_sequence is high risk because it writes media and may start encoding; inspect the timeline first when practical. Use UI/vision fallbacks only for features not exposed through the bridge. Major sequence creation and timeline insert/overwrite actions automatically save and copy the current .prproj into a sibling 'Shuvi Backups' folder before editing when a normal project path is available.
+- For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_timeline/premiere_list_items/premiere_project_tree for inspection, premiere_set_playhead for non-destructive navigation and premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media/premiere_insert_media/premiere_save_project for native editing. premiere_insert_media, premiere_trim_clip, premiere_move_clip, premiere_clone_clip, premiere_delete_clip, premiere_add_video_transition, premiere_add_video_effect, premiere_set_effect_param, premiere_add_effect_keyframe, premiere_add_audio_effect, premiere_set_audio_effect_param and premiere_add_audio_effect_keyframe are high risk because they change the timeline or effect state; premiere_insert_mogrt_path and premiere_insert_mogrt_library are high risk because they add graphics to the timeline; premiere_export_sequence is high risk because it writes media and may start encoding; inspect the timeline first when practical. Use UI/vision fallbacks only for features not exposed through the bridge. Major sequence creation and timeline insert/overwrite actions automatically save and copy the current .prproj into a sibling 'Shuvi Backups' folder before editing when a normal project path is available.
 - For managed Edge/Chrome sessions, prefer browser_dom_read/browser_dom_click/browser_dom_set_value/browser_navigate over visual coordinate actions because DOM selectors are more reliable.
 - browser_dom_click and browser_dom_set_value require selectors that match exactly one element; refine with browser_dom_read when ambiguous.
 - stop_managed_process may only target process roots that Shuvi launched itself.
@@ -272,6 +273,7 @@ enum ToolAction {
     PremiereInsertMedia { path: String, seconds: f64, video_track: u32, audio_track: u32, mode: String },
     PremiereTrimClip { kind: String, track: u32, clip_index: u32, start_seconds: Option<f64>, end_seconds: Option<f64> },
     PremiereMoveClip { kind: String, track: u32, clip_index: u32, delta_seconds: f64 },
+    PremiereCloneClip { kind: String, track: u32, clip_index: u32, time_offset_seconds: f64, video_track_offset: i32, audio_track_offset: i32, align_to_video: bool, insert: bool },
     PremiereDeleteClip { kind: String, track: u32, clip_index: u32, ripple: bool },
     PremiereExportSequence { output: String, preset: Option<String>, queue_to_ame: bool },
     PremiereSaveProject,
@@ -559,6 +561,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_insert_media"
         | "premiere_trim_clip"
         | "premiere_move_clip"
+        | "premiere_clone_clip"
         | "premiere_delete_clip"
         | "premiere_export_sequence"
         | "premiere_save_project"
@@ -2486,6 +2489,65 @@ fn stage_tool(
                 },
                 "Move Premiere clip".to_string(),
                 format!("Move {kind} track {track}, clip #{clip_index} by {delta_seconds:.3}s"),
+                RiskLevel::High,
+            )
+        }
+        "premiere_clone_clip" => {
+            let kind = arg_string(&proposal.arguments, "kind")?.to_ascii_lowercase();
+            if !matches!(kind.as_str(), "video" | "audio") {
+                return Err("premiere_clone_clip kind must be video or audio.".into());
+            }
+
+            let track = proposal.arguments.get("track").and_then(Value::as_u64).unwrap_or(0);
+            let clip_index = proposal.arguments.get("clip_index").and_then(Value::as_u64).unwrap_or(0);
+            if track > 128 || clip_index > 10_000 {
+                return Err("Premiere clone target is outside Shuvi's safety limits.".into());
+            }
+
+            let time_offset_seconds = proposal.arguments
+                .get("time_offset_seconds")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            if !time_offset_seconds.is_finite() || time_offset_seconds.abs() > 36_000.0 {
+                return Err("Premiere clone time offset must be finite and within ±10 hours.".into());
+            }
+
+            let video_track_offset = proposal.arguments
+                .get("video_track_offset")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            let audio_track_offset = proposal.arguments
+                .get("audio_track_offset")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            if video_track_offset.abs() > 128 || audio_track_offset.abs() > 128 {
+                return Err("Premiere clone vertical track offsets must be within ±128.".into());
+            }
+
+            let align_to_video = proposal.arguments
+                .get("align_to_video")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            let insert = proposal.arguments
+                .get("insert")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+
+            (
+                ToolAction::PremiereCloneClip {
+                    kind: kind.clone(),
+                    track: track as u32,
+                    clip_index: clip_index as u32,
+                    time_offset_seconds,
+                    video_track_offset: video_track_offset as i32,
+                    audio_track_offset: audio_track_offset as i32,
+                    align_to_video,
+                    insert,
+                },
+                "Clone Premiere clip".to_string(),
+                format!(
+                    "Clone {kind} track {track}, clip #{clip_index}; time_offset={time_offset_seconds:.3}s, V offset={video_track_offset}, A offset={audio_track_offset}, insert={insert}."
+                ),
                 RiskLevel::High,
             )
         }
@@ -5029,6 +5091,32 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "backup": backup,
                     "result": value
                 })).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereCloneClip { kind, track, clip_index, time_offset_seconds, video_track_offset, audio_track_offset, align_to_video, insert } => {
+            let backup = backup_premiere_project(state).await?;
+            let value = state.premiere_bridge.request(
+                "clone_clip",
+                json!({
+                    "kind": kind,
+                    "track": track,
+                    "clipIndex": clip_index,
+                    "timeOffsetSeconds": time_offset_seconds,
+                    "videoTrackOffset": video_track_offset,
+                    "audioTrackOffset": audio_track_offset,
+                    "alignToVideo": align_to_video,
+                    "insert": insert
+                }),
+                Duration::from_secs(30),
+            ).await?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value}))
+                    .unwrap_or_else(|_| value.to_string()),
                 stderr: String::new(),
                 exit_code: Some(0),
             })
