@@ -1640,6 +1640,158 @@ async function addAudioEffectKeyframe(argumentsValue) {
   };
 }
 
+async function getSequenceMarkers() {
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+  const markers = await premiere.Markers.getMarkers(sequence);
+  return { project, sequence, markers };
+}
+
+async function listMarkers() {
+  const { markers } = await getSequenceMarkers();
+  const values = await markers.getMarkers([]);
+  const rows = [];
+
+  for (const marker of values) {
+    const [name, type, start, duration, comments, colorIndex] = await Promise.all([
+      marker.getName(),
+      marker.getType(),
+      marker.getStart(),
+      marker.getDuration(),
+      marker.getComments(),
+      marker.getColorIndex()
+    ]);
+
+    rows.push({
+      marker,
+      name: name || null,
+      type: type || null,
+      startSeconds: start?.seconds ?? 0,
+      durationSeconds: duration?.seconds ?? 0,
+      comments: comments || "",
+      colorIndex
+    });
+  }
+
+  rows.sort((a, b) => a.startSeconds - b.startSeconds);
+
+  return {
+    count: rows.length,
+    markers: rows.slice(0, 1000).map((entry, markerIndex) => ({
+      markerIndex,
+      name: entry.name,
+      type: entry.type,
+      startSeconds: entry.startSeconds,
+      durationSeconds: entry.durationSeconds,
+      comments: entry.comments,
+      colorIndex: entry.colorIndex
+    })),
+    truncated: rows.length > 1000
+  };
+}
+
+async function addMarker(argumentsValue) {
+  const name =
+    typeof argumentsValue?.name === "string"
+      ? argumentsValue.name.trim()
+      : "";
+  const markerType =
+    typeof argumentsValue?.markerType === "string"
+      ? argumentsValue.markerType
+      : "Comment";
+  const seconds = Number(argumentsValue?.seconds ?? 0);
+  const durationSeconds = Number(argumentsValue?.durationSeconds ?? 0);
+  const comments =
+    typeof argumentsValue?.comments === "string"
+      ? argumentsValue.comments
+      : "";
+
+  if (!name) throw new Error("Marker name is required.");
+  if (!["Comment", "Chapter", "Segmentation", "WebLink"].includes(markerType)) {
+    throw new Error("Unsupported marker type: " + markerType);
+  }
+  if (!Number.isFinite(seconds) || seconds < 0 || seconds > 86400) {
+    throw new Error("Marker seconds must be between 0 and 86400.");
+  }
+  if (!Number.isFinite(durationSeconds) || durationSeconds < 0 || durationSeconds > 86400) {
+    throw new Error("Marker duration must be between 0 and 86400 seconds.");
+  }
+
+  const { project, markers } = await getSequenceMarkers();
+  const start = premiere.TickTime.createWithSeconds(seconds);
+  const duration = premiere.TickTime.createWithSeconds(durationSeconds);
+
+  let transactionSucceeded = false;
+  project.lockedAccess(() => {
+    const action = markers.createAddMarkerAction(
+      name,
+      markerType,
+      start,
+      duration,
+      comments
+    );
+    transactionSucceeded = project.executeTransaction((compoundAction) => {
+      compoundAction.addAction(action);
+    }, "Shuvi: Add Marker");
+  });
+
+  if (!transactionSucceeded) {
+    throw new Error("Premiere rejected the marker transaction.");
+  }
+
+  return {
+    added: true,
+    name,
+    markerType,
+    seconds,
+    durationSeconds,
+    comments
+  };
+}
+
+async function removeMarker(argumentsValue) {
+  const markerIndex = Number(argumentsValue?.markerIndex);
+  if (!Number.isInteger(markerIndex) || markerIndex < 0) {
+    throw new Error("markerIndex must be a non-negative integer.");
+  }
+
+  const { project, markers } = await getSequenceMarkers();
+  const values = await markers.getMarkers([]);
+  const timed = [];
+
+  for (const marker of values) {
+    const start = await marker.getStart();
+    timed.push({
+      marker,
+      startSeconds: start?.seconds ?? Number.POSITIVE_INFINITY
+    });
+  }
+
+  timed.sort((a, b) => a.startSeconds - b.startSeconds);
+  const target = timed[markerIndex]?.marker;
+  if (!target) {
+    throw new Error("Requested marker index was not found.");
+  }
+
+  let transactionSucceeded = false;
+  project.lockedAccess(() => {
+    const action = markers.createRemoveMarkerAction(target);
+    transactionSucceeded = project.executeTransaction((compoundAction) => {
+      compoundAction.addAction(action);
+    }, "Shuvi: Remove Marker");
+  });
+
+  if (!transactionSucceeded) {
+    throw new Error("Premiere rejected the marker removal transaction.");
+  }
+
+  return {
+    removed: true,
+    markerIndex
+  };
+}
+
 async function executeCommand(command) {
   switch (command.action) {
     case "inspect_context":
@@ -1686,6 +1838,12 @@ async function executeCommand(command) {
       return await setAudioEffectParam(command.arguments || {});
     case "add_audio_effect_keyframe":
       return await addAudioEffectKeyframe(command.arguments || {});
+    case "list_markers":
+      return await listMarkers();
+    case "add_marker":
+      return await addMarker(command.arguments || {});
+    case "remove_marker":
+      return await removeMarker(command.arguments || {});
     case "insert_media":
       return await insertMedia(command.arguments || {});
     case "trim_clip":
