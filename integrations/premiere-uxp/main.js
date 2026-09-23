@@ -841,6 +841,65 @@ async function exportSequence(argumentsValue) {
   };
 }
 
+async function setPlayhead(argumentsValue) {
+  const seconds = Number(argumentsValue?.seconds);
+  if (!Number.isFinite(seconds) || seconds < 0 || seconds > 86400) {
+    throw new Error("Playhead seconds must be between 0 and 86400.");
+  }
+
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+
+  const success = await sequence.setPlayerPosition(
+    premiere.TickTime.createWithSeconds(seconds)
+  );
+
+  if (!success) throw new Error("Premiere could not move the playhead.");
+
+  return {
+    moved: true,
+    sequenceName: sequence.name || null,
+    seconds
+  };
+}
+
+async function setTrackMute(argumentsValue) {
+  const kind =
+    typeof argumentsValue?.kind === "string"
+      ? argumentsValue.kind.toLowerCase()
+      : "";
+  const trackIndex = Number(argumentsValue?.track ?? 0);
+  const muted = Boolean(argumentsValue?.muted);
+
+  if (kind !== "video" && kind !== "audio") {
+    throw new Error("Track kind must be video or audio.");
+  }
+  if (!Number.isInteger(trackIndex) || trackIndex < 0) {
+    throw new Error("Track index must be a non-negative integer.");
+  }
+
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+
+  const track =
+    kind === "video"
+      ? await sequence.getVideoTrack(trackIndex)
+      : await sequence.getAudioTrack(trackIndex);
+  if (!track) throw new Error("Requested Premiere track was not found.");
+
+  const success = await track.setMute(muted);
+  if (!success) throw new Error("Premiere could not change the track mute state.");
+
+  return {
+    changed: true,
+    kind,
+    track: trackIndex,
+    muted
+  };
+}
+
 async function executeCommand(command) {
   switch (command.action) {
     case "inspect_context":
@@ -857,6 +916,10 @@ async function executeCommand(command) {
       return await saveProject();
     case "inspect_timeline":
       return await inspectTimeline();
+    case "set_playhead":
+      return await setPlayhead(command.arguments || {});
+    case "set_track_mute":
+      return await setTrackMute(command.arguments || {});
     case "insert_media":
       return await insertMedia(command.arguments || {});
     case "trim_clip":
