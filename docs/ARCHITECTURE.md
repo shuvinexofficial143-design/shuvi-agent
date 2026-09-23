@@ -199,3 +199,22 @@ Recipe writes are high risk and create a timestamped project backup first. The a
 ## Premiere visual review
 
 `premiere_inspect_frame` moves the native Premiere playhead to an exact time, waits briefly for the Program Monitor to update, captures the current screen and sends that image to the selected vision-capable provider. This creates a direct edit → preview → visual-analysis foundation while keeping any corrective edit as a separate permission-gated typed action.
+
+
+## Premiere saved recipe library
+
+Shuvi persists reusable Premiere video/audio parameter recipes under the app-data Premiere folder. A saved recipe contains only exact component selectors, exact parameter display names, primitive values and optional keyframe times; no API keys or project media are stored.
+
+Recipe application is high-risk, creates a timestamped project backup, and can target one clip or a bounded batch of clips. Batch application reports per-target success/failure rather than hiding partial completion.
+
+## Premiere batch relink and proxy workflows
+
+Batch media relink and proxy attach validate every local file path before execution, create one project backup up front, process at most 100 project items, and return per-item outcomes. A partial failure is surfaced as an unsuccessful action with explicit notice that earlier successful items were not rolled back.
+
+## Premiere multi-frame review
+
+A bounded multi-frame review can move the Premiere playhead to up to eight requested timestamps, capture each screen, and ask the currently selected vision-capable provider to evaluate the same review prompt. The returned frame observations stay in the normal Shuvi agent loop so a later edit can be proposed with permission and then reviewed again.
+
+## Premiere source preparation and transcripts
+
+Shuvi can set or clear ClipProjectItem source in/out points and, on Premiere 26.3+, create subclips through Premiere's undoable action API. It can also request Premiere transcription for a clip project item and read a bounded transcript JSON preview for editing decisions. Transcript responses are capped before crossing the localhost bridge so very long clips cannot overwhelm the bridge payload.
