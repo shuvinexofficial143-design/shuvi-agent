@@ -62,6 +62,8 @@ Available tools:
 - premiere_bridge_status: {}
 - premiere_context: {}
 - premiere_timeline: {}
+- premiere_set_playhead: {"seconds":12.5}
+- premiere_set_track_mute: {"kind":"video|audio","track":0,"muted":true}
 - premiere_list_items: {}
 - premiere_create_bin: {"name":"bin name"}
 - premiere_import_media: {"paths":["absolute media path 1","absolute media path 2"]}
@@ -96,7 +98,7 @@ Rules:
 - Treat git_push as a remote write and request it only after a successful commit when the user asked for a push.
 - Use run_project_task instead of raw shell commands when test/build/lint/typecheck is enough.
 - For browser/app UI work, prefer a Shuvi-managed browser when isolation matters, then use window-scoped semantic UI tools first. Use ui_toggle and ui_expand_collapse for supported controls. ui_send_keys is a high-risk fallback only after an exact element is focused and semantic patterns are unavailable. pointer_click is a final high-risk coordinate fallback: inspect_screen first, use coordinates only when semantic UI/DOM control cannot target the control, and never repeat a failed coordinate click blindly.
-- For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_timeline/premiere_list_items for inspection and premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media/premiere_insert_media/premiere_save_project for native editing. premiere_insert_media, premiere_trim_clip, premiere_move_clip and premiere_delete_clip are high risk because they change the timeline; premiere_export_sequence is high risk because it writes media and may start encoding; inspect the timeline first when practical. Use UI/vision fallbacks only for features not exposed through the bridge. Major sequence creation and timeline insert/overwrite actions automatically save and copy the current .prproj into a sibling 'Shuvi Backups' folder before editing when a normal project path is available.
+- For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_timeline/premiere_list_items for inspection, premiere_set_playhead for non-destructive navigation and premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media/premiere_insert_media/premiere_save_project for native editing. premiere_insert_media, premiere_trim_clip, premiere_move_clip and premiere_delete_clip are high risk because they change the timeline; premiere_export_sequence is high risk because it writes media and may start encoding; inspect the timeline first when practical. Use UI/vision fallbacks only for features not exposed through the bridge. Major sequence creation and timeline insert/overwrite actions automatically save and copy the current .prproj into a sibling 'Shuvi Backups' folder before editing when a normal project path is available.
 - For managed Edge/Chrome sessions, prefer browser_dom_read/browser_dom_click/browser_dom_set_value/browser_navigate over visual coordinate actions because DOM selectors are more reliable.
 - browser_dom_click and browser_dom_set_value require selectors that match exactly one element; refine with browser_dom_read when ambiguous.
 - stop_managed_process may only target process roots that Shuvi launched itself.
@@ -216,6 +218,8 @@ enum ToolAction {
     PremiereBridgeStatus,
     PremiereContext,
     PremiereTimeline,
+    PremiereSetPlayhead { seconds: f64 },
+    PremiereSetTrackMute { kind: String, track: u32, muted: bool },
     PremiereListItems,
     PremiereCreateBin { name: String },
     PremiereImportMedia { paths: Vec<String> },
@@ -479,6 +483,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_bridge_status"
         | "premiere_context"
         | "premiere_timeline"
+        | "premiere_set_playhead"
+        | "premiere_set_track_mute"
         | "premiere_list_items"
         | "premiere_create_bin"
         | "premiere_import_media"
@@ -1666,6 +1672,43 @@ fn stage_tool(
             "Read active sequence tracks and clip metadata through the paired Premiere UXP bridge.".to_string(),
             RiskLevel::Low,
         ),
+        "premiere_set_playhead" => {
+            let seconds = proposal.arguments
+                .get("seconds")
+                .and_then(Value::as_f64)
+                .ok_or_else(|| "premiere_set_playhead requires seconds.".to_string())?;
+            if !seconds.is_finite() || seconds < 0.0 || seconds > 86_400.0 {
+                return Err("Premiere playhead seconds must be finite and between 0 and 86400.".into());
+            }
+
+            (
+                ToolAction::PremiereSetPlayhead { seconds },
+                "Move Premiere playhead".to_string(),
+                format!("Move active sequence playhead to {seconds:.3}s."),
+                RiskLevel::Low,
+            )
+        }
+        "premiere_set_track_mute" => {
+            let kind = arg_string(&proposal.arguments, "kind")?.to_ascii_lowercase();
+            if !matches!(kind.as_str(), "video" | "audio") {
+                return Err("premiere_set_track_mute kind must be video or audio.".into());
+            }
+            let track = proposal.arguments.get("track").and_then(Value::as_u64).unwrap_or(0);
+            if track > 128 {
+                return Err("Premiere track index is outside Shuvi's safety limit.".into());
+            }
+            let muted = proposal.arguments
+                .get("muted")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| "premiere_set_track_mute requires muted=true|false.".to_string())?;
+
+            (
+                ToolAction::PremiereSetTrackMute { kind: kind.clone(), track: track as u32, muted },
+                if muted { "Mute Premiere track".to_string() } else { "Unmute Premiere track".to_string() },
+                format!("Set {kind} track {track} muted={muted}."),
+                RiskLevel::Medium,
+            )
+        }
         "premiere_list_items" => (
             ToolAction::PremiereListItems,
             "List Premiere root project items".to_string(),
@@ -3797,6 +3840,34 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
         ToolAction::PremiereTimeline => {
             let value = state.premiere_bridge
                 .request("inspect_timeline", json!({}), Duration::from_secs(12)).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereSetPlayhead { seconds } => {
+            let value = state.premiere_bridge.request(
+                "set_playhead",
+                json!({ "seconds": seconds }),
+                Duration::from_secs(8),
+            ).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereSetTrackMute { kind, track, muted } => {
+            let value = state.premiere_bridge.request(
+                "set_track_mute",
+                json!({ "kind": kind, "track": track, "muted": muted }),
+                Duration::from_secs(10),
+            ).await?;
             Ok(ActionResult {
                 success: true,
                 tool,
