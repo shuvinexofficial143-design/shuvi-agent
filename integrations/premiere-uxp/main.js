@@ -712,6 +712,86 @@ async function moveClip(argumentsValue) {
   };
 }
 
+async function deleteClip(argumentsValue) {
+  const kind =
+    typeof argumentsValue?.kind === "string"
+      ? argumentsValue.kind.toLowerCase()
+      : "";
+  const trackIndex = Number(argumentsValue?.track ?? 0);
+  const clipIndex = Number(argumentsValue?.clipIndex ?? 0);
+  const ripple = Boolean(argumentsValue?.ripple);
+
+  if (kind !== "video" && kind !== "audio") {
+    throw new Error("Delete kind must be video or audio.");
+  }
+  if (!Number.isInteger(trackIndex) || trackIndex < 0) {
+    throw new Error("Track index must be a non-negative integer.");
+  }
+  if (!Number.isInteger(clipIndex) || clipIndex < 0) {
+    throw new Error("Clip index must be a non-negative integer.");
+  }
+
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+
+  const track =
+    kind === "video"
+      ? await sequence.getVideoTrack(trackIndex)
+      : await sequence.getAudioTrack(trackIndex);
+  if (!track) throw new Error("Requested Premiere track was not found.");
+
+  const items = await sortedClipItems(track);
+  const item = items[clipIndex];
+  if (!item) {
+    throw new Error(
+      "Clip index " + clipIndex + " was not found on " + kind + " track " + trackIndex + "."
+    );
+  }
+
+  const editor = premiere.SequenceEditor.getEditor(sequence);
+  const mediaType =
+    kind === "video"
+      ? premiere.Constants.MediaType.VIDEO
+      : premiere.Constants.MediaType.AUDIO;
+
+  let selectionCreated = false;
+  let transactionSucceeded = false;
+
+  premiere.TrackItemSelection.createEmptySelection((selection) => {
+    selectionCreated = selection.addItem(item, false);
+    if (!selectionCreated) return;
+
+    project.lockedAccess(() => {
+      const action = editor.createRemoveItemsAction(
+        selection,
+        ripple,
+        mediaType,
+        true
+      );
+
+      transactionSucceeded = project.executeTransaction((compoundAction) => {
+        compoundAction.addAction(action);
+      }, ripple ? "Shuvi: Ripple Delete Clip" : "Shuvi: Delete Clip");
+    });
+  });
+
+  if (!selectionCreated) {
+    throw new Error("Premiere could not create a temporary selection for the clip.");
+  }
+  if (!transactionSucceeded) {
+    throw new Error("Premiere rejected the delete transaction.");
+  }
+
+  return {
+    deleted: true,
+    ripple,
+    kind,
+    track: trackIndex,
+    clipIndex
+  };
+}
+
 async function executeCommand(command) {
   switch (command.action) {
     case "inspect_context":
@@ -734,6 +814,8 @@ async function executeCommand(command) {
       return await trimClip(command.arguments || {});
     case "move_clip":
       return await moveClip(command.arguments || {});
+    case "delete_clip":
+      return await deleteClip(command.arguments || {});
     default:
       throw new Error("Unsupported Shuvi Premiere command: " + command.action);
   }
