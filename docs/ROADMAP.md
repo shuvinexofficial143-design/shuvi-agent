@@ -68,14 +68,16 @@
 - [x] read-only active project / active sequence inspection scaffold
 - [x] authenticated localhost Shuvi desktop ↔ Premiere UXP command bridge + pairing UI
 - [x] active-project root item inspection + permission-gated media import
-- [x] recursive project tree + bin creation + rename/move + media relink foundation\n- [x] source in/out controls + Premiere 26.3+ subclip creation foundation
+- [x] recursive project tree + bin creation + rename/move + media relink foundation
+- [x] source in/out controls + Premiere 26.3+ subclip creation foundation
 - [x] sequence-from-media creation + timeline track/clip inspection
 - [x] deterministic clip trim foundation (video/audio, exact track + clip index)
 - [x] exact clip delete + ripple-delete foundation
 - [x] rolling edit foundation for adjacent clips
 - [x] native insert/overwrite edit foundation with automatic .prproj backup
 - [x] same-track clip move + insert/overwrite foundations
-- [ ] vertical track moves, nest and multicam workflows
+- [x] selected-clips subsequence creation + project-item sequence insertion
+- [ ] vertical track moves, replacement nesting and multicam workflows
 - [x] video transition foundation + installed transition discovery
 - [x] video effect discovery/add + parameter inspection/static value control
 - [ ] broader effect types/preset workflows
@@ -83,19 +85,51 @@
 - [x] named multi-parameter video recipe foundation for transform/effect workflows
 - [ ] masks and speed changes
 - [x] reusable named video parameter recipe foundation for Lumetri-style grading workflows
-- [x] persistent reusable local video/audio recipe library + batch recipe apply\n- [ ] curated color-specific preset packs
+- [x] persistent reusable local video/audio recipe library + batch recipe apply
+- [ ] curated color-specific preset packs
 - [x] audio effect discovery/add + parameter inspection/static value/keyframe foundation
 - [x] track mute control
 - [x] reusable named audio parameter recipe foundation
 - [ ] automatic gain/mix/ducking analysis recipes and track-level automation
 - [x] MOGRT insertion from file path or Creative Cloud Library
-- [x] clip transcription + bounded transcript export foundation\n- [ ] caption-track/subtitle generation and editable graphics parameter workflows
+- [x] clip transcription + bounded transcript export foundation
+- [ ] caption-track/subtitle generation and editable graphics parameter workflows
 - [x] proxy attach + offline/relink inspection foundation
 - [x] batch proxy attach and batch media relink workflows with partial-failure reporting
 - [x] active-sequence export + optional preset + Media Encoder queue handoff foundation
 - [x] playhead-aware Premiere frame inspection through Shuvi vision
-- [x] bounded multi-frame Premiere vision review foundation\n- [ ] automatic review→edit→re-review convergence loop
+- [x] bounded multi-frame Premiere vision review foundation
+- [ ] automatic review→edit→re-review convergence loop
 - [x] timestamped .prproj backups before major sequence/timeline changes
 - [x] sequence marker list/add/remove foundation for edit planning
 - [x] atomic reusable parameter-recipe execution foundation
-- [x] saved high-level parameter recipe library foundation\n- [ ] curated reels, long-form, ads and cinematic recipe packs
+- [x] saved high-level parameter recipe library foundation
+- [ ] curated reels, long-form, ads and cinematic recipe packs
+
+## Professional module continuation — 2026-09-23
+
+Progress estimates are provisional scope estimates, not measured product certification:
+- Premiere code complete: approximately 45% of the requested professional scope.
+- Premiere runtime verified: 0% in this continuation session.
+- Production ready: not established (0% verified against the requested acceptance workflow).
+
+### Module O — validation and panel load repair
+- [x] Fix invalid context-inspection destructuring that prevented UXP JavaScript from loading.
+- [x] Syntax-parse UXP and frontend sources during validation.
+- [x] Check proposal allowlist, permission staging, typed action and executor separately.
+- [x] Detect duplicate UXP routes, missing direct/dynamic recipe routes and nested-generic frontend invokes.
+- [x] Ten regression tests, including deliberately broken routing/registration fixtures; run in CI.
+- [x] Synchronize stale UXP README and roadmap entries for existing features.
+- [x] Local npm install, npm test, npm run validate and npm run build passed.
+- [ ] Local cargo check: Rust toolchain unavailable; Windows CI remains authoritative.
+- [ ] Load panel, pair bridge and inspect a disposable project in real Premiere. Premiere 2026 is installed, but no running Premiere/UXP Developer Tool session was observed.
+
+### Remaining professional scope (continue incrementally)
+- [ ] A/H: stale-target safeguards, vertical moves, link-aware selection and reliable nesting/multicam capability boundaries.
+- [ ] B/C: speed/duration/reverse/ramp capabilities, effect lifecycle, masks and keyframe lifecycle.
+- [ ] D/E: curated color recipes, audio automation and dialogue-region ducking adapter.
+- [ ] F/G: structured captions/SRT boundaries and inspected MOGRT property workflows.
+- [ ] I: bounded media traversal, missing/duplicate asset reporting and batch safety.
+- [ ] J/K: bounded iterative review state and structured multi-stage editorial recipes.
+- [ ] L/M/N: export path/overwrite safeguards, required checkpoints and bridge lifecycle hardening.
+- [ ] O: broader runtime/unit coverage, recipe schema fixtures and Windows Rust CI verification.

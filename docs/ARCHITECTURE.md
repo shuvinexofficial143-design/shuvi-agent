@@ -18,7 +18,7 @@ The AI model is not the operating system. It proposes an action. Shuvi validates
 
 4 GB is a hard product ceiling for Shuvi and the child processes it manages where practical. The base app therefore avoids Electron, a bundled Python runtime, and a bundled large language model.
 
-The current v0.1 meter covers Shuvi's own native process. Process-tree accounting is planned for v0.2.
+The meter includes Shuvi's native process and descendants of registered agent-managed processes.
 
 ## Permission model
 
@@ -148,7 +148,7 @@ Major timeline edits will be versioned/checkpointed before execution, and Shuvi'
 
 The Shuvi desktop runtime hosts a loopback-only HTTP bridge on 127.0.0.1:17361. Starting the bridge rotates a random temporary pairing token. The Premiere UXP panel must present that token in the `X-Shuvi-Token` header before it can poll for commands or post results.
 
-The bridge intentionally exposes only fixed routes (`/health`, `/command`, `/result`) and a bounded command queue. The agent does not receive the pairing token in ordinary Premiere tool observations. The current native command set includes project/sequence inspection, top-level project-item listing, and permission-gated media import.
+The bridge intentionally exposes only fixed routes (`/health`, `/command`, `/result`) and a bounded command queue. The agent does not receive the pairing token in ordinary Premiere tool observations. The native command set includes project/sequence inspection, timeline edits, effects and keyframes, recipes, media management, captions/transcripts, MOGRT insertion and export. The UXP dispatcher remains an explicit allowlist.
 
 
 ## Premiere timeline edit safety
@@ -218,3 +218,7 @@ A bounded multi-frame review can move the Premiere playhead to up to eight reque
 ## Premiere source preparation and transcripts
 
 Shuvi can set or clear ClipProjectItem source in/out points and, on Premiere 26.3+, create subclips through Premiere's undoable action API. It can also request Premiere transcription for a clip project item and read a bounded transcript JSON preview for editing decisions. Transcript responses are capped before crossing the localhost bridge so very long clips cannot overwhelm the bridge payload.
+
+## Registry validation
+
+The validator syntax-parses the frontend and UXP panel and checks each protocol tool through the proposal allowlist, permission stage, typed action and execution arm. It detects duplicate UXP routes and missing direct/closed recipe-dispatch bridge routes. Rust checks follow this repository's explicit match-arm convention and complement cargo check; they are not a general Rust parser. Regression fixtures deliberately remove or duplicate wiring to verify detection. No model-supplied JavaScript is exposed by this work.

@@ -1,18 +1,18 @@
 # Shuvi Premiere Bridge
 
-Development scaffold for Shuvi's professional Adobe Premiere Pro integration.
+Native command bridge for Shuvi's professional Adobe Premiere Pro integration.
 
 Current scope:
 - UXP manifest v5
 - Premiere Pro 25.6+ host target
 - dockable Shuvi panel
 - read-only active project / active sequence inspection
-- no timeline writes yet
+- permission-gated timeline, project, effects, audio, graphics and export operations
 
-Planned architecture:
+Architecture:
 1. Shuvi desktop agent remains the permission/risk/audit authority.
 2. The UXP plugin performs Premiere-native project/timeline operations.
-3. Typed editing commands will be added gradually (import, bins, sequence edits, effects, captions, color, audio, export).
+3. Typed commands cover imports, bins, sequence edits, effects, captions, audio and export; unsupported operations must fail explicitly.
 4. Before destructive or large timeline changes, Shuvi will create a version/checkpoint and ask for permission where appropriate.
 
 During development, load this folder with Adobe UXP Developer Tool while Premiere Pro developer mode is enabled.
@@ -64,3 +64,13 @@ Shuvi's desktop agent creates a timestamped sibling `Shuvi Backups` copy of the 
 - review up to eight Premiere frames with Shuvi vision at explicit playhead timestamps
 - set/clear source in/out points and create Premiere 26.3+ subclips
 - transcribe clip project items and read a bounded transcript JSON preview
+
+- list supported transcription languages and import transcript JSON
+- discover caption tracks, rename tracks (26.3+ API guarded), and set track mute
+- create a subsequence from explicit video/audio clip targets while restoring selection
+- insert/overwrite a project item, including a sequence project item
+- clone clips with native time and track offsets
+
+## Verification
+
+Run npm run validate, npm test and npm run build from the repository root. Validation syntax-parses this panel and checks its routes against desktop requests. Tests use source fixtures/mocks; they do not prove Adobe runtime compatibility. Full disposable-project Premiere verification is pending. The Rust toolchain was unavailable locally during the 2026-09-23 continuation; see Windows CI for cargo check.

@@ -97,9 +97,9 @@ async function inspectActiveContext() {
       videoTracks,
       audioTracks,
       captionTracks,
-      frameSize: plainFrameSize(frameSize),
-      playerPosition: plainTickTime(playerPosition),
-      endTime: plainTickTime(endTime)
+      frameSize,
+      playerPosition,
+      endTime
     ] = await Promise.all([
       sequence.getVideoTrackCount(),
       sequence.getAudioTrackCount(),
@@ -115,9 +115,9 @@ async function inspectActiveContext() {
       videoTracks,
       audioTracks,
       captionTracks,
-      frameSize,
-      playerPosition,
-      endTime
+      frameSize: plainFrameSize(frameSize),
+      playerPosition: plainTickTime(playerPosition),
+      endTime: plainTickTime(endTime)
     };
   }
 

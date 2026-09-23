@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+import { validateRegistries } from "./registry-validation.mjs";
 
 const root = process.cwd();
 const read = (path) => readFileSync(join(root, path), "utf8");
@@ -121,6 +122,7 @@ for (const tool of tools) {
 ok("Typed tool registry checked.");
 
 const premiereUxp = read("integrations/premiere-uxp/main.js");
+for (const error of validateRegistries({ rust, main, uxp: premiereUxp })) fail(error);
 const premiereBridgeActions = [
   ...rust.matchAll(/\.premiere_bridge\s*\.request\(\s*"([a-z0-9_]+)"/g)
 ].map((match) => match[1]);
