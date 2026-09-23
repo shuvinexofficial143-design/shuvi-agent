@@ -98,6 +98,7 @@ Available tools:
 - premiere_set_audio_param_named: {"track":0,"clip_index":0,"component_match_name":"optional exact match name","component_display_name":"optional exact display name","param_display_name":"exact parameter display name","value":1.0}
 - premiere_add_audio_effect_keyframe: {"track":0,"clip_index":0,"component_index":0,"param_index":0,"seconds":1.0,"value":1.0}
 - premiere_add_audio_keyframe_named: {"track":0,"clip_index":0,"component_match_name":"optional exact match name","component_display_name":"optional exact display name","param_display_name":"exact parameter display name","seconds":1.0,"value":1.0}
+- premiere_apply_audio_recipe: {"track":0,"clip_index":0,"settings":[{"component_match_name":"optional exact match name","component_display_name":"optional exact display name","param_display_name":"exact parameter display name","value":1.0,"seconds":"optional keyframe time"}]}
 - premiere_list_markers: {}
 - premiere_add_marker: {"name":"marker name","marker_type":"Comment|Chapter|Segmentation|WebLink","seconds":10.0,"duration_seconds":0.0,"comments":"optional notes"}
 - premiere_remove_marker: {"marker_index":0}
@@ -266,6 +267,7 @@ enum ToolAction {
     PremiereSetAudioParamNamed { track: u32, clip_index: u32, component_match_name: Option<String>, component_display_name: Option<String>, param_display_name: String, value: Value },
     PremiereAddAudioEffectKeyframe { track: u32, clip_index: u32, component_index: u32, param_index: u32, seconds: f64, value: Value },
     PremiereAddAudioKeyframeNamed { track: u32, clip_index: u32, component_match_name: Option<String>, component_display_name: Option<String>, param_display_name: String, seconds: f64, value: Value },
+    PremiereApplyAudioRecipe { track: u32, clip_index: u32, settings: Vec<Value> },
     PremiereListMarkers,
     PremiereAddMarker { name: String, marker_type: String, seconds: f64, duration_seconds: f64, comments: String },
     PremiereRemoveMarker { marker_index: u32 },
@@ -559,6 +561,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_set_audio_param_named"
         | "premiere_add_audio_effect_keyframe"
         | "premiere_add_audio_keyframe_named"
+        | "premiere_apply_audio_recipe"
         | "premiere_list_markers"
         | "premiere_add_marker"
         | "premiere_remove_marker"
@@ -2347,6 +2350,80 @@ fn stage_tool(
                 },
                 "Add Premiere audio keyframe by name".to_string(),
                 format!("Add named audio keyframe '{param_display_name}' at {seconds:.3}s on A{track}, clip #{clip_index}."),
+                RiskLevel::High,
+            )
+        }
+        "premiere_apply_audio_recipe" => {
+            let track = proposal.arguments.get("track").and_then(Value::as_u64).unwrap_or(0);
+            let clip_index = proposal.arguments.get("clip_index").and_then(Value::as_u64).unwrap_or(0);
+            if track > 128 || clip_index > 10_000 {
+                return Err("Premiere audio recipe target is outside Shuvi's safety limits.".into());
+            }
+
+            let settings = proposal.arguments
+                .get("settings")
+                .and_then(Value::as_array)
+                .cloned()
+                .ok_or_else(|| "premiere_apply_audio_recipe requires a settings array.".to_string())?;
+
+            if settings.is_empty() || settings.len() > 64 {
+                return Err("Premiere audio recipe requires between 1 and 64 settings.".into());
+            }
+
+            for setting in &settings {
+                let Some(object) = setting.as_object() else {
+                    return Err("Each Premiere audio recipe setting must be an object.".into());
+                };
+
+                let has_component = object
+                    .get("component_match_name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.trim().is_empty())
+                    || object
+                        .get("component_display_name")
+                        .and_then(Value::as_str)
+                        .is_some_and(|value| !value.trim().is_empty());
+
+                if !has_component {
+                    return Err("Each audio recipe setting requires component_match_name or component_display_name.".into());
+                }
+
+                let param_name = object
+                    .get("param_display_name")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| "Each audio recipe setting requires param_display_name.".to_string())?;
+
+                if param_name.chars().count() > 240 {
+                    return Err("Audio recipe parameter name is too long.".into());
+                }
+
+                let value = object
+                    .get("value")
+                    .ok_or_else(|| "Each audio recipe setting requires value.".to_string())?;
+                if !matches!(value, Value::Bool(_) | Value::Number(_) | Value::String(_)) {
+                    return Err("Audio recipe values must be booleans, numbers, or strings.".into());
+                }
+
+                if let Some(seconds) = object.get("seconds") {
+                    let seconds = seconds
+                        .as_f64()
+                        .ok_or_else(|| "Audio recipe seconds must be numeric.".to_string())?;
+                    if !seconds.is_finite() || seconds < 0.0 || seconds > 86_400.0 {
+                        return Err("Audio recipe keyframe seconds must be between 0 and 86400.".into());
+                    }
+                }
+            }
+
+            (
+                ToolAction::PremiereApplyAudioRecipe {
+                    track: track as u32,
+                    clip_index: clip_index as u32,
+                    settings: settings.clone(),
+                },
+                "Apply Premiere audio parameter recipe".to_string(),
+                format!("Apply {} named audio parameter setting(s) to A{track}, clip #{clip_index}.", settings.len()),
                 RiskLevel::High,
             )
         }
@@ -5136,6 +5213,27 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }),
                 Duration::from_secs(30),
             ).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": result}))
+                    .unwrap_or_else(|_| result.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereApplyAudioRecipe { track, clip_index, settings } => {
+            let backup = backup_premiere_project(state).await?;
+            let result = state.premiere_bridge.request(
+                "apply_audio_recipe",
+                json!({
+                    "track": track,
+                    "clipIndex": clip_index,
+                    "settings": settings
+                }),
+                Duration::from_secs(45),
+            ).await?;
+
             Ok(ActionResult {
                 success: true,
                 tool,
