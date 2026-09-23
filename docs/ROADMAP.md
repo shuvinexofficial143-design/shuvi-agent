@@ -76,10 +76,10 @@
 - [x] video transition foundation + installed transition discovery\n- [x] video effect discovery/add + parameter inspection/static value control\n- [ ] broader effect types/preset workflows
 - [x] generic effect-parameter keyframe foundation\n- [ ] transform recipes, masks and speed changes
 - [ ] Lumetri color workflow and reusable grading presets
-- [ ] audio gain/mix/ducking and track-level workflows
+- [x] audio effect discovery/add + parameter inspection/static value/keyframe foundation\n- [x] track mute control\n- [ ] gain/mix/ducking recipes and track-level automation
 - [ ] captions/subtitles and graphics workflows
 - [ ] proxies and large-project media relink workflows
 - [x] active-sequence export + optional preset + Media Encoder queue handoff foundation
 - [ ] preview-analyze-correct editing loop using Shuvi vision
 - [x] timestamped .prproj backups before major sequence/timeline changes
-- [ ] reusable editing recipes for reels, long-form, ads and cinematic edits
+- [x] sequence marker list/add/remove foundation for edit planning\n- [ ] reusable editing recipes for reels, long-form, ads and cinematic edits
