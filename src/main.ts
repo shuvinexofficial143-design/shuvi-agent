@@ -558,6 +558,7 @@ function setBusy(value: boolean): void {
   const stop = el<HTMLButtonElement>("#stopButton");
   send.disabled = value;
   send.textContent = value ? "Working…" : "Send";
+  stop.textContent = "Stop";
   stop.classList.toggle("hidden", !value);
 }
 
