@@ -70,16 +70,32 @@
 - [x] active-project root item inspection + permission-gated media import
 - [x] recursive project tree + bin creation + rename/move + media relink foundation
 - [x] sequence-from-media creation + timeline track/clip inspection
-- [x] deterministic clip trim foundation (video/audio, exact track + clip index)\n- [x] exact clip delete + ripple-delete foundation\n- [ ] rolling edit operations
+- [x] deterministic clip trim foundation (video/audio, exact track + clip index)
+- [x] exact clip delete + ripple-delete foundation
+- [x] rolling edit foundation for adjacent clips
 - [x] native insert/overwrite edit foundation with automatic .prproj backup
-- [x] same-track clip move + insert/overwrite foundations\n- [ ] vertical track moves, nest and multicam workflows
-- [x] video transition foundation + installed transition discovery\n- [x] video effect discovery/add + parameter inspection/static value control\n- [ ] broader effect types/preset workflows
-- [x] generic effect-parameter keyframe foundation\n- [ ] transform recipes, masks and speed changes
-- [ ] Lumetri color workflow and reusable grading presets
-- [x] audio effect discovery/add + parameter inspection/static value/keyframe foundation\n- [x] track mute control\n- [ ] gain/mix/ducking recipes and track-level automation
-- [x] MOGRT insertion from file path or Creative Cloud Library\n- [ ] captions/subtitles and editable graphics parameter workflows
-- [x] proxy attach + offline/relink inspection foundation\n- [ ] batch proxy/relink recipes for large projects
+- [x] same-track clip move + insert/overwrite foundations
+- [ ] vertical track moves, nest and multicam workflows
+- [x] video transition foundation + installed transition discovery
+- [x] video effect discovery/add + parameter inspection/static value control
+- [ ] broader effect types/preset workflows
+- [x] generic effect-parameter keyframe foundation
+- [x] named multi-parameter video recipe foundation for transform/effect workflows
+- [ ] masks and speed changes
+- [x] reusable named video parameter recipe foundation for Lumetri-style grading workflows
+- [ ] saved grading preset library + color-specific recipes
+- [x] audio effect discovery/add + parameter inspection/static value/keyframe foundation
+- [x] track mute control
+- [x] reusable named audio parameter recipe foundation
+- [ ] automatic gain/mix/ducking analysis recipes and track-level automation
+- [x] MOGRT insertion from file path or Creative Cloud Library
+- [ ] captions/subtitles and editable graphics parameter workflows
+- [x] proxy attach + offline/relink inspection foundation
+- [ ] batch proxy/relink recipes for large projects
 - [x] active-sequence export + optional preset + Media Encoder queue handoff foundation
-- [ ] preview-analyze-correct editing loop using Shuvi vision
+- [x] playhead-aware Premiere frame inspection through Shuvi vision
+- [ ] automatic multi-frame preview-analyze-correct loop
 - [x] timestamped .prproj backups before major sequence/timeline changes
-- [x] sequence marker list/add/remove foundation for edit planning\n- [ ] reusable editing recipes for reels, long-form, ads and cinematic edits
+- [x] sequence marker list/add/remove foundation for edit planning
+- [x] atomic reusable parameter-recipe execution foundation
+- [ ] saved high-level recipes for reels, long-form, ads and cinematic edits
