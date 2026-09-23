@@ -212,3 +212,13 @@ Estimate: code complete approximately 58%; runtime verified 0% this session; pro
 - [ ] Verified selected-only replacement nesting, native link-aware edits and runtime verification. No semantic UI fallback implemented.
 
 Code estimate remains approximately 58%; this module tightens existing behavior and exposes boundaries rather than claiming unsupported editing features. Next: documented native effect lifecycle.
+
+### Module C — effect lifecycle
+- [x] Typed named video/audio component inspection and removal, using documented chain createRemoveComponentAction.
+- [x] Removal requires inspected clip/ordered-chain signature, unique component resolution, high-risk permission and checkpoint; one native transaction.
+- [x] Bounded chain inspection (128 components); unavailable removal, ambiguity and stale chains fail explicitly.
+- [x] Enabled state remains unknown, enable/disable and native preset import explicitly unsupported; existing named recipes remain available.
+- [x] Four new mocked tests; 49 Node tests, registry validation and frontend build pass. Rust schema test added but not executed locally.
+- [ ] Real Premiere removal and undo verification; stable instance identity beyond conservative signatures.
+
+Estimate: code complete approximately 60%; runtime verified 0% this session; production readiness not established. Next: reusable motion/color recipe construction using inspected parameter selectors.

@@ -14,7 +14,7 @@ use super::premiere_bridge_queue::CommandQueue;
 pub const ALLOWED_ACTIONS: &[&str] = &[
     "remove_keyframe_range",
     "remove_video_transition",
-    "inspect_keyframes",
+    "inspect_keyframes", "inspect_effect_lifecycle", "remove_effect",
     "edit_keyframe",
     "inspect_clip_speed",
     "plan_clip_speed",

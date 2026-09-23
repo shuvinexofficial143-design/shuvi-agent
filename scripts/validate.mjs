@@ -33,7 +33,8 @@ for (const path of [
   "src-tauri/src/premiere_checkpoint.rs",
   "src-tauri/src/premiere_bridge_queue.rs",
   "src-tauri/src/premiere_keyframes.rs",
-  "src-tauri/src/premiere_target.rs"
+  "src-tauri/src/premiere_target.rs",
+  "src-tauri/src/premiere_effects.rs"
 ]) {
   try {
     statSync(join(root, path));

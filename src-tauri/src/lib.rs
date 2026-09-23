@@ -17,6 +17,8 @@ use sysinfo::{Pid, System};
 use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
+mod premiere_effects;
+use premiere_effects::ComponentTarget;
 mod premiere_target;
 use premiere_target::{PremiereClient, PremiereExpectation};
 mod premiere_keyframes;
@@ -72,6 +74,8 @@ Available tools:
 - premiere_context: {}
 - premiere_remove_keyframe_range: {"target":{"kind":"video|audio","track":0,"clip_index":0,"component_match_name":"exact component match name or supply component_display_name","param_display_name":"exact parameter name"},"start_seconds":0,"end_seconds":2,"expected_count":1,"expected_signature":"targetSignature from inspection","allow_remove_all":false}
 - premiere_remove_video_transition: {"track":0,"clip_index":0,"position":"start|end"}
+- premiere_inspect_effect_lifecycle: {"target":{"kind":"video|audio","track":0,"clip_index":0,"component_match_name":"exact discovered name"}}
+- premiere_remove_effect: {"target":{"kind":"video|audio","track":0,"clip_index":0,"component_match_name":"exact discovered name"},"expected_signature":"copy from lifecycle inspection"}
 - premiere_inspect_keyframes: {"target":{"kind":"video|audio","track":0,"clip_index":0,"component_match_name":"exact native match name or supply component_display_name","param_display_name":"exact parameter name"}}
 - premiere_edit_keyframe: {"target":{"kind":"video|audio","track":0,"clip_index":0,"component_match_name":"exact native match name or supply component_display_name","param_display_name":"exact parameter name"},"ticks":"exact ticks from inspection","expected_signature":"targetSignature from inspection","operation":"remove|interpolation","interpolation":"only for interpolation: linear|hold|bezier"}
 - premiere_inspect_clip_speed: {"kind":"video|audio","track":0,"clip_index":0}
@@ -295,6 +299,8 @@ enum ToolAction {
     PremiereEditKeyframe { target: ParameterTarget, ticks: String, expected_signature: String, operation: String, interpolation: Option<String> },
     PremiereInspectClipSpeed { kind: String, track: u32, clip_index: u32 },
     PremierePlanSpeed { kind: String, track: u32, clip_index: u32, request: SpeedRequest },
+    PremiereInspectEffectLifecycle { target: ComponentTarget },
+    PremiereRemoveEffect { target: ComponentTarget, expected_signature: String },
     PremiereTimelineCapabilities,
     PremiereTimeline,
     PremiereCaptionTracks,
@@ -623,6 +629,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_context"
         | "premiere_remove_keyframe_range"
         | "premiere_remove_video_transition"
+        | "premiere_inspect_effect_lifecycle"
+        | "premiere_remove_effect"
         | "premiere_inspect_keyframes"
         | "premiere_edit_keyframe"
         | "premiere_inspect_clip_speed"
@@ -1898,6 +1906,19 @@ fn stage_tool(
             let detail = format!("Remove only the {position} video transition from V{track}, clip {clip_index}; checkpoint required.");
             (ToolAction::PremiereRemoveVideoTransition { track, clip_index, position },
                 "Remove Premiere video transition".to_string(), detail, RiskLevel::High)
+        }
+        "premiere_inspect_effect_lifecycle" => {
+            let target: ComponentTarget = serde_json::from_value(proposal.arguments.get("target").cloned().unwrap_or(Value::Null)).map_err(|e| format!("Invalid effect target: {e}"))?;
+            target.validate()?;
+            (ToolAction::PremiereInspectEffectLifecycle { target }, "Inspect effect lifecycle".into(), "Resolve exact component and inspect removal capability and signature.".into(), RiskLevel::Low)
+        }
+        "premiere_remove_effect" => {
+            let target: ComponentTarget = serde_json::from_value(proposal.arguments.get("target").cloned().unwrap_or(Value::Null)).map_err(|e| format!("Invalid effect target: {e}"))?;
+            target.validate()?;
+            let expected_signature = arg_string(&proposal.arguments, "expected_signature")?;
+            if expected_signature.len() > 65536 { return Err("Effect signature is too long.".into()); }
+            let detail = format!("Remove inspected component {:?}/{:?} from {} track {}, clip {}; checkpoint required.", target.component_match_name, target.component_display_name, target.kind, target.track, target.clip_index);
+            (ToolAction::PremiereRemoveEffect { target, expected_signature }, "Remove Premiere effect".into(), detail, RiskLevel::High)
         }
         "premiere_inspect_keyframes" => {
             let target: ParameterTarget = serde_json::from_value(proposal.arguments.get("target").cloned().unwrap_or(Value::Null))
@@ -5809,6 +5830,16 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 Duration::from_secs(15),
             ).await?;
             Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&value).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
+        }
+        ToolAction::PremiereInspectEffectLifecycle { target } => {
+            let value = premiere_bridge.request("inspect_effect_lifecycle", target.bridge_arguments(), Duration::from_secs(15)).await?;
+            Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&value).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
+        }
+        ToolAction::PremiereRemoveEffect { target, expected_signature } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let mut arguments = target.bridge_arguments(); arguments["expectedSignature"] = json!(expected_signature);
+            let value = premiere_bridge.request("remove_effect", arguments, Duration::from_secs(20)).await?;
+            Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&json!({"backup":backup,"result":value})).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
         }
         ToolAction::PremiereTimelineCapabilities => {
             let value = premiere_bridge.request("timeline_capabilities", json!({}), Duration::from_secs(12)).await?;

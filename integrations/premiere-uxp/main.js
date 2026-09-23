@@ -3826,12 +3826,60 @@ async function planClipSpeed(argumentsValue) {
   return planSpeed(snapshot, argumentsValue.request);
 }
 
+async function resolveLifecycleComponent(args) {
+  if (!["video", "audio"].includes(args.kind) || !(args.componentMatchName || args.componentDisplayName)) throw new Error("Exact named video/audio component target required.");
+  const target = args.kind === "video" ? await getVideoClipTarget(args.track, args.clipIndex) : await getAudioClipTarget(args.track, args.clipIndex);
+  const chain = await target.item.getComponentChain();
+  const count = await chain.getComponentCount();
+  if (!Number.isInteger(count) || count < 0 || count > 128) throw new Error("Component chain exceeds 128 components.");
+  const identities = [], matches = [];
+  for (let index = 0; index < count; index++) {
+    const component = await chain.getComponentAtIndex(index);
+    const [matchName, displayName] = await Promise.all([component.getMatchName(), component.getDisplayName()]);
+    if (typeof matchName !== "string" || typeof displayName !== "string" || matchName.length > 240 || displayName.length > 240) throw new Error("Component identity is unavailable or oversized.");
+    identities.push([matchName, displayName]);
+    if ((!args.componentMatchName || args.componentMatchName === matchName) && (!args.componentDisplayName || args.componentDisplayName === displayName)) matches.push({component, componentIndex: index, matchName, displayName});
+  }
+  if (matches.length !== 1) throw new Error("Expected one exact component; resolved " + matches.length + " components.");
+  const clipSignature = await clipTargetSignature(target.project, target.sequence, target.item, args.kind, args.track, args.clipIndex);
+  const targetSignature = JSON.stringify([clipSignature, identities, matches[0].componentIndex]);
+  if (targetSignature.length > 65536) throw new Error("Effect identity exceeds the supported bound.");
+  return {...target, ...matches[0], chain, targetSignature};
+}
+
+async function inspectEffectLifecycle(args) {
+  const target = await resolveLifecycleComponent(args);
+  return {kind: args.kind, track: args.track, clipIndex: args.clipIndex, componentIndex: target.componentIndex,
+    matchName: target.matchName, displayName: target.displayName, targetSignature: target.targetSignature,
+    removal: {supported: typeof target.chain.createRemoveComponentAction === "function", runtimeVerified: false},
+    enabled: null, enableDisable: {supported: false, reason: "No documented component enable/disable action in reviewed API."},
+    nativePreset: {supported: false, reason: "Use inspected named parameter recipes; no reviewed native preset import action."}};
+}
+
+async function removeEffect(args) {
+  const target = await resolveLifecycleComponent(args);
+  if (!args.expectedSignature || args.expectedSignature !== target.targetSignature) throw new Error("Effect target or chain changed; inspect lifecycle again.");
+  if (typeof target.chain.createRemoveComponentAction !== "function") throw new Error("Native component removal is unsupported.");
+  let transactionSucceeded = false;
+  target.project.lockedAccess(() => {
+    const action = target.chain.createRemoveComponentAction(target.component);
+    transactionSucceeded = target.project.executeTransaction(compound => compound.addAction(action), "Shuvi: Remove Effect");
+  });
+  if (!transactionSucceeded) throw new Error("Premiere rejected component removal.");
+  return {transactionSucceeded: true, componentIndex: target.componentIndex, matchName: target.matchName,
+    warning: "Native removal transaction accepted; inspect the effect chain to verify the result."};
+}
+
 async function dispatchNativeCommand(command) {
   switch (command.action) {
     case "remove_keyframe_range":
       return await removeKeyframeRange(command.arguments || {});
     case "remove_video_transition":
       return await removeVideoTransition(command.arguments || {});
+    case "inspect_effect_lifecycle":
+      return await inspectEffectLifecycle(command.arguments);
+    case "remove_effect":
+      return await removeEffect(command.arguments);
     case "inspect_keyframes":
       return await inspectKeyframes(command.arguments || {});
     case "edit_keyframe":

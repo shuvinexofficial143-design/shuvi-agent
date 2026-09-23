@@ -220,3 +220,35 @@ test("subsequence reports failed restoration without claiming selected-only cont
   const result = await f.panel.createSubsequence({targets: [{kind: "video", track: 0, clipIndex: 0}]});
   assert.equal(result.created, true); assert.equal(result.selectionRestored, false); assert.equal(result.selectionSemanticsVerified, false);
 });
+
+function effectFixture(kind = "video") {
+  const f = fixture(kind);
+  const chain = {getComponentCount: () => f.components.length, getComponentAtIndex: index => f.components[index], createRemoveComponentAction: component => ({removeComponent: component})};
+  f.item.getComponentChain = async () => chain;
+  const {paramDisplayName, ...args} = f.args;
+  return {...f, args, chain};
+}
+for (const kind of ["video", "audio"]) test(kind + ": inspected component removal uses one exact native action", async () => {
+  const f = effectFixture(kind);
+  const inspected = await f.panel.executeCommand({action: "inspect_effect_lifecycle", arguments: f.args});
+  assert.equal(inspected.removal.supported, true); assert.equal(inspected.enableDisable.supported, false); assert.equal(inspected.enabled, null);
+  const result = await f.panel.executeCommand({action: "remove_effect", arguments: {...f.args, expectedSignature: inspected.targetSignature}});
+  assert.equal(result.transactionSucceeded, true); assert.equal(f.actions.length, 1); assert.equal(f.actions[0].removeComponent, f.components[0]);
+});
+test("component lifecycle rejects ambiguity and changed chain before edits", async () => {
+  const f = effectFixture(); const inspected = await f.panel.inspectEffectLifecycle(f.args);
+  f.components.unshift({getMatchName: () => "different", getDisplayName: () => "Different"});
+  await assert.rejects(f.panel.removeEffect({...f.args, expectedSignature: inspected.targetSignature}), /chain changed/);
+  f.components.push(f.components[1]);
+  await assert.rejects(f.panel.inspectEffectLifecycle(f.args), /2 components/);
+  assert.equal(f.actions.length, 0);
+});
+test("component lifecycle exposes missing removal API and rejected transaction", async () => {
+  const f = effectFixture(); const inspected = await f.panel.inspectEffectLifecycle(f.args);
+  f.chain.createRemoveComponentAction = undefined;
+  assert.equal((await f.panel.inspectEffectLifecycle(f.args)).removal.supported, false);
+  await assert.rejects(f.panel.removeEffect({...f.args, expectedSignature: inspected.targetSignature}), /unsupported/);
+  assert.equal(f.actions.length, 0);
+  f.chain.createRemoveComponentAction = () => ({}); f.project.executeTransaction = () => false;
+  await assert.rejects(f.panel.removeEffect({...f.args, expectedSignature: inspected.targetSignature}), /rejected/);
+});
