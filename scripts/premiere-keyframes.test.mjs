@@ -179,3 +179,44 @@ test("timeline produces inspectable signatures and plain project/sequence expect
   assert.equal(timeline.expected.sequence_guid, "sequence-id");
   assert.equal(timeline.videoTracks[0].items[0].targetSignature, (await expectedTarget(f)).clips[0].signature);
 });
+
+test("timeline capability report refuses to infer vertical move, links, nesting or multicam", async () => {
+  const f = fixture(); const report = await f.panel.executeCommand({action: "timeline_capabilities", arguments: {}});
+  for (const name of ["verticalMove", "nativeLinkInspection", "replacementNesting", "multicam"]) {
+    assert.equal(report[name].supported, false); assert.equal(report[name].fallbackImplemented, false);
+  }
+  assert.equal(report.verticalClone.supported, false);
+  assert.equal(f.actions.length, 0);
+});
+
+test("timeline distinguishes selected state from unknown link membership", async () => {
+  const f = fixture();
+  Object.assign(f.item, {getDuration: async () => ({seconds: 10}), getSpeed: async () => 1, isDisabled: async () => false, getTrackIndex: async () => 0, getIsSelected: async () => true});
+  const item = await f.panel.summarizeTrackItem(f.item, 0);
+  assert.equal(item.selected, true); assert.equal(item.linkedGroup.supported, false);
+});
+
+test("clone rejects nonexistent vertical destination before creating native actions", async () => {
+  const f = fixture(); const sequence = await f.project.getActiveSequence();
+  sequence.getVideoTrackCount = async () => 1;
+  for (const offset of [-1, 1]) await assert.rejects(f.panel.cloneClip({kind: "video", track: 0, clipIndex: 0, videoTrackOffset: offset}), /existing track/);
+  assert.equal(f.actions.length, 0);
+});
+
+test("subsequence restores selection even if setting the temporary selection fails", async () => {
+  const f = fixture(); const sequence = await f.project.getActiveSequence();
+  const previous = {name: "previous"}; let selected = [previous]; let calls = 0;
+  sequence.getSelection = async () => ({getTrackItems: async () => [...selected], removeItem: item => {selected = selected.filter(x => x !== item);}, addItem: item => selected.push(item)});
+  sequence.setSelection = () => ++calls > 1;
+  await assert.rejects(f.panel.createSubsequence({targets: [{kind: "video", track: 0, clipIndex: 0}]}), /could not set/);
+  assert.equal(calls, 2); assert.deepEqual(selected, [previous]);
+});
+
+test("subsequence reports failed restoration without claiming selected-only content", async () => {
+  const f = fixture(); const sequence = await f.project.getActiveSequence(); let calls = 0;
+  sequence.getSelection = async () => ({getTrackItems: async () => [], removeItem() {}, addItem() {}});
+  sequence.setSelection = () => ++calls === 1;
+  sequence.createSubsequence = async () => ({guid: "new-sequence", getProjectItem: async () => ({getId: async () => "new-item"})});
+  const result = await f.panel.createSubsequence({targets: [{kind: "video", track: 0, clipIndex: 0}]});
+  assert.equal(result.created, true); assert.equal(result.selectionRestored, false); assert.equal(result.selectionSemanticsVerified, false);
+});

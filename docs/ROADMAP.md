@@ -202,3 +202,13 @@ Next: optional shared project/sequence/clip target expectations for existing des
 - [ ] Rust compile/test execution and disposable-project Premiere runtime verification.
 
 Estimate: code complete approximately 58%; runtime verified 0% this session; production readiness not established. Signatures are conservative snapshots, not native stable clip UUIDs or a lock against concurrent human edits. Next: timeline vertical/link-aware capability work, followed by effect lifecycle.
+
+### Module A — timeline capability and selection safety
+- [x] Typed read-only premiere_timeline_capabilities with observed native clone/subsequence presence and explicit unsupported vertical move, link inspection, replacement nesting and multicam boundaries.
+- [x] Timeline clip selection state with unknown links represented explicitly; no media-based inference of linked membership.
+- [x] Clone destinations must be existing same-kind tracks; missing native clone APIs fail explicitly.
+- [x] Subsequence attempts selection restoration even after temporary-selection failure and reports restoration success plus unverified selected-content semantics.
+- [x] Five new mock tests; 45 Node tests, validation and frontend build pass.
+- [ ] Verified selected-only replacement nesting, native link-aware edits and runtime verification. No semantic UI fallback implemented.
+
+Code estimate remains approximately 58%; this module tightens existing behavior and exposes boundaries rather than claiming unsupported editing features. Next: documented native effect lifecycle.

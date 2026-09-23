@@ -460,12 +460,16 @@ async function summarizeTrackItem(item, clipIndex, context = null) {
     item.getTrackIndex()
   ]);
 
+  let selected = null;
+  try { selected = await item.getIsSelected(); } catch {}
   let targetSignature = null;
   if (context) {
     try { targetSignature = await clipTargetSignature(context.project, context.sequence, item, context.kind, trackIndex, clipIndex); } catch {}
   }
   return {
     targetSignature,
+    selected,
+    linkedGroup: {supported: false, reason: "Native link inspection unavailable; no inferred links."},
     clipIndex,
     name,
     trackIndex,
@@ -474,6 +478,24 @@ async function summarizeTrackItem(item, clipIndex, context = null) {
     durationSeconds: duration?.seconds ?? null,
     speed,
     disabled
+  };
+}
+
+async function timelineCapabilities() {
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+  const editor = premiere.SequenceEditor?.getEditor?.(sequence);
+  const unavailable = reason => ({supported: false, reason, fallback: "semantic_ui_optional", fallbackImplemented: false});
+  return {
+    sequenceGuid: plainGuid(sequence.guid), runtimeVerified: false,
+    verticalClone: {supported: typeof editor?.createCloneTrackItemAction === "function", operation: "clone", preservesOriginal: true},
+    verticalMove: unavailable("No dedicated vertical move action in the reviewed public API; clone is a distinct operation."),
+    nativeLinkInspection: unavailable("No documented linked-group getter in the reviewed clip API; matching media is not proof of a link."),
+    selectionInspection: {supported: typeof sequence.getSelection === "function", timelineField: "selected"},
+    subsequenceCreation: {supported: typeof sequence.createSubsequence === "function", selectionSemanticsVerified: false},
+    replacementNesting: unavailable("Atomic replacement and exact selected-only subsequence semantics remain unverified."),
+    multicam: unavailable("Documented native multicam creation/switching API unavailable in reviewed references.")
   };
 }
 
@@ -2354,7 +2376,11 @@ async function cloneClip(argumentsValue) {
     throw new Error("Clone would place the copied clip before sequence time zero.");
   }
 
+  const destinationTrack = trackIndex + (kind === "video" ? videoTrackOffset : audioTrackOffset);
+  const trackCount = kind === "video" ? await sequence.getVideoTrackCount() : await sequence.getAudioTrackCount();
+  if (destinationTrack < 0 || destinationTrack >= trackCount) throw new Error("Clone destination must be an existing track of the same media kind.");
   const editor = premiere.SequenceEditor.getEditor(sequence);
+  if (typeof editor?.createCloneTrackItemAction !== "function") throw new Error("Native track-item clone is unsupported.");
   let transactionSucceeded = false;
 
   project.lockedAccess(() => {
@@ -2378,6 +2404,8 @@ async function cloneClip(argumentsValue) {
 
   return {
     cloned: true,
+    destinationTrack,
+    linkedItemsHandled: "native clone behavior; linked-group membership not inspected",
     kind,
     track: trackIndex,
     clipIndex,
@@ -3360,10 +3388,10 @@ async function replaceSequenceSelection(sequence, items) {
   const existing = await selection.getTrackItems();
 
   for (const item of existing) {
-    selection.removeItem(item);
+    if (selection.removeItem(item) === false) throw new Error("Premiere could not remove an item from the temporary selection.");
   }
   for (const item of items) {
-    selection.addItem(item, false);
+    if (selection.addItem(item, false) === false) throw new Error("Premiere could not add an item to the temporary selection.");
   }
 
   const result = sequence.setSelection(selection);
@@ -3407,20 +3435,14 @@ async function createSubsequence(argumentsValue) {
     throw new Error("No unique Premiere clips were resolved for the subsequence.");
   }
 
-  const selectionSet = await replaceSequenceSelection(sequence, uniqueItems);
-  if (selectionSet === false) {
-    throw new Error("Premiere could not set the exact subsequence selection.");
-  }
-
   let newSequence;
+  let selectionRestored = false;
   try {
+    const selectionSet = await replaceSequenceSelection(sequence, uniqueItems);
+    if (selectionSet === false) throw new Error("Premiere could not set the exact subsequence selection.");
     newSequence = await sequence.createSubsequence(true);
   } finally {
-    try {
-      await replaceSequenceSelection(sequence, previousItems);
-    } catch {
-      // Best-effort restore of the user's prior selection.
-    }
+    try { selectionRestored = (await replaceSequenceSelection(sequence, previousItems)) !== false; } catch {}
   }
 
   if (!newSequence) {
@@ -3437,7 +3459,11 @@ async function createSubsequence(argumentsValue) {
 
   return {
     created: true,
-    selectedClipCount: uniqueItems.length,
+    selectedClipCount: uniqueItems.length, // Requested selection count; content semantics remain unverified.
+    requestedClipCount: uniqueItems.length,
+    selectionRestored,
+    selectionSemanticsVerified: false,
+    warning: "Subsequence created; exact selected-only content and replacement nesting are not verified.",
     sequenceGuid: plainGuid(newSequence.guid),
     sequenceName: newSequence.name || null,
     projectItemId
@@ -3858,6 +3884,8 @@ async function dispatchNativeCommand(command) {
       return await insertProjectItem(command.arguments || {});
     case "save_project":
       return await saveProject();
+    case "timeline_capabilities":
+      return await timelineCapabilities();
     case "inspect_timeline":
       return await inspectTimeline();
     case "caption_tracks":

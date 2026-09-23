@@ -76,6 +76,7 @@ Available tools:
 - premiere_edit_keyframe: {"target":{"kind":"video|audio","track":0,"clip_index":0,"component_match_name":"exact native match name or supply component_display_name","param_display_name":"exact parameter name"},"ticks":"exact ticks from inspection","expected_signature":"targetSignature from inspection","operation":"remove|interpolation","interpolation":"only for interpolation: linear|hold|bezier"}
 - premiere_inspect_clip_speed: {"kind":"video|audio","track":0,"clip_index":0}
 - premiere_plan_speed: {"kind":"video|audio","track":0,"clip_index":0,"request":{"mode":"rate|duration|preset|ramp|freeze","rate":"rate mode: multiplier 0.01..100","duration_seconds":"duration/freeze mode: positive seconds","source_seconds":"freeze mode: source time","preset":"preset mode: normal|slow_motion|fast_motion","points":"ramp mode: [{source_offset_seconds:0,rate:1},...]","reverse":"optional boolean","preserve_audio_pitch":"optional boolean"}}
+- premiere_timeline_capabilities: {}
 - premiere_timeline: {}
 - premiere_caption_tracks: {}
 - premiere_set_caption_track_name: {"track":0,"name":"Captions"}
@@ -294,6 +295,7 @@ enum ToolAction {
     PremiereEditKeyframe { target: ParameterTarget, ticks: String, expected_signature: String, operation: String, interpolation: Option<String> },
     PremiereInspectClipSpeed { kind: String, track: u32, clip_index: u32 },
     PremierePlanSpeed { kind: String, track: u32, clip_index: u32, request: SpeedRequest },
+    PremiereTimelineCapabilities,
     PremiereTimeline,
     PremiereCaptionTracks,
     PremiereSetCaptionTrackName { track: u32, name: String },
@@ -625,6 +627,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_edit_keyframe"
         | "premiere_inspect_clip_speed"
         | "premiere_plan_speed"
+        | "premiere_timeline_capabilities"
         | "premiere_timeline"
         | "premiere_caption_tracks"
         | "premiere_set_caption_track_name"
@@ -1972,6 +1975,9 @@ fn stage_tool(
                 RiskLevel::Low,
             )
         }
+        "premiere_timeline_capabilities" => (
+            ToolAction::PremiereTimelineCapabilities, "Inspect timeline capabilities".into(), "Read native timeline capabilities without editing.".into(), RiskLevel::Low
+        ),
         "premiere_timeline" => (
             ToolAction::PremiereTimeline,
             "Inspect Premiere timeline".to_string(),
@@ -5802,6 +5808,10 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 json!({"kind": kind, "track": track, "clipIndex": clip_index, "request": request}),
                 Duration::from_secs(15),
             ).await?;
+            Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&value).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
+        }
+        ToolAction::PremiereTimelineCapabilities => {
+            let value = premiere_bridge.request("timeline_capabilities", json!({}), Duration::from_secs(12)).await?;
             Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&value).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
         }
         ToolAction::PremiereTimeline => {
