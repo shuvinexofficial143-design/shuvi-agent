@@ -18,6 +18,7 @@ use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
 mod premiere_diagnostics;
+mod premiere_review;
 use premiere_diagnostics::DiagnosticsLimits;
 mod premiere_mogrt;
 use premiere_mogrt::GraphicsRequest;
@@ -101,6 +102,11 @@ Available tools:
 - premiere_set_playhead: {"seconds":12.5}
 - premiere_inspect_frame: {"seconds":12.5,"prompt":"what should Shuvi evaluate in the Premiere Program Monitor"}
 - premiere_review_frames: {"seconds":[0,5,10],"prompt":"compare continuity, color, framing and edit quality across these Premiere frames"}
+- premiere_review_session_start: {"objective":"clean talking-head edit","sample_times":[0,5],"reference":"optional brief","max_iterations":4}
+- premiere_review_session_status: {"session_id":"exact returned ID"}
+- premiere_review_session_next: {"session_id":"exact returned ID"}
+- premiere_review_session_record_fix: {"session_id":"ID","issue_id":"inspected issue ID","target":"exact inspected clip target","planner":"premiere_plan_video_recipe","settings":{"exact":"approved typed settings"},"approved_action_id":"exact successful Shuvi audit action ID"}
+- premiere_review_session_cancel: {"session_id":"exact returned ID"}
 - premiere_list_items: {}
 - premiere_project_tree: {}
 - premiere_create_bin: {"name":"bin name"}
@@ -329,6 +335,11 @@ enum ToolAction {
     PremiereSetPlayhead { seconds: f64 },
     PremiereInspectFrame { seconds: f64, prompt: String, provider: ProviderContext },
     PremiereReviewFrames { seconds: Vec<f64>, prompt: String, provider: ProviderContext },
+    PremiereReviewSessionStart { objective: String, reference: String, sample_times: Vec<f64>, max_iterations: u8 },
+    PremiereReviewSessionStatus { session_id: String },
+    PremiereReviewSessionNext { session_id: String, provider: ProviderContext },
+    PremiereReviewSessionRecordFix { session_id: String, issue_id: String, target: String, planner: String, settings: Value, approved_action_id: String },
+    PremiereReviewSessionCancel { session_id: String },
     PremiereSetTrackMute { kind: String, track: u32, muted: bool },
     PremiereSetClipEnabled { kind: String, track: u32, clip_index: u32, enabled: bool },
     PremiereListVideoTransitions,
@@ -431,6 +442,8 @@ struct AuditEntry {
     tool: String,
     detail: String,
     success: bool,
+    #[serde(default)]
+    action_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -668,6 +681,11 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_set_playhead"
         | "premiere_inspect_frame"
         | "premiere_review_frames"
+        | "premiere_review_session_start"
+        | "premiere_review_session_status"
+        | "premiere_review_session_next"
+        | "premiere_review_session_record_fix"
+        | "premiere_review_session_cancel"
         | "premiere_set_track_mute"
         | "premiere_set_clip_enabled"
         | "premiere_list_video_transitions"
@@ -2199,6 +2217,42 @@ fn stage_tool(
                 ),
                 RiskLevel::Medium,
             )
+        }
+        "premiere_review_session_start" => {
+            let objective = arg_string(&proposal.arguments, "objective")?;
+            let reference = proposal.arguments.get("reference").and_then(Value::as_str).unwrap_or("").to_string();
+            let sample_times = proposal.arguments.get("sample_times").and_then(Value::as_array)
+                .ok_or("sample_times must be an array.")?.iter()
+                .map(|v| v.as_f64().ok_or("Invalid sample timestamp.".to_string()))
+                .collect::<Result<Vec<_>, _>>()?;
+            let max_iterations = proposal.arguments.get("max_iterations").and_then(Value::as_u64).unwrap_or(4);
+            let max_iterations = u8::try_from(max_iterations).map_err(|_| "Iteration limit exceeds 8.")?;
+            premiere_review::Session::new("validate".into(),"project".into(),"sequence".into(),objective.clone(),reference.clone(),sample_times.clone(),max_iterations)?;
+            (ToolAction::PremiereReviewSessionStart {objective,reference,sample_times,max_iterations},
+                "Start bounded Premiere review session".into(), "Inspect active project and sequence before storing bounded session.".into(), RiskLevel::Low)
+        }
+        "premiere_review_session_status" | "premiere_review_session_cancel" | "premiere_review_session_next" => {
+            let session_id = arg_string(&proposal.arguments,"session_id")?;
+            Uuid::parse_str(&session_id).map_err(|_| "Invalid Premiere review session ID.")?;
+            let (action, risk) = match proposal.tool.as_str() {
+                "premiere_review_session_status" => (ToolAction::PremiereReviewSessionStatus {session_id},RiskLevel::Low),
+                "premiere_review_session_cancel" => (ToolAction::PremiereReviewSessionCancel {session_id},RiskLevel::Low),
+                _ => (ToolAction::PremiereReviewSessionNext {session_id,provider:provider_context.ok_or("Review requires active vision provider.")?},RiskLevel::Medium),
+            };
+            (action,"Advance Premiere review session".into(),"Read-only review; does not launch an edit.".into(),risk)
+        }
+        "premiere_review_session_record_fix" => {
+            let session_id=arg_string(&proposal.arguments,"session_id")?;
+            Uuid::parse_str(&session_id).map_err(|_| "Invalid Premiere review session ID.")?;
+            let issue_id=arg_string(&proposal.arguments,"issue_id")?;
+            let target=arg_string(&proposal.arguments,"target")?;
+            let planner=arg_string(&proposal.arguments,"planner")?;
+            let settings=proposal.arguments.get("settings").cloned().ok_or("Missing exact fix settings.")?;
+            let approved_action_id=arg_string(&proposal.arguments,"approved_action_id")?;
+            Uuid::parse_str(&approved_action_id).map_err(|_| "Invalid approved action ID.")?;
+            premiere_review::fingerprint("color",&target,&planner,&settings).map_err(|e| e.to_string())?;
+            (ToolAction::PremiereReviewSessionRecordFix {session_id,issue_id,target,planner,settings,approved_action_id},
+                "Record approved Premiere edit for review".into(),"Verify successful typed action in audit log before re-review.".into(),RiskLevel::Medium)
         }
         "premiere_set_track_mute" => {
             let kind = arg_string(&proposal.arguments, "kind")?.to_ascii_lowercase();
@@ -4106,6 +4160,13 @@ fn audit_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
         .map_err(|error| format!("Could not create Shuvi data directory: {error}"))?;
 
     Ok(dir.join("audit.jsonl"))
+}
+
+fn premiere_review_path(app: &AppHandle, session_id: &str) -> Result<std::path::PathBuf, String> {
+    if Uuid::parse_str(session_id).is_err() { return Err("Invalid Premiere review session ID.".into()); }
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("premiere-reviews");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join(format!("{session_id}.json")))
 }
 
 fn append_audit(app: &AppHandle, entry: &AuditEntry) -> Result<(), String> {
@@ -6083,6 +6144,91 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 exit_code: Some(if failures == 0 { 0 } else { 1 }),
             })
         }
+        ToolAction::PremiereReviewSessionStart { objective, reference, sample_times, max_iterations } => {
+            let context = premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let project=context.get("projectGuid").and_then(Value::as_str).ok_or("No active Premiere project GUID.")?;
+            let sequence=context.pointer("/activeSequence/guid").and_then(Value::as_str).ok_or("No active Premiere sequence GUID.")?;
+            let id=Uuid::new_v4().to_string();
+            let session=premiere_review::Session::new(id.clone(),project.into(),sequence.into(),objective,reference,sample_times,max_iterations)?;
+            premiere_review::save(&premiere_review_path(app,&id)?,&session)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"session":session,"next":"premiere_review_session_next"}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereReviewSessionStatus {session_id} => {
+            let session=premiere_review::load(&premiere_review_path(app,&session_id)?)?;
+            Ok(ActionResult {success:true,tool,stdout:serde_json::to_string(&session).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereReviewSessionCancel {session_id} => {
+            let path=premiere_review_path(app,&session_id)?;
+            let mut session=premiere_review::load(&path)?;
+            session.cancel();
+            premiere_review::save(&path,&session)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"status":"cancelled","session_id":session_id}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereReviewSessionRecordFix {session_id,issue_id,target,planner,settings,approved_action_id} => {
+            let path=premiere_review_path(app,&session_id)?;
+            let mut session=premiere_review::load(&path)?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let project=context.get("projectGuid").and_then(Value::as_str).unwrap_or("");
+            let sequence=context.pointer("/activeSequence/guid").and_then(Value::as_str).unwrap_or("");
+            if let Err(error)=session.check_identity(project,sequence) { premiere_review::save(&path,&session)?; return Err(error); }
+            let audit=read_audit(app,200)?;
+            if !audit.iter().any(|entry| entry.action_id.as_deref()==Some(approved_action_id.as_str())
+                && entry.success && entry.event=="executed" && matches!(entry.tool.as_str(),
+                "premiere_apply_video_recipe"|"premiere_apply_audio_recipe"|"premiere_add_video_transition"|"premiere_apply_saved_recipe")) {
+                return Err("No successful approved typed Premiere edit with this action ID in recent audit.".into());
+            }
+            let issue=session.reviews.last().and_then(|r| r.issues.iter().find(|i| i.id==issue_id))
+                .ok_or("Unknown review issue.")?;
+            let fingerprint=premiere_review::fingerprint(&issue.category,&target,&planner,&settings)?;
+            let before=issue.observation.clone();
+            session.record_fix(&issue_id,&fingerprint,&before)?;
+            premiere_review::save(&path,&session)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"status":session.status,"fingerprint":fingerprint,"iteration":session.iteration}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereReviewSessionNext {session_id,provider} => {
+            let path=premiere_review_path(app,&session_id)?;
+            let mut session=premiere_review::load(&path)?;
+            if session.status!="reviewing" { return Err(format!("Review cannot run in {} state.",session.status)); }
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            if let Err(error)=session.check_identity(context.get("projectGuid").and_then(Value::as_str).unwrap_or(""),
+                context.pointer("/activeSequence/guid").and_then(Value::as_str).unwrap_or("")) {
+                premiere_review::save(&path,&session)?;
+                return Err(error);
+            }
+            let mut issues=Vec::new();
+            let mut confidence=1.0_f64;
+            let mut stop=false;
+            for (index,seconds) in session.sample_times.iter().enumerate() {
+                if premiere_review::load(&path)?.status=="cancelled" { return Err("Premiere review session cancelled.".into()); }
+                if session.model_calls >= 32 {
+                    session.status="stagnated".into();
+                    premiere_review::save(&path,&session)?;
+                    return Err("Premiere review vision-call budget exhausted.".into());
+                }
+                session.model_calls += 1;
+                premiere_review::save(&path,&session)?;
+                premiere_bridge.request("set_playhead",json!({"seconds":seconds}),Duration::from_secs(8)).await?;
+                tokio::time::sleep(Duration::from_millis(450)).await;
+                let screenshot=capture_screen_png()?;
+                let prompt=format!("Review the Premiere frame at {:.3}s for objective: {}. Context: {}. Return ONLY JSON {{\"iteration\":{},\"issues\":[{{\"id\":\"unique short id\",\"category\":\"exposure|color|framing|continuity|motion|transition|graphics|caption|audio_visual|other\",\"severity\":\"low|medium|high\",\"confidence\":0.8,\"frame_seconds\":[{}],\"observation\":\"visible evidence\",\"suggested_action_type\":\"typed suggestion\"}}],\"overall_confidence\":0.8,\"stop_recommended\":false}}. Max 4 issues, no unsupported claims.",seconds,session.objective,session.reference,session.iteration,seconds);
+                let analysis=analyze_png_with_provider(&provider,&prompt,&screenshot).await?;
+                let mut frame=premiere_review::normalize_vision(&analysis,session.iteration,&[*seconds])?;
+                confidence=confidence.min(frame.overall_confidence);
+                stop|=frame.stop_recommended;
+                for issue in &mut frame.issues { issue.id=format!("{index}-{}",issue.id); }
+                issues.extend(frame.issues.into_iter().take(4));
+            }
+            if premiere_review::load(&path)?.status=="cancelled" { return Err("Premiere review session cancelled.".into()); }
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            if let Err(error)=session.check_identity(context.get("projectGuid").and_then(Value::as_str).unwrap_or(""),
+                context.pointer("/activeSequence/guid").and_then(Value::as_str).unwrap_or("")) {
+                premiere_review::save(&path,&session)?; return Err(error);
+            }
+            let proposals=issues.iter().map(premiere_review::proposal).collect::<Vec<_>>();
+            let result=session.add_review(premiere_review::Review {iteration:session.iteration,issues,overall_confidence:confidence,stop_recommended:stop})?;
+            premiere_review::save(&path,&session)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"result":result,"review":session.reviews.last(),"proposals":proposals,"note":"Use inspected typed tools through normal approval and checkpoint; vision never executes edits."}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
         ToolAction::PremiereSetTrackMute { kind, track, muted } => {
             let value = premiere_bridge.request(
                 "set_track_mute",
@@ -7677,6 +7823,7 @@ fn deny_action(
                 tool: action.tool,
                 detail: action.detail,
                 success: false,
+                action_id: Some(action_id),
             },
         )?;
     }
@@ -7712,6 +7859,7 @@ async fn execute_action(
                     tool,
                     detail,
                     success: result.success,
+                    action_id: Some(action_id.clone()),
                 },
             )?;
             Ok(result)
@@ -7725,6 +7873,7 @@ async fn execute_action(
                     tool,
                     detail,
                     success: false,
+                    action_id: Some(action_id.clone()),
                 },
             )?;
             Err(error)
