@@ -47,6 +47,7 @@ for (const path of [
   "src-tauri/src/premiere_acceptance_harness.rs",
   "src-tauri/src/premiere_acceptance_execution.rs",
   "src-tauri/src/premiere_calibration.rs",
+  "src-tauri/src/premiere_export_jobs.rs",
   "src-tauri/src/premiere_review_binding.rs",
   "src-tauri/src/premiere_edit_session.rs",
   "integrations/premiere-uxp/recipe-plans.js",

@@ -25,6 +25,7 @@ mod premiere_acceptance;
 mod premiere_acceptance_harness;
 mod premiere_acceptance_execution;
 mod premiere_calibration;
+mod premiere_export_jobs;
 mod premiere_review_binding;
 mod premiere_edit_session;
 use premiere_diagnostics::DiagnosticsLimits;
@@ -429,6 +430,8 @@ enum ToolAction {
     PremiereCalibrationObserve { target: premiere_calibration::Target, semantic_role: Option<String> },
     PremiereCalibrationProbe { target: premiere_calibration::Target, delta: f64 },
     PremiereExportSequence { output: String, preset: Option<String>, queue_to_ame: bool, overwrite: bool },
+    PremiereExportStatus { job_id: String },
+    PremiereReadinessReport,
     PremiereSaveProject,
     WorkspaceScan { path: String },
     SearchText { path: String, query: String },
@@ -791,6 +794,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_delete_clip"
         | "premiere_export_sequence"
         | "premiere_plan_export"
+        | "premiere_export_status"
+        | "premiere_readiness_report"
         | "premiere_acceptance_report"
         | "premiere_acceptance_probe"
         | "premiere_acceptance_register_disposable"
@@ -4114,6 +4119,14 @@ fn stage_tool(
                 "Preflight Premiere export".to_string(),format!("Inspect output={output}; preset={preset:?}; queue_to_ame={queue_to_ame}; overwrite={overwrite}"),
                 RiskLevel::Low)
         }
+        "premiere_export_status" => {
+            let job_id=arg_string(&proposal.arguments,"job_id")?;
+            Uuid::parse_str(&job_id).map_err(|_|"Invalid export job ID.")?;
+            (ToolAction::PremiereExportStatus {job_id},"Observe Premiere export output".into(),
+                "One read-only bounded file metadata observation; stable file does not prove encoder completion.".into(),RiskLevel::Low)
+        }
+        "premiere_readiness_report" => (ToolAction::PremiereReadinessReport,
+            "Read Premiere production readiness gates".into(),"Report code, mock, Rust, native runtime, recovery and export completion separately.".into(),RiskLevel::Low),
         "premiere_export_sequence" => {
             let output = arg_string(&proposal.arguments, "output")?;
             let preset = arg_optional_string(&proposal.arguments, "preset");
@@ -4369,6 +4382,12 @@ fn premiere_calibration_path(app:&AppHandle)->Result<std::path::PathBuf,String>{
     let dir=app.path().app_data_dir().map_err(|e|e.to_string())?.join("premiere-calibration");
     fs::create_dir_all(&dir).map_err(|e|e.to_string())?;
     Ok(dir.join("native-v1.json"))
+}
+
+fn premiere_export_jobs_path(app:&AppHandle)->Result<std::path::PathBuf,String>{
+    let dir=app.path().app_data_dir().map_err(|e|e.to_string())?.join("premiere-exports");
+    fs::create_dir_all(&dir).map_err(|e|e.to_string())?;
+    Ok(dir.join("jobs-v1.json"))
 }
 
 async fn premiere_calibration_native(bridge:&PremiereClient<'_>,target:&premiere_calibration::Target)->Result<Value,String>{
@@ -8090,6 +8109,48 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }
             }
         }
+        ToolAction::PremiereExportStatus {job_id} => {
+            let path=premiere_export_jobs_path(app)?;
+            let mut jobs=premiere_export_jobs::load(&path)?;
+            let job=jobs.jobs.iter_mut().find(|j|j.job_id==job_id).ok_or("Export job ID not found.")?;
+            let identity=if state.premiere_bridge.status()?.paired {
+                premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await.ok()
+            }else{None};
+            let stale=identity.as_ref().is_some_and(|context|
+                context.get("projectGuid").and_then(Value::as_str)!=Some(job.project_guid.as_str())
+                || context.pointer("/activeSequence/guid").and_then(Value::as_str)!=Some(job.sequence_guid.as_str()));
+            let mut result=job.observe_once()?;
+            if let Some(map)=result.as_object_mut(){map.insert("identity_checked".into(),json!(identity.is_some()));
+                map.insert("stale_project_or_sequence".into(),json!(stale));}
+            premiere_export_jobs::save(&path,&jobs)?;
+            Ok(ActionResult {success:true,tool,stdout:result.to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereReadinessReport => {
+            let report=premiere_acceptance::load(&premiere_acceptance_path(app)?)?;
+            let registry=premiere_calibration::load(&premiere_calibration_path(app)?)?;
+            let jobs=premiere_export_jobs::load(&premiere_export_jobs_path(app)?)?;
+            let native=report.verified_count();let total=report.capabilities.len();
+            let verified=|name:&str|report.capabilities.iter().any(|c|c.name==name && c.premiere_runtime_verified);
+            let recovery_count=registry.entries.iter().filter(|e|e.recovery_verified).count();
+            let export_complete=jobs.jobs.iter().filter(|j|j.encoder_completion_verified).count();
+            let baseline=json!({"bridge_pair":verified("bridge_pair"),"project_inspection":verified("project_inspection"),
+                "timeline_inspection":verified("timeline_inspection"),"trim":verified("trim"),
+                "static_parameter_set":verified("static_parameter_set"),"visual_review":verified("visual_review"),
+                "checkpoint_recovery":recovery_count>0,"stale_expectation_host_tested":false,
+                "export_completion_verified":export_complete>0});
+            let by_state=|state:&str|report.capabilities.iter().filter(|c|c.state==state).map(|c|c.name.as_str()).collect::<Vec<_>>();
+            Ok(ActionResult {success:true,tool,stdout:json!({"code_implementation_estimate_pct":74,
+                "node_mock_verified_capabilities":report.capabilities.iter().filter(|c|c.code_tested).map(|c|c.name.as_str()).collect::<Vec<_>>(),
+                "node_test_run_attestation_persisted":false,"rust_verified":false,
+                "premiere_runtime_verified_count":native,"premiere_runtime_capability_count":total,
+                "premiere_runtime_verified_pct":if total>0{native*100/total}else{0},
+                "recovery_verified_entries":recovery_count,"export_completion_verified_jobs":export_complete,
+                "baseline":baseline,"production_ready":false,
+                "runtime_verified":by_state("runtime_verified"),"implemented_unverified":by_state("implemented_unverified"),
+                "unsupported_documented":by_state("unsupported_documented"),"blocked_environment":by_state("blocked_environment"),
+                "runtime_failed":by_state("runtime_failed"),
+                "note":"Code/mock coverage and native acceptance are distinct. Mandatory host recovery, stale expectation and export completion evidence remain absent."}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
         ToolAction::PremierePlanExport {output,preset,queue_to_ame,overwrite} => {
             let context=premiere_bridge.request("inspect_export",json!({}),Duration::from_secs(12)).await?;
             let project=context.get("projectGuid").and_then(Value::as_str).filter(|v|!v.is_empty()).ok_or("Premiere project GUID unavailable.")?;
@@ -8124,18 +8185,38 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             if queue_to_ame && context.get("ameAvailable").and_then(Value::as_bool)!=Some(true) {
                 return Err("Adobe Media Encoder is unavailable.".into());
             }
+            let job_id=Uuid::new_v4().to_string();
+            let mut job=premiere_export_jobs::Job::new(job_id.clone(),&expected.project_guid,
+                expected.sequence_guid.as_deref().ok_or("Sequence expectation missing.")?,&output,preset.as_deref(),queue_to_ame)?;
+            let jobs_path=premiere_export_jobs_path(app)?;
+            let mut jobs=premiere_export_jobs::load(&jobs_path)?;
+            // Persist uncertainty before dispatch: a crash or lost response cannot prove that
+            // the export never started and must never be followed by an automatic retry.
+            job.bridge_state="execution_status_unknown".into();
+            jobs.insert(job)?;premiere_export_jobs::save(&jobs_path,&jobs)?;
             let result=premiere_bridge.request("export_sequence",
                 json!({"output":output,"preset":preset,"queueToAme":queue_to_ame,"overwrite":overwrite}),
                 Duration::from_secs(if queue_to_ame {45} else {120})).await;
             let observed=premiere_export::observation(&output,local.output_exists);
+            let record=jobs.jobs.iter_mut().find(|j|j.job_id==job_id).ok_or("Export job record unavailable.")?;
             match result {
-                Ok(value) => Ok(ActionResult {success:true,tool,
-                    stdout:serde_json::to_string_pretty(&json!({"encoder":value,"output_observation":observed,"retry_automatically":false})).unwrap_or_default(),
-                    stderr:String::new(),exit_code:Some(0)}),
+                Ok(value) => {
+                    record.bridge_state=if value.get("accepted").and_then(Value::as_bool)==Some(true)
+                        && value.get("state").and_then(Value::as_str)==Some(if queue_to_ame{"queued"}else{"accepted"}) {
+                            if queue_to_ame{"queued"}else{"accepted"}
+                        }else{"execution_status_unknown"}.into();
+                    let accepted=matches!(record.bridge_state.as_str(),"accepted"|"queued");
+                    premiere_export_jobs::save(&jobs_path,&jobs)?;
+                    Ok(ActionResult {success:accepted,tool,
+                        stdout:serde_json::to_string_pretty(&json!({"job_id":job_id,"encoder":value,
+                            "output_observation":observed,"encoder_completion_verified":false,"retry_automatically":false})).unwrap_or_default(),
+                        stderr:String::new(),exit_code:Some(if accepted {0}else{1})})
+                },
                 Err(error) => {
                     let state=if error.contains("Premiere rejected the export request") {"rejected"} else {"execution_status_unknown"};
+                    record.bridge_state=state.into();premiere_export_jobs::save(&jobs_path,&jobs)?;
                     Ok(ActionResult {success:false,tool,
-                        stdout:json!({"state":state,"output_observation":observed,"retry_automatically":false,
+                        stdout:json!({"job_id":job_id,"state":state,"output_observation":observed,"retry_automatically":false,
                             "reason":"A bridge error or timeout is not proof that export did not run. Inspect before retrying."}).to_string(),
                         stderr:error,exit_code:None})
                 }
