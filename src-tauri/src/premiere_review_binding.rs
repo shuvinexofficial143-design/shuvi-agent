@@ -75,10 +75,35 @@ pub fn bind(session:&Session,issue:&Issue,seconds:f64,timeline:&Value,kind:&str,
             "reason":"Inspect exact boundary, transition match name, duration and position before proposing an edit."}));
     }
     if issue.category=="graphics" {
-        let bound=inspection.get("expected").and_then(|v|v.get("clips")).and_then(Value::as_array)
+        let bound=inspection.pointer("/expected/project_guid").and_then(Value::as_str)==Some(session.project_guid.as_str())
+            && inspection.pointer("/expected/sequence_guid").and_then(Value::as_str)==Some(session.sequence_guid.as_str())
+            && inspection.get("expected").and_then(|v|v.get("clips")).and_then(Value::as_array)
             .is_some_and(|clips| clips.len()==1 && clips[0]["signature"]==signature);
-        return Ok(json!({"supported":false,"planner":planner,"expected":expected,"native_inspection_consistent":bound,
-            "reason":"Provide an explicitly inspected primitive MOGRT property and value to the existing graphics planner."}));
+        if !bound || inspection.get("truncated").and_then(Value::as_bool)!=Some(false) {
+            return Err("Graphics property inspection is stale or incomplete.".into());
+        }
+        let components=inspection.get("components").and_then(Value::as_array).ok_or("Missing native graphic components.")?;
+        let mut candidates=vec![];
+        for component in components {
+            let Some(name)=component.get("matchName").and_then(Value::as_str) else {continue};
+            let Some(params)=component.get("params").and_then(Value::as_array) else {continue};
+            for param in params {
+                if param.get("editable").and_then(Value::as_bool)!=Some(true) {continue;}
+                let Some(field)=param.get("displayName").and_then(Value::as_str) else {continue};
+                if candidates.len()>=16 {return Err("More than 16 editable graphics properties; select a smaller inspected target.".into());}
+                candidates.push(json!({"component_match_name":name,"param_display_name":field,
+                    "current_value":param.get("value"),"value_type":param.get("type"),
+                    "time_varying":param.get("timeVarying"),"keyframes_supported":param.get("keyframesSupported")}));
+            }
+        }
+        let hits=selector.map(|(component,param)|candidates.iter().filter(|c|
+            c["component_match_name"]==component && c["param_display_name"]==param).collect::<Vec<_>>()).unwrap_or_default();
+        let supported=hits.len()==1;
+        return Ok(json!({"supported":supported,"planner":planner,"expected":expected,
+            "inspection_candidates":candidates,"binding":hits.first(),"ambiguous":hits.len()>1,
+            "missing_information":if supported {"Caller-supplied semantic role and exact value for the typed MOGRT planner"}
+                else {"Select one unique inspected primitive property by exact native component and parameter names"},
+            "reason":"Generic native parameters do not prove MOGRT identity or semantic text roles; no edit was sent."}));
     }
     let Some((component,param))=selector else {return Ok(json!({"supported":false,"planner":planner,"expected":expected,
         "reason":"Select an exact inspected component match name and parameter display name; no vision-inferred binding."}));};
@@ -137,5 +162,16 @@ pub fn bind(session:&Session,issue:&Issue,seconds:f64,timeline:&Value,kind:&str,
         let duplicate=native["components"][0]["params"][0].clone();
         native["components"][0]["params"].as_array_mut().unwrap().push(duplicate);
         assert_eq!(bind(&s,i,2.0,&t,"video",0,0,"sig",Some(("color.native","Exposure")),&native).unwrap()["supported"],false);
+    }
+    #[test] fn graphics_property_requires_native_identity_and_exact_selector(){
+        let (mut s,t)=fixture();s.reviews[0].issues[0].category="graphics".into();let i=issue(&s,"i",2.0).unwrap();
+        let native=json!({"expected":{"project_guid":"p","sequence_guid":"s","clips":[{"signature":"sig"}]},"truncated":false,
+            "components":[{"matchName":"native.graphic","params":[{"displayName":"Text","editable":true,"value":"old",
+                "type":"string","timeVarying":false,"keyframesSupported":false}]}]});
+        let candidate=bind(&s,i,2.0,&t,"video",0,0,"sig",None,&native).unwrap();
+        assert_eq!(candidate["supported"],false);assert_eq!(candidate["inspection_candidates"][0]["value_type"],"string");
+        assert_eq!(bind(&s,i,2.0,&t,"video",0,0,"sig",Some(("native.graphic","Text")),&native).unwrap()["supported"],true);
+        let mut stale=native.clone();stale["truncated"]=json!(true);
+        assert!(bind(&s,i,2.0,&t,"video",0,0,"sig",Some(("native.graphic","Text")),&stale).is_err());
     }
 }
