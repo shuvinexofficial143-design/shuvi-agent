@@ -23,6 +23,7 @@ mod premiere_editorial;
 mod premiere_export;
 mod premiere_acceptance;
 mod premiere_acceptance_harness;
+mod premiere_review_binding;
 use premiere_diagnostics::DiagnosticsLimits;
 mod premiere_mogrt;
 use premiere_mogrt::GraphicsRequest;
@@ -349,6 +350,8 @@ enum ToolAction {
     PremiereReviewSessionRecordFix { session_id: String, issue_id: String, target: String, planner: String, settings: Value, approved_action_id: String },
     PremiereReviewSessionCancel { session_id: String },
     PremierePlanEditRecipe { request: premiere_editorial::Request },
+    PremiereResolveReviewTarget { session_id: String, issue_id: String, frame_seconds: f64 },
+    PremiereBindReviewFix { session_id: String, issue_id: String, frame_seconds: f64, kind: String, track: u32, clip_index: u32, target_signature: String, component_match_name: Option<String>, param_display_name: Option<String> },
     PremiereSetTrackMute { kind: String, track: u32, muted: bool },
     PremiereSetClipEnabled { kind: String, track: u32, clip_index: u32, enabled: bool },
     PremiereListVideoTransitions,
@@ -707,6 +710,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_review_session_record_fix"
         | "premiere_review_session_cancel"
         | "premiere_plan_edit_recipe"
+        | "premiere_resolve_review_target"
+        | "premiere_bind_review_fix"
         | "premiere_set_track_mute"
         | "premiere_set_clip_enabled"
         | "premiere_list_video_transitions"
@@ -2250,6 +2255,28 @@ fn stage_tool(
             premiere_editorial::plan(request.clone())?;
             (ToolAction::PremierePlanEditRecipe {request},"Plan professional Premiere edit".into(),
                 "Read-only versioned editorial stages; no sequence modification.".into(),RiskLevel::Low)
+        }
+        "premiere_resolve_review_target" | "premiere_bind_review_fix" => {
+            let session_id=arg_string(&proposal.arguments,"session_id")?;
+            Uuid::parse_str(&session_id).map_err(|_|"Invalid review session ID.")?;
+            let issue_id=arg_string(&proposal.arguments,"issue_id")?;
+            let frame_seconds=proposal.arguments.get("frame_seconds").and_then(Value::as_f64)
+                .filter(|n|n.is_finite()&&(0.0..=86400.0).contains(n)).ok_or("Exact grounded frame timestamp required.")?;
+            if proposal.tool=="premiere_resolve_review_target" {
+                (ToolAction::PremiereResolveReviewTarget {session_id,issue_id,frame_seconds},
+                    "Resolve exact review timeline targets".into(),"Read-only bounded timeline lookup; multiple clips remain explicit.".into(),RiskLevel::Low)
+            } else {
+                let kind=arg_string(&proposal.arguments,"kind")?;
+                if !matches!(kind.as_str(),"video"|"audio") {return Err("Exact video/audio kind required.".into());}
+                let track=proposal.arguments.get("track").and_then(Value::as_u64).filter(|n|*n<=128).ok_or("Invalid track.")? as u32;
+                let clip_index=proposal.arguments.get("clip_index").and_then(Value::as_u64).filter(|n|*n<=10000).ok_or("Invalid clip index.")? as u32;
+                let target_signature=arg_string(&proposal.arguments,"target_signature")?;
+                if target_signature.len()>4096 {return Err("Oversized target signature.".into());}
+                let component_match_name=arg_optional_string(&proposal.arguments,"component_match_name");
+                let param_display_name=arg_optional_string(&proposal.arguments,"param_display_name");
+                (ToolAction::PremiereBindReviewFix {session_id,issue_id,frame_seconds,kind,track,clip_index,target_signature,component_match_name,param_display_name},
+                    "Bind reviewed issue to native target".into(),"Read-only exact native inspection and typed planner proposal; no edits.".into(),RiskLevel::Low)
+            }
         }
         "premiere_review_session_start" => {
             let objective = arg_string(&proposal.arguments, "objective")?;
@@ -6207,6 +6234,29 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let plan=premiere_editorial::plan(request)?;
             Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&plan).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereResolveReviewTarget {session_id,issue_id,frame_seconds} => {
+            let session=premiere_review::load(&premiere_review_path(app,&session_id)?)?;
+            let issue=premiere_review_binding::issue(&session,&issue_id,frame_seconds)?;
+            let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+            let result=premiere_review_binding::resolve(&session,issue,frame_seconds,&timeline)?;
+            Ok(ActionResult {success:true,tool,stdout:result.to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereBindReviewFix {session_id,issue_id,frame_seconds,kind,track,clip_index,target_signature,component_match_name,param_display_name} => {
+            let session=premiere_review::load(&premiere_review_path(app,&session_id)?)?;
+            let issue=premiere_review_binding::issue(&session,&issue_id,frame_seconds)?;
+            let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+            let category=issue.category.as_str();
+            let inspected=if matches!(category,"framing"|"motion"|"color"|"exposure"|"audio_visual") {
+                premiere_bridge.request(if category=="audio_visual"{"inspect_audio_clip_effects"}else{"inspect_clip_effects"},
+                    json!({"track":track,"clipIndex":clip_index}),Duration::from_secs(20)).await?
+            } else if category=="graphics" {
+                premiere_bridge.request("inspect_mogrt_properties",json!({"track":track,"clipIndex":clip_index}),Duration::from_secs(20)).await?
+            } else {json!({})};
+            let selector=component_match_name.as_deref().zip(param_display_name.as_deref());
+            let result=premiere_review_binding::bind(&session,issue,frame_seconds,&timeline,&kind,track,clip_index,
+                &target_signature,selector,&inspected)?;
+            Ok(ActionResult {success:true,tool,stdout:result.to_string(),stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::PremiereReviewSessionStart { objective, reference, sample_times, max_iterations } => {
             let context = premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;

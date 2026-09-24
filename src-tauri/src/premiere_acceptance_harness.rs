@@ -40,7 +40,7 @@ impl Registration {
         if context.get("projectGuid").and_then(Value::as_str)!=Some(self.project_guid.as_str())
             || context.get("projectPath").and_then(Value::as_str)!=Some(self.project_path.as_str())
             || self.sequence_guid.as_ref().is_some_and(|s|
-                context.pointer("/activeSequence/guid").and_then(Value::as_str)!=Some(s)) {
+                context.pointer("/activeSequence/guid").and_then(Value::as_str)!=Some(s.as_str())) {
             return Err("Disposable registration is stale: project path, GUID or sequence changed.".into());
         }
         Ok(())

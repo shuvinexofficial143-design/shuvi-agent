@@ -1,0 +1,141 @@
+use crate::premiere_review::{Issue, Session};
+use serde_json::{json,Value};
+
+pub fn strategy(category:&str)->(&'static str,&'static str){
+    match category {
+        "framing"|"motion" => ("video_components","premiere_plan_video_recipe"),
+        "exposure"|"color" => ("video_components","premiere_plan_video_recipe"),
+        "graphics" => ("mogrt_properties","premiere_plan_mogrt_recipe"),
+        "audio_visual" => ("audio_components","premiere_plan_audio_automation"),
+        "transition" => ("clip_boundaries","premiere_add_video_transition"),
+        "caption" => ("caption_adapter",""),
+        "continuity" => ("timeline_and_frames",""),
+        _ => ("none",""),
+    }
+}
+
+pub fn issue<'a>(session:&'a Session, id:&str, seconds:f64)->Result<&'a Issue,String>{
+    if !matches!(session.status.as_str(),"awaiting_approval"|"reviewing") {return Err("Review session is not available for binding.".into());}
+    let issue=session.reviews.last().and_then(|r|r.issues.iter().find(|i|i.id==id)).ok_or("Review issue ID not found in latest iteration.")?;
+    if !seconds.is_finite() || !session.sample_times.contains(&seconds) || !issue.frame_seconds.contains(&seconds){
+        return Err("Review timestamp is not grounded to this issue and session samples.".into());
+    }
+    Ok(issue)
+}
+
+pub fn resolve(session:&Session,issue:&Issue,seconds:f64,timeline:&Value)->Result<Value,String>{
+    if timeline.get("truncated").and_then(Value::as_bool)!=Some(false)
+        || timeline.pointer("/expected/project_guid").and_then(Value::as_str)!=Some(session.project_guid.as_str())
+        || timeline.get("sequenceGuid").and_then(Value::as_str)!=Some(session.sequence_guid.as_str()){
+        return Err("Timeline is incomplete or project/sequence identity changed.".into());
+    }
+    let (inspection,planner)=strategy(&issue.category);
+    let kinds:&[&str]=if issue.category=="audio_visual" {&["audio"]}else{&["video"]};
+    let mut candidates=vec![];
+    for kind in kinds {
+        let tracks=timeline.get(if *kind=="audio"{"audioTracks"}else{"videoTracks"}).and_then(Value::as_array)
+            .ok_or("Timeline tracks are missing.")?;
+        if tracks.len()>128{return Err("Too many tracks to resolve safely.".into());}
+        for track in tracks {
+            let index=track.get("index").and_then(Value::as_u64).filter(|n|*n<=128).ok_or("Invalid track index.")?;
+            let items=track.get("items").and_then(Value::as_array).ok_or("Missing timeline items.")?;
+            for item in items {
+                let (start,end)=(item.get("startSeconds").and_then(Value::as_f64),item.get("endSeconds").and_then(Value::as_f64));
+                if !matches!((start,end),(Some(a),Some(b)) if a.is_finite() && b.is_finite() && a<=seconds && seconds<b){continue;}
+                let clip=item.get("clipIndex").and_then(Value::as_u64).filter(|n|*n<=10000).ok_or("Invalid clip index.")?;
+                let sig=item.get("targetSignature").and_then(Value::as_str).filter(|s|!s.is_empty()&&s.len()<=4096)
+                    .ok_or("Active clip has no reliable target signature.")?;
+                if candidates.len()>=16{return Err("More than 16 overlapping clips; narrow the frame/target.".into());}
+                candidates.push(json!({"kind":kind,"track":index,"clip_index":clip,"clip_name":item.get("name"),
+                    "start_seconds":start,"end_seconds":end,"target_signature":sig,"layer_position":index,
+                    "inspection_required":inspection}));
+            }
+        }
+    }
+    Ok(json!({"issue_id":issue.id,"category":issue.category,"frame_seconds":seconds,"candidates":candidates,
+        "ambiguous":candidates.len()>1,"inspection_strategy":inspection,"planner_family":planner,
+        "read_only":true,"timeline_truncated":false}))
+}
+
+pub fn bind(session:&Session,issue:&Issue,seconds:f64,timeline:&Value,kind:&str,track:u32,clip:u32,
+    signature:&str,selector:Option<(&str,&str)>,inspection:&Value)->Result<Value,String>{
+    if signature.is_empty() || signature.len()>4096 || track>128 || clip>10000 {return Err("Invalid exact target.".into());}
+    let resolved=resolve(session,issue,seconds,timeline)?;
+    let exact=resolved["candidates"].as_array().unwrap().iter().filter(|c|c["kind"]==kind
+        && c["track"]==track && c["clip_index"]==clip && c["target_signature"]==signature).count();
+    if exact!=1{return Err("Clip target is stale or ambiguous.".into());}
+    let (_,planner)=strategy(&issue.category);
+    let expected=json!({"project_guid":session.project_guid,"project_path":timeline.pointer("/expected/project_path"),
+        "sequence_guid":session.sequence_guid,"clips":[{"kind":kind,"track":track,"clip_index":clip,"signature":signature}]});
+    if planner.is_empty() || matches!(issue.category.as_str(),"caption"|"continuity"|"other") {
+        return Ok(json!({"supported":false,"reason":"No verified native edit for this review issue.","expected":expected}));
+    }
+    if issue.category=="transition" {
+        return Ok(json!({"supported":false,"planner":planner,"expected":expected,
+            "reason":"Inspect exact boundary, transition match name, duration and position before proposing an edit."}));
+    }
+    if issue.category=="graphics" {
+        let bound=inspection.get("expected").and_then(|v|v.get("clips")).and_then(Value::as_array)
+            .is_some_and(|clips| clips.len()==1 && clips[0]["signature"]==signature);
+        return Ok(json!({"supported":false,"planner":planner,"expected":expected,"native_inspection_consistent":bound,
+            "reason":"Provide an explicitly inspected primitive MOGRT property and value to the existing graphics planner."}));
+    }
+    let Some((component,param))=selector else {return Ok(json!({"supported":false,"planner":planner,"expected":expected,
+        "reason":"Select an exact inspected component match name and parameter display name; no vision-inferred binding."}));};
+    if component.is_empty()||component.len()>240||param.is_empty()||param.len()>240{return Err("Invalid native selector.".into());}
+    if inspection.get("componentsTruncated").and_then(Value::as_bool)!=Some(false)
+        || inspection.get("track").and_then(Value::as_u64)!=Some(track as u64)
+        || inspection.get("clipIndex").and_then(Value::as_u64)!=Some(clip as u64)
+        || inspection.get("components").and_then(Value::as_array).is_some_and(|c|c.iter().any(|c|c["paramsTruncated"]==true)) {
+        return Err("Native component inspection is incomplete or targets another clip.".into());
+    }
+    let components=inspection.get("components").and_then(Value::as_array).ok_or("No native components returned.")?;
+    let matching=components.iter().filter(|c|c.get("matchName").and_then(Value::as_str)==Some(component)).collect::<Vec<_>>();
+    if matching.len()!=1 {return Ok(json!({"supported":false,"planner":planner,"expected":expected,
+        "reason":"Native component identity is missing or ambiguous."}));}
+    let hits=matching.into_iter()
+        .flat_map(|c|c.get("params").and_then(Value::as_array).into_iter().flatten())
+        .filter(|p|p.get("displayName").and_then(Value::as_str)==Some(param)).collect::<Vec<_>>();
+    if hits.len()!=1 {return Ok(json!({"supported":false,"planner":planner,"expected":expected,
+        "reason":"Native component/parameter is missing or ambiguous; inspect and select exact identity.","match_count":hits.len().min(2)}));}
+    let value=&hits[0]["startValue"];
+    let primitive=value.is_boolean()||value.is_number()||value.is_string();
+    let animated=hits[0]["timeVarying"].as_bool().unwrap_or(true);
+    let supported=primitive && !animated;
+    Ok(json!({"supported":supported,"planner":planner,"operation_family":if kind=="audio"{"premiere_plan_audio_automation"}else{"premiere_plan_video_recipe"},
+        "expected":expected,"binding":{"component_match_name":component,"param_display_name":param,"current_value":value,
+            "value_type":if value.is_number(){"number"}else if value.is_string(){"string"}else if value.is_boolean(){"boolean"}else{"unknown"},
+            "time_varying":animated,"keyframes_supported":hits[0]["keyframesSupported"]},
+        "missing_information":if supported {vec!["User-approved exact desired value and typed planner settings"]}else{vec!["Static primitive native parameter"]},
+        "reason":if supported {"Exact binding available; invoke typed planner and normal approval separately."}else{"Animated, complex or unreadable value cannot be statically edited."}}))
+}
+
+#[cfg(test)] mod tests {
+    use super::*;
+    fn fixture()->(Session,Value){
+        let mut s=Session::new("id".into(),"p".into(),"s".into(),"grade".into(),"".into(),vec![2.0],4).unwrap();
+        s.status="awaiting_approval".into();
+        s.reviews.push(crate::premiere_review::Review {iteration:1,overall_confidence:0.9,stop_recommended:false,
+            issues:vec![Issue{id:"i".into(),category:"color".into(),severity:"medium".into(),confidence:0.9,
+                frame_seconds:vec![2.0],observation:"warm".into(),suggested_action_type:"color_recipe".into()}]});
+        let item=json!({"clipIndex":0,"name":"clip","startSeconds":0.0,"endSeconds":4.0,"targetSignature":"sig"});
+        (s,json!({"sequenceGuid":"s","expected":{"project_guid":"p","project_path":"C:/test.prproj"},"truncated":false,
+            "videoTracks":[{"index":0,"items":[item.clone()]},{"index":1,"items":[item]}],"audioTracks":[]}))
+    }
+    #[test] fn grounded_overlap_and_stale_target(){let (s,t)=fixture();let i=issue(&s,"i",2.0).unwrap();
+        assert!(issue(&s,"i",2.1).is_err());let r=resolve(&s,i,2.0,&t).unwrap();assert_eq!(r["candidates"].as_array().unwrap().len(),2);
+        assert_eq!(r["ambiguous"],true);let mut changed=t.clone();changed["sequenceGuid"]=json!("other");assert!(resolve(&s,i,2.0,&changed).is_err());
+        assert!(bind(&s,i,2.0,&t,"video",0,0,"old",None,&json!({})).is_err());}
+    #[test] fn exact_primitive_requires_unique_native_binding(){let (s,t)=fixture();let i=issue(&s,"i",2.0).unwrap();
+        let mut native=json!({"track":0,"clipIndex":0,"componentsTruncated":false,"components":[{"matchName":"color.native",
+            "paramsTruncated":false,"params":[{"displayName":"Exposure","startValue":1.0,"timeVarying":false,"keyframesSupported":true}]}]});
+        let b=bind(&s,i,2.0,&t,"video",0,0,"sig",Some(("color.native","Exposure")),&native).unwrap();assert_eq!(b["supported"],true);
+        assert_eq!(b["expected"]["clips"][0]["signature"],"sig");
+        native["components"][0]["params"][0]["timeVarying"]=json!(true);
+        assert_eq!(bind(&s,i,2.0,&t,"video",0,0,"sig",Some(("color.native","Exposure")),&native).unwrap()["supported"],false);
+        native["components"][0]["params"][0]["timeVarying"]=json!(false);
+        let duplicate=native["components"][0]["params"][0].clone();
+        native["components"][0]["params"].as_array_mut().unwrap().push(duplicate);
+        assert_eq!(bind(&s,i,2.0,&t,"video",0,0,"sig",Some(("color.native","Exposure")),&native).unwrap()["supported"],false);
+    }
+}
