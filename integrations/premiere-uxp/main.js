@@ -3649,6 +3649,21 @@ async function setCaptionTrackMute(argumentsValue) {
   };
 }
 
+async function inspectAssemblyItems(argumentsValue) {
+  const ids=argumentsValue?.itemIds;
+  if (!Array.isArray(ids) || !ids.length || ids.length>64 || ids.some(id=>typeof id!=="string"||!id||id.length>240)) throw new Error("Assembly inspection requires 1–64 exact project item ids.");
+  const project=await requireProject(), sequence=await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+  const root=await project.getRootItem();
+  const items=[];
+  for (const id of ids) {
+    const item=await findProjectItemById(root,id);
+    items.push({id,found:!!item,insertable:!!item&&!!asClipProjectItem(item),name:item?.name||null});
+  }
+  return {expected:{project_guid:plainGuid(project.guid),project_path:project.path||null,sequence_guid:plainGuid(sequence.guid),clips:[]},
+    video_tracks:await sequence.getVideoTrackCount(),audio_tracks:await sequence.getAudioTrackCount(),items};
+}
+
 async function insertProjectItem(argumentsValue) {
   const itemId =
     typeof argumentsValue?.itemId === "string"
@@ -4052,6 +4067,8 @@ async function dispatchNativeCommand(command) {
       return await createSequenceFromMedia(command.arguments || {});
     case "create_subsequence":
       return await createSubsequence(command.arguments || {});
+    case "inspect_assembly_items":
+      return await inspectAssemblyItems(command.arguments || {});
     case "insert_project_item":
       return await insertProjectItem(command.arguments || {});
     case "save_project":

@@ -31,6 +31,7 @@ mod premiere_edit_session;
 use premiere_diagnostics::DiagnosticsLimits;
 mod premiere_subtitles;
 mod premiere_dialogue;
+mod premiere_assembly;
 mod premiere_mogrt;
 use premiere_mogrt::GraphicsRequest;
 mod premiere_audio;
@@ -107,6 +108,9 @@ Available tools:
 - premiere_plan_transcript_ducking: {"item_id":"dialogue project item","target":{"kind":"audio","track":0,"clip_index":0,"component_match_name":"inspected","param_display_name":"inspected"},"request":{"mode":"duck","duration_seconds":30,"baseline":1,"value_unit":"native","target_value":0.4,"attack_seconds":0.2,"release_seconds":0.5,"regions":[]},"transcript_offset_seconds":0,"music_start_seconds":0,"merge_gap_seconds":0}
 - premiere_apply_transcript_ducking: {"item_id":"dialogue project item","target":{"kind":"audio","track":0,"clip_index":0,"component_match_name":"inspected","param_display_name":"inspected"},"request":{"mode":"duck","duration_seconds":30,"baseline":1,"value_unit":"native","target_value":0.4,"attack_seconds":0.2,"release_seconds":0.5,"regions":[]},"transcript_offset_seconds":0,"music_start_seconds":0,"merge_gap_seconds":0,"expected":{"project_guid":"...","sequence_guid":"...","clips":[{"kind":"audio","track":0,"clip_index":0,"signature":"..."}]}}
 - premiere_plan_audio_automation: {"target":{"kind":"audio","track":0,"clip_index":0,"component_match_name":"discovered","param_display_name":"discovered"},"request":{"mode":"duck","duration_seconds":30,"baseline":1,"value_unit":"linear_amplitude","reduction_db":12,"attack_seconds":0.2,"release_seconds":0.5,"regions":[{"start":2,"end":5}]}}
+- premiere_plan_assembly: {"assembly":{"schema_version":1,"shots":[{"item_id":"exact project item","timeline_seconds":0,"video_track":0,"audio_track":0,"mode":"insert"}],"chapters":[{"name":"Section","seconds":0}]}}
+- premiere_apply_assembly: {"assembly":{"schema_version":1,"shots":[{"item_id":"exact project item","timeline_seconds":0,"video_track":0,"audio_track":0,"mode":"insert"}]},"expected":{"project_guid":"...","sequence_guid":"...","clips":[]}}
+- premiere_cancel_assembly: {}
 - premiere_batch_finish: {"targets":[{"track":0,"clip_index":2,"request":{"preset":"natural_correction","bindings":[{"role":"contrast","component_match_name":"exact","param_display_name":"exact","unit":1,"min":0,"max":2}]}}],"expected":{"project_guid":"...","sequence_guid":"...","clips":[{"kind":"video","track":0,"clip_index":2,"signature":"inspected"}]}}
 - premiere_batch_finish_cancel: {}
 - premiere_plan_video_recipe: {"track":0,"clip_index":0,"request":{"preset":"zoom_in","start_seconds":0,"end_seconds":2,"bindings":[{"role":"scale","component_match_name":"discovered","param_display_name":"discovered","start_value":100,"end_value":110}]}}
@@ -416,6 +420,8 @@ enum ToolAction {
     PremiereTranscriptDucking { item_id: String, target: ParameterTarget, request: AudioPlanRequest, transcript_offset: f64, music_start: f64, merge_gap: f64, apply: bool },
     PremiereBatchFinish { targets: Vec<Value> },
     PremiereBatchFinishCancel,
+    PremiereAssembly { assembly: premiere_assembly::Assembly, apply: bool },
+    PremiereAssemblyCancel,
     PremierePopulateMogrt { track: u32, clip_index: u32, request: GraphicsRequest },
     PremiereImportTranscript { item_id: String, transcript_json: String },
     PremiereAttachProxy { item_id: String, proxy_path: String },
@@ -524,6 +530,8 @@ struct ActionState {
     acceptance_probe_running: AtomicBool,
     finishing_running: AtomicBool,
     finishing_cancelled: AtomicBool,
+    assembly_running: AtomicBool,
+    assembly_cancelled: AtomicBool,
 }
 
 struct AcceptanceProbeGuard<'a>(&'a AtomicBool);
@@ -736,6 +744,9 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_plan_video_recipe"
         | "premiere_batch_finish"
         | "premiere_batch_finish_cancel"
+        | "premiere_plan_assembly"
+        | "premiere_apply_assembly"
+        | "premiere_cancel_assembly"
         | "premiere_timeline_capabilities"
         | "premiere_timeline"
         | "premiere_caption_tracks"
@@ -2193,6 +2204,25 @@ fn stage_tool(
             request.validate()?;
             (ToolAction::PremierePlanAudioAutomation {target, request}, "Plan named audio automation".into(), "Inspect a parameter and plan supplied dialogue ducking/fade/pan values; no edit or speech detection.".into(), RiskLevel::Low)
         }
+        "premiere_plan_assembly" => {
+            let assembly:premiere_assembly::Assembly=serde_json::from_value(proposal.arguments.get("assembly").cloned().unwrap_or(Value::Null)).map_err(|e|format!("Invalid shot list: {e}"))?;
+            assembly.validate()?;
+            if false {
+                let expected=premiere_expectation.as_ref().ok_or("Assembly edit requires inspected project/sequence expectation.")?;
+                if expected.sequence_guid.is_none()||!expected.clips.is_empty(){return Err("Assembly requires exact project/sequence expectation without stale clip assumptions.".into());}
+            }
+            (ToolAction::PremiereAssembly{assembly,apply:false},if false{"Assemble explicit Premiere shot list"}else{"Plan explicit Premiere shot list"}.into(),"Use inspected project items and existing typed insert/overwrite; no inferred source trims or media assets.".into(),if false{RiskLevel::High}else{RiskLevel::Low})
+        }
+        "premiere_apply_assembly" => {
+            let assembly:premiere_assembly::Assembly=serde_json::from_value(proposal.arguments.get("assembly").cloned().unwrap_or(Value::Null)).map_err(|e|format!("Invalid shot list: {e}"))?;
+            assembly.validate()?;
+            if true {
+                let expected=premiere_expectation.as_ref().ok_or("Assembly edit requires inspected project/sequence expectation.")?;
+                if expected.sequence_guid.is_none()||!expected.clips.is_empty(){return Err("Assembly requires exact project/sequence expectation without stale clip assumptions.".into());}
+            }
+            (ToolAction::PremiereAssembly{assembly,apply:true},if true{"Assemble explicit Premiere shot list"}else{"Plan explicit Premiere shot list"}.into(),"Use inspected project items and existing typed insert/overwrite; no inferred source trims or media assets.".into(),if true{RiskLevel::High}else{RiskLevel::Low})
+        }
+        "premiere_cancel_assembly" => (ToolAction::PremiereAssemblyCancel,"Cancel Premiere assembly".into(),"Stop launching further shots after current native action.".into(),RiskLevel::Low),
         "premiere_batch_finish" => {
             let targets=proposal.arguments.get("targets").and_then(Value::as_array).ok_or("Batch requires explicit targets.")?;
             if targets.is_empty()||targets.len()>32 {return Err("Batch finishing requires 1–32 targets.".into());}
@@ -6292,6 +6322,61 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let mut arguments = target.bridge_arguments(); arguments["expectedSignature"] = json!(expected_signature);
             let value = premiere_bridge.request("remove_effect", arguments, Duration::from_secs(20)).await?;
             Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&json!({"backup":backup,"result":value})).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
+        }
+        ToolAction::PremiereAssemblyCancel => {
+            state.assembly_cancelled.store(true,Ordering::Release);
+            Ok(ActionResult{success:true,tool,stdout:json!({"cancel_requested":true,"running":state.assembly_running.load(Ordering::Acquire)}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereAssembly{assembly,apply} => {
+            let expected=premiere_bridge.expected;
+            if apply {
+                if state.assembly_running.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){return Err("Another assembly is active.".into());}
+                state.assembly_cancelled.store(false,Ordering::Release);
+            }
+            let _running_guard=if apply{Some(AcceptanceProbeGuard(&state.assembly_running))}else{None};
+            let ids:Vec<&str>=assembly.shots.iter().map(|shot|shot.item_id.as_str()).collect();
+            let inspected=premiere_bridge.request("inspect_assembly_items",json!({"itemIds":ids}),Duration::from_secs(30)).await?;
+            let native_expected=inspected.get("expected").ok_or("Assembly preflight returned no project/sequence identity.")?;
+            if apply&&Some(native_expected)!=expected.map(|e|serde_json::to_value(e).ok()).flatten().as_ref(){return Err("Assembly project or sequence changed since planning.".into());}
+            let video=inspected.get("video_tracks").and_then(Value::as_u64).ok_or("Video track count unavailable.")?;
+            let audio=inspected.get("audio_tracks").and_then(Value::as_u64).ok_or("Audio track count unavailable.")?;
+            let items=inspected.get("items").and_then(Value::as_array).ok_or("Project item inspection unavailable.")?;
+            if items.len()!=assembly.shots.len(){return Err("Incomplete project item inspection.".into());}
+            let mut blocked=Vec::new();
+            for (i,shot) in assembly.shots.iter().enumerate() {
+                if shot.video_track as u64>=video||shot.audio_track as u64>=audio||items[i]["id"].as_str()!=Some(shot.item_id.as_str())||items[i]["insertable"].as_bool()!=Some(true) {
+                    blocked.push(json!({"index":i,"item_id":shot.item_id,"reason":"Project item is missing/not insertable or target tracks do not exist."}));
+                }
+            }
+            if !apply {return Ok(ActionResult{success:true,tool,stdout:json!({"applied":false,"executable":blocked.is_empty(),"assembly":assembly,"blocked_shots":blocked,"expected":native_expected,"video_tracks":video,"audio_tracks":audio,"action_count":assembly.shots.len()+assembly.chapters.len(),"source_range_support":false}).to_string(),stderr:String::new(),exit_code:Some(0)});}
+            if !blocked.is_empty(){return Err("Assembly preflight blocked an invalid media item or track; nothing was inserted.".into());}
+            let backup=backup_premiere_project(&premiere_bridge).await?;
+            let mut results=Vec::new();let mut uncertainty=false;
+            for (i,shot) in assembly.shots.iter().enumerate(){
+                if state.assembly_cancelled.load(Ordering::Acquire){break;}
+                let result=premiere_bridge.request("insert_project_item",json!({"itemId":shot.item_id,"seconds":shot.timeline_seconds,"videoTrack":shot.video_track,"audioTrack":shot.audio_track,"mode":shot.mode}),Duration::from_secs(30)).await;
+                match result {
+                    Ok(value)=>results.push(json!({"index":i,"item_id":shot.item_id,"requested_seconds":shot.timeline_seconds,"status":"accepted","native_result":value})),
+                    Err(error)=>{
+                        uncertainty=error.contains("unknown")||error.contains("timed out")||error.contains("timeout");
+                        results.push(json!({"index":i,"item_id":shot.item_id,"status":if uncertainty{"uncertain"}else{"failed"},"reason":error.chars().take(240).collect::<String>()}));
+                        break;
+                    }
+                }
+            }
+            let mut markers=Vec::new();
+            if results.len()==assembly.shots.len()&&results.iter().all(|r|r["status"]=="accepted")&&!state.assembly_cancelled.load(Ordering::Acquire){
+                for chapter in &assembly.chapters {
+                    if state.assembly_cancelled.load(Ordering::Acquire){break;}
+                    match premiere_bridge.request("add_marker",json!({"name":chapter.name,"markerType":"Chapter","seconds":chapter.seconds,"durationSeconds":0,"comments":""}),Duration::from_secs(20)).await {
+                        Ok(value)=>markers.push(json!({"name":chapter.name,"seconds":chapter.seconds,"status":"accepted","native_result":value})),
+                        Err(error)=>{markers.push(json!({"name":chapter.name,"status":"failed","reason":error.chars().take(240).collect::<String>()}));break;}
+                    }
+                }
+            }
+            let timeline=if results.iter().any(|r|r["status"]=="accepted") {premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(15)).await.ok()}else{None};
+            let complete=results.len()==assembly.shots.len()&&results.iter().all(|r|r["status"]=="accepted")&&markers.len()==assembly.chapters.len()&&markers.iter().all(|m|m["status"]=="accepted")&&!state.assembly_cancelled.load(Ordering::Acquire)&&!uncertainty;
+            Ok(ActionResult{success:complete,tool,stdout:json!({"backup":backup,"complete":complete,"uncertain":uncertainty,"cancelled":state.assembly_cancelled.load(Ordering::Acquire),"shots":results,"chapters":markers,"timeline_reinspected":timeline.is_some(),"timeline":timeline,"review_recommended":true}).to_string(),stderr:String::new(),exit_code:Some(if complete{0}else{1})})
         }
         ToolAction::PremiereBatchFinishCancel => {
             state.finishing_cancelled.store(true,Ordering::Release);
