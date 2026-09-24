@@ -3316,13 +3316,17 @@ async function exportTranscript(argumentsValue) {
       previewChars += cost;
     }
     const srtPreviewLimit = 60000;
+    const delivery = argumentsValue?.deliverSrt === true;
+    if (delivery && (captionAdaptation.segments.length > 256 || captionAdaptation.srt.length > 60000)) {
+      throw new Error("Transcript SRT delivery exceeds the bounded 256 cue / 60000 character bridge result; no partial SRT will be written.");
+    }
     captions = {
       supported: true,
       schemaVersion: captionAdaptation.schemaVersion,
       source: captionAdaptation.source,
       segmentCount: captionAdaptation.segments.length,
-      segmentsTruncated: segmentPreview.length < captionAdaptation.segments.length,
-      segments: segmentPreview,
+      segmentsTruncated: delivery ? false : segmentPreview.length < captionAdaptation.segments.length,
+      segments: delivery ? captionAdaptation.segments : segmentPreview,
       overlapCount: captionAdaptation.overlaps.length,
       overlapsTruncated: captionAdaptation.overlaps.length > 64,
       overlaps: captionAdaptation.overlaps.slice(0, 64),
@@ -3337,7 +3341,7 @@ async function exportTranscript(argumentsValue) {
     itemId,
     chars: transcriptJson.length,
     truncated: transcriptJson.length > previewLimit,
-    transcriptJson: transcriptJson.slice(0, previewLimit),
+    transcriptJson: argumentsValue?.deliverSrt === true ? undefined : transcriptJson.slice(0, previewLimit),
     captions
   };
 }

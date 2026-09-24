@@ -29,6 +29,7 @@ mod premiere_export_jobs;
 mod premiere_review_binding;
 mod premiere_edit_session;
 use premiere_diagnostics::DiagnosticsLimits;
+mod premiere_subtitles;
 mod premiere_mogrt;
 use premiere_mogrt::GraphicsRequest;
 mod premiere_audio;
@@ -100,6 +101,7 @@ Available tools:
 - premiere_plan_speed: {"kind":"video|audio","track":0,"clip_index":0,"request":{"mode":"rate|duration|preset|ramp|freeze","rate":"rate mode: multiplier 0.01..100","duration_seconds":"duration/freeze mode: positive seconds","source_seconds":"freeze mode: source time","preset":"preset mode: normal|slow_motion|fast_motion","points":"ramp mode: [{source_offset_seconds:0,rate:1},...]","reverse":"optional boolean","preserve_audio_pitch":"optional boolean"}}
 - premiere_project_diagnostics: {"limits":{"max_items":10000,"max_depth":32,"max_detail_items":200}}
 - premiere_inspect_mogrt_properties: {"track":0,"clip_index":0}
+- premiere_populate_mogrt: {"track":0,"clip_index":0,"request":{"preset":"lower_third","fields":[{"role":"title","component_match_name":"exact inspected native component","param_display_name":"exact inspected native parameter","value":"Name"}]},"expected":{"project_guid":"...","sequence_guid":"...","clips":[{"kind":"video","track":0,"clip_index":0,"signature":"..."}]}}
 - premiere_plan_mogrt_recipe: {"track":0,"clip_index":0,"request":{"preset":"title|lower_third","fields":[{"role":"text|title|subtitle|property","component_match_name":"exact inspected name","param_display_name":"exact inspected name","value":"My title"}]}}
 - premiere_plan_audio_automation: {"target":{"kind":"audio","track":0,"clip_index":0,"component_match_name":"discovered","param_display_name":"discovered"},"request":{"mode":"duck","duration_seconds":30,"baseline":1,"value_unit":"linear_amplitude","reduction_db":12,"attack_seconds":0.2,"release_seconds":0.5,"regions":[{"start":2,"end":5}]}}
 - premiere_plan_video_recipe: {"track":0,"clip_index":0,"request":{"preset":"zoom_in","start_seconds":0,"end_seconds":2,"bindings":[{"role":"scale","component_match_name":"discovered","param_display_name":"discovered","start_value":100,"end_value":110}]}}
@@ -129,6 +131,8 @@ Available tools:
 - premiere_list_transcription_languages: {}
 - premiere_transcribe_item: {"item_id":"clip project item id","language":"optional language code such as en-US"}
 - premiere_export_transcript: {"item_id":"clip project item id"}
+- premiere_write_srt: {"output":"absolute .srt path","captions":[{"start":0,"end":2.5,"text":"Hello"}],"overwrite":false}
+- premiere_transcript_to_srt: {"item_id":"clip project item id","output":"absolute .srt path","overwrite":false}
 - premiere_import_transcript: {"item_id":"clip project item id","transcript_path":"absolute transcript .json path"}
 - premiere_attach_proxy: {"item_id":"clip project item id","proxy_path":"absolute proxy media path"}
 - premiere_batch_relink: {"items":[{"item_id":"clip project item id","new_path":"absolute replacement media path","override_compatibility":false}]}
@@ -402,6 +406,9 @@ enum ToolAction {
     PremiereListTranscriptionLanguages,
     PremiereTranscribeItem { item_id: String, language: Option<String> },
     PremiereExportTranscript { item_id: String },
+    PremiereWriteSrt { output: String, overwrite: bool, cues: Vec<premiere_subtitles::Cue> },
+    PremiereTranscriptToSrt { item_id: String, output: String, overwrite: bool },
+    PremierePopulateMogrt { track: u32, clip_index: u32, request: GraphicsRequest },
     PremiereImportTranscript { item_id: String, transcript_json: String },
     PremiereAttachProxy { item_id: String, proxy_path: String },
     PremiereBatchRelink { items: Vec<Value> },
@@ -712,6 +719,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_project_diagnostics"
         | "premiere_inspect_mogrt_properties"
         | "premiere_plan_mogrt_recipe"
+        | "premiere_populate_mogrt"
         | "premiere_plan_audio_automation"
         | "premiere_plan_video_recipe"
         | "premiere_timeline_capabilities"
@@ -776,6 +784,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_list_transcription_languages"
         | "premiere_transcribe_item"
         | "premiere_export_transcript"
+        | "premiere_write_srt"
+        | "premiere_transcript_to_srt"
         | "premiere_import_transcript"
         | "premiere_attach_proxy"
         | "premiere_batch_relink"
@@ -2112,6 +2122,15 @@ fn stage_tool(
             let clip_index = proposal.arguments.get("clip_index").and_then(Value::as_u64).filter(|v| *v <= 10000).ok_or("Clip index must be 0–10000.")? as u32;
             (ToolAction::PremiereInspectMogrtProperties {track, clip_index}, "Inspect graphics properties".into(), "Read bounded native video component parameters; no inferred MOGRT identity.".into(), RiskLevel::Low)
         }
+        "premiere_populate_mogrt" => {
+            let track=proposal.arguments.get("track").and_then(Value::as_u64).filter(|v|*v<=128).ok_or("Track must be 0–128.")? as u32;
+            let clip_index=proposal.arguments.get("clip_index").and_then(Value::as_u64).filter(|v|*v<=10000).ok_or("Clip index must be 0–10000.")? as u32;
+            let request:GraphicsRequest=serde_json::from_value(proposal.arguments.get("request").cloned().unwrap_or(Value::Null)).map_err(|e|format!("Invalid graphics fields: {e}"))?;
+            request.validate()?;
+            let expected=premiere_expectation.as_ref().ok_or("Populating graphics requires inspected project/sequence/clip expectation.")?;
+            if expected.sequence_guid.is_none() || expected.clips.len()!=1 || !expected.clips.iter().any(|c|c.kind=="video"&&c.track==track&&c.clip_index==clip_index) {return Err("Exact inspected graphics clip expectation required.".into());}
+            (ToolAction::PremierePopulateMogrt{track,clip_index,request},"Populate exact Premiere graphics fields".into(),format!("Set {} inspected fields on V{track} clip #{clip_index}; MOGRT identity must be inspected.",proposal.arguments["request"]["fields"].as_array().map_or(0,Vec::len)),RiskLevel::High)
+        }
         "premiere_plan_mogrt_recipe" => {
             let track = proposal.arguments.get("track").and_then(Value::as_u64).filter(|v| *v <= 128).ok_or("Track must be 0–128.")? as u32;
             let clip_index = proposal.arguments.get("clip_index").and_then(Value::as_u64).filter(|v| *v <= 10000).ok_or("Clip index must be 0–10000.")? as u32;
@@ -3423,6 +3442,22 @@ fn stage_tool(
                 format!("Export transcript for project item {item_id}."),
                 RiskLevel::Low,
             )
+        }
+        "premiere_write_srt" => {
+            let output = absolute_path(arg_string(&proposal.arguments,"output")?)?;
+            let overwrite = proposal.arguments.get("overwrite").and_then(Value::as_bool).unwrap_or(false);
+            let cues: Vec<premiere_subtitles::Cue> = serde_json::from_value(proposal.arguments.get("captions").cloned().unwrap_or(Value::Null)).map_err(|e|format!("Invalid captions: {e}"))?;
+            premiere_subtitles::serialize(&cues)?;
+            premiere_subtitles::validate_output(&output,overwrite)?;
+            (ToolAction::PremiereWriteSrt{output:output.clone(),overwrite,cues},"Deliver Premiere SRT subtitles".into(),format!("Write SRT to {output}; replace existing file={overwrite}."),if overwrite {RiskLevel::High} else {RiskLevel::Medium})
+        }
+        "premiere_transcript_to_srt" => {
+            let item_id=arg_string(&proposal.arguments,"item_id")?;
+            if item_id.is_empty() || item_id.chars().count()>240 { return Err("Transcript item id must be 1–240 characters.".into()); }
+            let output=absolute_path(arg_string(&proposal.arguments,"output")?)?;
+            let overwrite=proposal.arguments.get("overwrite").and_then(Value::as_bool).unwrap_or(false);
+            premiere_subtitles::validate_output(&output,overwrite)?;
+            (ToolAction::PremiereTranscriptToSrt{item_id,output:output.clone(),overwrite},"Deliver transcript SRT subtitles".into(),format!("Export Premiere transcript to {output}; replace existing file={overwrite}."),if overwrite {RiskLevel::High} else {RiskLevel::Medium})
         }
         "premiere_list_transcription_languages" => (
             ToolAction::PremiereListTranscriptionLanguages,
@@ -6209,6 +6244,20 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let value = premiere_bridge.request("inspect_mogrt_properties", json!({"track":track,"clipIndex":clip_index}), Duration::from_secs(30)).await?;
             Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&value).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
         }
+        ToolAction::PremierePopulateMogrt{track,clip_index,request} => {
+            let expected=premiere_bridge.expected.ok_or("Missing graphics target expectation.")?;
+            let plan=premiere_bridge.request("plan_mogrt_recipe",json!({"track":track,"clipIndex":clip_index,"request":request}),Duration::from_secs(30)).await?;
+            if plan.get("expected")!=Some(&serde_json::to_value(expected).map_err(|e|e.to_string())?) {
+                return Err("Graphics target changed since native inspection; no field was written.".into());
+            }
+            let settings=plan.get("settings").and_then(Value::as_array).ok_or("Graphics plan returned no typed settings.")?;
+            if settings.len()!=request.fields.len() || !plan.get("skipped").and_then(Value::as_array).is_some_and(Vec::is_empty) {
+                return Err("MOGRT fields were unavailable, ambiguous or incompatible; no partial graphic was applied.".into());
+            }
+            let backup=backup_premiere_project(&premiere_bridge).await?;
+            let result=premiere_bridge.request("apply_video_recipe",json!({"track":track,"clipIndex":clip_index,"settings":settings}),Duration::from_secs(45)).await?;
+            Ok(ActionResult{success:true,tool,stdout:json!({"backup":backup,"result":result,"field_count":settings.len(),"native_reinspection_recommended":true}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
         ToolAction::PremierePlanMogrtRecipe { track, clip_index, request } => {
             let mut value = premiere_bridge.request("plan_mogrt_recipe", json!({"track":track,"clipIndex":clip_index,"request":request}), Duration::from_secs(30)).await?;
             premiere_plan_calibration(&mut value,&premiere_bridge,app).await?;
@@ -7398,6 +7447,22 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 stderr: String::new(),
                 exit_code: Some(0),
             })
+        }
+        ToolAction::PremiereWriteSrt{output,overwrite,cues} => {
+            let value=premiere_subtitles::write(&output,overwrite,&cues)?;
+            Ok(ActionResult{success:true,tool,stdout:value.to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereTranscriptToSrt{item_id,output,overwrite} => {
+            premiere_subtitles::validate_output(&output,overwrite)?;
+            let value=premiere_bridge.request("export_transcript",json!({"itemId":item_id,"deliverSrt":true}),Duration::from_secs(30)).await?;
+            let captions=value.get("captions").ok_or("Premiere transcript returned no structured captions.")?;
+            if captions.get("supported").and_then(Value::as_bool)!=Some(true) || captions.get("segmentsTruncated").and_then(Value::as_bool)!=Some(false) {
+                return Err("Transcript has no complete recognized explicit timing; no partial SRT written.".into());
+            }
+            let cues:Vec<premiere_subtitles::Cue>=serde_json::from_value(captions.get("segments").cloned().ok_or("Missing transcript segments.")?).map_err(|e|format!("Invalid transcript timing: {e}"))?;
+            let mut result=premiere_subtitles::write(&output,overwrite,&cues)?;
+            result["source_item_id"]=json!(item_id);
+            Ok(ActionResult{success:true,tool,stdout:result.to_string(),stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::PremiereListTranscriptionLanguages => {
             let value = premiere_bridge.request(

@@ -341,3 +341,9 @@ After P/Q/R: code complete approximately 74% as a conservative feature coverage 
 - [ ] Runtime acceptance for Groups 2 transitions and 3–8, actual Premiere/UXP tests, native unit/semantic calibration and recovery acceptance remain outstanding. Conservative code-complete estimate remains approximately 74%; runtime verified 0% without a real paired host; production ready: no.
 
 Next Premiere priority: run paired Premiere on an explicitly registered disposable project, fix any Rust/host regressions, verify effect/audio/review/export outcomes and correlate a documented native completion event before production-readiness promotion.
+
+### Premiere subtitle delivery and inspected graphics (Module V)
+
+- `premiere_write_srt` writes validated UTF-8 captions to an absolute `.srt` file under an existing directory. Existing files require explicit overwrite approval; cues and text are bounded. `premiere_transcript_to_srt` reads real Premiere transcript segments and writes only complete recognized timing (at most 256 cues/60,000 characters per bridge delivery); unknown or oversized schemas fail without a partial file. Native Premiere caption creation remains unsupported.
+- `premiere_populate_mogrt` accepts user-supplied exact native component/parameter selectors and a fresh clip expectation, re-plans against the inspected host, refuses ambiguous or incompatible fields as a group, takes a `.prproj` checkpoint and applies the typed video parameter recipe. A supplied MOGRT still needs the existing `premiere_insert_mogrt_path` action; batch insertion and persistent template mapping remain outstanding. No semantic role is inferred from native display names.
+- Feature coverage remains about 74% conservatively until batch graphics, talking-head audio finishing, multi-clip finishing and shot-list assembly execute end to end; runtime verified 0% without a paired Premiere host.
