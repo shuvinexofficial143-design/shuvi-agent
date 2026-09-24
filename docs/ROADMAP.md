@@ -257,3 +257,15 @@ Estimate: code complete approximately 65%; runtime verified 0% this session; pro
 - [ ] Native caption creation/text-editing/import only if a future documented UXP API exposes it safely.
 
 Estimate after Module F: code complete approximately 67%; runtime verified 0% this session; production readiness not established. Next: Module G — inspected MOGRT editable-property workflows.
+
+### Module G — inspected graphics/MOGRT properties (2026-09-24)
+- [x] Read-only typed premiere_inspect_mogrt_properties and premiere_plan_mogrt_recipe routes with exact bounded video targets.
+- [x] Generic native clip/component/parameter inspection, primitive start values, keyframe/time-varying state and actual setter-method presence.
+- [x] Honest capability boundary: no asserted native MOGRT identity or inferred Essential Graphics field roles.
+- [x] title/lower_third plans accept exact supplied selectors; text roles require inspected strings, property roles require exact primitive type equality. Complex/time-varying/unavailable fields are skipped, duplicates/oversized requests rejected.
+- [x] 128-component, 128-parameter/component, 256-total-parameter, 2048-value-character and 48000-serialized-character budgets. Incomplete inspection cannot produce editable settings.
+- [x] Returns existing project/sequence/clip expectations and settings for the checkpointed high-risk video recipe executor; no new write path.
+- [x] Seventeen graphics tests added; 93 total Node tests pass, registry validation and frontend build pass. Fixed pre-existing transport/speed fixture loading of the caption module from c986c3f.
+- [ ] Rust schema tests/compilation: local Cargo unavailable. Real Premiere template text/property edit, undo and visual verification pending.
+
+Conservative estimate after Module G: code complete approximately 69%; runtime verified 0%; production readiness not established. Next: Module I — bounded project/media diagnostics. Native type/setter presence is not proof that any particular template accepts a write.

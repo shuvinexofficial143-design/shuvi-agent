@@ -7,6 +7,8 @@ const { buildRecipePlan } = require("./recipe-plans.js");
 const { buildAudioPlan } = require("./audio-plans.js");
 const { adaptTranscriptTiming, captionCapability } = require("./caption-workflows.js");
 
+const { inspectProperties, planRecipe: planGraphicsRecipe } = require("./mogrt-workflows.js");
+
 const BRIDGE_BASE = "http://127.0.0.1:17361";
 let bridgeToken = "";
 let pollTimer = null;
@@ -3862,6 +3864,26 @@ async function planClipSpeed(argumentsValue) {
   return planSpeed(snapshot, argumentsValue.request);
 }
 
+async function graphicsTarget(args) {
+  if (!Number.isInteger(args?.track) || args.track < 0 || args.track > 128 || !Number.isInteger(args?.clipIndex) || args.clipIndex < 0 || args.clipIndex > 10000) throw new Error("Bounded exact video track/clip target required.");
+  return await getVideoClipTarget(args.track, args.clipIndex);
+}
+async function graphicsExpectation(target, args) {
+  const signature = await clipTargetSignature(target.project, target.sequence, target.item, "video", args.track, args.clipIndex);
+  return {project_guid: plainGuid(target.project.guid), project_path: target.project.path || null, sequence_guid: plainGuid(target.sequence.guid), clips: [{kind: "video", track: args.track, clip_index: args.clipIndex, signature}]};
+}
+async function inspectMogrtProperties(args) {
+  const target = await graphicsTarget(args), inspected = await inspectProperties(target.item);
+  let expected = null;
+  try { expected = await graphicsExpectation(target, args); } catch (e) { inspected.errors.push(String(e?.message || e).slice(0, 240)); }
+  return {...inspected, track: args.track, clipIndex: args.clipIndex, expected};
+}
+async function planMogrtRecipe(args) {
+  const target = await graphicsTarget(args), inspected = await inspectProperties(target.item);
+  const plan = planGraphicsRecipe(args.request, inspected);
+  return {...plan, expected: await graphicsExpectation(target, args), capability: inspected.capability};
+}
+
 async function planAudioAutomation(args) {
   if (args.kind !== "audio") throw new Error("Audio automation requires an audio target.");
   const target = await resolveNamedAudioParam(args);
@@ -3998,6 +4020,10 @@ async function dispatchNativeCommand(command) {
       return await insertProjectItem(command.arguments || {});
     case "save_project":
       return await saveProject();
+    case "inspect_mogrt_properties":
+      return await inspectMogrtProperties(command.arguments);
+    case "plan_mogrt_recipe":
+      return await planMogrtRecipe(command.arguments);
     case "plan_audio_automation":
       return await planAudioAutomation(command.arguments);
     case "plan_video_recipe":

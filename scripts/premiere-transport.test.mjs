@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 
 function loadPanel() {
   const panel = { document: { getElementById: () => null }, require: name => {
+    if (name === "./caption-workflows.js" || name === "./mogrt-workflows.js") return {};
     if (name === "./audio-plans.js") return {};
     if (name === "./recipe-plans.js") return {};
     if (name === "uxp") return { entrypoints: { setup() {} } };
