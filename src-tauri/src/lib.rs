@@ -24,6 +24,7 @@ mod premiere_export;
 mod premiere_acceptance;
 mod premiere_acceptance_harness;
 mod premiere_review_binding;
+mod premiere_edit_session;
 use premiere_diagnostics::DiagnosticsLimits;
 mod premiere_mogrt;
 use premiere_mogrt::GraphicsRequest;
@@ -352,6 +353,12 @@ enum ToolAction {
     PremierePlanEditRecipe { request: premiere_editorial::Request },
     PremiereResolveReviewTarget { session_id: String, issue_id: String, frame_seconds: f64 },
     PremiereBindReviewFix { session_id: String, issue_id: String, frame_seconds: f64, kind: String, track: u32, clip_index: u32, target_signature: String, component_match_name: Option<String>, param_display_name: Option<String> },
+    PremiereEditSessionStart { request: premiere_editorial::Request },
+    PremiereEditSessionStatus { session_id: String },
+    PremiereEditSessionNext { session_id: String },
+    PremiereEditSessionRecordAction { session_id: String, stage_id: String, action_id: String },
+    PremiereEditSessionRecordReview { session_id: String, stage_id: String, review_session_id: String },
+    PremiereEditSessionCancel { session_id: String },
     PremiereSetTrackMute { kind: String, track: u32, muted: bool },
     PremiereSetClipEnabled { kind: String, track: u32, clip_index: u32, enabled: bool },
     PremiereListVideoTransitions,
@@ -712,6 +719,12 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_plan_edit_recipe"
         | "premiere_resolve_review_target"
         | "premiere_bind_review_fix"
+        | "premiere_edit_session_start"
+        | "premiere_edit_session_status"
+        | "premiere_edit_session_next"
+        | "premiere_edit_session_record_action"
+        | "premiere_edit_session_record_review"
+        | "premiere_edit_session_cancel"
         | "premiere_set_track_mute"
         | "premiere_set_clip_enabled"
         | "premiere_list_video_transitions"
@@ -2255,6 +2268,36 @@ fn stage_tool(
             premiere_editorial::plan(request.clone())?;
             (ToolAction::PremierePlanEditRecipe {request},"Plan professional Premiere edit".into(),
                 "Read-only versioned editorial stages; no sequence modification.".into(),RiskLevel::Low)
+        }
+        "premiere_edit_session_start" => {
+            let request:premiere_editorial::Request=serde_json::from_value(proposal.arguments.clone())
+                .map_err(|e|format!("Invalid editorial session request: {e}"))?;
+            premiere_editorial::plan(request.clone())?;
+            (ToolAction::PremiereEditSessionStart {request},"Start professional Premiere edit session".into(),
+                "Persist bounded editorial stages after live project and sequence inspection; no edit.".into(),RiskLevel::Low)
+        }
+        "premiere_edit_session_status" | "premiere_edit_session_next" | "premiere_edit_session_cancel" => {
+            let session_id=arg_string(&proposal.arguments,"session_id")?;
+            Uuid::parse_str(&session_id).map_err(|_|"Invalid edit session ID.")?;
+            let action=match proposal.tool.as_str(){
+                "premiere_edit_session_status"=>ToolAction::PremiereEditSessionStatus {session_id},
+                "premiere_edit_session_next"=>ToolAction::PremiereEditSessionNext {session_id},
+                _=>ToolAction::PremiereEditSessionCancel {session_id}};
+            (action,"Inspect or advance Premiere edit session".into(),"No stage is auto-executed; cancel persists state.".into(),RiskLevel::Low)
+        }
+        "premiere_edit_session_record_action" | "premiere_edit_session_record_review" => {
+            let session_id=arg_string(&proposal.arguments,"session_id")?;
+            Uuid::parse_str(&session_id).map_err(|_|"Invalid edit session ID.")?;
+            let stage_id=arg_string(&proposal.arguments,"stage_id")?;
+            let action=if proposal.tool=="premiere_edit_session_record_review" {
+                let review_session_id=arg_string(&proposal.arguments,"review_session_id")?;
+                Uuid::parse_str(&review_session_id).map_err(|_|"Invalid review session ID.")?;
+                ToolAction::PremiereEditSessionRecordReview {session_id,stage_id,review_session_id}
+            }else{
+                let action_id=arg_string(&proposal.arguments,"action_id")?;
+                ToolAction::PremiereEditSessionRecordAction {session_id,stage_id,action_id}
+            };
+            (action,"Record verified Premiere stage receipt".into(),"Confirm recent audit or bounded review evidence; no edit.".into(),RiskLevel::Low)
         }
         "premiere_resolve_review_target" | "premiere_bind_review_fix" => {
             let session_id=arg_string(&proposal.arguments,"session_id")?;
@@ -4241,6 +4284,13 @@ fn premiere_review_path(app: &AppHandle, session_id: &str) -> Result<std::path::
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("premiere-reviews");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir.join(format!("{session_id}.json")))
+}
+
+fn premiere_edit_session_path(app:&AppHandle,id:&str)->Result<std::path::PathBuf,String>{
+    Uuid::parse_str(id).map_err(|_|"Invalid Premiere edit session ID.")?;
+    let dir=app.path().app_data_dir().map_err(|e|e.to_string())?.join("premiere-edit-sessions");
+    fs::create_dir_all(&dir).map_err(|e|e.to_string())?;
+    Ok(dir.join(format!("{id}.json")))
 }
 
 fn premiere_acceptance_path(app: &AppHandle) -> Result<std::path::PathBuf,String> {
@@ -6234,6 +6284,71 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let plan=premiere_editorial::plan(request)?;
             Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&plan).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereEditSessionStart {request} => {
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let project=context.get("projectGuid").and_then(Value::as_str).filter(|s|!s.is_empty()).ok_or("Active project GUID unavailable.")?;
+            let sequence=context.pointer("/activeSequence/guid").and_then(Value::as_str).filter(|s|!s.is_empty()).ok_or("Active sequence GUID unavailable.")?;
+            let id=Uuid::new_v4().to_string();
+            let session=premiere_edit_session::Session::new(id.clone(),request,project,sequence,context.get("projectPath").and_then(Value::as_str))?;
+            premiere_edit_session::save(&premiere_edit_session_path(app,&id)?,&session)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"session":session,"next":"premiere_edit_session_next"}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereEditSessionStatus {session_id} => {
+            let session=premiere_edit_session::load(&premiere_edit_session_path(app,&session_id)?)?;
+            Ok(ActionResult {success:true,tool,stdout:serde_json::to_string(&session).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereEditSessionCancel {session_id} => {
+            let path=premiere_edit_session_path(app,&session_id)?;
+            let mut session=premiere_edit_session::load(&path)?;
+            session.cancel();premiere_edit_session::save(&path,&session)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"session_id":session_id,"status":"cancelled"}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereEditSessionNext {session_id} => {
+            let path=premiere_edit_session_path(app,&session_id)?;
+            let mut session=premiere_edit_session::load(&path)?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            session.identity(&context)?;
+            let result=session.next()?;premiere_edit_session::save(&path,&session)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"next":result,"session_status":session.status}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereEditSessionRecordAction {session_id,stage_id,action_id} => {
+            let path=premiere_edit_session_path(app,&session_id)?;
+            let mut session=premiere_edit_session::load(&path)?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            session.identity(&context)?;
+            let stage=session.recipe.stages.iter().find(|s|s.id==stage_id).ok_or("Unknown editorial stage.")?;
+            let required_capability=stage.required_capability.clone();let review_required=stage.review_required;
+            let receipt=read_audit(app,200)?.into_iter().find(|e|e.action_id.as_deref()==Some(action_id.as_str())
+                && e.timestamp_ms>=session.created_at_ms && e.event=="executed" && e.tool==required_capability)
+                .ok_or("No matching recent typed action audit receipt for this stage.")?;
+            session.record(&stage_id,&action_id,&receipt.tool,receipt.success)?;
+            premiere_edit_session::save(&path,&session)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"stage_id":stage_id,"state":session.stages.iter().find(|s|s.id==stage_id).map(|s|s.state.as_str()),
+                "audit_action_id":action_id,"review_required":review_required}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereEditSessionRecordReview {session_id,stage_id,review_session_id} => {
+            let path=premiere_edit_session_path(app,&session_id)?;
+            let mut session=premiere_edit_session::load(&path)?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            session.identity(&context)?;
+            let review=premiere_review::load(&premiere_review_path(app,&review_session_id)?)?;
+            if review.project_guid!=session.project_guid || review.sequence_guid!=session.sequence_guid
+                || review.status!="completed" || review.reviews.is_empty() {
+                return Err("Review is incomplete or belongs to another project/sequence.".into());
+            }
+            let last=review.reviews.last().ok_or("Review evidence unavailable.")?;
+            let stage=session.recipe.stages.iter().find(|s|s.id==stage_id).ok_or("Unknown editorial stage.")?;
+            if let Some(times)=stage.parameters.get("sample_times").and_then(Value::as_array) {
+                if times.len()!=review.sample_times.len() || times.iter().zip(&review.sample_times)
+                    .any(|(a,b)|a.as_f64()!=Some(*b)) {return Err("Review sample positions differ from the planned stage.".into());}
+            }
+            let acceptable=last.overall_confidence>=0.65 && !last.issues.iter().any(|i|i.confidence>=0.65 && matches!(i.severity.as_str(),"medium"|"high"));
+            session.review(&stage_id,&review_session_id,acceptable)?;
+            premiere_edit_session::save(&path,&session)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"stage_id":stage_id,"acceptable":acceptable,
+                "stage_state":if acceptable {"completed"} else {"failed"},
+                "on_issue":"premiere_resolve_review_target then premiere_bind_review_fix; a correction requires normal typed approval and an explicit new plan."}).to_string(),stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::PremiereResolveReviewTarget {session_id,issue_id,frame_seconds} => {
             let session=premiere_review::load(&premiere_review_path(app,&session_id)?)?;
