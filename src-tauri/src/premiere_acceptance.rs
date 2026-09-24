@@ -75,6 +75,24 @@ impl Default for Report {
 }
 
 impl Report {
+    /// Invoked only after the desktop executes an approved typed edit and receives
+    /// a matching live native post-inspection on the same disposable project.
+    pub fn verified_timeline_edit(&mut self,capability:&str,action:&str,version:&str,project:&str,
+        sequence:&str,checkpoint:&str)->Result<(),String>{
+        if (capability,action)!=("trim","premiere_trim_clip") || version.is_empty() || project.is_empty()
+            || sequence.is_empty() || checkpoint.is_empty() || checkpoint.len()>1024 {
+            return Err("Timeline acceptance requires a verified exact edit and checkpoint.".into());
+        }
+        let index=self.capabilities.iter().position(|c|c.name==capability).ok_or("Unknown acceptance capability.")?;
+        self.capabilities[index].state="runtime_verified".into();
+        self.capabilities[index].premiere_runtime_verified=true;
+        self.capabilities[index].reason=None;
+        self.append(Evidence {timestamp_ms:self.next_timestamp(),capability:capability.into(),action:action.into(),
+            result_category:"runtime_verified".into(),premiere_version:Some(version.into()),
+            project_guid:Some(project.into()),sequence_guid:Some(sequence.into()),
+            native_capability:Some("accepted typed trim; exact native timing reinspected".into()),
+            recovery:Some("Checkpoint recorded; rollback and recovery not yet verified.".into())})
+    }
     fn next_timestamp(&self) -> u64 {
         now_ms().max(self.evidence.last().map(|e|e.timestamp_ms.saturating_add(1)).unwrap_or(0))
     }

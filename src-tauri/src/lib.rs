@@ -23,6 +23,7 @@ mod premiere_editorial;
 mod premiere_export;
 mod premiere_acceptance;
 mod premiere_acceptance_harness;
+mod premiere_acceptance_execution;
 mod premiere_review_binding;
 mod premiere_edit_session;
 use premiere_diagnostics::DiagnosticsLimits;
@@ -420,6 +421,9 @@ enum ToolAction {
     PremiereAcceptanceProbe { group: u8 },
     PremiereAcceptanceRegisterDisposable { project_guid: String, project_path: String, sequence_guid: Option<String> },
     PremiereAcceptancePlan { group: u8 },
+    PremiereAcceptancePrepare { step: String, fixture: premiere_acceptance_execution::Fixture },
+    PremiereAcceptanceExecute { action_id: String },
+    PremiereAcceptanceCancel { action_id: String },
     PremiereExportSequence { output: String, preset: Option<String>, queue_to_ame: bool, overwrite: bool },
     PremiereSaveProject,
     WorkspaceScan { path: String },
@@ -787,6 +791,9 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_acceptance_probe"
         | "premiere_acceptance_register_disposable"
         | "premiere_acceptance_plan"
+        | "premiere_acceptance_prepare"
+        | "premiere_acceptance_execute"
+        | "premiere_acceptance_cancel"
         | "premiere_save_project"
         | "workspace_scan"
         | "search_text"
@@ -4043,6 +4050,27 @@ fn stage_tool(
             (ToolAction::PremiereAcceptancePlan {group},"Plan Premiere acceptance group".into(),
                 format!("Read-only bounded plan for group {group}; no edit launched."),RiskLevel::Low)
         }
+        "premiere_acceptance_prepare" => {
+            if proposal.arguments.get("group").and_then(Value::as_u64)!=Some(2){return Err("Only bounded Group 2 timeline fixtures are executable; other acceptance steps remain blocked.".into());}
+            let step=arg_string(&proposal.arguments,"step")?;
+            let fixture:premiere_acceptance_execution::Fixture=serde_json::from_value(proposal.arguments.get("fixture").cloned().ok_or("Exact acceptance fixture required.")?)
+                .map_err(|e|format!("Invalid acceptance fixture: {e}"))?;
+            if !matches!(step.as_str(),"trim"|"move"|"clone") {return Err("Acceptance action is unsupported.".into());}
+            (ToolAction::PremiereAcceptancePrepare {step,fixture},"Prepare one Premiere acceptance action".into(),
+                "Read-only live project/timeline snapshot and bounded exact clip fixture; no edit.".into(),RiskLevel::Low)
+        }
+        "premiere_acceptance_execute" | "premiere_acceptance_cancel" => {
+            let action_id=arg_string(&proposal.arguments,"action_id")?;
+            Uuid::parse_str(&action_id).map_err(|_|"Invalid acceptance action ID.")?;
+            if proposal.tool=="premiere_acceptance_execute" {
+                (ToolAction::PremiereAcceptanceExecute {action_id:action_id.clone()},
+                    "Execute ONE disposable Premiere acceptance edit".into(),
+                    format!("High risk: execute preplanned acceptance action {action_id} against the registered disposable project; requires a .prproj checkpoint, exact clip expectation and native post-inspection. No automatic rollback or retry."),RiskLevel::High)
+            }else{
+                (ToolAction::PremiereAcceptanceCancel {action_id},"Cancel Premiere acceptance action".into(),
+                    "Persist cooperative cancellation; an already running native edit may need inspection.".into(),RiskLevel::Low)
+            }
+        }
         "premiere_acceptance_probe" => {
             let group=proposal.arguments.get("group").and_then(Value::as_u64)
                 .filter(|g|(1..=8).contains(g)).ok_or("Acceptance group must be 1–8.")? as u8;
@@ -4303,6 +4331,13 @@ fn premiere_disposable_path(app:&AppHandle)->Result<std::path::PathBuf,String>{
     let dir=app.path().app_data_dir().map_err(|e|e.to_string())?.join("premiere-acceptance");
     fs::create_dir_all(&dir).map_err(|e|e.to_string())?;
     Ok(dir.join("disposable-v1.json"))
+}
+
+fn premiere_acceptance_action_path(app:&AppHandle,id:&str)->Result<std::path::PathBuf,String>{
+    Uuid::parse_str(id).map_err(|_|"Invalid acceptance action ID.")?;
+    let dir=app.path().app_data_dir().map_err(|e|e.to_string())?.join("premiere-acceptance").join("actions");
+    fs::create_dir_all(&dir).map_err(|e|e.to_string())?;
+    Ok(dir.join(format!("{id}.json")))
 }
 
 fn append_audit(app: &AppHandle, entry: &AuditEntry) -> Result<(), String> {
@@ -7741,6 +7776,107 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             } else {None};
             let value=premiere_acceptance_harness::plan(group,registration.as_ref(),context.as_ref())?;
             Ok(ActionResult {success:true,tool,stdout:value.to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereAcceptancePrepare {step,fixture} => {
+            if !state.premiere_bridge.status()?.paired {return Err("Paired Premiere UXP host unavailable.".into());}
+            let registration=premiere_acceptance_harness::load(&premiere_disposable_path(app)?)?
+                .ok_or("Register an explicitly disposable saved .prproj before mutating acceptance.")?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(10)).await?;
+            registration.check(&context)?;
+            let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+            let id=Uuid::new_v4().to_string();
+            let action=premiere_acceptance_execution::Action::new(id.clone(),step,fixture,&context,&timeline)?;
+            premiere_acceptance_execution::save(&premiere_acceptance_action_path(app,&id)?,&action)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"action":action,"next":"premiere_acceptance_execute",
+                "approval_required":true,"recovery":"Checkpoint will be retained; cleanup/rollback requires separate explicit approval."}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereAcceptanceCancel {action_id} => {
+            let path=premiere_acceptance_action_path(app,&action_id)?;
+            let mut action=premiere_acceptance_execution::load(&path)?;
+            if action.status=="prepared" {action.status="cancelled".into();}
+            if action.status=="executing" {action.cancellation_requested=true;}
+            premiere_acceptance_execution::save(&path,&action)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"action_id":action_id,"status":action.status,
+                "cancellation_requested":action.cancellation_requested,"native_edit_may_have_started":action.status=="executing"}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereAcceptanceExecute {action_id} => {
+            if state.acceptance_probe_running.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err() {
+                return Err("Another Premiere acceptance action is running.".into());
+            }
+            let _guard=AcceptanceProbeGuard(&state.acceptance_probe_running);
+            let path=premiere_acceptance_action_path(app,&action_id)?;
+            let mut record=premiere_acceptance_execution::load(&path)?;
+            if record.status!="prepared" || record.cancellation_requested {return Err("Acceptance action already used or cancelled; no retry.".into());}
+            if !state.premiere_bridge.status()?.paired {return Err("Paired Premiere UXP host unavailable.".into());}
+            let registration=premiere_acceptance_harness::load(&premiere_disposable_path(app)?)?
+                .ok_or("Disposable project registration is required.")?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(10)).await?;
+            registration.check(&context)?;
+            record.identity(&context)?;
+            let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+            if premiere_acceptance_execution::exact_clip(&timeline,&record.fixture)?!=record.before {
+                return Err("Timeline target changed after acceptance planning; inspect and prepare a new action.".into());
+            }
+            record.status="executing".into();
+            premiere_acceptance_execution::save(&path,&record)?;
+            let freshest=premiere_acceptance_execution::load(&path)?;
+            if freshest.cancellation_requested {
+                record.status="cancelled".into();record.cancellation_requested=true;
+                premiere_acceptance_execution::save(&path,&record)?;
+                return Err("Acceptance cancelled before the native edit.".into());
+            }
+            let fixture=&record.fixture;
+            let native_action=match record.step.as_str() {
+                "trim"=>ToolAction::PremiereTrimClip {kind:fixture.kind.clone(),track:fixture.track,clip_index:fixture.clip_index,
+                    start_seconds:fixture.start_seconds,end_seconds:fixture.end_seconds},
+                "move"=>ToolAction::PremiereMoveClip {kind:fixture.kind.clone(),track:fixture.track,clip_index:fixture.clip_index,
+                    delta_seconds:fixture.delta_seconds.ok_or("Missing planned move offset.")?},
+                "clone"=>ToolAction::PremiereCloneClip {kind:fixture.kind.clone(),track:fixture.track,clip_index:fixture.clip_index,
+                    time_offset_seconds:fixture.delta_seconds.ok_or("Missing planned clone offset.")?,video_track_offset:0,
+                    audio_track_offset:0,align_to_video:false,insert:false},
+                _=>return Err("Acceptance step not allowlisted.".into())
+            };
+            let native_tool=match record.step.as_str(){"trim"=>"premiere_trim_clip","move"=>"premiere_move_clip",_=>"premiere_clone_clip"};
+            let inner=PendingAction {premiere_expectation:Some(fixture.expected.clone()),tool:native_tool.into(),
+                detail:format!("Disposable acceptance {} action {}",record.step,action_id),action:native_action};
+            let native=Box::pin(execute_tool(inner,state,app)).await;
+            let native_result=match native {
+                Ok(result)=>result,
+                Err(error)=>{
+                    record.status="uncertain".into();record.recovery=Some("Native call failed or result uncertain; checkpoint/host inspection required before any retry.".into());
+                    premiere_acceptance_execution::save(&path,&record)?;
+                    return Ok(ActionResult{success:false,tool,stdout:json!({"action_id":action_id,"status":"uncertain",
+                        "retry_automatically":false}).to_string(),stderr:error,exit_code:None});
+                }
+            };
+            record.checkpoint=serde_json::from_str::<Value>(&native_result.stdout).ok()
+                .and_then(|v|v.get("backup").and_then(Value::as_str).map(str::to_owned));
+            if !native_result.success || record.checkpoint.is_none() {
+                record.status="uncertain".into();record.recovery=Some("Native result or checkpoint could not be confirmed; inspect before retry.".into());
+                premiere_acceptance_execution::save(&path,&record)?;
+                return Ok(ActionResult{success:false,tool,stdout:json!({"action_id":action_id,"status":"uncertain",
+                    "retry_automatically":false}).to_string(),stderr:native_result.stderr,exit_code:None});
+            }
+            let after=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await;
+            let verified=match after {Ok(after)=>record.finish(&after,true).unwrap_or_else(|_|{
+                record.status="uncertain".into();record.recovery=Some("Native post-state is incomplete; inspect before any retry.".into());false
+            }),Err(_)=>{
+                record.status="uncertain".into();record.recovery=Some("Post-inspection unavailable; do not retry or assume success.".into());false}};
+            if premiere_acceptance_execution::load(&path).is_ok_and(|latest|latest.cancellation_requested){record.cancellation_requested=true;}
+            premiere_acceptance_execution::save(&path,&record)?;
+            if verified && record.step=="trim" {
+                let report_path=premiere_acceptance_path(app)?;
+                let mut report=premiere_acceptance::load(&report_path)?;
+                if let Some(checkpoint)=record.checkpoint.as_deref(){
+                    report.verified_timeline_edit("trim","premiere_trim_clip",&record.premiere_version,
+                        &record.fixture.expected.project_guid,record.fixture.expected.sequence_guid.as_deref().unwrap_or(""),checkpoint)?;
+                    premiere_acceptance::save(&report_path,&report)?;
+                }
+            }
+            Ok(ActionResult{success:verified,tool,stdout:json!({"action_id":action_id,"status":record.status,
+                "native_poststate_verified":verified,"capability_promoted":verified && record.step=="trim",
+                "checkpoint":record.checkpoint,"recovery":record.recovery,"cleanup_needed":record.step=="clone",
+                "retry_automatically":false}).to_string(),stderr:String::new(),exit_code:Some(if verified{0}else{1})})
         }
         ToolAction::PremiereAcceptanceProbe {group} => {
             if state.acceptance_probe_running.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err() {
