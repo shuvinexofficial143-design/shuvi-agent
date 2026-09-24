@@ -24,6 +24,7 @@ mod premiere_export;
 mod premiere_acceptance;
 mod premiere_acceptance_harness;
 mod premiere_acceptance_execution;
+mod premiere_calibration;
 mod premiere_review_binding;
 mod premiere_edit_session;
 use premiere_diagnostics::DiagnosticsLimits;
@@ -424,6 +425,9 @@ enum ToolAction {
     PremiereAcceptancePrepare { step: String, fixture: premiere_acceptance_execution::Fixture },
     PremiereAcceptanceExecute { action_id: String },
     PremiereAcceptanceCancel { action_id: String },
+    PremiereCalibrationReport,
+    PremiereCalibrationObserve { target: premiere_calibration::Target, semantic_role: Option<String> },
+    PremiereCalibrationProbe { target: premiere_calibration::Target, delta: f64 },
     PremiereExportSequence { output: String, preset: Option<String>, queue_to_ame: bool, overwrite: bool },
     PremiereSaveProject,
     WorkspaceScan { path: String },
@@ -794,6 +798,9 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_acceptance_prepare"
         | "premiere_acceptance_execute"
         | "premiere_acceptance_cancel"
+        | "premiere_calibration_report"
+        | "premiere_calibration_observe"
+        | "premiere_calibration_probe"
         | "premiere_save_project"
         | "workspace_scan"
         | "search_text"
@@ -4059,6 +4066,24 @@ fn stage_tool(
             (ToolAction::PremiereAcceptancePrepare {step,fixture},"Prepare one Premiere acceptance action".into(),
                 "Read-only live project/timeline snapshot and bounded exact clip fixture; no edit.".into(),RiskLevel::Low)
         }
+        "premiere_calibration_report" => (ToolAction::PremiereCalibrationReport,"Read native parameter calibration".into(),
+            "Inspect bounded local host observations and verified recovery status.".into(),RiskLevel::Low),
+        "premiere_calibration_observe" | "premiere_calibration_probe" => {
+            let target:premiere_calibration::Target=serde_json::from_value(proposal.arguments.get("target").cloned().ok_or("Exact calibration target required.")?)
+                .map_err(|e|format!("Invalid calibration target: {e}"))?;
+            target.validate()?;
+            if proposal.tool=="premiere_calibration_observe" {
+                let semantic_role=arg_optional_string(&proposal.arguments,"semantic_role");
+                (ToolAction::PremiereCalibrationObserve {target,semantic_role},
+                    "Observe exact native Premiere parameter".into(),"Read-only native value; role and unit remain unverified.".into(),RiskLevel::Low)
+            }else{
+                let delta=proposal.arguments.get("delta").and_then(Value::as_f64).filter(|v|v.is_finite()&&*v!=0.0&&v.abs()<=1.0)
+                    .ok_or("Small bounded numeric delta required.")?;
+                (ToolAction::PremiereCalibrationProbe {target,delta},
+                    "Probe and restore disposable Premiere parameter".into(),
+                    format!("High risk: exact approved native parameter will be changed by a bounded delta of {delta}, reinspected, restored to its original value and reinspected again. A .prproj checkpoint is required. If delivery is uncertain, no blind retry or assumed recovery."),RiskLevel::High)
+            }
+        }
         "premiere_acceptance_execute" | "premiere_acceptance_cancel" => {
             let action_id=arg_string(&proposal.arguments,"action_id")?;
             Uuid::parse_str(&action_id).map_err(|_|"Invalid acceptance action ID.")?;
@@ -4338,6 +4363,27 @@ fn premiere_acceptance_action_path(app:&AppHandle,id:&str)->Result<std::path::Pa
     let dir=app.path().app_data_dir().map_err(|e|e.to_string())?.join("premiere-acceptance").join("actions");
     fs::create_dir_all(&dir).map_err(|e|e.to_string())?;
     Ok(dir.join(format!("{id}.json")))
+}
+
+fn premiere_calibration_path(app:&AppHandle)->Result<std::path::PathBuf,String>{
+    let dir=app.path().app_data_dir().map_err(|e|e.to_string())?.join("premiere-calibration");
+    fs::create_dir_all(&dir).map_err(|e|e.to_string())?;
+    Ok(dir.join("native-v1.json"))
+}
+
+async fn premiere_calibration_native(bridge:&PremiereClient<'_>,target:&premiere_calibration::Target)->Result<Value,String>{
+    bridge.request(if target.kind=="video"{"inspect_clip_effects"}else{"inspect_audio_clip_effects"},
+        json!({"track":target.track,"clipIndex":target.clip_index}),Duration::from_secs(20)).await
+}
+
+async fn premiere_plan_calibration(value:&mut Value,bridge:&PremiereClient<'_>,app:&AppHandle)->Result<(),String>{
+    let context=bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+    let version=context.get("premiereVersion").and_then(Value::as_str).unwrap_or("");
+    let registry=premiere_calibration::load(&premiere_calibration_path(app)?)?;
+    let settings=value.get("settings").cloned().unwrap_or(Value::Null);
+    if let Some(map)=value.as_object_mut(){map.insert("verified_calibration".into(),registry.annotations(version,&settings));
+        map.insert("calibration_note".into(),json!("Only exact, recovery-verified semantic records may be surfaced; numeric settings and units are never inferred."));}
+    Ok(())
 }
 
 fn append_audit(app: &AppHandle, entry: &AuditEntry) -> Result<(), String> {
@@ -6130,12 +6176,14 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&json!({"backup":backup,"result":value})).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
         }
         ToolAction::PremierePlanVideoRecipe { track, clip_index, request } => {
-            let value = premiere_bridge.request("plan_video_recipe", json!({"track":track,"clipIndex":clip_index,"request":request}), Duration::from_secs(30)).await?;
+            let mut value = premiere_bridge.request("plan_video_recipe", json!({"track":track,"clipIndex":clip_index,"request":request}), Duration::from_secs(30)).await?;
+            premiere_plan_calibration(&mut value,&premiere_bridge,app).await?;
             Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&value).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
         }
         ToolAction::PremierePlanAudioAutomation { target, request } => {
             let mut arguments = target.bridge_arguments(); arguments["request"] = serde_json::to_value(request).map_err(|e| e.to_string())?;
-            let value = premiere_bridge.request("plan_audio_automation", arguments, Duration::from_secs(20)).await?;
+            let mut value = premiere_bridge.request("plan_audio_automation", arguments, Duration::from_secs(20)).await?;
+            premiere_plan_calibration(&mut value,&premiere_bridge,app).await?;
             Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&value).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
         }
         ToolAction::PremiereInspectMogrtProperties { track, clip_index } => {
@@ -6143,7 +6191,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&value).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
         }
         ToolAction::PremierePlanMogrtRecipe { track, clip_index, request } => {
-            let value = premiere_bridge.request("plan_mogrt_recipe", json!({"track":track,"clipIndex":clip_index,"request":request}), Duration::from_secs(30)).await?;
+            let mut value = premiere_bridge.request("plan_mogrt_recipe", json!({"track":track,"clipIndex":clip_index,"request":request}), Duration::from_secs(30)).await?;
+            premiere_plan_calibration(&mut value,&premiere_bridge,app).await?;
             Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&value).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
         }
         ToolAction::PremiereProjectDiagnostics { limits } => {
@@ -7776,6 +7825,121 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             } else {None};
             let value=premiere_acceptance_harness::plan(group,registration.as_ref(),context.as_ref())?;
             Ok(ActionResult {success:true,tool,stdout:value.to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereCalibrationReport => {
+            let registry=premiere_calibration::load(&premiere_calibration_path(app)?)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"registry":registry,
+                "note":"Native delta/recovery verification does not establish semantic units or subjective visual/audio direction."}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereCalibrationObserve {target,semantic_role} => {
+            if !state.premiere_bridge.status()?.paired{return Err("Paired Premiere host unavailable.".into());}
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+            let fixture=premiere_acceptance_execution::Fixture {kind:target.kind.clone(),track:target.track,
+                clip_index:target.clip_index,start_seconds:None,end_seconds:None,delta_seconds:None,expected:target.expected.clone()};
+            premiere_acceptance_execution::exact_clip(&timeline,&fixture)?;
+            let native=premiere_calibration_native(&premiere_bridge,&target).await?;
+            let entry=premiere_calibration::inspected(&context,&native,&target,semantic_role.as_deref())?;
+            let path=premiere_calibration_path(app)?;
+            let mut registry=premiere_calibration::load(&path)?;
+            registry.upsert(entry.clone())?;premiere_calibration::save(&path,&registry)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"entry":entry,"write_performed":false,
+                "unit":"native_unknown","next":"premiere_calibration_probe on an explicitly registered disposable project"}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereCalibrationProbe {target,delta} => {
+            if state.acceptance_probe_running.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err() {
+                return Err("Another Premiere host probe is running.".into());
+            }
+            let _guard=AcceptanceProbeGuard(&state.acceptance_probe_running);
+            if !state.premiere_bridge.status()?.paired{return Err("Paired Premiere UXP host unavailable.".into());}
+            let registration=premiere_acceptance_harness::load(&premiere_disposable_path(app)?)?
+                .ok_or("Disposable project registration required for calibration writes.")?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            registration.check(&context)?;
+            let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+            let fixture=premiere_acceptance_execution::Fixture {kind:target.kind.clone(),track:target.track,
+                clip_index:target.clip_index,start_seconds:None,end_seconds:None,delta_seconds:None,expected:target.expected.clone()};
+            premiere_acceptance_execution::exact_clip(&timeline,&fixture)?;
+            let path=premiere_calibration_path(app)?;
+            let mut registry=premiere_calibration::load(&path)?;
+            let version=context.get("premiereVersion").and_then(Value::as_str).ok_or("Premiere host version missing.")?;
+            let baseline={let entry=registry.find_mut(version,&target)?;
+                if entry.probe_status!="observed" || entry.value_type!="number" || entry.time_varying {
+                    return Err("Calibration probe requires a fresh static numeric observation; no automatic retry.".into());
+                }entry.original_value.clone()};
+            let value=premiere_calibration::bounded_delta(&baseline,delta,false)?;
+            let native=premiere_calibration_native(&premiere_bridge,&target).await?;
+            let observed=premiere_calibration::inspected(&context,&native,&target,None)?;
+            if observed.original_value!=baseline {return Err("Native baseline changed since calibration observation.".into());}
+            registry.find_mut(version,&target)?.probe_status="probing".into();
+            premiere_calibration::save(&path,&registry)?;
+            let make_action=|v:Value| {
+                if target.kind=="video" {ToolAction::PremiereSetVideoParamNamed{track:target.track,clip_index:target.clip_index,
+                    component_match_name:Some(target.component_match_name.clone()),component_display_name:None,
+                    param_display_name:target.param_display_name.clone(),value:v}}
+                else {ToolAction::PremiereSetAudioParamNamed{track:target.track,clip_index:target.clip_index,
+                    component_match_name:Some(target.component_match_name.clone()),component_display_name:None,
+                    param_display_name:target.param_display_name.clone(),value:v}}
+            };
+            let inner=PendingAction{premiere_expectation:Some(target.expected.clone()),tool:if target.kind=="video"{"premiere_set_video_param_named"}else{"premiere_set_audio_param_named"}.into(),
+                detail:"Disposable native parameter delta calibration".into(),action:make_action(value.clone())};
+            let changed=Box::pin(execute_tool(inner,state,app)).await;
+            let changed=match changed {Ok(result) if result.success=>result,Err(error)=>{
+                let entry=registry.find_mut(version,&target)?;entry.probe_status="uncertain".into();
+                entry.observations.push("Delta write response uncertain; do not repeat or assume restored.".into());
+                premiere_calibration::save(&path,&registry)?;
+                return Ok(ActionResult {success:false,tool,stdout:json!({"status":"uncertain","retry_automatically":false}).to_string(),stderr:error,exit_code:None});
+            },Ok(_) => {
+                registry.find_mut(version,&target)?.probe_status="uncertain".into();
+                premiere_calibration::save(&path,&registry)?;
+                return Err("Calibration native write rejected; inspect before any retry.".into());
+            }};
+            let checkpoint=serde_json::from_str::<Value>(&changed.stdout).ok()
+                .and_then(|v|v.get("backup").and_then(Value::as_str).map(str::to_owned));
+            {let entry=registry.find_mut(version,&target)?;entry.checkpoint=checkpoint.clone();entry.probe_status="restoring".into();}
+            premiere_calibration::save(&path,&registry)?;
+            let inspected_after=premiere_calibration_native(&premiere_bridge,&target).await;
+            let mid=match inspected_after.and_then(|v|premiere_calibration::inspected(&context,&v,&target,None)) {
+                Ok(entry)=>entry.original_value,
+                Err(_) => {
+                    registry.find_mut(version,&target)?.probe_status="needs_recovery".into();
+                    premiere_calibration::save(&path,&registry)?;
+                    return Ok(ActionResult {success:false,tool,stdout:json!({"status":"needs_recovery","checkpoint":checkpoint,
+                        "reason":"After-delta native inspection missing; restoration not attempted blindly."}).to_string(),stderr:String::new(),exit_code:None});
+                }
+            };
+            let restore=PendingAction{premiere_expectation:Some(target.expected.clone()),tool:if target.kind=="video"{"premiere_set_video_param_named"}else{"premiere_set_audio_param_named"}.into(),
+                detail:"Restore original disposable native value".into(),action:make_action(baseline.clone())};
+            let restored=Box::pin(execute_tool(restore,state,app)).await;
+            if !restored.is_ok_and(|r|r.success) {
+                registry.find_mut(version,&target)?.probe_status="needs_recovery".into();
+                premiere_calibration::save(&path,&registry)?;
+                return Ok(ActionResult {success:false,tool,stdout:json!({"status":"needs_recovery","checkpoint":checkpoint,
+                    "reason":"Restoration failed or is uncertain; stop and inspect manually."}).to_string(),stderr:String::new(),exit_code:None});
+            }
+            let final_read=async {
+                let final_context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+                registration.check(&final_context)?;
+                let final_native=premiere_calibration_native(&premiere_bridge,&target).await?;
+                Ok::<Value,String>(premiere_calibration::inspected(&final_context,&final_native,&target,None)?.original_value)
+            }.await;
+            let final_value=match final_read {Ok(value)=>value,Err(_)=>{
+                registry.find_mut(version,&target)?.probe_status="needs_recovery".into();
+                premiere_calibration::save(&path,&registry)?;
+                return Ok(ActionResult {success:false,tool,stdout:json!({"status":"needs_recovery","checkpoint":checkpoint,
+                    "reason":"Restoration was requested but final native value/identity cannot be verified."}).to_string(),stderr:String::new(),exit_code:None});
+            }};
+            let recovered=final_value==baseline;
+            let exact_delta=mid==value;
+            {let entry=registry.find_mut(version,&target)?;
+                entry.observed_value=Some(mid);entry.native_delta_verified=exact_delta && recovered;
+                entry.recovery_verified=recovered;entry.probe_status=if recovered {"verified_native_delta"}else{"needs_recovery"}.into();
+                entry.observations.push(if recovered {"Original native value reobserved after restoration; semantic unit remains unknown."}
+                    else {"Restoration could not be proven; do not retry blindly."}.into());}
+            premiere_calibration::save(&path,&registry)?;
+            Ok(ActionResult {success:recovered,tool,stdout:json!({"native_delta_verified":exact_delta && recovered,
+                "recovery_verified":recovered,"semantic_verified":false,"unit":"native_unknown","checkpoint":checkpoint,
+                "retry_automatically":false}).to_string(),stderr:String::new(),exit_code:Some(if recovered{0}else{1})})
         }
         ToolAction::PremiereAcceptancePrepare {step,fixture} => {
             if !state.premiere_bridge.status()?.paired {return Err("Paired Premiere UXP host unavailable.".into());}
