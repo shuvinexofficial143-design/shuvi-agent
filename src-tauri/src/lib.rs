@@ -4,7 +4,7 @@ use std::{
     io::{BufRead, BufReader, Write},
     path::Path,
     process::{Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -21,6 +21,7 @@ mod premiere_diagnostics;
 mod premiere_review;
 mod premiere_editorial;
 mod premiere_export;
+mod premiere_acceptance;
 use premiere_diagnostics::DiagnosticsLimits;
 mod premiere_mogrt;
 use premiere_mogrt::GraphicsRequest;
@@ -168,6 +169,8 @@ Available tools:
 - premiere_remove_marker: {"marker_index":0}
 - premiere_export_sequence: {"output":"absolute output media path","preset":"optional absolute .epr preset path","queue_to_ame":false}
 - premiere_plan_export: {"output":"absolute output media path","preset":"optional absolute .epr preset","queue_to_ame":false,"overwrite":false}
+- premiere_acceptance_report: {}
+- premiere_acceptance_probe: {"group":1}
 - premiere_save_project: {}
 - workspace_scan: {"path":"absolute workspace path"}
 - search_text: {"path":"absolute workspace path","query":"text to find"}
@@ -402,6 +405,8 @@ enum ToolAction {
     PremiereCloneClip { kind: String, track: u32, clip_index: u32, time_offset_seconds: f64, video_track_offset: i32, audio_track_offset: i32, align_to_video: bool, insert: bool },
     PremiereDeleteClip { kind: String, track: u32, clip_index: u32, ripple: bool },
     PremierePlanExport { output: String, preset: Option<String>, queue_to_ame: bool, overwrite: bool },
+    PremiereAcceptanceReport,
+    PremiereAcceptanceProbe { group: u8 },
     PremiereExportSequence { output: String, preset: Option<String>, queue_to_ame: bool, overwrite: bool },
     PremiereSaveProject,
     WorkspaceScan { path: String },
@@ -477,6 +482,12 @@ struct ActionState {
     managed_children: Mutex<HashSet<u32>>,
     browser_sessions: Mutex<HashMap<u32, BrowserSession>>,
     premiere_bridge: Arc<PremiereBridgeShared>,
+    acceptance_probe_running: AtomicBool,
+}
+
+struct AcceptanceProbeGuard<'a>(&'a AtomicBool);
+impl Drop for AcceptanceProbeGuard<'_> {
+    fn drop(&mut self) {self.0.store(false,Ordering::Release);}
 }
 
 fn providers() -> Vec<ProviderDescriptor> {
@@ -751,6 +762,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_delete_clip"
         | "premiere_export_sequence"
         | "premiere_plan_export"
+        | "premiere_acceptance_report"
+        | "premiere_acceptance_probe"
         | "premiere_save_project"
         | "workspace_scan"
         | "search_text"
@@ -3935,6 +3948,18 @@ fn stage_tool(
                 RiskLevel::High,
             )
         }
+        "premiere_acceptance_report" => (
+            ToolAction::PremiereAcceptanceReport,"Read Premiere acceptance matrix".into(),
+            "Read bounded local code/mock/runtime capability evidence.".into(),RiskLevel::Low
+        ),
+        "premiere_acceptance_probe" => {
+            let group=proposal.arguments.get("group").and_then(Value::as_u64)
+                .filter(|g|(1..=8).contains(g)).ok_or("Acceptance group must be 1–8.")? as u8;
+            (ToolAction::PremiereAcceptanceProbe {group},
+                "Probe Premiere acceptance group".into(),
+                format!("Group {group}: read-only host probe where implemented; no destructive test launches."),
+                RiskLevel::Low)
+        }
         "premiere_plan_export" => {
             let output = arg_string(&proposal.arguments, "output")?;
             let preset = arg_optional_string(&proposal.arguments, "preset");
@@ -4168,6 +4193,12 @@ fn premiere_review_path(app: &AppHandle, session_id: &str) -> Result<std::path::
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("premiere-reviews");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir.join(format!("{session_id}.json")))
+}
+
+fn premiere_acceptance_path(app: &AppHandle) -> Result<std::path::PathBuf,String> {
+    let dir=app.path().app_data_dir().map_err(|e|e.to_string())?.join("premiere-acceptance");
+    fs::create_dir_all(&dir).map_err(|e|e.to_string())?;
+    Ok(dir.join("capabilities-v1.json"))
 }
 
 fn append_audit(app: &AppHandle, entry: &AuditEntry) -> Result<(), String> {
@@ -7489,6 +7520,65 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 stderr: String::new(),
                 exit_code: Some(0),
             })
+        }
+        ToolAction::PremiereAcceptanceReport => {
+            let report=premiere_acceptance::load(&premiere_acceptance_path(app)?)?;
+            let eligible=report.capabilities.iter().filter(|c|c.state!="unsupported_documented").count();
+            let verified=report.verified_count();
+            Ok(ActionResult {success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({"report":report,
+                    "premiere_runtime_verified_count":verified,
+                    "implemented_capability_count":eligible,
+                    "production_ready":false})).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereAcceptanceProbe {group} => {
+            if state.acceptance_probe_running.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err() {
+                return Err("Another Premiere acceptance probe is already running.".into());
+            }
+            let _guard=AcceptanceProbeGuard(&state.acceptance_probe_running);
+            let path=premiere_acceptance_path(app)?;
+            let mut report=premiere_acceptance::load(&path)?;
+            if group!=1 {
+                let reason=if matches!(group,2|3|4|5|8) {
+                    "Destructive host test requires a provably disposable project, approval, checkpoint and exact expectation; no automated mutation launched."
+                } else {
+                    "This acceptance group has no safe automated host probe yet; no runtime verification was inferred."
+                };
+                report.blocked(group,reason)?;
+                premiere_acceptance::save(&path,&report)?;
+                return Ok(ActionResult {success:true,tool,stdout:json!({"group":group,"result":"blocked_environment","reason":reason,"report":report}).to_string(),stderr:String::new(),exit_code:Some(0)});
+            }
+            let native=async {
+                if !state.premiere_bridge.status()?.paired {
+                    return Err("Paired Premiere UXP panel unavailable.".to_string());
+                }
+                let context=state.premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(12)).await?;
+                let timeline=state.premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+                let diagnostics=state.premiere_bridge.request("project_diagnostics",
+                    json!({"limits":{"max_items":200,"max_depth":8,"max_detail_items":10}}),Duration::from_secs(30)).await?;
+                premiere_acceptance::host_probe_identity(&context,&timeline,&diagnostics)
+            }.await;
+            match native {
+                Ok((version,project,sequence)) => {
+                    for (capability,action) in [("bridge_pair","inspect_context"),("project_inspection","inspect_context"),
+                        ("sequence_inspection","inspect_context"),("timeline_inspection","inspect_timeline"),
+                        ("project_diagnostics","project_diagnostics")] {
+                        report.verified_probe(capability,action,&version,&project,&sequence)?;
+                    }
+                    premiere_acceptance::save(&path,&report)?;
+                    Ok(ActionResult {success:true,tool,stdout:json!({"group":1,"result":"runtime_verified",
+                        "verified_capabilities":5,"project_guid":project,"sequence_guid":sequence,
+                        "premiere_version":version,"read_only":true}).to_string(),stderr:String::new(),exit_code:Some(0)})
+                }
+                Err(_) => {
+                    let reason="Group 1 host probe unavailable or returned incomplete identity; no capability promoted.";
+                    report.blocked(1,reason)?;
+                    premiere_acceptance::save(&path,&report)?;
+                    Ok(ActionResult {success:true,tool,stdout:json!({"group":1,"result":"blocked_environment","reason":reason,
+                        "premiere_runtime_verified_count":report.verified_count()}).to_string(),stderr:String::new(),exit_code:Some(0)})
+                }
+            }
         }
         ToolAction::PremierePlanExport {output,preset,queue_to_ame,overwrite} => {
             let context=premiere_bridge.request("inspect_export",json!({}),Duration::from_secs(12)).await?;

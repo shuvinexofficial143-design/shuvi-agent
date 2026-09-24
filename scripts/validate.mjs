@@ -43,6 +43,7 @@ for (const path of [
   "integrations/premiere-uxp/audio-plans.js",
   "src-tauri/src/premiere_recipes.rs",
   "src-tauri/src/premiere_export.rs",
+  "src-tauri/src/premiere_acceptance.rs",
   "integrations/premiere-uxp/recipe-plans.js",
   "integrations/premiere-uxp/caption-workflows.js"
 ]) {

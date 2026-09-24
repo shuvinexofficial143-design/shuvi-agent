@@ -114,7 +114,7 @@ Progress estimates are provisional scope estimates, not measured product certifi
 - Premiere runtime verified: 0% in this continuation session.
 - Production ready: not established (0% verified against the requested acceptance workflow).
 
-### Module O — validation and panel load repair
+### Earlier Module O — validation and panel load repair (historical)
 - [x] Fix invalid context-inspection destructuring that prevented UXP JavaScript from loading.
 - [x] Syntax-parse UXP and frontend sources during validation.
 - [x] Check proposal allowlist, permission staging, typed action and executor separately.
@@ -307,3 +307,13 @@ Next Premiere priority: export/output hardening and disposable-project Premiere+
 - [ ] Runtime acceptance on a disposable project remains unverified. There is a filesystem race between the desktop collision check and Adobe writing the file; do not assume an atomic no-overwrite guarantee from the UXP API.
 
 Next Premiere priority after Module L: versioned runtime acceptance evidence and capability audit (Module O), followed by disposable-project Premiere/UXP testing.
+
+### Module O — Premiere runtime acceptance evidence
+- [x] Version 1 local capability matrix for 33 capabilities, with separate `code_tested` and `premiere_runtime_verified` fields. States: not_implemented, implemented_unverified, runtime_verified, unsupported_documented, runtime_failed and blocked_environment.
+- [x] Bounded 64-entry/96 KiB evidence, project/sequence GUID, host version, action, result and recovery fields; atomic local persistence with recovery backup. No screen captures, base64 media or credentials are stored.
+- [x] Read-only `premiere_acceptance_report` and `premiere_acceptance_probe`. Group 1 is a real paired-panel probe for context, timeline and bounded diagnostics; it promotes five capabilities only after consistent live host replies. Groups 2–8 report blocked until a disposable project and the relevant safe host harness exist; they launch no destructive edits.
+- [x] Duplicate/bogus evidence, malformed versions, overlarge reports and unsupported capability promotion are rejected in Rust tests. Node/mock tests and real host evidence are not conflated.
+- [x] Re-audited current official UXP EncoderManager, SequenceEditor, VideoClipTrackItem and CaptionTrack reference pages. The reviewed VideoClipTrackItem offers getSpeed but no speed write; SequenceEditor exposes clone vertical offset, not a general vertical move; no reliable caption creation/editing API was found in the reviewed CaptionTrack page. Keep other listed gaps unsupported pending method-specific review and disposable-project proof.
+- [ ] Rust unit tests/compilation unavailable in this environment. No Adobe Premiere+paired UXP host is present; **runtime verified remains 0%**. Production readiness remains unestablished.
+
+Code-complete estimate after L/O: approximately 74% (conservative feature coverage estimate, not a measured test pass rate). Runtime verified: 0%. Production ready: no. Next: run Group 1 against an actual paired Premiere panel, then introduce each remaining group on a provably disposable .prproj with approval, checkpoint, expectation and recovery evidence. Export completion still needs a separately verified native completion signal.
