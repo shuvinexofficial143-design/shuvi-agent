@@ -22,6 +22,7 @@ mod premiere_review;
 mod premiere_editorial;
 mod premiere_export;
 mod premiere_acceptance;
+mod premiere_acceptance_harness;
 use premiere_diagnostics::DiagnosticsLimits;
 mod premiere_mogrt;
 use premiere_mogrt::GraphicsRequest;
@@ -407,6 +408,8 @@ enum ToolAction {
     PremierePlanExport { output: String, preset: Option<String>, queue_to_ame: bool, overwrite: bool },
     PremiereAcceptanceReport,
     PremiereAcceptanceProbe { group: u8 },
+    PremiereAcceptanceRegisterDisposable { project_guid: String, project_path: String, sequence_guid: Option<String> },
+    PremiereAcceptancePlan { group: u8 },
     PremiereExportSequence { output: String, preset: Option<String>, queue_to_ame: bool, overwrite: bool },
     PremiereSaveProject,
     WorkspaceScan { path: String },
@@ -764,6 +767,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_plan_export"
         | "premiere_acceptance_report"
         | "premiere_acceptance_probe"
+        | "premiere_acceptance_register_disposable"
+        | "premiere_acceptance_plan"
         | "premiere_save_project"
         | "workspace_scan"
         | "search_text"
@@ -3952,6 +3957,22 @@ fn stage_tool(
             ToolAction::PremiereAcceptanceReport,"Read Premiere acceptance matrix".into(),
             "Read bounded local code/mock/runtime capability evidence.".into(),RiskLevel::Low
         ),
+        "premiere_acceptance_register_disposable" => {
+            let project_guid=arg_string(&proposal.arguments,"project_guid")?;
+            let project_path=arg_string(&proposal.arguments,"project_path")?;
+            let sequence_guid=arg_optional_string(&proposal.arguments,"sequence_guid");
+            if proposal.arguments.get("explicitly_disposable").and_then(Value::as_bool)!=Some(true) {
+                return Err("Explicit disposable-project authorization is required.".into());
+            }
+            (ToolAction::PremiereAcceptanceRegisterDisposable {project_guid:project_guid.clone(),project_path:project_path.clone(),sequence_guid},
+                "Register disposable Premiere project".into(),format!("Explicitly register current saved .prproj: {project_path}, GUID {project_guid}. Destructive acceptance remains subject to separate approval and checkpoints."),RiskLevel::High)
+        }
+        "premiere_acceptance_plan" => {
+            let group=proposal.arguments.get("group").and_then(Value::as_u64).filter(|g|(1..=8).contains(g))
+                .ok_or("Acceptance group must be 1–8.")? as u8;
+            (ToolAction::PremiereAcceptancePlan {group},"Plan Premiere acceptance group".into(),
+                format!("Read-only bounded plan for group {group}; no edit launched."),RiskLevel::Low)
+        }
         "premiere_acceptance_probe" => {
             let group=proposal.arguments.get("group").and_then(Value::as_u64)
                 .filter(|g|(1..=8).contains(g)).ok_or("Acceptance group must be 1–8.")? as u8;
@@ -4199,6 +4220,12 @@ fn premiere_acceptance_path(app: &AppHandle) -> Result<std::path::PathBuf,String
     let dir=app.path().app_data_dir().map_err(|e|e.to_string())?.join("premiere-acceptance");
     fs::create_dir_all(&dir).map_err(|e|e.to_string())?;
     Ok(dir.join("capabilities-v1.json"))
+}
+
+fn premiere_disposable_path(app:&AppHandle)->Result<std::path::PathBuf,String>{
+    let dir=app.path().app_data_dir().map_err(|e|e.to_string())?.join("premiere-acceptance");
+    fs::create_dir_all(&dir).map_err(|e|e.to_string())?;
+    Ok(dir.join("disposable-v1.json"))
 }
 
 fn append_audit(app: &AppHandle, entry: &AuditEntry) -> Result<(), String> {
@@ -7531,6 +7558,24 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "implemented_capability_count":eligible,
                     "production_ready":false})).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereAcceptanceRegisterDisposable {project_guid,project_path,sequence_guid} => {
+            if !state.premiere_bridge.status()?.paired {return Err("Paired Premiere host is required.".into());}
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(12)).await?;
+            let registration=premiere_acceptance_harness::Registration::new(&project_guid,&project_path,sequence_guid.as_deref(),true)?;
+            registration.check(&context)?;
+            premiere_acceptance_harness::save(&premiere_disposable_path(app)?,&registration)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"registered":true,"project_guid":project_guid,
+                "sequence_guid":sequence_guid,"verified_current_host_identity":true,
+                "next":"premiere_acceptance_plan","mutation_enabled_automatically":false}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereAcceptancePlan {group} => {
+            let registration=premiere_acceptance_harness::load(&premiere_disposable_path(app)?)?;
+            let context=if state.premiere_bridge.status()?.paired {
+                Some(premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(12)).await?)
+            } else {None};
+            let value=premiere_acceptance_harness::plan(group,registration.as_ref(),context.as_ref())?;
+            Ok(ActionResult {success:true,tool,stdout:value.to_string(),stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::PremiereAcceptanceProbe {group} => {
             if state.acceptance_probe_running.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err() {
