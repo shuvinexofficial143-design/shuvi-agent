@@ -298,3 +298,12 @@ Conservative estimate after Module I: code complete approximately 71%; runtime v
 - [ ] Runtime recipe orchestration and native Premiere host acceptance remain pending. Rust compile/tests unavailable locally; editorial intent and quality are not guaranteed.
 
 Next Premiere priority: export/output hardening and disposable-project Premiere+UXP acceptance. Resolve remaining capability gaps only with verified host support.
+
+### Module L — export/output hardening
+- [x] Read-only `premiere_plan_export` checks bounded absolute output/preset paths, parent existence, collisions, overwrite intent, exact active project/sequence identity, and AME installation. It returns a whole-sequence expectation for the existing high-risk export tool.
+- [x] Export now requires that expectation and `overwrite=true` for an existing regular file. A changed project or sequence is refused at the desktop and by the UXP expectation guard. Existing output and preset are never deleted by planning.
+- [x] The panel distinguishes accepted immediate calls from queued AME calls. Adobe's documented boolean return does not prove encoding completion. Post-call file metadata is a separate observation and never sets `completion_verified=true`. A lost/late bridge result is explicitly uncertain and is never retried automatically.
+- [x] Immediate call timeout is bounded at 120 seconds and queue handoff at 45 seconds. Longer or disconnected operations can leave status unknown; the user must inspect Premiere and output before another attempt.
+- [ ] Runtime acceptance on a disposable project remains unverified. There is a filesystem race between the desktop collision check and Adobe writing the file; do not assume an atomic no-overwrite guarantee from the UXP API.
+
+Next Premiere priority after Module L: versioned runtime acceptance evidence and capability audit (Module O), followed by disposable-project Premiere/UXP testing.

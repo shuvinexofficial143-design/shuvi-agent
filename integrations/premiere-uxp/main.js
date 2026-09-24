@@ -909,6 +909,21 @@ async function deleteClip(argumentsValue) {
   };
 }
 
+async function inspectExport() {
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+  const manager = premiere.EncoderManager.getManager();
+  return {
+    projectGuid: plainGuid(project.guid),
+    projectPath: project.path || null,
+    sequenceGuid: plainGuid(sequence.guid),
+    sequenceName: sequence.name || null,
+    ameAvailable: Boolean(manager.isAMEInstalled),
+    defaultPresetDetailsInspectable: false
+  };
+}
+
 async function exportSequence(argumentsValue) {
   const output =
     typeof argumentsValue?.output === "string"
@@ -919,9 +934,14 @@ async function exportSequence(argumentsValue) {
       ? argumentsValue.preset.trim()
       : "";
   const queueToAme = Boolean(argumentsValue?.queueToAme);
+  const overwrite = argumentsValue?.overwrite === true;
 
   if (!output) throw new Error("Export output path is required.");
 
+  if (!argumentsValue?._expected?.project_guid || !argumentsValue?._expected?.sequence_guid ||
+      (argumentsValue?._expected?.clips || []).length) {
+    throw new Error("Export requires an exact project and sequence expectation without clip targets.");
+  }
   const project = await requireProject();
   const sequence = await project.getActiveSequence();
   if (!sequence) throw new Error("No active Premiere sequence.");
@@ -950,11 +970,14 @@ async function exportSequence(argumentsValue) {
 
   return {
     accepted: true,
+    state: queueToAme ? "queued" : "accepted",
+    completionVerified: false,
+    overwriteRequested: overwrite,
     sequenceName: sequence.name || null,
     output,
     preset: preset || null,
     queueToAme,
-    ameInstalled: Boolean(manager.isAMEInstalled)
+    ameAvailable: Boolean(manager.isAMEInstalled)
   };
 }
 
@@ -4109,6 +4132,8 @@ async function dispatchNativeCommand(command) {
       return await cloneClip(command.arguments || {});
     case "delete_clip":
       return await deleteClip(command.arguments || {});
+    case "inspect_export":
+      return await inspectExport();
     case "export_sequence":
       return await exportSequence(command.arguments || {});
     default:

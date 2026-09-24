@@ -75,6 +75,7 @@ pub const ALLOWED_ACTIONS: &[&str] = &[
     "clone_clip",
     "delete_clip",
     "export_sequence",
+    "inspect_export",
 ];
 
 pub const PREMIERE_BRIDGE_PORT: u16 = 17_361;

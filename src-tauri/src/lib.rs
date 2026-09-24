@@ -20,6 +20,7 @@ use uuid::Uuid;
 mod premiere_diagnostics;
 mod premiere_review;
 mod premiere_editorial;
+mod premiere_export;
 use premiere_diagnostics::DiagnosticsLimits;
 mod premiere_mogrt;
 use premiere_mogrt::GraphicsRequest;
@@ -166,6 +167,7 @@ Available tools:
 - premiere_add_marker: {"name":"marker name","marker_type":"Comment|Chapter|Segmentation|WebLink","seconds":10.0,"duration_seconds":0.0,"comments":"optional notes"}
 - premiere_remove_marker: {"marker_index":0}
 - premiere_export_sequence: {"output":"absolute output media path","preset":"optional absolute .epr preset path","queue_to_ame":false}
+- premiere_plan_export: {"output":"absolute output media path","preset":"optional absolute .epr preset","queue_to_ame":false,"overwrite":false}
 - premiere_save_project: {}
 - workspace_scan: {"path":"absolute workspace path"}
 - search_text: {"path":"absolute workspace path","query":"text to find"}
@@ -399,7 +401,8 @@ enum ToolAction {
     PremiereMoveClip { kind: String, track: u32, clip_index: u32, delta_seconds: f64 },
     PremiereCloneClip { kind: String, track: u32, clip_index: u32, time_offset_seconds: f64, video_track_offset: i32, audio_track_offset: i32, align_to_video: bool, insert: bool },
     PremiereDeleteClip { kind: String, track: u32, clip_index: u32, ripple: bool },
-    PremiereExportSequence { output: String, preset: Option<String>, queue_to_ame: bool },
+    PremierePlanExport { output: String, preset: Option<String>, queue_to_ame: bool, overwrite: bool },
+    PremiereExportSequence { output: String, preset: Option<String>, queue_to_ame: bool, overwrite: bool },
     PremiereSaveProject,
     WorkspaceScan { path: String },
     SearchText { path: String, query: String },
@@ -747,6 +750,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_clone_clip"
         | "premiere_delete_clip"
         | "premiere_export_sequence"
+        | "premiere_plan_export"
         | "premiere_save_project"
         | "workspace_scan"
         | "search_text"
@@ -3931,46 +3935,32 @@ fn stage_tool(
                 RiskLevel::High,
             )
         }
+        "premiere_plan_export" => {
+            let output = arg_string(&proposal.arguments, "output")?;
+            let preset = arg_optional_string(&proposal.arguments, "preset");
+            let queue_to_ame = proposal.arguments.get("queue_to_ame").and_then(Value::as_bool).unwrap_or(false);
+            let overwrite = proposal.arguments.get("overwrite").and_then(Value::as_bool).unwrap_or(false);
+            premiere_export::inspect(&output,preset.as_deref(),overwrite,None)?;
+            (ToolAction::PremierePlanExport {output:output.clone(),preset:preset.clone(),queue_to_ame,overwrite},
+                "Preflight Premiere export".to_string(),format!("Inspect output={output}; preset={preset:?}; queue_to_ame={queue_to_ame}; overwrite={overwrite}"),
+                RiskLevel::Low)
+        }
         "premiere_export_sequence" => {
-            let output = absolute_path(arg_string(&proposal.arguments, "output")?)?;
-            let output_parent = Path::new(&output)
-                .parent()
-                .ok_or_else(|| "Premiere export output path has no parent directory.".to_string())?;
-            if !output_parent.is_dir() {
-                return Err("Premiere export output parent directory does not exist.".into());
+            let output = arg_string(&proposal.arguments, "output")?;
+            let preset = arg_optional_string(&proposal.arguments, "preset");
+            let queue_to_ame = proposal.arguments.get("queue_to_ame").and_then(Value::as_bool).unwrap_or(false);
+            let overwrite = proposal.arguments.get("overwrite").and_then(Value::as_bool).unwrap_or(false);
+            let local = premiere_export::inspect(&output,preset.as_deref(),overwrite,None)?;
+            if !local.executable { return Err(format!("Export preflight blocked: {}",local.warnings.join("; "))); }
+            let expected = premiere_expectation.as_ref().ok_or("Export requires expected project and sequence from premiere_plan_export.")?;
+            if expected.sequence_guid.is_none() || !expected.clips.is_empty() {
+                return Err("Export requires a project and sequence expectation without clip targets.".into());
             }
-
-            let preset = arg_optional_string(&proposal.arguments, "preset")
-                .map(absolute_path)
-                .transpose()?;
-
-            if let Some(path) = &preset {
-                if !Path::new(path).is_file() {
-                    return Err("Premiere export preset file does not exist.".into());
-                }
-            }
-
-            let queue_to_ame = proposal.arguments
-                .get("queue_to_ame")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-
-            (
-                ToolAction::PremiereExportSequence {
-                    output: output.clone(),
-                    preset: preset.clone(),
-                    queue_to_ame,
-                },
-                if queue_to_ame {
-                    "Queue Premiere export to Media Encoder".to_string()
-                } else {
-                    "Export active Premiere sequence".to_string()
-                },
-                format!(
-                    "Export active sequence to {output}; preset={preset:?}; queue_to_ame={queue_to_ame}"
-                ),
-                RiskLevel::High,
-            )
+            (ToolAction::PremiereExportSequence {output:output.clone(),preset:preset.clone(),queue_to_ame,overwrite},
+                if queue_to_ame {"Queue Premiere export to Media Encoder".to_string()} else {"Export active Premiere sequence".to_string()},
+                format!("Output={output}; preset={preset:?}; queue_to_ame={queue_to_ame}; overwrite={overwrite}. {}",
+                    if local.output_exists {"Existing file may be replaced."} else {"No output existed at staging."}),
+                RiskLevel::High)
         }
         "premiere_save_project" => (
             ToolAction::PremiereSaveProject,
@@ -7500,23 +7490,56 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 exit_code: Some(0),
             })
         }
-        ToolAction::PremiereExportSequence { output, preset, queue_to_ame } => {
-            let value = premiere_bridge.request(
-                "export_sequence",
-                json!({
-                    "output": output,
-                    "preset": preset,
-                    "queueToAme": queue_to_ame
-                }),
-                Duration::from_secs(45),
-            ).await?;
-            Ok(ActionResult {
-                success: true,
-                tool,
-                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
-                stderr: String::new(),
-                exit_code: Some(0),
-            })
+        ToolAction::PremierePlanExport {output,preset,queue_to_ame,overwrite} => {
+            let context=premiere_bridge.request("inspect_export",json!({}),Duration::from_secs(12)).await?;
+            let project=context.get("projectGuid").and_then(Value::as_str).filter(|v|!v.is_empty()).ok_or("Premiere project GUID unavailable.")?;
+            let sequence=context.get("sequenceGuid").and_then(Value::as_str).filter(|v|!v.is_empty()).ok_or("Premiere sequence GUID unavailable.")?;
+            let local=premiere_export::inspect(&output,preset.as_deref(),overwrite,context.get("projectPath").and_then(Value::as_str))?;
+            let ame=context.get("ameAvailable").and_then(Value::as_bool).unwrap_or(false);
+            let mut warnings=local.warnings.clone();
+            if queue_to_ame && !ame {warnings.push("Adobe Media Encoder is unavailable.".into());}
+            if preset.is_none() {warnings.push("Premiere default export settings are not inspectable here; no codec or bitrate is inferred.".into());}
+            let value=json!({"executable":local.executable && (!queue_to_ame || ame),
+                "output":local.output,"output_exists":local.output_exists,"parent_exists":local.parent_exists,
+                "preset":local.preset,"preset_exists":local.preset_exists,"overwrite":overwrite,
+                "warnings":warnings,"ame_required":queue_to_ame,"ame_available":ame,
+                "project":{"guid":project,"path":context.get("projectPath")},
+                "sequence":{"guid":sequence,"name":context.get("sequenceName")},
+                "expected":{"project_guid":project,"project_path":context.get("projectPath"),"sequence_guid":sequence,"clips":[]},
+                "default_preset_details_inspectable":false,
+                "note":"Adobe's boolean export result does not prove finished media encoding."});
+            Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereExportSequence { output, preset, queue_to_ame, overwrite } => {
+            let context=premiere_bridge.request("inspect_export",json!({}),Duration::from_secs(12)).await?;
+            let local=premiere_export::inspect(&output,preset.as_deref(),overwrite,context.get("projectPath").and_then(Value::as_str))?;
+            if !local.executable { return Err(format!("Export preflight blocked: {}",local.warnings.join("; "))); }
+            let expected=premiere_bridge.expected.ok_or("Export requires a project and sequence expectation.")?;
+            if context.get("projectGuid").and_then(Value::as_str)!=Some(expected.project_guid.as_str())
+                || context.get("sequenceGuid").and_then(Value::as_str)!=expected.sequence_guid.as_deref()
+                || expected.project_path.as_deref().is_some_and(|p|context.get("projectPath").and_then(Value::as_str)!=Some(p)) {
+                return Err("Premiere project or sequence changed after export planning; inspect again.".into());
+            }
+            if queue_to_ame && context.get("ameAvailable").and_then(Value::as_bool)!=Some(true) {
+                return Err("Adobe Media Encoder is unavailable.".into());
+            }
+            let result=premiere_bridge.request("export_sequence",
+                json!({"output":output,"preset":preset,"queueToAme":queue_to_ame,"overwrite":overwrite}),
+                Duration::from_secs(if queue_to_ame {45} else {120})).await;
+            let observed=premiere_export::observation(&output,local.output_exists);
+            match result {
+                Ok(value) => Ok(ActionResult {success:true,tool,
+                    stdout:serde_json::to_string_pretty(&json!({"encoder":value,"output_observation":observed,"retry_automatically":false})).unwrap_or_default(),
+                    stderr:String::new(),exit_code:Some(0)}),
+                Err(error) => {
+                    let state=if error.contains("Premiere rejected the export request") {"rejected"} else {"execution_status_unknown"};
+                    Ok(ActionResult {success:false,tool,
+                        stdout:json!({"state":state,"output_observation":observed,"retry_automatically":false,
+                            "reason":"A bridge error or timeout is not proof that export did not run. Inspect before retrying."}).to_string(),
+                        stderr:error,exit_code:None})
+                }
+            }
         }
         ToolAction::PremiereSaveProject => {
             let value = premiere_bridge
