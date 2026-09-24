@@ -17,6 +17,8 @@ use sysinfo::{Pid, System};
 use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
+mod premiere_diagnostics;
+use premiere_diagnostics::DiagnosticsLimits;
 mod premiere_mogrt;
 use premiere_mogrt::GraphicsRequest;
 mod premiere_audio;
@@ -86,6 +88,7 @@ Available tools:
 - premiere_edit_keyframe: {"target":{"kind":"video|audio","track":0,"clip_index":0,"component_match_name":"exact native match name or supply component_display_name","param_display_name":"exact parameter name"},"ticks":"exact ticks from inspection","expected_signature":"targetSignature from inspection","operation":"remove|interpolation","interpolation":"only for interpolation: linear|hold|bezier"}
 - premiere_inspect_clip_speed: {"kind":"video|audio","track":0,"clip_index":0}
 - premiere_plan_speed: {"kind":"video|audio","track":0,"clip_index":0,"request":{"mode":"rate|duration|preset|ramp|freeze","rate":"rate mode: multiplier 0.01..100","duration_seconds":"duration/freeze mode: positive seconds","source_seconds":"freeze mode: source time","preset":"preset mode: normal|slow_motion|fast_motion","points":"ramp mode: [{source_offset_seconds:0,rate:1},...]","reverse":"optional boolean","preserve_audio_pitch":"optional boolean"}}
+- premiere_project_diagnostics: {"limits":{"max_items":10000,"max_depth":32,"max_detail_items":200}}
 - premiere_inspect_mogrt_properties: {"track":0,"clip_index":0}
 - premiere_plan_mogrt_recipe: {"track":0,"clip_index":0,"request":{"preset":"title|lower_third","fields":[{"role":"text|title|subtitle|property","component_match_name":"exact inspected name","param_display_name":"exact inspected name","value":"My title"}]}}
 - premiere_plan_audio_automation: {"target":{"kind":"audio","track":0,"clip_index":0,"component_match_name":"discovered","param_display_name":"discovered"},"request":{"mode":"duck","duration_seconds":30,"baseline":1,"value_unit":"linear_amplitude","reduction_db":12,"attack_seconds":0.2,"release_seconds":0.5,"regions":[{"start":2,"end":5}]}}
@@ -180,6 +183,7 @@ Rules:
 - Use run_project_task instead of raw shell commands when test/build/lint/typecheck is enough.
 - For browser/app UI work, prefer a Shuvi-managed browser when isolation matters, then use window-scoped semantic UI tools first. Use ui_toggle and ui_expand_collapse for supported controls. ui_send_keys is a high-risk fallback only after an exact element is focused and semantic patterns are unavailable. pointer_click is a final high-risk coordinate fallback: inspect_screen first, use coordinates only when semantic UI/DOM control cannot target the control, and never repeat a failed coordinate click blindly.
 - For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_timeline/premiere_list_items/premiere_project_tree for inspection, premiere_set_playhead for non-destructive navigation, premiere_inspect_frame for playhead-positioned visual review and premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media/premiere_insert_media/premiere_save_project for native editing. premiere_insert_media, premiere_trim_clip, premiere_roll_edit, premiere_move_clip, premiere_clone_clip, premiere_delete_clip, premiere_add_video_transition, premiere_add_video_effect, premiere_set_effect_param, premiere_add_effect_keyframe, premiere_add_audio_effect, premiere_set_audio_effect_param and premiere_add_audio_effect_keyframe are high risk because they change the timeline or effect state; premiere_insert_mogrt_path and premiere_insert_mogrt_library are high risk because they add graphics to the timeline; premiere_export_sequence is high risk because it writes media and may start encoding; inspect the timeline first when practical. Use UI/vision fallbacks only for features not exposed through the bridge. Major sequence creation and timeline insert/overwrite actions automatically save and copy the current .prproj into a sibling 'Shuvi Backups' folder before editing; the edit is refused if a saved local project cannot be checkpointed.
+- Project diagnostics are read-only and bounded. Inspect traversal/truncation and unknown status fields before interpreting counts; proxy attachment does not establish proxy health and duplicate path candidates are not authorization to delete/relink.
 - Graphics plans must use inspected primitive types without coercion or semantic-name inference. Copy settings and expected into premiere_apply_video_recipe; skipped fields were not applied.
 - Premiere tools accept optional arguments.expected: {project_guid, project_path?, sequence_guid?, clips:[{kind,track,clip_index,signature}]}. Copy project/sequence identity and each clip targetSignature from premiere_timeline. Include every edited clip for clip guards. Stale expectations are rejected; legacy callers without expected remain compatible. Never discard an expectation after rejection to force an edit.
 - Inspect premiere_inspect_keyframes before premiere_edit_keyframe and copy the returned targetSignature and exact native ticks. A stale target is rejected. Keyframe edits are high-risk and require a project checkpoint. Do not convert keyframe ticks to timeline seconds.
@@ -316,6 +320,7 @@ enum ToolAction {
     PremierePlanAudioAutomation { target: ParameterTarget, request: AudioPlanRequest },
     PremiereInspectMogrtProperties { track: u32, clip_index: u32 },
     PremierePlanMogrtRecipe { track: u32, clip_index: u32, request: GraphicsRequest },
+    PremiereProjectDiagnostics { limits: DiagnosticsLimits },
     PremiereTimelineCapabilities,
     PremiereTimeline,
     PremiereCaptionTracks,
@@ -650,6 +655,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_edit_keyframe"
         | "premiere_inspect_clip_speed"
         | "premiere_plan_speed"
+        | "premiere_project_diagnostics"
         | "premiere_inspect_mogrt_properties"
         | "premiere_plan_mogrt_recipe"
         | "premiere_plan_audio_automation"
@@ -2014,6 +2020,11 @@ fn stage_tool(
                 "Read the exact clip; no speed or timeline modification will be performed.".to_string(),
                 RiskLevel::Low,
             )
+        }
+        "premiere_project_diagnostics" => {
+            let limits: DiagnosticsLimits = serde_json::from_value(proposal.arguments.get("limits").cloned().unwrap_or_else(|| json!({}))).map_err(|e| format!("Invalid diagnostics limits: {e}"))?;
+            limits.validate()?;
+            (ToolAction::PremiereProjectDiagnostics {limits}, "Inspect Premiere project/media diagnostics".into(), "Read bounded project counts, offline/proxy states and duplicate path candidates; no repairs.".into(), RiskLevel::Low)
         }
         "premiere_inspect_mogrt_properties" => {
             let track = proposal.arguments.get("track").and_then(Value::as_u64).filter(|v| *v <= 128).ok_or("Track must be 0–128.")? as u32;
@@ -5901,6 +5912,10 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
         }
         ToolAction::PremierePlanMogrtRecipe { track, clip_index, request } => {
             let value = premiere_bridge.request("plan_mogrt_recipe", json!({"track":track,"clipIndex":clip_index,"request":request}), Duration::from_secs(30)).await?;
+            Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&value).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
+        }
+        ToolAction::PremiereProjectDiagnostics { limits } => {
+            let value = premiere_bridge.request("project_diagnostics", json!({"limits":limits}), Duration::from_secs(30)).await?;
             Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&value).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
         }
         ToolAction::PremiereTimelineCapabilities => {

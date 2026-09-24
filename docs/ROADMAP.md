@@ -269,3 +269,18 @@ Estimate after Module F: code complete approximately 67%; runtime verified 0% th
 - [ ] Rust schema tests/compilation: local Cargo unavailable. Real Premiere template text/property edit, undo and visual verification pending.
 
 Conservative estimate after Module G: code complete approximately 69%; runtime verified 0%; production readiness not established. Next: Module I — bounded project/media diagnostics. Native type/setter presence is not proof that any particular template accepts a write.
+
+### Module I — bounded project/media diagnostics (2026-09-24)
+- [x] Low-risk typed premiere_project_diagnostics tool, explicit bridge allowlist and existing audit/expectation request path; no checkpoints or writes for inspection.
+- [x] Project/active-sequence identity, native sequence count, visited project-item/bin/media/sequence counts, offline/proxy/unknown state and actual-path extension summary.
+- [x] Iterative depth-first traversal with 10000-item/32-depth/10-second cooperative limits, cycle avoidance, per-field error isolation and explicit partial counts.
+- [x] Bounded details, duplicate absolute-path candidates and repeated project-item ID groups. Windows ASCII case/slash normalization preserves other path semantics; no filename-only matching or automatic repairs.
+- [x] Proxy attachment/path separated from usability; proxyUsable remains null. Unknown paths/status never imply offline/healthy media.
+- [x] 200 media details, 50 groups per group list, 8 members/group, 32 errors, 2048-character paths, 64 extension keys and 48000 serialized-character response limit; omitted detail/group counts remain explicit.
+- [x] Nineteen diagnostics tests including hard 10000-item and escaped-output budgets; 112 total Node tests pass. Registry validation and frontend build pass.
+- [ ] Rust compile/schema tests: local Cargo unavailable. Real Premiere read-only large-project verification and native folder-call latency/memory checks pending.
+
+Conservative estimate after Module I: code complete approximately 71%; runtime verified 0%; production readiness not established. Module G and Module I are separate committed/pushed units. No Module J implementation started.
+
+### Exact next continuation — Module J: bounded visual-review convergence
+Start from latest remote main and preserve existing single/multi-frame review tools. Add a locally persisted review session with objective/reference context, 3–8 configurable iterations, bounded vision calls, structured issues/confidence and attempted-fix history. Stop on repeated failed fixes, stagnation, cancellation or iteration limits. Route every proposed fix through existing normal permissions/checkpoints; no recursive hidden executor. Add state-transition/persistence/cancellation tests, docs and a separate commit/push. Rust/CI and disposable Premiere acceptance remain independent pending verification; do not infer failures from CI jobs with no executed steps.

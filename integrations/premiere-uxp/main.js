@@ -9,6 +9,8 @@ const { adaptTranscriptTiming, captionCapability } = require("./caption-workflow
 
 const { inspectProperties, planRecipe: planGraphicsRecipe } = require("./mogrt-workflows.js");
 
+const { diagnoseProject } = require("./project-diagnostics.js");
+
 const BRIDGE_BASE = "http://127.0.0.1:17361";
 let bridgeToken = "";
 let pollTimer = null;
@@ -3864,6 +3866,13 @@ async function planClipSpeed(argumentsValue) {
   return planSpeed(snapshot, argumentsValue.request);
 }
 
+async function projectDiagnostics(args) {
+  const project = await requireProject();
+  return await diagnoseProject(project, {folder: asFolderItem, clip: asClipProjectItem,
+    id: async item => { const nativeItem = asProjectItem(item); if (!nativeItem) throw new Error("Native project item identity unavailable."); return await nativeItem.getId(); },
+    guid: plainGuid}, args.limits || {});
+}
+
 async function graphicsTarget(args) {
   if (!Number.isInteger(args?.track) || args.track < 0 || args.track > 128 || !Number.isInteger(args?.clipIndex) || args.clipIndex < 0 || args.clipIndex > 10000) throw new Error("Bounded exact video track/clip target required.");
   return await getVideoClipTarget(args.track, args.clipIndex);
@@ -4020,6 +4029,8 @@ async function dispatchNativeCommand(command) {
       return await insertProjectItem(command.arguments || {});
     case "save_project":
       return await saveProject();
+    case "project_diagnostics":
+      return await projectDiagnostics(command.arguments || {});
     case "inspect_mogrt_properties":
       return await inspectMogrtProperties(command.arguments);
     case "plan_mogrt_recipe":
