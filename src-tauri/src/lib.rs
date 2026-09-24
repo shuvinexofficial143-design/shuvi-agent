@@ -19,6 +19,7 @@ use uuid::Uuid;
 
 mod premiere_diagnostics;
 mod premiere_review;
+mod premiere_editorial;
 use premiere_diagnostics::DiagnosticsLimits;
 mod premiere_mogrt;
 use premiere_mogrt::GraphicsRequest;
@@ -107,6 +108,7 @@ Available tools:
 - premiere_review_session_next: {"session_id":"exact returned ID"}
 - premiere_review_session_record_fix: {"session_id":"ID","issue_id":"inspected issue ID","target":"exact inspected clip target","planner":"premiere_plan_video_recipe","settings":{"exact":"approved typed settings"},"approved_action_id":"exact successful Shuvi audit action ID"}
 - premiere_review_session_cancel: {"session_id":"exact returned ID"}
+- premiere_plan_edit_recipe: {"preset":"social_reel|cinematic_reel|talking_head|product_ad|wedding_highlight|long_form_youtube|story_explainer|clean_corporate","targets":{},"inputs":{},"options":{}}
 - premiere_list_items: {}
 - premiere_project_tree: {}
 - premiere_create_bin: {"name":"bin name"}
@@ -340,6 +342,7 @@ enum ToolAction {
     PremiereReviewSessionNext { session_id: String, provider: ProviderContext },
     PremiereReviewSessionRecordFix { session_id: String, issue_id: String, target: String, planner: String, settings: Value, approved_action_id: String },
     PremiereReviewSessionCancel { session_id: String },
+    PremierePlanEditRecipe { request: premiere_editorial::Request },
     PremiereSetTrackMute { kind: String, track: u32, muted: bool },
     PremiereSetClipEnabled { kind: String, track: u32, clip_index: u32, enabled: bool },
     PremiereListVideoTransitions,
@@ -686,6 +689,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_review_session_next"
         | "premiere_review_session_record_fix"
         | "premiere_review_session_cancel"
+        | "premiere_plan_edit_recipe"
         | "premiere_set_track_mute"
         | "premiere_set_clip_enabled"
         | "premiere_list_video_transitions"
@@ -2217,6 +2221,13 @@ fn stage_tool(
                 ),
                 RiskLevel::Medium,
             )
+        }
+        "premiere_plan_edit_recipe" => {
+            let request: premiere_editorial::Request=serde_json::from_value(proposal.arguments.clone())
+                .map_err(|e| format!("Invalid editorial recipe request: {e}"))?;
+            premiere_editorial::plan(request.clone())?;
+            (ToolAction::PremierePlanEditRecipe {request},"Plan professional Premiere edit".into(),
+                "Read-only versioned editorial stages; no sequence modification.".into(),RiskLevel::Low)
         }
         "premiere_review_session_start" => {
             let objective = arg_string(&proposal.arguments, "objective")?;
@@ -6143,6 +6154,11 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 },
                 exit_code: Some(if failures == 0 { 0 } else { 1 }),
             })
+        }
+        ToolAction::PremierePlanEditRecipe {request} => {
+            let plan=premiere_editorial::plan(request)?;
+            Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&plan).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::PremiereReviewSessionStart { objective, reference, sample_times, max_iterations } => {
             let context = premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;

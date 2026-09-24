@@ -182,3 +182,5 @@ Reviewed September 24, 2026: [ClipProjectItem](https://developer.adobe.com/premi
 # Desktop review sessions
 
 The Premiere panel continues to expose only its existing typed inspection and edit routes. Shuvi's desktop review session calls `inspect_context` and `set_playhead`, captures at most four screen frames per iteration, and stores bounded structured observations locally. It never sends model output to a UXP action. A proposed adjustment requires exact target/parameter inspection followed by a normal approved, checkpointed typed edit, then `premiere_review_session_record_fix` and `premiere_review_session_next`. Only a disposable project should be used for host acceptance until Premiere runtime verification is complete.
+
+The separate `premiere_plan_edit_recipe` desktop tool creates a versioned read-only editorial plan. All eight packs rely on existing UXP typed routes; no new panel command or arbitrary action dispatcher is involved. Exact project/sequence/clip signatures, supplied timings/assets and inspected parameter bindings must be present before the corresponding stage is marked ready. Unsupported native capabilities stay blocked.

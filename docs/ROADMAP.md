@@ -289,3 +289,12 @@ Conservative estimate after Module I: code complete approximately 71%; runtime v
 - [x] Same-position after review yields improved/unchanged/regressed/uncertain using actionable issue counts and confidence; this is a heuristic, not objective image scoring. Cancellation, low confidence, no actionable issues, iteration limit and duplicate failed fingerprint stop the loop.
 - [ ] Precise clip/parameter binding from vision observations to safe deterministic edit settings remains manual inspection; all automatic fix proposals report supported=false until exact target binding can be proved. Audit receipt confirms a successful typed edit, but does not cryptographically bind its settings to the recorded fingerprint.
 - [ ] Rust compile/tests and disposable-project Premiere/UXP runtime acceptance remain unverified in this environment. No professional quality guarantee.
+
+### Module K — professional multi-stage editorial recipe packs
+- [x] Read-only `premiere_plan_edit_recipe` with schema version 1, a 32-stage/32 KB ceiling, dependency ordering and cycle rejection. Eight packs: social reel, cinematic reel, talking head, product ad, wedding highlight, long-form YouTube, story/explainer, and clean corporate.
+- [x] Each plan returns typed stage capability, exact target/parameter requirements, supported and blocked stages, missing inputs, review requirement, and finite stage state. Executable-code fields and unknown presets are rejected. Plans never modify Premiere.
+- [x] Cut regions, named parameters, audio regions and review timestamps require exact bounded supplied values. Social beats, long-form B-roll assets and story narration timing are explicit dependencies. Native captions, speed writes, masks, multicam and vertical track moves remain blocked.
+- [x] The existing saved parameter recipe library remains separate. A mutating stage is performed through the existing individually approved, checkpointed typed tool, then reviewed with Module J; no batch executor was added.
+- [ ] Runtime recipe orchestration and native Premiere host acceptance remain pending. Rust compile/tests unavailable locally; editorial intent and quality are not guaranteed.
+
+Next Premiere priority: export/output hardening and disposable-project Premiere+UXP acceptance. Resolve remaining capability gaps only with verified host support.
