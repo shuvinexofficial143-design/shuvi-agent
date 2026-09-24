@@ -30,6 +30,7 @@ mod premiere_review_binding;
 mod premiere_edit_session;
 use premiere_diagnostics::DiagnosticsLimits;
 mod premiere_subtitles;
+mod premiere_dialogue;
 mod premiere_mogrt;
 use premiere_mogrt::GraphicsRequest;
 mod premiere_audio;
@@ -103,6 +104,8 @@ Available tools:
 - premiere_inspect_mogrt_properties: {"track":0,"clip_index":0}
 - premiere_populate_mogrt: {"track":0,"clip_index":0,"request":{"preset":"lower_third","fields":[{"role":"title","component_match_name":"exact inspected native component","param_display_name":"exact inspected native parameter","value":"Name"}]},"expected":{"project_guid":"...","sequence_guid":"...","clips":[{"kind":"video","track":0,"clip_index":0,"signature":"..."}]}}
 - premiere_plan_mogrt_recipe: {"track":0,"clip_index":0,"request":{"preset":"title|lower_third","fields":[{"role":"text|title|subtitle|property","component_match_name":"exact inspected name","param_display_name":"exact inspected name","value":"My title"}]}}
+- premiere_plan_transcript_ducking: {"item_id":"dialogue project item","target":{"kind":"audio","track":0,"clip_index":0,"component_match_name":"inspected","param_display_name":"inspected"},"request":{"mode":"duck","duration_seconds":30,"baseline":1,"value_unit":"native","target_value":0.4,"attack_seconds":0.2,"release_seconds":0.5,"regions":[]},"transcript_offset_seconds":0,"music_start_seconds":0,"merge_gap_seconds":0}
+- premiere_apply_transcript_ducking: {"item_id":"dialogue project item","target":{"kind":"audio","track":0,"clip_index":0,"component_match_name":"inspected","param_display_name":"inspected"},"request":{"mode":"duck","duration_seconds":30,"baseline":1,"value_unit":"native","target_value":0.4,"attack_seconds":0.2,"release_seconds":0.5,"regions":[]},"transcript_offset_seconds":0,"music_start_seconds":0,"merge_gap_seconds":0,"expected":{"project_guid":"...","sequence_guid":"...","clips":[{"kind":"audio","track":0,"clip_index":0,"signature":"..."}]}}
 - premiere_plan_audio_automation: {"target":{"kind":"audio","track":0,"clip_index":0,"component_match_name":"discovered","param_display_name":"discovered"},"request":{"mode":"duck","duration_seconds":30,"baseline":1,"value_unit":"linear_amplitude","reduction_db":12,"attack_seconds":0.2,"release_seconds":0.5,"regions":[{"start":2,"end":5}]}}
 - premiere_plan_video_recipe: {"track":0,"clip_index":0,"request":{"preset":"zoom_in","start_seconds":0,"end_seconds":2,"bindings":[{"role":"scale","component_match_name":"discovered","param_display_name":"discovered","start_value":100,"end_value":110}]}}
 - premiere_timeline_capabilities: {}
@@ -408,6 +411,7 @@ enum ToolAction {
     PremiereExportTranscript { item_id: String },
     PremiereWriteSrt { output: String, overwrite: bool, cues: Vec<premiere_subtitles::Cue> },
     PremiereTranscriptToSrt { item_id: String, output: String, overwrite: bool },
+    PremiereTranscriptDucking { item_id: String, target: ParameterTarget, request: AudioPlanRequest, transcript_offset: f64, music_start: f64, merge_gap: f64, apply: bool },
     PremierePopulateMogrt { track: u32, clip_index: u32, request: GraphicsRequest },
     PremiereImportTranscript { item_id: String, transcript_json: String },
     PremiereAttachProxy { item_id: String, proxy_path: String },
@@ -721,6 +725,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_plan_mogrt_recipe"
         | "premiere_populate_mogrt"
         | "premiere_plan_audio_automation"
+        | "premiere_plan_transcript_ducking"
+        | "premiere_apply_transcript_ducking"
         | "premiere_plan_video_recipe"
         | "premiere_timeline_capabilities"
         | "premiere_timeline"
@@ -2137,6 +2143,40 @@ fn stage_tool(
             let request: GraphicsRequest = serde_json::from_value(proposal.arguments.get("request").cloned().unwrap_or(Value::Null)).map_err(|e| format!("Invalid graphics plan: {e}"))?;
             request.validate()?;
             (ToolAction::PremierePlanMogrtRecipe {track, clip_index, request}, "Plan inspected graphics recipe".into(), "Inspect exact primitive fields and prepare static settings without editing.".into(), RiskLevel::Low)
+        }
+        "premiere_plan_transcript_ducking" => {
+            let apply=false;
+            let item_id=arg_string(&proposal.arguments,"item_id")?;
+            if item_id.is_empty()||item_id.len()>240 {return Err("Transcript item id exceeds bounds.".into());}
+            let target:ParameterTarget=serde_json::from_value(proposal.arguments.get("target").cloned().unwrap_or(Value::Null)).map_err(|e|format!("Invalid audio target: {e}"))?;
+            target.validate()?;if target.kind!="audio" {return Err("Ducking requires an inspected audio target.".into());}
+            let request:AudioPlanRequest=serde_json::from_value(proposal.arguments.get("request").cloned().unwrap_or(Value::Null)).map_err(|e|format!("Invalid audio request: {e}"))?;
+            request.validate()?;if request.mode!="duck"||!request.regions.is_empty(){return Err("Transcript ducking derives dialogue regions from native transcript timing only.".into());}
+            let read=|key:&str|->Result<f64,String>{let value=proposal.arguments.get(key).and_then(Value::as_f64).ok_or_else(||format!("{key} is required."))?;if !value.is_finite()||value<0.0||value>86400.0 {return Err(format!("{key} is outside bounds."));}Ok(value)};
+            let transcript_offset=read("transcript_offset_seconds")?;let music_start=read("music_start_seconds")?;
+            let merge_gap=read("merge_gap_seconds")?;if merge_gap>5.0{return Err("Maximum merge gap is 5 seconds.".into());}
+            if apply {
+                let expected=premiere_expectation.as_ref().ok_or("Ducking edit requires an inspected audio clip expectation.")?;
+                if expected.sequence_guid.is_none()||expected.clips.len()!=1||!expected.clips.iter().any(|c|c.kind=="audio"&&c.track==target.track&&c.clip_index==target.clip_index){return Err("Exact audio clip expectation required.".into());}
+            }
+            (ToolAction::PremiereTranscriptDucking{item_id,target,request,transcript_offset,music_start,merge_gap,apply},if apply{"Apply transcript-derived Premiere ducking"}else{"Plan transcript-derived Premiere ducking"}.into(),"Use actual explicit transcript segments with caller-supplied timeline offsets and inspected native audio values.".into(),if apply{RiskLevel::High}else{RiskLevel::Low})
+        }
+        "premiere_apply_transcript_ducking" => {
+            let apply=true;
+            let item_id=arg_string(&proposal.arguments,"item_id")?;
+            if item_id.is_empty()||item_id.len()>240 {return Err("Transcript item id exceeds bounds.".into());}
+            let target:ParameterTarget=serde_json::from_value(proposal.arguments.get("target").cloned().unwrap_or(Value::Null)).map_err(|e|format!("Invalid audio target: {e}"))?;
+            target.validate()?;if target.kind!="audio" {return Err("Ducking requires an inspected audio target.".into());}
+            let request:AudioPlanRequest=serde_json::from_value(proposal.arguments.get("request").cloned().unwrap_or(Value::Null)).map_err(|e|format!("Invalid audio request: {e}"))?;
+            request.validate()?;if request.mode!="duck"||!request.regions.is_empty(){return Err("Transcript ducking derives dialogue regions from native transcript timing only.".into());}
+            let read=|key:&str|->Result<f64,String>{let value=proposal.arguments.get(key).and_then(Value::as_f64).ok_or_else(||format!("{key} is required."))?;if !value.is_finite()||value<0.0||value>86400.0 {return Err(format!("{key} is outside bounds."));}Ok(value)};
+            let transcript_offset=read("transcript_offset_seconds")?;let music_start=read("music_start_seconds")?;
+            let merge_gap=read("merge_gap_seconds")?;if merge_gap>5.0{return Err("Maximum merge gap is 5 seconds.".into());}
+            if apply {
+                let expected=premiere_expectation.as_ref().ok_or("Ducking edit requires an inspected audio clip expectation.")?;
+                if expected.sequence_guid.is_none()||expected.clips.len()!=1||!expected.clips.iter().any(|c|c.kind=="audio"&&c.track==target.track&&c.clip_index==target.clip_index){return Err("Exact audio clip expectation required.".into());}
+            }
+            (ToolAction::PremiereTranscriptDucking{item_id,target,request,transcript_offset,music_start,merge_gap,apply},if apply{"Apply transcript-derived Premiere ducking"}else{"Plan transcript-derived Premiere ducking"}.into(),"Use actual explicit transcript segments with caller-supplied timeline offsets and inspected native audio values.".into(),if apply{RiskLevel::High}else{RiskLevel::Low})
         }
         "premiere_plan_audio_automation" => {
             let target: ParameterTarget = serde_json::from_value(proposal.arguments.get("target").cloned().unwrap_or(Value::Null)).map_err(|e| format!("Invalid audio target: {e}"))?;
@@ -6233,6 +6273,26 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let mut value = premiere_bridge.request("plan_video_recipe", json!({"track":track,"clipIndex":clip_index,"request":request}), Duration::from_secs(30)).await?;
             premiere_plan_calibration(&mut value,&premiere_bridge,app).await?;
             Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&value).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
+        }
+        ToolAction::PremiereTranscriptDucking{item_id,target,mut request,transcript_offset,music_start,merge_gap,apply} => {
+            let transcript=premiere_bridge.request("export_transcript",json!({"itemId":item_id,"deliverSrt":true}),Duration::from_secs(30)).await?;
+            let caption=transcript.get("captions").ok_or("Transcript has no timing adapter.")?;
+            if caption.get("supported").and_then(Value::as_bool)!=Some(true)||caption.get("segmentsTruncated").and_then(Value::as_bool)!=Some(false){return Err("No complete recognized transcript timing available for ducking.".into());}
+            let segments=caption.get("segments").and_then(Value::as_array).ok_or("Transcript segments missing.")?;
+            request.regions=premiere_dialogue::regions(segments,transcript_offset,music_start,request.duration_seconds,merge_gap)?;
+            let mut args=target.bridge_arguments();args["request"]=serde_json::to_value(&request).map_err(|e|e.to_string())?;
+            let mut plan=premiere_bridge.request("plan_audio_automation",args,Duration::from_secs(30)).await?;
+            if !apply {
+                premiere_plan_calibration(&mut plan,&premiere_bridge,app).await?;
+                plan["transcript_source"]=json!({"item_id":item_id,"region_count":request.regions.len(),"transcript_offset_seconds":transcript_offset,"music_start_seconds":music_start});
+                return Ok(ActionResult{success:true,tool,stdout:plan.to_string(),stderr:String::new(),exit_code:Some(0)});
+            }
+            let expected=premiere_bridge.expected.ok_or("Ducking edit requires exact expectation.")?;
+            if plan.get("expected")!=Some(&serde_json::to_value(expected).map_err(|e|e.to_string())?){return Err("Music target changed since inspection; no ducking written.".into());}
+            let settings=plan.get("settings").and_then(Value::as_array).filter(|v|!v.is_empty()&&v.len()<=64).ok_or("Ducking plan has no bounded executable keyframes.")?;
+            let backup=backup_premiere_project(&premiere_bridge).await?;
+            let value=premiere_bridge.request("apply_audio_recipe",json!({"track":target.track,"clipIndex":target.clip_index,"settings":settings}),Duration::from_secs(45)).await?;
+            Ok(ActionResult{success:true,tool,stdout:json!({"backup":backup,"result":value,"transcript_item_id":item_id,"dialogue_regions":request.regions.len(),"native_reinspection_recommended":true}).to_string(),stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::PremierePlanAudioAutomation { target, request } => {
             let mut arguments = target.bridge_arguments(); arguments["request"] = serde_json::to_value(request).map_err(|e| e.to_string())?;
