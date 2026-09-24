@@ -107,6 +107,8 @@ Available tools:
 - premiere_plan_transcript_ducking: {"item_id":"dialogue project item","target":{"kind":"audio","track":0,"clip_index":0,"component_match_name":"inspected","param_display_name":"inspected"},"request":{"mode":"duck","duration_seconds":30,"baseline":1,"value_unit":"native","target_value":0.4,"attack_seconds":0.2,"release_seconds":0.5,"regions":[]},"transcript_offset_seconds":0,"music_start_seconds":0,"merge_gap_seconds":0}
 - premiere_apply_transcript_ducking: {"item_id":"dialogue project item","target":{"kind":"audio","track":0,"clip_index":0,"component_match_name":"inspected","param_display_name":"inspected"},"request":{"mode":"duck","duration_seconds":30,"baseline":1,"value_unit":"native","target_value":0.4,"attack_seconds":0.2,"release_seconds":0.5,"regions":[]},"transcript_offset_seconds":0,"music_start_seconds":0,"merge_gap_seconds":0,"expected":{"project_guid":"...","sequence_guid":"...","clips":[{"kind":"audio","track":0,"clip_index":0,"signature":"..."}]}}
 - premiere_plan_audio_automation: {"target":{"kind":"audio","track":0,"clip_index":0,"component_match_name":"discovered","param_display_name":"discovered"},"request":{"mode":"duck","duration_seconds":30,"baseline":1,"value_unit":"linear_amplitude","reduction_db":12,"attack_seconds":0.2,"release_seconds":0.5,"regions":[{"start":2,"end":5}]}}
+- premiere_batch_finish: {"targets":[{"track":0,"clip_index":2,"request":{"preset":"natural_correction","bindings":[{"role":"contrast","component_match_name":"exact","param_display_name":"exact","unit":1,"min":0,"max":2}]}}],"expected":{"project_guid":"...","sequence_guid":"...","clips":[{"kind":"video","track":0,"clip_index":2,"signature":"inspected"}]}}
+- premiere_batch_finish_cancel: {}
 - premiere_plan_video_recipe: {"track":0,"clip_index":0,"request":{"preset":"zoom_in","start_seconds":0,"end_seconds":2,"bindings":[{"role":"scale","component_match_name":"discovered","param_display_name":"discovered","start_value":100,"end_value":110}]}}
 - premiere_timeline_capabilities: {}
 - premiere_timeline: {}
@@ -412,6 +414,8 @@ enum ToolAction {
     PremiereWriteSrt { output: String, overwrite: bool, cues: Vec<premiere_subtitles::Cue> },
     PremiereTranscriptToSrt { item_id: String, output: String, overwrite: bool },
     PremiereTranscriptDucking { item_id: String, target: ParameterTarget, request: AudioPlanRequest, transcript_offset: f64, music_start: f64, merge_gap: f64, apply: bool },
+    PremiereBatchFinish { targets: Vec<Value> },
+    PremiereBatchFinishCancel,
     PremierePopulateMogrt { track: u32, clip_index: u32, request: GraphicsRequest },
     PremiereImportTranscript { item_id: String, transcript_json: String },
     PremiereAttachProxy { item_id: String, proxy_path: String },
@@ -518,6 +522,8 @@ struct ActionState {
     browser_sessions: Mutex<HashMap<u32, BrowserSession>>,
     premiere_bridge: Arc<PremiereBridgeShared>,
     acceptance_probe_running: AtomicBool,
+    finishing_running: AtomicBool,
+    finishing_cancelled: AtomicBool,
 }
 
 struct AcceptanceProbeGuard<'a>(&'a AtomicBool);
@@ -728,6 +734,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_plan_transcript_ducking"
         | "premiere_apply_transcript_ducking"
         | "premiere_plan_video_recipe"
+        | "premiere_batch_finish"
+        | "premiere_batch_finish_cancel"
         | "premiere_timeline_capabilities"
         | "premiere_timeline"
         | "premiere_caption_tracks"
@@ -2185,6 +2193,22 @@ fn stage_tool(
             request.validate()?;
             (ToolAction::PremierePlanAudioAutomation {target, request}, "Plan named audio automation".into(), "Inspect a parameter and plan supplied dialogue ducking/fade/pan values; no edit or speech detection.".into(), RiskLevel::Low)
         }
+        "premiere_batch_finish" => {
+            let targets=proposal.arguments.get("targets").and_then(Value::as_array).ok_or("Batch requires explicit targets.")?;
+            if targets.is_empty()||targets.len()>32 {return Err("Batch finishing requires 1–32 targets.".into());}
+            let expected=premiere_expectation.as_ref().ok_or("Batch finishing requires inspected clip expectations.")?;
+            if expected.sequence_guid.is_none()||expected.clips.len()!=targets.len(){return Err("Batch requires one exact video clip expectation per target.".into());}
+            let mut seen=HashSet::new();
+            for t in targets {
+                let track=t.get("track").and_then(Value::as_u64).filter(|n|*n<=128).ok_or("Invalid video track.")? as u32;
+                let index=t.get("clip_index").and_then(Value::as_u64).filter(|n|*n<=10000).ok_or("Invalid clip index.")? as u32;
+                if !seen.insert((track,index))||!expected.clips.iter().any(|c|c.kind=="video"&&c.track==track&&c.clip_index==index){return Err("Duplicate or uninspected video batch target.".into());}
+                let request:RecipePlanRequest=serde_json::from_value(t.get("request").cloned().unwrap_or(Value::Null)).map_err(|e|format!("Invalid clip recipe: {e}"))?;
+                request.validate()?;
+            }
+            (ToolAction::PremiereBatchFinish{targets:targets.clone()},"Finish explicit Premiere clips".into(),format!("Apply inspected native motion/color recipes on {} exact clips, with per-clip results and project checkpoint.",targets.len()),RiskLevel::High)
+        }
+        "premiere_batch_finish_cancel" => (ToolAction::PremiereBatchFinishCancel,"Cancel Premiere batch finishing".into(),"Stop before the next clip; any current Premiere command may still finish.".into(),RiskLevel::Low),
         "premiere_plan_video_recipe" => {
             let track = proposal.arguments.get("track").and_then(Value::as_u64).filter(|v| *v <= 128).ok_or("Track must be 0–128.")? as u32;
             let clip_index = proposal.arguments.get("clip_index").and_then(Value::as_u64).filter(|v| *v <= 10000).ok_or("Clip index must be 0–10000.")? as u32;
@@ -6268,6 +6292,51 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let mut arguments = target.bridge_arguments(); arguments["expectedSignature"] = json!(expected_signature);
             let value = premiere_bridge.request("remove_effect", arguments, Duration::from_secs(20)).await?;
             Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&json!({"backup":backup,"result":value})).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
+        }
+        ToolAction::PremiereBatchFinishCancel => {
+            state.finishing_cancelled.store(true,Ordering::Release);
+            Ok(ActionResult{success:true,tool,stdout:json!({"cancel_requested":true,"running":state.finishing_running.load(Ordering::Acquire)}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereBatchFinish{targets} => {
+            if state.finishing_running.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){return Err("Another finishing batch is active.".into());}
+            let _guard=AcceptanceProbeGuard(&state.finishing_running);
+            state.finishing_cancelled.store(false,Ordering::Release);
+            let expected=premiere_bridge.expected.ok_or("Batch requires inspected Premiere expectation.")?;
+            let mut results=Vec::new();let mut checkpoint:Option<String>=None;
+            for target in targets {
+                if state.finishing_cancelled.load(Ordering::Acquire){break;}
+                let track=target["track"].as_u64().ok_or("Invalid batch track.")? as u32;
+                let index=target["clip_index"].as_u64().ok_or("Invalid batch index.")? as u32;
+                let clip=expected.clips.iter().find(|c|c.kind=="video"&&c.track==track&&c.clip_index==index).ok_or("Missing batch clip guard.")?.clone();
+                let guard=PremiereExpectation{project_guid:expected.project_guid.clone(),project_path:expected.project_path.clone(),sequence_guid:expected.sequence_guid.clone(),clips:vec![clip]};
+                let client=PremiereClient{bridge:&state.premiere_bridge,expected:Some(&guard)};
+                let request=target.get("request").ok_or("Missing batch recipe request.")?;
+                let plan=client.request("plan_video_recipe",json!({"track":track,"clipIndex":index,"request":request}),Duration::from_secs(30)).await;
+                let outcome=match plan {
+                    Ok(plan) => {
+                        if plan.get("expected")!=Some(&serde_json::to_value(&guard).map_err(|e|e.to_string())?) {Err("Native clip expectation changed during planning.".into())}
+                        else if !plan.get("skipped").and_then(Value::as_array).is_some_and(Vec::is_empty) {Err("Some native bindings are unavailable; clip skipped.".into())}
+                        else if let Some(settings)=plan.get("settings").and_then(Value::as_array).filter(|s|!s.is_empty()&&s.len()<=64){
+                            if state.finishing_cancelled.load(Ordering::Acquire){Err("Cancelled before clip edit.".into())}
+                            else {
+                                if checkpoint.is_none(){checkpoint=Some(backup_premiere_project(&client).await?);}
+                                client.request("apply_video_recipe",json!({"track":track,"clipIndex":index,"settings":settings}),Duration::from_secs(45)).await
+                            }
+                        }else{Err("Native planner returned no bounded executable settings.".into())}
+                    },Err(error)=>Err(error)
+                };
+                match outcome {
+                    Ok(result)=>results.push(json!({"track":track,"clip_index":index,"status":"applied","result":result})),
+                    Err(error)=>{
+                        let uncertain=error.contains("unknown")||error.contains("timed out")||error.contains("timeout");
+                        results.push(json!({"track":track,"clip_index":index,"status":if uncertain{"uncertain"}else{"failed"},"reason":error.chars().take(240).collect::<String>()}));
+                        if uncertain {break;}
+                    }
+                }
+            }
+            let done=results.iter().filter(|r|r["status"]=="applied").count();
+            let cancelled=state.finishing_cancelled.load(Ordering::Acquire);
+            Ok(ActionResult{success:done==results.len()&&!cancelled,tool,stdout:json!({"checkpoint":checkpoint,"requested":expected.clips.len(),"processed":results.len(),"applied":done,"cancelled":cancelled,"results":results,"review_recommended":done>0}).to_string(),stderr:String::new(),exit_code:Some(if done==expected.clips.len()&&!cancelled{0}else{1})})
         }
         ToolAction::PremierePlanVideoRecipe { track, clip_index, request } => {
             let mut value = premiere_bridge.request("plan_video_recipe", json!({"track":track,"clipIndex":clip_index,"request":request}), Duration::from_secs(30)).await?;
