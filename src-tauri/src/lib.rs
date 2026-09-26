@@ -31,6 +31,7 @@ mod premiere_edit_session;
 use premiere_diagnostics::DiagnosticsLimits;
 mod premiere_subtitles;
 mod premiere_dialogue;
+mod premiere_talking_head;
 mod premiere_assembly;
 mod premiere_mogrt;
 mod premiere_graphics;
@@ -108,6 +109,8 @@ Available tools:
 - premiere_plan_mogrt_recipe: {"track":0,"clip_index":0,"request":{"preset":"title|lower_third","fields":[{"role":"text|title|subtitle|property","component_match_name":"exact inspected name","param_display_name":"exact inspected name","value":"My title"}]}}
 - premiere_plan_transcript_ducking: {"item_id":"dialogue project item","target":{"kind":"audio","track":0,"clip_index":0,"component_match_name":"inspected","param_display_name":"inspected"},"request":{"mode":"duck","duration_seconds":30,"baseline":1,"value_unit":"native","target_value":0.4,"attack_seconds":0.2,"release_seconds":0.5,"regions":[]},"transcript_offset_seconds":0,"music_start_seconds":0,"merge_gap_seconds":0}
 - premiere_apply_transcript_ducking: {"item_id":"dialogue project item","target":{"kind":"audio","track":0,"clip_index":0,"component_match_name":"inspected","param_display_name":"inspected"},"request":{"mode":"duck","duration_seconds":30,"baseline":1,"value_unit":"native","target_value":0.4,"attack_seconds":0.2,"release_seconds":0.5,"regions":[]},"transcript_offset_seconds":0,"music_start_seconds":0,"merge_gap_seconds":0,"expected":{"project_guid":"...","sequence_guid":"...","clips":[{"kind":"audio","track":0,"clip_index":0,"signature":"..."}]}}
+- premiere_plan_transcript_cuts: {"request":{"schema_version":1,"item_id":"dialogue project item","video":{"kind":"video","track":0,"clip_index":0},"audio":{"kind":"audio","track":0,"clip_index":0},"transcript_offset_seconds":10,"padding_seconds":0.05,"ripple":false,"selections":[{"segment_id":"seg-0001","action":"remove"},{"segment_id":"seg-0003","action":"chapter","label":"Part 2"}]}}
+- premiere_apply_transcript_cuts: {"request":{"schema_version":1,"item_id":"dialogue project item","video":{"kind":"video","track":0,"clip_index":0},"audio":{"kind":"audio","track":0,"clip_index":0},"transcript_offset_seconds":10,"padding_seconds":0.05,"ripple":false,"selections":[{"segment_id":"seg-0001","action":"remove"}]},"transcript_snapshot":"fnv1a64:...","expected":{"project_guid":"...","sequence_guid":"...","clips":[{"kind":"video","track":0,"clip_index":0,"signature":"..."},{"kind":"audio","track":0,"clip_index":0,"signature":"..."}]}}
 - premiere_plan_audio_automation: {"target":{"kind":"audio","track":0,"clip_index":0,"component_match_name":"discovered","param_display_name":"discovered"},"request":{"mode":"duck","duration_seconds":30,"baseline":1,"value_unit":"linear_amplitude","reduction_db":12,"attack_seconds":0.2,"release_seconds":0.5,"regions":[{"start":2,"end":5}]}}
 - premiere_plan_assembly: {"assembly":{"schema_version":1,"shots":[{"item_id":"exact project item","timeline_seconds":0,"video_track":0,"audio_track":0,"mode":"insert"}],"chapters":[{"name":"Section","seconds":0}]}}
 - premiere_apply_assembly: {"assembly":{"schema_version":1,"shots":[{"item_id":"exact project item","timeline_seconds":0,"video_track":0,"audio_track":0,"mode":"insert"}]},"expected":{"project_guid":"...","sequence_guid":"...","clips":[]}}
@@ -426,6 +429,7 @@ enum ToolAction {
     PremiereWriteSrt { output: String, overwrite: bool, cues: Vec<premiere_subtitles::Cue> },
     PremiereTranscriptToSrt { item_id: String, output: String, overwrite: bool },
     PremiereTranscriptDucking { item_id: String, target: ParameterTarget, request: AudioPlanRequest, transcript_offset: f64, music_start: f64, merge_gap: f64, apply: bool },
+    PremiereTranscriptCuts { request: premiere_talking_head::Request, apply: bool, transcript_snapshot: Option<String> },
     PremiereBatchFinish { targets: Vec<Value> },
     PremiereBatchFinishCancel,
     PremiereSaveGraphicsMapping { mapping: premiere_graphics::Mapping, track: u32, clip_index: u32, expected_revision: Option<u32> },
@@ -756,6 +760,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_plan_audio_automation"
         | "premiere_plan_transcript_ducking"
         | "premiere_apply_transcript_ducking"
+        | "premiere_plan_transcript_cuts"
+        | "premiere_apply_transcript_cuts"
         | "premiere_plan_video_recipe"
         | "premiere_batch_finish"
         | "premiere_batch_finish_cancel"
@@ -2247,6 +2253,45 @@ fn stage_tool(
                 if expected.sequence_guid.is_none()||expected.clips.len()!=1||!expected.clips.iter().any(|c|c.kind=="audio"&&c.track==target.track&&c.clip_index==target.clip_index){return Err("Exact audio clip expectation required.".into());}
             }
             (ToolAction::PremiereTranscriptDucking{item_id,target,request,transcript_offset,music_start,merge_gap,apply},if apply{"Apply transcript-derived Premiere ducking"}else{"Plan transcript-derived Premiere ducking"}.into(),"Use actual explicit transcript segments with caller-supplied timeline offsets and inspected native audio values.".into(),if apply{RiskLevel::High}else{RiskLevel::Low})
+        }
+        "premiere_plan_transcript_cuts" => {
+            let request: premiere_talking_head::Request = serde_json::from_value(
+                proposal.arguments.get("request").cloned().unwrap_or(Value::Null)
+            ).map_err(|e| format!("Invalid transcript cut request: {e}"))?;
+            request.validate()?;
+            (
+                ToolAction::PremiereTranscriptCuts { request, apply: false, transcript_snapshot: None },
+                "Plan explicit transcript cuts".into(),
+                "Map explicit keep/remove/chapter/highlight transcript selections to exact inspected timeline targets; interior cuts stay unsupported until a verified split path exists.".into(),
+                RiskLevel::Low,
+            )
+        }
+        "premiere_apply_transcript_cuts" => {
+            let request: premiere_talking_head::Request = serde_json::from_value(
+                proposal.arguments.get("request").cloned().unwrap_or(Value::Null)
+            ).map_err(|e| format!("Invalid transcript cut request: {e}"))?;
+            request.validate()?;
+            let transcript_snapshot = arg_string(&proposal.arguments, "transcript_snapshot")?;
+            if !transcript_snapshot.starts_with("fnv1a64:") || transcript_snapshot.len() != 24 {
+                return Err("Apply transcript cuts requires the exact bounded transcript_snapshot returned by the plan.".into());
+            }
+            let expected = premiere_expectation.as_ref().ok_or("Transcript cut execution requires exact inspected clip expectations.")?;
+            if expected.sequence_guid.is_none() {
+                return Err("Transcript cut execution requires an active sequence expectation.".into());
+            }
+            let required = 1 + usize::from(request.audio.is_some());
+            if expected.clips.len() != required
+                || !expected.clips.iter().any(|clip| clip.kind == "video" && clip.track == request.video.track && clip.clip_index == request.video.clip_index)
+                || request.audio.as_ref().is_some_and(|audio| !expected.clips.iter().any(|clip| clip.kind == "audio" && clip.track == audio.track && clip.clip_index == audio.clip_index))
+            {
+                return Err("Transcript cut execution requires one exact expectation for every explicit video/audio target.".into());
+            }
+            (
+                ToolAction::PremiereTranscriptCuts { request, apply: true, transcript_snapshot: Some(transcript_snapshot) },
+                "Apply explicit transcript cuts".into(),
+                "Apply only edge trims/whole-clip deletion and selected markers from a fresh matching transcript snapshot; no inferred links, silence detection, or unverified split edits.".into(),
+                RiskLevel::High,
+            )
         }
         "premiere_plan_audio_automation" => {
             let target: ParameterTarget = serde_json::from_value(proposal.arguments.get("target").cloned().unwrap_or(Value::Null)).map_err(|e| format!("Invalid audio target: {e}"))?;
@@ -6561,6 +6606,145 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let backup=backup_premiere_project(&premiere_bridge).await?;
             let value=premiere_bridge.request("apply_audio_recipe",json!({"track":target.track,"clipIndex":target.clip_index,"settings":settings}),Duration::from_secs(45)).await?;
             Ok(ActionResult{success:true,tool,stdout:json!({"backup":backup,"result":value,"transcript_item_id":item_id,"dialogue_regions":request.regions.len(),"native_reinspection_recommended":true}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereTranscriptCuts { request, apply, transcript_snapshot } => {
+            let transcript = premiere_bridge.request(
+                "export_transcript",
+                json!({"itemId": request.item_id, "deliverSrt": true}),
+                Duration::from_secs(30),
+            ).await?;
+            let caption = transcript.get("captions").ok_or("Transcript has no timing adapter.")?;
+            if caption.get("supported").and_then(Value::as_bool) != Some(true)
+                || caption.get("segmentsTruncated").and_then(Value::as_bool) != Some(false)
+            {
+                return Err("No complete recognized transcript timing is available for talking-head editing.".into());
+            }
+            let segments = caption.get("segments").and_then(Value::as_array).ok_or("Transcript segments missing.")?;
+            let timeline = premiere_bridge.request("inspect_timeline", json!({}), Duration::from_secs(20)).await?;
+            let mut targets = vec![request.video.clone()];
+            if let Some(audio) = &request.audio { targets.push(audio.clone()); }
+            let states = premiere_talking_head::clip_states_from_timeline(&timeline, &targets)?;
+            let plan = premiere_talking_head::build_plan(segments, &request, &states)?;
+
+            if !apply {
+                return Ok(ActionResult {
+                    success: true,
+                    tool,
+                    stdout: serde_json::to_string_pretty(&plan).unwrap_or_else(|_| "{}".into()),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                });
+            }
+
+            if transcript_snapshot.as_deref() != Some(plan.transcript_snapshot.as_str()) {
+                return Err("Transcript changed since planning; inspect and plan again before editing.".into());
+            }
+            if !plan.supported {
+                return Err(format!(
+                    "Transcript cut plan is not executable: {}",
+                    plan.unsupported_reasons.join(" ")
+                ));
+            }
+
+            let expected = premiere_bridge.expected.ok_or("Transcript cuts require exact clip expectations.")?.clone();
+            for state in &states {
+                let guard = expected.clips.iter().find(|clip| {
+                    clip.kind == state.kind && clip.track == state.track && clip.clip_index == state.clip_index
+                }).ok_or("Transcript target expectation is missing.")?;
+                if guard.signature != state.signature {
+                    return Err("Transcript target changed since inspection; no edit was made.".into());
+                }
+            }
+
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let mut edits = Vec::new();
+            let mut markers = Vec::new();
+            let mut uncertain = false;
+
+            for edit in &plan.edits {
+                let clip = expected.clips.iter().find(|clip| {
+                    clip.kind == edit.target.kind && clip.track == edit.target.track && clip.clip_index == edit.target.clip_index
+                }).ok_or("Transcript edit expectation is missing.")?.clone();
+                let guard = PremiereExpectation {
+                    project_guid: expected.project_guid.clone(),
+                    project_path: expected.project_path.clone(),
+                    sequence_guid: expected.sequence_guid.clone(),
+                    clips: vec![clip],
+                };
+                let client = PremiereClient { bridge: &state.premiere_bridge, expected: Some(&guard) };
+                let arguments = premiere_talking_head::operation_arguments(edit);
+                let (route, timeout) = match &edit.operation {
+                    premiere_talking_head::EditOperation::Trim { .. } => ("trim_clip", Duration::from_secs(30)),
+                    premiere_talking_head::EditOperation::Delete { .. } => ("delete_clip", Duration::from_secs(30)),
+                };
+                match client.request(route, arguments, timeout).await {
+                    Ok(value) => edits.push(json!({"target":edit.target,"status":"applied","native_result":value})),
+                    Err(error) => {
+                        uncertain = error.contains("unknown") || error.contains("timed out") || error.contains("timeout");
+                        edits.push(json!({"target":edit.target,"status":if uncertain {"uncertain"} else {"failed"},"reason":error.chars().take(240).collect::<String>()}));
+                        break;
+                    }
+                }
+            }
+
+            if !uncertain && edits.iter().all(|row| row["status"] == "applied") {
+                let project_guard = PremiereExpectation {
+                    project_guid: expected.project_guid.clone(),
+                    project_path: expected.project_path.clone(),
+                    sequence_guid: expected.sequence_guid.clone(),
+                    clips: Vec::new(),
+                };
+                let client = PremiereClient { bridge: &state.premiere_bridge, expected: Some(&project_guard) };
+                for marker in &plan.markers {
+                    let args = json!({
+                        "name": marker.name,
+                        "markerType": marker.marker_type,
+                        "seconds": marker.seconds,
+                        "durationSeconds": 0,
+                        "comments": format!("Transcript selection {}", marker.segment_id),
+                    });
+                    match client.request("add_marker", args, Duration::from_secs(20)).await {
+                        Ok(value) => markers.push(json!({"segment_id":marker.segment_id,"seconds":marker.seconds,"status":"applied","native_result":value})),
+                        Err(error) => {
+                            uncertain = error.contains("unknown") || error.contains("timed out") || error.contains("timeout");
+                            markers.push(json!({"segment_id":marker.segment_id,"status":if uncertain {"uncertain"} else {"failed"},"reason":error.chars().take(240).collect::<String>()}));
+                            break;
+                        }
+                    }
+                }
+            }
+
+            let project_guard = PremiereExpectation {
+                project_guid: expected.project_guid.clone(),
+                project_path: expected.project_path.clone(),
+                sequence_guid: expected.sequence_guid.clone(),
+                clips: Vec::new(),
+            };
+            let post_client = PremiereClient { bridge: &state.premiere_bridge, expected: Some(&project_guard) };
+            let post_timeline = post_client.request("inspect_timeline", json!({}), Duration::from_secs(20)).await.ok();
+            let edit_ok = edits.len() == plan.edits.len() && edits.iter().all(|row| row["status"] == "applied");
+            let marker_ok = markers.len() == plan.markers.len() && markers.iter().all(|row| row["status"] == "applied");
+            let complete = edit_ok && marker_ok && !uncertain;
+
+            Ok(ActionResult {
+                success: complete,
+                tool,
+                stdout: json!({
+                    "backup": backup,
+                    "complete": complete,
+                    "uncertain": uncertain,
+                    "transcript_snapshot": plan.transcript_snapshot,
+                    "remove_ranges": plan.remove_ranges,
+                    "edits": edits,
+                    "markers": markers,
+                    "post_timeline_inspected": post_timeline.is_some(),
+                    "post_timeline": post_timeline,
+                    "linked_media_inferred": false,
+                    "interior_split_supported": false,
+                }).to_string(),
+                stderr: String::new(),
+                exit_code: Some(if complete {0} else {1}),
+            })
         }
         ToolAction::PremierePlanAudioAutomation { target, request } => {
             let mut arguments = target.bridge_arguments(); arguments["request"] = serde_json::to_value(request).map_err(|e| e.to_string())?;

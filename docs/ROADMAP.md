@@ -373,3 +373,15 @@ Next Premiere priority: run paired Premiere on an explicitly registered disposab
 Current conservative **feature code coverage: approximately 75%** (before: approximately 74%). The small increase counts usable batch insertion/population/duration functionality, not the mapping registry alone. **Runtime verified: 0%. Production ready: no.** These are separate metrics; the code estimate is a scope estimate, not a measured test coverage percentage.
 
 Continuation boundary: V2 implemented; W2, X2, Y2 and Z expansions are not complete. Next real feature: W2 explicit transcript selections and deterministic cut application, followed by selected chapter markers and a composed talking-head audio/finishing workflow. Existing W/X/Y foundations above remain available. Continue W2 → X2 → Y2 → Z with separate validation, commits and pushes. Native speed/time-remapping writes, masks, general vertical moves, inferred links, native caption writes, multicam, replacement nesting and complex MOGRT values remain unsupported.
+
+
+### Module W2 — explicit transcript selections and talking-head cuts (2026-09-26)
+
+- Added `premiere_plan_transcript_cuts` and `premiere_apply_transcript_cuts` backed by a dedicated bounded `premiere_talking_head.rs` module. Native transcript timing is re-exported on every plan/apply; deterministic segment IDs and an FNV-1a transcript snapshot prevent applying stale transcript selections.
+- Explicit `keep` / `remove` / `chapter` / `highlight` selections map through a caller-supplied transcript→sequence offset. Padding is bounded to 0–2 seconds, remove ranges merge deterministically, and Chapter/Comment markers reuse the existing typed marker route.
+- Real executable cut support now covers safe clip-edge trims and whole-clip deletion through the existing `trim_clip` / `delete_clip` routes. Interior removals that require a split fail closed with `supported=false`; no blind coordinate split path was added.
+- Video/audio are explicit independent targets. Native linked membership is never inferred; matching inspected intervals are required, and ripple deletion with separate A/V targets is refused to avoid shifting an unverified linked counterpart.
+- Apply requires exact fresh clip expectations, a matching transcript snapshot, a durable `.prproj` checkpoint, and native post-edit timeline reinspection. Unknown/timeout bridge delivery stops the workflow without retry. Existing transcript ducking/fades remain the audio-finishing path.
+- Added Rust unit coverage for edge trim/interior refusal/chapter mapping/A-V ripple refusal plus Node structural safety tests. This environment could not execute Cargo/Node locally, so test execution remains to be confirmed by CI or a development machine.
+
+Conservative feature-code estimate after W2: approximately **76%** (up from 75% because explicit transcript selections now produce real safe Premiere cuts/markers rather than only ducking plans). Runtime verified remains **0%** without a paired Premiere host; production ready: **no**. Next real feature priority: X2 mixed video/audio/graphics finishing, then Y2 advanced source-range assembly and Z end-to-end edit jobs.
