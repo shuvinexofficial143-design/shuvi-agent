@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
 
@@ -12,7 +12,7 @@ const MAX_AUDIO: usize = 32;
 const MAX_TOTAL_TARGETS: usize = 48;
 const MAX_REVIEW_SAMPLES: usize = 8;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct VideoFinish {
     pub track: u32,
@@ -20,14 +20,14 @@ pub struct VideoFinish {
     pub request: RecipePlanRequest,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AudioFinish {
     pub target: ParameterTarget,
     pub request: AudioPlanRequest,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
     pub schema_version: u8,

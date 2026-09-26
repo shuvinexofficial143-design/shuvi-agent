@@ -28,6 +28,7 @@ mod premiere_calibration;
 mod premiere_export_jobs;
 mod premiere_review_binding;
 mod premiere_edit_session;
+mod premiere_edit_job;
 use premiere_diagnostics::DiagnosticsLimits;
 mod premiere_subtitles;
 mod premiere_dialogue;
@@ -141,6 +142,11 @@ Available tools:
 - premiere_review_session_record_fix: {"session_id":"ID","issue_id":"inspected issue ID","target":"exact inspected clip target","planner":"premiere_plan_video_recipe","settings":{"exact":"approved typed settings"},"approved_action_id":"exact successful Shuvi audit action ID"}
 - premiere_review_session_cancel: {"session_id":"exact returned ID"}
 - premiere_plan_edit_recipe: {"preset":"social_reel|cinematic_reel|talking_head|product_ad|wedding_highlight|long_form_youtube|story_explainer|clean_corporate","targets":{},"inputs":{},"options":{}}
+- premiere_edit_job_start: {"schema_version":1,"job_type":"talking_head|social_reel|product_ad|wedding_highlight|corporate|custom","assembly":null,"transcript_cuts":null,"finishing":null,"review":null,"export":null}
+- premiere_edit_job_status: {"job_id":"exact returned UUID"}
+- premiere_edit_job_next: {"job_id":"exact returned UUID"}
+- premiere_edit_job_record_action: {"job_id":"UUID","phase_id":"exact current phase id","action_id":"exact executed Shuvi audit action UUID"}
+- premiere_edit_job_cancel: {"job_id":"exact returned UUID"}
 - premiere_list_items: {}
 - premiere_project_tree: {}
 - premiere_create_bin: {"name":"bin name"}
@@ -389,6 +395,11 @@ enum ToolAction {
     PremiereEditSessionRecordAction { session_id: String, stage_id: String, action_id: String },
     PremiereEditSessionRecordReview { session_id: String, stage_id: String, review_session_id: String },
     PremiereEditSessionCancel { session_id: String },
+    PremiereEditJobStart { request: premiere_edit_job::Request },
+    PremiereEditJobStatus { job_id: String },
+    PremiereEditJobNext { job_id: String },
+    PremiereEditJobRecordAction { job_id: String, phase_id: String, action_id: String },
+    PremiereEditJobCancel { job_id: String },
     PremiereSetTrackMute { kind: String, track: u32, muted: bool },
     PremiereSetClipEnabled { kind: String, track: u32, clip_index: u32, enabled: bool },
     PremiereListVideoTransitions,
@@ -802,6 +813,11 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_edit_session_record_action"
         | "premiere_edit_session_record_review"
         | "premiere_edit_session_cancel"
+        | "premiere_edit_job_start"
+        | "premiere_edit_job_status"
+        | "premiere_edit_job_next"
+        | "premiere_edit_job_record_action"
+        | "premiere_edit_job_cancel"
         | "premiere_set_track_mute"
         | "premiere_set_clip_enabled"
         | "premiere_list_video_transitions"
@@ -2537,6 +2553,34 @@ fn stage_tool(
             premiere_editorial::plan(request.clone())?;
             (ToolAction::PremierePlanEditRecipe {request},"Plan professional Premiere edit".into(),
                 "Read-only versioned editorial stages; no sequence modification.".into(),RiskLevel::Low)
+        }
+        "premiere_edit_job_start" => {
+            let request:premiere_edit_job::Request=serde_json::from_value(proposal.arguments.clone())
+                .map_err(|e|format!("Invalid Premiere edit job: {e}"))?;
+            request.validate()?;
+            (ToolAction::PremiereEditJobStart{request},"Start professional Premiere edit job".into(),
+                "Persist a bounded project/sequence-scoped job that composes existing typed Premiere actions one approved phase at a time.".into(),RiskLevel::Low)
+        }
+        "premiere_edit_job_status" | "premiere_edit_job_next" | "premiere_edit_job_cancel" => {
+            let job_id=arg_string(&proposal.arguments,"job_id")?;
+            Uuid::parse_str(&job_id).map_err(|_|"Invalid edit job ID.")?;
+            let action=match proposal.tool.as_str(){
+                "premiere_edit_job_status"=>ToolAction::PremiereEditJobStatus{job_id},
+                "premiere_edit_job_next"=>ToolAction::PremiereEditJobNext{job_id},
+                _=>ToolAction::PremiereEditJobCancel{job_id},
+            };
+            (action,"Inspect or advance professional Premiere edit job".into(),
+                "No mutating phase is auto-dispatched; next returns one concrete existing typed tool proposal requiring its normal approval.".into(),RiskLevel::Low)
+        }
+        "premiere_edit_job_record_action" => {
+            let job_id=arg_string(&proposal.arguments,"job_id")?;
+            Uuid::parse_str(&job_id).map_err(|_|"Invalid edit job ID.")?;
+            let phase_id=arg_string(&proposal.arguments,"phase_id")?;
+            let action_id=arg_string(&proposal.arguments,"action_id")?;
+            Uuid::parse_str(&action_id).map_err(|_|"Invalid edit-job action receipt ID.")?;
+            (ToolAction::PremiereEditJobRecordAction{job_id,phase_id,action_id},
+                "Record professional edit-job phase receipt".into(),
+                "Advance only after a matching recent typed action audit receipt; this command performs no Premiere mutation.".into(),RiskLevel::Low)
         }
         "premiere_edit_session_start" => {
             let request:premiere_editorial::Request=serde_json::from_value(proposal.arguments.clone())
@@ -4621,6 +4665,13 @@ fn premiere_review_path(app: &AppHandle, session_id: &str) -> Result<std::path::
 fn premiere_edit_session_path(app:&AppHandle,id:&str)->Result<std::path::PathBuf,String>{
     Uuid::parse_str(id).map_err(|_|"Invalid Premiere edit session ID.")?;
     let dir=app.path().app_data_dir().map_err(|e|e.to_string())?.join("premiere-edit-sessions");
+    fs::create_dir_all(&dir).map_err(|e|e.to_string())?;
+    Ok(dir.join(format!("{id}.json")))
+}
+
+fn premiere_edit_job_path(app:&AppHandle,id:&str)->Result<std::path::PathBuf,String>{
+    Uuid::parse_str(id).map_err(|_|"Invalid Premiere edit job ID.")?;
+    let dir=app.path().app_data_dir().map_err(|e|e.to_string())?.join("premiere-edit-jobs");
     fs::create_dir_all(&dir).map_err(|e|e.to_string())?;
     Ok(dir.join(format!("{id}.json")))
 }
@@ -7509,6 +7560,173 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let plan=premiere_editorial::plan(request)?;
             Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&plan).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereEditJobStart {request} => {
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let project=context.get("projectGuid").and_then(Value::as_str).filter(|value|!value.is_empty())
+                .ok_or("Active Premiere project GUID unavailable.")?;
+            let sequence=context.pointer("/activeSequence/guid").and_then(Value::as_str).filter(|value|!value.is_empty())
+                .ok_or("Active Premiere sequence GUID unavailable.")?;
+            let id=Uuid::new_v4().to_string();
+            let job=premiere_edit_job::Job::new(
+                id.clone(),request,project,context.get("projectPath").and_then(Value::as_str),sequence,now_ms()
+            )?;
+            premiere_edit_job::save(&premiere_edit_job_path(app,&id)?,&job)?;
+            Ok(ActionResult{
+                success:true,tool,
+                stdout:json!({
+                    "job":job,
+                    "next_tool":"premiere_edit_job_next",
+                    "execution_model":"one concrete existing typed Premiere phase per approval"
+                }).to_string(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PremiereEditJobStatus {job_id} => {
+            let job=premiere_edit_job::load(&premiere_edit_job_path(app,&job_id)?)?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&job).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereEditJobCancel {job_id} => {
+            let path=premiere_edit_job_path(app,&job_id)?;
+            let mut job=premiere_edit_job::load(&path)?;
+            job.cancel(now_ms());
+            premiere_edit_job::save(&path,&job)?;
+            Ok(ActionResult{success:true,tool,stdout:json!({"job_id":job_id,"status":job.status}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereEditJobNext {job_id} => {
+            let path=premiere_edit_job_path(app,&job_id)?;
+            let mut job=premiere_edit_job::load(&path)?;
+            if job.status!="running" {
+                return Err(format!("Edit job is not running (status={}).",job.status));
+            }
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            job.identity(&context)?;
+            let phase=job.pending().cloned().ok_or("Edit job has no pending phase.")?;
+
+            let (arguments,reason)=match phase.id.as_str() {
+                "assembly" => {
+                    let assembly=job.request.assembly.clone().ok_or("Edit job assembly payload is missing.")?;
+                    (json!({"assembly":assembly,"expected":job.project_expectation()}),
+                        "Execute the validated assembly through the existing checkpointed assembly tool.".to_string())
+                }
+                "transcript_cuts" => {
+                    let request=job.request.transcript_cuts.clone().ok_or("Edit job transcript-cut payload is missing.")?;
+                    let transcript=premiere_bridge.request(
+                        "export_transcript",
+                        json!({"itemId":request.item_id,"deliverSrt":true}),
+                        Duration::from_secs(30),
+                    ).await?;
+                    let caption=transcript.get("captions").ok_or("Transcript has no timing adapter.")?;
+                    if caption.get("supported").and_then(Value::as_bool)!=Some(true)
+                        ||caption.get("segmentsTruncated").and_then(Value::as_bool)!=Some(false)
+                    {
+                        return Err("Edit-job transcript phase requires complete recognized transcript timing.".into());
+                    }
+                    let segments=caption.get("segments").and_then(Value::as_array).ok_or("Transcript segments missing.")?;
+                    let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+                    let mut targets=vec![request.video.clone()];
+                    if let Some(audio)=&request.audio{targets.push(audio.clone());}
+                    let states=premiere_talking_head::clip_states_from_timeline(&timeline,&targets)?;
+                    let plan=premiere_talking_head::build_plan(segments,&request,&states)?;
+                    if !plan.supported {
+                        return Err(format!("Edit-job transcript cut phase is not executable: {}",plan.unsupported_reasons.join(" ")));
+                    }
+                    let expected=premiere_edit_job::expectation_for_transcript(&job,&timeline,&request)?;
+                    job.set_transcript_preflight(plan.transcript_snapshot.clone(),expected.clone(),now_ms())?;
+                    premiere_edit_job::save(&path,&job)?;
+                    (json!({
+                        "request":request,
+                        "transcript_snapshot":plan.transcript_snapshot,
+                        "expected":expected
+                    }),
+                    "Apply the freshly re-planned explicit transcript selections through W2; no inferred links or interior split hacks.".to_string())
+                }
+                "finishing" => {
+                    let request=job.request.finishing.clone().ok_or("Edit job finishing payload is missing.")?;
+                    let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+                    let expected=premiere_edit_job::expectation_for_finishing(&job,&timeline,&request)?;
+                    (json!({"request":request,"expected":expected}),
+                        "Execute X2 mixed finishing against freshly inspected exact video/audio targets.".to_string())
+                }
+                "review" => {
+                    let review=job.request.review.clone().ok_or("Edit job review payload is missing.")?;
+                    (json!({"seconds":review.seconds,"prompt":review.prompt}),
+                        "Run the existing bounded multi-frame Premiere vision review; this does not auto-fix or guarantee artistic quality.".to_string())
+                }
+                "export_preflight" => {
+                    let export=job.request.export.clone().ok_or("Edit job export payload is missing.")?;
+                    (json!({
+                        "output":export.output,"preset":export.preset,
+                        "queue_to_ame":export.queue_to_ame,"overwrite":export.overwrite
+                    }),
+                    "Run the existing read-only export/output preflight before any export dispatch.".to_string())
+                }
+                "export_dispatch" => {
+                    let export=job.request.export.clone().ok_or("Edit job export payload is missing.")?;
+                    (json!({
+                        "output":export.output,"preset":export.preset,
+                        "queue_to_ame":export.queue_to_ame,"overwrite":export.overwrite,
+                        "expected":job.project_expectation()
+                    }),
+                    "Dispatch export through the existing separately approved high-risk export tool; accepted/queued is not encoder completion.".to_string())
+                }
+                _=>return Err("Unknown edit-job phase.".into()),
+            };
+
+            Ok(ActionResult{
+                success:true,tool,
+                stdout:json!({
+                    "job_id":job_id,
+                    "phase_id":phase.id,
+                    "phase_state":phase.state,
+                    "tool_proposal":{
+                        "tool":phase.tool,
+                        "arguments":arguments,
+                        "reason":reason
+                    },
+                    "requires_separate_approval":true,
+                    "after_execution":{
+                        "tool":"premiere_edit_job_record_action",
+                        "arguments":{"job_id":job_id,"phase_id":phase.id,"action_id":"COPY_EXECUTED_ACTION_ID"}
+                    },
+                    "no_hidden_mutation":true
+                }).to_string(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PremiereEditJobRecordAction {job_id,phase_id,action_id} => {
+            let path=premiere_edit_job_path(app,&job_id)?;
+            let mut job=premiere_edit_job::load(&path)?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            job.identity(&context)?;
+            let pending=job.pending().cloned().ok_or("Edit job has no pending phase.")?;
+            if pending.id!=phase_id{return Err("Receipt phase is not the current edit-job phase.".into());}
+            let receipt=read_audit(app,300)?.into_iter().find(|entry|
+                entry.action_id.as_deref()==Some(action_id.as_str())
+                &&entry.timestamp_ms>=job.created_at_ms
+                &&entry.tool==pending.tool
+                &&matches!(entry.event.as_str(),"executed"|"failed")
+            ).ok_or("No matching recent typed action audit receipt for this edit-job phase.")?;
+            let success=receipt.event=="executed"&&receipt.success;
+            job.record(&phase_id,&receipt.tool,&action_id,success,now_ms())?;
+            premiere_edit_job::save(&path,&job)?;
+            Ok(ActionResult{
+                success,
+                tool,
+                stdout:json!({
+                    "job_id":job_id,
+                    "phase_id":phase_id,
+                    "recorded_tool":receipt.tool,
+                    "action_id":action_id,
+                    "phase_success":success,
+                    "job_status":job.status,
+                    "next_tool":if job.status=="running"{Some("premiere_edit_job_next")}else{None},
+                    "export_completion_verified":false,
+                    "audit_payload_binding":"tool/action receipt plus live project/sequence and downstream stale guards; audit entry does not cryptographically hash the full phase arguments"
+                }).to_string(),
+                stderr:String::new(),
+                exit_code:Some(if success{0}else{1})
+            })
         }
         ToolAction::PremiereEditSessionStart {request} => {
             let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;

@@ -405,3 +405,13 @@ Conservative feature-code estimate after X2: approximately **78%**. Runtime veri
 - All v2 mutation shares one durable checkpoint, cooperative cancellation and uncertainty stop. Review requests return at most eight deterministic shot timestamps for the existing `premiere_review_frames` tool; assembly does not invent an artistic verdict or automatic rollback.
 
 Conservative feature-code estimate after Y2: approximately **81%**. Runtime verified remains **0%** without a paired Premiere host; production ready: **no**. Next real feature priority: Module Z end-to-end professional edit jobs that compose these actual execution paths without duplicating low-level Premiere mutation.
+
+
+### Module Z — professional edit jobs (2026-09-26)
+
+- Added a bounded persistent end-to-end job coordinator for `talking_head`, `social_reel`, `product_ad`, `wedding_highlight`, `corporate` and `custom`. A job can compose existing Y2 assembly, W2 transcript cuts, X2 mixed finishing, multi-frame review, export preflight and export dispatch; the label itself never implies unsupported effects.
+- `premiere_edit_job_next` revalidates the live project/sequence and returns exactly one concrete existing typed tool proposal. It does **not** hide a mega-executor: each mutating phase still needs the normal Shuvi approval/checkpoint/expectation/audit path, then `premiere_edit_job_record_action` advances only from a matching recent typed-action receipt.
+- Transcript phases are freshly re-exported/replanned before execution and carry a current transcript snapshot plus exact live clip signatures. X2 finishing expectations are likewise regenerated from the current timeline after prior phases, avoiding silent reuse of stale indexes/signatures where the native target can be reinspected.
+- Export preflight and dispatch remain separate phases. A successful export action leaves the job in `export_dispatched`; encoder completion is still not claimed until the independent export verification subsystem proves it. Cancellation persists remaining phase states; completed edits are not falsely rolled back.
+
+Conservative feature-code estimate after Z: approximately **84%**. Runtime verified remains **0%** without an actual paired Premiere host; production ready: **no**. Highest-value remaining work is now real host acceptance/calibration, closing any compile/host regressions, and selectively filling only Premiere capabilities that current Adobe APIs actually expose safely.
