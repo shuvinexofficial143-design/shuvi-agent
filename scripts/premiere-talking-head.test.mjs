@@ -24,8 +24,9 @@ test("transcript snapshot is deterministic and required before apply", () => {
   assert.match(rust, /transcript_snapshot\.starts_with\("fnv1a64:"\)/);
 });
 
-test("mid-clip removal fails closed until a verified split exists", () => {
-  assert.match(talking, /interior hole; a verified split path is required/);
+test("mid-clip direct removal offers an explicit safe rebuild alternative", () => {
+  assert.match(talking, /interior hole; choose premiere_plan_transcript_rebuild/);
+  assert.match(talking, /requires_explicit_choice/);
   assert.match(rust, /"interior_split_supported": false/);
 });
 

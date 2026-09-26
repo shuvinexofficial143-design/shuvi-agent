@@ -33,6 +33,7 @@ use premiere_diagnostics::DiagnosticsLimits;
 mod premiere_subtitles;
 mod premiere_dialogue;
 mod premiere_talking_head;
+mod premiere_transcript_rebuild;
 mod premiere_finishing;
 mod premiere_assembly;
 mod premiere_mogrt;
@@ -156,6 +157,10 @@ Available tools:
 - premiere_set_source_inout: {"item_id":"clip project item id","in_seconds":1.0,"out_seconds":8.0}
 - premiere_clear_source_inout: {"item_id":"clip project item id"}
 - premiere_create_subclip: {"item_id":"clip project item id","name":"subclip name","start_seconds":1.0,"end_seconds":8.0,"hard_boundaries":true,"take_video":true,"take_audio":true}
+- premiere_plan_transcript_rebuild: {"request":{"schema_version":1,"item_id":"exact transcript/source item","source":{"track":0,"clip_index":0},"transcript_source_offset":0.0,"removals":[{"segment_id":"seg-0002"}],"destination":{"mode":"explicit_empty_target_sequence","sequence_guid":"different empty sequence GUID","video_track":0,"audio_track":0},"take_video":true,"take_audio":false,"gap_seconds":0.0}}
+- premiere_apply_transcript_rebuild: {"request":"same structured request as plan","plan_snapshot":"copy exact plan_snapshot","expected":"copy exact source expectation from plan"}
+- premiere_cancel_transcript_rebuild: {}
+Transcript rebuild handles explicit interior text removal by creating and inserting KEEP subclips, never a fabricated split. Premiere 26.3+ required. Source stays active and untouched; destination must be a different explicitly supplied completely empty sequence, with existing video/audio tracks and no caption tracks. Choose this strategy explicitly; no silent fallback from direct cuts. Only ordinary forward 1x media is supported. take_audio includes only that same source's audio; separate external dialogue requires a separate explicit mapped workflow and is unsupported here. Effects/keyframes/markers are not copied. Cancellation can leave created subclips and an incomplete destination; inspect before a fresh plan, never blindly retry.
 - premiere_list_transcription_languages: {}
 - premiere_transcribe_item: {"item_id":"clip project item id","language":"optional language code such as en-US"}
 - premiere_export_transcript: {"item_id":"clip project item id"}
@@ -444,6 +449,8 @@ enum ToolAction {
     PremiereTranscriptToSrt { item_id: String, output: String, overwrite: bool },
     PremiereTranscriptDucking { item_id: String, target: ParameterTarget, request: AudioPlanRequest, transcript_offset: f64, music_start: f64, merge_gap: f64, apply: bool },
     PremiereTranscriptCuts { request: premiere_talking_head::Request, apply: bool, transcript_snapshot: Option<String> },
+    PremiereTranscriptRebuild { request: premiere_transcript_rebuild::Request, apply: bool, plan_snapshot: Option<String> },
+    PremiereCancelTranscriptRebuild,
     PremiereBatchFinish { targets: Vec<Value> },
     PremiereFinishMediaBatch { request: premiere_finishing::Request, provider: Option<ProviderContext> },
     PremiereBatchFinishCancel,
@@ -565,6 +572,8 @@ struct ActionState {
     graphics_running: AtomicBool,
     graphics_cancelled: AtomicBool,
     assembly_running: AtomicBool,
+    rebuild_running: AtomicBool,
+    rebuild_cancelled: AtomicBool,
     assembly_cancelled: AtomicBool,
 }
 
@@ -855,6 +864,9 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_set_source_inout"
         | "premiere_clear_source_inout"
         | "premiere_create_subclip"
+        | "premiere_plan_transcript_rebuild"
+        | "premiere_apply_transcript_rebuild"
+        | "premiere_cancel_transcript_rebuild"
         | "premiere_list_transcription_languages"
         | "premiere_transcribe_item"
         | "premiere_export_transcript"
@@ -2276,6 +2288,34 @@ fn stage_tool(
             }
             (ToolAction::PremiereTranscriptDucking{item_id,target,request,transcript_offset,music_start,merge_gap,apply},if apply{"Apply transcript-derived Premiere ducking"}else{"Plan transcript-derived Premiere ducking"}.into(),"Use actual explicit transcript segments with caller-supplied timeline offsets and inspected native audio values.".into(),if apply{RiskLevel::High}else{RiskLevel::Low})
         }
+        "premiere_plan_transcript_rebuild" => {
+            let request: premiere_transcript_rebuild::Request = serde_json::from_value(proposal.arguments.get("request").cloned().unwrap_or(Value::Null))
+                .map_err(|e| format!("Invalid rebuild request: {e}"))?;
+            request.validate()?;
+            (ToolAction::PremiereTranscriptRebuild {request, apply:false, plan_snapshot:None}, "Plan transcript rebuild".into(),
+                "Inspect complete transcript, source mapping and explicit empty destination without editing.".into(), RiskLevel::Low)
+        }
+        "premiere_apply_transcript_rebuild" => {
+            let request: premiere_transcript_rebuild::Request = serde_json::from_value(proposal.arguments.get("request").cloned().unwrap_or(Value::Null))
+                .map_err(|e| format!("Invalid rebuild request: {e}"))?;
+            request.validate()?;
+            let apply = true;
+            let plan_snapshot = if apply {
+                let snapshot = arg_string(&proposal.arguments, "plan_snapshot")?;
+                if snapshot.is_empty() || snapshot.len() > 48000 { return Err("Exact bounded plan_snapshot required.".into()); }
+                let expected = premiere_expectation.as_ref().ok_or("Rebuild requires exact source clip expectation.")?;
+                if expected.sequence_guid.is_none() || expected.sequence_guid.as_ref() == Some(&request.destination.sequence_guid) || expected.clips.len() != 1 ||
+                    !expected.clips.iter().any(|c| c.kind == "video" && c.track == request.source.track && c.clip_index == request.source.clip_index) {
+                    return Err("Rebuild requires source clip expectation and a different explicit empty destination sequence.".into());
+                }
+                Some(snapshot)
+            } else { None };
+            (ToolAction::PremiereTranscriptRebuild {request, apply, plan_snapshot},
+                if apply {"Rebuild explicit transcript keep ranges"} else {"Plan transcript rebuild"}.into(),
+                "Create hard-bounded source subclips and assemble into a separate explicit empty sequence; preserve original, use only supplied removals and media flags.".into(),
+                if apply {RiskLevel::High} else {RiskLevel::Low})
+        }
+        "premiere_cancel_transcript_rebuild" => (ToolAction::PremiereCancelTranscriptRebuild, "Cancel transcript rebuild".into(), "Stop before the next subclip or insertion; completed pieces remain available.".into(), RiskLevel::Low),
         "premiere_plan_transcript_cuts" => {
             let request: premiere_talking_head::Request = serde_json::from_value(
                 proposal.arguments.get("request").cloned().unwrap_or(Value::Null)
@@ -6523,6 +6563,41 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let value = premiere_bridge.request("remove_effect", arguments, Duration::from_secs(20)).await?;
             Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&json!({"backup":backup,"result":value})).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
         }
+        ToolAction::PremiereCancelTranscriptRebuild => {
+            state.rebuild_cancelled.store(true, Ordering::Release);
+            Ok(ActionResult {success:true, tool, stdout:json!({"cancel_requested":true,"running":state.rebuild_running.load(Ordering::Acquire)}).to_string(), stderr:String::new(), exit_code:Some(0)})
+        }
+        ToolAction::PremiereTranscriptRebuild {request, apply, plan_snapshot} => {
+            request.validate()?;
+            if !apply {
+                let plan = premiere_bridge.request("plan_transcript_rebuild", json!({"request":request}), Duration::from_secs(60)).await?;
+                return Ok(ActionResult {success:true, tool, stdout:plan.to_string(), stderr:String::new(), exit_code:Some(0)});
+            }
+            if state.rebuild_running.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err() { return Err("Another transcript rebuild is running.".into()); }
+            let _guard = AcceptanceProbeGuard(&state.rebuild_running);
+            state.rebuild_cancelled.store(false,Ordering::Release);
+            // Checkpoint first; native begin then rechecks the approved snapshot before any media mutation.
+            let checkpoint = backup_premiere_project(&premiere_bridge).await?;
+            let prepared = premiere_bridge.request("begin_transcript_rebuild", json!({"request":request,"plan_snapshot":plan_snapshot}), Duration::from_secs(60)).await?;
+            let id = prepared.get("id").and_then(Value::as_str).ok_or("Native rebuild ID missing.")?;
+            let count = prepared.get("operation_count").and_then(Value::as_u64).filter(|n| *n <= 256).ok_or("Invalid rebuild step bound.")? as usize;
+            let mut result = premiere_transcript_rebuild::run(id, count, &state.rebuild_cancelled, |index| {
+                let bridge = &premiere_bridge;
+                let audit_tool = &tool;
+                async move {
+                    append_audit(app, &AuditEntry {timestamp_ms:now_ms(),event:"rebuild_dispatch".into(),tool:audit_tool.clone(),detail:format!("{id}: step {index}"),success:false,action_id:None})?;
+                    let reply = bridge.request("step_transcript_rebuild", json!({"id":id,"index":index}), Duration::from_secs(60)).await;
+                    append_audit(app, &AuditEntry {timestamp_ms:now_ms(),event:"rebuild_result".into(),tool:audit_tool.clone(),detail:format!("{id}: step {index}: {}", reply.as_ref().ok().and_then(|v| v.get("status")).and_then(Value::as_str).unwrap_or("uncertain")),success:reply.as_ref().ok().is_some_and(|v| v.get("status").and_then(Value::as_str)==Some("applied")),action_id:None})?;
+                    reply
+                }
+            }).await;
+            let release = premiere_bridge.request("release_transcript_rebuild",json!({"id":id}),Duration::from_secs(10)).await;
+            result["session_released"] = json!(release.as_ref().ok().and_then(|v|v.get("released")).and_then(Value::as_bool)==Some(true));
+            result["checkpoint"] = json!(checkpoint);
+            result["plan"] = prepared.get("plan").cloned().unwrap_or(Value::Null);
+            let success = result.get("complete").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult {success,tool,stdout:result.to_string(),stderr:String::new(),exit_code:Some(if success {0} else {1})})
+        }
         ToolAction::PremiereAssemblyCancel => {
             state.assembly_cancelled.store(true,Ordering::Release);
             Ok(ActionResult{success:true,tool,stdout:json!({"cancel_requested":true,"running":state.assembly_running.load(Ordering::Acquire)}).to_string(),stderr:String::new(),exit_code:Some(0)})
@@ -9495,7 +9570,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 "checkpoint_recovery":recovery_count>0,"stale_expectation_host_tested":false,
                 "export_completion_verified":export_complete>0});
             let by_state=|state:&str|report.capabilities.iter().filter(|c|c.state==state).map(|c|c.name.as_str()).collect::<Vec<_>>();
-            Ok(ActionResult {success:true,tool,stdout:json!({"code_implementation_estimate_pct":75,
+            Ok(ActionResult {success:true,tool,stdout:json!({"code_implementation_estimate_pct":86,
                 "node_mock_verified_capabilities":report.capabilities.iter().filter(|c|c.code_tested).map(|c|c.name.as_str()).collect::<Vec<_>>(),
                 "node_test_run_attestation_persisted":false,"rust_verified":false,
                 "premiere_runtime_verified_count":native,"premiere_runtime_capability_count":total,

@@ -28,6 +28,7 @@ pub const ALLOWED_ACTIONS: &[&str] = &[
     "set_source_inout",
     "clear_source_inout",
     "create_subclip",
+    "plan_transcript_rebuild", "begin_transcript_rebuild", "step_transcript_rebuild", "release_transcript_rebuild",
     "list_transcription_languages",
     "transcribe_item",
     "export_transcript",

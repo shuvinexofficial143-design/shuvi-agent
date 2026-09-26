@@ -97,6 +97,7 @@ pub struct Plan {
     pub markers: Vec<MarkerPlan>,
     pub unsupported_reasons: Vec<String>,
     pub linked_media_inferred: bool,
+    pub alternative_strategy: Option<Value>,
 }
 
 impl Request {
@@ -284,7 +285,7 @@ fn operation_for_clip(
         }
     }
     if interior {
-        return Err("Selected removal creates an interior hole; a verified split path is required before this cut can execute.".into());
+        return Err("Selected removal creates an interior hole; choose premiere_plan_transcript_rebuild with an explicit separate empty destination (no native split path is used).".into());
     }
     if left >= right - EPSILON {
         return Ok(Some(EditOperation::Delete { ripple }));
@@ -379,6 +380,9 @@ pub fn build_plan(
     Ok(Plan {
         schema_version: 1,
         supported: unsupported_reasons.is_empty(),
+        alternative_strategy: if unsupported_reasons.iter().any(|r| r.contains("interior hole")) {
+            Some(json!({"strategy":"rebuild","tool":"premiere_plan_transcript_rebuild","requires_explicit_choice":true,"required_inputs":["exact source project item","transcript/source offset","explicit empty destination sequence","take_video/take_audio"]}))
+        } else { None },
         transcript_snapshot: snapshot,
         catalog,
         remove_ranges,

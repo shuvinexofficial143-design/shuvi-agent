@@ -1,5 +1,6 @@
 const { entrypoints, host, versions } = require("uxp");
 const premiere = require("premierepro");
+const transcriptRebuild = require("./transcript-rebuild.js");
 const { planSpeed, SPEED_CAPABILITY } = require("./speed-workflows.js");
 
 const { buildRecipePlan } = require("./recipe-plans.js");
@@ -3703,7 +3704,7 @@ async function inspectAssemblyItems(argumentsValue) {
     video_tracks:await sequence.getVideoTrackCount(),audio_tracks:await sequence.getAudioTrackCount(),items};
 }
 
-async function insertProjectItem(argumentsValue) {
+async function insertProjectItem(argumentsValue, explicitSequence = null) {
   const itemId =
     typeof argumentsValue?.itemId === "string"
       ? argumentsValue.itemId.trim()
@@ -3729,7 +3730,7 @@ async function insertProjectItem(argumentsValue) {
   }
 
   const project = await requireProject();
-  const sequence = await project.getActiveSequence();
+  const sequence = explicitSequence || await project.getActiveSequence();
   if (!sequence) throw new Error("No active Premiere sequence.");
 
   const root = await project.getRootItem();
@@ -4170,6 +4171,62 @@ async function removeEffect(args) {
     warning: "Native removal transaction accepted; inspect the effect chain to verify the result."};
 }
 
+// Rebuild writes only the explicit empty destination. The source stays active.
+async function rebuildSequence(guid) {
+  const project = await requireProject();
+  const sequences = await project.getSequences();
+  const matches = sequences.filter(sequence => plainGuid(sequence.guid) === guid);
+  if (matches.length !== 1) throw new Error("Exact rebuild destination sequence not found.");
+  return matches[0];
+}
+
+async function rebuildRows(project, sequence) {
+  const rows = [];
+  const video_tracks = await sequence.getVideoTrackCount(), audio_tracks = await sequence.getAudioTrackCount();
+  const caption_tracks = await sequence.getCaptionTrackCount();
+  if (video_tracks > 64 || audio_tracks > 64) throw new Error("Rebuild track inspection exceeds bounds.");
+  for (const kind of ["video", "audio"]) {
+    for (let track = 0; track < (kind === "video" ? video_tracks : audio_tracks); track++) {
+      const native = kind === "video" ? await sequence.getVideoTrack(track) : await sequence.getAudioTrack(track);
+      const items = await sortedClipItems(native);
+      if (rows.length + items.length > 256) throw new Error("Rebuild timeline inspection exceeds 256 clips.");
+      for (const [clip_index, item] of items.entries()) {
+        rows.push({kind, track, clip_index, item_id: await projectItemId(await item.getProjectItem()),
+          start: (await item.getStartTime()).seconds, end: (await item.getEndTime()).seconds,
+          input: (await item.getInPoint()).seconds, output: (await item.getOutPoint()).seconds,
+          signature: await clipTargetSignature(project, sequence, item, kind, track, clip_index)});
+      }
+    }
+  }
+  return {sequence_guid: plainGuid(sequence.guid), video_tracks, audio_tracks, caption_tracks, rows};
+}
+
+async function inspectRebuild(request) {
+  transcriptRebuild.validate(request);
+  const project = await requireProject(), sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active source sequence.");
+  const {item} = await resolveSubsequenceTarget(sequence, {kind: "video", track: request.source.track, clipIndex: request.source.clip_index});
+  const {clip} = await requireClipProjectItemById(request.item_id);
+  const sourceTimeline = await rebuildRows(project, sequence);
+  const row = sourceTimeline.rows.find(r => r.kind === "video" && r.track === request.source.track && r.clip_index === request.source.clip_index);
+  const source = {...row, sequence_guid: plainGuid(sequence.guid), project_guid: plainGuid(project.guid), project_path: project.path || null,
+    speed: await item.getSpeed(), reverse: typeof item.isSpeedReversed === "function" ? await item.isSpeedReversed() : null, timeline: sourceTimeline};
+  const supported = ["createSubClipAction", "isOffline", "isSequence", "isMergedClip", "isMulticamClip"].every(name => typeof clip[name] === "function") && (await clip.isOffline()) === false &&
+    (await clip.isSequence()) === false && (await clip.isMergedClip()) === false && (await clip.isMulticamClip()) === false;
+  const destination = await rebuildRows(project, await rebuildSequence(request.destination.sequence_guid));
+  const exported = await exportTranscript({itemId: request.item_id, deliverSrt: true});
+  return {source, destination, source_supported: supported, captions: exported.captions,
+    expected: {project_guid: plainGuid(project.guid), project_path: project.path || null, sequence_guid: plainGuid(sequence.guid),
+      clips: [{kind: "video", track: request.source.track, clip_index: request.source.clip_index, signature: row.signature}]}};
+}
+
+let rebuildWorkflow = null;
+function getRebuildWorkflow() {
+  if (!rebuildWorkflow) rebuildWorkflow = transcriptRebuild.createWorkflow({inspect: inspectRebuild, subclip: createSubclip,
+    insert: async (args, guid) => insertProjectItem(args, await rebuildSequence(guid))});
+  return rebuildWorkflow;
+}
+
 async function dispatchNativeCommand(command) {
   switch (command.action) {
     case "remove_keyframe_range":
@@ -4206,6 +4263,14 @@ async function dispatchNativeCommand(command) {
       return await setSourceInOut(command.arguments || {});
     case "clear_source_inout":
       return await clearSourceInOut(command.arguments || {});
+    case "plan_transcript_rebuild":
+      return getRebuildWorkflow().plan(command.arguments.request);
+    case "begin_transcript_rebuild":
+      return getRebuildWorkflow().begin(command.arguments.request, command.arguments.plan_snapshot);
+    case "step_transcript_rebuild":
+      return getRebuildWorkflow().step(command.arguments.id, command.arguments.index);
+    case "release_transcript_rebuild":
+      return getRebuildWorkflow().release(command.arguments.id);
     case "create_subclip":
       return await createSubclip(command.arguments || {});
     case "list_transcription_languages":

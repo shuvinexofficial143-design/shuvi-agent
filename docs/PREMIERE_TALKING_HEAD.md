@@ -48,7 +48,7 @@ The typed Premiere layer currently supports safe trim/delete primitives but does
 - removal covering the whole exact clip -> delete
 - chapter/highlight selections -> marker creation
 
-An interior removal that would create a hole in one clip returns `supported=false` with a split-path requirement. It is **not** approximated with destructive UI clicks.
+An interior removal still returns `supported=false` for direct editing, together with an explicit `alternative_strategy` pointing to `premiere_plan_transcript_rebuild`. Choose that strategy with a separate empty destination to assemble kept source ranges. It is never silently selected. See [AA rebuild usage](PREMIERE_TRANSCRIPT_REBUILD.md).
 
 Padding is explicit and bounded to 0–2 seconds. Overlapping remove ranges are merged deterministically.
 
@@ -109,4 +109,4 @@ Those tools already derive speech regions from recognized transcript timing and 
 
 ## Current limitation
 
-Mid-clip text-based deletion still needs a verified native split path before Shuvi can remove arbitrary interior transcript ranges end to end. W2 deliberately fails closed rather than simulating a split with blind coordinates.
+In-place mid-clip deletion remains unsupported. AA now supports interior text removal through source-subclip rebuild into a different explicit empty sequence; timeline effects and separate external audio are not copied. W2's direct-edit mode continues to fail closed for interior holes.

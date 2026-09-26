@@ -43,6 +43,8 @@ for (const path of [
   "src-tauri/src/premiere_subtitles.rs",
   "src-tauri/src/premiere_dialogue.rs",
   "src-tauri/src/premiere_talking_head.rs",
+  "src-tauri/src/premiere_transcript_rebuild.rs",
+  "integrations/premiere-uxp/transcript-rebuild.js",
   "src-tauri/src/premiere_finishing.rs",
   "src-tauri/src/premiere_assembly.rs",
   "integrations/premiere-uxp/mogrt-workflows.js",
