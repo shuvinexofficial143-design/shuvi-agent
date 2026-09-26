@@ -3,8 +3,13 @@ use serde_json::Value;
 use std::{fs,io::{Read,Write},path::Path};
 
 use crate::premiere_assembly::Assembly;
+use crate::premiere_delivery::{FrameBatch, InterchangeRequest};
 use crate::premiere_finishing::Request as FinishingRequest;
+use crate::premiere_layering::{LayerBatch, TrackOrganization};
+use crate::premiere_media_prep::{Batch as MediaPrepBatch, WorkArea};
+use crate::premiere_scene_detection::Request as SceneDetectionRequest;
 use crate::premiere_talking_head::Request as TranscriptRequest;
+use crate::premiere_transcript_rebuild::Request as TranscriptRebuildRequest;
 use crate::premiere_target::{ExpectedClip,PremiereExpectation};
 
 const MAX_STATE_BYTES: usize = 128 * 1024;
@@ -31,10 +36,19 @@ pub struct ExportSpec {
 pub struct Request {
     pub schema_version:u8,
     pub job_type:String,
-    #[serde(default)] pub assembly:Option<Assembly>,
+    #[serde(default)] pub talking_head_strategy:Option<String>,
+    #[serde(default)] pub media_prep:Option<MediaPrepBatch>,
+    #[serde(default)] pub scene_detection:Option<SceneDetectionRequest>,
     #[serde(default)] pub transcript_cuts:Option<TranscriptRequest>,
+    #[serde(default)] pub transcript_rebuild:Option<TranscriptRebuildRequest>,
+    #[serde(default)] pub assembly:Option<Assembly>,
+    #[serde(default)] pub track_organization:Option<TrackOrganization>,
+    #[serde(default)] pub layering:Option<LayerBatch>,
     #[serde(default)] pub finishing:Option<FinishingRequest>,
+    #[serde(default)] pub work_area:Option<WorkArea>,
     #[serde(default)] pub review:Option<ReviewSpec>,
+    #[serde(default)] pub frame_delivery:Option<FrameBatch>,
+    #[serde(default)] pub interchange_export:Option<InterchangeRequest>,
     #[serde(default)] pub export:Option<ExportSpec>,
 }
 
@@ -103,13 +117,44 @@ impl Request {
         {
             return Err("Edit job requires schema v1 and a supported explicit job_type.".into());
         }
-        if self.assembly.is_none()&&self.transcript_cuts.is_none()&&self.finishing.is_none()&&self.review.is_none()&&self.export.is_none(){
+        if self.media_prep.is_none()&&self.scene_detection.is_none()&&self.transcript_cuts.is_none()
+            &&self.transcript_rebuild.is_none()&&self.assembly.is_none()&&self.track_organization.is_none()
+            &&self.layering.is_none()&&self.finishing.is_none()&&self.work_area.is_none()
+            &&self.review.is_none()&&self.frame_delivery.is_none()&&self.interchange_export.is_none()&&self.export.is_none(){
             return Err("Edit job contains no executable phase.".into());
         }
-        if let Some(value)=&self.assembly{value.validate()?;}
+        if self.transcript_cuts.is_some() && self.transcript_rebuild.is_some(){
+            return Err("Edit job must choose direct transcript cuts OR source rebuild, not both.".into());
+        }
+        if let Some(strategy)=&self.talking_head_strategy{
+            if !matches!(strategy.as_str(),"direct_cut"|"source_rebuild"){
+                return Err("talking_head_strategy must be direct_cut or source_rebuild.".into());
+            }
+            if strategy=="direct_cut" && (self.transcript_cuts.is_none()||self.transcript_rebuild.is_some()){
+                return Err("direct_cut strategy requires transcript_cuts and no transcript_rebuild.".into());
+            }
+            if strategy=="source_rebuild" && (self.transcript_rebuild.is_none()||self.transcript_cuts.is_some()){
+                return Err("source_rebuild strategy requires transcript_rebuild and no transcript_cuts.".into());
+            }
+        } else if self.transcript_rebuild.is_some() {
+            return Err("Transcript rebuild requires explicit talking_head_strategy=source_rebuild.".into());
+        }
+        let delivery_count=(self.export.is_some() as usize)+(self.frame_delivery.is_some() as usize)+(self.interchange_export.is_some() as usize);
+        if delivery_count>1{
+            return Err("Edit job allows one primary delivery: media export, review frames, or interchange export.".into());
+        }
+        if let Some(value)=&self.media_prep{value.validate()?;}
+        if let Some(value)=&self.scene_detection{value.validate()?;}
         if let Some(value)=&self.transcript_cuts{value.validate()?;}
+        if let Some(value)=&self.transcript_rebuild{value.validate()?;}
+        if let Some(value)=&self.assembly{value.validate()?;}
+        if let Some(value)=&self.track_organization{value.validate()?;}
+        if let Some(value)=&self.layering{value.validate()?;}
         if let Some(value)=&self.finishing{value.validate()?;}
+        if let Some(value)=&self.work_area{value.validate()?;}
         if let Some(value)=&self.review{value.validate()?;}
+        if let Some(value)=&self.frame_delivery{value.validate()?;}
+        if let Some(value)=&self.interchange_export{value.validate()?;}
         if let Some(value)=&self.export{value.validate()?;}
         bounded(self)?;
         Ok(())
@@ -133,10 +178,30 @@ impl Job {
         let mut push=|id:&str,tool:&str|phases.push(Phase{
             id:id.into(),tool:tool.into(),state:"pending".into(),action_id:None,error:None
         });
-        if request.assembly.is_some(){push("assembly","premiere_apply_assembly");}
+        if request.media_prep.is_some(){push("media_prep","premiere_prepare_media_batch");}
+        if request.scene_detection.is_some(){
+            let tool=if request.scene_detection.as_ref().is_some_and(|value|value.mode=="cuts"){
+                "premiere_detect_scene_cuts"
+            }else{"premiere_detect_scene_markers"};
+            push("scene_detection",tool);
+        }
         if request.transcript_cuts.is_some(){push("transcript_cuts","premiere_apply_transcript_cuts");}
+        if request.transcript_rebuild.is_some(){push("transcript_rebuild","premiere_apply_transcript_rebuild");}
+        if request.assembly.is_some(){push("assembly","premiere_apply_assembly");}
+        if request.track_organization.is_some(){push("track_organization","premiere_organize_tracks");}
+        if request.layering.is_some(){push("layering","premiere_layer_clips");}
         if request.finishing.is_some(){push("finishing","premiere_finish_media_batch");}
+        if request.work_area.is_some(){push("work_area","premiere_set_work_area");}
         if request.review.is_some(){push("review","premiere_review_frames");}
+        if request.frame_delivery.is_some(){push("frame_delivery","premiere_export_review_frames");}
+        if request.interchange_export.is_some(){
+            let tool=match request.interchange_export.as_ref().map(|value|value.format.as_str()){
+                Some("aaf")=>"premiere_export_aaf",
+                Some("otio")=>"premiere_export_otio",
+                _=>"premiere_export_fcpxml",
+            };
+            push("interchange_export",tool);
+        }
         if request.export.is_some(){
             push("export_preflight","premiere_plan_export");
             push("export_dispatch","premiere_export_sequence");
@@ -181,7 +246,10 @@ impl Job {
             phase.error=Some("Typed phase action failed; edit job stopped.".into());
             self.status="failed".into();
         } else if self.pending().is_none() {
-            self.status=if self.request.export.is_some(){"export_dispatched".into()}else{"complete".into()};
+            self.status=if self.request.export.is_some(){"export_dispatched".into()}
+                else if self.request.interchange_export.is_some(){"interchange_delivered".into()}
+                else if self.request.frame_delivery.is_some(){"frames_delivered".into()}
+                else{"complete".into()};
         }
         self.updated_at_ms=now_ms;
         bounded(self)?;
@@ -257,6 +325,38 @@ pub fn expectation_for_finishing(job:&Job,timeline:&Value,request:&FinishingRequ
     expected.validate()?;Ok(expected)
 }
 
+pub fn expectation_for_layering(job:&Job,timeline:&Value,batch:&LayerBatch)->Result<PremiereExpectation,String>{
+    let mut clips=Vec::new();
+    for source in batch.unique_sources(){
+        let clip=timeline_clip(timeline,&source.kind,source.track,source.clip_index)?;
+        if clip.signature!=source.signature{
+            return Err("Layering source changed after an earlier edit-job phase; provide a fresh job request instead of guessing a new clip index.".into());
+        }
+        clips.push(clip);
+    }
+    let expected=PremiereExpectation{
+        project_guid:job.project_guid.clone(),project_path:job.project_path.clone(),
+        sequence_guid:Some(job.sequence_guid.clone()),clips
+    };
+    expected.validate()?;Ok(expected)
+}
+
+pub fn expectation_for_scene(job:&Job,timeline:&Value,request:&SceneDetectionRequest)->Result<PremiereExpectation,String>{
+    let mut clips=Vec::new();
+    for target in &request.targets{
+        let clip=timeline_clip(timeline,"video",target.track,target.clip_index)?;
+        if clip.signature!=target.signature{
+            return Err("Scene-detection target changed after an earlier edit-job phase; provide a fresh job request instead of guessing target identity.".into());
+        }
+        clips.push(clip);
+    }
+    let expected=PremiereExpectation{
+        project_guid:job.project_guid.clone(),project_path:job.project_path.clone(),
+        sequence_guid:Some(job.sequence_guid.clone()),clips
+    };
+    expected.validate()?;Ok(expected)
+}
+
 pub fn save(path:&Path,job:&Job)->Result<(),String>{
     let bytes=bounded(job)?;
     if let Some(parent)=path.parent(){fs::create_dir_all(parent).map_err(|e|e.to_string())?;}
@@ -317,8 +417,46 @@ mod tests{
             "videos":[{"track":0,"clip_index":0,"request":{"preset":"natural_correction","bindings":[{"role":"contrast","component_match_name":"native","param_display_name":"Contrast","unit":1,"min":0,"max":2}]}}],
             "audios":[],"graphics":null,"review":false
         })).unwrap();
-        let job=Job::new("job".into(),Request{schema_version:1,job_type:"custom".into(),assembly:None,transcript_cuts:None,finishing:Some(request.clone()),review:None,export:None},"p",None,"s",1).unwrap();
+        let job=Job::new("job".into(),Request{
+            schema_version:1,job_type:"custom".into(),talking_head_strategy:None,
+            media_prep:None,scene_detection:None,transcript_cuts:None,transcript_rebuild:None,
+            assembly:None,track_organization:None,layering:None,finishing:Some(request.clone()),
+            work_area:None,review:None,frame_delivery:None,interchange_export:None,export:None
+        },"p",None,"s",1).unwrap();
         let timeline=json!({"truncated":false,"videoTracks":[{"index":0,"items":[{"targetSignature":"sig"}]}],"audioTracks":[]});
         assert_eq!(expectation_for_finishing(&job,&timeline,&request).unwrap().clips[0].signature,"sig");
+    }
+    #[test]fn rebuild_requires_explicit_strategy(){
+        let value=json!({
+            "schema_version":1,"job_type":"talking_head",
+            "transcript_rebuild":{
+                "schema_version":1,"item_id":"media","source":{"track":0,"clip_index":0},
+                "transcript_source_offset":0,"removals":[{"start":2,"end":3}],
+                "destination":{"mode":"explicit_empty_target_sequence","sequence_guid":"dest","video_track":0,"audio_track":0},
+                "take_video":true,"take_audio":false
+            }
+        });
+        let request:Request=serde_json::from_value(value).unwrap();
+        assert!(request.validate().is_err());
+    }
+    #[test]fn one_primary_delivery_only(){
+        let value=json!({
+            "schema_version":1,"job_type":"corporate",
+            "frame_delivery":{"schema_version":1,"frames":[{"seconds":1,"output":"C:/tmp/a.png","width":1920,"height":1080}]},
+            "export":{"output":"C:/out.mp4","queue_to_ame":false,"overwrite":false}
+        });
+        let request:Request=serde_json::from_value(value).unwrap();
+        assert!(request.validate().is_err());
+    }
+    #[test]fn optional_advanced_phases_preserve_typed_order(){
+        let value=json!({
+            "schema_version":1,"job_type":"corporate",
+            "track_organization":{"schema_version":1,"tracks":[{"kind":"video","track":0,"name":"A-Roll"}]},
+            "work_area":{"in_seconds":1,"out_seconds":4}
+        });
+        let request:Request=serde_json::from_value(value).unwrap();
+        let job=Job::new("job".into(),request,"p",None,"s",1).unwrap();
+        assert_eq!(job.phases.iter().map(|p|p.tool.as_str()).collect::<Vec<_>>(),
+            vec!["premiere_organize_tracks","premiere_set_work_area"]);
     }
 }

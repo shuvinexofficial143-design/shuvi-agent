@@ -471,3 +471,14 @@ Conservative **feature-code coverage after AD: approximately 93%** (before 90%),
 - Added Rust validation coverage and Node structural/safety tests. Real paired-host execution remains pending; runtime verified stays **0%**, production ready **no**.
 
 Conservative **feature-code coverage after AE: approximately 96%** (before 93%), counting actual professional interchange and native frame delivery only. Next real feature priority: AF integration of AA–AE into professional edit jobs, then optional AG scene-aware rough-cut builder and real paired-host acceptance/bug fixing.
+
+
+### Module AF — advanced edit-job integration (2026-09-26)
+
+- Extended persistent professional edit jobs with optional typed AA–AE phases: media prep, native scene detection, transcript source rebuild, track organization, cross-track layering, work area, review-frame delivery and one interchange delivery. Every phase maps to an existing registered Shuvi tool; no arbitrary tool-name or script execution field was added.
+- Talking-head jobs now distinguish direct W2 cuts from AA source rebuild. `source_rebuild` must be explicitly selected and is mutually exclusive with direct cuts; no silent destructive strategy switch occurs.
+- `premiere_edit_job_next` performs fresh native binding before advanced clip-sensitive phases: scene detection reruns capability/timeline planning, transcript rebuild reruns AA read-only planning and obtains a fresh plan snapshot, layering reinspects timeline signatures, while existing transcript-cut/finishing phases retain their own fresh inspections. If a stored exact target no longer matches after earlier mutation, the job fails closed instead of guessing a new clip index.
+- Primary delivery is now explicit and exclusive: regular media export, AE review-frame package, or one AE interchange format. Every returned phase still requires the normal separate approval and matching audit receipt; the coordinator remains orchestration, not a hidden mega-executor.
+- Added Rust validation/order tests and Node structural safety coverage. Paired Premiere runtime evidence remains absent, so runtime verified stays **0%** and production ready remains **no**.
+
+Conservative **feature-code coverage after AF: approximately 97%** (before 96%). The one-point increase reflects the newly usable end-to-end composition of AA–AE capabilities, not tests/docs alone. Remaining high-value coding is optional AG scene-aware rough-cut construction plus any API-backed gaps discovered during real host acceptance; the dominant next step is paired Premiere compile/runtime testing and bug fixing.

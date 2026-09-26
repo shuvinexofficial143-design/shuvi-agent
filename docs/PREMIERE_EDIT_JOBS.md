@@ -93,3 +93,44 @@ Export preflight and export dispatch are separate phases. A successful dispatch 
 ```
 
 Call `premiere_edit_job_next`, execute the returned concrete proposal through the normal Shuvi permission flow, record its audit action ID, and repeat until the job is complete or export has been dispatched.
+
+
+## AF advanced phase integration
+
+Professional edit jobs can now opt into the real AA–AE capabilities without introducing a hidden mega-executor. Optional phases are:
+
+- `media_prep` → `premiere_prepare_media_batch`
+- `scene_detection` → native scene cuts or scene markers
+- `transcript_rebuild` → `premiere_apply_transcript_rebuild`
+- `track_organization` → `premiere_organize_tracks`
+- `layering` → `premiere_layer_clips`
+- `work_area` → `premiere_set_work_area`
+- `frame_delivery` → `premiere_export_review_frames`
+- `interchange_export` → one explicit AAF/FCPXML/OTIO typed tool
+
+The existing assembly, direct transcript cuts, finishing, review and normal media export phases remain available.
+
+### Talking-head strategy
+
+A rebuild job must explicitly select `talking_head_strategy: "source_rebuild"`. Direct W2 cuts and AA source rebuild are mutually exclusive inside one job. Existing direct-cut jobs remain backward compatible when no strategy field is supplied; Shuvi never silently changes an edge-cut job into a rebuild.
+
+### Fresh phase binding
+
+`premiere_edit_job_next` still returns only one separately approved typed proposal. Before clip-sensitive advanced phases it rereads current native state:
+
+- scene detection rechecks capabilities and the current timeline, then rebuilds exact expectations;
+- transcript rebuild reruns the read-only AA plan immediately before approval and uses the fresh `plan_snapshot`/expectation;
+- layering reinspects the current timeline and refuses a source whose stored signature no longer matches;
+- direct transcript cuts and X2 finishing keep their existing fresh transcript/timeline inspection paths.
+
+This means earlier edits do not silently authorize later work against an old expectation. Where Shuvi lacks a stable identity needed to relocate a moved clip, it fails closed instead of guessing a new index.
+
+### Delivery choice
+
+A job may select at most one primary delivery path:
+
+- regular media export,
+- native review-frame package,
+- one interchange export (AAF, FCPXML or OTIO).
+
+Each delivery remains its normal separately approved Shuvi tool. No job silently exports every format.

@@ -370,3 +370,8 @@ Sequence preset creation validates the preset path in Rust before invoking `Proj
 ### Professional interchange and native frame delivery (AE)
 
 `premiere_delivery.rs` owns bounded output/collision, AAF option and frame-package schemas. The UXP panel routes FCPXML/OTIO/AAF to stable `ProjectConverter` methods and native stills to `Exporter.exportSequenceFrame`. Desktop code validates absolute output paths, existing parents, overwrite intent and optional AAF mixdown preset before staging high-risk writes. Project/sequence expectations remain mandatory. After native completion, the desktop observes output metadata so host acceptance and file presence are reported independently; no external-NLE fidelity guarantee is inferred. Review-frame batches reuse one expectation and cooperative cancellation. See [PREMIERE_DELIVERY.md](PREMIERE_DELIVERY.md).
+
+
+### Advanced professional edit-job integration (AF)
+
+`premiere_edit_job.rs` now accepts only explicit typed optional AA–AE payloads and converts them to a deterministic phase list. The coordinator still never executes a mutating phase itself: `premiere_edit_job_next` produces one normal Shuvi tool proposal, and `premiere_edit_job_record_action` advances state only from a matching audit receipt. Fresh native preflight is repeated for scene detection, AA transcript rebuild and AC layering before those proposals are emitted; stale exact targets fail closed. Direct W2 cuts and AA rebuild are mutually exclusive, and only one primary delivery path (media export, review frames or interchange) may appear in a job. See [PREMIERE_EDIT_JOBS.md](PREMIERE_EDIT_JOBS.md).

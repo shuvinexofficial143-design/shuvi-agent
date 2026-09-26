@@ -147,7 +147,7 @@ Available tools:
 - premiere_review_session_record_fix: {"session_id":"ID","issue_id":"inspected issue ID","target":"exact inspected clip target","planner":"premiere_plan_video_recipe","settings":{"exact":"approved typed settings"},"approved_action_id":"exact successful Shuvi audit action ID"}
 - premiere_review_session_cancel: {"session_id":"exact returned ID"}
 - premiere_plan_edit_recipe: {"preset":"social_reel|cinematic_reel|talking_head|product_ad|wedding_highlight|long_form_youtube|story_explainer|clean_corporate","targets":{},"inputs":{},"options":{}}
-- premiere_edit_job_start: {"schema_version":1,"job_type":"talking_head|social_reel|product_ad|wedding_highlight|corporate|custom","assembly":null,"transcript_cuts":null,"finishing":null,"review":null,"export":null}
+- premiere_edit_job_start: {"schema_version":1,"job_type":"talking_head|social_reel|product_ad|wedding_highlight|corporate|custom","talking_head_strategy":"optional direct_cut|source_rebuild","media_prep":null,"scene_detection":null,"transcript_cuts":null,"transcript_rebuild":null,"assembly":null,"track_organization":null,"layering":null,"finishing":null,"work_area":null,"review":null,"frame_delivery":null,"interchange_export":null,"export":null}
 - premiere_edit_job_status: {"job_id":"exact returned UUID"}
 - premiere_edit_job_next: {"job_id":"exact returned UUID"}
 - premiere_edit_job_record_action: {"job_id":"UUID","phase_id":"exact current phase id","action_id":"exact executed Shuvi audit action UUID"}
@@ -8069,6 +8069,47 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let phase=job.pending().cloned().ok_or("Edit job has no pending phase.")?;
 
             let (arguments,reason)=match phase.id.as_str() {
+                "media_prep" => {
+                    let batch=job.request.media_prep.clone().ok_or("Edit job media_prep payload is missing.")?;
+                    (json!({"batch":batch,"expected":job.project_expectation()}),
+                        "Run the existing bounded media-preparation batch against the current project identity.".to_string())
+                }
+                "scene_detection" => {
+                    let request=job.request.scene_detection.clone().ok_or("Edit job scene_detection payload is missing.")?;
+                    let capabilities=premiere_bridge.request("scene_detection_capabilities",json!({}),Duration::from_secs(10)).await?;
+                    let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+                    let plan=premiere_scene_detection::build_plan(&request,&timeline,&capabilities)?;
+                    if plan.get("supported").and_then(Value::as_bool)!=Some(true){
+                        return Err(plan.get("reason").and_then(Value::as_str).unwrap_or("Scene detection is unavailable.").to_string());
+                    }
+                    let expected:PremiereExpectation=serde_json::from_value(
+                        plan.get("expected").cloned().ok_or("Scene-detection plan returned no expectation.")?
+                    ).map_err(|e|format!("Invalid scene-detection expectation: {e}"))?;
+                    (json!({"request":request,"expected":expected}),
+                        "Run the selected native scene-detection mode only after a fresh timeline/capability rebind.".to_string())
+                }
+                "transcript_rebuild" => {
+                    let request=job.request.transcript_rebuild.clone().ok_or("Edit job transcript_rebuild payload is missing.")?;
+                    let plan=premiere_bridge.request(
+                        "plan_transcript_rebuild",
+                        json!({"request":request}),
+                        Duration::from_secs(60),
+                    ).await?;
+                    if plan.get("supported").and_then(Value::as_bool)!=Some(true){
+                        return Err(format!("Edit-job transcript rebuild is not executable: {}",
+                            plan.get("unsupported_reasons").and_then(Value::as_array)
+                                .map(|rows|rows.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "))
+                                .unwrap_or_else(||"unsupported".into())));
+                    }
+                    let snapshot=plan.get("plan_snapshot").and_then(Value::as_str).filter(|value|!value.is_empty())
+                        .ok_or("Transcript rebuild plan_snapshot missing.")?.to_string();
+                    let expected:PremiereExpectation=serde_json::from_value(
+                        plan.get("expected").cloned().ok_or("Transcript rebuild plan returned no expectation.")?
+                    ).map_err(|e|format!("Invalid transcript rebuild expectation: {e}"))?;
+                    expected.validate()?;
+                    (json!({"request":request,"plan_snapshot":snapshot,"expected":expected}),
+                        "Execute the explicitly selected AA source-rebuild strategy from a fresh native plan; preserve the original sequence.".to_string())
+                }
                 "assembly" => {
                     let assembly=job.request.assembly.clone().ok_or("Edit job assembly payload is missing.")?;
                     (json!({"assembly":assembly,"expected":job.project_expectation()}),
@@ -8106,6 +8147,18 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     }),
                     "Apply the freshly re-planned explicit transcript selections through W2; no inferred links or interior split hacks.".to_string())
                 }
+                "track_organization" => {
+                    let request=job.request.track_organization.clone().ok_or("Edit job track_organization payload is missing.")?;
+                    (json!({"request":request,"expected":job.project_expectation()}),
+                        "Rename only the explicitly requested existing tracks through AC with current project/sequence identity.".to_string())
+                }
+                "layering" => {
+                    let batch=job.request.layering.clone().ok_or("Edit job layering payload is missing.")?;
+                    let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+                    let expected=premiere_edit_job::expectation_for_layering(&job,&timeline,&batch)?;
+                    (json!({"batch":batch,"expected":expected}),
+                        "Run AC layering only after a fresh timeline rebind; stale source indexes/signatures fail rather than being guessed.".to_string())
+                }
                 "finishing" => {
                     let request=job.request.finishing.clone().ok_or("Edit job finishing payload is missing.")?;
                     let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
@@ -8113,10 +8166,25 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     (json!({"request":request,"expected":expected}),
                         "Execute X2 mixed finishing against freshly inspected exact video/audio targets.".to_string())
                 }
+                "work_area" => {
+                    let request=job.request.work_area.clone().ok_or("Edit job work_area payload is missing.")?;
+                    (json!({"request":request,"expected":job.project_expectation()}),
+                        "Set the explicit active-sequence work area through AD after current project/sequence identity validation.".to_string())
+                }
                 "review" => {
                     let review=job.request.review.clone().ok_or("Edit job review payload is missing.")?;
                     (json!({"seconds":review.seconds,"prompt":review.prompt}),
                         "Run the existing bounded multi-frame Premiere vision review; this does not auto-fix or guarantee artistic quality.".to_string())
+                }
+                "frame_delivery" => {
+                    let batch=job.request.frame_delivery.clone().ok_or("Edit job frame_delivery payload is missing.")?;
+                    (json!({"batch":batch,"expected":job.project_expectation()}),
+                        "Deliver the explicitly requested native review frames through AE; no screenshot fallback or hidden extra format.".to_string())
+                }
+                "interchange_export" => {
+                    let request=job.request.interchange_export.clone().ok_or("Edit job interchange_export payload is missing.")?;
+                    (json!({"request":request,"expected":job.project_expectation()}),
+                        "Deliver exactly one explicit AAF/FCPXML/OTIO handoff through AE with its normal output-collision approval.".to_string())
                 }
                 "export_preflight" => {
                     let export=job.request.export.clone().ok_or("Edit job export payload is missing.")?;
