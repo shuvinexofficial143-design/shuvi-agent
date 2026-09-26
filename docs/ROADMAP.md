@@ -449,3 +449,14 @@ Conservative **feature-code coverage after AB: approximately 88%** (before 86%),
 - Added Rust validation tests and Node structural/safety coverage. Real paired-host execution remains pending; runtime verified stays **0%**, production ready **no**.
 
 Conservative **feature-code coverage after AC: approximately 90%** (before 88%), counting usable cross-track layering and native track organization only. Next real feature priority: AD media interpretation/sequence preparation, AE professional interchange/frame delivery, then AF edit-job integration.
+
+
+### Module AD — professional media and sequence preparation (2026-09-26)
+
+- Added read-only `premiere_inspect_media_interpretation` plus explicit single/batch media preparation for up to 64 unique `ClipProjectItem` IDs. Native 25.6+ actions cover footage frame-rate override, pixel-aspect override, Scale to Frame Size and input LUT ID; caller can bind the previously inspected media path so an offline/relinked item fails closed.
+- Frame rate, pixel aspect and input LUT are reinspected after mutation. Scale to Frame Size remains `accepted_unverified` when it is the only change because the reviewed stable API exposes the action but no dedicated readback getter. Frame-rate override is explicitly footage interpretation, not timeline speed/time-remapping. Opaque full-footage-interpretation writes remain out of scope.
+- Added `premiere_create_sequence_from_preset` on stable `Project.createSequenceWithPresetPath` (26.3+), validating an existing absolute preset file and verifying a newly returned sequence GUID without deleting/replacing existing sequences.
+- Added `premiere_get_work_area` / `premiere_set_work_area` on stable `WorkAreaUtils` (26.5+), with sequence-end bounds, exact project/sequence expectation, project checkpoint and post-write readback. Work area remains distinct from sequence in/out points.
+- Media batches share one checkpoint, support cancellation between items and stop only on transport uncertainty; no native mutation is blindly retried. Real paired-host execution remains pending, so runtime verified stays **0%** and production ready remains **no**.
+
+Conservative **feature-code coverage after AD: approximately 93%** (before 90%), counting actual footage interpretation, preset sequence creation and work-area control only. Next real feature priority: AE professional interchange/frame delivery, then AF edit-job integration and optional AG scene-aware rough-cut building.

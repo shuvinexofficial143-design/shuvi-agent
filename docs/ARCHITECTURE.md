@@ -358,3 +358,10 @@ The host compares pre/post clip and marker observations before reporting verific
 `premiere_layering.rs` owns bounded clone/track-rename schemas. The UXP panel's `clone_clip_to_track` converts absolute destination track/time into `SequenceEditor.createCloneTrackItemAction` offsets, snapshots the destination track before mutation, and only verifies a result when exactly one new same-media/same-duration clip appears at the requested destination. Desktop execution uses the existing expectation/checkpoint path and batch cancellation state; linked-media membership is not inferred.
 
 Track organization resolves existing VideoTrack/AudioTrack/CaptionTrack objects, creates their documented `createSetNameAction` actions inside one compound transaction, then reads every name back. No track creation/reordering abstraction was introduced. See [PREMIERE_LAYERING.md](PREMIERE_LAYERING.md).
+
+
+### Professional media and sequence preparation (AD)
+
+`premiere_media_prep.rs` owns bounded project-item preparation and work-area schemas. The UXP panel reads native `FootageInterpretation`/LUT/proxy/offline state and applies only reviewed `ClipProjectItem` actions for frame-rate override, pixel aspect, Scale to Frame Size and input LUT. Desktop mutations remain project-checkpointed and project expectation-guarded; batches operate one exact project item at a time and support cooperative cancellation. Native readback distinguishes verified fields from Scale-to-Frame's current accepted-unverified boundary.
+
+Sequence preset creation validates the preset path in Rust before invoking `Project.createSequenceWithPresetPath`; WorkAreaUtils operations are version-gated by method availability and verify in/out readback. See [PREMIERE_MEDIA_PREP.md](PREMIERE_MEDIA_PREP.md).

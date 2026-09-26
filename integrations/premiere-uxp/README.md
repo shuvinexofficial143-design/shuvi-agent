@@ -235,3 +235,8 @@ The panel now exposes bounded native Scene Edit Detection for explicit video tar
 ### Cross-track layering and track organization (AC)
 
 The panel now exposes verified cross-track clone correlation plus native video/audio/caption track naming. Cross-track clones derive `createCloneTrackItemAction` offsets from explicit source/destination coordinates, require a clear destination range, and return `verified_delta` only after exact readback correlation. Track naming uses `createSetNameAction` (26.3+) and never creates/reorders tracks. See `docs/PREMIERE_LAYERING.md`.
+
+
+### Professional media and sequence preparation (AD)
+
+The panel now inspects `FootageInterpretation` and applies stable ClipProjectItem frame-rate/PAR/scale-to-frame/input-LUT actions, creates sequences from preset paths (26.3+) and reads/sets the active sequence work area through WorkAreaUtils (26.5+). Desktop code supplies path validation, project checkpoints, exact project/sequence expectations and bounded batch cancellation. See `docs/PREMIERE_MEDIA_PREP.md`.

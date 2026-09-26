@@ -46,6 +46,7 @@ for (const path of [
   "src-tauri/src/premiere_transcript_rebuild.rs",
   "src-tauri/src/premiere_scene_detection.rs",
   "src-tauri/src/premiere_layering.rs",
+  "src-tauri/src/premiere_media_prep.rs",
   "integrations/premiere-uxp/transcript-rebuild.js",
   "src-tauri/src/premiere_finishing.rs",
   "src-tauri/src/premiere_assembly.rs",

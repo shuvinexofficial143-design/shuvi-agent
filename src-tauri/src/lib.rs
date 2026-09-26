@@ -36,6 +36,7 @@ mod premiere_talking_head;
 mod premiere_transcript_rebuild;
 mod premiere_scene_detection;
 mod premiere_layering;
+mod premiere_media_prep;
 mod premiere_finishing;
 mod premiere_assembly;
 mod premiere_mogrt;
@@ -156,6 +157,14 @@ Available tools:
 - premiere_rename_project_item: {"item_id":"project item id","name":"new name"}
 - premiere_move_project_item: {"item_id":"project item id","target_bin_id":"destination bin id"}
 - premiere_relink_media: {"item_id":"clip project item id","new_path":"absolute replacement media path","override_compatibility":false}
+- premiere_inspect_media_interpretation: {"item_id":"exact clip project item id"}
+- premiere_prepare_media_item: {"request":{"item_id":"exact clip project item id","expected_media_path":"copy inspected path or null","override_frame_rate":23.976,"pixel_aspect":{"numerator":1,"denominator":1},"scale_to_frame_size":false,"input_lut_id":"exact native LUT ID or null"},"expected":{"project_guid":"...","sequence_guid":"optional active sequence","clips":[]}}
+- premiere_prepare_media_batch: {"batch":{"schema_version":1,"items":[{"item_id":"exact clip project item id","expected_media_path":"copy inspected path","override_frame_rate":25,"pixel_aspect":null,"scale_to_frame_size":true,"input_lut_id":null}]},"expected":{"project_guid":"...","sequence_guid":"optional","clips":[]}}
+- premiere_cancel_media_prep: {}
+- premiere_create_sequence_from_preset: {"name":"Edit 01","preset_path":"absolute existing sequence preset path","expected":{"project_guid":"...","sequence_guid":"optional","clips":[]}}
+- premiere_get_work_area: {}
+- premiere_set_work_area: {"request":{"in_seconds":2,"out_seconds":12},"expected":{"project_guid":"...","sequence_guid":"active sequence GUID","clips":[]}}
+Media preparation uses stable ClipProjectItem interpretation actions (25.6+). Frame-rate override is footage interpretation, not timeline speed/time remapping. Scale-to-frame has no reviewed dedicated readback getter, so native acceptance remains accepted_unverified for that field. Sequence preset creation requires Premiere 26.3+; WorkAreaUtils requires 26.5+.
 - premiere_set_source_inout: {"item_id":"clip project item id","in_seconds":1.0,"out_seconds":8.0}
 - premiere_clear_source_inout: {"item_id":"clip project item id"}
 - premiere_create_subclip: {"item_id":"clip project item id","name":"subclip name","start_seconds":1.0,"end_seconds":8.0,"hard_boundaries":true,"take_video":true,"take_audio":true}
@@ -479,6 +488,13 @@ enum ToolAction {
     PremiereImportTranscript { item_id: String, transcript_json: String },
     PremiereAttachProxy { item_id: String, proxy_path: String },
     PremiereBatchRelink { items: Vec<Value> },
+    PremiereInspectMediaInterpretation { item_id: String },
+    PremierePrepareMediaItem { request: premiere_media_prep::ItemPrep },
+    PremierePrepareMediaBatch { batch: premiere_media_prep::Batch },
+    PremiereCancelMediaPrep,
+    PremiereCreateSequenceFromPreset { name: String, preset_path: String },
+    PremiereGetWorkArea,
+    PremiereSetWorkArea { request: premiere_media_prep::WorkArea },
     PremiereBatchAttachProxy { items: Vec<Value> },
     PremiereInsertMogrtPath { path: String, seconds: f64, video_track: u32, audio_track: u32 },
     PremiereInsertMogrtLibrary { library_name: String, element_name: String, seconds: f64, video_track: u32, audio_track: u32 },
@@ -595,6 +611,8 @@ struct ActionState {
     rebuild_cancelled: AtomicBool,
     layering_running: AtomicBool,
     layering_cancelled: AtomicBool,
+    media_prep_running: AtomicBool,
+    media_prep_cancelled: AtomicBool,
     assembly_cancelled: AtomicBool,
 }
 
@@ -882,6 +900,13 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_rename_project_item"
         | "premiere_move_project_item"
         | "premiere_relink_media"
+        | "premiere_inspect_media_interpretation"
+        | "premiere_prepare_media_item"
+        | "premiere_prepare_media_batch"
+        | "premiere_cancel_media_prep"
+        | "premiere_create_sequence_from_preset"
+        | "premiere_get_work_area"
+        | "premiere_set_work_area"
         | "premiere_set_source_inout"
         | "premiere_clear_source_inout"
         | "premiere_create_subclip"
@@ -3689,6 +3714,84 @@ fn stage_tool(
                 "Relink Premiere media".to_string(),
                 format!("Relink clip project item {item_id} to {new_path}; override_compatibility={override_compatibility}."),
                 RiskLevel::High,
+            )
+        }
+        "premiere_inspect_media_interpretation" => {
+            let item_id=arg_string(&proposal.arguments,"item_id")?;
+            if item_id.len()>240 {return Err("Premiere item ID is too long.".into());}
+            (
+                ToolAction::PremiereInspectMediaInterpretation {item_id},
+                "Inspect Premiere media interpretation".into(),
+                "Read exact native footage interpretation, media/LUT/proxy/offline values without editing.".into(),
+                RiskLevel::Low,
+            )
+        }
+        "premiere_prepare_media_item" => {
+            let request:premiere_media_prep::ItemPrep=serde_json::from_value(
+                proposal.arguments.get("request").cloned().unwrap_or(Value::Null)
+            ).map_err(|e|format!("Invalid media preparation request: {e}"))?;
+            request.validate()?;
+            let expected=premiere_expectation.as_ref().ok_or("Media preparation requires the inspected project expectation.")?;
+            if !expected.clips.is_empty(){return Err("Media preparation uses project-item identity, not timeline clip expectations.".into());}
+            (
+                ToolAction::PremierePrepareMediaItem {request},
+                "Prepare Premiere media interpretation".into(),
+                "Apply only explicitly requested native frame-rate/PAR/scale-to-frame/LUT changes to one exact project item, checkpoint first, then reinspect.".into(),
+                RiskLevel::High,
+            )
+        }
+        "premiere_prepare_media_batch" => {
+            let batch:premiere_media_prep::Batch=serde_json::from_value(
+                proposal.arguments.get("batch").cloned().unwrap_or(Value::Null)
+            ).map_err(|e|format!("Invalid media preparation batch: {e}"))?;
+            batch.validate()?;
+            let expected=premiere_expectation.as_ref().ok_or("Media preparation batch requires the inspected project expectation.")?;
+            if !expected.clips.is_empty(){return Err("Media preparation batch uses project-item identity, not timeline clip expectations.".into());}
+            (
+                ToolAction::PremierePrepareMediaBatch {batch},
+                "Prepare Premiere media batch".into(),
+                "Apply explicit interpretation changes to up to 64 unique project items under one checkpoint with cancellation and uncertainty stop.".into(),
+                RiskLevel::High,
+            )
+        }
+        "premiere_cancel_media_prep" => (
+            ToolAction::PremiereCancelMediaPrep,
+            "Cancel Premiere media preparation".into(),
+            "Stop before the next project item; a native transaction already dispatched may still complete.".into(),
+            RiskLevel::Low,
+        ),
+        "premiere_create_sequence_from_preset" => {
+            let name=arg_string(&proposal.arguments,"name")?;
+            if name.trim().is_empty()||name.chars().count()>120{return Err("Sequence name must contain 1–120 characters.".into());}
+            let preset_path=absolute_path(arg_string(&proposal.arguments,"preset_path")?)?;
+            if !Path::new(&preset_path).is_file(){return Err("Sequence preset path must be an existing absolute file.".into());}
+            let expected=premiere_expectation.as_ref().ok_or("Sequence preset creation requires the inspected project expectation.")?;
+            if !expected.clips.is_empty(){return Err("Sequence creation requires project/sequence expectation without clip targets.".into());}
+            (
+                ToolAction::PremiereCreateSequenceFromPreset {name,preset_path},
+                "Create Premiere sequence from preset".into(),
+                "Create a new sequence from an explicit existing preset path; do not delete or replace existing sequences.".into(),
+                RiskLevel::Medium,
+            )
+        }
+        "premiere_get_work_area" => (
+            ToolAction::PremiereGetWorkArea,
+            "Inspect Premiere work area".into(),
+            "Read current active-sequence work area using WorkAreaUtils; no edit.".into(),
+            RiskLevel::Low,
+        ),
+        "premiere_set_work_area" => {
+            let request:premiere_media_prep::WorkArea=serde_json::from_value(
+                proposal.arguments.get("request").cloned().unwrap_or(Value::Null)
+            ).map_err(|e|format!("Invalid work area: {e}"))?;
+            request.validate()?;
+            let expected=premiere_expectation.as_ref().ok_or("Work-area update requires inspected active project/sequence expectation.")?;
+            if expected.sequence_guid.is_none()||!expected.clips.is_empty(){return Err("Work-area update requires exact project/sequence expectation without clip targets.".into());}
+            (
+                ToolAction::PremiereSetWorkArea {request},
+                "Set Premiere work area".into(),
+                "Set explicit active-sequence work-area in/out through stable WorkAreaUtils and verify readback; this is not sequence in/out.".into(),
+                RiskLevel::Medium,
             )
         }
         "premiere_set_source_inout" => {
@@ -8901,6 +9004,135 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     .unwrap_or_else(|_| value.to_string()),
                 stderr: String::new(),
                 exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereInspectMediaInterpretation {item_id} => {
+            let value=premiere_bridge.request(
+                "inspect_media_interpretation",
+                json!({"itemId":item_id}),
+                Duration::from_secs(20),
+            ).await?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremierePrepareMediaItem {request} => {
+            request.validate()?;
+            let expected=premiere_bridge.expected.ok_or("Media preparation requires project expectation.")?;
+            let checkpoint=backup_premiere_project(&premiere_bridge).await?;
+            let client=PremiereClient{bridge:&state.premiere_bridge,expected:Some(expected)};
+            let value=client.request(
+                "prepare_media_item",
+                json!({
+                    "itemId":request.item_id,
+                    "expectedMediaPath":request.expected_media_path,
+                    "overrideFrameRate":request.override_frame_rate,
+                    "pixelAspect":request.pixel_aspect,
+                    "scaleToFrameSize":request.scale_to_frame_size,
+                    "inputLUTID":request.input_lut_id
+                }),
+                Duration::from_secs(30),
+            ).await?;
+            let accepted=value.get("accepted").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{
+                success:accepted,
+                tool,
+                stdout:json!({"checkpoint":checkpoint,"result":value,"runtime_verified":false}).to_string(),
+                stderr:String::new(),
+                exit_code:Some(if accepted{0}else{1}),
+            })
+        }
+        ToolAction::PremiereCancelMediaPrep => {
+            state.media_prep_cancelled.store(true,Ordering::Release);
+            Ok(ActionResult{
+                success:true,tool,
+                stdout:json!({"cancel_requested":true,"running":state.media_prep_running.load(Ordering::Acquire)}).to_string(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PremierePrepareMediaBatch {batch} => {
+            batch.validate()?;
+            if state.media_prep_running.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){
+                return Err("Another Premiere media preparation batch is running.".into());
+            }
+            let _guard=AcceptanceProbeGuard(&state.media_prep_running);
+            state.media_prep_cancelled.store(false,Ordering::Release);
+            let expected=premiere_bridge.expected.ok_or("Media preparation batch requires project expectation.")?.clone();
+            let checkpoint=backup_premiere_project(&premiere_bridge).await?;
+            let client=PremiereClient{bridge:&state.premiere_bridge,expected:Some(&expected)};
+            let mut results=Vec::new();
+            let mut uncertain=false;
+            for (index,item) in batch.items.iter().enumerate(){
+                if state.media_prep_cancelled.load(Ordering::Acquire){break;}
+                match client.request(
+                    "prepare_media_item",
+                    json!({
+                        "itemId":item.item_id.clone(),
+                        "expectedMediaPath":item.expected_media_path.clone(),
+                        "overrideFrameRate":item.override_frame_rate,
+                        "pixelAspect":item.pixel_aspect.clone(),
+                        "scaleToFrameSize":item.scale_to_frame_size,
+                        "inputLUTID":item.input_lut_id.clone()
+                    }),
+                    Duration::from_secs(30),
+                ).await {
+                    Ok(value)=>{
+                        let accepted=value.get("accepted").and_then(Value::as_bool)==Some(true);
+                        results.push(json!({"index":index,"item_id":item.item_id.clone(),"status":if accepted{"applied"}else{"failed"},"native_result":value}));
+                    }
+                    Err(error)=>{
+                        let delivery_uncertain=error.contains("unknown")||error.contains("timed out")||error.contains("timeout")||error.contains("delivery");
+                        results.push(json!({"index":index,"item_id":item.item_id.clone(),"status":if delivery_uncertain{"uncertain"}else{"failed"},"reason":error.chars().take(240).collect::<String>()}));
+                        if delivery_uncertain{uncertain=true;break;}
+                    }
+                }
+            }
+            let cancelled=state.media_prep_cancelled.load(Ordering::Acquire);
+            let applied=results.iter().filter(|row|row["status"]=="applied").count();
+            let complete=!uncertain&&!cancelled&&applied==batch.items.len();
+            Ok(ActionResult{
+                success:complete,tool,
+                stdout:json!({
+                    "checkpoint":checkpoint,"requested":batch.items.len(),"applied":applied,
+                    "results":results,"complete":complete,"cancelled":cancelled,"uncertain":uncertain,
+                    "timeline_speed_changed":false,"retry_safe":false
+                }).to_string(),
+                stderr:String::new(),exit_code:Some(if complete{0}else{1})
+            })
+        }
+        ToolAction::PremiereCreateSequenceFromPreset {name,preset_path} => {
+            let expected=premiere_bridge.expected.ok_or("Sequence preset creation requires project expectation.")?;
+            let checkpoint=backup_premiere_project(&premiere_bridge).await?;
+            let client=PremiereClient{bridge:&state.premiere_bridge,expected:Some(expected)};
+            let value=client.request(
+                "create_sequence_from_preset",
+                json!({"name":name,"presetPath":preset_path}),
+                Duration::from_secs(45),
+            ).await?;
+            let created=value.get("created").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{
+                success:created,tool,
+                stdout:json!({"checkpoint":checkpoint,"result":value}).to_string(),
+                stderr:String::new(),exit_code:Some(if created{0}else{1})
+            })
+        }
+        ToolAction::PremiereGetWorkArea => {
+            let value=premiere_bridge.request("get_work_area",json!({}),Duration::from_secs(10)).await?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereSetWorkArea {request} => {
+            request.validate()?;
+            let expected=premiere_bridge.expected.ok_or("Work-area update requires project/sequence expectation.")?;
+            let checkpoint=backup_premiere_project(&premiere_bridge).await?;
+            let client=PremiereClient{bridge:&state.premiere_bridge,expected:Some(expected)};
+            let value=client.request(
+                "set_work_area",
+                json!({"inSeconds":request.in_seconds,"outSeconds":request.out_seconds}),
+                Duration::from_secs(20),
+            ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+            Ok(ActionResult{
+                success:verified,tool,
+                stdout:json!({"checkpoint":checkpoint,"result":value,"verified":verified}).to_string(),
+                stderr:String::new(),exit_code:Some(if verified{0}else{1})
             })
         }
         ToolAction::PremiereSetSourceInOut { item_id, in_seconds, out_seconds } => {

@@ -3670,6 +3670,262 @@ async function requireClipProjectItemById(itemId) {
   return { project, clip };
 }
 
+async function inspectMediaInterpretation(argumentsValue) {
+  const itemId = typeof argumentsValue?.itemId === "string" ? argumentsValue.itemId.trim() : "";
+  if (!itemId || itemId.length > 240) throw new Error("Media interpretation requires a bounded exact itemId.");
+  const project = await requireProject();
+  const root = await project.getRootItem();
+  const item = await findProjectItemById(root,itemId);
+  if (!item) throw new Error("Premiere project item id was not found.");
+  const clip = asClipProjectItem(item);
+  if (!clip) throw new Error("Requested item is not a ClipProjectItem.");
+
+  const read = async (fn, fallback = null) => {
+    try { return await fn(); } catch { return fallback; }
+  };
+  const footage = await read(() => clip.getFootageInterpretation(), null);
+  const mediaPath = await read(() => clip.getMediaFilePath(), null);
+  const offline = await read(() => clip.isOffline(), null);
+  const hasProxy = await read(() => clip.hasProxy(), null);
+  const proxyPath = hasProxy ? await read(() => clip.getProxyPath(), null) : null;
+  const inputLUTID = await read(() => clip.getInputLUTID(), null);
+  const embeddedLUTID = await read(() => clip.getEmbeddedLUTID(), null);
+
+  const interpretation = footage ? {
+    frameRate: await read(() => footage.getFrameRate(), null),
+    pixelAspectRatio: await read(() => footage.getPixelAspectRatio(), null),
+    inputLUTID: await read(() => footage.getInputLUTID(), null),
+    alphaUsage: await read(() => footage.getAlphaUsage(), null),
+    fieldType: await read(() => footage.getFieldType(), null),
+    ignoreAlpha: await read(() => footage.getIgnoreAlpha(), null),
+    invertAlpha: await read(() => footage.getInvertAlpha(), null),
+    removePullDown: await read(() => footage.getRemovePullDown(), null),
+    vrConform: await read(() => footage.getVrConform(), null),
+    vrHorzView: await read(() => footage.getVrHorzView(), null),
+    vrLayout: await read(() => footage.getVrLayout(), null),
+    vrVertView: await read(() => footage.getVrVertView(), null)
+  } : null;
+
+  return {
+    itemId,
+    name:item?.name || null,
+    mediaPath,
+    offline,
+    hasProxy,
+    proxyPath,
+    inputLUTID,
+    embeddedLUTID,
+    footageInterpretation:interpretation,
+    capabilities:{
+      overrideFrameRate:typeof clip.createSetOverrideFrameRateAction === "function",
+      overridePixelAspectRatio:typeof clip.createSetOverridePixelAspectRatioAction === "function",
+      scaleToFrameSize:typeof clip.createSetScaleToFrameSizeAction === "function",
+      inputLUTID:typeof clip.createSetInputLUTIDAction === "function",
+      fullFootageInterpretation:typeof clip.createSetFootageInterpretationAction === "function"
+    }
+  };
+}
+
+async function prepareMediaItem(argumentsValue) {
+  const itemId = typeof argumentsValue?.itemId === "string" ? argumentsValue.itemId.trim() : "";
+  const expectedMediaPath = typeof argumentsValue?.expectedMediaPath === "string" && argumentsValue.expectedMediaPath.trim()
+    ? argumentsValue.expectedMediaPath.trim() : null;
+  const overrideFrameRate = argumentsValue?.overrideFrameRate == null ? null : Number(argumentsValue.overrideFrameRate);
+  const pixelAspect = argumentsValue?.pixelAspect || null;
+  const scaleToFrameSize = argumentsValue?.scaleToFrameSize === true;
+  const inputLUTID = typeof argumentsValue?.inputLUTID === "string" && argumentsValue.inputLUTID.trim()
+    ? argumentsValue.inputLUTID.trim() : null;
+
+  if (!itemId || itemId.length > 240) throw new Error("Media preparation requires a bounded exact itemId.");
+  if (overrideFrameRate != null && (!Number.isFinite(overrideFrameRate) || overrideFrameRate < 1 || overrideFrameRate > 1000)) {
+    throw new Error("Override frame rate must be between 1 and 1000 fps.");
+  }
+  if (pixelAspect) {
+    const numerator = Number(pixelAspect.numerator), denominator = Number(pixelAspect.denominator);
+    if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || numerator <= 0 || denominator <= 0
+        || numerator > 10000 || denominator > 10000) {
+      throw new Error("Pixel aspect numerator/denominator must be finite positive values no greater than 10000.");
+    }
+  }
+  if (!overrideFrameRate && !pixelAspect && !scaleToFrameSize && !inputLUTID) {
+    throw new Error("Media preparation contains no requested native change.");
+  }
+  if (inputLUTID && inputLUTID.length > 512) throw new Error("Input LUT ID is too long.");
+
+  const before = await inspectMediaInterpretation({itemId});
+  if (before.offline === true) throw new Error("Offline media cannot be prepared safely.");
+  if (expectedMediaPath && before.mediaPath !== expectedMediaPath) {
+    throw new Error("Media path changed since inspection; no media interpretation was changed.");
+  }
+
+  const project = await requireProject();
+  const root = await project.getRootItem();
+  const item = await findProjectItemById(root,itemId);
+  const clip = item ? asClipProjectItem(item) : null;
+  if (!clip) throw new Error("Requested ClipProjectItem disappeared.");
+
+  const actions = [];
+  const requested = [];
+  project.lockedAccess(() => {
+    if (overrideFrameRate != null) {
+      if (typeof clip.createSetOverrideFrameRateAction !== "function") throw new Error("Frame-rate override is unavailable.");
+      actions.push(clip.createSetOverrideFrameRateAction(overrideFrameRate));
+      requested.push("override_frame_rate");
+    }
+    if (pixelAspect) {
+      if (typeof clip.createSetOverridePixelAspectRatioAction !== "function") throw new Error("Pixel-aspect override is unavailable.");
+      actions.push(clip.createSetOverridePixelAspectRatioAction(Number(pixelAspect.numerator),Number(pixelAspect.denominator)));
+      requested.push("pixel_aspect");
+    }
+    if (scaleToFrameSize) {
+      if (typeof clip.createSetScaleToFrameSizeAction !== "function") throw new Error("Scale-to-frame action is unavailable.");
+      actions.push(clip.createSetScaleToFrameSizeAction());
+      requested.push("scale_to_frame_size");
+    }
+    if (inputLUTID) {
+      if (typeof clip.createSetInputLUTIDAction !== "function") throw new Error("Input LUT action is unavailable.");
+      actions.push(clip.createSetInputLUTIDAction(inputLUTID));
+      requested.push("input_lut_id");
+    }
+  });
+  if (!actions.length) throw new Error("No native media preparation actions were created.");
+
+  let transactionSucceeded = false;
+  project.lockedAccess(() => {
+    transactionSucceeded = project.executeTransaction(compoundAction => {
+      for (const action of actions) compoundAction.addAction(action);
+    }, "Shuvi: Prepare Media");
+  });
+  if (!transactionSucceeded) throw new Error("Premiere rejected the media preparation transaction.");
+
+  const after = await inspectMediaInterpretation({itemId});
+  const checks = [];
+  if (overrideFrameRate != null) {
+    const observed = after.footageInterpretation?.frameRate;
+    checks.push({field:"override_frame_rate",requested:overrideFrameRate,observed,
+      verified:Number.isFinite(observed) && Math.abs(observed-overrideFrameRate) <= 0.001});
+  }
+  if (pixelAspect) {
+    const requestedRatio = Number(pixelAspect.numerator)/Number(pixelAspect.denominator);
+    const observed = after.footageInterpretation?.pixelAspectRatio;
+    checks.push({field:"pixel_aspect_ratio",requested:requestedRatio,observed,
+      verified:Number.isFinite(observed) && Math.abs(observed-requestedRatio) <= 0.000001});
+  }
+  if (inputLUTID) {
+    const observed = after.inputLUTID;
+    checks.push({field:"input_lut_id",requested:inputLUTID,observed,verified:observed === inputLUTID});
+  }
+  if (scaleToFrameSize) {
+    checks.push({field:"scale_to_frame_size",requested:true,observed:null,verified:false,
+      reason:"Stable reviewed ClipProjectItem API exposes the action but no dedicated scale-to-frame readback getter."});
+  }
+
+  const verified = checks.length > 0 && checks.every(check => check.verified);
+
+  return {
+    accepted:true,
+    itemId,
+    requested,
+    before,
+    after,
+    checks,
+    verificationStatus: verified ? "verified_readback" : "accepted_unverified",
+    retrySafe:false
+  };
+}
+
+async function createSequenceFromPreset(argumentsValue) {
+  const name = typeof argumentsValue?.name === "string" ? argumentsValue.name.trim() : "";
+  const presetPath = typeof argumentsValue?.presetPath === "string" ? argumentsValue.presetPath.trim() : "";
+  if (!name || [...name].length > 120 || !presetPath) {
+    throw new Error("Sequence preset creation requires a 1–120 character name and presetPath.");
+  }
+  const project = await requireProject();
+  if (typeof project.createSequenceWithPresetPath !== "function") {
+    throw new Error("Sequence preset creation requires Premiere 26.3+.");
+  }
+  const before = await project.getSequences();
+  const beforeGuids = new Set(before.map(sequence => plainGuid(sequence.guid)));
+  const sequence = await project.createSequenceWithPresetPath(name,presetPath);
+  if (!sequence) throw new Error("Premiere did not return the created sequence.");
+  const guid = plainGuid(sequence.guid);
+  const after = await project.getSequences();
+  const matches = after.filter(candidate => plainGuid(candidate.guid) === guid);
+  let createdProjectItemId = null;
+  try {
+    const item = await sequence.getProjectItem();
+    createdProjectItemId = await projectItemId(item);
+  } catch {}
+  return {
+    created:true,
+    sequenceGuid:guid,
+    sequenceName:sequence.name || null,
+    projectItemId:createdProjectItemId,
+    presetPath,
+    sequenceWasNew:!beforeGuids.has(guid) && matches.length === 1,
+    activeSequenceChanged:false,
+    verificationStatus:!beforeGuids.has(guid) && matches.length === 1 ? "verified_readback" : "accepted_unverified"
+  };
+}
+
+async function getWorkArea() {
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+  const utils = premiere.WorkAreaUtils;
+  if (typeof utils?.getWorkAreaInPoint !== "function" || typeof utils?.getWorkAreaOutPoint !== "function") {
+    throw new Error("WorkAreaUtils requires Premiere 26.5+.");
+  }
+  const [input,output,end] = await Promise.all([
+    utils.getWorkAreaInPoint(sequence),
+    utils.getWorkAreaOutPoint(sequence),
+    sequence.getEndTime()
+  ]);
+  return {
+    sequenceGuid:plainGuid(sequence.guid),
+    sequenceName:sequence.name || null,
+    inSeconds:input?.seconds ?? null,
+    outSeconds:output?.seconds ?? null,
+    sequenceEndSeconds:end?.seconds ?? null,
+    apiSince:"26.5"
+  };
+}
+
+async function setWorkArea(argumentsValue) {
+  const inSeconds = Number(argumentsValue?.inSeconds);
+  const outSeconds = Number(argumentsValue?.outSeconds);
+  if (!Number.isFinite(inSeconds) || !Number.isFinite(outSeconds) || inSeconds < 0 || outSeconds <= inSeconds || outSeconds > 86400) {
+    throw new Error("Work area requires 0 <= in < out <= 86400 seconds.");
+  }
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+  const end = await sequence.getEndTime();
+  if (Number.isFinite(end?.seconds) && outSeconds > end.seconds + 0.001) {
+    throw new Error("Work area cannot extend past the inspected sequence end.");
+  }
+  const utils = premiere.WorkAreaUtils;
+  if (typeof utils?.setWorkAreaInOutPoints !== "function") {
+    throw new Error("WorkAreaUtils.setWorkAreaInOutPoints requires Premiere 26.5+.");
+  }
+  const accepted = Boolean(await utils.setWorkAreaInOutPoints(
+    sequence,
+    premiere.TickTime.createWithSeconds(inSeconds),
+    premiere.TickTime.createWithSeconds(outSeconds)
+  ));
+  if (!accepted) throw new Error("Premiere rejected the work-area update.");
+  const after = await getWorkArea();
+  const verified = Number.isFinite(after.inSeconds) && Number.isFinite(after.outSeconds)
+    && Math.abs(after.inSeconds-inSeconds) <= 0.001 && Math.abs(after.outSeconds-outSeconds) <= 0.001;
+  return {
+    accepted:true,
+    requested:{inSeconds,outSeconds},
+    observed:after,
+    verificationStatus:verified ? "verified_readback" : "accepted_unverified",
+    retrySafe:false
+  };
+}
+
 async function setSourceInOut(argumentsValue) {
   const itemId =
     typeof argumentsValue?.itemId === "string"
@@ -4806,6 +5062,16 @@ async function dispatchNativeCommand(command) {
       return await moveProjectItem(command.arguments || {});
     case "relink_media":
       return await relinkMedia(command.arguments || {});
+    case "inspect_media_interpretation":
+      return await inspectMediaInterpretation(command.arguments || {});
+    case "prepare_media_item":
+      return await prepareMediaItem(command.arguments || {});
+    case "create_sequence_from_preset":
+      return await createSequenceFromPreset(command.arguments || {});
+    case "get_work_area":
+      return await getWorkArea();
+    case "set_work_area":
+      return await setWorkArea(command.arguments || {});
     case "set_source_inout":
       return await setSourceInOut(command.arguments || {});
     case "clear_source_inout":
