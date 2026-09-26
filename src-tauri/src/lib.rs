@@ -35,6 +35,7 @@ mod premiere_dialogue;
 mod premiere_talking_head;
 mod premiere_transcript_rebuild;
 mod premiere_scene_detection;
+mod premiere_scene_rough_cut;
 mod premiere_layering;
 mod premiere_media_prep;
 mod premiere_delivery;
@@ -173,6 +174,7 @@ Media preparation uses stable ClipProjectItem interpretation actions (25.6+). Fr
 - premiere_apply_transcript_rebuild: {"request":"same structured request as plan","plan_snapshot":"copy exact plan_snapshot","expected":"copy exact source expectation from plan"}
 - premiere_cancel_transcript_rebuild: {}
 - premiere_plan_scene_detection: {"request":{"schema_version":1,"mode":"cuts|markers","targets":[{"track":0,"clip_index":2,"signature":"copy exact targetSignature from timeline inspection"}]}}
+- premiere_plan_scene_rough_cut: {"request":{"schema_version":1,"catalog_source":"scene_detection|explicit","shots":[{"id":"shot-001","item_id":"project item id","source_start":1,"source_end":3,"sequence_start":10,"sequence_end":12,"source_speed":1}],"selection":["shot-001"],"destination":{"mode":"explicit_empty_active_sequence","sequence_guid":"active empty sequence GUID","start_seconds":0,"video_track":0,"audio_track":0,"take_audio":true},"b_roll":[],"transitions":[],"request_review":true,"describe_shots":false}}
 - premiere_detect_scene_markers: {"request":{"schema_version":1,"mode":"markers","targets":[{"track":0,"clip_index":2,"signature":"exact inspected signature"}]},"expected":"copy exact expectation from scene plan"}
 - premiere_detect_scene_cuts: {"request":{"schema_version":1,"mode":"cuts","targets":[{"track":0,"clip_index":2,"signature":"exact inspected signature"}]},"expected":"copy exact expectation from scene plan"}
 Scene Edit Detection uses stable SequenceUtils.performSceneEditDetectionOnSelection and Constants.SequenceOperation.CREATEMARKER/APPLYCUT (API since Premiere 25.6). Only explicit video targets are selected. Mutation checkpoints the project, never blindly retries, attempts to restore the previous selection and verifies native marker/timeline deltas after the call. A native true without observable delta remains accepted_unverified, not runtime-verified.
@@ -483,6 +485,7 @@ enum ToolAction {
     PremiereCancelTranscriptRebuild,
     PremierePlanSceneDetection { request: premiere_scene_detection::Request },
     PremiereSceneDetection { request: premiere_scene_detection::Request },
+    PremierePlanSceneRoughCut { request: premiere_scene_rough_cut::Request },
     PremiereBatchFinish { targets: Vec<Value> },
     PremiereFinishMediaBatch { request: premiere_finishing::Request, provider: Option<ProviderContext> },
     PremiereBatchFinishCancel,
@@ -2402,6 +2405,18 @@ fn stage_tool(
                 ToolAction::PremierePlanSceneDetection { request },
                 "Plan native Premiere scene detection".into(),
                 "Verify explicit inspected video targets and stable native operation availability; no selection or timeline mutation.".into(),
+                RiskLevel::Low,
+            )
+        }
+        "premiere_plan_scene_rough_cut" => {
+            let request: premiere_scene_rough_cut::Request = serde_json::from_value(
+                proposal.arguments.get("request").cloned().unwrap_or(Value::Null)
+            ).map_err(|e| format!("Invalid scene rough-cut request: {e}"))?;
+            request.validate()?;
+            (
+                ToolAction::PremierePlanSceneRoughCut { request },
+                "Plan explicit scene-aware Premiere rough cut".into(),
+                "Validate a bounded shot catalog, explicit ordered selection and empty destination, then emit the existing Y2 assembly proposal; no edit or automatic shot choice.".into(),
                 RiskLevel::Low,
             )
         }
@@ -6916,6 +6931,20 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 exit_code:Some(0),
             })
         }
+        ToolAction::PremierePlanSceneRoughCut {request} => {
+            request.validate()?;
+            let timeline = premiere_bridge.request("inspect_timeline", json!({}), Duration::from_secs(25)).await?;
+            let captions = premiere_bridge.request("caption_tracks", json!({}), Duration::from_secs(10)).await?;
+            let mut plan = premiere_scene_rough_cut::build_plan(&request, &timeline, &captions)?;
+            plan["planner"] = json!("premiere_plan_scene_rough_cut");
+            Ok(ActionResult {
+                success:true,
+                tool,
+                stdout:serde_json::to_string_pretty(&plan).unwrap_or_else(|_| "{}".into()),
+                stderr:String::new(),
+                exit_code:Some(0),
+            })
+        }
         ToolAction::PremiereSceneDetection {request} => {
             request.validate()?;
             let capabilities = premiere_bridge.request("scene_detection_capabilities", json!({}), Duration::from_secs(10)).await?;
@@ -7115,8 +7144,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                             "startSeconds":source_in,
                             "endSeconds":source_out,
                             "hardBoundaries":true,
-                            "takeVideo":true,
-                            "takeAudio":true
+                            "takeVideo":shot.take_video,
+                            "takeAudio":shot.take_audio
                         }),
                         Duration::from_secs(45),
                     ).await {

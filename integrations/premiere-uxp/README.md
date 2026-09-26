@@ -245,3 +245,8 @@ The panel now inspects `FootageInterpretation` and applies stable ClipProjectIte
 ### Professional interchange and native frame delivery (AE)
 
 The panel now exposes stable ProjectConverter handoff for FCPXML/OTIO (26.2+) and AAF (26.3+), plus native sequence-frame export through Exporter.exportSequenceFrame (25.6+). Desktop staging validates output collision and typed AAF/frame inputs; outputs are observed after native acceptance and never silently retried. See `docs/PREMIERE_DELIVERY.md`.
+
+
+### Scene-aware rough-cut planning (AG)
+
+AB Scene Edit Detection results now include a normalized `shotCatalog` with deterministic IDs, source ranges when safely available, representative source-sequence midpoints and a rough-cut readiness flag. `premiere_plan_scene_rough_cut` accepts either that catalog or explicit caller ranges, requires an ordered shot-ID selection and an explicitly active empty destination sequence, then returns the existing `premiere_apply_assembly` proposal. Optional B-roll is explicit and video-only; optional review reuses the existing bounded review tool. No automatic shot ranking/selection, hidden mutation or second insertion engine is introduced. See `docs/PREMIERE_SCENE_ROUGH_CUT.md`.

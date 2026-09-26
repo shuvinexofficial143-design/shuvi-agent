@@ -482,3 +482,15 @@ Conservative **feature-code coverage after AE: approximately 96%** (before 93%),
 - Added Rust validation/order tests and Node structural safety coverage. Paired Premiere runtime evidence remains absent, so runtime verified stays **0%** and production ready remains **no**.
 
 Conservative **feature-code coverage after AF: approximately 97%** (before 96%). The one-point increase reflects the newly usable end-to-end composition of AA–AE capabilities, not tests/docs alone. Remaining high-value coding is optional AG scene-aware rough-cut construction plus any API-backed gaps discovered during real host acceptance; the dominant next step is paired Premiere compile/runtime testing and bug fixing.
+
+
+### Module AG — scene-aware rough-cut builder (2026-09-26)
+
+- Started from verified remote `main` `80ca7d12f8019cb71d6880c4adb4bbf5c04827da`, where AE and AF were already committed; neither module was rebuilt.
+- Added `premiere_plan_scene_rough_cut`: a read-only planner for a maximum 256-shot catalog, explicit ordered shot IDs, exact source ranges, and an explicitly supplied active empty destination sequence. It refuses any existing video/audio/caption content instead of risking the original edit.
+- AB scene-detection results now expose a normalized `shotCatalog` with deterministic IDs, project-item/source ranges when safely observable, representative midpoints and a `ready_for_rough_cut` flag. Retimed sources remain outside AG's executable 1x boundary.
+- Apply is not a new executor: AG emits one existing `premiere_apply_assembly` proposal. Y2 still performs hard-bounded subclip creation and insertion under its normal separate approval, checkpoint, cancellation and uncertainty semantics. Optional explicit B-roll uses the same engine as video-only source-range subclips.
+- Optional visual-description metadata points to the existing bounded review tool and limits fields to factual visibility/framing/lighting/text observations; it never identifies people, ranks shots or selects a “best” shot. Post-apply review is opt-in and capped at eight timestamps.
+- Added Rust planner tests and Node structural/safety tests. No paired Premiere host evidence is created by these tests; runtime verified remains **0%** until actual host acceptance.
+
+Conservative **feature-code coverage after AG: approximately 98%** (before 97%), counting the new usable scene-catalog→explicit-selection→rough-cut planning path. **Runtime verified: 0%. Production ready: no.** Remaining work is dominated by real paired-host compile/runtime acceptance and bug fixing, plus only API-backed gaps found during that process.

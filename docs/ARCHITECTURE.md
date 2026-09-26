@@ -375,3 +375,12 @@ Sequence preset creation validates the preset path in Rust before invoking `Proj
 ### Advanced professional edit-job integration (AF)
 
 `premiere_edit_job.rs` now accepts only explicit typed optional AA–AE payloads and converts them to a deterministic phase list. The coordinator still never executes a mutating phase itself: `premiere_edit_job_next` produces one normal Shuvi tool proposal, and `premiere_edit_job_record_action` advances state only from a matching audit receipt. Fresh native preflight is repeated for scene detection, AA transcript rebuild and AC layering before those proposals are emitted; stale exact targets fail closed. Direct W2 cuts and AA rebuild are mutually exclusive, and only one primary delivery path (media export, review frames or interchange) may appear in a job. See [PREMIERE_EDIT_JOBS.md](PREMIERE_EDIT_JOBS.md).
+
+
+### Scene-aware rough-cut planning (AG)
+
+`premiere_scene_rough_cut.rs` owns the bounded shot-catalog and explicit-selection contract. It reads only the active destination timeline/caption state, refuses non-empty destinations, and produces an existing `premiere_apply_assembly` proposal with exact project/sequence expectation. It does not dispatch native edits itself.
+
+AB native scene detection now includes a normalized `shotCatalog` in its result. Source ranges are marked rough-cut-ready only when the project item/range is observable and ordinary forward 1x semantics are preserved. AG can also consume caller-supplied explicit source ranges. The Y2 assembly engine remains the sole source-range insertion path; per-shot video/audio flags allow explicit video-only B-roll without creating a parallel executor.
+
+Optional visual analysis and post-apply review reuse the existing review surface. Descriptions are factual only, source-sequence sampling must occur while that source is active, and no model output chooses, ranks, or automatically applies shots.

@@ -22,6 +22,8 @@ pub struct Shot {
     pub mode:String,
     #[serde(default)] pub source_in:Option<f64>,
     #[serde(default)] pub source_out:Option<f64>,
+    #[serde(default="default_true")] pub take_video:bool,
+    #[serde(default="default_true")] pub take_audio:bool,
     #[serde(default)] pub role:Option<String>,
     #[serde(default)] pub beat_index:Option<u32>,
 }
@@ -51,6 +53,7 @@ pub struct Music {
 }
 
 fn insert_mode()->String{"insert".into()}
+fn default_true()->bool{true}
 
 #[derive(Debug,Clone,Deserialize,Serialize)]
 #[serde(deny_unknown_fields)]
@@ -121,6 +124,7 @@ impl Assembly {
         for (i,shot) in self.shots.iter().enumerate(){
             if !item_id_ok(&shot.item_id)||!bounded_time(shot.timeline_seconds)
                 ||shot.video_track>128||shot.audio_track>128
+                ||(!shot.take_video&&!shot.take_audio)
                 ||!matches!(shot.mode.as_str(),"insert"|"overwrite")
             {
                 return Err(format!("Shot {i} has invalid typed placement."));
@@ -196,7 +200,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn shot()->Shot{Shot{item_id:"exact".into(),timeline_seconds:1.0,video_track:1,audio_track:0,mode:"overwrite".into(),source_in:None,source_out:None,role:Some("b_roll".into()),beat_index:None}}
+    fn shot()->Shot{Shot{item_id:"exact".into(),timeline_seconds:1.0,video_track:1,audio_track:0,mode:"overwrite".into(),source_in:None,source_out:None,take_video:true,take_audio:true,role:Some("b_roll".into()),beat_index:None}}
     #[test]fn v1_stays_compatible_and_advanced_fields_require_v2(){
         let a=Assembly{schema_version:1,shots:vec![shot()],chapters:vec![],transitions:vec![],music:vec![],graphics:None,beats:vec![],review:false};
         a.validate().unwrap();

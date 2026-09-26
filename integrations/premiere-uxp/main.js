@@ -2054,8 +2054,8 @@ async function sceneSegmentsAfter(project, sequence, originals) {
     const items = await sortedClipItems(track);
     for (let clipIndex = 0; clipIndex < items.length; clipIndex += 1) {
       const item = items[clipIndex];
-      const [start,end,projectItem] = await Promise.all([
-        item.getStartTime(), item.getEndTime(), item.getProjectItem()
+      const [start,end,input,output,speed,projectItem] = await Promise.all([
+        item.getStartTime(), item.getEndTime(), item.getInPoint(), item.getOutPoint(), item.getSpeed(), item.getProjectItem()
       ]);
       const mediaId = await projectItemId(projectItem);
       if (mediaId !== original.mediaId || !Number.isFinite(start?.seconds) || !Number.isFinite(end?.seconds)) continue;
@@ -2072,6 +2072,9 @@ async function sceneSegmentsAfter(project, sequence, originals) {
         startSeconds: clippedStart,
         endSeconds: clippedEnd,
         durationSeconds: clippedEnd - clippedStart,
+        sourceInSeconds: Number.isFinite(input?.seconds) ? input.seconds : null,
+        sourceOutSeconds: Number.isFinite(output?.seconds) ? output.seconds : null,
+        speed: Number.isFinite(speed) ? speed : null,
         signature,
         source: "scene_cut"
       });
@@ -2180,17 +2183,45 @@ async function sceneEditDetection(argumentsValue) {
       const edges = [original.startSeconds,...times,original.endSeconds];
       for (let i=0;i+1<edges.length;i+=1) {
         if (segments.length >= 256) throw new Error("Scene marker segmentation exceeds the 256-segment bound.");
-        if (edges[i+1] > edges[i]) segments.push({
-          targetIndex,
-          track: original.track,
-          startSeconds:edges[i],
-          endSeconds:edges[i+1],
-          durationSeconds:edges[i+1]-edges[i],
-          source:"scene_marker"
-        });
+        if (edges[i+1] > edges[i]) {
+          const sourceReady = Number.isFinite(original.speed) && Math.abs(original.speed - 1) <= 0.0001;
+          segments.push({
+            targetIndex,
+            track: original.track,
+            clipIndex: original.clipIndex,
+            mediaId: original.mediaId,
+            startSeconds:edges[i],
+            endSeconds:edges[i+1],
+            durationSeconds:edges[i+1]-edges[i],
+            sourceInSeconds: sourceReady ? original.sourceInSeconds + (edges[i] - original.startSeconds) : null,
+            sourceOutSeconds: sourceReady ? original.sourceInSeconds + (edges[i+1] - original.startSeconds) : null,
+            speed: original.speed,
+            signature: original.signature,
+            source:"scene_marker"
+          });
+        }
       }
     }
   }
+
+  const shotCatalog = segments.map((row,index) => {
+    const speedReady = Number.isFinite(row.speed) && Math.abs(row.speed - 1) <= 0.0001;
+    const sourceReady = Boolean(row.mediaId)
+      && Number.isFinite(row.sourceInSeconds) && Number.isFinite(row.sourceOutSeconds)
+      && row.sourceOutSeconds > row.sourceInSeconds && speedReady;
+    return {
+      id:"shot-" + String(index + 1).padStart(3,"0"),
+      item_id:row.mediaId || null,
+      source_start:sourceReady ? row.sourceInSeconds : null,
+      source_end:sourceReady ? row.sourceOutSeconds : null,
+      sequence_start:row.startSeconds,
+      sequence_end:row.endSeconds,
+      source_speed:Number.isFinite(row.speed) ? row.speed : null,
+      representative_seconds:row.startSeconds + (row.endSeconds-row.startSeconds)/2,
+      source:row.source,
+      ready_for_rough_cut:sourceReady
+    };
+  });
 
   const verifiedDelta = mode === "cuts"
     ? afterClipCount > beforeClipCount || segments.length > originals.length
@@ -2214,6 +2245,7 @@ async function sceneEditDetection(argumentsValue) {
     markerObservationTruncated:sequenceMarkersBefore.truncated || sequenceMarkersAfter.truncated || sourceMarkersBefore.truncated || sourceMarkersAfter.truncated,
     segments,
     segmentCount:segments.length,
+    shotCatalog,
     reviewTimes,
     verificationStatus: nativeAccepted ? (verifiedDelta ? "verified_delta" : "accepted_unverified") : "native_rejected",
     runtimeVerified:false,
