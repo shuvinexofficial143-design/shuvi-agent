@@ -385,3 +385,13 @@ Continuation boundary: V2 implemented; W2, X2, Y2 and Z expansions are not compl
 - Added Rust unit coverage for edge trim/interior refusal/chapter mapping/A-V ripple refusal plus Node structural safety tests. This environment could not execute Cargo/Node locally, so test execution remains to be confirmed by CI or a development machine.
 
 Conservative feature-code estimate after W2: approximately **76%** (up from 75% because explicit transcript selections now produce real safe Premiere cuts/markers rather than only ducking plans). Runtime verified remains **0%** without a paired Premiere host; production ready: **no**. Next real feature priority: X2 mixed video/audio/graphics finishing, then Y2 advanced source-range assembly and Z end-to-end edit jobs.
+
+
+### Module X2 — mixed professional finishing (2026-09-26)
+
+- Added `premiere_finish_media_batch` / `premiere_finish_media_batch_cancel`: one bounded job can now apply exact per-clip video motion/color recipes, exact per-parameter audio automation, and an optional saved V2 graphics batch. Existing native planners/executors are reused; no duplicate low-level editing path was introduced.
+- Existing video/audio clips require one fresh exact expectation each. The workflow preflights every requested recipe against the native target, takes one durable project checkpoint before the first mutation, preserves per-target applied/skipped/failed/uncertain receipts, and stops later mutation on uncertain delivery.
+- Optional graphics reuse the saved mapping revision and V2 batch executor under the same checkpoint. Optional before/after review samples at most eight deterministic midpoints from actually affected video clips; review is comparative evidence, not a subjective quality guarantee.
+- Speed ramps, masks, multicam and inferred linked-media operations remain unsupported. Real paired Premiere acceptance remains pending.
+
+Conservative feature-code estimate after X2: approximately **78%**. Runtime verified remains **0%** without a paired Premiere host; production ready: **no**. Next real feature priority: Y2 advanced source-range assembly, then Z end-to-end edit jobs.

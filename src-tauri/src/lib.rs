@@ -32,6 +32,7 @@ use premiere_diagnostics::DiagnosticsLimits;
 mod premiere_subtitles;
 mod premiere_dialogue;
 mod premiere_talking_head;
+mod premiere_finishing;
 mod premiere_assembly;
 mod premiere_mogrt;
 mod premiere_graphics;
@@ -117,6 +118,8 @@ Available tools:
 - premiere_cancel_assembly: {}
 - premiere_batch_finish: {"targets":[{"track":0,"clip_index":2,"request":{"preset":"natural_correction","bindings":[{"role":"contrast","component_match_name":"exact","param_display_name":"exact","unit":1,"min":0,"max":2}]}}],"expected":{"project_guid":"...","sequence_guid":"...","clips":[{"kind":"video","track":0,"clip_index":2,"signature":"inspected"}]}}
 - premiere_batch_finish_cancel: {}
+- premiere_finish_media_batch: {"request":{"schema_version":1,"videos":[{"track":0,"clip_index":2,"request":{"preset":"natural_correction","bindings":[{"role":"contrast","component_match_name":"exact","param_display_name":"exact","unit":1,"min":0,"max":2}]}}],"audios":[],"graphics":null,"review":false},"expected":{"project_guid":"...","sequence_guid":"...","clips":[{"kind":"video","track":0,"clip_index":2,"signature":"..."}]}}
+- premiere_finish_media_batch_cancel: {}
 - premiere_save_graphics_template_mapping: {"mapping":{"schema_version":1,"name":"doctor_lower_third","template":{"source":"path","path":"C:/templates/doctor.mogrt"},"fields":[{"role":"name","component_match_name":"exact inspected native component","param_display_name":"exact inspected field","primitive_type":"string"}]},"track":0,"clip_index":0,"expected_revision":null,"expected":{"project_guid":"...","sequence_guid":"...","clips":[{"kind":"video","track":0,"clip_index":0,"signature":"inspected"}]}}
 - premiere_list_graphics_template_mappings: {}
 - premiere_delete_graphics_template_mapping: {"name":"doctor_lower_third","revision":1}
@@ -431,6 +434,7 @@ enum ToolAction {
     PremiereTranscriptDucking { item_id: String, target: ParameterTarget, request: AudioPlanRequest, transcript_offset: f64, music_start: f64, merge_gap: f64, apply: bool },
     PremiereTranscriptCuts { request: premiere_talking_head::Request, apply: bool, transcript_snapshot: Option<String> },
     PremiereBatchFinish { targets: Vec<Value> },
+    PremiereFinishMediaBatch { request: premiere_finishing::Request, provider: Option<ProviderContext> },
     PremiereBatchFinishCancel,
     PremiereSaveGraphicsMapping { mapping: premiere_graphics::Mapping, track: u32, clip_index: u32, expected_revision: Option<u32> },
     PremiereListGraphicsMappings,
@@ -765,6 +769,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_plan_video_recipe"
         | "premiere_batch_finish"
         | "premiere_batch_finish_cancel"
+        | "premiere_finish_media_batch"
+        | "premiere_finish_media_batch_cancel"
         | "premiere_save_graphics_template_mapping"
         | "premiere_list_graphics_template_mappings"
         | "premiere_delete_graphics_template_mapping"
@@ -2319,6 +2325,41 @@ fn stage_tool(
             (ToolAction::PremiereAssembly{assembly,apply:true},if true{"Assemble explicit Premiere shot list"}else{"Plan explicit Premiere shot list"}.into(),"Use inspected project items and existing typed insert/overwrite; no inferred source trims or media assets.".into(),if true{RiskLevel::High}else{RiskLevel::Low})
         }
         "premiere_cancel_assembly" => (ToolAction::PremiereAssemblyCancel,"Cancel Premiere assembly".into(),"Stop launching further shots after current native action.".into(),RiskLevel::Low),
+        "premiere_finish_media_batch" => {
+            let request: premiere_finishing::Request = serde_json::from_value(
+                proposal.arguments.get("request").cloned().unwrap_or(Value::Null)
+            ).map_err(|e| format!("Invalid mixed finishing request: {e}"))?;
+            request.validate()?;
+            let expected = premiere_expectation.as_ref().ok_or("Mixed finishing requires inspected project/sequence expectations.")?;
+            if expected.sequence_guid.is_none() || expected.clips.len() != request.expected_clip_count() {
+                return Err("Mixed finishing requires one exact expectation for every existing video/audio target.".into());
+            }
+            for video in &request.videos {
+                if !expected.clips.iter().any(|clip| clip.kind=="video" && clip.track==video.track && clip.clip_index==video.clip_index) {
+                    return Err("Mixed finishing video target is missing its exact expectation.".into());
+                }
+            }
+            for audio in &request.audios {
+                if !expected.clips.iter().any(|clip| clip.kind=="audio" && clip.track==audio.target.track && clip.clip_index==audio.target.clip_index) {
+                    return Err("Mixed finishing audio target is missing its exact expectation.".into());
+                }
+            }
+            let provider = if request.review {
+                Some(provider_context.ok_or("Review-enabled mixed finishing requires the active vision provider.")?)
+            } else { None };
+            (
+                ToolAction::PremiereFinishMediaBatch { request, provider },
+                "Finish mixed Premiere media batch".into(),
+                "Apply exact inspected video recipes, audio automation and optional mapped graphics under one checkpoint, with per-target results and bounded review samples.".into(),
+                RiskLevel::High,
+            )
+        }
+        "premiere_finish_media_batch_cancel" => (
+            ToolAction::PremiereBatchFinishCancel,
+            "Cancel mixed Premiere finishing".into(),
+            "Stop before the next finishing target; a current native command may still complete.".into(),
+            RiskLevel::Low,
+        ),
         "premiere_batch_finish" => {
             let targets=proposal.arguments.get("targets").and_then(Value::as_array).ok_or("Batch requires explicit targets.")?;
             if targets.is_empty()||targets.len()>32 {return Err("Batch finishing requires 1–32 targets.".into());}
@@ -6485,6 +6526,279 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let timeline=if results.iter().any(|r|r["status"]=="accepted") {premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(15)).await.ok()}else{None};
             let complete=results.len()==assembly.shots.len()&&results.iter().all(|r|r["status"]=="accepted")&&markers.len()==assembly.chapters.len()&&markers.iter().all(|m|m["status"]=="accepted")&&!state.assembly_cancelled.load(Ordering::Acquire)&&!uncertainty;
             Ok(ActionResult{success:complete,tool,stdout:json!({"backup":backup,"complete":complete,"uncertain":uncertainty,"cancelled":state.assembly_cancelled.load(Ordering::Acquire),"shots":results,"chapters":markers,"timeline_reinspected":timeline.is_some(),"timeline":timeline,"review_recommended":true}).to_string(),stderr:String::new(),exit_code:Some(if complete{0}else{1})})
+        }
+        ToolAction::PremiereFinishMediaBatch { request, provider } => {
+            if state.finishing_running.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err() {
+                return Err("Another finishing batch is active.".into());
+            }
+            let _guard = AcceptanceProbeGuard(&state.finishing_running);
+            state.finishing_cancelled.store(false, Ordering::Release);
+            let expected = premiere_bridge.expected.ok_or("Mixed finishing requires inspected Premiere expectations.")?.clone();
+
+            let timeline = premiere_bridge.request("inspect_timeline", json!({}), Duration::from_secs(25)).await?;
+            let sample_times = if request.review {
+                premiere_finishing::review_times(&timeline, &request.videos)?
+            } else {
+                Vec::new()
+            };
+
+            let mut before_review = Vec::new();
+            if let Some(provider) = &provider {
+                for seconds in &sample_times {
+                    if state.finishing_cancelled.load(Ordering::Acquire) { break; }
+                    let observation = async {
+                        premiere_bridge.request("set_playhead", json!({"seconds":seconds}), Duration::from_secs(8)).await?;
+                        tokio::time::sleep(Duration::from_millis(350)).await;
+                        let path = capture_screen_png()?;
+                        let analysis = analyze_png_with_provider(
+                            provider,
+                            request.review_prompt.as_deref().unwrap_or("Review professional finishing consistency."),
+                            &path,
+                        ).await?;
+                        Ok::<Value,String>(json!({"seconds":seconds,"analysis":analysis}))
+                    }.await;
+                    match observation {
+                        Ok(value) => before_review.push(json!({"status":"reviewed","result":value})),
+                        Err(error) => before_review.push(json!({"status":"failed","reason":error.chars().take(240).collect::<String>()})),
+                    }
+                }
+            }
+
+            let mut video_plans: Vec<(u32,u32,PremiereExpectation,Value)> = Vec::new();
+            let mut audio_plans: Vec<(ParameterTarget,PremiereExpectation,Value)> = Vec::new();
+            let mut video_results = Vec::new();
+            let mut audio_results = Vec::new();
+            let mut uncertain = false;
+
+            for video in &request.videos {
+                let clip = expected.clips.iter().find(|clip|
+                    clip.kind=="video" && clip.track==video.track && clip.clip_index==video.clip_index
+                ).ok_or("Missing mixed finishing video guard.")?.clone();
+                let guard = PremiereExpectation {
+                    project_guid: expected.project_guid.clone(),
+                    project_path: expected.project_path.clone(),
+                    sequence_guid: expected.sequence_guid.clone(),
+                    clips: vec![clip],
+                };
+                let client = PremiereClient { bridge:&state.premiere_bridge, expected:Some(&guard) };
+                match client.request(
+                    "plan_video_recipe",
+                    json!({"track":video.track,"clipIndex":video.clip_index,"request":video.request}),
+                    Duration::from_secs(30),
+                ).await {
+                    Ok(plan)
+                        if plan.get("expected")==Some(&serde_json::to_value(&guard).map_err(|e|e.to_string())?)
+                        && plan.get("skipped").and_then(Value::as_array).is_some_and(Vec::is_empty)
+                        && plan.get("settings").and_then(Value::as_array).is_some_and(|settings|!settings.is_empty()&&settings.len()<=64) =>
+                    {
+                        video_plans.push((video.track,video.clip_index,guard,plan));
+                    }
+                    Ok(_) => video_results.push(json!({
+                        "track":video.track,"clip_index":video.clip_index,"status":"skipped",
+                        "reason":"Native video plan is incomplete, stale, or has incompatible bindings."
+                    })),
+                    Err(error) => video_results.push(json!({
+                        "track":video.track,"clip_index":video.clip_index,"status":"failed",
+                        "reason":error.chars().take(240).collect::<String>()
+                    })),
+                }
+            }
+
+            for audio in &request.audios {
+                let clip = expected.clips.iter().find(|clip|
+                    clip.kind=="audio" && clip.track==audio.target.track && clip.clip_index==audio.target.clip_index
+                ).ok_or("Missing mixed finishing audio guard.")?.clone();
+                let guard = PremiereExpectation {
+                    project_guid: expected.project_guid.clone(),
+                    project_path: expected.project_path.clone(),
+                    sequence_guid: expected.sequence_guid.clone(),
+                    clips: vec![clip],
+                };
+                let client = PremiereClient { bridge:&state.premiere_bridge, expected:Some(&guard) };
+                let mut arguments = audio.target.bridge_arguments();
+                arguments["request"] = serde_json::to_value(&audio.request).map_err(|e|e.to_string())?;
+                match client.request("plan_audio_automation", arguments, Duration::from_secs(30)).await {
+                    Ok(plan)
+                        if plan.get("expected")==Some(&serde_json::to_value(&guard).map_err(|e|e.to_string())?)
+                        && plan.get("settings").and_then(Value::as_array).is_some_and(|settings|!settings.is_empty()&&settings.len()<=64) =>
+                    {
+                        audio_plans.push((audio.target.clone(),guard,plan));
+                    }
+                    Ok(_) => audio_results.push(json!({
+                        "track":audio.target.track,"clip_index":audio.target.clip_index,"status":"skipped",
+                        "reason":"Native audio plan is incomplete or stale."
+                    })),
+                    Err(error) => audio_results.push(json!({
+                        "track":audio.target.track,"clip_index":audio.target.clip_index,"status":"failed",
+                        "reason":error.chars().take(240).collect::<String>()
+                    })),
+                }
+            }
+
+            let saved_graphics = if let Some(batch) = &request.graphics {
+                let saved = premiere_graphics::list(&graphics_library_path(app)?)?
+                    .into_iter()
+                    .find(|saved| saved.mapping.name==batch.mapping)
+                    .ok_or("Unknown mixed finishing graphics mapping.")?;
+                batch.resolve(&saved)?;
+                saved.mapping.validate_local_template()?;
+                Some(saved)
+            } else {
+                None
+            };
+
+            let has_mutation = !video_plans.is_empty() || !audio_plans.is_empty() || request.graphics.is_some();
+            let checkpoint = if has_mutation {
+                Some(backup_premiere_project(&premiere_bridge).await?)
+            } else {
+                None
+            };
+
+            for (track,clip_index,guard,plan) in video_plans {
+                if state.finishing_cancelled.load(Ordering::Acquire) { break; }
+                let client = PremiereClient { bridge:&state.premiere_bridge, expected:Some(&guard) };
+                let settings = plan.get("settings").and_then(Value::as_array).ok_or("Video finishing settings disappeared.")?;
+                match client.request(
+                    "apply_video_recipe",
+                    json!({"track":track,"clipIndex":clip_index,"settings":settings}),
+                    Duration::from_secs(45),
+                ).await {
+                    Ok(value) => video_results.push(json!({"track":track,"clip_index":clip_index,"status":"applied","native_result":value})),
+                    Err(error) => {
+                        uncertain = error.contains("unknown")||error.contains("timed out")||error.contains("timeout");
+                        video_results.push(json!({
+                            "track":track,"clip_index":clip_index,
+                            "status":if uncertain{"uncertain"}else{"failed"},
+                            "reason":error.chars().take(240).collect::<String>()
+                        }));
+                        if uncertain { break; }
+                    }
+                }
+            }
+
+            if !uncertain {
+                for (target,guard,plan) in audio_plans {
+                    if state.finishing_cancelled.load(Ordering::Acquire) { break; }
+                    let client = PremiereClient { bridge:&state.premiere_bridge, expected:Some(&guard) };
+                    let settings = plan.get("settings").and_then(Value::as_array).ok_or("Audio finishing settings disappeared.")?;
+                    match client.request(
+                        "apply_audio_recipe",
+                        json!({"track":target.track,"clipIndex":target.clip_index,"settings":settings}),
+                        Duration::from_secs(45),
+                    ).await {
+                        Ok(value) => audio_results.push(json!({
+                            "track":target.track,"clip_index":target.clip_index,"status":"applied","native_result":value
+                        })),
+                        Err(error) => {
+                            uncertain = error.contains("unknown")||error.contains("timed out")||error.contains("timeout");
+                            audio_results.push(json!({
+                                "track":target.track,"clip_index":target.clip_index,
+                                "status":if uncertain{"uncertain"}else{"failed"},
+                                "reason":error.chars().take(240).collect::<String>()
+                            }));
+                            if uncertain { break; }
+                        }
+                    }
+                }
+            }
+
+            let mut graphics_result = Value::Null;
+            if !uncertain && !state.finishing_cancelled.load(Ordering::Acquire) {
+                if let (Some(batch),Some(saved)) = (&request.graphics,saved_graphics.as_ref()) {
+                    let project_guard = PremiereExpectation {
+                        project_guid: expected.project_guid.clone(),
+                        project_path: expected.project_path.clone(),
+                        sequence_guid: expected.sequence_guid.clone(),
+                        clips: Vec::new(),
+                    };
+                    let graphics_client = PremiereClient { bridge:&state.premiere_bridge, expected:Some(&project_guard) };
+                    let checkpoint_path = checkpoint.clone().ok_or("Mixed finishing checkpoint missing before graphics.")?;
+                    graphics_result = premiere_graphics::run_batch(batch,saved,&state.finishing_cancelled,|step| {
+                        let client = &graphics_client;
+                        let checkpoint_path = checkpoint_path.clone();
+                        async move {
+                            match step {
+                                premiere_graphics::BatchStep::Checkpoint => Ok(json!(checkpoint_path)),
+                                premiere_graphics::BatchStep::Insert(arguments) =>
+                                    client.request("insert_mapped_graphic",arguments,Duration::from_secs(90)).await,
+                            }
+                        }
+                    }).await?;
+                    uncertain = graphics_result.get("uncertain").and_then(Value::as_bool).unwrap_or(true);
+                }
+            }
+
+            let cancelled = state.finishing_cancelled.load(Ordering::Acquire);
+            let project_guard = PremiereExpectation {
+                project_guid: expected.project_guid.clone(),
+                project_path: expected.project_path.clone(),
+                sequence_guid: expected.sequence_guid.clone(),
+                clips: Vec::new(),
+            };
+            let post_client = PremiereClient { bridge:&state.premiere_bridge, expected:Some(&project_guard) };
+            let post_timeline = post_client.request("inspect_timeline",json!({}),Duration::from_secs(25)).await.ok();
+
+            let mut after_review = Vec::new();
+            if !uncertain && !cancelled {
+                if let Some(provider) = &provider {
+                    for seconds in &sample_times {
+                        let observation = async {
+                            post_client.request("set_playhead",json!({"seconds":seconds}),Duration::from_secs(8)).await?;
+                            tokio::time::sleep(Duration::from_millis(350)).await;
+                            let path = capture_screen_png()?;
+                            let analysis = analyze_png_with_provider(
+                                provider,
+                                request.review_prompt.as_deref().unwrap_or("Review professional finishing consistency."),
+                                &path,
+                            ).await?;
+                            Ok::<Value,String>(json!({"seconds":seconds,"analysis":analysis}))
+                        }.await;
+                        match observation {
+                            Ok(value) => after_review.push(json!({"status":"reviewed","result":value})),
+                            Err(error) => after_review.push(json!({"status":"failed","reason":error.chars().take(240).collect::<String>()})),
+                        }
+                    }
+                }
+            }
+
+            let video_applied = video_results.iter().filter(|row|row["status"]=="applied").count();
+            let audio_applied = audio_results.iter().filter(|row|row["status"]=="applied").count();
+            let graphics_complete = request.graphics.is_none()
+                || graphics_result.get("complete").and_then(Value::as_bool)==Some(true);
+            let all_video_applied = video_applied==request.videos.len();
+            let all_audio_applied = audio_applied==request.audios.len();
+            let review_complete = !request.review
+                || (before_review.len()==sample_times.len()
+                    && after_review.len()==sample_times.len()
+                    && before_review.iter().all(|row|row["status"]=="reviewed")
+                    && after_review.iter().all(|row|row["status"]=="reviewed"));
+            let success = all_video_applied && all_audio_applied && graphics_complete
+                && review_complete && !uncertain && !cancelled;
+
+            Ok(ActionResult {
+                success,
+                tool,
+                stdout: json!({
+                    "schema_version":1,
+                    "checkpoint":checkpoint,
+                    "cancelled":cancelled,
+                    "uncertain":uncertain,
+                    "video":{"requested":request.videos.len(),"applied":video_applied,"results":video_results},
+                    "audio":{"requested":request.audios.len(),"applied":audio_applied,"results":audio_results},
+                    "graphics":graphics_result,
+                    "review":{
+                        "sample_times":sample_times,
+                        "before":before_review,
+                        "after":after_review,
+                        "subjective_quality_guaranteed":false
+                    },
+                    "post_timeline_inspected":post_timeline.is_some(),
+                    "post_timeline":post_timeline,
+                    "unsupported_features":["speed_ramp","masks","multicam","inferred_linked_media"]
+                }).to_string(),
+                stderr:String::new(),
+                exit_code:Some(if success{0}else{1}),
+            })
         }
         ToolAction::PremiereBatchFinishCancel => {
             state.finishing_cancelled.store(true,Ordering::Release);
