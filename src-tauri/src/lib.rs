@@ -33,6 +33,7 @@ mod premiere_subtitles;
 mod premiere_dialogue;
 mod premiere_assembly;
 mod premiere_mogrt;
+mod premiere_graphics;
 use premiere_mogrt::GraphicsRequest;
 mod premiere_audio;
 use premiere_audio::AudioPlanRequest;
@@ -113,6 +114,12 @@ Available tools:
 - premiere_cancel_assembly: {}
 - premiere_batch_finish: {"targets":[{"track":0,"clip_index":2,"request":{"preset":"natural_correction","bindings":[{"role":"contrast","component_match_name":"exact","param_display_name":"exact","unit":1,"min":0,"max":2}]}}],"expected":{"project_guid":"...","sequence_guid":"...","clips":[{"kind":"video","track":0,"clip_index":2,"signature":"inspected"}]}}
 - premiere_batch_finish_cancel: {}
+- premiere_save_graphics_template_mapping: {"mapping":{"schema_version":1,"name":"doctor_lower_third","template":{"source":"path","path":"C:/templates/doctor.mogrt"},"fields":[{"role":"name","component_match_name":"exact inspected native component","param_display_name":"exact inspected field","primitive_type":"string"}]},"track":0,"clip_index":0,"expected_revision":null,"expected":{"project_guid":"...","sequence_guid":"...","clips":[{"kind":"video","track":0,"clip_index":0,"signature":"inspected"}]}}
+- premiere_list_graphics_template_mappings: {}
+- premiere_delete_graphics_template_mapping: {"name":"doctor_lower_third","revision":1}
+- premiere_batch_graphics: {"batch":{"mapping":"doctor_lower_third","revision":1,"video_track":1,"audio_track":1,"items":[{"seconds":5,"fields":{"name":"Dr. A"},"duration_seconds":2}]},"expected":{"project_guid":"...","sequence_guid":"...","clips":[]}}
+- premiere_batch_lower_thirds: {"batch":{"mapping":"doctor_lower_third","revision":1,"video_track":1,"audio_track":1,"items":[{"seconds":5,"fields":{"name":"Dr. A"}}]},"expected":{"project_guid":"...","sequence_guid":"...","clips":[]}}
+- premiere_cancel_graphics_batch: {}
 - premiere_plan_video_recipe: {"track":0,"clip_index":0,"request":{"preset":"zoom_in","start_seconds":0,"end_seconds":2,"bindings":[{"role":"scale","component_match_name":"discovered","param_display_name":"discovered","start_value":100,"end_value":110}]}}
 - premiere_timeline_capabilities: {}
 - premiere_timeline: {}
@@ -217,6 +224,7 @@ Rules:
 - For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_timeline/premiere_list_items/premiere_project_tree for inspection, premiere_set_playhead for non-destructive navigation, premiere_inspect_frame for playhead-positioned visual review and premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media/premiere_insert_media/premiere_save_project for native editing. premiere_insert_media, premiere_trim_clip, premiere_roll_edit, premiere_move_clip, premiere_clone_clip, premiere_delete_clip, premiere_add_video_transition, premiere_add_video_effect, premiere_set_effect_param, premiere_add_effect_keyframe, premiere_add_audio_effect, premiere_set_audio_effect_param and premiere_add_audio_effect_keyframe are high risk because they change the timeline or effect state; premiere_insert_mogrt_path and premiere_insert_mogrt_library are high risk because they add graphics to the timeline; premiere_export_sequence is high risk because it writes media and may start encoding; inspect the timeline first when practical. Use UI/vision fallbacks only for features not exposed through the bridge. Major sequence creation and timeline insert/overwrite actions automatically save and copy the current .prproj into a sibling 'Shuvi Backups' folder before editing; the edit is refused if a saved local project cannot be checkpointed.
 - Project diagnostics are read-only and bounded. Inspect traversal/truncation and unknown status fields before interpreting counts; proxy attachment does not establish proxy health and duplicate path candidates are not authorization to delete/relink.
 - Graphics plans must use inspected primitive types without coercion or semantic-name inference. Copy settings and expected into premiere_apply_video_recipe; skipped fields were not applied.
+- Saved graphics mappings require an inspected reference clip and explicit caller-defined roles; saving checks every native field. Template provenance is caller-supplied, not inferred. List mappings to obtain the revision before updating/deleting/applying. Batch graphics and lower thirds share one executor for title/chapter/CTA/price/location cards. Use clear existing video/audio tracks. All mapped roles need values. Duration only shortens video-only native graphics; no extension or inferred linked audio. Batches checkpoint once and return partial results; uncertain delivery must never be blindly retried.
 - Premiere tools accept optional arguments.expected: {project_guid, project_path?, sequence_guid?, clips:[{kind,track,clip_index,signature}]}. Copy project/sequence identity and each clip targetSignature from premiere_timeline. Include every edited clip for clip guards. Stale expectations are rejected; legacy callers without expected remain compatible. Never discard an expectation after rejection to force an edit.
 - Inspect premiere_inspect_keyframes before premiere_edit_keyframe and copy the returned targetSignature and exact native ticks. A stale target is rejected. Keyframe edits are high-risk and require a project checkpoint. Do not convert keyframe ticks to timeline seconds.
 - premiere_plan_speed is a read-only planner. Supply only fields for the chosen mode. It returns applied=false/executable=false because the reviewed UXP API has no documented speed write action. Never describe a plan as an applied edit, and never invoke blind UI to execute it. Inspect timeline/clip speed first.
@@ -420,6 +428,11 @@ enum ToolAction {
     PremiereTranscriptDucking { item_id: String, target: ParameterTarget, request: AudioPlanRequest, transcript_offset: f64, music_start: f64, merge_gap: f64, apply: bool },
     PremiereBatchFinish { targets: Vec<Value> },
     PremiereBatchFinishCancel,
+    PremiereSaveGraphicsMapping { mapping: premiere_graphics::Mapping, track: u32, clip_index: u32, expected_revision: Option<u32> },
+    PremiereListGraphicsMappings,
+    PremiereDeleteGraphicsMapping { name: String, revision: u32 },
+    PremiereBatchGraphics { batch: premiere_graphics::Batch },
+    PremiereCancelGraphicsBatch,
     PremiereAssembly { assembly: premiere_assembly::Assembly, apply: bool },
     PremiereAssemblyCancel,
     PremierePopulateMogrt { track: u32, clip_index: u32, request: GraphicsRequest },
@@ -530,6 +543,8 @@ struct ActionState {
     acceptance_probe_running: AtomicBool,
     finishing_running: AtomicBool,
     finishing_cancelled: AtomicBool,
+    graphics_running: AtomicBool,
+    graphics_cancelled: AtomicBool,
     assembly_running: AtomicBool,
     assembly_cancelled: AtomicBool,
 }
@@ -744,6 +759,12 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_plan_video_recipe"
         | "premiere_batch_finish"
         | "premiere_batch_finish_cancel"
+        | "premiere_save_graphics_template_mapping"
+        | "premiere_list_graphics_template_mappings"
+        | "premiere_delete_graphics_template_mapping"
+        | "premiere_batch_graphics"
+        | "premiere_batch_lower_thirds"
+        | "premiere_cancel_graphics_batch"
         | "premiere_plan_assembly"
         | "premiere_apply_assembly"
         | "premiere_cancel_assembly"
@@ -2156,6 +2177,36 @@ fn stage_tool(
             if expected.sequence_guid.is_none() || expected.clips.len()!=1 || !expected.clips.iter().any(|c|c.kind=="video"&&c.track==track&&c.clip_index==clip_index) {return Err("Exact inspected graphics clip expectation required.".into());}
             (ToolAction::PremierePopulateMogrt{track,clip_index,request},"Populate exact Premiere graphics fields".into(),format!("Set {} inspected fields on V{track} clip #{clip_index}; MOGRT identity must be inspected.",proposal.arguments["request"]["fields"].as_array().map_or(0,Vec::len)),RiskLevel::High)
         }
+        "premiere_save_graphics_template_mapping" => {
+            let mapping: premiere_graphics::Mapping = serde_json::from_value(proposal.arguments["mapping"].clone()).map_err(|e| e.to_string())?;
+            mapping.validate_local_template()?;
+            let track = proposal.arguments["track"].as_u64().filter(|v| *v <= 128).ok_or("Exact graphics track required.")? as u32;
+            let clip_index = proposal.arguments["clip_index"].as_u64().filter(|v| *v <= 10000).ok_or("Exact graphics clip required.")? as u32;
+            let expected_revision: Option<u32> = serde_json::from_value(proposal.arguments["expected_revision"].clone()).map_err(|e| e.to_string())?;
+            let expected = premiere_expectation.as_ref().ok_or("Save mapping requires inspected reference clip expectation.")?;
+            if expected.clips.len() != 1 || expected.clips[0].kind != "video" || expected.clips[0].track != track || expected.clips[0].clip_index != clip_index {
+                return Err("Mapping reference must identify exactly one inspected video clip.".into());
+            }
+            (ToolAction::PremiereSaveGraphicsMapping {mapping,track,clip_index,expected_revision}, "Save inspected graphics mapping".into(), "Read native reference fields and persist explicit roles/template source locally; existing mappings require exact revision.".into(), RiskLevel::Medium)
+        }
+        "premiere_list_graphics_template_mappings" => (ToolAction::PremiereListGraphicsMappings, "List saved graphics mappings".into(), "Read bounded local template selectors, explicit roles and revisions.".into(), RiskLevel::Low),
+        "premiere_delete_graphics_template_mapping" => {
+            let name = proposal.arguments["name"].as_str().ok_or("Mapping name required.")?.to_owned();
+            premiere_graphics::validate_name(&name)?;
+            let revision = proposal.arguments["revision"].as_u64().filter(|r| *r > 0 && *r <= u32::MAX as u64).ok_or("Exact mapping revision required.")? as u32;
+            (ToolAction::PremiereDeleteGraphicsMapping {name,revision}, "Delete saved graphics mapping".into(), "Remove one exact local mapping revision; source MOGRT and timeline clips remain untouched.".into(), RiskLevel::Medium)
+        }
+        "premiere_batch_graphics" => {
+            let batch = stage_graphics_batch(&proposal.arguments["batch"], premiere_expectation.as_ref())?;
+            let detail = format!("Insert and populate {} graphics using '{}' revision {}; one project checkpoint, per-item results and no automatic rollback.", batch.items.len(), batch.mapping, batch.revision);
+            (ToolAction::PremiereBatchGraphics {batch}, "Insert mapped graphics batch".into(), detail, RiskLevel::High)
+        }
+        "premiere_batch_lower_thirds" => {
+            let batch = stage_graphics_batch(&proposal.arguments["batch"], premiere_expectation.as_ref())?;
+            let detail = format!("Insert and populate {} lower thirds using '{}' revision {}; one project checkpoint and explicit native targets.", batch.items.len(), batch.mapping, batch.revision);
+            (ToolAction::PremiereBatchGraphics {batch}, "Insert mapped lower thirds".into(), detail, RiskLevel::High)
+        }
+        "premiere_cancel_graphics_batch" => (ToolAction::PremiereCancelGraphicsBatch, "Cancel graphics batch".into(), "Stop between graphics; the current native item may still finish.".into(), RiskLevel::Low),
         "premiere_plan_mogrt_recipe" => {
             let track = proposal.arguments.get("track").and_then(Value::as_u64).filter(|v| *v <= 128).ok_or("Track must be 0–128.")? as u32;
             let clip_index = proposal.arguments.get("clip_index").and_then(Value::as_u64).filter(|v| *v <= 10000).ok_or("Clip index must be 0–10000.")? as u32;
@@ -5135,6 +5186,18 @@ fn premiere_recipes_path(app: &AppHandle) -> Result<std::path::PathBuf, String> 
     Ok(dir.join("recipes.json"))
 }
 
+fn graphics_library_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(premiere_recipes_path(app)?.with_file_name("graphics-mappings.json"))
+}
+
+fn stage_graphics_batch(value: &Value, expected: Option<&PremiereExpectation>) -> Result<premiere_graphics::Batch, String> {
+    let batch: premiere_graphics::Batch = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+    batch.validate()?;
+    let expected = expected.ok_or("Graphics batch requires inspected project/sequence expectation.")?;
+    if expected.sequence_guid.is_none() || !expected.clips.is_empty() { return Err("Graphics insertion requires project/sequence expectation without old clip indexes.".into()); }
+    Ok(batch)
+}
+
 fn read_premiere_recipes(app: &AppHandle) -> Result<Vec<PremiereSavedRecipe>, String> {
     let path = premiere_recipes_path(app)?;
     if !path.exists() {
@@ -6381,6 +6444,57 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
         ToolAction::PremiereBatchFinishCancel => {
             state.finishing_cancelled.store(true,Ordering::Release);
             Ok(ActionResult{success:true,tool,stdout:json!({"cancel_requested":true,"running":state.finishing_running.load(Ordering::Acquire)}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereSaveGraphicsMapping {mapping,track,clip_index,expected_revision} => {
+            mapping.validate_local_template()?;
+            let inspected = premiere_bridge.request("inspect_mogrt_properties", json!({"track":track,"clipIndex":clip_index}), Duration::from_secs(30)).await?;
+            let expected = premiere_bridge.expected.ok_or("Reference clip expectation missing.")?;
+            let native: PremiereExpectation = serde_json::from_value(inspected["expected"].clone()).map_err(|e| e.to_string())?;
+            if native.project_guid != expected.project_guid || native.sequence_guid != expected.sequence_guid
+                || native.clips.len() != 1 || native.clips[0].signature != expected.clips[0].signature {
+                return Err("Graphics reference changed during inspection; mapping not saved.".into());
+            }
+            mapping.validate_inspection(&inspected)?;
+            let saved = premiere_graphics::save(&graphics_library_path(app)?, mapping, expected_revision)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"saved":saved,"template_identity":"caller_supplied","roles_inferred":false}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereListGraphicsMappings => {
+            let entries = premiere_graphics::list(&graphics_library_path(app)?)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"mappings":entries,"limits":{"mappings":64,"bytes":98304,"batch_items":32}}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereDeleteGraphicsMapping {name,revision} => {
+            premiere_graphics::delete(&graphics_library_path(app)?, &name, revision)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"deleted":name,"revision":revision}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereCancelGraphicsBatch => {
+            state.graphics_cancelled.store(true, Ordering::Release);
+            Ok(ActionResult {success:true,tool,stdout:json!({"cancel_requested":true,"running":state.graphics_running.load(Ordering::Acquire)}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereBatchGraphics {batch} => {
+            if state.graphics_running.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err() { return Err("Another graphics batch is active.".into()); }
+            let _guard = AcceptanceProbeGuard(&state.graphics_running);
+            state.graphics_cancelled.store(false, Ordering::Release);
+            let expected = premiere_bridge.expected.ok_or("Graphics project/sequence expectation missing.")?;
+            stage_graphics_batch(&serde_json::to_value(&batch).map_err(|e| e.to_string())?, Some(expected))?;
+            let saved = premiere_graphics::list(&graphics_library_path(app)?)?.into_iter().find(|s| s.mapping.name == batch.mapping).ok_or("Unknown graphics mapping.")?;
+            batch.resolve(&saved)?;
+            saved.mapping.validate_local_template()?;
+            let timeline = premiere_bridge.request("inspect_timeline", json!({}), Duration::from_secs(30)).await?;
+            if timeline["truncated"] != false || !timeline["videoTracks"].as_array().is_some_and(|t| t.iter().any(|t| t["index"] == batch.video_track))
+                || !timeline["audioTracks"].as_array().is_some_and(|t| t.iter().any(|t| t["index"] == batch.audio_track)) {
+                return Err("Graphics preflight needs a complete timeline and existing destination tracks.".into());
+            }
+            let result = premiere_graphics::run_batch(&batch, &saved, &state.graphics_cancelled, |step| {
+                let client = &premiere_bridge;
+                async move {
+                    match step {
+                        premiere_graphics::BatchStep::Checkpoint => Ok(json!(backup_premiere_project(client).await?)),
+                        premiere_graphics::BatchStep::Insert(arguments) => client.request("insert_mapped_graphic", arguments, Duration::from_secs(90)).await,
+                    }
+                }
+            }).await?;
+            let success = result["complete"] == true;
+            Ok(ActionResult {success,tool,stdout:result.to_string(),stderr:String::new(),exit_code:Some(if success {0} else {1})})
         }
         ToolAction::PremiereBatchFinish{targets} => {
             if state.finishing_running.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){return Err("Another finishing batch is active.".into());}
@@ -8418,7 +8532,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 "checkpoint_recovery":recovery_count>0,"stale_expectation_host_tested":false,
                 "export_completion_verified":export_complete>0});
             let by_state=|state:&str|report.capabilities.iter().filter(|c|c.state==state).map(|c|c.name.as_str()).collect::<Vec<_>>();
-            Ok(ActionResult {success:true,tool,stdout:json!({"code_implementation_estimate_pct":74,
+            Ok(ActionResult {success:true,tool,stdout:json!({"code_implementation_estimate_pct":75,
                 "node_mock_verified_capabilities":report.capabilities.iter().filter(|c|c.code_tested).map(|c|c.name.as_str()).collect::<Vec<_>>(),
                 "node_test_run_attestation_persisted":false,"rust_verified":false,
                 "premiere_runtime_verified_count":native,"premiere_runtime_capability_count":total,

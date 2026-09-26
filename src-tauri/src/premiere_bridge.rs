@@ -35,6 +35,7 @@ pub const ALLOWED_ACTIONS: &[&str] = &[
     "attach_proxy",
     "insert_mogrt_path",
     "insert_mogrt_library",
+    "insert_mapped_graphic",
     "import_media",
     "create_sequence_from_media",
     "create_subsequence",

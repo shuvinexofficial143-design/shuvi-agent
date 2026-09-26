@@ -38,6 +38,8 @@ for (const path of [
   "src-tauri/src/premiere_diagnostics.rs",
   "integrations/premiere-uxp/project-diagnostics.js",
   "src-tauri/src/premiere_mogrt.rs",
+  "src-tauri/src/premiere_graphics.rs",
+  "integrations/premiere-uxp/graphics-batch.js",
   "src-tauri/src/premiere_subtitles.rs",
   "src-tauri/src/premiere_dialogue.rs",
   "src-tauri/src/premiere_assembly.rs",

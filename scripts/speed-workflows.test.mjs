@@ -53,7 +53,7 @@ test("native route reads the inspected clip and never starts an edit transaction
   const premiere = { Project: { getActiveProject: async () => project }, Constants: { TrackItemType: { CLIP: 1 } } };
   const panel = { require: name => {
     if (name === "./project-diagnostics.js") return {};
-    if (name === "./caption-workflows.js" || name === "./mogrt-workflows.js") return {};
+    if (name === "./caption-workflows.js" || name === "./mogrt-workflows.js" || name === "./graphics-batch.js") return {};
     if (name === "./audio-plans.js") return {};
     if (name === "./recipe-plans.js") return {};
     if (name === "uxp") return { entrypoints: { setup() {} } };

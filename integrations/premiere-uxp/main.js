@@ -8,6 +8,7 @@ const { buildAudioPlan } = require("./audio-plans.js");
 const { adaptTranscriptTiming, captionCapability } = require("./caption-workflows.js");
 
 const { inspectProperties, planRecipe: planGraphicsRecipe } = require("./mogrt-workflows.js");
+const { validateItem: validateGraphicItem, mappedPlan } = require("./graphics-batch.js");
 
 const { diagnoseProject } = require("./project-diagnostics.js");
 
@@ -3935,6 +3936,128 @@ async function planMogrtRecipe(args) {
   return {...plan, expected: await graphicsExpectation(target, args), capability: inspected.capability};
 }
 
+// Correlate native insertion receipts with a bounded before/after track snapshot.
+// Ignore the sorted index in the comparison key: insertion can change later indexes.
+async function graphicsTrackSnapshot(project, sequence, trackIndex, kind) {
+  const track = kind === "video" ? await sequence.getVideoTrack(trackIndex) : await sequence.getAudioTrack(trackIndex);
+  if (!track) throw Error("Graphics destination track unavailable.");
+  const items = await track.getTrackItems(premiere.Constants.TrackItemType.CLIP, false);
+  if (!Array.isArray(items) || items.length > 512) throw Error("Graphics track inspection exceeds 512 clips.");
+  const rows = [];
+  for (const item of items) {
+    const start = await item.getStartTime(), end = await item.getEndTime();
+    if (!Number.isFinite(start?.seconds) || !Number.isFinite(end?.seconds) || end.seconds <= start.seconds) throw Error("Native graphics clip timing unavailable.");
+    rows.push({item, start, end, key: await clipTargetSignature(project, sequence, item, kind, trackIndex, 0)});
+  }
+  rows.sort((a, b) => a.start.seconds - b.start.seconds);
+  return rows;
+}
+function graphicsAdditions(before, after) {
+  const keys = before.map(r => r.key);
+  const added = [];
+  for (const row of after) {
+    const i = keys.indexOf(row.key);
+    if (i < 0) added.push(row); else keys.splice(i, 1);
+  }
+  if (keys.length) throw Error("Insertion changed existing clips; stop and inspect the checkpoint.");
+  return added;
+}
+async function insertMappedGraphic(args) {
+  validateGraphicItem(args?.mapping, args?.item);
+  const expected = args._expected;
+  if (!expected?.project_guid || !expected.sequence_guid || expected.clips?.length) throw Error("Graphics insertion requires explicit project/sequence expectation without old clip indexes.");
+  const {videoTrack, audioTrack, mapping, item: event} = args;
+  if (![videoTrack, audioTrack].every(t => Number.isInteger(t) && t >= 0 && t <= 128)) throw Error("Invalid graphics tracks.");
+  const project = await requireProject(), sequence = await project.getActiveSequence();
+  if (videoTrack >= await sequence.getVideoTrackCount() || audioTrack >= await sequence.getAudioTrackCount()) throw Error("Use existing graphics destination tracks.");
+  const beforeVideo = await graphicsTrackSnapshot(project, sequence, videoTrack, "video");
+  const beforeAudio = await graphicsTrackSnapshot(project, sequence, audioTrack, "audio");
+  // Never knowingly overwrite an occupied point. Native duration is only known after insertion.
+  if ([...beforeVideo, ...beforeAudio].some(r => r.start.seconds <= event.seconds && event.seconds < r.end.seconds
+      || event.duration_seconds != null && r.start.seconds < event.seconds + event.duration_seconds && r.end.seconds > event.seconds)) throw Error("Graphics destination is occupied; choose clear tracks/time.");
+  const editor = premiere.SequenceEditor.getEditor(sequence), t = mapping.template;
+  const method = t.source === "path" ? "insertMogrtFromPath" : "insertMogrtFromLibrary";
+  if (typeof editor?.[method] !== "function") throw Error("Native MOGRT insertion unavailable.");
+  const result = {status: "uncertain", inserted: null, populated: false, trimmed: false, uncertain: true, stop_batch: true,
+    expected: null, start_seconds: null, end_seconds: null, native_duration_seconds: null, audio_items: [],
+    semantic_inference: false, template_identity: "caller_supplied_source_with_inspected_parameters", automatic_rollback: false};
+  let phase = "insertion";
+  try {
+    await assertExpectedProject(project, expected);
+    const time = premiere.TickTime.createWithSeconds(event.seconds);
+    const returned = t.source === "path"
+      ? await editor.insertMogrtFromPath(t.path, time, videoTrack, audioTrack)
+      : await editor.insertMogrtFromLibrary(t.library_name, t.element_name, time, videoTrack, audioTrack);
+    phase = "locate_inserted_clip";
+    await requireProject();
+    if (!Array.isArray(returned) || !returned.length || returned.length > 8) throw Error("Native insertion returned no bounded exact receipt.");
+    result.inserted = true;
+    const afterVideo = await graphicsTrackSnapshot(project, sequence, videoTrack, "video");
+    const afterAudio = await graphicsTrackSnapshot(project, sequence, audioTrack, "audio");
+    const video = graphicsAdditions(beforeVideo, afterVideo), audio = graphicsAdditions(beforeAudio, afterAudio);
+    if (video.length !== 1 || audio.length > 7) throw Error("Insertion did not produce one unambiguous new video clip.");
+    const row = video[0], clipIndex = afterVideo.indexOf(row);
+    const returnedKeys = [];
+    for (const nativeItem of returned) {
+      if (await nativeItem.getTrackIndex() === videoTrack) returnedKeys.push(await clipTargetSignature(project, sequence, nativeItem, "video", videoTrack, 0));
+    }
+    if (returnedKeys.filter(k => k === row.key).length !== 1 || row.start.ticks !== time.ticks) throw Error("Native receipt cannot identify the exact inserted graphics clip at the requested time.");
+    const target = {project, sequence, item: row.item};
+    result.expected = await graphicsExpectation(target, {track: videoTrack, clipIndex});
+    result.start_seconds = row.start.seconds; result.end_seconds = row.end.seconds;
+    result.native_duration_seconds = row.end.seconds - row.start.seconds;
+    for (const r of audio) result.audio_items.push({track: audioTrack, clip_index: afterAudio.indexOf(r), start_seconds: r.start.seconds, end_seconds: r.end.seconds,
+      signature: await clipTargetSignature(project, sequence, r.item, "audio", audioTrack, afterAudio.indexOf(r))});
+    if (JSON.stringify(result).length > 10000) throw Error("Native insertion receipt exceeds bounded recovery output.");
+    if (beforeVideo.some(r => r.start.seconds < row.end.seconds && r.end.seconds > row.start.seconds)
+        || audio.some(a => beforeAudio.some(r => r.start.seconds < a.end.seconds && r.end.seconds > a.start.seconds))) throw Error("Native graphics duration overlaps existing clips; inspect before continuing.");
+    phase = "mapping_validation";
+    const plan = mappedPlan(mapping, event, await inspectProperties(row.item));
+    let desiredEnd = null;
+    if (event.duration_seconds != null) {
+      desiredEnd = premiere.TickTime.createWithSeconds(event.seconds + event.duration_seconds);
+      if (audio.length || typeof row.item.createSetEndAction !== "function" || desiredEnd.seconds > row.end.seconds) {
+        throw Error("Exact duration supports shortening video-only graphics with the native end setter; extension and linked audio trim are unsupported. Native duration is retained.");
+      }
+    }
+    // Use the existing typed recipe/trim routes with the newly inspected exact clip guard.
+    const guarded = {_expected: result.expected, track: videoTrack, clipIndex};
+    phase = "populate";
+    const applied = await executeCommand({action: "apply_video_recipe", arguments: {...guarded, settings: plan.settings}});
+    if (applied.applied !== true) throw Error("Native graphics recipe was not acknowledged.");
+    result.populated = true;
+    if (desiredEnd && desiredEnd.ticks !== row.end.ticks) {
+      phase = "trim";
+      await executeCommand({action: "trim_clip", arguments: {...guarded, kind: "video", endSeconds: desiredEnd.seconds}});
+      result.trimmed = true;
+    }
+    phase = "post_inspection";
+    await requireProject();
+    const current = await graphicsTarget({track: videoTrack, clipIndex});
+    const start = await current.item.getStartTime(), end = await current.item.getEndTime();
+    const nextExpected = await graphicsExpectation(current, {track: videoTrack, clipIndex});
+    const oldIdentity = JSON.parse(result.expected.clips[0].signature), newIdentity = JSON.parse(nextExpected.clips[0].signature);
+    if (JSON.stringify(oldIdentity.slice(0, 9)) !== JSON.stringify(newIdentity.slice(0, 9)) || start.ticks !== row.start.ticks
+      || end.ticks !== (desiredEnd?.ticks ?? row.end.ticks)) throw Error("Native graphics identity/duration did not match the requested result.");
+    result.expected = nextExpected;
+    result.start_seconds = start.seconds; result.end_seconds = end.seconds;
+    result.duration_seconds = end.seconds - start.seconds;
+    const inspected = await inspectProperties(current.item);
+    const verified = mappedPlan(mapping, event, inspected);
+    for (const s of verified.settings) {
+      const c = inspected.components.find(c => c.matchName === s.component_match_name && c.displayName === s.component_display_name);
+      if (c.params.find(p => p.displayName === s.param_display_name).value !== s.value) throw Error("Native graphics value readback mismatch.");
+    }
+    result.field_count = verified.settings.length;
+    result.status = "applied"; result.uncertain = false; result.stop_batch = false;
+  } catch (error) {
+    result.phase = phase; result.reason = String(error?.message || error).slice(0, 240);
+    // Validation fails after a known insertion; preserve that clip and allow independent later items.
+    if (phase === "mapping_validation") { result.status = "failed"; result.uncertain = false; result.stop_batch = false; }
+  }
+  return result;
+}
+
 async function planAudioAutomation(args) {
   if (args.kind !== "audio") throw new Error("Audio automation requires an audio target.");
   const target = await resolveNamedAudioParam(args);
@@ -4079,6 +4202,8 @@ async function dispatchNativeCommand(command) {
       return await inspectMogrtProperties(command.arguments);
     case "plan_mogrt_recipe":
       return await planMogrtRecipe(command.arguments);
+    case "insert_mapped_graphic":
+      return await insertMappedGraphic(command.arguments);
     case "plan_audio_automation":
       return await planAudioAutomation(command.arguments);
     case "plan_video_recipe":
