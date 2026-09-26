@@ -3190,6 +3190,26 @@ async function clearSourceInOut(argumentsValue) {
   };
 }
 
+async function collectProjectItemsForCorrelation(folder, output, budget, depth = 0) {
+  if (budget.remaining <= 0 || depth > 16) {
+    budget.complete = false;
+    return;
+  }
+  const items = await folder.getItems();
+  for (const item of items) {
+    if (budget.remaining <= 0) {
+      budget.complete = false;
+      break;
+    }
+    budget.remaining -= 1;
+    const id = await projectItemId(item);
+    const clip = asClipProjectItem(item);
+    if (id) output.push({ id, name: item?.name || null, isClip: Boolean(clip) });
+    const child = asFolderItem(item);
+    if (child) await collectProjectItemsForCorrelation(child, output, budget, depth + 1);
+  }
+}
+
 async function createSubclip(argumentsValue) {
   const itemId =
     typeof argumentsValue?.itemId === "string"
@@ -3215,6 +3235,10 @@ async function createSubclip(argumentsValue) {
   }
 
   const { project, clip } = await requireClipProjectItemById(itemId);
+  const root = await project.getRootItem();
+  const beforeItems = [];
+  const beforeBudget = { remaining: 5000, complete: true };
+  await collectProjectItemsForCorrelation(root, beforeItems, beforeBudget);
 
   if (typeof clip.createSubClipAction !== "function") {
     throw new Error("This Premiere version does not expose createSubClipAction; Premiere 26.3+ is required.");
@@ -3242,9 +3266,23 @@ async function createSubclip(argumentsValue) {
     throw new Error("Premiere rejected the subclip transaction.");
   }
 
+  const afterItems = [];
+  const afterBudget = { remaining: 5000, complete: true };
+  await collectProjectItemsForCorrelation(root, afterItems, afterBudget);
+  const beforeIds = new Set(beforeItems.map((entry) => entry.id));
+  const candidates = afterItems.filter((entry) =>
+    entry.isClip && entry.name === name && !beforeIds.has(entry.id)
+  );
+  const correlationVerified =
+    beforeBudget.complete && afterBudget.complete && candidates.length === 1;
+
   return {
     created: true,
     itemId,
+    createdItemId: correlationVerified ? candidates[0].id : null,
+    correlationVerified,
+    correlationCandidates: candidates.slice(0, 8),
+    scanComplete: beforeBudget.complete && afterBudget.complete,
     name,
     startSeconds,
     endSeconds,

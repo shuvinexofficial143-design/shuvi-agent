@@ -6479,53 +6479,300 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
         ToolAction::PremiereAssembly{assembly,apply} => {
             let expected=premiere_bridge.expected;
             if apply {
-                if state.assembly_running.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){return Err("Another assembly is active.".into());}
+                if state.assembly_running.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err() {
+                    return Err("Another assembly is active.".into());
+                }
                 state.assembly_cancelled.store(false,Ordering::Release);
             }
             let _running_guard=if apply{Some(AcceptanceProbeGuard(&state.assembly_running))}else{None};
-            let ids:Vec<&str>=assembly.shots.iter().map(|shot|shot.item_id.as_str()).collect();
-            let inspected=premiere_bridge.request("inspect_assembly_items",json!({"itemIds":ids}),Duration::from_secs(30)).await?;
+
+            let ids=assembly.all_item_ids();
+            let inspected=premiere_bridge.request(
+                "inspect_assembly_items",
+                json!({"itemIds":ids}),
+                Duration::from_secs(30),
+            ).await?;
             let native_expected=inspected.get("expected").ok_or("Assembly preflight returned no project/sequence identity.")?;
-            if apply&&Some(native_expected)!=expected.map(|e|serde_json::to_value(e).ok()).flatten().as_ref(){return Err("Assembly project or sequence changed since planning.".into());}
-            let video=inspected.get("video_tracks").and_then(Value::as_u64).ok_or("Video track count unavailable.")?;
-            let audio=inspected.get("audio_tracks").and_then(Value::as_u64).ok_or("Audio track count unavailable.")?;
+            if apply && Some(native_expected)!=expected.and_then(|value|serde_json::to_value(value).ok()).as_ref() {
+                return Err("Assembly project or sequence changed since planning.".into());
+            }
+            let video_tracks=inspected.get("video_tracks").and_then(Value::as_u64).ok_or("Video track count unavailable.")?;
+            let audio_tracks=inspected.get("audio_tracks").and_then(Value::as_u64).ok_or("Audio track count unavailable.")?;
             let items=inspected.get("items").and_then(Value::as_array).ok_or("Project item inspection unavailable.")?;
-            if items.len()!=assembly.shots.len(){return Err("Incomplete project item inspection.".into());}
+            if items.len()!=ids.len(){return Err("Incomplete project item inspection.".into());}
+
             let mut blocked=Vec::new();
             for (i,shot) in assembly.shots.iter().enumerate() {
-                if shot.video_track as u64>=video||shot.audio_track as u64>=audio||items[i]["id"].as_str()!=Some(shot.item_id.as_str())||items[i]["insertable"].as_bool()!=Some(true) {
-                    blocked.push(json!({"index":i,"item_id":shot.item_id,"reason":"Project item is missing/not insertable or target tracks do not exist."}));
+                if shot.video_track as u64>=video_tracks
+                    || shot.audio_track as u64>=audio_tracks
+                    || items[i]["id"].as_str()!=Some(shot.item_id.as_str())
+                    || items[i]["insertable"].as_bool()!=Some(true)
+                {
+                    blocked.push(json!({"kind":"shot","index":i,"item_id":shot.item_id,"reason":"Project item is missing/not insertable or target tracks do not exist."}));
                 }
             }
-            if !apply {return Ok(ActionResult{success:true,tool,stdout:json!({"applied":false,"executable":blocked.is_empty(),"assembly":assembly,"blocked_shots":blocked,"expected":native_expected,"video_tracks":video,"audio_tracks":audio,"action_count":assembly.shots.len()+assembly.chapters.len(),"source_range_support":false}).to_string(),stderr:String::new(),exit_code:Some(0)});}
-            if !blocked.is_empty(){return Err("Assembly preflight blocked an invalid media item or track; nothing was inserted.".into());}
+            for (i,music) in assembly.music.iter().enumerate() {
+                let item_index=assembly.shots.len()+i;
+                if music.video_track as u64>=video_tracks
+                    || music.audio_track as u64>=audio_tracks
+                    || items[item_index]["id"].as_str()!=Some(music.item_id.as_str())
+                    || items[item_index]["insertable"].as_bool()!=Some(true)
+                {
+                    blocked.push(json!({"kind":"music","index":i,"item_id":music.item_id,"reason":"Music item is missing/not insertable or target tracks do not exist."}));
+                }
+            }
+            if let Some(graphics)=&assembly.graphics {
+                if graphics.video_track as u64>=video_tracks||graphics.audio_track as u64>=audio_tracks {
+                    blocked.push(json!({"kind":"graphics","reason":"Mapped graphics destination tracks do not exist."}));
+                }
+            }
+
+            let installed_transitions=if assembly.transitions.is_empty() {
+                Vec::<String>::new()
+            } else {
+                let value=premiere_bridge.request("list_video_transitions",json!({}),Duration::from_secs(20)).await?;
+                value.get("transitions").and_then(Value::as_array).ok_or("Installed transition list unavailable.")?
+                    .iter().filter_map(Value::as_str).map(str::to_string).collect()
+            };
+            for (i,transition) in assembly.transitions.iter().enumerate() {
+                if !installed_transitions.iter().any(|name|name==&transition.match_name) {
+                    blocked.push(json!({"kind":"transition","index":i,"match_name":transition.match_name,"reason":"Requested transition is not installed."}));
+                }
+            }
+
+            let saved_graphics=if let Some(batch)=&assembly.graphics {
+                let saved=premiere_graphics::list(&graphics_library_path(app)?)?
+                    .into_iter().find(|saved|saved.mapping.name==batch.mapping)
+                    .ok_or("Unknown advanced assembly graphics mapping.")?;
+                batch.resolve(&saved)?;
+                saved.mapping.validate_local_template()?;
+                Some(saved)
+            }else{None};
+
+            if !apply {
+                return Ok(ActionResult{
+                    success:true,
+                    tool,
+                    stdout:json!({
+                        "applied":false,
+                        "executable":blocked.is_empty(),
+                        "assembly":assembly,
+                        "blocked":blocked,
+                        "expected":native_expected,
+                        "video_tracks":video_tracks,
+                        "audio_tracks":audio_tracks,
+                        "source_range_support":assembly.schema_version>=2,
+                        "source_range_strategy":"verified_created_subclip_id",
+                        "transition_count":assembly.transitions.len(),
+                        "music_count":assembly.music.len(),
+                        "graphics_count":assembly.graphics.as_ref().map(|batch|batch.items.len()).unwrap_or(0),
+                        "review_times":if assembly.review{assembly.review_times()?}else{Vec::new()},
+                        "inferred_beat_detection":false
+                    }).to_string(),
+                    stderr:String::new(),
+                    exit_code:Some(0)
+                });
+            }
+            if !blocked.is_empty(){return Err("Advanced assembly preflight blocked one or more requested items; nothing was edited.".into());}
+
             let backup=backup_premiere_project(&premiere_bridge).await?;
-            let mut results=Vec::new();let mut uncertainty=false;
-            for (i,shot) in assembly.shots.iter().enumerate(){
+            let mut shot_results=Vec::new();
+            let mut subclips=Vec::new();
+            let mut music_results=Vec::new();
+            let mut transition_results=Vec::new();
+            let mut marker_results=Vec::new();
+            let mut graphics_result=Value::Null;
+            let mut uncertain=false;
+
+            for (i,shot) in assembly.shots.iter().enumerate() {
                 if state.assembly_cancelled.load(Ordering::Acquire){break;}
-                let result=premiere_bridge.request("insert_project_item",json!({"itemId":shot.item_id,"seconds":shot.timeline_seconds,"videoTrack":shot.video_track,"audioTrack":shot.audio_track,"mode":shot.mode}),Duration::from_secs(30)).await;
-                match result {
-                    Ok(value)=>results.push(json!({"index":i,"item_id":shot.item_id,"requested_seconds":shot.timeline_seconds,"status":"accepted","native_result":value})),
+                let seconds=assembly.shot_seconds(shot)?;
+                let mut insert_item_id=shot.item_id.clone();
+
+                if let (Some(source_in),Some(source_out))=(shot.source_in,shot.source_out) {
+                    let name=format!("Shuvi Range {:03}",i+1);
+                    match premiere_bridge.request(
+                        "create_subclip",
+                        json!({
+                            "itemId":shot.item_id,
+                            "name":name,
+                            "startSeconds":source_in,
+                            "endSeconds":source_out,
+                            "hardBoundaries":true,
+                            "takeVideo":true,
+                            "takeAudio":true
+                        }),
+                        Duration::from_secs(45),
+                    ).await {
+                        Ok(value) => {
+                            if value.get("correlationVerified").and_then(Value::as_bool)!=Some(true) {
+                                uncertain=true;
+                                subclips.push(json!({"shot_index":i,"status":"uncertain","native_result":value,"reason":"Created subclip could not be correlated to exactly one new native project item."}));
+                                break;
+                            }
+                            let created=value.get("createdItemId").and_then(Value::as_str).filter(|id|!id.is_empty())
+                                .ok_or("Verified subclip correlation returned no project item id.")?;
+                            insert_item_id=created.to_string();
+                            subclips.push(json!({"shot_index":i,"status":"created","source_item_id":shot.item_id,"created_item_id":created,"source_in":source_in,"source_out":source_out}));
+                        }
+                        Err(error)=>{
+                            uncertain=true;
+                            subclips.push(json!({"shot_index":i,"status":"uncertain","reason":error.chars().take(240).collect::<String>()}));
+                            break;
+                        }
+                    }
+                }
+
+                match premiere_bridge.request(
+                    "insert_project_item",
+                    json!({
+                        "itemId":insert_item_id,
+                        "seconds":seconds,
+                        "videoTrack":shot.video_track,
+                        "audioTrack":shot.audio_track,
+                        "mode":shot.mode
+                    }),
+                    Duration::from_secs(35),
+                ).await {
+                    Ok(value)=>shot_results.push(json!({
+                        "index":i,"source_item_id":shot.item_id,"insert_item_id":insert_item_id,
+                        "role":shot.role,"requested_seconds":seconds,"status":"accepted","native_result":value
+                    })),
                     Err(error)=>{
-                        uncertainty=error.contains("unknown")||error.contains("timed out")||error.contains("timeout");
-                        results.push(json!({"index":i,"item_id":shot.item_id,"status":if uncertainty{"uncertain"}else{"failed"},"reason":error.chars().take(240).collect::<String>()}));
+                        uncertain=true;
+                        shot_results.push(json!({"index":i,"item_id":insert_item_id,"status":"uncertain","reason":error.chars().take(240).collect::<String>()}));
                         break;
                     }
                 }
             }
-            let mut markers=Vec::new();
-            if results.len()==assembly.shots.len()&&results.iter().all(|r|r["status"]=="accepted")&&!state.assembly_cancelled.load(Ordering::Acquire){
-                for chapter in &assembly.chapters {
+
+            if !uncertain && shot_results.len()==assembly.shots.len() {
+                for (i,music) in assembly.music.iter().enumerate() {
                     if state.assembly_cancelled.load(Ordering::Acquire){break;}
-                    match premiere_bridge.request("add_marker",json!({"name":chapter.name,"markerType":"Chapter","seconds":chapter.seconds,"durationSeconds":0,"comments":""}),Duration::from_secs(20)).await {
-                        Ok(value)=>markers.push(json!({"name":chapter.name,"seconds":chapter.seconds,"status":"accepted","native_result":value})),
-                        Err(error)=>{markers.push(json!({"name":chapter.name,"status":"failed","reason":error.chars().take(240).collect::<String>()}));break;}
+                    match premiere_bridge.request(
+                        "insert_project_item",
+                        json!({
+                            "itemId":music.item_id,
+                            "seconds":music.timeline_seconds,
+                            "videoTrack":music.video_track,
+                            "audioTrack":music.audio_track,
+                            "mode":music.mode
+                        }),
+                        Duration::from_secs(35),
+                    ).await {
+                        Ok(value)=>music_results.push(json!({"index":i,"item_id":music.item_id,"seconds":music.timeline_seconds,"status":"accepted","native_result":value})),
+                        Err(error)=>{
+                            uncertain=true;
+                            music_results.push(json!({"index":i,"item_id":music.item_id,"status":"uncertain","reason":error.chars().take(240).collect::<String>()}));
+                            break;
+                        }
                     }
                 }
             }
-            let timeline=if results.iter().any(|r|r["status"]=="accepted") {premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(15)).await.ok()}else{None};
-            let complete=results.len()==assembly.shots.len()&&results.iter().all(|r|r["status"]=="accepted")&&markers.len()==assembly.chapters.len()&&markers.iter().all(|m|m["status"]=="accepted")&&!state.assembly_cancelled.load(Ordering::Acquire)&&!uncertainty;
-            Ok(ActionResult{success:complete,tool,stdout:json!({"backup":backup,"complete":complete,"uncertain":uncertainty,"cancelled":state.assembly_cancelled.load(Ordering::Acquire),"shots":results,"chapters":markers,"timeline_reinspected":timeline.is_some(),"timeline":timeline,"review_recommended":true}).to_string(),stderr:String::new(),exit_code:Some(if complete{0}else{1})})
+
+            let mut post_insert_timeline=None;
+            if !uncertain && shot_results.len()==assembly.shots.len() && music_results.len()==assembly.music.len() {
+                let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(25)).await?;
+                for (i,transition) in assembly.transitions.iter().enumerate() {
+                    if state.assembly_cancelled.load(Ordering::Acquire){break;}
+                    let shot=&assembly.shots[transition.shot_index as usize];
+                    let seconds=assembly.shot_seconds(shot)?;
+                    let clip_index=premiere_assembly::resolve_video_clip_index(&timeline,shot.video_track,seconds)?;
+                    match premiere_bridge.request(
+                        "add_video_transition",
+                        json!({
+                            "track":shot.video_track,
+                            "clipIndex":clip_index,
+                            "matchName":transition.match_name,
+                            "durationSeconds":transition.duration_seconds,
+                            "position":transition.position,
+                            "forceSingleSided":transition.force_single_sided
+                        }),
+                        Duration::from_secs(30),
+                    ).await {
+                        Ok(value)=>transition_results.push(json!({"index":i,"shot_index":transition.shot_index,"clip_index":clip_index,"status":"accepted","native_result":value})),
+                        Err(error)=>{
+                            uncertain=true;
+                            transition_results.push(json!({"index":i,"shot_index":transition.shot_index,"status":"uncertain","reason":error.chars().take(240).collect::<String>()}));
+                            break;
+                        }
+                    }
+                }
+                post_insert_timeline=Some(timeline);
+            }
+
+            if !uncertain && transition_results.len()==assembly.transitions.len() {
+                for chapter in &assembly.chapters {
+                    if state.assembly_cancelled.load(Ordering::Acquire){break;}
+                    match premiere_bridge.request(
+                        "add_marker",
+                        json!({"name":chapter.name,"markerType":"Chapter","seconds":chapter.seconds,"durationSeconds":0,"comments":""}),
+                        Duration::from_secs(20),
+                    ).await {
+                        Ok(value)=>marker_results.push(json!({"name":chapter.name,"seconds":chapter.seconds,"status":"accepted","native_result":value})),
+                        Err(error)=>{
+                            uncertain=true;
+                            marker_results.push(json!({"name":chapter.name,"status":"uncertain","reason":error.chars().take(240).collect::<String>()}));
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if !uncertain && marker_results.len()==assembly.chapters.len() {
+                if let (Some(batch),Some(saved))=(&assembly.graphics,saved_graphics.as_ref()) {
+                    graphics_result=premiere_graphics::run_batch(batch,saved,&state.assembly_cancelled,|step| {
+                        let client=&premiere_bridge;
+                        let checkpoint=backup.clone();
+                        async move {
+                            match step {
+                                premiere_graphics::BatchStep::Checkpoint=>Ok(json!(checkpoint)),
+                                premiere_graphics::BatchStep::Insert(arguments)=>
+                                    client.request("insert_mapped_graphic",arguments,Duration::from_secs(90)).await,
+                            }
+                        }
+                    }).await?;
+                    uncertain=graphics_result.get("uncertain").and_then(Value::as_bool).unwrap_or(true);
+                }
+            }
+
+            let cancelled=state.assembly_cancelled.load(Ordering::Acquire);
+            let final_timeline=if shot_results.iter().any(|row|row["status"]=="accepted") {
+                premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(25)).await.ok()
+            }else{None};
+            let graphics_complete=assembly.graphics.is_none()||graphics_result.get("complete").and_then(Value::as_bool)==Some(true);
+            let complete=!uncertain&&!cancelled
+                &&shot_results.len()==assembly.shots.len()&&shot_results.iter().all(|row|row["status"]=="accepted")
+                &&music_results.len()==assembly.music.len()&&music_results.iter().all(|row|row["status"]=="accepted")
+                &&transition_results.len()==assembly.transitions.len()&&transition_results.iter().all(|row|row["status"]=="accepted")
+                &&marker_results.len()==assembly.chapters.len()&&marker_results.iter().all(|row|row["status"]=="accepted")
+                &&graphics_complete;
+
+            Ok(ActionResult{
+                success:complete,
+                tool,
+                stdout:json!({
+                    "backup":backup,
+                    "complete":complete,
+                    "uncertain":uncertain,
+                    "cancelled":cancelled,
+                    "shots":shot_results,
+                    "created_subclips":subclips,
+                    "music":music_results,
+                    "transitions":transition_results,
+                    "chapters":marker_results,
+                    "graphics":graphics_result,
+                    "post_insert_timeline_inspected":post_insert_timeline.is_some(),
+                    "final_timeline":final_timeline,
+                    "review_requested":assembly.review,
+                    "review_times":if assembly.review{assembly.review_times()?}else{Vec::new()},
+                    "review_execution_tool":if assembly.review{Some("premiere_review_frames")}else{None},
+                    "inferred_beat_detection":false,
+                    "automatic_rollback":false
+                }).to_string(),
+                stderr:String::new(),
+                exit_code:Some(if complete{0}else{1})
+            })
         }
         ToolAction::PremiereFinishMediaBatch { request, provider } => {
             if state.finishing_running.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err() {

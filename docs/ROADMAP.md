@@ -395,3 +395,13 @@ Conservative feature-code estimate after W2: approximately **76%** (up from 75% 
 - Speed ramps, masks, multicam and inferred linked-media operations remain unsupported. Real paired Premiere acceptance remains pending.
 
 Conservative feature-code estimate after X2: approximately **78%**. Runtime verified remains **0%** without a paired Premiere host; production ready: **no**. Next real feature priority: Y2 advanced source-range assembly, then Z end-to-end edit jobs.
+
+
+### Module Y2 — advanced timeline assembly (2026-09-26)
+
+- Assembly schema v2 now supports exact source ranges by creating a hard-bounded native subclip and requiring one unambiguous new project-item ID before insertion. The paired panel performs bounded before/after project-tree correlation; name-only matching is never trusted. V1 remains compatible for simple shot/chapter lists.
+- Shots can carry explicit `a_roll` / `b_roll` / `overlay` roles while placement still uses caller-supplied existing tracks. Supplied beat timestamps can be referenced by index; no beat detection is claimed.
+- Added installed transition preflight and post-insert exact clip correlation before the existing native transition route, plus explicit music project-item placement and optional V2 mapped graphics. Existing Chapter markers remain integrated.
+- All v2 mutation shares one durable checkpoint, cooperative cancellation and uncertainty stop. Review requests return at most eight deterministic shot timestamps for the existing `premiere_review_frames` tool; assembly does not invent an artistic verdict or automatic rollback.
+
+Conservative feature-code estimate after Y2: approximately **81%**. Runtime verified remains **0%** without a paired Premiere host; production ready: **no**. Next real feature priority: Module Z end-to-end professional edit jobs that compose these actual execution paths without duplicating low-level Premiere mutation.
