@@ -22,6 +22,7 @@ const SPECS: &[(&str, u8, bool, bool)] = &[
     ("vertical_track_move",2,false,true),("replacement_nesting",2,false,true),
     ("reliable_multicam",2,false,true),("linked_clip_membership",2,false,true),
     ("native_caption_write_import",6,false,true),("complex_mogrt_properties",5,false,true),
+    ("scene_edit_detection",2,false,false),
 ];
 
 fn now_ms() -> u64 {
@@ -169,6 +170,24 @@ impl Report {
             native_capability:Some("paired UXP returned structured data".into()),recovery:None})
     }
 
+    pub fn verified_scene_detection(&mut self, action:&str, version:&str, project:&str, sequence:&str,
+        checkpoint:&str, marker_count:usize, selection_restored:bool) -> Result<(),String> {
+        if action!="premiere_detect_scene_markers" || version.is_empty() || project.is_empty() || sequence.is_empty()
+            || checkpoint.is_empty() || checkpoint.len()>1024 || marker_count==0 || marker_count>1000 || !selection_restored {
+            return Err("Scene detection acceptance requires observed native marker delta, restored selection and checkpoint.".into());
+        }
+        let capability="scene_edit_detection";
+        let index=self.capabilities.iter().position(|c|c.name==capability).ok_or("Unknown acceptance capability.")?;
+        self.capabilities[index].state="runtime_verified".into();
+        self.capabilities[index].premiere_runtime_verified=true;
+        self.capabilities[index].reason=None;
+        self.append(Evidence {timestamp_ms:self.next_timestamp(),capability:capability.into(),action:action.into(),
+            result_category:"runtime_verified".into(),premiere_version:Some(version.into()),
+            project_guid:Some(project.into()),sequence_guid:Some(sequence.into()),
+            native_capability:Some(format!("Native scene marker detection produced {marker_count} observed marker delta(s); selection restored.")),
+            recovery:Some("Checkpoint retained; generated markers remain until explicitly removed.".into())})
+    }
+
     pub fn native_failure(&mut self, capability:&str, action:&str, version:&str, project:&str, sequence:&str, reason:&str) -> Result<(),String> {
         if !matches!((capability,action),("timeline_inspection","inspect_timeline")|("project_diagnostics","project_diagnostics"))
             || version.is_empty() || project.is_empty() || sequence.is_empty() || reason.is_empty() || reason.len()>200 {
@@ -227,14 +246,32 @@ pub fn host_probe_identity(context:&Value,timeline:&Value,diagnostics:&Value) ->
     Ok((version.into(),project.into(),sequence.into()))
 }
 
+fn current_report(mut report:Report)->Result<Report,String>{
+    if report.schema_version!=1 {return Err("Unsupported Premiere acceptance report version.".into());}
+    if report.capabilities.len()==SPECS.len() {
+        report.validate()?;
+        return Ok(report);
+    }
+    if report.capabilities.len()+1!=SPECS.len()
+        || report.capabilities.iter().any(|c|c.name=="scene_edit_detection")
+        || !report.capabilities.iter().zip(SPECS.iter()).all(|(cap,spec)|
+            cap.name==spec.0 && cap.group==spec.1 && cap.code_tested==spec.2)
+    {
+        return Err("Premiere acceptance report does not match the current or immediately previous capability schema.".into());
+    }
+    let fresh=Report::default().capabilities.last().cloned().ok_or("Acceptance capability defaults unavailable.")?;
+    report.capabilities.push(fresh);
+    report.validate()?;
+    Ok(report)
+}
+
 pub fn load(path:&Path) -> Result<Report,String> {
     if !path.exists() && !path.with_extension("json.bak").exists() {return Ok(Report::default());}
     let read=|p:&Path| -> Result<Report,String> {
         let bytes=fs::read(p).map_err(|e|e.to_string())?;
         if bytes.len()>MAX_REPORT_BYTES {return Err("Oversized Premiere acceptance file.".into());}
         let report:Report=serde_json::from_slice(&bytes).map_err(|e|format!("Corrupt Premiere acceptance report: {e}"))?;
-        report.validate()?;
-        Ok(report)
+        current_report(report)
     };
     read(path).or_else(|e|if path.with_extension("json.bak").exists(){read(&path.with_extension("json.bak"))}else{Err(e)})
 }
@@ -308,6 +345,27 @@ mod tests {
         let mut bad=Report::default();bad.capabilities.pop();assert!(bad.validate().is_err());
         let mut bad=Report::default();bad.capabilities[0].state="runtime_verified".into();
         bad.capabilities[0].premiere_runtime_verified=true;assert!(bad.validate().is_err());
+    }
+    #[test] fn scene_detection_promotion_requires_real_marker_delta_and_restored_selection() {
+        let mut r=Report::default();
+        assert!(r.verified_scene_detection("premiere_detect_scene_markers","26.0","p","s","C:/backup.prproj",0,true).is_err());
+        assert!(r.verified_scene_detection("premiere_detect_scene_markers","26.0","p","s","C:/backup.prproj",1,false).is_err());
+        r.verified_scene_detection("premiere_detect_scene_markers","26.0","p","s","C:/backup.prproj",2,true).unwrap();
+        let cap=r.capabilities.iter().find(|c|c.name=="scene_edit_detection").unwrap();
+        assert!(cap.premiere_runtime_verified);
+        assert!(r.evidence.iter().any(|e|e.capability=="scene_edit_detection" && e.action=="premiere_detect_scene_markers"));
+    }
+    #[test] fn legacy_report_adds_new_scene_detection_capability_without_promoting_it() {
+        let path=std::env::temp_dir().join(format!("shuvi-acceptance-legacy-{}.json",std::process::id()));
+        let mut legacy=Report::default();
+        legacy.capabilities.pop();
+        fs::write(&path,serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let loaded=load(&path).unwrap();
+        let cap=loaded.capabilities.last().unwrap();
+        assert_eq!(cap.name,"scene_edit_detection");
+        assert_eq!(cap.state,"implemented_unverified");
+        assert!(!cap.premiere_runtime_verified);
+        fs::remove_file(path).unwrap();
     }
     #[test] fn interrupted_replace_recovers_backup() {
         let path=std::env::temp_dir().join(format!("shuvi-acceptance-restore-{}.json",std::process::id()));

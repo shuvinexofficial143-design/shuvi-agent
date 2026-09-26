@@ -494,3 +494,15 @@ Conservative **feature-code coverage after AF: approximately 97%** (before 96%).
 - Added Rust planner tests and Node structural/safety tests. No paired Premiere host evidence is created by these tests; runtime verified remains **0%** until actual host acceptance.
 
 Conservative **feature-code coverage after AG: approximately 98%** (before 97%), counting the new usable scene-catalog→explicit-selection→rough-cut planning path. **Runtime verified: 0%. Production ready: no.** Remaining work is dominated by real paired-host compile/runtime acceptance and bug fixing, plus only API-backed gaps found during that process.
+
+
+### Real-host acceptance continuation — native Scene Edit Detection (2026-09-26)
+
+- CI was rechecked from current `main` `1471f3e084323999ef220dc6612325ecd8d23900`. Run `36245810517` was retried (attempt 2) and both frontend/Rust jobs again failed before any workflow step was created. Recent main runs 147–226 show the same repository-level failure pattern, so this is not counted as source-test evidence.
+- Added a real disposable-host Group 2 acceptance step for AB marker-mode Scene Edit Detection. It still requires explicit disposable-project registration, exact clip expectation, separate high-risk approval and a durable project checkpoint.
+- Acceptance dispatch reuses the production `PremiereSceneDetection` action in marker mode. Promotion requires native acceptance, `verified_delta`, exactly one requested target, non-truncated marker observation, at least one observed marker delta, restored previous selection, and unchanged exact clip identity after the operation.
+- Successful evidence promotes only `scene_edit_detection`; failure/uncertainty does not promote anything and is never blindly retried. Generated markers are intentionally left for explicit cleanup and the checkpoint is retained.
+- The acceptance report adds this capability with a backward-compatible one-capability migration for existing schema-v1 reports. The readiness code estimate is synchronized from stale 86% to the current conservative 98%; runtime percentage still depends only on persisted real-host evidence.
+- Added Rust unit coverage and Node structural/safety coverage for the new acceptance path. Because GitHub-hosted jobs still execute zero steps, these new tests are committed but not claimed as executed here.
+
+Feature-code coverage remains approximately **98%**; this acceptance work does not add a new editing capability. Runtime verified remains whatever the local acceptance report proves on a real paired Premiere host; no mock or CI metadata raises it.

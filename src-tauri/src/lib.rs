@@ -246,6 +246,11 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - premiere_plan_export: {"output":"absolute output media path","preset":"optional absolute .epr preset","queue_to_ame":false,"overwrite":false}
 - premiere_acceptance_report: {}
 - premiere_acceptance_probe: {"group":1}
+- premiere_acceptance_register_disposable: {"project_guid":"exact current project GUID","project_path":"existing absolute disposable .prproj","sequence_guid":"optional exact current sequence GUID","explicitly_disposable":true}
+- premiere_acceptance_plan: {"group":1}
+- premiere_acceptance_prepare: {"group":2,"step":"trim|move|clone|scene_markers","fixture":{"kind":"video|audio","track":0,"clip_index":0,"start_seconds":"optional","end_seconds":"optional","delta_seconds":"optional","expected":{"project_guid":"...","project_path":"...","sequence_guid":"...","clips":[{"kind":"video","track":0,"clip_index":0,"signature":"..."}]}}}
+- premiere_acceptance_execute: {"action_id":"exact prepared acceptance action UUID"}
+- premiere_acceptance_cancel: {"action_id":"exact prepared acceptance action UUID"}
 - premiere_save_project: {}
 - workspace_scan: {"path":"absolute workspace path"}
 - search_text: {"path":"absolute workspace path","query":"text to find"}
@@ -4701,7 +4706,7 @@ fn stage_tool(
             let step=arg_string(&proposal.arguments,"step")?;
             let fixture:premiere_acceptance_execution::Fixture=serde_json::from_value(proposal.arguments.get("fixture").cloned().ok_or("Exact acceptance fixture required.")?)
                 .map_err(|e|format!("Invalid acceptance fixture: {e}"))?;
-            if !matches!(step.as_str(),"trim"|"move"|"clone") {return Err("Acceptance action is unsupported.".into());}
+            if !matches!(step.as_str(),"trim"|"move"|"clone"|"scene_markers") {return Err("Acceptance action is unsupported.".into());}
             (ToolAction::PremiereAcceptancePrepare {step,fixture},"Prepare one Premiere acceptance action".into(),
                 "Read-only live project/timeline snapshot and bounded exact clip fixture; no edit.".into(),RiskLevel::Low)
         }
@@ -10220,9 +10225,17 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 "clone"=>ToolAction::PremiereCloneClip {kind:fixture.kind.clone(),track:fixture.track,clip_index:fixture.clip_index,
                     time_offset_seconds:fixture.delta_seconds.ok_or("Missing planned clone offset.")?,video_track_offset:0,
                     audio_track_offset:0,align_to_video:false,insert:false},
+                "scene_markers"=>ToolAction::PremiereSceneDetection {request:premiere_scene_detection::Request{
+                    schema_version:1,mode:"markers".into(),targets:vec![premiere_scene_detection::Target{
+                        track:fixture.track,clip_index:fixture.clip_index,signature:fixture.expected.clips[0].signature.clone()
+                    }]
+                }},
                 _=>return Err("Acceptance step not allowlisted.".into())
             };
-            let native_tool=match record.step.as_str(){"trim"=>"premiere_trim_clip","move"=>"premiere_move_clip",_=>"premiere_clone_clip"};
+            let native_tool=match record.step.as_str(){
+                "trim"=>"premiere_trim_clip","move"=>"premiere_move_clip","clone"=>"premiere_clone_clip",
+                "scene_markers"=>"premiere_detect_scene_markers",_=>return Err("Acceptance tool not allowlisted.".into())
+            };
             let inner=PendingAction {premiere_expectation:Some(fixture.expected.clone()),tool:native_tool.into(),
                 detail:format!("Disposable acceptance {} action {}",record.step,action_id),action:native_action};
             let native=Box::pin(execute_tool(inner,state,app)).await;
@@ -10235,33 +10248,61 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                         "retry_automatically":false}).to_string(),stderr:error,exit_code:None});
                 }
             };
-            record.checkpoint=serde_json::from_str::<Value>(&native_result.stdout).ok()
-                .and_then(|v|v.get("backup").and_then(Value::as_str).map(str::to_owned));
+            let native_receipt=serde_json::from_str::<Value>(&native_result.stdout).ok();
+            record.checkpoint=native_receipt.as_ref().and_then(|v|
+                v.get("backup").or_else(||v.get("checkpoint")).and_then(Value::as_str).map(str::to_owned));
             if !native_result.success || record.checkpoint.is_none() {
                 record.status="uncertain".into();record.recovery=Some("Native result or checkpoint could not be confirmed; inspect before retry.".into());
                 premiere_acceptance_execution::save(&path,&record)?;
                 return Ok(ActionResult{success:false,tool,stdout:json!({"action_id":action_id,"status":"uncertain",
                     "retry_automatically":false}).to_string(),stderr:native_result.stderr,exit_code:None});
             }
-            let after=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await;
-            let verified=match after {Ok(after)=>record.finish(&after,true).unwrap_or_else(|_|{
-                record.status="uncertain".into();record.recovery=Some("Native post-state is incomplete; inspect before any retry.".into());false
-            }),Err(_)=>{
-                record.status="uncertain".into();record.recovery=Some("Post-inspection unavailable; do not retry or assume success.".into());false}};
+            let verified=if record.step=="scene_markers" {
+                let timeline_after=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await;
+                let target_unchanged=timeline_after.as_ref().ok()
+                    .and_then(|value|premiere_acceptance_execution::exact_clip(value,&record.fixture).ok())
+                    .is_some_and(|value|value==record.before);
+                if !target_unchanged {
+                    record.status="uncertain".into();
+                    record.recovery=Some("Scene-marker operation changed or obscured the exact clip identity; inspect checkpoint before any retry.".into());
+                    false
+                } else if let Some(receipt)=native_receipt.as_ref() {
+                    record.finish_scene_markers(receipt).unwrap_or_else(|_|{
+                        record.status="uncertain".into();record.recovery=Some("Native scene-marker receipt lacks a complete verified delta.".into());false
+                    })
+                } else {
+                    record.status="uncertain".into();record.recovery=Some("Native scene-marker receipt could not be decoded.".into());false
+                }
+            } else {
+                let after=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await;
+                match after {Ok(after)=>record.finish(&after,true).unwrap_or_else(|_|{
+                    record.status="uncertain".into();record.recovery=Some("Native post-state is incomplete; inspect before any retry.".into());false
+                }),Err(_)=>{
+                    record.status="uncertain".into();record.recovery=Some("Post-inspection unavailable; do not retry or assume success.".into());false}}
+            };
             if premiere_acceptance_execution::load(&path).is_ok_and(|latest|latest.cancellation_requested){record.cancellation_requested=true;}
             premiere_acceptance_execution::save(&path,&record)?;
-            if verified && record.step=="trim" {
+            if verified && matches!(record.step.as_str(),"trim"|"scene_markers") {
                 let report_path=premiere_acceptance_path(app)?;
                 let mut report=premiere_acceptance::load(&report_path)?;
                 if let Some(checkpoint)=record.checkpoint.as_deref(){
-                    report.verified_timeline_edit("trim","premiere_trim_clip",&record.premiere_version,
-                        &record.fixture.expected.project_guid,record.fixture.expected.sequence_guid.as_deref().unwrap_or(""),checkpoint)?;
+                    if record.step=="trim" {
+                        report.verified_timeline_edit("trim","premiere_trim_clip",&record.premiere_version,
+                            &record.fixture.expected.project_guid,record.fixture.expected.sequence_guid.as_deref().unwrap_or(""),checkpoint)?;
+                    } else {
+                        let marker_count=record.after.as_ref().and_then(|v|v.get("new_marker_count")).and_then(Value::as_u64).unwrap_or(0) as usize;
+                        let restored=record.after.as_ref().and_then(|v|v.get("selection_restored")).and_then(Value::as_bool).unwrap_or(false);
+                        report.verified_scene_detection("premiere_detect_scene_markers",&record.premiere_version,
+                            &record.fixture.expected.project_guid,record.fixture.expected.sequence_guid.as_deref().unwrap_or(""),
+                            checkpoint,marker_count,restored)?;
+                    }
                     premiere_acceptance::save(&report_path,&report)?;
                 }
             }
             Ok(ActionResult{success:verified,tool,stdout:json!({"action_id":action_id,"status":record.status,
-                "native_poststate_verified":verified,"capability_promoted":verified && record.step=="trim",
-                "checkpoint":record.checkpoint,"recovery":record.recovery,"cleanup_needed":record.step=="clone",
+                "native_poststate_verified":verified,"capability_promoted":verified && matches!(record.step.as_str(),"trim"|"scene_markers"),
+                "checkpoint":record.checkpoint,"recovery":record.recovery,
+                "cleanup_needed":matches!(record.step.as_str(),"clone"|"scene_markers"),
                 "retry_automatically":false}).to_string(),stderr:String::new(),exit_code:Some(if verified{0}else{1})})
         }
         ToolAction::PremiereAcceptanceProbe {group} => {
@@ -10338,11 +10379,12 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let export_complete=jobs.jobs.iter().filter(|j|j.encoder_completion_verified).count();
             let baseline=json!({"bridge_pair":verified("bridge_pair"),"project_inspection":verified("project_inspection"),
                 "timeline_inspection":verified("timeline_inspection"),"trim":verified("trim"),
+                "scene_edit_detection":verified("scene_edit_detection"),
                 "static_parameter_set":verified("static_parameter_set"),"visual_review":verified("visual_review"),
                 "checkpoint_recovery":recovery_count>0,"stale_expectation_host_tested":false,
                 "export_completion_verified":export_complete>0});
             let by_state=|state:&str|report.capabilities.iter().filter(|c|c.state==state).map(|c|c.name.as_str()).collect::<Vec<_>>();
-            Ok(ActionResult {success:true,tool,stdout:json!({"code_implementation_estimate_pct":86,
+            Ok(ActionResult {success:true,tool,stdout:json!({"code_implementation_estimate_pct":98,
                 "node_mock_verified_capabilities":report.capabilities.iter().filter(|c|c.code_tested).map(|c|c.name.as_str()).collect::<Vec<_>>(),
                 "node_test_run_attestation_persisted":false,"rust_verified":false,
                 "premiere_runtime_verified_count":native,"premiere_runtime_capability_count":total,

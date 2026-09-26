@@ -40,7 +40,7 @@ fn now() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default
 
 impl Action {
     pub fn new(id: String, step: String, fixture: Fixture, context: &Value, timeline: &Value) -> Result<Self,String> {
-        if !matches!(step.as_str(),"trim"|"move"|"clone") {return Err("Acceptance action is unsupported; no arbitrary bridge action.".into());}
+        if !matches!(step.as_str(),"trim"|"move"|"clone"|"scene_markers") {return Err("Acceptance action is unsupported; no arbitrary bridge action.".into());}
         fixture.expected.validate()?;
         if fixture.expected.clips.len()!=1 || fixture.kind!=fixture.expected.clips[0].kind
             || fixture.track!=fixture.expected.clips[0].track || fixture.clip_index!=fixture.expected.clips[0].clip_index
@@ -68,6 +68,11 @@ impl Action {
                     || !fixture.delta_seconds.is_some_and(|n|n.is_finite() && n!=0.0 && n.abs()<=3.0 && start+n>=0.0 && end+n<=86400.0) {
                     return Err("Acceptance move/clone requires a bounded offset of at most three seconds.".into());
                 }
+            },
+            "scene_markers" => {
+                if fixture.kind!="video" || fixture.start_seconds.is_some() || fixture.end_seconds.is_some() || fixture.delta_seconds.is_some() {
+                    return Err("Scene marker acceptance requires one exact video clip and no timing mutation fields.".into());
+                }
             }, _=> unreachable!()
         }
         let project_path=context.get("projectPath").and_then(Value::as_str).unwrap_or("");
@@ -82,7 +87,9 @@ impl Action {
     }
     pub fn validate(&self)->Result<(),String>{
         self.fixture.expected.validate()?;
-        if self.schema_version!=1 || self.group!=2 || !matches!(self.step.as_str(),"trim"|"move"|"clone")
+        if self.schema_version!=1 || self.group!=2 || !matches!(self.step.as_str(),"trim"|"move"|"clone"|"scene_markers")
+            || (self.step=="scene_markers" && (self.fixture.kind!="video" || self.fixture.start_seconds.is_some()
+                || self.fixture.end_seconds.is_some() || self.fixture.delta_seconds.is_some()))
             || !matches!(self.status.as_str(),"prepared"|"executing"|"verified"|"uncertain"|"failed"|"cancelled")
             || self.action_id.is_empty() || self.action_id.len()>80 || self.project_path.is_empty() || self.project_path.len()>1024
             || self.premiere_version.is_empty() || self.premiere_version.len()>80
@@ -100,6 +107,34 @@ impl Action {
             return Err("Acceptance host snapshot stale; no edit launched.".into());
         } Ok(())
     }
+    pub fn finish_scene_markers(&mut self,native:&Value)->Result<bool,String>{
+        if self.status!="executing" {return Err("Acceptance action cannot be completed twice.".into());}
+        if self.step!="scene_markers" {return Err("Scene marker receipt supplied for a different acceptance step.".into());}
+        let result=native.get("result").ok_or("Scene detection acceptance receipt is missing native result.")?;
+        let new_markers=result.get("newMarkers").and_then(Value::as_array).ok_or("Scene detection marker delta is missing.")?;
+        let verified=native.get("native_accepted").and_then(Value::as_bool)==Some(true)
+            && native.get("verification_status").and_then(Value::as_str)==Some("verified_delta")
+            && result.get("mode").and_then(Value::as_str)==Some("markers")
+            && result.get("nativeAccepted").and_then(Value::as_bool)==Some(true)
+            && result.get("operationDispatched").and_then(Value::as_bool)==Some(true)
+            && result.get("selectionRestored").and_then(Value::as_bool)==Some(true)
+            && result.get("targetCount").and_then(Value::as_u64)==Some(1)
+            && result.get("markerObservationTruncated").and_then(Value::as_bool)==Some(false)
+            && !new_markers.is_empty() && new_markers.len()<=1000;
+        self.after=Some(json!({
+            "mode":"markers",
+            "native_accepted":result.get("nativeAccepted"),
+            "verification_status":native.get("verification_status"),
+            "selection_restored":result.get("selectionRestored"),
+            "target_count":result.get("targetCount"),
+            "new_marker_count":new_markers.len(),
+            "marker_observation_truncated":result.get("markerObservationTruncated")
+        }));
+        self.status=if verified {"verified"} else {"uncertain"}.into();
+        self.recovery=Some("A .prproj checkpoint is retained; generated scene markers were not removed automatically.".into());
+        self.validate()?;Ok(verified)
+    }
+
     pub fn finish(&mut self,after:&Value, native_accepted:bool)->Result<bool,String>{
         if self.status!="executing" {return Err("Acceptance action cannot be completed twice.".into());}
         let verified=native_accepted && verify(&self.step,&self.fixture,&self.before,after);
@@ -204,5 +239,16 @@ pub fn save(path:&Path,action:&Action)->Result<(),String>{
     #[test] fn verified_timing_requires_real_poststate(){let (f,c,mut t)=fixture();let mut a=Action::new("a".into(),"trim".into(),f,&c,&t).unwrap();
         a.status="executing".into();t["videoTracks"][0]["items"][0]["startSeconds"]=json!(0.5);
         assert!(a.finish(&t,true).unwrap());assert_eq!(a.status,"verified");
+    }
+    #[test] fn scene_marker_acceptance_needs_native_observed_delta(){
+        let (mut f,c,t)=fixture();f.start_seconds=None;f.end_seconds=None;f.delta_seconds=None;
+        let mut a=Action::new("a".into(),"scene_markers".into(),f,&c,&t).unwrap();
+        a.status="executing".into();
+        let receipt=json!({"native_accepted":true,"verification_status":"verified_delta","result":{
+            "mode":"markers","nativeAccepted":true,"operationDispatched":true,"selectionRestored":true,
+            "targetCount":1,"markerObservationTruncated":false,"newMarkers":[{"startSeconds":1.0}]
+        }});
+        assert!(a.finish_scene_markers(&receipt).unwrap());
+        assert_eq!(a.after.as_ref().unwrap()["new_marker_count"],1);
     }
 }

@@ -74,7 +74,7 @@ pub fn save(path:&Path, registration:&Registration) -> Result<(),String> {
 pub fn plan(group:u8, registration:Option<&Registration>, context:Option<&Value>) -> Result<Value,String> {
     let actions: &[(&str,&str,bool)] = match group {
         1 => &[("context","inspect_context",false),("timeline","premiere_timeline",false),("diagnostics","premiere_project_diagnostics",false)],
-        2 => &[("timeline","premiere_timeline",false),("trim","premiere_trim_clip",true),("move","premiere_move_clip",true),("clone","premiere_clone_clip",true),("transition","premiere_add_video_transition",true)],
+        2 => &[("timeline","premiere_timeline",false),("trim","premiere_trim_clip",true),("move","premiere_move_clip",true),("clone","premiere_clone_clip",true),("transition","premiere_add_video_transition",true),("scene_markers","premiere_detect_scene_markers",true)],
         3 => &[("inspect_effects","premiere_inspect_clip_effects",false),("effect","premiere_add_video_effect",true),("parameter","premiere_set_video_param_named",true),("keyframe","premiere_add_video_keyframe_named",true),("remove","premiere_remove_effect",true)],
         4 => &[("inspect_audio","premiere_inspect_audio_clip_effects",false),("parameter","premiere_set_audio_param_named",true),("automation","premiere_apply_audio_recipe",true)],
         5 => &[("inspect_graphics","premiere_inspect_mogrt_properties",false),("insert","premiere_insert_mogrt_path",true),("property","premiere_apply_video_recipe",true)],
