@@ -460,3 +460,14 @@ Conservative **feature-code coverage after AC: approximately 90%** (before 88%),
 - Media batches share one checkpoint, support cancellation between items and stop only on transport uncertainty; no native mutation is blindly retried. Real paired-host execution remains pending, so runtime verified stays **0%** and production ready remains **no**.
 
 Conservative **feature-code coverage after AD: approximately 93%** (before 90%), counting actual footage interpretation, preset sequence creation and work-area control only. Next real feature priority: AE professional interchange/frame delivery, then AF edit-job integration and optional AG scene-aware rough-cut building.
+
+
+### Module AE — professional interchange and native frame delivery (2026-09-26)
+
+- Added read-only `premiere_plan_interchange_export` plus real `premiere_export_fcpxml`, `premiere_export_otio` and `premiere_export_aaf`. The paired panel delegates to stable Adobe `ProjectConverter` APIs: FCPXML/OTIO since 26.2 and AAF since 26.3. Output collision blocks by default, explicit overwrite is high-risk, and every export requires exact project/sequence expectation without clip targets.
+- AAF uses only documented `AAFExportOptions` setters and `Constants.AAFExportAudioFormat`: audio format, bit depth, embed/explode, handle frames, interleave-without-effects, video mixdown, parent-folder preservation, audio effects, sample rate, source trim and optional existing mixdown preset. No invented option names or downstream-NLE compatibility claim.
+- Added `premiere_export_frame` on stable `Exporter.exportSequenceFrame` (25.6+) with exact sequence time, bounded dimensions and only Adobe-documented bmp/dpx/gif/jpg/exr/png/tga/tif formats. Added `premiere_export_review_frames` / cancellation for 1–16 explicit stills; no screenshot fallback.
+- Desktop results keep native acceptance separate from local output-file observation. ProjectConverter delivery reports completion only when Premiere accepted and the requested output file is observed; this still does not prove semantic fidelity in another editor. Uncertain result delivery is never blindly retried.
+- Added Rust validation coverage and Node structural/safety tests. Real paired-host execution remains pending; runtime verified stays **0%**, production ready **no**.
+
+Conservative **feature-code coverage after AE: approximately 96%** (before 93%), counting actual professional interchange and native frame delivery only. Next real feature priority: AF integration of AA–AE into professional edit jobs, then optional AG scene-aware rough-cut builder and real paired-host acceptance/bug fixing.

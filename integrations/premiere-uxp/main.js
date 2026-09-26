@@ -931,6 +931,138 @@ async function inspectExport() {
   };
 }
 
+async function exportInterchange(argumentsValue) {
+  const format = typeof argumentsValue?.format === "string" ? argumentsValue.format.toLowerCase() : "";
+  const output = typeof argumentsValue?.output === "string" ? argumentsValue.output.trim() : "";
+  const suppressUI = argumentsValue?.suppressUI !== false;
+  const optionsValue = argumentsValue?.aafOptions || null;
+
+  if (!["aaf","fcpxml","otio"].includes(format) || !output) {
+    throw new Error("Interchange export requires format aaf|fcpxml|otio and output path.");
+  }
+  if (!argumentsValue?._expected?.project_guid || !argumentsValue?._expected?.sequence_guid ||
+      (argumentsValue?._expected?.clips || []).length) {
+    throw new Error("Interchange export requires an exact project and sequence expectation without clip targets.");
+  }
+
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+
+  const converter = premiere.ProjectConverter;
+  let accepted = false;
+
+  if (format === "fcpxml") {
+    if (typeof converter?.exportAsFinalCutProXML !== "function") {
+      throw new Error("Final Cut Pro XML export requires Premiere 26.2+.");
+    }
+    accepted = Boolean(await converter.exportAsFinalCutProXML(sequence, output, suppressUI));
+  } else if (format === "otio") {
+    if (typeof converter?.exportAsOpenTimelineIO !== "function") {
+      throw new Error("OpenTimelineIO export requires Premiere 26.2+.");
+    }
+    accepted = Boolean(await converter.exportAsOpenTimelineIO(sequence, output, suppressUI));
+  } else {
+    if (typeof converter?.exportAAF !== "function" || typeof premiere.AAFExportOptions !== "function") {
+      throw new Error("AAF export requires Premiere 26.3+.");
+    }
+    if (!optionsValue) throw new Error("AAF export requires explicit options.");
+
+    let options = new premiere.AAFExportOptions();
+    const audioFormat = String(optionsValue.audioFileFormat || "").toLowerCase();
+    if (audioFormat === "wav") {
+      options = options.setAudioFileFormat(premiere.Constants.AAFExportAudioFormat.WAV);
+    } else if (audioFormat === "aiff") {
+      options = options.setAudioFileFormat(premiere.Constants.AAFExportAudioFormat.AIFF);
+    } else {
+      throw new Error("AAF audio format must be wav or aiff.");
+    }
+    options = options
+      .setBitsPerSample(Number(optionsValue.bitsPerSample))
+      .setEmbedAudio(Boolean(optionsValue.embedAudio))
+      .setExplodeToMono(Boolean(optionsValue.explodeToMono))
+      .setHandleFrames(Number(optionsValue.handleFrames))
+      .setInterleaveWithoutEffects(Boolean(optionsValue.interleaveWithoutEffects))
+      .setMixdownVideo(Boolean(optionsValue.mixdownVideo))
+      .setPreserveParentFolder(Boolean(optionsValue.preserveParentFolder))
+      .setRenderAudioEffects(Boolean(optionsValue.renderAudioEffects))
+      .setSampleRate(Number(optionsValue.sampleRate))
+      .setTrimSources(Boolean(optionsValue.trimSources));
+
+    const preset = typeof optionsValue.videoMixdownPresetPath === "string"
+      ? optionsValue.videoMixdownPresetPath.trim()
+      : "";
+    if (preset) options = options.setVideoMixdownPresetPath(preset);
+
+    accepted = Boolean(await converter.exportAAF(sequence, output, options));
+  }
+
+  return {
+    accepted,
+    format,
+    output,
+    suppressUI,
+    sequenceGuid:plainGuid(sequence.guid),
+    sequenceName:sequence.name || null,
+    apiSince:format === "aaf" ? "26.3" : "26.2",
+    completionVerified:false,
+    retrySafe:false
+  };
+}
+
+async function exportSequenceFrame(argumentsValue) {
+  const seconds = Number(argumentsValue?.seconds);
+  const output = typeof argumentsValue?.output === "string" ? argumentsValue.output.trim() : "";
+  const directory = typeof argumentsValue?.directory === "string" ? argumentsValue.directory.trim() : "";
+  const width = Number(argumentsValue?.width);
+  const height = Number(argumentsValue?.height);
+
+  if (!Number.isFinite(seconds) || seconds < 0 || seconds > 86400
+      || !output || !directory
+      || !Number.isInteger(width) || !Number.isInteger(height)
+      || width <= 0 || height <= 0 || width > 16384 || height > 16384) {
+    throw new Error("Frame export requires bounded time, output, directory and 1–16384 dimensions.");
+  }
+  if (!argumentsValue?._expected?.project_guid || !argumentsValue?._expected?.sequence_guid ||
+      (argumentsValue?._expected?.clips || []).length) {
+    throw new Error("Frame export requires exact project and sequence expectation without clip targets.");
+  }
+
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+  const end = await sequence.getEndTime();
+  if (Number.isFinite(end?.seconds) && seconds > end.seconds + 0.001) {
+    throw new Error("Frame export time is beyond the inspected sequence end.");
+  }
+  if (typeof premiere.Exporter?.exportSequenceFrame !== "function") {
+    throw new Error("Native sequence frame export requires Premiere 25.6+.");
+  }
+
+  const accepted = Boolean(await premiere.Exporter.exportSequenceFrame(
+    sequence,
+    premiere.TickTime.createWithSeconds(seconds),
+    output,
+    directory,
+    width,
+    height
+  ));
+
+  return {
+    accepted,
+    seconds,
+    output,
+    directory,
+    width,
+    height,
+    sequenceGuid:plainGuid(sequence.guid),
+    sequenceName:sequence.name || null,
+    apiSince:"25.6",
+    completionVerified:false,
+    retrySafe:false
+  };
+}
+
 async function exportSequence(argumentsValue) {
   const output =
     typeof argumentsValue?.output === "string"
@@ -5206,6 +5338,10 @@ async function dispatchNativeCommand(command) {
       return await deleteClip(command.arguments || {});
     case "inspect_export":
       return await inspectExport();
+    case "export_interchange":
+      return await exportInterchange(command.arguments || {});
+    case "export_sequence_frame":
+      return await exportSequenceFrame(command.arguments || {});
     case "export_sequence":
       return await exportSequence(command.arguments || {});
     default:

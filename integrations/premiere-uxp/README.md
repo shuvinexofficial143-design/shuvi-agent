@@ -240,3 +240,8 @@ The panel now exposes verified cross-track clone correlation plus native video/a
 ### Professional media and sequence preparation (AD)
 
 The panel now inspects `FootageInterpretation` and applies stable ClipProjectItem frame-rate/PAR/scale-to-frame/input-LUT actions, creates sequences from preset paths (26.3+) and reads/sets the active sequence work area through WorkAreaUtils (26.5+). Desktop code supplies path validation, project checkpoints, exact project/sequence expectations and bounded batch cancellation. See `docs/PREMIERE_MEDIA_PREP.md`.
+
+
+### Professional interchange and native frame delivery (AE)
+
+The panel now exposes stable ProjectConverter handoff for FCPXML/OTIO (26.2+) and AAF (26.3+), plus native sequence-frame export through Exporter.exportSequenceFrame (25.6+). Desktop staging validates output collision and typed AAF/frame inputs; outputs are observed after native acceptance and never silently retried. See `docs/PREMIERE_DELIVERY.md`.

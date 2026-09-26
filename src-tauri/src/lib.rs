@@ -37,6 +37,7 @@ mod premiere_transcript_rebuild;
 mod premiere_scene_detection;
 mod premiere_layering;
 mod premiere_media_prep;
+mod premiere_delivery;
 mod premiere_finishing;
 mod premiere_assembly;
 mod premiere_mogrt;
@@ -232,6 +233,14 @@ Cross-track clone computes native vertical offsets from inspected source/destina
 - premiere_add_marker: {"name":"marker name","marker_type":"Comment|Chapter|Segmentation|WebLink","seconds":10.0,"duration_seconds":0.0,"comments":"optional notes"}
 - premiere_remove_marker: {"marker_index":0}
 - premiere_export_sequence: {"output":"absolute output media path","preset":"optional absolute .epr preset path","queue_to_ame":false}
+- premiere_plan_interchange_export: {"request":{"format":"aaf|fcpxml|otio","output":"absolute output file","overwrite":false,"suppress_ui":true,"aaf_options":"required only for aaf; exact documented fields"}}
+- premiere_export_fcpxml: {"request":{"format":"fcpxml","output":"absolute output file","overwrite":false,"suppress_ui":true,"aaf_options":null},"expected":{"project_guid":"...","sequence_guid":"...","clips":[]}}
+- premiere_export_otio: {"request":{"format":"otio","output":"absolute output file","overwrite":false,"suppress_ui":true,"aaf_options":null},"expected":{"project_guid":"...","sequence_guid":"...","clips":[]}}
+- premiere_export_aaf: {"request":{"format":"aaf","output":"absolute output file","overwrite":false,"suppress_ui":true,"aaf_options":{"audio_file_format":"wav|aiff","bits_per_sample":24,"embed_audio":true,"explode_to_mono":false,"handle_frames":0,"interleave_without_effects":false,"mixdown_video":false,"preserve_parent_folder":false,"render_audio_effects":true,"sample_rate":48000,"trim_sources":false,"video_mixdown_preset_path":null}},"expected":{"project_guid":"...","sequence_guid":"...","clips":[]}}
+- premiere_export_frame: {"request":{"seconds":5,"output":"absolute output.png","width":1920,"height":1080,"overwrite":false},"expected":{"project_guid":"...","sequence_guid":"...","clips":[]}}
+- premiere_export_review_frames: {"batch":{"schema_version":1,"frames":[{"seconds":5,"output":"absolute frame-001.png","width":1920,"height":1080,"overwrite":false}]},"expected":{"project_guid":"...","sequence_guid":"...","clips":[]}}
+- premiere_cancel_review_frame_export: {}
+Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) APIs. Native frame export uses Exporter.exportSequenceFrame (25.6+) and Adobe-supported bmp/dpx/gif/jpg/exr/png/tga/tif formats. Output collision blocks by default; host acceptance and observed file metadata are reported separately.
 - premiere_plan_export: {"output":"absolute output media path","preset":"optional absolute .epr preset","queue_to_ame":false,"overwrite":false}
 - premiere_acceptance_report: {}
 - premiere_acceptance_probe: {"group":1}
@@ -525,6 +534,11 @@ enum ToolAction {
     PremiereCalibrationObserve { target: premiere_calibration::Target, semantic_role: Option<String> },
     PremiereCalibrationProbe { target: premiere_calibration::Target, delta: f64 },
     PremiereExportSequence { output: String, preset: Option<String>, queue_to_ame: bool, overwrite: bool },
+    PremierePlanInterchangeExport { request: premiere_delivery::InterchangeRequest },
+    PremiereExportInterchange { request: premiere_delivery::InterchangeRequest },
+    PremiereExportFrame { request: premiere_delivery::FrameRequest },
+    PremiereExportReviewFrames { batch: premiere_delivery::FrameBatch },
+    PremiereCancelReviewFrameExport,
     PremiereExportStatus { job_id: String },
     PremiereReadinessReport,
     PremiereSaveProject,
@@ -613,6 +627,8 @@ struct ActionState {
     layering_cancelled: AtomicBool,
     media_prep_running: AtomicBool,
     media_prep_cancelled: AtomicBool,
+    delivery_running: AtomicBool,
+    delivery_cancelled: AtomicBool,
     assembly_cancelled: AtomicBool,
 }
 
@@ -943,6 +959,13 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_organize_tracks"
         | "premiere_delete_clip"
         | "premiere_export_sequence"
+        | "premiere_plan_interchange_export"
+        | "premiere_export_fcpxml"
+        | "premiere_export_otio"
+        | "premiere_export_aaf"
+        | "premiere_export_frame"
+        | "premiere_export_review_frames"
+        | "premiere_cancel_review_frame_export"
         | "premiere_plan_export"
         | "premiere_export_status"
         | "premiere_readiness_report"
@@ -4705,6 +4728,77 @@ fn stage_tool(
                 format!("Group {group}: read-only host probe where implemented; no destructive test launches."),
                 RiskLevel::Low)
         }
+        "premiere_plan_interchange_export" => {
+            let request:premiere_delivery::InterchangeRequest=serde_json::from_value(
+                proposal.arguments.get("request").cloned().unwrap_or(Value::Null)
+            ).map_err(|e|format!("Invalid interchange export request: {e}"))?;
+            request.validate()?;
+            (
+                ToolAction::PremierePlanInterchangeExport {request},
+                "Preflight Premiere interchange export".into(),
+                "Validate format/output/collision/AAF options and inspect active project/sequence without writing output.".into(),
+                RiskLevel::Low,
+            )
+        }
+        "premiere_export_fcpxml" | "premiere_export_otio" | "premiere_export_aaf" => {
+            let mut request:premiere_delivery::InterchangeRequest=serde_json::from_value(
+                proposal.arguments.get("request").cloned().unwrap_or(Value::Null)
+            ).map_err(|e|format!("Invalid interchange export request: {e}"))?;
+            request.format=match proposal.tool.as_str(){
+                "premiere_export_fcpxml"=>"fcpxml".into(),
+                "premiere_export_otio"=>"otio".into(),
+                _=>"aaf".into(),
+            };
+            request.validate()?;
+            let expected=premiere_expectation.as_ref().ok_or("Interchange export requires expected project and sequence.")?;
+            if expected.sequence_guid.is_none()||!expected.clips.is_empty(){
+                return Err("Interchange export requires project/sequence expectation without clip targets.".into());
+            }
+            (
+                ToolAction::PremiereExportInterchange {request:request.clone()},
+                format!("Export Premiere sequence as {}",request.format.to_uppercase()),
+                format!("Write {} to {}; overwrite={}. Native acceptance and observed file metadata are reported separately.",request.format,request.output,request.overwrite),
+                RiskLevel::High,
+            )
+        }
+        "premiere_export_frame" => {
+            let request:premiere_delivery::FrameRequest=serde_json::from_value(
+                proposal.arguments.get("request").cloned().unwrap_or(Value::Null)
+            ).map_err(|e|format!("Invalid frame export request: {e}"))?;
+            request.validate()?;
+            let expected=premiere_expectation.as_ref().ok_or("Frame export requires expected project and sequence.")?;
+            if expected.sequence_guid.is_none()||!expected.clips.is_empty(){
+                return Err("Frame export requires project/sequence expectation without clip targets.".into());
+            }
+            (
+                ToolAction::PremiereExportFrame {request},
+                "Export Premiere sequence frame".into(),
+                "Use native Exporter.exportSequenceFrame for one exact timestamp/output; no screenshot fallback.".into(),
+                RiskLevel::Medium,
+            )
+        }
+        "premiere_export_review_frames" => {
+            let batch:premiere_delivery::FrameBatch=serde_json::from_value(
+                proposal.arguments.get("batch").cloned().unwrap_or(Value::Null)
+            ).map_err(|e|format!("Invalid review-frame batch: {e}"))?;
+            batch.validate()?;
+            let expected=premiere_expectation.as_ref().ok_or("Review-frame export requires expected project and sequence.")?;
+            if expected.sequence_guid.is_none()||!expected.clips.is_empty(){
+                return Err("Review-frame export requires project/sequence expectation without clip targets.".into());
+            }
+            (
+                ToolAction::PremiereExportReviewFrames {batch},
+                "Export Premiere review frame package".into(),
+                "Export 1–16 explicit native sequence frames with one project/sequence guard, per-frame output observation, cancellation and uncertainty stop.".into(),
+                RiskLevel::Medium,
+            )
+        }
+        "premiere_cancel_review_frame_export" => (
+            ToolAction::PremiereCancelReviewFrameExport,
+            "Cancel Premiere review-frame export".into(),
+            "Stop before the next native frame export; an already dispatched frame may still complete.".into(),
+            RiskLevel::Low,
+        ),
         "premiere_plan_export" => {
             let output = arg_string(&proposal.arguments, "output")?;
             let preset = arg_optional_string(&proposal.arguments, "preset");
@@ -10162,6 +10256,167 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 "unsupported_documented":by_state("unsupported_documented"),"blocked_environment":by_state("blocked_environment"),
                 "runtime_failed":by_state("runtime_failed"),
                 "note":"Code/mock coverage and native acceptance are distinct. Mandatory host recovery, stale expectation and export completion evidence remain absent."}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremierePlanInterchangeExport {request} => {
+            request.validate()?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let sequence_guid=context.pointer("/activeSequence/guid").and_then(Value::as_str).filter(|value|!value.is_empty())
+                .ok_or("Interchange export requires an active Premiere sequence.")?;
+            let project_guid=context.get("projectGuid").and_then(Value::as_str).filter(|value|!value.is_empty())
+                .ok_or("Interchange export requires an active Premiere project.")?;
+            let expected=PremiereExpectation{
+                project_guid:project_guid.into(),
+                project_path:context.get("projectPath").and_then(Value::as_str).map(str::to_string),
+                sequence_guid:Some(sequence_guid.into()),
+                clips:Vec::new(),
+            };
+            expected.validate()?;
+            let format=request.format.clone();
+            let output=request.output.clone();
+            Ok(ActionResult{
+                success:true,tool,
+                stdout:json!({
+                    "supported":true,
+                    "request":request,
+                    "expected":expected,
+                    "api_since":if format=="aaf"{"26.3"}else{"26.2"},
+                    "output_exists":Path::new(&output).exists(),
+                    "completion_verified":false
+                }).to_string(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PremiereExportInterchange {request} => {
+            request.validate()?;
+            let expected=premiere_bridge.expected.ok_or("Interchange export requires project/sequence expectation.")?;
+            let output=request.output.clone();
+            let format=request.format.clone();
+            let suppress_ui=request.suppress_ui;
+            let before=premiere_delivery::observed_file(&output);
+            let client=PremiereClient{bridge:&state.premiere_bridge,expected:Some(expected)};
+            let aaf_options=request.aaf_options.as_ref().map(|value|json!({
+                "audioFileFormat":value.audio_file_format.clone(),
+                "bitsPerSample":value.bits_per_sample,
+                "embedAudio":value.embed_audio,
+                "explodeToMono":value.explode_to_mono,
+                "handleFrames":value.handle_frames,
+                "interleaveWithoutEffects":value.interleave_without_effects,
+                "mixdownVideo":value.mixdown_video,
+                "preserveParentFolder":value.preserve_parent_folder,
+                "renderAudioEffects":value.render_audio_effects,
+                "sampleRate":value.sample_rate,
+                "trimSources":value.trim_sources,
+                "videoMixdownPresetPath":value.video_mixdown_preset_path.clone()
+            }));
+            let value=client.request(
+                "export_interchange",
+                json!({"format":format,"output":output,"suppressUI":suppress_ui,"aafOptions":aaf_options}),
+                Duration::from_secs(180),
+            ).await?;
+            let after=premiere_delivery::observed_file(&request.output);
+            let accepted=value.get("accepted").and_then(Value::as_bool)==Some(true);
+            let observed=after.get("observed").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{
+                success:accepted&&observed,tool,
+                stdout:json!({
+                    "native_result":value,"file_before":before,"file_after":after,
+                    "accepted":accepted,"file_observed":observed,
+                    "completion_verified":accepted&&observed,
+                    "compatibility_with_other_nles_guaranteed":false,
+                    "retry_safe":false
+                }).to_string(),
+                stderr:String::new(),exit_code:Some(if accepted&&observed{0}else{1})
+            })
+        }
+        ToolAction::PremiereExportFrame {request} => {
+            request.validate()?;
+            let expected=premiere_bridge.expected.ok_or("Frame export requires project/sequence expectation.")?;
+            let output=request.output.clone();
+            let path=Path::new(&output);
+            let directory=path.parent().ok_or("Frame export output has no parent directory.")?.to_string_lossy().to_string();
+            let before=premiere_delivery::observed_file(&output);
+            let client=PremiereClient{bridge:&state.premiere_bridge,expected:Some(expected)};
+            let value=client.request(
+                "export_sequence_frame",
+                json!({"seconds":request.seconds,"output":output,"directory":directory,"width":request.width,"height":request.height}),
+                Duration::from_secs(60),
+            ).await?;
+            let after=premiere_delivery::observed_file(&request.output);
+            let accepted=value.get("accepted").and_then(Value::as_bool)==Some(true);
+            let observed=after.get("observed").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{
+                success:accepted&&observed,tool,
+                stdout:json!({
+                    "native_result":value,"file_before":before,"file_after":after,
+                    "accepted":accepted,"file_observed":observed,
+                    "native_frame_export":true,"screenshot_fallback":false,"retry_safe":false
+                }).to_string(),
+                stderr:String::new(),exit_code:Some(if accepted&&observed{0}else{1})
+            })
+        }
+        ToolAction::PremiereCancelReviewFrameExport => {
+            state.delivery_cancelled.store(true,Ordering::Release);
+            Ok(ActionResult{
+                success:true,tool,
+                stdout:json!({"cancel_requested":true,"running":state.delivery_running.load(Ordering::Acquire)}).to_string(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PremiereExportReviewFrames {batch} => {
+            batch.validate()?;
+            if state.delivery_running.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){
+                return Err("Another Premiere review-frame export is running.".into());
+            }
+            let _guard=AcceptanceProbeGuard(&state.delivery_running);
+            state.delivery_cancelled.store(false,Ordering::Release);
+            let expected=premiere_bridge.expected.ok_or("Review-frame export requires project/sequence expectation.")?.clone();
+            let client=PremiereClient{bridge:&state.premiere_bridge,expected:Some(&expected)};
+            let mut results=Vec::new();
+            let mut uncertain=false;
+            for (index,frame) in batch.frames.iter().enumerate(){
+                if state.delivery_cancelled.load(Ordering::Acquire){break;}
+                let output=frame.output.clone();
+                let path=Path::new(&output);
+                let directory=path.parent().ok_or("Review frame output has no parent directory.")?.to_string_lossy().to_string();
+                match client.request(
+                    "export_sequence_frame",
+                    json!({"seconds":frame.seconds,"output":output,"directory":directory,"width":frame.width,"height":frame.height}),
+                    Duration::from_secs(60),
+                ).await {
+                    Ok(value)=>{
+                        let observation=premiere_delivery::observed_file(&frame.output);
+                        let accepted=value.get("accepted").and_then(Value::as_bool)==Some(true);
+                        let observed=observation.get("observed").and_then(Value::as_bool)==Some(true);
+                        results.push(json!({
+                            "index":index,"seconds":frame.seconds,"output":frame.output.clone(),
+                            "status":if accepted&&observed{"exported"}else{"failed"},
+                            "native_result":value,"file":observation
+                        }));
+                        if !accepted{break;}
+                    }
+                    Err(error)=>{
+                        let delivery_uncertain=error.contains("unknown")||error.contains("timed out")||error.contains("timeout")||error.contains("delivery");
+                        results.push(json!({
+                            "index":index,"seconds":frame.seconds,"output":frame.output.clone(),
+                            "status":if delivery_uncertain{"uncertain"}else{"failed"},
+                            "reason":error.chars().take(240).collect::<String>()
+                        }));
+                        if delivery_uncertain{uncertain=true;break;}
+                    }
+                }
+            }
+            let cancelled=state.delivery_cancelled.load(Ordering::Acquire);
+            let exported=results.iter().filter(|row|row["status"]=="exported").count();
+            let complete=!uncertain&&!cancelled&&exported==batch.frames.len();
+            Ok(ActionResult{
+                success:complete,tool,
+                stdout:json!({
+                    "requested":batch.frames.len(),"exported":exported,"results":results,
+                    "complete":complete,"cancelled":cancelled,"uncertain":uncertain,
+                    "native_frame_export":true,"screenshot_fallback":false,"retry_safe":false
+                }).to_string(),
+                stderr:String::new(),exit_code:Some(if complete{0}else{1})
+            })
         }
         ToolAction::PremierePlanExport {output,preset,queue_to_ame,overwrite} => {
             let context=premiere_bridge.request("inspect_export",json!({}),Duration::from_secs(12)).await?;

@@ -365,3 +365,8 @@ Track organization resolves existing VideoTrack/AudioTrack/CaptionTrack objects,
 `premiere_media_prep.rs` owns bounded project-item preparation and work-area schemas. The UXP panel reads native `FootageInterpretation`/LUT/proxy/offline state and applies only reviewed `ClipProjectItem` actions for frame-rate override, pixel aspect, Scale to Frame Size and input LUT. Desktop mutations remain project-checkpointed and project expectation-guarded; batches operate one exact project item at a time and support cooperative cancellation. Native readback distinguishes verified fields from Scale-to-Frame's current accepted-unverified boundary.
 
 Sequence preset creation validates the preset path in Rust before invoking `Project.createSequenceWithPresetPath`; WorkAreaUtils operations are version-gated by method availability and verify in/out readback. See [PREMIERE_MEDIA_PREP.md](PREMIERE_MEDIA_PREP.md).
+
+
+### Professional interchange and native frame delivery (AE)
+
+`premiere_delivery.rs` owns bounded output/collision, AAF option and frame-package schemas. The UXP panel routes FCPXML/OTIO/AAF to stable `ProjectConverter` methods and native stills to `Exporter.exportSequenceFrame`. Desktop code validates absolute output paths, existing parents, overwrite intent and optional AAF mixdown preset before staging high-risk writes. Project/sequence expectations remain mandatory. After native completion, the desktop observes output metadata so host acceptance and file presence are reported independently; no external-NLE fidelity guarantee is inferred. Review-frame batches reuse one expectation and cooperative cancellation. See [PREMIERE_DELIVERY.md](PREMIERE_DELIVERY.md).
