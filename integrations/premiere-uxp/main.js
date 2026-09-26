@@ -126,6 +126,11 @@ async function clipTargetSignature(project, sequence, item, kind, track, clipInd
 function commandClipTargets(command) {
   const args = command.arguments || {};
   if (command.action === "create_subsequence") return args.targets || [];
+  if (command.action === "scene_edit_detection") {
+    return Array.isArray(args.targets)
+      ? args.targets.map(target => ({kind: "video", track: target.track, clipIndex: target.clip_index ?? target.clipIndex}))
+      : [];
+  }
   if (command.action === "roll_edit") return [
     {kind: args.kind, track: args.track, clipIndex: args.leftClipIndex},
     {kind: args.kind, track: args.track, clipIndex: args.rightClipIndex}
@@ -1788,6 +1793,300 @@ async function getSequenceMarkers() {
   if (!sequence) throw new Error("No active Premiere sequence.");
   const markers = await premiere.Markers.getMarkers(sequence);
   return { project, sequence, markers };
+}
+
+async function sceneDetectionCapabilities() {
+  const operation = premiere.Constants?.SequenceOperation;
+  const supported =
+    typeof premiere.SequenceUtils?.performSceneEditDetectionOnSelection === "function" &&
+    typeof premiere.TrackItemSelection?.createEmptySelection === "function";
+  return {
+    supported,
+    apiSince: "25.6",
+    applyCut: supported && operation?.APPLYCUT != null,
+    createMarker: supported && operation?.CREATEMARKER != null,
+    selectionRead: true,
+    selectionWrite: true,
+    stableConstants: {
+      applyCut: operation?.APPLYCUT ?? null,
+      createMarker: operation?.CREATEMARKER ?? null
+    },
+    reason: supported ? null : "Native SequenceUtils scene edit detection or TrackItemSelection is unavailable."
+  };
+}
+
+async function markerRowsForOwner(owner, ownerKind, ownerId) {
+  const markerCollection = await premiere.Markers.getMarkers(owner);
+  const values = await markerCollection.getMarkers([]);
+  const rows = [];
+  for (const marker of values.slice(0, 1000)) {
+    const [name, type, start, duration, comments] = await Promise.all([
+      marker.getName(), marker.getType(), marker.getStart(), marker.getDuration(), marker.getComments()
+    ]);
+    let guid = null;
+    try { guid = plainGuid(marker.guid); } catch {}
+    rows.push({
+      ownerKind,
+      ownerId,
+      guid,
+      name: name || null,
+      type: type || null,
+      startSeconds: start?.seconds ?? 0,
+      durationSeconds: duration?.seconds ?? 0,
+      comments: comments || ""
+    });
+  }
+  rows.sort((a,b) => a.startSeconds - b.startSeconds || String(a.name).localeCompare(String(b.name)));
+  return {rows, truncated: values.length > 1000};
+}
+
+function markerKey(row) {
+  return row.guid
+    ? [row.ownerKind,row.ownerId,"guid",row.guid].join("|")
+    : [row.ownerKind,row.ownerId,row.name,row.type,row.startSeconds,row.durationSeconds,row.comments].join("|");
+}
+
+function markerDelta(beforeRows, afterRows) {
+  const counts = new Map();
+  for (const row of beforeRows) {
+    const key = markerKey(row);
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  const added = [];
+  for (const row of afterRows) {
+    const key = markerKey(row);
+    const remaining = counts.get(key) || 0;
+    if (remaining > 0) counts.set(key, remaining - 1);
+    else added.push(row);
+  }
+  return added;
+}
+
+async function sourceMarkerSnapshot(resolved) {
+  const owners = new Map();
+  for (const entry of resolved) {
+    const projectItem = await entry.item.getProjectItem();
+    const id = await projectItemId(projectItem);
+    if (id && !owners.has(id)) owners.set(id, projectItem);
+  }
+  const rows = [];
+  let truncated = false;
+  for (const [id, owner] of owners) {
+    try {
+      const result = await markerRowsForOwner(owner, "project_item", id);
+      rows.push(...result.rows);
+      truncated ||= result.truncated;
+    } catch {
+      // Some project items may not expose markers. Keep sequence-marker verification available.
+    }
+  }
+  return {rows: rows.slice(0, 2000), truncated: truncated || rows.length > 2000};
+}
+
+async function sceneSelectedSnapshot(project, sequence, resolved) {
+  const rows = [];
+  for (const entry of resolved) {
+    const [start,end,input,output,projectItem,name,speed] = await Promise.all([
+      entry.item.getStartTime(), entry.item.getEndTime(), entry.item.getInPoint(), entry.item.getOutPoint(),
+      entry.item.getProjectItem(), entry.item.getName(), entry.item.getSpeed()
+    ]);
+    const mediaId = await projectItemId(projectItem);
+    const signature = await clipTargetSignature(project, sequence, entry.item, "video", entry.trackIndex, entry.clipIndex);
+    if (!mediaId || !Number.isFinite(start?.seconds) || !Number.isFinite(end?.seconds) || end.seconds <= start.seconds
+        || !Number.isFinite(input?.seconds) || !Number.isFinite(output?.seconds) || output.seconds <= input.seconds) {
+      throw new Error("Scene detection target identity/timing is unavailable.");
+    }
+    rows.push({
+      track: entry.trackIndex,
+      clipIndex: entry.clipIndex,
+      mediaId,
+      name: name || null,
+      startSeconds: start.seconds,
+      endSeconds: end.seconds,
+      sourceInSeconds: input.seconds,
+      sourceOutSeconds: output.seconds,
+      speed: Number.isFinite(speed) ? speed : null,
+      signature
+    });
+  }
+  return rows;
+}
+
+async function sceneSegmentsAfter(project, sequence, originals) {
+  const segments = [];
+  const epsilon = 0.001;
+  for (let targetIndex = 0; targetIndex < originals.length; targetIndex += 1) {
+    const original = originals[targetIndex];
+    const track = await sequence.getVideoTrack(original.track);
+    if (!track) throw new Error("Scene detection destination track disappeared.");
+    const items = await sortedClipItems(track);
+    for (let clipIndex = 0; clipIndex < items.length; clipIndex += 1) {
+      const item = items[clipIndex];
+      const [start,end,projectItem] = await Promise.all([
+        item.getStartTime(), item.getEndTime(), item.getProjectItem()
+      ]);
+      const mediaId = await projectItemId(projectItem);
+      if (mediaId !== original.mediaId || !Number.isFinite(start?.seconds) || !Number.isFinite(end?.seconds)) continue;
+      if (end.seconds <= original.startSeconds + epsilon || start.seconds >= original.endSeconds - epsilon) continue;
+      const clippedStart = Math.max(start.seconds, original.startSeconds);
+      const clippedEnd = Math.min(end.seconds, original.endSeconds);
+      if (clippedEnd <= clippedStart + epsilon) continue;
+      const signature = await clipTargetSignature(project, sequence, item, "video", original.track, clipIndex);
+      segments.push({
+        targetIndex,
+        track: original.track,
+        clipIndex,
+        mediaId,
+        startSeconds: clippedStart,
+        endSeconds: clippedEnd,
+        durationSeconds: clippedEnd - clippedStart,
+        signature,
+        source: "scene_cut"
+      });
+      if (segments.length > 256) throw new Error("Scene detection produced more than 256 bounded segments.");
+    }
+  }
+  segments.sort((a,b) => a.startSeconds - b.startSeconds || a.track - b.track || a.clipIndex - b.clipIndex);
+  return segments;
+}
+
+async function timelineVideoClipCount(sequence) {
+  const count = await sequence.getVideoTrackCount();
+  let total = 0;
+  for (let index = 0; index < count; index += 1) {
+    const track = await sequence.getVideoTrack(index);
+    total += (await sortedClipItems(track)).length;
+    if (total > 5000) throw new Error("Scene detection timeline exceeds the 5000-video-clip verification bound.");
+  }
+  return total;
+}
+
+async function sceneEditDetection(argumentsValue) {
+  const mode = typeof argumentsValue?.mode === "string" ? argumentsValue.mode.toLowerCase() : "";
+  const targets = Array.isArray(argumentsValue?.targets) ? argumentsValue.targets : [];
+  if (!["cuts","markers"].includes(mode)) throw new Error("Scene detection mode must be cuts or markers.");
+  if (!targets.length || targets.length > 16) throw new Error("Scene detection requires 1–16 exact video targets.");
+
+  const capabilities = await sceneDetectionCapabilities();
+  if (!capabilities.supported || (mode === "cuts" && !capabilities.applyCut) || (mode === "markers" && !capabilities.createMarker)) {
+    throw new Error("Requested native stable scene detection operation is unavailable.");
+  }
+
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+
+  const resolved = [];
+  const seen = new Set();
+  for (const target of targets) {
+    const track = Number(target?.track);
+    const clipIndex = Number(target?.clip_index ?? target?.clipIndex);
+    if (!Number.isInteger(track) || track < 0 || track > 128 || !Number.isInteger(clipIndex) || clipIndex < 0 || clipIndex > 10000) {
+      throw new Error("Scene detection target is outside bounds.");
+    }
+    const key = track + ":" + clipIndex;
+    if (seen.has(key)) throw new Error("Scene detection targets must be unique.");
+    seen.add(key);
+    resolved.push(await resolveSubsequenceTarget(sequence, {kind:"video",track,clipIndex}));
+  }
+
+  const originals = await sceneSelectedSnapshot(project, sequence, resolved);
+  const beforeClipCount = await timelineVideoClipCount(sequence);
+  const sequenceMarkersBefore = await markerRowsForOwner(sequence, "sequence", plainGuid(sequence.guid));
+  const sourceMarkersBefore = await sourceMarkerSnapshot(resolved);
+  const previousSelection = await sequence.getSelection();
+  const previousItems = await previousSelection.getTrackItems();
+
+  let nativeAccepted = false;
+  let selectionRestored = false;
+  let operationDispatched = false;
+  try {
+    const selected = await replaceSequenceSelection(sequence, resolved.map(entry => entry.item));
+    if (selected === false) throw new Error("Premiere could not set the exact scene detection selection.");
+    const activeSelection = await sequence.getSelection();
+    const activeItems = await activeSelection.getTrackItems();
+    if (activeItems.length !== resolved.length) throw new Error("Scene detection selection count does not match the explicit request.");
+    const operation = mode === "cuts"
+      ? premiere.Constants.SequenceOperation.APPLYCUT
+      : premiere.Constants.SequenceOperation.CREATEMARKER;
+    operationDispatched = true;
+    nativeAccepted = Boolean(await premiere.SequenceUtils.performSceneEditDetectionOnSelection(operation, activeSelection));
+  } finally {
+    try { selectionRestored = (await replaceSequenceSelection(sequence, previousItems)) !== false; } catch {}
+  }
+
+  const afterClipCount = await timelineVideoClipCount(sequence);
+  const sequenceMarkersAfter = await markerRowsForOwner(sequence, "sequence", plainGuid(sequence.guid));
+  const sourceMarkersAfter = await sourceMarkerSnapshot(resolved);
+  const newSequenceMarkers = markerDelta(sequenceMarkersBefore.rows, sequenceMarkersAfter.rows);
+  const newSourceMarkers = markerDelta(sourceMarkersBefore.rows, sourceMarkersAfter.rows);
+  const newMarkers = [...newSequenceMarkers, ...newSourceMarkers].slice(0, 1000);
+
+  let segments = [];
+  if (mode === "cuts") {
+    segments = await sceneSegmentsAfter(project, sequence, originals);
+  } else {
+    for (let targetIndex = 0; targetIndex < originals.length; targetIndex += 1) {
+      const original = originals[targetIndex];
+      const mapped = [];
+      for (const row of newSequenceMarkers) {
+        if (Number.isFinite(row.startSeconds) && row.startSeconds > original.startSeconds && row.startSeconds < original.endSeconds) {
+          mapped.push(row.startSeconds);
+        }
+      }
+      if (Math.abs((original.speed ?? 1) - 1) <= 0.0001) {
+        for (const row of newSourceMarkers) {
+          if (row.ownerId !== original.mediaId || !Number.isFinite(row.startSeconds)) continue;
+          if (row.startSeconds <= original.sourceInSeconds || row.startSeconds >= original.sourceOutSeconds) continue;
+          mapped.push(original.startSeconds + (row.startSeconds - original.sourceInSeconds));
+        }
+      }
+      const times = [...new Set(mapped.map(value => Math.round(value * 1000000) / 1000000))]
+        .filter(value => value > original.startSeconds && value < original.endSeconds)
+        .sort((a,b)=>a-b);
+      if (!times.length) continue;
+      const edges = [original.startSeconds,...times,original.endSeconds];
+      for (let i=0;i+1<edges.length;i+=1) {
+        if (segments.length >= 256) throw new Error("Scene marker segmentation exceeds the 256-segment bound.");
+        if (edges[i+1] > edges[i]) segments.push({
+          targetIndex,
+          track: original.track,
+          startSeconds:edges[i],
+          endSeconds:edges[i+1],
+          durationSeconds:edges[i+1]-edges[i],
+          source:"scene_marker"
+        });
+      }
+    }
+  }
+
+  const verifiedDelta = mode === "cuts"
+    ? afterClipCount > beforeClipCount || segments.length > originals.length
+    : newMarkers.length > 0;
+  const reviewTimes = segments.slice(0,8).map(row => row.startSeconds + (row.endSeconds-row.startSeconds)/2);
+
+  return {
+    mode,
+    apiSince:"25.6",
+    nativeAccepted,
+    operationDispatched,
+    selectionRestored,
+    targetCount:resolved.length,
+    beforeVideoClipCount:beforeClipCount,
+    afterVideoClipCount:afterClipCount,
+    beforeSequenceMarkerCount:sequenceMarkersBefore.rows.length,
+    afterSequenceMarkerCount:sequenceMarkersAfter.rows.length,
+    beforeSourceMarkerCount:sourceMarkersBefore.rows.length,
+    afterSourceMarkerCount:sourceMarkersAfter.rows.length,
+    newMarkers,
+    markerObservationTruncated:sequenceMarkersBefore.truncated || sequenceMarkersAfter.truncated || sourceMarkersBefore.truncated || sourceMarkersAfter.truncated,
+    segments,
+    segmentCount:segments.length,
+    reviewTimes,
+    verificationStatus: nativeAccepted ? (verifiedDelta ? "verified_delta" : "accepted_unverified") : "native_rejected",
+    runtimeVerified:false,
+    blindRetry:false
+  };
 }
 
 async function listMarkers() {
@@ -4313,6 +4612,10 @@ async function dispatchNativeCommand(command) {
       return await planVideoRecipe(command.arguments);
     case "timeline_capabilities":
       return await timelineCapabilities();
+    case "scene_detection_capabilities":
+      return await sceneDetectionCapabilities();
+    case "scene_edit_detection":
+      return await sceneEditDetection(command.arguments || {});
     case "inspect_timeline":
       return await inspectTimeline();
     case "caption_tracks":

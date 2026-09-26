@@ -428,3 +428,14 @@ Conservative feature-code estimate after Z: approximately **84%**. Runtime verif
 Conservative **feature-code coverage: approximately 86%** (before 84%), counting usable interior source-rebuild editing only. Readiness report's stale 75% code estimate is synchronized to this value. **Runtime verified: 0%. Production ready: no.** No paired Premiere evidence was created from mocks.
 
 Continuation boundary after AA: **AB, AC, AD, AE and AF remain pending**. Next: AB scene edit detection, first proving the operation strings in official stable docs/types/samples, then selection, delta verification and bounded shot segmentation. Follow with cross-track layer/track workflows, media/sequence preparation, interchange/frame delivery, and explicit edit-job integration. Native arbitrary split, speed writes, masks, native caption creation/editing, multicam editing and inferred linked membership remain unsupported.
+
+
+### Module AB — native Scene Edit Detection and shot segmentation (2026-09-26)
+
+- Added read-only `premiere_plan_scene_detection` plus native `premiere_detect_scene_markers` and high-risk `premiere_detect_scene_cuts`. The paired panel uses stable Adobe UXP `SequenceUtils.performSceneEditDetectionOnSelection` with documented `Constants.SequenceOperation.CREATEMARKER` / `APPLYCUT` (API since 25.6); no guessed operation strings or beta-only dependency.
+- Detection accepts only 1–16 exact inspected video clips. Existing target expectations now cover every temporary selection member. The panel snapshots the previous selection, sets only the requested TrackItems, dispatches one native operation and attempts selection restoration. Mutation takes a durable `.prproj` checkpoint and is never blindly retried after uncertain delivery.
+- Verification does not trust native `true` alone: cut mode correlates same-media pieces on the original track/range and bounds shot extraction to 256 segments; marker mode observes both sequence and source-item marker deltas. Source marker timing is mapped to sequence time only for proven ordinary 1x clips with inspected source in/out timing. Native acceptance with no observable delta is `accepted_unverified`, not runtime verified.
+- Native results expose at most eight representative scene midpoints for the existing `premiere_review_frames` workflow; scene detection itself makes no semantic shot labels and launches no automatic correction loop.
+- Added Rust planning tests and Node structural/safety tests. Real paired Premiere execution remains pending; runtime verified therefore remains **0%** and production ready remains **no**.
+
+Conservative **feature-code coverage after AB: approximately 88%** (before 86%), counting actual marker/cut Scene Edit Detection and bounded shot segmentation, not tests/docs. Next real feature priority: AC cross-track clone/layering and track organization, then AD media/sequence preparation, AE interchange/frame delivery and AF edit-job integration.

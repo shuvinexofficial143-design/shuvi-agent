@@ -34,6 +34,7 @@ mod premiere_subtitles;
 mod premiere_dialogue;
 mod premiere_talking_head;
 mod premiere_transcript_rebuild;
+mod premiere_scene_detection;
 mod premiere_finishing;
 mod premiere_assembly;
 mod premiere_mogrt;
@@ -160,6 +161,10 @@ Available tools:
 - premiere_plan_transcript_rebuild: {"request":{"schema_version":1,"item_id":"exact transcript/source item","source":{"track":0,"clip_index":0},"transcript_source_offset":0.0,"removals":[{"segment_id":"seg-0002"}],"destination":{"mode":"explicit_empty_target_sequence","sequence_guid":"different empty sequence GUID","video_track":0,"audio_track":0},"take_video":true,"take_audio":false,"gap_seconds":0.0}}
 - premiere_apply_transcript_rebuild: {"request":"same structured request as plan","plan_snapshot":"copy exact plan_snapshot","expected":"copy exact source expectation from plan"}
 - premiere_cancel_transcript_rebuild: {}
+- premiere_plan_scene_detection: {"request":{"schema_version":1,"mode":"cuts|markers","targets":[{"track":0,"clip_index":2,"signature":"copy exact targetSignature from timeline inspection"}]}}
+- premiere_detect_scene_markers: {"request":{"schema_version":1,"mode":"markers","targets":[{"track":0,"clip_index":2,"signature":"exact inspected signature"}]},"expected":"copy exact expectation from scene plan"}
+- premiere_detect_scene_cuts: {"request":{"schema_version":1,"mode":"cuts","targets":[{"track":0,"clip_index":2,"signature":"exact inspected signature"}]},"expected":"copy exact expectation from scene plan"}
+Scene Edit Detection uses stable SequenceUtils.performSceneEditDetectionOnSelection and Constants.SequenceOperation.CREATEMARKER/APPLYCUT (API since Premiere 25.6). Only explicit video targets are selected. Mutation checkpoints the project, never blindly retries, attempts to restore the previous selection and verifies native marker/timeline deltas after the call. A native true without observable delta remains accepted_unverified, not runtime-verified.
 Transcript rebuild handles explicit interior text removal by creating and inserting KEEP subclips, never a fabricated split. Premiere 26.3+ required. Source stays active and untouched; destination must be a different explicitly supplied completely empty sequence, with existing video/audio tracks and no caption tracks. Choose this strategy explicitly; no silent fallback from direct cuts. Only ordinary forward 1x media is supported. take_audio includes only that same source's audio; separate external dialogue requires a separate explicit mapped workflow and is unsupported here. Effects/keyframes/markers are not copied. Cancellation can leave created subclips and an incomplete destination; inspect before a fresh plan, never blindly retry.
 - premiere_list_transcription_languages: {}
 - premiere_transcribe_item: {"item_id":"clip project item id","language":"optional language code such as en-US"}
@@ -451,6 +456,8 @@ enum ToolAction {
     PremiereTranscriptCuts { request: premiere_talking_head::Request, apply: bool, transcript_snapshot: Option<String> },
     PremiereTranscriptRebuild { request: premiere_transcript_rebuild::Request, apply: bool, plan_snapshot: Option<String> },
     PremiereCancelTranscriptRebuild,
+    PremierePlanSceneDetection { request: premiere_scene_detection::Request },
+    PremiereSceneDetection { request: premiere_scene_detection::Request },
     PremiereBatchFinish { targets: Vec<Value> },
     PremiereFinishMediaBatch { request: premiere_finishing::Request, provider: Option<ProviderContext> },
     PremiereBatchFinishCancel,
@@ -867,6 +874,9 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_plan_transcript_rebuild"
         | "premiere_apply_transcript_rebuild"
         | "premiere_cancel_transcript_rebuild"
+        | "premiere_plan_scene_detection"
+        | "premiere_detect_scene_markers"
+        | "premiere_detect_scene_cuts"
         | "premiere_list_transcription_languages"
         | "premiere_transcribe_item"
         | "premiere_export_transcript"
@@ -2316,6 +2326,41 @@ fn stage_tool(
                 if apply {RiskLevel::High} else {RiskLevel::Low})
         }
         "premiere_cancel_transcript_rebuild" => (ToolAction::PremiereCancelTranscriptRebuild, "Cancel transcript rebuild".into(), "Stop before the next subclip or insertion; completed pieces remain available.".into(), RiskLevel::Low),
+        "premiere_plan_scene_detection" => {
+            let request: premiere_scene_detection::Request = serde_json::from_value(
+                proposal.arguments.get("request").cloned().unwrap_or(Value::Null)
+            ).map_err(|e| format!("Invalid scene detection request: {e}"))?;
+            request.validate()?;
+            (
+                ToolAction::PremierePlanSceneDetection { request },
+                "Plan native Premiere scene detection".into(),
+                "Verify explicit inspected video targets and stable native operation availability; no selection or timeline mutation.".into(),
+                RiskLevel::Low,
+            )
+        }
+        "premiere_detect_scene_markers" | "premiere_detect_scene_cuts" => {
+            let mut request: premiere_scene_detection::Request = serde_json::from_value(
+                proposal.arguments.get("request").cloned().unwrap_or(Value::Null)
+            ).map_err(|e| format!("Invalid scene detection request: {e}"))?;
+            request.mode = if proposal.tool == "premiere_detect_scene_cuts" {"cuts".into()} else {"markers".into()};
+            request.validate()?;
+            let expected = premiere_expectation.as_ref().ok_or("Scene detection mutation requires the exact expectation returned by the plan.")?;
+            if expected.sequence_guid.is_none() || expected.clips.len() != request.targets.len() {
+                return Err("Scene detection requires one exact video expectation for every explicit target.".into());
+            }
+            for target in &request.targets {
+                if !expected.clips.iter().any(|clip| clip.kind=="video" && clip.track==target.track
+                    && clip.clip_index==target.clip_index && clip.signature==target.signature) {
+                    return Err("Scene detection expectation does not match an explicit inspected target.".into());
+                }
+            }
+            (
+                ToolAction::PremiereSceneDetection { request: request.clone() },
+                if request.mode=="cuts" {"Run native Premiere scene cut detection"} else {"Run native Premiere scene marker detection"}.into(),
+                "Set only the exact requested video clips as a temporary native selection, dispatch one stable Scene Edit Detection operation, inspect marker/timeline deltas, and never retry uncertain mutation.".into(),
+                if request.mode=="cuts" {RiskLevel::High} else {RiskLevel::Medium},
+            )
+        }
         "premiere_plan_transcript_cuts" => {
             let request: premiere_talking_head::Request = serde_json::from_value(
                 proposal.arguments.get("request").cloned().unwrap_or(Value::Null)
@@ -6562,6 +6607,56 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let mut arguments = target.bridge_arguments(); arguments["expectedSignature"] = json!(expected_signature);
             let value = premiere_bridge.request("remove_effect", arguments, Duration::from_secs(20)).await?;
             Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&json!({"backup":backup,"result":value})).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
+        }
+        ToolAction::PremierePlanSceneDetection {request} => {
+            request.validate()?;
+            let capabilities = premiere_bridge.request("scene_detection_capabilities", json!({}), Duration::from_secs(10)).await?;
+            let timeline = premiere_bridge.request("inspect_timeline", json!({}), Duration::from_secs(25)).await?;
+            let plan = premiere_scene_detection::build_plan(&request, &timeline, &capabilities)?;
+            Ok(ActionResult {
+                success:true,
+                tool,
+                stdout:serde_json::to_string_pretty(&plan).unwrap_or_else(|_| "{}".into()),
+                stderr:String::new(),
+                exit_code:Some(0),
+            })
+        }
+        ToolAction::PremiereSceneDetection {request} => {
+            request.validate()?;
+            let capabilities = premiere_bridge.request("scene_detection_capabilities", json!({}), Duration::from_secs(10)).await?;
+            let timeline = premiere_bridge.request("inspect_timeline", json!({}), Duration::from_secs(25)).await?;
+            let plan = premiere_scene_detection::build_plan(&request, &timeline, &capabilities)?;
+            if plan.get("supported").and_then(Value::as_bool) != Some(true) {
+                return Err(plan.get("reason").and_then(Value::as_str).unwrap_or("Native scene detection is unavailable.").to_string());
+            }
+            let expected = premiere_bridge.expected.ok_or("Scene detection requires exact approved Premiere expectations.")?;
+            if plan.get("expected") != Some(&serde_json::to_value(expected).map_err(|e|e.to_string())?) {
+                return Err("Scene detection target/project state changed since planning; no operation was dispatched.".into());
+            }
+            let checkpoint = backup_premiere_project(&premiere_bridge).await?;
+            let client = PremiereClient { bridge:&state.premiere_bridge, expected:Some(expected) };
+            let result = client.request(
+                "scene_edit_detection",
+                json!({"mode":request.mode,"targets":request.targets}),
+                Duration::from_secs(180),
+            ).await?;
+            let accepted = result.get("nativeAccepted").and_then(Value::as_bool)==Some(true);
+            let verification = result.get("verificationStatus").and_then(Value::as_str).unwrap_or("unknown");
+            Ok(ActionResult {
+                success:accepted,
+                tool,
+                stdout:json!({
+                    "checkpoint":checkpoint,
+                    "plan":plan,
+                    "result":result,
+                    "native_accepted":accepted,
+                    "verification_status":verification,
+                    "runtime_verified":false,
+                    "retry_safe":false
+                }).to_string(),
+                stderr:String::new(),
+                exit_code:Some(if accepted {0}else{1}),
+            })
         }
         ToolAction::PremiereCancelTranscriptRebuild => {
             state.rebuild_cancelled.store(true, Ordering::Release);

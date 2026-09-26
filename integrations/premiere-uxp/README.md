@@ -225,3 +225,8 @@ Use clear existing destination tracks. Up to 32 graphics share one desktop check
 # Transcript rebuild (AA)
 
 Premiere 26.3+ can rebuild explicit interior transcript removals into a different empty sequence using hard-bounded source subclips. The original sequence remains active and available. Reload the panel after updating to load `transcript-rebuild.js`. The desktop tools are `premiere_plan_transcript_rebuild`, `premiere_apply_transcript_rebuild` and `premiere_cancel_transcript_rebuild`; the fixed native plan/begin/step/release routes do not accept arbitrary commands. See [usage, API evidence and recovery](../../docs/PREMIERE_TRANSCRIPT_REBUILD.md). Real Premiere acceptance remains pending.
+
+
+### Scene Edit Detection (AB)
+
+The panel now exposes bounded native Scene Edit Detection for explicit video targets. It uses stable `SequenceUtils.performSceneEditDetectionOnSelection` with `SequenceOperation.APPLYCUT` / `CREATEMARKER`, snapshots/restores sequence selection, observes sequence/source marker deltas and correlates cut segments after mutation. Desktop expectations and a project checkpoint remain mandatory; no retry is attempted after uncertain delivery. See `docs/PREMIERE_SCENE_DETECTION.md`.
