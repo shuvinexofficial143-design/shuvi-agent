@@ -439,3 +439,13 @@ Continuation boundary after AA: **AB, AC, AD, AE and AF remain pending**. Next: 
 - Added Rust planning tests and Node structural/safety tests. Real paired Premiere execution remains pending; runtime verified therefore remains **0%** and production ready remains **no**.
 
 Conservative **feature-code coverage after AB: approximately 88%** (before 86%), counting actual marker/cut Scene Edit Detection and bounded shot segmentation, not tests/docs. Next real feature priority: AC cross-track clone/layering and track organization, then AD media/sequence preparation, AE interchange/frame delivery and AF edit-job integration.
+
+
+### Module AC — cross-track layering and track organization (2026-09-26)
+
+- Added `premiere_clone_clip_to_track` on top of stable `SequenceEditor.createCloneTrackItemAction`: caller supplies an exact source signature plus absolute destination track/time; Shuvi derives native time/vertical offsets, requires a different existing same-kind track and a clear destination range, checkpoints the project, and verifies exactly one same-media/same-duration clone at the requested time.
+- Added bounded `premiere_layer_clips` / `premiere_cancel_layer_clips` for up to 32 explicit clone operations under one `.prproj` checkpoint. Every unique source has its own stale-target guard; cancellation is checked between operations; ambiguous/uncertain native correlation stops the batch without retry. Native linked membership remains uninspected and is never inferred.
+- Added `premiere_rename_track` and `premiere_organize_tracks` for existing video/audio/caption tracks using documented `createSetNameAction` (Premiere 26.3+). Organization renames up to 32 unique tracks in one native transaction and verifies every name by host readback; no track creation, deletion or reorder is claimed.
+- Added Rust validation tests and Node structural/safety coverage. Real paired-host execution remains pending; runtime verified stays **0%**, production ready **no**.
+
+Conservative **feature-code coverage after AC: approximately 90%** (before 88%), counting usable cross-track layering and native track organization only. Next real feature priority: AD media interpretation/sequence preparation, AE professional interchange/frame delivery, then AF edit-job integration.

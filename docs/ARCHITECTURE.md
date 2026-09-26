@@ -351,3 +351,10 @@ Assembly schema v2 extends the existing `PremiereAssembly` action rather than cr
 `premiere_scene_detection.rs` owns the bounded request schema and converts a fresh complete timeline inspection into exact clip expectations. The UXP panel exposes `scene_detection_capabilities` and `scene_edit_detection`: every requested video target is expectation-guarded, resolved to a native TrackItem, selected through the existing exact selection helper, and passed once to stable `SequenceUtils.performSceneEditDetectionOnSelection` using `SequenceOperation.APPLYCUT` or `CREATEMARKER`. The previous selection is restored on a best-effort basis after dispatch.
 
 The host compares pre/post clip and marker observations before reporting verification. Cut segments are bounded same-media pieces on the original selected ranges; marker observations cover both sequence and source project-item markers, with source→sequence mapping only for inspected 1x timing. A boolean native acknowledgment without observable delta remains `accepted_unverified`. Desktop execution takes the normal project checkpoint before mutation and never marks the call retry-safe. See [PREMIERE_SCENE_DETECTION.md](PREMIERE_SCENE_DETECTION.md).
+
+
+### Cross-track layering and track organization (AC)
+
+`premiere_layering.rs` owns bounded clone/track-rename schemas. The UXP panel's `clone_clip_to_track` converts absolute destination track/time into `SequenceEditor.createCloneTrackItemAction` offsets, snapshots the destination track before mutation, and only verifies a result when exactly one new same-media/same-duration clip appears at the requested destination. Desktop execution uses the existing expectation/checkpoint path and batch cancellation state; linked-media membership is not inferred.
+
+Track organization resolves existing VideoTrack/AudioTrack/CaptionTrack objects, creates their documented `createSetNameAction` actions inside one compound transaction, then reads every name back. No track creation/reordering abstraction was introduced. See [PREMIERE_LAYERING.md](PREMIERE_LAYERING.md).

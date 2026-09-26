@@ -2752,6 +2752,254 @@ async function cloneClip(argumentsValue) {
   };
 }
 
+async function snapshotTrackItems(project, sequence, kind, trackIndex) {
+  const track = kind === "video"
+    ? await sequence.getVideoTrack(trackIndex)
+    : await sequence.getAudioTrack(trackIndex);
+  if (!track) throw new Error("Requested Premiere destination track was not found.");
+  const items = await sortedClipItems(track);
+  const rows = [];
+  for (let clipIndex = 0; clipIndex < items.length; clipIndex += 1) {
+    const item = items[clipIndex];
+    const [start,end,projectItem] = await Promise.all([
+      item.getStartTime(), item.getEndTime(), item.getProjectItem()
+    ]);
+    const mediaId = await projectItemId(projectItem);
+    if (!mediaId || !Number.isFinite(start?.seconds) || !Number.isFinite(end?.seconds) || end.seconds <= start.seconds) {
+      throw new Error("Native clone correlation requires complete media/timing identity.");
+    }
+    rows.push({
+      item,
+      clipIndex,
+      mediaId,
+      startSeconds:start.seconds,
+      endSeconds:end.seconds,
+      durationSeconds:end.seconds-start.seconds,
+      signature:await clipTargetSignature(project,sequence,item,kind,trackIndex,clipIndex)
+    });
+  }
+  return rows;
+}
+
+async function cloneClipToTrack(argumentsValue) {
+  const kind = typeof argumentsValue?.kind === "string" ? argumentsValue.kind.toLowerCase() : "";
+  const sourceTrack = Number(argumentsValue?.track);
+  const clipIndex = Number(argumentsValue?.clipIndex);
+  const destinationTrack = Number(argumentsValue?.destinationTrack);
+  const destinationSeconds = Number(argumentsValue?.destinationSeconds);
+  const mode = typeof argumentsValue?.mode === "string" ? argumentsValue.mode.toLowerCase() : "overwrite";
+  const alignToVideo = argumentsValue?.alignToVideo !== false;
+
+  if (!["video","audio"].includes(kind)) throw new Error("Cross-track clone kind must be video or audio.");
+  if (![sourceTrack,clipIndex,destinationTrack].every(Number.isInteger)
+      || sourceTrack < 0 || sourceTrack > 128 || clipIndex < 0 || clipIndex > 10000
+      || destinationTrack < 0 || destinationTrack > 128 || destinationTrack === sourceTrack) {
+    throw new Error("Cross-track clone source/destination is invalid.");
+  }
+  if (!Number.isFinite(destinationSeconds) || destinationSeconds < 0 || destinationSeconds > 86400) {
+    throw new Error("Cross-track clone destinationSeconds must be between 0 and 86400.");
+  }
+  if (!["insert","overwrite"].includes(mode)) throw new Error("Cross-track clone mode must be insert or overwrite.");
+
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+  const trackCount = kind === "video" ? await sequence.getVideoTrackCount() : await sequence.getAudioTrackCount();
+  if (sourceTrack >= trackCount || destinationTrack >= trackCount) {
+    throw new Error("Cross-track clone requires existing source and destination tracks.");
+  }
+
+  const sourceTrackObject = kind === "video"
+    ? await sequence.getVideoTrack(sourceTrack)
+    : await sequence.getAudioTrack(sourceTrack);
+  const sourceItems = await sortedClipItems(sourceTrackObject);
+  const sourceItem = sourceItems[clipIndex];
+  if (!sourceItem) throw new Error("Cross-track clone source clip was not found.");
+
+  const [sourceStart,sourceEnd,sourceProjectItem] = await Promise.all([
+    sourceItem.getStartTime(),sourceItem.getEndTime(),sourceItem.getProjectItem()
+  ]);
+  const mediaId = await projectItemId(sourceProjectItem);
+  if (!mediaId || !Number.isFinite(sourceStart?.seconds) || !Number.isFinite(sourceEnd?.seconds)
+      || sourceEnd.seconds <= sourceStart.seconds) {
+    throw new Error("Cross-track clone source identity/timing is unavailable.");
+  }
+  const durationSeconds = sourceEnd.seconds-sourceStart.seconds;
+  const destinationEnd = destinationSeconds+durationSeconds;
+  if (destinationEnd > 86400) throw new Error("Cross-track clone destination exceeds the bounded sequence time.");
+
+  const before = await snapshotTrackItems(project,sequence,kind,destinationTrack);
+  if (before.some(row => row.startSeconds < destinationEnd && row.endSeconds > destinationSeconds)) {
+    throw new Error("Cross-track clone destination range is occupied; choose a clear existing track/range.");
+  }
+
+  const editor = premiere.SequenceEditor.getEditor(sequence);
+  if (typeof editor?.createCloneTrackItemAction !== "function") {
+    throw new Error("Native createCloneTrackItemAction is unavailable.");
+  }
+  const timeOffsetSeconds = destinationSeconds-sourceStart.seconds;
+  const videoTrackVerticalOffset = kind === "video" ? destinationTrack-sourceTrack : 0;
+  const audioTrackVerticalOffset = kind === "audio" ? destinationTrack-sourceTrack : 0;
+  let transactionSucceeded = false;
+  project.lockedAccess(() => {
+    const action = editor.createCloneTrackItemAction(
+      sourceItem,
+      premiere.TickTime.createWithSeconds(timeOffsetSeconds),
+      videoTrackVerticalOffset,
+      audioTrackVerticalOffset,
+      alignToVideo,
+      mode === "insert"
+    );
+    transactionSucceeded = project.executeTransaction(compoundAction => {
+      compoundAction.addAction(action);
+    }, "Shuvi: Cross-Track Clone");
+  });
+  if (!transactionSucceeded) throw new Error("Premiere rejected the cross-track clone transaction.");
+
+  const after = await snapshotTrackItems(project,sequence,kind,destinationTrack);
+  const beforeSignatures = new Set(before.map(row => row.signature));
+  const epsilon = 0.001;
+  const candidates = after.filter(row =>
+    !beforeSignatures.has(row.signature)
+    && row.mediaId === mediaId
+    && Math.abs(row.startSeconds-destinationSeconds) <= epsilon
+    && Math.abs(row.durationSeconds-durationSeconds) <= epsilon
+  );
+  const verified = candidates.length === 1;
+  const candidate = verified ? candidates[0] : null;
+
+  return {
+    cloned:true,
+    kind,
+    sourceTrack,
+    sourceClipIndex:clipIndex,
+    destinationTrack,
+    destinationSeconds,
+    durationSeconds,
+    mode,
+    alignToVideo,
+    timeOffsetSeconds,
+    videoTrackVerticalOffset,
+    audioTrackVerticalOffset,
+    clearDestinationRequired:true,
+    linkedMediaInferred:false,
+    verificationStatus:verified ? "verified_delta" : "accepted_unverified",
+    uncertain:!verified,
+    stopBatch:!verified,
+    newTarget:verified ? {
+      kind,
+      track:destinationTrack,
+      clipIndex:candidate.clipIndex,
+      signature:candidate.signature,
+      mediaId:candidate.mediaId,
+      startSeconds:candidate.startSeconds,
+      endSeconds:candidate.endSeconds
+    } : null,
+    candidateCount:candidates.length,
+    retrySafe:false
+  };
+}
+
+async function resolveTrackByKind(sequence, kind, trackIndex) {
+  if (kind === "video") return await sequence.getVideoTrack(trackIndex);
+  if (kind === "audio") return await sequence.getAudioTrack(trackIndex);
+  if (kind === "caption") return await sequence.getCaptionTrack(trackIndex);
+  return null;
+}
+
+async function renameTrack(argumentsValue) {
+  const kind = typeof argumentsValue?.kind === "string" ? argumentsValue.kind.toLowerCase() : "";
+  const trackIndex = Number(argumentsValue?.track);
+  const name = typeof argumentsValue?.name === "string" ? argumentsValue.name.trim() : "";
+  if (!["video","audio","caption"].includes(kind)
+      || !Number.isInteger(trackIndex) || trackIndex < 0 || trackIndex > 128
+      || !name || [...name].length > 120) {
+    throw new Error("Track rename requires video/audio/caption, bounded index and 1–120 character name.");
+  }
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+  const track = await resolveTrackByKind(sequence,kind,trackIndex);
+  if (!track) throw new Error("Requested Premiere track was not found.");
+  if (typeof track.createSetNameAction !== "function") {
+    throw new Error("Native track rename requires Premiere 26.3+.");
+  }
+  let transactionSucceeded = false;
+  project.lockedAccess(() => {
+    const action = track.createSetNameAction(name);
+    transactionSucceeded = project.executeTransaction(compoundAction => {
+      compoundAction.addAction(action);
+    }, "Shuvi: Rename Track");
+  });
+  if (!transactionSucceeded) throw new Error("Premiere rejected the track rename transaction.");
+  const after = await resolveTrackByKind(sequence,kind,trackIndex);
+  const verified = after?.name === name;
+  return {
+    renamed:true,
+    kind,
+    track:trackIndex,
+    requestedName:name,
+    observedName:after?.name ?? null,
+    verificationStatus:verified ? "verified_readback" : "accepted_unverified",
+    retrySafe:false
+  };
+}
+
+async function organizeTracks(argumentsValue) {
+  const mappings = Array.isArray(argumentsValue?.tracks) ? argumentsValue.tracks : [];
+  if (!mappings.length || mappings.length > 32) throw new Error("Track organization requires 1–32 explicit mappings.");
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+
+  const resolved = [];
+  const seen = new Set();
+  for (const mapping of mappings) {
+    const kind = typeof mapping?.kind === "string" ? mapping.kind.toLowerCase() : "";
+    const trackIndex = Number(mapping?.track);
+    const name = typeof mapping?.name === "string" ? mapping.name.trim() : "";
+    const key = kind+":"+trackIndex;
+    if (!["video","audio","caption"].includes(kind)
+        || !Number.isInteger(trackIndex) || trackIndex < 0 || trackIndex > 128
+        || !name || [...name].length > 120 || seen.has(key)) {
+      throw new Error("Track organization contains an invalid or duplicate mapping.");
+    }
+    seen.add(key);
+    const track = await resolveTrackByKind(sequence,kind,trackIndex);
+    if (!track) throw new Error("Track organization references a missing existing track.");
+    if (typeof track.createSetNameAction !== "function") throw new Error("Native track rename requires Premiere 26.3+.");
+    resolved.push({kind,trackIndex,name,track});
+  }
+
+  let transactionSucceeded = false;
+  project.lockedAccess(() => {
+    transactionSucceeded = project.executeTransaction(compoundAction => {
+      for (const entry of resolved) compoundAction.addAction(entry.track.createSetNameAction(entry.name));
+    }, "Shuvi: Organize Tracks");
+  });
+  if (!transactionSucceeded) throw new Error("Premiere rejected the track organization transaction.");
+
+  const results = [];
+  for (const entry of resolved) {
+    const current = await resolveTrackByKind(sequence,entry.kind,entry.trackIndex);
+    results.push({
+      kind:entry.kind,
+      track:entry.trackIndex,
+      requestedName:entry.name,
+      observedName:current?.name ?? null,
+      verified:current?.name === entry.name
+    });
+  }
+  return {
+    organized:true,
+    count:results.length,
+    results,
+    complete:results.every(row => row.verified),
+    verificationStatus:results.every(row => row.verified) ? "verified_readback" : "accepted_unverified",
+    retrySafe:false
+  };
+}
+
 async function resolveNamedVideoParam(argumentsValue) {
   const trackIndex = Number(argumentsValue?.track ?? 0);
   const clipIndex = Number(argumentsValue?.clipIndex ?? 0);
@@ -4682,6 +4930,12 @@ async function dispatchNativeCommand(command) {
       return await moveClip(command.arguments || {});
     case "clone_clip":
       return await cloneClip(command.arguments || {});
+    case "clone_clip_to_track":
+      return await cloneClipToTrack(command.arguments || {});
+    case "rename_track":
+      return await renameTrack(command.arguments || {});
+    case "organize_tracks":
+      return await organizeTracks(command.arguments || {});
     case "delete_clip":
       return await deleteClip(command.arguments || {});
     case "inspect_export":

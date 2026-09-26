@@ -35,6 +35,7 @@ mod premiere_dialogue;
 mod premiere_talking_head;
 mod premiere_transcript_rebuild;
 mod premiere_scene_detection;
+mod premiere_layering;
 mod premiere_finishing;
 mod premiere_assembly;
 mod premiere_mogrt;
@@ -186,6 +187,12 @@ Transcript rebuild handles explicit interior text removal by creating and insert
 - premiere_roll_edit: {"kind":"video|audio","track":0,"left_clip_index":0,"right_clip_index":1,"boundary_seconds":5.0}
 - premiere_move_clip: {"kind":"video|audio","track":0,"clip_index":0,"delta_seconds":1.5}
 - premiere_clone_clip: {"kind":"video|audio","track":0,"clip_index":0,"time_offset_seconds":0.0,"video_track_offset":1,"audio_track_offset":0,"align_to_video":true,"insert":false}
+- premiere_clone_clip_to_track: {"request":{"source":{"kind":"video|audio","track":0,"clip_index":2,"signature":"exact inspected targetSignature"},"destination_track":2,"destination_seconds":12,"mode":"overwrite|insert","align_to_video":true},"expected":"exact one-source expectation"}
+- premiere_layer_clips: {"batch":{"schema_version":1,"operations":[{"source":{"kind":"video","track":0,"clip_index":2,"signature":"exact inspected targetSignature"},"destination_track":2,"destination_seconds":12,"mode":"overwrite","align_to_video":true}]},"expected":"one exact expectation per unique source"}
+- premiere_cancel_layer_clips: {}
+- premiere_rename_track: {"request":{"kind":"video|audio|caption","track":0,"name":"A-Roll"},"expected":{"project_guid":"...","sequence_guid":"...","clips":[]}}
+- premiere_organize_tracks: {"request":{"schema_version":1,"tracks":[{"kind":"video","track":0,"name":"A-Roll"},{"kind":"audio","track":0,"name":"Dialogue"}]},"expected":{"project_guid":"...","sequence_guid":"...","clips":[]}}
+Cross-track clone computes native vertical offsets from inspected source/destination tracks and requires a clear destination range for unambiguous correlation. Linked membership is never inferred. Track rename uses stable createSetNameAction (Premiere 26.3+) and verifies native readback.
 - premiere_delete_clip: {"kind":"video|audio","track":0,"clip_index":0,"ripple":true}
 - premiere_set_track_mute: {"kind":"video|audio","track":0,"muted":true}
 - premiere_set_clip_enabled: {"kind":"video|audio","track":0,"clip_index":0,"enabled":true}
@@ -484,6 +491,11 @@ enum ToolAction {
     PremiereRollEdit { kind: String, track: u32, left_clip_index: u32, right_clip_index: u32, boundary_seconds: f64 },
     PremiereMoveClip { kind: String, track: u32, clip_index: u32, delta_seconds: f64 },
     PremiereCloneClip { kind: String, track: u32, clip_index: u32, time_offset_seconds: f64, video_track_offset: i32, audio_track_offset: i32, align_to_video: bool, insert: bool },
+    PremiereCloneClipToTrack { request: premiere_layering::CloneToTrack },
+    PremiereLayerClips { batch: premiere_layering::LayerBatch },
+    PremiereCancelLayerClips,
+    PremiereRenameTrack { request: premiere_layering::TrackRename },
+    PremiereOrganizeTracks { request: premiere_layering::TrackOrganization },
     PremiereDeleteClip { kind: String, track: u32, clip_index: u32, ripple: bool },
     PremierePlanExport { output: String, preset: Option<String>, queue_to_ame: bool, overwrite: bool },
     PremiereAcceptanceReport,
@@ -581,6 +593,8 @@ struct ActionState {
     assembly_running: AtomicBool,
     rebuild_running: AtomicBool,
     rebuild_cancelled: AtomicBool,
+    layering_running: AtomicBool,
+    layering_cancelled: AtomicBool,
     assembly_cancelled: AtomicBool,
 }
 
@@ -897,6 +911,11 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_roll_edit"
         | "premiere_move_clip"
         | "premiere_clone_clip"
+        | "premiere_clone_clip_to_track"
+        | "premiere_layer_clips"
+        | "premiere_cancel_layer_clips"
+        | "premiere_rename_track"
+        | "premiere_organize_tracks"
         | "premiere_delete_clip"
         | "premiere_export_sequence"
         | "premiere_plan_export"
@@ -4352,6 +4371,85 @@ fn stage_tool(
                 "Move Premiere clip".to_string(),
                 format!("Move {kind} track {track}, clip #{clip_index} by {delta_seconds:.3}s"),
                 RiskLevel::High,
+            )
+        }
+        "premiere_clone_clip_to_track" => {
+            let request: premiere_layering::CloneToTrack = serde_json::from_value(
+                proposal.arguments.get("request").cloned().unwrap_or(Value::Null)
+            ).map_err(|e| format!("Invalid cross-track clone request: {e}"))?;
+            request.validate()?;
+            let expected = premiere_expectation.as_ref().ok_or("Cross-track clone requires the exact source clip expectation.")?;
+            if expected.sequence_guid.is_none() || expected.clips.len()!=1
+                || !expected.clips.iter().any(|clip| clip.kind==request.source.kind && clip.track==request.source.track
+                    && clip.clip_index==request.source.clip_index && clip.signature==request.source.signature) {
+                return Err("Cross-track clone expectation must exactly match the source clip.".into());
+            }
+            (
+                ToolAction::PremiereCloneClipToTrack { request },
+                "Clone Premiere clip to another track".into(),
+                "Use native createCloneTrackItemAction with destination track/time converted to exact offsets, require a clear range, checkpoint, and verify one correlated new clip.".into(),
+                RiskLevel::High,
+            )
+        }
+        "premiere_layer_clips" => {
+            let batch: premiere_layering::LayerBatch = serde_json::from_value(
+                proposal.arguments.get("batch").cloned().unwrap_or(Value::Null)
+            ).map_err(|e| format!("Invalid layer batch: {e}"))?;
+            batch.validate()?;
+            let expected = premiere_expectation.as_ref().ok_or("Layer batch requires exact expectations for all unique source clips.")?;
+            let sources = batch.unique_sources();
+            if expected.sequence_guid.is_none() || expected.clips.len()!=sources.len() {
+                return Err("Layer batch requires one exact expectation per unique source clip.".into());
+            }
+            for source in sources {
+                if !expected.clips.iter().any(|clip| clip.kind==source.kind && clip.track==source.track
+                    && clip.clip_index==source.clip_index && clip.signature==source.signature) {
+                    return Err("Layer batch expectation does not match an explicit source clip.".into());
+                }
+            }
+            (
+                ToolAction::PremiereLayerClips { batch },
+                "Layer explicit Premiere clips".into(),
+                "Run up to 32 exact cross-track clone operations under one project checkpoint, per-source stale guards, cooperative cancellation and uncertainty stop.".into(),
+                RiskLevel::High,
+            )
+        }
+        "premiere_cancel_layer_clips" => (
+            ToolAction::PremiereCancelLayerClips,
+            "Cancel Premiere layering batch".into(),
+            "Stop before the next clone operation; a native clone already dispatched may still complete.".into(),
+            RiskLevel::Low,
+        ),
+        "premiere_rename_track" => {
+            let request: premiere_layering::TrackRename = serde_json::from_value(
+                proposal.arguments.get("request").cloned().unwrap_or(Value::Null)
+            ).map_err(|e| format!("Invalid track rename request: {e}"))?;
+            request.validate()?;
+            let expected = premiere_expectation.as_ref().ok_or("Track rename requires an inspected project/sequence expectation.")?;
+            if expected.sequence_guid.is_none() || !expected.clips.is_empty() {
+                return Err("Track rename requires project/sequence expectation without clip indexes.".into());
+            }
+            (
+                ToolAction::PremiereRenameTrack { request },
+                "Rename Premiere track".into(),
+                "Rename one explicit existing video/audio/caption track through the documented native action and verify readback.".into(),
+                RiskLevel::Medium,
+            )
+        }
+        "premiere_organize_tracks" => {
+            let request: premiere_layering::TrackOrganization = serde_json::from_value(
+                proposal.arguments.get("request").cloned().unwrap_or(Value::Null)
+            ).map_err(|e| format!("Invalid track organization request: {e}"))?;
+            request.validate()?;
+            let expected = premiere_expectation.as_ref().ok_or("Track organization requires an inspected project/sequence expectation.")?;
+            if expected.sequence_guid.is_none() || !expected.clips.is_empty() {
+                return Err("Track organization requires project/sequence expectation without clip indexes.".into());
+            }
+            (
+                ToolAction::PremiereOrganizeTracks { request },
+                "Organize Premiere track names".into(),
+                "Rename up to 32 explicit existing tracks in one native transaction and verify every resulting name; no track creation or reordering.".into(),
+                RiskLevel::Medium,
             )
         }
         "premiere_clone_clip" => {
@@ -9291,6 +9389,162 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 })).unwrap_or_else(|_| value.to_string()),
                 stderr: String::new(),
                 exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereCancelLayerClips => {
+            state.layering_cancelled.store(true, Ordering::Release);
+            Ok(ActionResult {
+                success:true,
+                tool,
+                stdout:json!({"cancel_requested":true,"running":state.layering_running.load(Ordering::Acquire)}).to_string(),
+                stderr:String::new(),
+                exit_code:Some(0),
+            })
+        }
+        ToolAction::PremiereCloneClipToTrack { request } => {
+            request.validate()?;
+            let expected = premiere_bridge.expected.ok_or("Cross-track clone requires exact source expectation.")?;
+            let checkpoint = backup_premiere_project(&premiere_bridge).await?;
+            let client = PremiereClient { bridge:&state.premiere_bridge, expected:Some(expected) };
+            let result = client.request(
+                "clone_clip_to_track",
+                json!({
+                    "kind":request.source.kind,
+                    "track":request.source.track,
+                    "clipIndex":request.source.clip_index,
+                    "destinationTrack":request.destination_track,
+                    "destinationSeconds":request.destination_seconds,
+                    "mode":request.mode,
+                    "alignToVideo":request.align_to_video
+                }),
+                Duration::from_secs(45),
+            ).await?;
+            let verified = result.get("verificationStatus").and_then(Value::as_str)==Some("verified_delta")
+                && result.get("uncertain").and_then(Value::as_bool)==Some(false);
+            Ok(ActionResult {
+                success:verified,
+                tool,
+                stdout:json!({
+                    "checkpoint":checkpoint,
+                    "result":result,
+                    "verified":verified,
+                    "linked_media_inferred":false,
+                    "retry_safe":false
+                }).to_string(),
+                stderr:String::new(),
+                exit_code:Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereLayerClips { batch } => {
+            batch.validate()?;
+            if state.layering_running.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err() {
+                return Err("Another Premiere layering batch is already running.".into());
+            }
+            let _guard = AcceptanceProbeGuard(&state.layering_running);
+            state.layering_cancelled.store(false,Ordering::Release);
+            let expected = premiere_bridge.expected.ok_or("Layer batch requires exact source expectations.")?.clone();
+            let checkpoint = backup_premiere_project(&premiere_bridge).await?;
+            let mut results = Vec::new();
+            let mut uncertain = false;
+
+            for (index,operation) in batch.operations.iter().enumerate() {
+                if state.layering_cancelled.load(Ordering::Acquire) { break; }
+                let clip = expected.clips.iter().find(|clip| clip.kind==operation.source.kind
+                    && clip.track==operation.source.track && clip.clip_index==operation.source.clip_index
+                    && clip.signature==operation.source.signature)
+                    .ok_or("Layer batch source expectation disappeared.")?.clone();
+                let guard = PremiereExpectation {
+                    project_guid:expected.project_guid.clone(),
+                    project_path:expected.project_path.clone(),
+                    sequence_guid:expected.sequence_guid.clone(),
+                    clips:vec![clip],
+                };
+                let client = PremiereClient { bridge:&state.premiere_bridge, expected:Some(&guard) };
+                match client.request(
+                    "clone_clip_to_track",
+                    json!({
+                        "kind":operation.source.kind.clone(),
+                        "track":operation.source.track,
+                        "clipIndex":operation.source.clip_index,
+                        "destinationTrack":operation.destination_track,
+                        "destinationSeconds":operation.destination_seconds,
+                        "mode":operation.mode.clone(),
+                        "alignToVideo":operation.align_to_video
+                    }),
+                    Duration::from_secs(45),
+                ).await {
+                    Ok(value) => {
+                        let verified = value.get("verificationStatus").and_then(Value::as_str)==Some("verified_delta")
+                            && value.get("uncertain").and_then(Value::as_bool)==Some(false);
+                        results.push(json!({"index":index,"status":if verified {"applied"} else {"uncertain"},"native_result":value}));
+                        if !verified { uncertain=true; break; }
+                    }
+                    Err(error) => {
+                        let delivery_uncertain = error.contains("unknown") || error.contains("timed out") || error.contains("timeout")
+                            || error.contains("delivery");
+                        results.push(json!({"index":index,"status":if delivery_uncertain {"uncertain"} else {"failed"},"reason":error.chars().take(240).collect::<String>()}));
+                        if delivery_uncertain { uncertain=true; break; }
+                    }
+                }
+            }
+
+            let cancelled = state.layering_cancelled.load(Ordering::Acquire);
+            let applied = results.iter().filter(|row| row["status"]=="applied").count();
+            let complete = !uncertain && !cancelled && applied==batch.operations.len();
+            Ok(ActionResult {
+                success:complete,
+                tool,
+                stdout:json!({
+                    "checkpoint":checkpoint,
+                    "requested":batch.operations.len(),
+                    "applied":applied,
+                    "results":results,
+                    "complete":complete,
+                    "cancelled":cancelled,
+                    "uncertain":uncertain,
+                    "linked_media_inferred":false,
+                    "retry_safe":false
+                }).to_string(),
+                stderr:String::new(),
+                exit_code:Some(if complete {0}else{1}),
+            })
+        }
+        ToolAction::PremiereRenameTrack { request } => {
+            request.validate()?;
+            let expected = premiere_bridge.expected.ok_or("Track rename requires project/sequence expectation.")?;
+            let checkpoint = backup_premiere_project(&premiere_bridge).await?;
+            let client = PremiereClient { bridge:&state.premiere_bridge, expected:Some(expected) };
+            let result = client.request(
+                "rename_track",
+                json!({"kind":request.kind,"track":request.track,"name":request.name}),
+                Duration::from_secs(20),
+            ).await?;
+            let verified = result.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+            Ok(ActionResult {
+                success:verified,
+                tool,
+                stdout:json!({"checkpoint":checkpoint,"result":result,"verified":verified}).to_string(),
+                stderr:String::new(),
+                exit_code:Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereOrganizeTracks { request } => {
+            request.validate()?;
+            let expected = premiere_bridge.expected.ok_or("Track organization requires project/sequence expectation.")?;
+            let checkpoint = backup_premiere_project(&premiere_bridge).await?;
+            let client = PremiereClient { bridge:&state.premiere_bridge, expected:Some(expected) };
+            let result = client.request(
+                "organize_tracks",
+                json!({"tracks":request.tracks}),
+                Duration::from_secs(30),
+            ).await?;
+            let complete = result.get("complete").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult {
+                success:complete,
+                tool,
+                stdout:json!({"checkpoint":checkpoint,"result":result,"complete":complete}).to_string(),
+                stderr:String::new(),
+                exit_code:Some(if complete {0}else{1}),
             })
         }
         ToolAction::PremiereCloneClip { kind, track, clip_index, time_offset_seconds, video_track_offset, audio_track_offset, align_to_video, insert } => {

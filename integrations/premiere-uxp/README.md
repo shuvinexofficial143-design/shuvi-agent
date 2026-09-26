@@ -230,3 +230,8 @@ Premiere 26.3+ can rebuild explicit interior transcript removals into a differen
 ### Scene Edit Detection (AB)
 
 The panel now exposes bounded native Scene Edit Detection for explicit video targets. It uses stable `SequenceUtils.performSceneEditDetectionOnSelection` with `SequenceOperation.APPLYCUT` / `CREATEMARKER`, snapshots/restores sequence selection, observes sequence/source marker deltas and correlates cut segments after mutation. Desktop expectations and a project checkpoint remain mandatory; no retry is attempted after uncertain delivery. See `docs/PREMIERE_SCENE_DETECTION.md`.
+
+
+### Cross-track layering and track organization (AC)
+
+The panel now exposes verified cross-track clone correlation plus native video/audio/caption track naming. Cross-track clones derive `createCloneTrackItemAction` offsets from explicit source/destination coordinates, require a clear destination range, and return `verified_delta` only after exact readback correlation. Track naming uses `createSetNameAction` (26.3+) and never creates/reorders tracks. See `docs/PREMIERE_LAYERING.md`.
