@@ -30,9 +30,28 @@ export function validateRegistries({ rust, main, uxp, bridge }) {
   const executor = section("async fn execute_tool(", "#[tauri::command]");
   const enumBody = section("enum ToolAction {", "struct PendingAction");
   const executionVariants = new Set([...executor.matchAll(/ToolAction::(\w+)\s*(?:\{[^}]*\})?\s*=>/g)].map(m => m[1]));
+
+  const stageLines = stage.split("\n");
+  const armHeaderPattern = /^ {8}(?:"[a-z0-9_]+"(?:\s*\|\s*"[a-z0-9_]+")*)\s*=>/;
+  const fallbackPattern = /^ {8}_\s*=>/;
+  const stageArmFor = tool => {
+    const quoted = `"${tool}"`;
+    const startIndex = stageLines.findIndex(line =>
+      armHeaderPattern.test(line) && line.includes(quoted)
+    );
+    if (startIndex < 0) return null;
+    const header = stageLines[startIndex];
+    const body = [header.slice(header.indexOf("=>") + 2)];
+    for (let i = startIndex + 1; i < stageLines.length; i++) {
+      if (armHeaderPattern.test(stageLines[i]) || fallbackPattern.test(stageLines[i])) break;
+      body.push(stageLines[i]);
+    }
+    return body.join("\n");
+  };
+
   for (const tool of tools) {
     if (!parser.includes(`"${tool}"`)) errors.push(`Tool missing proposal allowlist: ${tool}`);
-    const arm = stage.match(new RegExp(`"${tool}"\\s*=>\\s*([\\s\\S]*?)(?=\\n        "[a-z0-9_]+"\\s*=>|\\n        _ =>)`))?.[1];
+    const arm = stageArmFor(tool);
     if (!arm) {
       errors.push(`Tool missing permission staging: ${tool}`);
       continue;
