@@ -534,3 +534,15 @@ Conservative feature-code coverage remains approximately **98%** because this pa
 - Latest CI for source head `ab3718e26b6816538fb1d7f8d5da07cb5c61e6eb` was run `36437197792`; both `frontend` and `rust` again finished with `steps=null`. Therefore no current-head test execution is claimed.
 
 Feature-code coverage remains approximately **98%**; this work strengthens recovery evidence rather than adding a new editing feature. Production ready remains **no** until a real paired Premiere host verifies the acceptance and recovery paths and the remaining export/recovery gates.
+
+
+### Commit-bound verification attestations + CI runner diagnosis (2026-09-28)
+
+- Added `scripts/run-attested.mjs` with closed `frontend`, `rust`, and `full` verification scopes. Each run records the exact 40-character Git commit, clean tracked-worktree state, platform, command exit codes, bounded output tails and overall pass/fail result under ignored `.shuvi-attest/` JSON files.
+- The attestation is explicitly a process execution record, not a cryptographic signature and not Premiere runtime evidence. Dirty tracked worktrees cannot produce `passed=true`.
+- Added `npm run verify:frontend`, `npm run verify:rust`, and `npm run verify:full`, plus structural tests for the closed command plans and commit-bound schema.
+- CI now uses these attested verification commands and uploads the per-job JSON receipts when a runner actually executes. Frontend dependency installation now uses `npm ci` because the repository has a committed lockfile.
+- Raw GitHub job evidence for run `36439647113` showed both `ubuntu-latest` and `windows-latest` jobs with `runner_id=0`, empty runner names and `steps=[]`, with no artifacts. Therefore no repository command started. The exact account/repository cause is not asserted because the connected GitHub API cannot read sensitive billing/account Actions settings.
+- Added `docs/CI_DIAGNOSTICS.md` with the confirmed evidence, non-claims, manual account/repository checks, and the exact commands to execute once compute/hosted runners are available.
+
+These changes improve verification truthfulness and reproducibility but do not increase Premiere runtime verification. Production ready remains **no** until current-head source tests and paired Premiere acceptance/recovery execute successfully.
