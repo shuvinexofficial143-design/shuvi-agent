@@ -51,11 +51,15 @@ export type ProposalDecision =
   | { allowed: true; fingerprint: string }
   | { allowed: false; fingerprint: string; reason: string; stop: boolean };
 
-const CODING_TOOLS = new Set([
-  "workspace_scan",
-  "read_file",
-  "search_text",
+const CODE_MUTATION_TOOLS = new Set([
   "write_file",
+  "replace_text",
+  "apply_patch"
+]);
+
+const CODING_START_TOOLS = new Set([
+  "workspace_scan",
+  "search_text",
   "replace_text",
   "apply_patch",
   "run_project_task",
@@ -65,11 +69,19 @@ const CODING_TOOLS = new Set([
   "git_push"
 ]);
 
-const CODE_MUTATION_TOOLS = new Set([
-  "write_file",
-  "replace_text",
-  "apply_patch"
-]);
+const CODE_PATH_SUFFIXES = [
+  ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".rs", ".py", ".go", ".java",
+  ".kt", ".swift", ".c", ".h", ".cpp", ".hpp", ".cs", ".php", ".rb", ".vue",
+  ".svelte", ".html", ".css", ".scss", ".sql", ".json", ".toml", ".yaml", ".yml",
+  ".md", ".sh", ".ps1"
+];
+
+function isCodingProposal(proposal: ToolProposal): boolean {
+  if (CODING_START_TOOLS.has(proposal.tool)) return true;
+  if (proposal.tool !== "read_file" && proposal.tool !== "write_file") return false;
+  const path = normalizePath(proposal.arguments.path);
+  return Boolean(path && CODE_PATH_SUFFIXES.some((suffix) => path.endsWith(suffix)));
+}
 
 function boundedText(value: unknown, max: number): string | null {
   if (typeof value !== "string") return null;
@@ -310,7 +322,7 @@ function withSuccessfulCodingEvidence(
   const path = normalizePath(proposal.arguments.path);
   const coding: CodingWorkflowState = {
     ...state.coding,
-    active: state.coding.active || CODING_TOOLS.has(proposal.tool)
+    active: state.coding.active || isCodingProposal(proposal)
   };
 
   if (proposal.tool === "read_file" && path) {
@@ -392,7 +404,7 @@ export function recordProposalBlock(
     stop_reason: decision.stop ? decision.reason : null,
     coding: {
       ...state.coding,
-      active: state.coding.active || CODING_TOOLS.has(proposal.tool)
+      active: state.coding.active || isCodingProposal(proposal)
     }
   };
 }
