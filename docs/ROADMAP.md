@@ -561,3 +561,18 @@ These changes improve verification truthfulness and reproducibility but do not i
 - Static source checks confirmed the expected wiring is present. This is not a current-head build/test attestation.
 
 This improves Shuvi's general multi-step reliability and recovery behavior without adding unrestricted execution or automatic mutation retries. Runtime verification remains pending until current-head commands execute on real compute.
+
+
+### Coding workflow dependency graph (2026-09-28)
+
+- Added deterministic local coding dependencies to the general agent orchestrator. The model cannot satisfy these dependencies by claiming a step occurred; only successful typed tool results update the evidence.
+- `replace_text` now requires a successful exact-path `read_file` in the current task. `apply_patch` requires a successful same-repository `git_status` first.
+- `git_commit` now requires fresh same-repository `git_status` and `git_diff` after the most recent Shuvi code mutation. `git_push` requires a successful same-repository commit after that mutation.
+- `run_project_task` is tracked as validation evidence and the provider is encouraged to validate after edits, but missing validation is not converted into a fabricated pass or a universal hard commit block.
+- Added a persisted coding workflow state with bounded inspected-path history and step stamps for mutation, validation, status, diff, commit and push evidence. Orchestration-state v1 remains readable; v2 carries the coding dependency state.
+- Added derived phases `inspect`, `edit`, `validate`, `review`, `commit_ready`, `push_ready`, and `complete`, plus a small local progress indicator in the sidebar.
+- Dependency failures enter the existing replan/circuit-breaker path before Rust permission staging. Existing permission/risk controls remain authoritative.
+- Added structural coverage in `scripts/coding-workflow-orchestration.test.mjs` and expanded `docs/AGENT_ORCHESTRATION.md`.
+- Static source wiring checks on GitHub confirmed all expected dependency, persistence, provider-guidance, UI and test markers are present. This is not a current-head runtime/build attestation.
+
+This work improves coding-agent sequencing without adding unrestricted shell execution or increasing the eight-step safety ceiling.
