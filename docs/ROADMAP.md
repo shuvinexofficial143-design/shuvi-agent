@@ -546,3 +546,18 @@ Feature-code coverage remains approximately **98%**; this work strengthens recov
 - Added `docs/CI_DIAGNOSTICS.md` with the confirmed evidence, non-claims, manual account/repository checks, and the exact commands to execute once compute/hosted runners are available.
 
 These changes improve verification truthfulness and reproducibility but do not increase Premiere runtime verification. Production ready remains **no** until current-head source tests and paired Premiere acceptance/recovery execute successfully.
+
+
+### General agent orchestration + recovery loop (2026-09-28)
+
+- Added a bounded frontend orchestration state machine for general Shuvi tasks. It keeps the existing hard 8-step limit, tracks the exact next step across interruptions, counts consecutive failures, fingerprints tool+arguments proposals, retains a stable task objective, and exposes `normal`, `replan_required`, and `stopped` modes.
+- Multi-step model proposals may now carry optional structured plan metadata: objective, current step, and observable success criteria. Metadata is bounded and descriptive only; it never authorizes execution. Invalid/oversized plan metadata is dropped without disabling an otherwise valid typed tool.
+- Session checkpoint schema advanced to v2 and now persists orchestration state. Schema-v1 checkpoints remain readable and migrate without inventing orchestration history. Resume no longer restarts the task at step 1.
+- Added a local exact-repeat circuit breaker: after a failed, denied, or blocked proposal, the identical tool+arguments proposal is refused before permission staging. One refusal requests replanning; a second identical refusal stops the task. Three consecutive actual tool failures also stop the task and require a new user instruction.
+- Existing permissions remain authoritative: orchestration safety checks happen before `prepare_tool`; low-risk session scopes behave as before; high-risk actions still require the existing explicit approval flow.
+- Failure/preparation errors are fed back as observed hidden tool results with `retry_automatically=false`; the provider receives a bounded orchestration context describing step, prior outcome, failure count and recovery mode.
+- Added bounded local audit events for `orchestration_blocked`, `orchestration_replan`, and `orchestration_stopped`. Audit logging is best-effort and cannot alter a safety decision. Existing diagnostics exports include these events.
+- Added structural Node coverage for repeat/failure circuit breakers, resumable step state, checkpoint-v1 migration, structured plan bounds, permission ordering and orchestration audit wiring. Added `docs/AGENT_ORCHESTRATION.md` describing the behavior and non-goals.
+- Static source checks confirmed the expected wiring is present. This is not a current-head build/test attestation.
+
+This improves Shuvi's general multi-step reliability and recovery behavior without adding unrestricted execution or automatic mutation retries. Runtime verification remains pending until current-head commands execute on real compute.
