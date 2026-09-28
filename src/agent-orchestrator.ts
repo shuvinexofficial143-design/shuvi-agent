@@ -167,7 +167,10 @@ export function createAgentOrchestrationState(): AgentOrchestrationState {
 export function normalizeAgentOrchestrationState(value: unknown): AgentOrchestrationState {
   const base = createAgentOrchestrationState();
   if (!value || typeof value !== "object") return base;
-  const input = value as Partial<AgentOrchestrationState> & { version?: number };
+  const input = value as Partial<Omit<AgentOrchestrationState, "version" | "coding">> & {
+    version?: number;
+    coding?: unknown;
+  };
   if (input.version !== 1 && input.version !== 2) return base;
 
   const nextStep = Number.isInteger(input.next_step) ? Number(input.next_step) : 1;
