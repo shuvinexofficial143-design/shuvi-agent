@@ -14,3 +14,4 @@ Thumbs.db
 *.key
 *.pem
 secrets/
+.shuvi-attest/
