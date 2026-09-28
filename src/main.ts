@@ -12,15 +12,25 @@ import type {
   SessionCheckpoint,
   PremiereBridgeStatus
 } from "./types";
+import {
+  MAX_AGENT_STEPS,
+  createAgentOrchestrationState,
+  evaluateProposal,
+  normalizeAgentOrchestrationState,
+  orchestrationContext,
+  orchestrationSummary,
+  recordProposalBlock,
+  recordToolOutcome,
+  type AgentOrchestrationState
+} from "./agent-orchestrator";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("Missing app root");
 
-const MAX_AGENT_STEPS = 8;
-
 let providers: ProviderDescriptor[] = [];
 let messages: ChatMessage[] = [];
 let pendingAction: PendingAction | null = null;
+let orchestration: AgentOrchestrationState = createAgentOrchestrationState();
 let busy = false;
 let cancelRequested = false;
 let sessionInputTokens = 0;
@@ -341,12 +351,13 @@ function prepareOnboarding(): void {
 
 function currentCheckpoint(): SessionCheckpoint {
   return {
-    version: 1,
+    version: 2,
     updated_at_ms: Date.now(),
     provider: providerSelect.value,
     model: modelInput.value.trim(),
     base_url: baseUrlInput.value.trim() || null,
-    messages
+    messages,
+    orchestration
   };
 }
 
@@ -377,7 +388,8 @@ async function loadRecoveryCheckpoint(): Promise<void> {
 
     const ageMinutes = Math.max(0, Math.round((Date.now() - savedCheckpoint.updated_at_ms) / 60000));
     const ageText = ageMinutes <= 1 ? "about a minute" : String(ageMinutes) + " minutes";
-    resumeSummary.textContent = "Saved " + ageText + " ago · " + savedCheckpoint.provider + " · " + String(savedCheckpoint.messages.length) + " messages";
+    const savedOrchestration = normalizeAgentOrchestrationState(savedCheckpoint.orchestration);
+    resumeSummary.textContent = "Saved " + ageText + " ago · " + savedCheckpoint.provider + " · " + orchestrationSummary(savedOrchestration);
     resumeBanner.classList.remove("hidden");
   } catch {
     savedCheckpoint = null;
@@ -628,7 +640,53 @@ function sessionPermissionLabel(proposal: ToolProposal): string {
   return "Allow this read tool for session";
 }
 
-async function stageProposal(proposal: ToolProposal, step: number): Promise<void> {
+function hiddenToolFailure(
+  proposal: ToolProposal,
+  detail: Record<string, unknown>
+): ChatMessage {
+  return {
+    role: "user",
+    content: `[SHUVI_TOOL_RESULT]\n${JSON.stringify({
+      tool: proposal.tool,
+      success: false,
+      ...detail
+    })}\n[/SHUVI_TOOL_RESULT]`
+  };
+}
+
+async function stopAgentForSafety(reason: string): Promise<void> {
+  messages.push({ role: "assistant", content: reason });
+  renderMessages();
+  await clearActiveCheckpoint();
+  setBusy(false);
+}
+
+async function continueAfterOutcome(): Promise<void> {
+  await saveActiveCheckpoint();
+  if (orchestration.recovery_mode === "stopped") {
+    await stopAgentForSafety(
+      orchestration.stop_reason ??
+        "Shuvi stopped this task because the local safety orchestrator requires a new user instruction."
+    );
+    return;
+  }
+  await runAgentStep();
+}
+
+async function stageProposal(proposal: ToolProposal): Promise<void> {
+  const decision = evaluateProposal(orchestration, proposal);
+  if (!decision.allowed) {
+    orchestration = recordProposalBlock(orchestration, proposal, decision);
+    messages.push(hiddenToolFailure(proposal, {
+      orchestration_blocked: true,
+      reason: decision.reason,
+      retry_automatically: false
+    }));
+    await continueAfterOutcome();
+    return;
+  }
+
+  const step = orchestration.next_step;
   try {
     pendingAction = await invoke<PendingAction>("prepare_tool", {
       proposal,
@@ -642,18 +700,20 @@ async function stageProposal(proposal: ToolProposal, step: number): Promise<void
       sessionAllowedScopes.has(sessionPermissionKey(proposal)) &&
       !cancelRequested
     ) {
-      await executePendingProposal(proposal, step);
+      await executePendingProposal(proposal);
       return;
     }
 
     renderChatPermission(proposal, step);
   } catch (error) {
-    messages.push({
-      role: "assistant",
-      content: `Shuvi could not prepare that action: ${String(error)}`
-    });
+    orchestration = recordToolOutcome(orchestration, proposal, "failure");
+    messages.push(hiddenToolFailure(proposal, {
+      prepare_failed: true,
+      error: String(error),
+      retry_automatically: false
+    }));
     renderMessages();
-    setBusy(false);
+    await continueAfterOutcome();
   }
 }
 
@@ -663,10 +723,7 @@ function clearChatPermission(): void {
   chatPermission.innerHTML = "";
 }
 
-async function executePendingProposal(
-  proposal: ToolProposal,
-  step: number
-): Promise<void> {
+async function executePendingProposal(proposal: ToolProposal): Promise<void> {
   if (!pendingAction || cancelRequested) return;
 
   const actionId = pendingAction.id;
@@ -675,20 +732,20 @@ async function executePendingProposal(
   try {
     const result = await invoke<ActionResult>("execute_action", { actionId });
     void refreshAudit();
+    orchestration = recordToolOutcome(
+      orchestration,
+      proposal,
+      result.success ? "success" : "failure"
+    );
     messages.push(toolResultMessage(result));
-    await saveActiveCheckpoint();
-    await runAgentStep(step + 1);
+    await continueAfterOutcome();
   } catch (error) {
-    messages.push({
-      role: "user",
-      content: `[SHUVI_TOOL_RESULT]\n${JSON.stringify({
-        tool: proposal.tool,
-        success: false,
-        error: String(error)
-      })}\n[/SHUVI_TOOL_RESULT]`
-    });
-    await saveActiveCheckpoint();
-    await runAgentStep(step + 1);
+    orchestration = recordToolOutcome(orchestration, proposal, "failure");
+    messages.push(hiddenToolFailure(proposal, {
+      error: String(error),
+      retry_automatically: false
+    }));
+    await continueAfterOutcome();
   }
 }
 
@@ -732,18 +789,28 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
   `;
 
   const reason = chatPermission.querySelector<HTMLElement>(".permission-reason");
-  if (reason) reason.textContent = proposal.reason || "Shuvi requested this computer action.";
+  if (reason) {
+    const plannedStep = proposal.plan?.step?.trim();
+    reason.textContent = plannedStep
+      ? `${plannedStep} · ${proposal.reason || "Shuvi requested this computer action."}`
+      : proposal.reason || "Shuvi requested this computer action.";
+  }
 
   const sessionButton = chatPermission.querySelector<HTMLButtonElement>("#chatAllowSession");
   if (sessionButton) sessionButton.textContent = sessionPermissionLabel(proposal);
 
   const detail = chatPermission.querySelector<HTMLElement>(".permission-detail");
-  if (detail) detail.textContent = pendingAction.detail;
+  if (detail) {
+    const successCriteria = proposal.plan?.success_criteria?.trim();
+    detail.textContent = successCriteria
+      ? `${pendingAction.detail}\n\nSuccess criteria: ${successCriteria}`
+      : pendingAction.detail;
+  }
 
   const approve = chatPermission.querySelector<HTMLButtonElement>("#chatApprove");
   if (approve) {
     approve.onclick = async () => {
-      await executePendingProposal(proposal, step);
+      await executePendingProposal(proposal);
     };
   }
 
@@ -751,7 +818,7 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
   if (allowSession) {
     allowSession.onclick = async () => {
       sessionAllowedScopes.add(sessionPermissionKey(proposal));
-      await executePendingProposal(proposal, step);
+      await executePendingProposal(proposal);
     };
   }
 
@@ -767,22 +834,18 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
         await invoke("deny_action", { actionId });
         void refreshAudit();
       } finally {
-        messages.push({
-          role: "user",
-          content: `[SHUVI_TOOL_RESULT]\n${JSON.stringify({
-            tool: proposal.tool,
-            success: false,
-            denied_by_user: true
-          })}\n[/SHUVI_TOOL_RESULT]`
-        });
-        await saveActiveCheckpoint();
-        await runAgentStep(step + 1);
+        orchestration = recordToolOutcome(orchestration, proposal, "denied");
+        messages.push(hiddenToolFailure(proposal, {
+          denied_by_user: true,
+          retry_automatically: false
+        }));
+        await continueAfterOutcome();
       }
     };
   }
 }
 
-async function runAgentStep(step: number): Promise<void> {
+async function runAgentStep(): Promise<void> {
   if (cancelRequested) {
     messages.push({ role: "assistant", content: "Task stopped." });
     renderMessages();
@@ -791,14 +854,14 @@ async function runAgentStep(step: number): Promise<void> {
     return;
   }
 
-  if (step > MAX_AGENT_STEPS) {
-    messages.push({
-      role: "assistant",
-      content: "I stopped this task because it reached Shuvi's 8-step safety limit."
-    });
-    renderMessages();
-    await clearActiveCheckpoint();
-    setBusy(false);
+  if (
+    orchestration.recovery_mode === "stopped" ||
+    orchestration.next_step > MAX_AGENT_STEPS
+  ) {
+    await stopAgentForSafety(
+      orchestration.stop_reason ??
+        `I stopped this task because it reached Shuvi's ${MAX_AGENT_STEPS}-step safety limit.`
+    );
     return;
   }
 
@@ -810,7 +873,8 @@ async function runAgentStep(step: number): Promise<void> {
         provider: providerSelect.value,
         model: modelInput.value.trim(),
         base_url: baseUrlInput.value.trim() || null,
-        messages
+        messages,
+        orchestration_context: orchestrationContext(orchestration)
       }
     });
 
@@ -835,7 +899,7 @@ async function runAgentStep(step: number): Promise<void> {
     await saveActiveCheckpoint();
 
     if (response.tool_proposal) {
-      await stageProposal(response.tool_proposal, step);
+      await stageProposal(response.tool_proposal);
       return;
     }
 
@@ -863,10 +927,11 @@ el<HTMLButtonElement>("#resumeTask").addEventListener("click", async () => {
   }
 
   messages = checkpoint.messages;
+  orchestration = normalizeAgentOrchestrationState(checkpoint.orchestration);
   renderMessages();
   cancelRequested = false;
   await saveActiveCheckpoint();
-  await runAgentStep(1);
+  await runAgentStep();
 });
 
 el<HTMLButtonElement>("#discardTask").addEventListener("click", async () => {
@@ -1021,12 +1086,13 @@ el<HTMLFormElement>("#chatForm").addEventListener("submit", async (event) => {
 
   saveProviderSettings();
   cancelRequested = false;
+  orchestration = createAgentOrchestrationState();
   messages.push({ role: "user", content });
   prompt.value = "";
   renderMessages();
   await saveActiveCheckpoint();
 
-  await runAgentStep(1);
+  await runAgentStep();
 });
 
 el<HTMLButtonElement>("#prepareAction").addEventListener("click", async () => {
