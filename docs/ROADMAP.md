@@ -520,3 +520,17 @@ Feature-code coverage remains approximately **98%**; this acceptance work does n
 - The earlier laptop validation before these later move/clone commits had passed 296/296 Node tests, registry validation and frontend build, but that result is not treated as an attestation for the current head.
 
 Conservative feature-code coverage remains approximately **98%** because this pass hardens acceptance/evidence plumbing rather than adding a new editing capability. Premiere runtime verification is unchanged by these commits alone, and production ready remains **no** until real paired-host evidence and remaining recovery/export gates are proven.
+
+
+### GitHub-only recovery verification hardening (2026-09-28)
+
+- Added recovery-verifiable Premiere checkpoints without adding any automatic rollback. New checkpoints use metadata schema v2 and record a bounded streaming FNV-1a 64-bit content fingerprint plus exact source/backup path binding and byte count. The fingerprint is explicitly documented as accidental-corruption detection, not cryptographic authentication.
+- Added `premiere_checkpoint::verify_checkpoint`, which requires the checkpoint to remain a distinct `.prproj` inside the sibling `Shuvi Backups` directory, verifies v2 metadata/path/size/fingerprint consistency, and refuses older schema-v1 checkpoints for recovery attestation.
+- Acceptance actions now persist `recovery_verified` (backward-compatible default false). For completed `trim`, `move`, and `clone` actions, recovery can be verified only after the user manually opens the Shuvi checkpoint and the paired host reobserves the same Premiere version, project GUID, sequence GUID, checkpoint path, clip count, exact target signature, name, start and end timing from the pre-edit snapshot.
+- Added read-only `premiere_acceptance_verify_recovery`. It never opens, overwrites, restores, or mutates a Premiere project; it only validates the Shuvi checkpoint receipt plus current host/timeline state. It also keeps `retry_automatically=false`.
+- Scene-marker recovery is deliberately not inferred from unchanged clip timing; the verifier refuses `scene_markers` until marker state can be explicitly inspected/cleaned and reverified.
+- Added Rust tests for checkpoint tamper detection and exact manual recovery state plus Node structural safety coverage for the new tool, v2 fingerprint requirement, no automatic rollback, no blind retry, and scene-marker refusal.
+- Static source wiring checks on current GitHub content passed for the new checkpoint/recovery contracts. These are not a substitute for Rust/Node execution.
+- Latest CI for source head `ab3718e26b6816538fb1d7f8d5da07cb5c61e6eb` was run `36437197792`; both `frontend` and `rust` again finished with `steps=null`. Therefore no current-head test execution is claimed.
+
+Feature-code coverage remains approximately **98%**; this work strengthens recovery evidence rather than adding a new editing feature. Production ready remains **no** until a real paired Premiere host verifies the acceptance and recovery paths and the remaining export/recovery gates.
