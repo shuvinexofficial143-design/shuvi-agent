@@ -938,6 +938,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_apply_transcript_rebuild"
         | "premiere_cancel_transcript_rebuild"
         | "premiere_plan_scene_detection"
+        | "premiere_plan_scene_rough_cut"
         | "premiere_detect_scene_markers"
         | "premiere_detect_scene_cuts"
         | "premiere_list_transcription_languages"
