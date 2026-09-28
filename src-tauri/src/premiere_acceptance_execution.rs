@@ -32,6 +32,8 @@ pub struct Action {
     pub checkpoint: Option<String>,
     pub after: Option<Value>,
     pub recovery: Option<String>,
+    #[serde(default)]
+    pub recovery_verified: bool,
     pub cancellation_requested: bool,
     pub created_at_ms: u64,
 }
@@ -82,7 +84,7 @@ impl Action {
         }
         let record=Self{schema_version:1,action_id:id,group:2,step,fixture,premiere_version:version.into(),
             project_path:project_path.into(),before,status:"prepared".into(),checkpoint:None,after:None,
-            recovery:None,cancellation_requested:false,created_at_ms:now()};
+            recovery:None,recovery_verified:false,cancellation_requested:false,created_at_ms:now()};
         record.validate()?;Ok(record)
     }
     pub fn validate(&self)->Result<(),String>{
@@ -142,6 +144,59 @@ impl Action {
         self.status=if verified {"verified"} else {"uncertain"}.into();
         self.recovery=Some("A .prproj checkpoint is retained; no rollback or cleanup was performed. Inspect before explicit recovery.".into());
         self.validate()?;Ok(verified)
+    }
+
+    pub fn verify_recovery(&mut self,context:&Value,timeline:&Value)->Result<bool,String>{
+        if self.checkpoint.is_none() || !matches!(self.step.as_str(),"trim"|"move"|"clone")
+            || !matches!(self.status.as_str(),"verified"|"uncertain"|"failed") {
+            return Err("Recovery verification requires a completed trim/move/clone acceptance action with checkpoint.".into());
+        }
+        let checkpoint=self.checkpoint.as_deref().ok_or("Checkpoint missing.")?;
+        let current_path=context.get("projectPath").and_then(Value::as_str).ok_or("Recovery host project path missing.")?;
+        let canonical_current=fs::canonicalize(current_path).map_err(|e|format!("Recovery project path unavailable: {e}"))?;
+        let canonical_checkpoint=fs::canonicalize(checkpoint).map_err(|e|format!("Checkpoint path unavailable: {e}"))?;
+        if canonical_current!=canonical_checkpoint
+            || context.get("projectGuid").and_then(Value::as_str)!=Some(self.fixture.expected.project_guid.as_str())
+            || context.pointer("/activeSequence/guid").and_then(Value::as_str)!=self.fixture.expected.sequence_guid.as_deref()
+            || context.get("premiereVersion").and_then(Value::as_str)!=Some(self.premiere_version.as_str()) {
+            self.recovery_verified=false;
+            return Ok(false);
+        }
+        if timeline.get("truncated").and_then(Value::as_bool)!=Some(false)
+            || timeline.get("sequenceGuid").and_then(Value::as_str)!=self.fixture.expected.sequence_guid.as_deref()
+            || timeline.pointer("/expected/project_guid").and_then(Value::as_str)!=Some(self.fixture.expected.project_guid.as_str()) {
+            self.recovery_verified=false;
+            return Ok(false);
+        }
+        let timeline_path=timeline.pointer("/expected/project_path").and_then(Value::as_str).ok_or("Recovery timeline project path missing.")?;
+        if fs::canonicalize(timeline_path).ok().as_deref()!=Some(canonical_checkpoint.as_path()) {
+            self.recovery_verified=false;
+            return Ok(false);
+        }
+        let items=timeline.get(if self.fixture.kind=="video" {"videoTracks"}else{"audioTracks"}).and_then(Value::as_array)
+            .and_then(|tracks|tracks.iter().find(|track|track["index"]==self.fixture.track))
+            .and_then(|track|track.get("items")).and_then(Value::as_array).ok_or("Recovery track missing.")?;
+        if items.len()>240 || Some(items.len() as u64)!=self.before.get("clip_count").and_then(Value::as_u64) {
+            self.recovery_verified=false;
+            return Ok(false);
+        }
+        let clip=items.iter().find(|item|item["clipIndex"]==self.fixture.clip_index
+            && item.get("targetSignature").and_then(Value::as_str)==Some(self.fixture.expected.clips[0].signature.as_str()));
+        let Some(clip)=clip else {self.recovery_verified=false;return Ok(false);};
+        let close=|a:f64,b:f64|(a-b).abs()<0.005;
+        let recovered=clip.get("name")==self.before.get("name")
+            && clip.get("startSeconds").and_then(Value::as_f64).zip(self.before.get("startSeconds").and_then(Value::as_f64))
+                .is_some_and(|(a,b)|close(a,b))
+            && clip.get("endSeconds").and_then(Value::as_f64).zip(self.before.get("endSeconds").and_then(Value::as_f64))
+                .is_some_and(|(a,b)|close(a,b));
+        self.recovery_verified=recovered;
+        self.recovery=Some(if recovered {
+            "Recovery verified by reopening the Shuvi checkpoint and reobserving the exact pre-edit clip/timeline state; Shuvi performed no automatic rollback.".into()
+        } else {
+            "Checkpoint is open but the exact pre-edit clip/timeline state was not reobserved; recovery remains unverified.".into()
+        });
+        self.validate()?;
+        Ok(recovered)
     }
 }
 
@@ -263,6 +318,28 @@ pub fn save(path:&Path,action:&Action)->Result<(),String>{
         let mut bad_action=Action::new("clone-b".into(),"clone".into(),bad_fixture,&c,&bad).unwrap();
         bad_action.status="executing".into();
         assert!(!bad_action.finish(&bad,true).unwrap());
+    }
+    #[test] fn recovery_requires_checkpoint_project_and_exact_pre_edit_state(){
+        let (fixture,mut context,timeline)=fixture();
+        let mut action=Action::new("recover-a".into(),"trim".into(),Fixture {
+            start_seconds:Some(0.1),..fixture
+        },&context,&timeline).unwrap();
+        let checkpoint_dir=std::env::temp_dir().join(format!("shuvi-recovery-{}",std::process::id()));
+        let backups=checkpoint_dir.join("Shuvi Backups");
+        fs::create_dir_all(&backups).unwrap();
+        let source=checkpoint_dir.join("original.prproj");
+        let checkpoint=backups.join("backup.prproj");
+        fs::write(&source,b"source").unwrap();
+        fs::write(&checkpoint,b"backup").unwrap();
+        action.checkpoint=Some(checkpoint.to_string_lossy().into_owned());
+        action.status="verified".into();
+        context["projectPath"]=json!(checkpoint.to_string_lossy().to_string());
+        let mut recovered=timeline.clone();
+        recovered["expected"]["project_path"]=json!(checkpoint.to_string_lossy().to_string());
+        assert!(action.verify_recovery(&context,&recovered).unwrap());
+        recovered["videoTracks"][0]["items"][0]["startSeconds"]=json!(0.5);
+        assert!(!action.verify_recovery(&context,&recovered).unwrap());
+        let _=fs::remove_dir_all(checkpoint_dir);
     }
     #[test] fn scene_marker_acceptance_needs_native_observed_delta(){
         let (mut f,c,t)=fixture();f.start_seconds=None;f.end_seconds=None;f.delta_seconds=None;
