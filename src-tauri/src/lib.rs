@@ -333,8 +333,11 @@ struct ChatInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AgentPlanMeta {
+    #[serde(default)]
     objective: String,
+    #[serde(default)]
     step: String,
+    #[serde(default)]
     success_criteria: String,
 }
 
@@ -818,15 +821,15 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         candidate = stripped.strip_suffix("~~~").unwrap_or(stripped).trim();
     }
 
-    let proposal: ToolProposal = serde_json::from_str(candidate).ok()?;
-    if let Some(plan)=proposal.plan.as_ref() {
+    let mut proposal: ToolProposal = serde_json::from_str(candidate).ok()?;
+    if proposal.plan.as_ref().is_some_and(|plan| {
         let bounded=|value:&str,max:usize| {
             let trimmed=value.trim();
             !trimmed.is_empty() && trimmed.chars().count()<=max
         };
-        if !bounded(&plan.objective,500) || !bounded(&plan.step,500) || !bounded(&plan.success_criteria,800) {
-            return None;
-        }
+        !bounded(&plan.objective,500) || !bounded(&plan.step,500) || !bounded(&plan.success_criteria,800)
+    }) {
+        proposal.plan=None;
     }
 
     match proposal.tool.as_str() {
