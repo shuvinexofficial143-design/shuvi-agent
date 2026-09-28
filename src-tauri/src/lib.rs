@@ -251,6 +251,7 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - premiere_acceptance_prepare: {"group":2,"step":"trim|move|clone|scene_markers","fixture":{"kind":"video|audio","track":0,"clip_index":0,"start_seconds":"optional","end_seconds":"optional","delta_seconds":"optional","expected":{"project_guid":"...","project_path":"...","sequence_guid":"...","clips":[{"kind":"video","track":0,"clip_index":0,"signature":"..."}]}}}
 - premiere_acceptance_execute: {"action_id":"exact prepared acceptance action UUID"}
 - premiere_acceptance_cancel: {"action_id":"exact prepared acceptance action UUID"}
+- premiere_acceptance_verify_recovery: {"action_id":"completed trim/move/clone acceptance action UUID"} — read-only verification after manually opening the Shuvi checkpoint; never opens or overwrites a project automatically
 - premiere_save_project: {}
 - workspace_scan: {"path":"absolute workspace path"}
 - search_text: {"path":"absolute workspace path","query":"text to find"}
@@ -538,6 +539,7 @@ enum ToolAction {
     PremiereAcceptancePrepare { step: String, fixture: premiere_acceptance_execution::Fixture },
     PremiereAcceptanceExecute { action_id: String },
     PremiereAcceptanceCancel { action_id: String },
+    PremiereAcceptanceVerifyRecovery { action_id: String },
     PremiereCalibrationReport,
     PremiereCalibrationObserve { target: premiere_calibration::Target, semantic_role: Option<String> },
     PremiereCalibrationProbe { target: premiere_calibration::Target, delta: f64 },
@@ -985,6 +987,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_acceptance_prepare"
         | "premiere_acceptance_execute"
         | "premiere_acceptance_cancel"
+        | "premiere_acceptance_verify_recovery"
         | "premiere_calibration_report"
         | "premiere_calibration_observe"
         | "premiere_calibration_probe"
@@ -4729,13 +4732,17 @@ fn stage_tool(
                     format!("High risk: exact approved native parameter will be changed by a bounded delta of {delta}, reinspected, restored to its original value and reinspected again. A .prproj checkpoint is required. If delivery is uncertain, no blind retry or assumed recovery."),RiskLevel::High)
             }
         }
-        "premiere_acceptance_execute" | "premiere_acceptance_cancel" => {
+        "premiere_acceptance_execute" | "premiere_acceptance_cancel" | "premiere_acceptance_verify_recovery" => {
             let action_id=arg_string(&proposal.arguments,"action_id")?;
             Uuid::parse_str(&action_id).map_err(|_|"Invalid acceptance action ID.")?;
             if proposal.tool=="premiere_acceptance_execute" {
                 (ToolAction::PremiereAcceptanceExecute {action_id:action_id.clone()},
                     "Execute ONE disposable Premiere acceptance edit".into(),
                     format!("High risk: execute preplanned acceptance action {action_id} against the registered disposable project; requires a .prproj checkpoint, exact clip expectation and native post-inspection. No automatic rollback or retry."),RiskLevel::High)
+            }else if proposal.tool=="premiere_acceptance_verify_recovery" {
+                (ToolAction::PremiereAcceptanceVerifyRecovery {action_id:action_id.clone()},
+                    "Verify manually reopened Premiere checkpoint recovery".into(),
+                    format!("Read-only: verify checkpoint metadata/fingerprint and exact pre-edit host state for acceptance action {action_id}. Shuvi will not open, overwrite, restore, or mutate a project."),RiskLevel::Low)
             }else{
                 (ToolAction::PremiereAcceptanceCancel {action_id},"Cancel Premiere acceptance action".into(),
                     "Persist cooperative cancellation; an already running native edit may need inspection.".into(),RiskLevel::Low)
@@ -10190,6 +10197,33 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             premiere_acceptance_execution::save(&path,&action)?;
             Ok(ActionResult {success:true,tool,stdout:json!({"action_id":action_id,"status":action.status,
                 "cancellation_requested":action.cancellation_requested,"native_edit_may_have_started":action.status=="executing"}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereAcceptanceVerifyRecovery {action_id} => {
+            if state.acceptance_probe_running.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err() {
+                return Err("Another Premiere acceptance action is running.".into());
+            }
+            let _guard=AcceptanceProbeGuard(&state.acceptance_probe_running);
+            if !state.premiere_bridge.status()?.paired {return Err("Paired Premiere UXP host unavailable.".into());}
+            let path=premiere_acceptance_action_path(app,&action_id)?;
+            let mut record=premiere_acceptance_execution::load(&path)?;
+            let checkpoint=record.checkpoint.clone().ok_or("Acceptance action has no checkpoint to verify.")?;
+            if record.step=="scene_markers" {
+                return Err("Scene-marker recovery cannot be verified from timeline state alone; generated markers require explicit marker inspection/cleanup.".into());
+            }
+            let checkpoint_receipt=premiere_checkpoint::verify_checkpoint(Path::new(&checkpoint),Path::new(&record.project_path))?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(10)).await?;
+            let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+            let recovered=record.verify_recovery(&context,&timeline)?;
+            premiere_acceptance_execution::save(&path,&record)?;
+            Ok(ActionResult {success:recovered,tool,stdout:json!({
+                "action_id":action_id,
+                "recovery_verified":recovered,
+                "checkpoint":checkpoint,
+                "checkpoint_receipt":checkpoint_receipt,
+                "automatic_rollback_performed":false,
+                "retry_automatically":false,
+                "recovery":record.recovery
+            }).to_string(),stderr:String::new(),exit_code:Some(if recovered{0}else{1})})
         }
         ToolAction::PremiereAcceptanceExecute {action_id} => {
             if state.acceptance_probe_running.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err() {
