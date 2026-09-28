@@ -10283,25 +10283,31 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             };
             if premiere_acceptance_execution::load(&path).is_ok_and(|latest|latest.cancellation_requested){record.cancellation_requested=true;}
             premiere_acceptance_execution::save(&path,&record)?;
-            if verified && matches!(record.step.as_str(),"trim"|"scene_markers") {
+            if verified && matches!(record.step.as_str(),"trim"|"move"|"clone"|"scene_markers") {
                 let report_path=premiere_acceptance_path(app)?;
                 let mut report=premiere_acceptance::load(&report_path)?;
                 if let Some(checkpoint)=record.checkpoint.as_deref(){
-                    if record.step=="trim" {
-                        report.verified_timeline_edit("trim","premiere_trim_clip",&record.premiere_version,
-                            &record.fixture.expected.project_guid,record.fixture.expected.sequence_guid.as_deref().unwrap_or(""),checkpoint)?;
-                    } else {
-                        let marker_count=record.after.as_ref().and_then(|v|v.get("new_marker_count")).and_then(Value::as_u64).unwrap_or(0) as usize;
-                        let restored=record.after.as_ref().and_then(|v|v.get("selection_restored")).and_then(Value::as_bool).unwrap_or(false);
-                        report.verified_scene_detection("premiere_detect_scene_markers",&record.premiere_version,
-                            &record.fixture.expected.project_guid,record.fixture.expected.sequence_guid.as_deref().unwrap_or(""),
-                            checkpoint,marker_count,restored)?;
+                    match record.step.as_str() {
+                        "trim"=>report.verified_timeline_edit("trim","premiere_trim_clip",&record.premiere_version,
+                            &record.fixture.expected.project_guid,record.fixture.expected.sequence_guid.as_deref().unwrap_or(""),checkpoint)?,
+                        "move"=>report.verified_timeline_edit("move_clone","premiere_move_clip",&record.premiere_version,
+                            &record.fixture.expected.project_guid,record.fixture.expected.sequence_guid.as_deref().unwrap_or(""),checkpoint)?,
+                        "clone"=>report.verified_timeline_edit("move_clone","premiere_clone_clip",&record.premiere_version,
+                            &record.fixture.expected.project_guid,record.fixture.expected.sequence_guid.as_deref().unwrap_or(""),checkpoint)?,
+                        "scene_markers"=>{
+                            let marker_count=record.after.as_ref().and_then(|v|v.get("new_marker_count")).and_then(Value::as_u64).unwrap_or(0) as usize;
+                            let restored=record.after.as_ref().and_then(|v|v.get("selection_restored")).and_then(Value::as_bool).unwrap_or(false);
+                            report.verified_scene_detection("premiere_detect_scene_markers",&record.premiere_version,
+                                &record.fixture.expected.project_guid,record.fixture.expected.sequence_guid.as_deref().unwrap_or(""),
+                                checkpoint,marker_count,restored)?;
+                        },
+                        _=>unreachable!(),
                     }
                     premiere_acceptance::save(&report_path,&report)?;
                 }
             }
             Ok(ActionResult{success:verified,tool,stdout:json!({"action_id":action_id,"status":record.status,
-                "native_poststate_verified":verified,"capability_promoted":verified && matches!(record.step.as_str(),"trim"|"scene_markers"),
+                "native_poststate_verified":verified,"capability_promoted":verified && matches!(record.step.as_str(),"trim"|"move"|"clone"|"scene_markers"),
                 "checkpoint":record.checkpoint,"recovery":record.recovery,
                 "cleanup_needed":matches!(record.step.as_str(),"clone"|"scene_markers"),
                 "retry_automatically":false}).to_string(),stderr:String::new(),exit_code:Some(if verified{0}else{1})})
@@ -10380,7 +10386,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let export_complete=jobs.jobs.iter().filter(|j|j.encoder_completion_verified).count();
             let baseline=json!({"bridge_pair":verified("bridge_pair"),"project_inspection":verified("project_inspection"),
                 "timeline_inspection":verified("timeline_inspection"),"trim":verified("trim"),
-                "scene_edit_detection":verified("scene_edit_detection"),
+                "move_clone":verified("move_clone"),"scene_edit_detection":verified("scene_edit_detection"),
                 "static_parameter_set":verified("static_parameter_set"),"visual_review":verified("visual_review"),
                 "checkpoint_recovery":recovery_count>0,"stale_expectation_host_tested":false,
                 "export_completion_verified":export_complete>0});
