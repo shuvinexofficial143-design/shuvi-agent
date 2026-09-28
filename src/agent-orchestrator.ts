@@ -136,12 +136,12 @@ export function evaluateProposal(
   return { allowed: true, fingerprint };
 }
 
-function planFields(proposal: ToolProposal): Pick<
-  AgentOrchestrationState,
-  "objective" | "last_plan_step" | "last_success_criteria"
-> {
+function planFields(
+  state: AgentOrchestrationState,
+  proposal: ToolProposal
+): Pick<AgentOrchestrationState, "objective" | "last_plan_step" | "last_success_criteria"> {
   return {
-    objective: boundedText(proposal.plan?.objective, 500),
+    objective: state.objective ?? boundedText(proposal.plan?.objective, 500),
     last_plan_step: boundedText(proposal.plan?.step, 500),
     last_success_criteria: boundedText(proposal.plan?.success_criteria, 800)
   };
@@ -158,7 +158,7 @@ export function recordToolOutcome(
   const replan = outcome !== "success";
   return {
     ...state,
-    ...planFields(proposal),
+    ...planFields(state, proposal),
     next_step: Math.min(MAX_AGENT_STEPS + 1, state.next_step + 1),
     tool_actions: Math.min(MAX_AGENT_STEPS, state.tool_actions + 1),
     consecutive_failures: Math.min(MAX_CONSECUTIVE_FAILURES, failures),
@@ -181,7 +181,7 @@ export function recordProposalBlock(
   const blocks = Math.min(MAX_ORCHESTRATION_BLOCKS, state.blocked_repeats + 1);
   return {
     ...state,
-    ...planFields(proposal),
+    ...planFields(state, proposal),
     next_step: Math.min(MAX_AGENT_STEPS + 1, state.next_step + 1),
     blocked_repeats: blocks,
     last_proposal_fingerprint: decision.fingerprint,
