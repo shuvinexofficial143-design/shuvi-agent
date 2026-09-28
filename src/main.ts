@@ -15,6 +15,7 @@ import type {
 import {
   MAX_AGENT_STEPS,
   createAgentOrchestrationState,
+  codingPhase,
   evaluateProposal,
   normalizeAgentOrchestrationState,
   orchestrationContext,
@@ -91,6 +92,7 @@ root.innerHTML = `
       <small id="ramHint">4 GB hard ceiling</small>
       <small id="ramChildren" class="ram-children">0 managed processes</small>
       <small id="tokenMeter" class="ram-children">0 session tokens</small>
+      <small id="agentProgress" class="ram-children">Agent idle</small>
     </div>
   </aside>
 
@@ -361,6 +363,23 @@ function currentCheckpoint(): SessionCheckpoint {
   };
 }
 
+function renderOrchestrationStatus(): void {
+  const progress = el<HTMLElement>("#agentProgress");
+  if (!orchestration.objective && orchestration.tool_actions === 0 && orchestration.next_step === 1) {
+    progress.textContent = "Agent idle";
+    return;
+  }
+
+  const mode = orchestration.recovery_mode === "normal"
+    ? ""
+    : ` · ${orchestration.recovery_mode.replaceAll("_", " ")}`;
+  const coding = orchestration.coding.active
+    ? ` · ${codingPhase(orchestration).replaceAll("_", " ")}`
+    : "";
+  progress.textContent =
+    `Agent ${Math.min(orchestration.next_step, MAX_AGENT_STEPS)}/${MAX_AGENT_STEPS}${coding}${mode}`;
+}
+
 async function saveActiveCheckpoint(): Promise<void> {
   try {
     await invoke("save_session_checkpoint", { checkpoint: currentCheckpoint() });
@@ -506,6 +525,7 @@ async function boot(): Promise<void> {
     prepareOnboarding();
     await loadWorkspace();
     await loadRecoveryCheckpoint();
+    renderOrchestrationStatus();
     await refreshRam();
     await refreshAudit();
     await refreshPremiereBridge();
@@ -668,6 +688,7 @@ async function recordOrchestrationAudit(
 }
 
 async function stopAgentForSafety(reason: string): Promise<void> {
+  renderOrchestrationStatus();
   await recordOrchestrationAudit("orchestration_stopped", reason, orchestration.last_tool);
   messages.push({ role: "assistant", content: reason });
   renderMessages();
@@ -676,6 +697,7 @@ async function stopAgentForSafety(reason: string): Promise<void> {
 }
 
 async function continueAfterOutcome(): Promise<void> {
+  renderOrchestrationStatus();
   await saveActiveCheckpoint();
   if (orchestration.recovery_mode === "stopped") {
     await stopAgentForSafety(
@@ -948,6 +970,7 @@ el<HTMLButtonElement>("#resumeTask").addEventListener("click", async () => {
 
   messages = checkpoint.messages;
   orchestration = normalizeAgentOrchestrationState(checkpoint.orchestration);
+  renderOrchestrationStatus();
   renderMessages();
   cancelRequested = false;
   await saveActiveCheckpoint();
@@ -956,6 +979,8 @@ el<HTMLButtonElement>("#resumeTask").addEventListener("click", async () => {
 
 el<HTMLButtonElement>("#discardTask").addEventListener("click", async () => {
   savedCheckpoint = null;
+  orchestration = createAgentOrchestrationState();
+  renderOrchestrationStatus();
   resumeBanner.classList.add("hidden");
   await clearActiveCheckpoint();
 });
@@ -1107,6 +1132,7 @@ el<HTMLFormElement>("#chatForm").addEventListener("submit", async (event) => {
   saveProviderSettings();
   cancelRequested = false;
   orchestration = createAgentOrchestrationState();
+  renderOrchestrationStatus();
   messages.push({ role: "user", content });
   prompt.value = "";
   renderMessages();
