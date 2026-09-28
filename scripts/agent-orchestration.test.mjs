@@ -56,3 +56,12 @@ test("permission gates remain between planning and execution",()=>{
   assert.match(main,/renderChatPermission\(proposal, step\)/);
   assert.match(main,/await invoke<ActionResult>\("execute_action", \{ actionId \}\)/);
 });
+
+test("orchestration safety decisions are locally audited without bypassing permissions",()=>{
+  assert.match(rust,/fn record_agent_event\(/);
+  assert.match(rust,/"orchestration_blocked"\|"orchestration_stopped"\|"orchestration_replan"/);
+  assert.match(rust,/record_agent_event,[\s\S]*set_workspace/);
+  assert.match(main,/recordOrchestrationAudit\("orchestration_blocked", decision\.reason, proposal\.tool\)/);
+  assert.match(main,/recordOrchestrationAudit\("orchestration_stopped", reason, orchestration\.last_tool\)/);
+  assert.match(main,/Audit logging is best-effort and must not change orchestration decisions/);
+});
