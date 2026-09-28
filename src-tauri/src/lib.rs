@@ -273,6 +273,8 @@ Rules:
 - inspect_screen captures the screen and sends it to the currently selected vision-capable provider after user approval.
 - Do not put tool JSON inside markdown fences.
 - For destructive/system/security-sensitive work, explain the intent in reason.
+- Coding workflow dependencies are enforced locally. Before replace_text, successfully read the exact target file. Before apply_patch, inspect git_status for that exact repository. Before git_commit, run fresh git_status and git_diff after the latest edit. git_push requires a successful same-repository git_commit after the latest edit.
+- After a code mutation, prefer run_project_task for an appropriate test/build/lint/typecheck before review/commit when such a task exists. Validation status is tracked, but a missing validation step alone does not authorize or fabricate a pass/fail result.
 - Before git_commit, inspect git_status and git_diff so the user can review what will be committed.
 - Treat git_push as a remote write and request it only after a successful commit when the user asked for a push.
 - Use run_project_task instead of raw shell commands when test/build/lint/typecheck is enough.
