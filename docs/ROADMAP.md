@@ -506,3 +506,17 @@ Conservative **feature-code coverage after AG: approximately 98%** (before 97%),
 - Added Rust unit coverage and Node structural/safety coverage for the new acceptance path. Because GitHub-hosted jobs still execute zero steps, these new tests are committed but not claimed as executed here.
 
 Feature-code coverage remains approximately **98%**; this acceptance work does not add a new editing capability. Runtime verified remains whatever the local acceptance report proves on a real paired Premiere host; no mock or CI metadata raises it.
+
+
+### GitHub-only acceptance hardening — move/clone promotion (2026-09-28)
+
+- Started from confirmed remote `main` `2f0301013ca05b028e5d05180ef7ede2f7bc06cf`; no local/server build environment was required for this coding pass.
+- Fixed four registry/integration gaps that had already been exposed during the earlier laptop-only validation pass: `premiere_plan_scene_rough_cut` is now proposal-allowlisted, the desktop Premiere native allowlist is synchronized with the UXP routes added by AD/AB/AC/AE, grouped Rust staging arms are parsed correctly by the registry validator, and the AF transcript-rebuild structural assertion now checks the typed phase mapping rather than a stale inline literal.
+- Extended disposable Group 2 acceptance so `move` and `clone` can promote only the existing `move_clone` capability after a real paired Premiere host proves the exact post-state. A move must reobserve exactly one matching clip shifted by the bounded planned offset. A clone must preserve the original, add exactly one matching offset duplicate, and increase the track clip count by one. An unchanged or ambiguous timeline does not verify.
+- Promotion remains evidence-gated: explicit disposable `.prproj` registration, exact project/sequence/clip expectation, separate approval, durable checkpoint, production typed action, native post-inspection, and no blind retry are still required. Clone cleanup remains explicit; no automatic rollback or cleanup was added.
+- The acceptance report now allowlists only the exact action/capability pairs `trim/premiere_trim_clip`, `move_clone/premiere_move_clip`, and `move_clone/premiere_clone_clip`. Readiness also exposes the persisted `move_clone` runtime-evidence gate.
+- Added Rust unit coverage for exact move/clone post-state and report promotion plus Node structural coverage for desktop wiring, checkpoint requirements, no-blind-retry semantics and clone cleanup. These tests are committed but are not claimed as executed on the current head.
+- Current remote `main` before this roadmap note is `60e0b3aff16aa966414fa82f407ecea5864b401d`. GitHub Actions run `36435001718` again completed with both `rust` and `frontend` jobs reporting `steps=null`; therefore the current source tests did not execute and no CI test attestation is recorded.
+- The earlier laptop validation before these later move/clone commits had passed 296/296 Node tests, registry validation and frontend build, but that result is not treated as an attestation for the current head.
+
+Conservative feature-code coverage remains approximately **98%** because this pass hardens acceptance/evidence plumbing rather than adding a new editing capability. Premiere runtime verification is unchanged by these commits alone, and production ready remains **no** until real paired-host evidence and remaining recovery/export gates are proven.
