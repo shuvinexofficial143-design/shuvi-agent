@@ -11,6 +11,28 @@ export type ChatMessage = {
   content: string;
 };
 
+export type AgentPlanMeta = {
+  objective: string;
+  step: string;
+  success_criteria: string;
+};
+
+export type AgentOrchestrationCheckpoint = {
+  version: 1;
+  next_step: number;
+  tool_actions: number;
+  consecutive_failures: number;
+  blocked_repeats: number;
+  last_proposal_fingerprint: string | null;
+  last_tool: string | null;
+  last_outcome: "success" | "failure" | "denied" | "blocked" | null;
+  recovery_mode: "normal" | "replan_required" | "stopped";
+  objective: string | null;
+  last_plan_step: string | null;
+  last_success_criteria: string | null;
+  stop_reason: string | null;
+};
+
 export type SessionCheckpoint = {
   version: number;
   updated_at_ms: number;
@@ -18,12 +40,14 @@ export type SessionCheckpoint = {
   model: string;
   base_url: string | null;
   messages: ChatMessage[];
+  orchestration?: AgentOrchestrationCheckpoint | null;
 };
 
 export type ToolProposal = {
   tool: string;
   arguments: Record<string, unknown>;
   reason?: string | null;
+  plan?: AgentPlanMeta | null;
 };
 
 export type UsageStats = {
