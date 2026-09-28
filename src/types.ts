@@ -17,8 +17,23 @@ export type AgentPlanMeta = {
   success_criteria: string;
 };
 
+export type CodingWorkflowCheckpoint = {
+  active: boolean;
+  inspected_paths: string[];
+  last_mutation_step: number;
+  last_validation_step: number;
+  last_git_status_step: number;
+  last_git_status_path: string | null;
+  last_git_diff_step: number;
+  last_git_diff_path: string | null;
+  last_commit_step: number;
+  last_commit_path: string | null;
+  last_push_step: number;
+  last_push_path: string | null;
+};
+
 export type AgentOrchestrationCheckpoint = {
-  version: 1;
+  version: 1 | 2;
   next_step: number;
   tool_actions: number;
   consecutive_failures: number;
@@ -31,6 +46,7 @@ export type AgentOrchestrationCheckpoint = {
   last_plan_step: string | null;
   last_success_criteria: string | null;
   stop_reason: string | null;
+  coding?: CodingWorkflowCheckpoint | null;
 };
 
 export type SessionCheckpoint = {
