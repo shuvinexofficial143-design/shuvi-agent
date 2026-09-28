@@ -80,8 +80,13 @@ impl Report {
     /// a matching live native post-inspection on the same disposable project.
     pub fn verified_timeline_edit(&mut self,capability:&str,action:&str,version:&str,project:&str,
         sequence:&str,checkpoint:&str)->Result<(),String>{
-        if (capability,action)!=("trim","premiere_trim_clip") || version.is_empty() || project.is_empty()
-            || sequence.is_empty() || checkpoint.is_empty() || checkpoint.len()>1024 {
+        let native_capability=match (capability,action) {
+            ("trim","premiere_trim_clip")=>"accepted typed trim; exact native timing reinspected",
+            ("move_clone","premiere_move_clip")=>"accepted typed move; exact native timing offset reinspected",
+            ("move_clone","premiere_clone_clip")=>"accepted typed clone; original plus offset duplicate reinspected",
+            _=>return Err("Timeline acceptance requires an allowlisted verified edit/action pair.".into()),
+        };
+        if version.is_empty() || project.is_empty() || sequence.is_empty() || checkpoint.is_empty() || checkpoint.len()>1024 {
             return Err("Timeline acceptance requires a verified exact edit and checkpoint.".into());
         }
         let index=self.capabilities.iter().position(|c|c.name==capability).ok_or("Unknown acceptance capability.")?;
@@ -91,7 +96,7 @@ impl Report {
         self.append(Evidence {timestamp_ms:self.next_timestamp(),capability:capability.into(),action:action.into(),
             result_category:"runtime_verified".into(),premiere_version:Some(version.into()),
             project_guid:Some(project.into()),sequence_guid:Some(sequence.into()),
-            native_capability:Some("accepted typed trim; exact native timing reinspected".into()),
+            native_capability:Some(native_capability.into()),
             recovery:Some("Checkpoint recorded; rollback and recovery not yet verified.".into())})
     }
     fn next_timestamp(&self) -> u64 {
@@ -345,6 +350,16 @@ mod tests {
         let mut bad=Report::default();bad.capabilities.pop();assert!(bad.validate().is_err());
         let mut bad=Report::default();bad.capabilities[0].state="runtime_verified".into();
         bad.capabilities[0].premiere_runtime_verified=true;assert!(bad.validate().is_err());
+    }
+    #[test] fn timeline_promotion_accepts_only_exact_trim_move_clone_pairs() {
+        let mut r=Report::default();
+        assert!(r.verified_timeline_edit("move_clone","premiere_trim_clip","26.0","p","s","C:/backup.prproj").is_err());
+        r.verified_timeline_edit("move_clone","premiere_move_clip","26.0","p","s","C:/backup.prproj").unwrap();
+        r.verified_timeline_edit("move_clone","premiere_clone_clip","26.0","p","s","C:/backup2.prproj").unwrap();
+        let cap=r.capabilities.iter().find(|c|c.name=="move_clone").unwrap();
+        assert!(cap.premiere_runtime_verified);
+        assert!(r.evidence.iter().any(|e|e.capability=="move_clone" && e.action=="premiere_move_clip"));
+        assert!(r.evidence.iter().any(|e|e.capability=="move_clone" && e.action=="premiere_clone_clip"));
     }
     #[test] fn scene_detection_promotion_requires_real_marker_delta_and_restored_selection() {
         let mut r=Report::default();
