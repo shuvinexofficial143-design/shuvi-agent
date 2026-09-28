@@ -654,7 +654,21 @@ function hiddenToolFailure(
   };
 }
 
+async function recordOrchestrationAudit(
+  event: "orchestration_blocked" | "orchestration_stopped" | "orchestration_replan",
+  detail: string,
+  tool: string | null = null
+): Promise<void> {
+  try {
+    await invoke("record_agent_event", { event, tool, detail });
+    void refreshAudit();
+  } catch {
+    // Audit logging is best-effort and must not change orchestration decisions.
+  }
+}
+
 async function stopAgentForSafety(reason: string): Promise<void> {
+  await recordOrchestrationAudit("orchestration_stopped", reason, orchestration.last_tool);
   messages.push({ role: "assistant", content: reason });
   renderMessages();
   await clearActiveCheckpoint();
@@ -677,6 +691,7 @@ async function stageProposal(proposal: ToolProposal): Promise<void> {
   const decision = evaluateProposal(orchestration, proposal);
   if (!decision.allowed) {
     orchestration = recordProposalBlock(orchestration, proposal, decision);
+    await recordOrchestrationAudit("orchestration_blocked", decision.reason, proposal.tool);
     messages.push(hiddenToolFailure(proposal, {
       orchestration_blocked: true,
       reason: decision.reason,
@@ -707,6 +722,11 @@ async function stageProposal(proposal: ToolProposal): Promise<void> {
     renderChatPermission(proposal, step);
   } catch (error) {
     orchestration = recordToolOutcome(orchestration, proposal, "failure");
+    await recordOrchestrationAudit(
+      "orchestration_replan",
+      `Tool preparation failed and requires replanning: ${String(error)}`.slice(0, 1_200),
+      proposal.tool
+    );
     messages.push(hiddenToolFailure(proposal, {
       prepare_failed: true,
       error: String(error),
