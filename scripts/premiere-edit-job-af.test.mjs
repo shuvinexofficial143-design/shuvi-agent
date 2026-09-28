@@ -47,7 +47,8 @@ test("transcript rebuild is replanned immediately before approval",()=>{
   const next=rust.slice(rust.indexOf("ToolAction::PremiereEditJobNext {job_id}"));
   assert.match(next,/"plan_transcript_rebuild"/);
   assert.match(next,/plan_snapshot/);
-  assert.match(next,/premiere_apply_transcript_rebuild/);
+  assert.match(next,/"tool":phase\.tool/);
+  assert.match(job,/premiere_apply_transcript_rebuild/);
 });
 
 test("layering rebinds current timeline and refuses stale source signatures",()=>{
