@@ -14,16 +14,30 @@ jobs:
         with:
           node-version: 22
       - run: npm install
-      - run: npm run validate
-      - run: npm test
-      - run: npm run build
+      - name: Frontend verification with attestation
+        run: npm run verify:frontend
+      - name: Upload frontend attestation
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-test-attestation
+          path: .shuvi-attest/frontend-*.json
+          if-no-files-found: warn
 
   rust:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - uses: dtolnay/rust-toolchain@stable
-      - name: Cargo check
-        run: cargo check --manifest-path src-tauri/Cargo.toml
-      - name: Rust unit tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+      - name: Rust verification with attestation
+        run: npm run verify:rust
+      - name: Upload Rust attestation
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-test-attestation
+          path: .shuvi-attest/rust-*.json
+          if-no-files-found: warn
