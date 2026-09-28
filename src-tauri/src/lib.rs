@@ -11104,6 +11104,33 @@ fn audit_log(app: AppHandle, limit: Option<usize>) -> Result<Vec<AuditEntry>, St
 }
 
 #[tauri::command]
+fn record_agent_event(
+    event: String,
+    tool: Option<String>,
+    detail: String,
+    app: AppHandle,
+) -> Result<(), String> {
+    if !matches!(event.as_str(),"orchestration_blocked"|"orchestration_stopped"|"orchestration_replan") {
+        return Err("Unsupported agent orchestration audit event.".into());
+    }
+    if detail.trim().is_empty() || detail.chars().count()>1_200 {
+        return Err("Agent orchestration audit detail must be 1..1200 characters.".into());
+    }
+    let tool=tool.unwrap_or_else(||"agent_orchestrator".into());
+    if tool.trim().is_empty() || tool.chars().count()>160 {
+        return Err("Agent orchestration audit tool label must be 1..160 characters.".into());
+    }
+    append_audit(&app,&AuditEntry {
+        timestamp_ms:now_ms(),
+        event,
+        tool,
+        detail,
+        success:false,
+        action_id:None,
+    })
+}
+
+#[tauri::command]
 fn set_workspace(path: String, app: AppHandle) -> Result<(), String> {
     write_workspace(&app, path.trim())
 }
@@ -11232,6 +11259,7 @@ pub fn run() {
             execute_action,
             execute_powershell,
             audit_log,
+            record_agent_event,
             set_workspace,
             get_workspace,
             save_session_checkpoint,
