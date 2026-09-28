@@ -104,3 +104,24 @@ This system does not:
 - turn plan metadata into a new unrestricted command language.
 
 Runtime correctness still requires current-head frontend/Rust execution and, for Premiere behavior, paired-host acceptance evidence.
+
+
+## Coding workflow dependencies
+
+Coding actions now have local predecessor checks. These checks are deterministic and run before permission staging; they are not model suggestions.
+
+- `replace_text` requires a successful `read_file` for the exact normalized target path in the current task.
+- `apply_patch` requires a successful `git_status` for the exact repository path first.
+- `git_commit` requires both `git_status` and `git_diff` for the same repository after the most recent Shuvi code mutation.
+- `git_push` requires a successful `git_commit` for the same repository after the most recent Shuvi code mutation.
+- `run_project_task` is tracked as validation evidence. It is strongly preferred after a mutation when an appropriate test/build/lint/typecheck exists, but a missing validation action is not converted into a fabricated pass or a universal hard commit block.
+
+Successful coding actions advance a bounded local phase:
+
+`inspect → edit → validate → review → commit_ready → push_ready → complete`
+
+The phase is shown in the local agent progress indicator and persisted in the orchestration checkpoint. It is guidance and dependency evidence, not proof that source code is correct.
+
+Only successful tool results update dependency evidence. Failed, denied, blocked, or merely proposed actions do not satisfy a dependency. A new user task starts a fresh dependency state; resume restores the persisted state.
+
+The dependency graph intentionally stays narrow. It does not require every valid file creation to have a prior read, and it does not infer a test pass from source inspection. This avoids turning a safety layer into an unrestricted workflow language.
