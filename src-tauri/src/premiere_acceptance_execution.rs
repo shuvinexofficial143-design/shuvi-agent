@@ -240,6 +240,30 @@ pub fn save(path:&Path,action:&Action)->Result<(),String>{
         a.status="executing".into();t["videoTracks"][0]["items"][0]["startSeconds"]=json!(0.5);
         assert!(a.finish(&t,true).unwrap());assert_eq!(a.status,"verified");
     }
+    #[test] fn move_and_clone_require_exact_observed_poststate(){
+        let (mut move_fixture,c,mut moved)=fixture();
+        move_fixture.start_seconds=None;move_fixture.end_seconds=None;move_fixture.delta_seconds=Some(1.0);
+        let mut move_action=Action::new("move-a".into(),"move".into(),move_fixture,&c,&moved).unwrap();
+        move_action.status="executing".into();
+        moved["videoTracks"][0]["items"][0]["startSeconds"]=json!(1.0);
+        moved["videoTracks"][0]["items"][0]["endSeconds"]=json!(3.0);
+        assert!(move_action.finish(&moved,true).unwrap());
+
+        let (mut clone_fixture,c,mut cloned)=fixture();
+        clone_fixture.start_seconds=None;clone_fixture.end_seconds=None;clone_fixture.delta_seconds=Some(1.0);
+        let mut clone_action=Action::new("clone-a".into(),"clone".into(),clone_fixture,&c,&cloned).unwrap();
+        clone_action.status="executing".into();
+        cloned["videoTracks"][0]["items"].as_array_mut().unwrap().push(json!({
+            "clipIndex":1,"name":"test","startSeconds":1.0,"endSeconds":3.0,"targetSignature":"clone-sig"
+        }));
+        assert!(clone_action.finish(&cloned,true).unwrap());
+
+        let (mut bad_fixture,c,bad)=fixture();
+        bad_fixture.start_seconds=None;bad_fixture.end_seconds=None;bad_fixture.delta_seconds=Some(1.0);
+        let mut bad_action=Action::new("clone-b".into(),"clone".into(),bad_fixture,&c,&bad).unwrap();
+        bad_action.status="executing".into();
+        assert!(!bad_action.finish(&bad,true).unwrap());
+    }
     #[test] fn scene_marker_acceptance_needs_native_observed_delta(){
         let (mut f,c,t)=fixture();f.start_seconds=None;f.end_seconds=None;f.delta_seconds=None;
         let mut a=Action::new("a".into(),"scene_markers".into(),f,&c,&t).unwrap();
