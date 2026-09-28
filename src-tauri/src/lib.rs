@@ -71,7 +71,8 @@ const MAX_TOOL_OUTPUT_CHARS: usize = 120_000;
 
 const TOOL_PROTOCOL: &str = r#"You are Shuvi, a permission-first Windows desktop AI agent.
 If the user's request requires a computer action, choose ONE tool and respond ONLY with a JSON object:
-{"tool":"tool_name","arguments":{...},"reason":"short explanation"}
+{"tool":"tool_name","arguments":{...},"reason":"short explanation","plan":{"objective":"overall task","step":"what this one action is meant to accomplish","success_criteria":"observable result that proves this step worked"}}
+For a genuinely one-step task, plan may be omitted. For a multi-step task, keep objective stable across steps and make success_criteria observable from tool output or a follow-up inspection. Never claim future plan steps have already run.
 
 Available tools:
 - list_directory: {"path":"absolute path"}
@@ -289,6 +290,8 @@ Rules:
 - browser_dom_click and browser_dom_set_value require selectors that match exactly one element; refine with browser_dom_read when ambiguous.
 - stop_managed_process may only target process roots that Shuvi launched itself.
 - When a tool fails, do not repeat the exact same failing action blindly. Use the observation to refine the selector, inspect the screen, or choose a different typed tool.
+- The local orchestrator may reject an exact repeated unsuccessful proposal or stop after repeated failures. Treat an orchestration_blocked result as a requirement to replan, not as permission to bypass the typed tool/approval layer.
+- After a failure, prefer a read/inspection action when it can reduce uncertainty before another mutation. Do not change a target expectation merely to force a stale edit through.
 - If no computer action is needed, answer normally."#;
 
 #[derive(Debug, Clone, Serialize)]
@@ -314,6 +317,8 @@ struct SessionCheckpoint {
     model: String,
     base_url: Option<String>,
     messages: Vec<ChatMessage>,
+    #[serde(default)]
+    orchestration: Option<Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -322,6 +327,15 @@ struct ChatInput {
     model: String,
     base_url: Option<String>,
     messages: Vec<ChatMessage>,
+    #[serde(default)]
+    orchestration_context: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AgentPlanMeta {
+    objective: String,
+    step: String,
+    success_criteria: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -330,6 +344,8 @@ struct ToolProposal {
     arguments: Value,
     #[serde(default)]
     reason: Option<String>,
+    #[serde(default)]
+    plan: Option<AgentPlanMeta>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -803,6 +819,15 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
     }
 
     let proposal: ToolProposal = serde_json::from_str(candidate).ok()?;
+    if let Some(plan)=proposal.plan.as_ref() {
+        let bounded=|value:&str,max:usize| {
+            let trimmed=value.trim();
+            !trimmed.is_empty() && trimmed.chars().count()<=max
+        };
+        if !bounded(&plan.objective,500) || !bounded(&plan.step,500) || !bounded(&plan.success_criteria,800) {
+            return None;
+        }
+    }
 
     match proposal.tool.as_str() {
         "list_directory"
@@ -5812,7 +5837,7 @@ fn write_session_checkpoint(
         checkpoint.messages = checkpoint.messages.split_off(keep_from);
     }
 
-    checkpoint.version = 1;
+    checkpoint.version = 2;
     checkpoint.updated_at_ms = now_ms();
 
     let content = serde_json::to_vec_pretty(&checkpoint)
@@ -5853,11 +5878,15 @@ fn read_session_checkpoint(app: &AppHandle) -> Result<Option<SessionCheckpoint>,
     let content = fs::read(&path)
         .map_err(|error| format!("Could not read session checkpoint: {error}"))?;
 
-    let checkpoint: SessionCheckpoint = serde_json::from_slice(&content)
+    let mut checkpoint: SessionCheckpoint = serde_json::from_slice(&content)
         .map_err(|error| format!("Saved session checkpoint is invalid: {error}"))?;
 
-    if checkpoint.version != 1 {
+    if !matches!(checkpoint.version,1|2) {
         return Err("Saved session checkpoint uses an unsupported version.".into());
+    }
+    if checkpoint.version==1 {
+        checkpoint.version=2;
+        checkpoint.orchestration=None;
     }
 
     Ok(Some(checkpoint))
@@ -10916,12 +10945,21 @@ async fn chat(
         .as_deref()
         .map(|path| format!("\nCurrent Shuvi workspace: {path}\nUse this workspace when the user refers to 'the project' without giving another path."))
         .unwrap_or_default();
+    let orchestration_context=input.orchestration_context.take().unwrap_or_default();
+    if orchestration_context.chars().count()>3_000 {
+        return Err("Agent orchestration context exceeds the 3000-character safety limit.".into());
+    }
+    let orchestration_context=if orchestration_context.trim().is_empty() {
+        String::new()
+    } else {
+        format!("\n\n{}\n",orchestration_context.trim())
+    };
 
     input.messages.insert(
         0,
         ChatMessage {
             role: "system".into(),
-            content: format!("{TOOL_PROTOCOL}{workspace_context}"),
+            content: format!("{TOOL_PROTOCOL}{workspace_context}{orchestration_context}"),
         },
     );
 
