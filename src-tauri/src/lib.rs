@@ -2141,7 +2141,7 @@ fn stage_tool(
         }
         "write_file" => {
             let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
-            let content = arg_string(&proposal.arguments, "content")?;
+            let content = arg_raw_string(&proposal.arguments, "content")?;
             if content.len() > MAX_WRITE_BYTES {
                 return Err("File content is larger than Shuvi's 2 MB write limit.".into());
             }
