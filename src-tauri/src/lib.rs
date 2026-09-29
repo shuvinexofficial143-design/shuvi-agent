@@ -80,6 +80,7 @@ const MAX_CHAT_MESSAGE_BYTES: usize = 256 * 1024;
 const MAX_CHAT_CONTEXT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_SCREENSHOT_FILES: usize = 64;
 const MAX_STALE_BROWSER_PROFILES: usize = 8;
+const MAX_DIAGNOSTIC_FILES: usize = 16;
 const MAX_WORKSPACE_SCAN_ENTRIES: usize = 1_200;
 const MAX_WORKSPACE_DIRECTORY_ENTRIES: usize = 2_000;
 const MAX_SEARCH_MATCHES: usize = 150;
@@ -11976,6 +11977,54 @@ fn premiere_bridge_stop(
     state.premiere_bridge.stop()
 }
 
+fn prune_diagnostics_dir(dir: &Path, keep_existing: usize) -> Result<(), String> {
+    if !dir.exists() {
+        return Ok(());
+    }
+
+    let mut keep = Vec::<(SystemTime, std::path::PathBuf)>::new();
+    for entry in fs::read_dir(dir)
+        .map_err(|error| format!("Could not inspect diagnostics directory: {error}"))?
+        .filter_map(Result::ok)
+    {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("shuvi-diagnostics-") || !name.ends_with(".json") || !path.is_file() {
+            continue;
+        }
+        let modified = entry.metadata()
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .unwrap_or(UNIX_EPOCH);
+        keep.push((modified, path));
+        keep.sort_by(|a, b| b.0.cmp(&a.0));
+        keep.truncate(keep_existing);
+    }
+
+    let keep_paths = keep.into_iter()
+        .map(|(_, path)| path)
+        .collect::<HashSet<_>>();
+    for entry in fs::read_dir(dir)
+        .map_err(|error| format!("Could not inspect diagnostics directory: {error}"))?
+        .filter_map(Result::ok)
+    {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if name.starts_with("shuvi-diagnostics-")
+            && name.ends_with(".json")
+            && path.is_file()
+            && !keep_paths.contains(&path)
+        {
+            let _ = fs::remove_file(path);
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn export_diagnostics(
     app: AppHandle,
@@ -12029,8 +12078,9 @@ fn export_diagnostics(
 
     fs::create_dir_all(&dir)
         .map_err(|error| format!("Could not create diagnostics directory: {error}"))?;
+    let _ = prune_diagnostics_dir(&dir, MAX_DIAGNOSTIC_FILES.saturating_sub(1));
 
-    let path = dir.join(format!("shuvi-diagnostics-{}.json", now_ms()));
+    let path = dir.join(format!("shuvi-diagnostics-{}-{}.json", now_ms(), Uuid::new_v4()));
     let content = serde_json::to_string_pretty(&report)
         .map_err(|error| format!("Could not encode diagnostics: {error}"))?;
 
