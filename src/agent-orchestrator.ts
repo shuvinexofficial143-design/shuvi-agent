@@ -489,6 +489,10 @@ function dependencyFailure(
     if (!freshStatus) {
       return "Coding dependency missing: run fresh git_status for this exact repository after the latest Shuvi mutation before apply_patch.";
     }
+    const expectedWorktree = gitObjectId(proposal.arguments.expected_worktree_fingerprint);
+    if (!expectedWorktree || expectedWorktree !== coding.last_git_status_git?.worktree_fingerprint) {
+      return "Coding dependency missing: apply_patch expected_worktree_fingerprint must exactly match the latest git_status worktree snapshot.";
+    }
   }
 
   if (proposal.tool === "git_commit") {
@@ -916,6 +920,10 @@ export function orchestrationContext(state: AgentOrchestrationState): string {
     parts.push(`- coding phase: ${phase}`);
     if (state.coding.last_mutation_step > state.coding.last_validation_step) {
       parts.push("- validation has not succeeded since the latest edit; prefer run_project_task when an appropriate project task exists.");
+    }
+    if (state.coding.last_git_status_git
+        && state.coding.last_git_status_step > state.coding.last_mutation_step) {
+      parts.push(`- latest git_status worktree fingerprint: ${state.coding.last_git_status_git.worktree_fingerprint}; apply_patch expected_worktree_fingerprint must match exactly.`);
     }
     const reviewedHead = state.coding.last_git_status_git
       && state.coding.last_git_diff_git
