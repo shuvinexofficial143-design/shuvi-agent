@@ -81,6 +81,8 @@ const MAX_CHAT_CONTEXT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_SCREENSHOT_FILES: usize = 64;
 const MAX_STALE_BROWSER_PROFILES: usize = 8;
 const MAX_DIAGNOSTIC_FILES: usize = 16;
+const MAX_PENDING_ACTIONS: usize = 16;
+const PENDING_ACTION_TTL_MS: u64 = 10 * 60 * 1000;
 const MAX_WORKSPACE_SCAN_ENTRIES: usize = 1_200;
 const MAX_WORKSPACE_DIRECTORY_ENTRIES: usize = 2_000;
 const MAX_SEARCH_MATCHES: usize = 150;
@@ -614,6 +616,7 @@ enum ToolAction {
 
 #[derive(Debug, Clone)]
 struct PendingAction {
+    created_at_ms: u64,
     premiere_expectation: Option<PremiereExpectation>,
     tool: String,
     detail: String,
@@ -5216,19 +5219,30 @@ fn stage_tool(
 
     let id = Uuid::new_v4().to_string();
 
-    state
+    let prepared_at_ms = now_ms();
+    let mut pending = state
         .pending
         .lock()
-        .map_err(|_| "Permission state is unavailable.".to_string())?
-        .insert(
-            id.clone(),
-            PendingAction {
-                premiere_expectation,
-                tool: tool.clone(),
-                detail: detail.clone(),
-                action,
-            },
-        );
+        .map_err(|_| "Permission state is unavailable.".to_string())?;
+    pending.retain(|_, action| {
+        prepared_at_ms.saturating_sub(action.created_at_ms) <= PENDING_ACTION_TTL_MS
+    });
+    if pending.len() >= MAX_PENDING_ACTIONS {
+        return Err(format!(
+            "Shuvi already has {MAX_PENDING_ACTIONS} unresolved prepared actions. Resolve or deny them before preparing more."
+        ));
+    }
+    pending.insert(
+        id.clone(),
+        PendingAction {
+            created_at_ms: prepared_at_ms,
+            premiere_expectation,
+            tool: tool.clone(),
+            detail: detail.clone(),
+            action,
+        },
+    );
+    drop(pending);
 
     Ok(PendingActionView {
         id,
@@ -10778,7 +10792,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 "trim"=>"premiere_trim_clip","move"=>"premiere_move_clip","clone"=>"premiere_clone_clip",
                 "scene_markers"=>"premiere_detect_scene_markers",_=>return Err("Acceptance tool not allowlisted.".into())
             };
-            let inner=PendingAction {premiere_expectation:Some(fixture.expected.clone()),tool:native_tool.into(),
+            let inner=PendingAction {created_at_ms:now_ms(),premiere_expectation:Some(fixture.expected.clone()),tool:native_tool.into(),
                 detail:format!("Disposable acceptance {} action {}",record.step,action_id),action:native_action};
             let native=Box::pin(execute_tool(inner,state,app)).await;
             let native_result=match native {
@@ -11830,6 +11844,30 @@ async fn execute_action(
 ) -> Result<ActionResult, String> {
     ensure_memory_budget(state.inner())?;
 
+    let expired_action = {
+        let mut pending = state
+            .pending
+            .lock()
+            .map_err(|_| "Permission state is unavailable.".to_string())?;
+        let expired = pending
+            .get(&action_id)
+            .is_some_and(|action| now_ms().saturating_sub(action.created_at_ms) > PENDING_ACTION_TTL_MS);
+        if expired { pending.remove(&action_id) } else { None }
+    };
+    if let Some(action) = expired_action {
+        append_audit(
+            &app,
+            &AuditEntry {
+                timestamp_ms: now_ms(),
+                event: "denied".into(),
+                tool: action.tool,
+                detail: format!("Expired prepared action: {}", action.detail),
+                success: false,
+                action_id: Some(action_id.clone()),
+            },
+        )?;
+        return Err("Prepared action expired before execution and must be prepared again.".into());
+    }
     let action = {
         let mut pending = state
             .pending
