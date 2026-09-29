@@ -72,6 +72,10 @@ const MAX_CHAT_MESSAGES: usize = 120;
 const MAX_CHAT_MESSAGE_BYTES: usize = 256 * 1024;
 const MAX_CHAT_CONTEXT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_SCREENSHOT_FILES: usize = 64;
+const MAX_WORKSPACE_SCAN_ENTRIES: usize = 1_200;
+const MAX_WORKSPACE_DIRECTORY_ENTRIES: usize = 2_000;
+const MAX_SEARCH_MATCHES: usize = 150;
+const MAX_SEARCH_FILES: usize = 5_000;
 
 const TOOL_PROTOCOL: &str = r#"You are Shuvi, a permission-first Windows desktop AI agent.
 If the user's request requires a computer action, choose ONE tool and respond ONLY with a JSON object:
@@ -5584,19 +5588,20 @@ fn workspace_scan_recursive(
     depth: usize,
     output: &mut Vec<String>,
 ) -> Result<(), String> {
-    if depth > 5 || output.len() >= 1200 {
+    if depth > 5 || output.len() >= MAX_WORKSPACE_SCAN_ENTRIES {
         return Ok(());
     }
 
     let mut entries = fs::read_dir(current)
         .map_err(|error| format!("Could not scan workspace: {error}"))?
         .filter_map(Result::ok)
+        .take(MAX_WORKSPACE_DIRECTORY_ENTRIES)
         .collect::<Vec<_>>();
 
     entries.sort_by_key(|entry| entry.file_name());
 
     for entry in entries {
-        if output.len() >= 1200 {
+        if output.len() >= MAX_WORKSPACE_SCAN_ENTRIES {
             break;
         }
 
@@ -5625,8 +5630,9 @@ fn search_text_recursive(
     query: &str,
     depth: usize,
     matches: &mut Vec<String>,
+    visited_files: &mut usize,
 ) -> Result<(), String> {
-    if depth > 7 || matches.len() >= 150 {
+    if depth > 7 || matches.len() >= MAX_SEARCH_MATCHES || *visited_files >= MAX_SEARCH_FILES {
         return Ok(());
     }
 
@@ -5634,7 +5640,7 @@ fn search_text_recursive(
         .map_err(|error| format!("Could not search workspace: {error}"))?
         .filter_map(Result::ok)
     {
-        if matches.len() >= 150 {
+        if matches.len() >= MAX_SEARCH_MATCHES || *visited_files >= MAX_SEARCH_FILES {
             break;
         }
 
@@ -5645,12 +5651,17 @@ fn search_text_recursive(
             if is_ignored_workspace_dir(&file_name) {
                 continue;
             }
-            search_text_recursive(root, &path, query, depth + 1, matches)?;
+            search_text_recursive(root, &path, query, depth + 1, matches, visited_files)?;
             continue;
         }
 
         if !path.is_file() {
             continue;
+        }
+
+        *visited_files = visited_files.saturating_add(1);
+        if *visited_files > MAX_SEARCH_FILES {
+            break;
         }
 
         let metadata = match entry.metadata() {
@@ -5677,7 +5688,7 @@ fn search_text_recursive(
                     line.chars().take(300).collect::<String>()
                 ));
 
-                if matches.len() >= 150 {
+                if matches.len() >= MAX_SEARCH_MATCHES {
                     break;
                 }
             }
@@ -11048,7 +11059,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             }
 
             let mut matches = Vec::new();
-            search_text_recursive(root, root, &query, 0, &mut matches)?;
+            let mut visited_files = 0_usize;
+            search_text_recursive(root, root, &query, 0, &mut matches, &mut visited_files)?;
 
             let stdout = if matches.is_empty() {
                 format!("No matches found for '{query}'.")
