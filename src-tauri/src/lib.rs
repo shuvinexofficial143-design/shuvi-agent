@@ -11984,9 +11984,9 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             }
             if let Some(before) = git_before {
                 let after = git_local_context(&path)?;
-                if before.get("head") != after.get("head") {
+                if !git_same_local_snapshot(&before, &after) {
                     success = false;
-                    let warning = "Git HEAD changed while the validation task was running; validation evidence is not bound to one commit.";
+                    let warning = "Git branch, HEAD, or worktree changed while the validation task was running; validation evidence is not bound to one repository snapshot.";
                     stderr = if stderr.trim().is_empty() {
                         warning.into()
                     } else {
