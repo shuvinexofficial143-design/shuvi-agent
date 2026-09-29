@@ -1881,6 +1881,20 @@ fn read_utf8_file_bounded(path: &Path, max_bytes: usize, label: &str) -> Result<
         .map_err(|error| format!("{label} is not valid UTF-8: {error}"))
 }
 
+fn read_file_bytes_bounded(path: &Path, max_bytes: usize, label: &str) -> Result<Vec<u8>, String> {
+    let file = fs::File::open(path)
+        .map_err(|error| format!("Could not open {label}: {error}"))?;
+    let limit = (max_bytes as u64).saturating_add(1);
+    let mut bytes = Vec::with_capacity(max_bytes.min(64 * 1024));
+    file.take(limit)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("Could not read {label}: {error}"))?;
+    if bytes.len() > max_bytes {
+        return Err(format!("{label} exceeds Shuvi's bounded read limit."));
+    }
+    Ok(bytes)
+}
+
 fn safe_web_url(value: String) -> Result<String, String> {
     if value.len() > 4096 {
         return Err("URL is too long.".into());
@@ -4450,14 +4464,11 @@ fn stage_tool(
                 return Err("Premiere transcript JSON file does not exist.".into());
             }
 
-            let metadata = fs::metadata(path)
-                .map_err(|error| format!("Could not inspect transcript file: {error}"))?;
-            if metadata.len() > 1024 * 1024 {
-                return Err("Premiere transcript import is limited to 1 MB per action.".into());
-            }
-
-            let transcript_json = fs::read_to_string(path)
-                .map_err(|error| format!("Could not read transcript JSON as UTF-8: {error}"))?;
+            let transcript_json = read_utf8_file_bounded(
+                path,
+                1024 * 1024,
+                "Premiere transcript JSON",
+            )?;
             let _: Value = serde_json::from_str(&transcript_json)
                 .map_err(|error| format!("Transcript file is not valid JSON: {error}"))?;
 
@@ -5825,12 +5836,11 @@ async fn analyze_png_with_provider(
     prompt: &str,
     path: &Path,
 ) -> Result<String, String> {
-    let bytes = fs::read(path)
-        .map_err(|error| format!("Could not read captured screenshot: {error}"))?;
-
-    if bytes.len() > 12 * 1024 * 1024 {
-        return Err("Screenshot is larger than Shuvi's 12 MB vision limit.".into());
-    }
+    let bytes = read_file_bytes_bounded(
+        path,
+        12 * 1024 * 1024,
+        "captured screenshot",
+    )?;
 
     let encoded = BASE64.encode(bytes);
     let key = load_api_key(&context.provider)?;
@@ -6488,8 +6498,12 @@ fn project_task_command(path: &str, task: &str) -> Result<(String, Vec<String>),
     }
 
     if root.join("package.json").exists() {
-        let package_json = fs::read_to_string(root.join("package.json"))
-            .map_err(|error| format!("Could not read package.json: {error}"))?;
+        let package_path = root.join("package.json");
+        let package_json = read_utf8_file_bounded(
+            &package_path,
+            1024 * 1024,
+            "package.json",
+        )?;
         let package: Value = serde_json::from_str(&package_json)
             .map_err(|error| format!("Invalid package.json: {error}"))?;
 
