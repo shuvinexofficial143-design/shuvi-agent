@@ -93,14 +93,18 @@ running receipt and checkpointed again before approval UI or session auto-execut
 If either checkpoint save fails, the graph path stops and Shuvi does not intentionally
 execute the prepared action.
 
-Successful completion requires the local `execute_action` return value, matching tool,
-successful typed result, matching running fingerprint/turn, and the exact prepared action UUID
-that was bound before execution. A missing, malformed, stale or different action UUID cannot
-complete the graph step even if the tool/result shape otherwise looks successful.
-The graph records step ID, tool, fingerprint, prepared action ID, success/outcome, evidence
-source, local orchestration turn and a fixed short summary. No timestamp is invented and no
-raw output is copied into the graph. Preparation errors, denials, exceptions, failed results
-or provider prose cannot satisfy dependencies.
+Successful completion requires all of the following to agree: the local `execute_action`
+return value, expected tool, matching running fingerprint/turn, exact prepared action UUID,
+and the Rust audit entry written for that same UUID. The audit receipt must be an
+`executed` event with the same tool and success flag. After execution the frontend reads
+that exact bounded receipt through `action_audit_receipt` before updating task/coding
+evidence. A missing, malformed, stale or different action UUID/audit receipt cannot complete
+the graph step even if the frontend result shape otherwise looks successful.
+
+The graph records step ID, tool, fingerprint, prepared action ID, correlated audit event,
+success/outcome, evidence source, local orchestration turn and a fixed short summary. No raw
+stdout/stderr is copied into the graph. Preparation errors, denials, exceptions, failed
+results, provider prose, or an uncorrelated frontend result cannot satisfy dependencies.
 
 Failure changes the step to failed and the coordinator to `replan_required`. Three
 consecutive actual execution failures retain the existing stop behavior. Preparation
@@ -138,12 +142,14 @@ actions still require the existing approval flow.
 
 ## Checkpoint and resume
 
-The outer session schema remains v2. Its orchestration payload is now v4 and contains graph,
-action-bound evidence, retained unsuccessful fingerprints and the last successful recovery
-turn. Orchestration v1/v2 and non-graph v3 payloads remain readable with no invented graph or
-completion history. A v3 payload that already contains graph evidence fails closed because
-the historical prepared action UUID was never recorded and cannot be invented safely.
-A known last unsuccessful legacy fingerprint is retained conservatively.
+The outer session schema remains v2. Its orchestration payload is now v5 and contains graph,
+action-and-audit-bound evidence, retained unsuccessful fingerprints and the last successful
+recovery turn. Orchestration v1/v2 and non-graph v3/v4 payloads remain readable with no
+invented graph or completion history. A v3 payload containing graph evidence fails closed
+because prepared action UUIDs were not stored. A v4 payload containing graph evidence also
+fails closed because Rust audit-event correlation was not stored. Neither historical binding
+is invented during migration. A known last unsuccessful legacy fingerprint is retained
+conservatively.
 
 Resume validates graph structure, evidence bounds, tool/source/outcome consistency, evidence
 turns and dependency ordering. It preserves completed evidence and failed states, recalculates
