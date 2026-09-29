@@ -11,6 +11,13 @@ export const MAX_ORCHESTRATION_BLOCKS = 2;
 export const MAX_INSPECTED_PATHS = 12;
 
 export type ToolOutcome = "success" | "failure" | "denied" | "blocked";
+export type ExecutionAuditReceipt = {
+  action_id: string | null;
+  event: string;
+  tool: string;
+  success: boolean;
+};
+
 export type CodingPhase =
   | "inspect"
   | "edit"
@@ -455,7 +462,8 @@ export function recordToolOutcome(
   outcome: Exclude<ToolOutcome, "blocked">,
   result?: ActionResult,
   actualFailure = true,
-  preparedActionId: string | null = null
+  preparedActionId: string | null = null,
+  auditReceipt: ExecutionAuditReceipt | null = null
 ): AgentOrchestrationState {
   const fingerprint = proposalFingerprint(proposal);
   // A provider claim or a success enum alone cannot create graph/coding evidence.
@@ -471,7 +479,8 @@ export function recordToolOutcome(
     state.next_step,
     outcome,
     result,
-    preparedActionId
+    preparedActionId,
+    auditReceipt
   );
   if (outcome === "success" && proposal.task_step_id != null) {
     const completedStep = taskGraph?.steps.find(s => s.step_id === proposal.task_step_id);
