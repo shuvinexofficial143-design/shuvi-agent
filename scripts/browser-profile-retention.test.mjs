@@ -24,7 +24,8 @@ test("inactive browser profiles are bounded without deleting active session prof
 });
 
 test("browser start prunes stale profiles before creating a collision-resistant active profile",()=>{
-  const start=rust.indexOf("ToolAction::BrowserStart { browser, url }");
+  const first=rust.indexOf("ToolAction::BrowserStart { browser, url }");
+  const start=rust.indexOf("ToolAction::BrowserStart { browser, url }",first+1);
   const end=rust.indexOf("ToolAction::BrowserNavigate",start);
   const block=rust.slice(start,end);
   assert.match(block,/prune_inactive_browser_profiles\(state, &profiles_root\)/);
