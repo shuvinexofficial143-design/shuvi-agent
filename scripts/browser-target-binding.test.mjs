@@ -24,7 +24,8 @@ test("CDP commands select the stored target ID instead of the first page",()=>{
 });
 
 test("navigate and DOM evaluation pass the bound target",()=>{
-  const navStart=rust.indexOf("ToolAction::BrowserNavigate");
+  const first=rust.indexOf("ToolAction::BrowserNavigate");
+  const navStart=rust.indexOf("ToolAction::BrowserNavigate",first+1);
   const navEnd=rust.indexOf("ToolAction::BrowserDomRead",navStart);
   assert.match(rust.slice(navStart,navEnd),/&session\.target_id/);
   assert.match(rust,/fn cdp_eval\(port: u16, target_id: &str, expression: String\)/);
