@@ -25,7 +25,7 @@ test("apply_patch requires fresh same-repository git status after the latest mut
   assert.match(orchestrator,/coding\.last_git_status_step > coding\.last_mutation_step/);
   assert.match(orchestrator,/fresh git_status for this exact repository after the latest Shuvi mutation before apply_patch/);
   assert.match(orchestrator,/proposal\.tool === "git_status"/);
-  assert.match(orchestrator,/coding\.last_git_status_path = path/);
+  assert.match(orchestrator,/coding\.last_git_status_path = exactGit \? path : null/);
 });
 
 test("git commit requires fresh status and diff after latest mutation",()=>{

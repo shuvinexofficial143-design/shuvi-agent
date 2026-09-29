@@ -76,7 +76,7 @@ test("git writes require the exact reviewed local HEAD",()=>{
   const push=rust.slice(rust.indexOf("ToolAction::GitPush { path, expected_head }"),rust.indexOf("ToolAction::PowerShell"));
   assert.match(push,/current_head\.to_ascii_lowercase\(\) != expected_head/);
   assert.match(push,/Local HEAD changed after commit; refusing git_push/);
-  assert.ok(push.indexOf("current_head.to_ascii_lowercase() != expected_head") < push.indexOf("git_remote_freshness(&path, false)"));
+  assert.ok(push.indexOf("current_head.to_ascii_lowercase() != expected_head") < push.indexOf("git_remote_freshness(&path, true)"));
 });
 
 
