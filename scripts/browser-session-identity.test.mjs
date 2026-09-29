@@ -39,3 +39,23 @@ test("runtime refresh removes stale browser profile directories",()=>{
   assert.match(block,/sessions\.retain\(\|root_pid, _\| live_roots\.contains\(root_pid\)\)/);
   assert.match(block,/fs::remove_dir_all\(profile_dir\)/);
 });
+
+
+test("failed managed browser startup tears down the spawned tree and reaps the root",()=>{
+  const start=rust.indexOf("ToolAction::BrowserStart { browser, url } =>");
+  const end=rust.indexOf("ToolAction::BrowserNavigate",start);
+  const block=rust.slice(start,end);
+
+  for(const failure of [
+    "Managed browser started, but its local DevTools endpoint did not become ready within 5 seconds.",
+    "Managed browser started, but no stable page target became available for Shuvi to bind."
+  ]){
+    const failureIndex=block.indexOf(failure);
+    assert.ok(failureIndex>=0,failure);
+    const cleanup=block.slice(Math.max(0,failureIndex-500),failureIndex);
+    assert.match(cleanup,/terminate_managed_process_tree\(child_pid\)/);
+    assert.match(cleanup,/child\.kill\(\)/);
+    assert.match(cleanup,/child\.wait\(\)/);
+    assert.match(cleanup,/fs::remove_dir_all\(&profile_dir\)/);
+  }
+});
