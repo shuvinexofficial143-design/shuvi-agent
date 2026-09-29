@@ -5580,26 +5580,31 @@ fn read_audit(app: &AppHandle, limit: usize) -> Result<Vec<AuditEntry>, String> 
         .lock()
         .map_err(|_| "Audit I/O state is unavailable.".to_string())?;
     let path = audit_path(app)?;
+    let rotated = path.with_extension("jsonl.1");
 
-    if !path.exists() {
+    if !path.exists() && !rotated.exists() {
         return Ok(Vec::new());
     }
 
-    let file = OpenOptions::new()
-        .read(true)
-        .open(path)
-        .map_err(|error| format!("Could not open audit log: {error}"))?;
-
     let limit = limit.clamp(1, 200);
     let mut entries = VecDeque::with_capacity(limit);
-    for line in BufReader::new(file).lines().filter_map(Result::ok) {
-        let Ok(entry) = serde_json::from_str::<AuditEntry>(&line) else {
+    for candidate in [&rotated, &path] {
+        if !candidate.exists() {
             continue;
-        };
-        if entries.len() == limit {
-            entries.pop_front();
         }
-        entries.push_back(entry);
+        let file = OpenOptions::new()
+            .read(true)
+            .open(candidate)
+            .map_err(|error| format!("Could not open audit log: {error}"))?;
+        for line in BufReader::new(file).lines().filter_map(Result::ok) {
+            let Ok(entry) = serde_json::from_str::<AuditEntry>(&line) else {
+                continue;
+            };
+            if entries.len() == limit {
+                entries.pop_front();
+            }
+            entries.push_back(entry);
+        }
     }
 
     Ok(entries.into_iter().rev().collect())
@@ -5614,24 +5619,29 @@ fn read_action_audit_receipt(
         .lock()
         .map_err(|_| "Audit I/O state is unavailable.".to_string())?;
     let path = audit_path(app)?;
-    if !path.exists() {
+    let rotated = path.with_extension("jsonl.1");
+    if !path.exists() && !rotated.exists() {
         return Ok(None);
     }
 
-    let file = OpenOptions::new()
-        .read(true)
-        .open(path)
-        .map_err(|error| format!("Could not open audit log: {error}"))?;
-
     let mut matched = None;
-    for line in BufReader::new(file).lines().filter_map(Result::ok) {
-        let Ok(entry) = serde_json::from_str::<AuditEntry>(&line) else {
+    for candidate in [&rotated, &path] {
+        if !candidate.exists() {
             continue;
-        };
-        if entry.action_id.as_deref() == Some(action_id)
-            && matches!(entry.event.as_str(), "executed" | "failed" | "denied")
-        {
-            matched = Some(entry);
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .open(candidate)
+            .map_err(|error| format!("Could not open audit log: {error}"))?;
+        for line in BufReader::new(file).lines().filter_map(Result::ok) {
+            let Ok(entry) = serde_json::from_str::<AuditEntry>(&line) else {
+                continue;
+            };
+            if entry.action_id.as_deref() == Some(action_id)
+                && matches!(entry.event.as_str(), "executed" | "failed" | "denied")
+            {
+                matched = Some(entry);
+            }
         }
     }
     Ok(matched)

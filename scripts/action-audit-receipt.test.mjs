@@ -9,6 +9,8 @@ test("exact action audit lookup streams the full log with constant retained stat
   const end=rust.indexOf("fn prune_screenshot_dir",start);
   const block=rust.slice(start,end);
   assert.match(block,/Uuid::parse_str\(action_id\)/);
+  assert.match(block,/let rotated = path\.with_extension\("jsonl\.1"\)/);
+  assert.match(block,/for candidate in \[&rotated, &path\]/);
   assert.match(block,/for line in BufReader::new\(file\)\.lines\(\)\.filter_map\(Result::ok\)/);
   assert.match(block,/let mut matched = None/);
   assert.match(block,/matched = Some\(entry\)/);
@@ -34,4 +36,16 @@ test("Premiere edit evidence uses exact action-ID lookup",()=>{
     assert.ok(start>=0,arm);
     assert.match(rust.slice(start,start+5200),/read_action_audit_receipt\(app,&/);
   }
+});
+
+
+test("bounded audit tail spans rotated archive and current log",()=>{
+  const start=rust.indexOf("fn read_audit(");
+  const end=rust.indexOf("fn read_action_audit_receipt",start);
+  const block=rust.slice(start,end);
+  assert.match(block,/let rotated = path\.with_extension\("jsonl\.1"\)/);
+  assert.match(block,/for candidate in \[&rotated, &path\]/);
+  assert.match(block,/VecDeque::with_capacity\(limit\)/);
+  assert.match(block,/entries\.pop_front\(\)/);
+  assert.match(block,/entries\.into_iter\(\)\.rev\(\)\.collect\(\)/);
 });
