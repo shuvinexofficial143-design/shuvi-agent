@@ -66,6 +66,10 @@ Changed arguments or a different typed inspection tool are allowed so the model 
 
 A user denial is also treated as a replan signal; the identical denied action cannot simply be proposed again unchanged. Orchestration v5 retains unsuccessful action fingerprints across intervening successes and graph revisions. Runtime graph/coding evidence is bound to the exact Rust-prepared action UUID and correlated Rust audit receipt; an uncorrelated frontend result cannot advance dependency evidence. While a typed `run_project_task` is executing, its exact prepared action UUID is correlated to the managed child PID. Pressing Stop requests cancellation only for that registered action child. Frontend classification awaits the exact cancellation promise for that action ID, so a fast child exit cannot race cancellation confirmation; a confirmed user cancellation is recorded as a denied/replan outcome rather than a consecutive real tool failure. Backend start ordering is race-safe as well: `execute_action` registers the exact active tool while the prepared-action lock is still held, before removing it from pending state. Stop can therefore either deny a still-prepared `run_project_task` or wait a bounded one-second window for that exact active action to publish its managed child PID; unrelated tools/PIDs remain non-cancellable through this path. Non-cancellable actions are not force-killed and stop after their current result returns.
 
+### Manual PowerShell boundary
+
+PowerShell remains available only from the local **Permission Lab** command path. It is intentionally absent from the provider TOOL_PROTOCOL and provider proposal allowlist, and the Rust staging layer rejects PowerShell whenever an active provider context is present. This prevents an AI proposal from bypassing typed file, Git, task-graph, or coding dependency rules through arbitrary shell commands. Manual PowerShell still goes through the normal local approval gate and audit log.
+
 ## Permission boundary
 
 Planning never executes a tool.

@@ -263,7 +263,6 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - git_diff: {"path":"absolute repository path"}
 - git_commit: {"path":"absolute repository path","message":"commit message","files":["exact/relative/file1","exact/relative/file2"],"expected_head":"exact local HEAD copied from the latest matching git_status/git_diff receipt"}
 - git_push: {"path":"absolute repository path","expected_head":"exact committed HEAD copied from the successful git_commit receipt"}
-- powershell: {"command":"PowerShell command"}
 
 Rules:
 - Use tools only when a computer action is required.
@@ -1053,8 +1052,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "git_status"
         | "git_diff"
         | "git_commit"
-        | "git_push"
-        | "powershell" => Some(proposal),
+        | "git_push" => Some(proposal),
         _ => None,
     }
 }
@@ -5116,6 +5114,9 @@ fn stage_tool(
             )
         }
         "powershell" => {
+            if provider_context.is_some() {
+                return Err("PowerShell is available only through the manual Permission Lab, not through AI/provider tool proposals.".into());
+            }
             let command = arg_string(&proposal.arguments, "command")?;
             if command.len() > 8_000 {
                 return Err("PowerShell command is too long.".into());
