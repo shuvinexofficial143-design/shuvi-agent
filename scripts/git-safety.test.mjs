@@ -32,3 +32,34 @@ test("tool protocol requires reviewed commit file list",()=>{
   assert.match(rust,/- git_commit: \{"path":"absolute repository path","message":"commit message","files":\["exact\/relative\/file1","exact\/relative\/file2"\]\}/);
   assert.match(rust,/pass only the exact reviewed relative files/);
 });
+
+
+test("typed Git results carry bounded repository identity receipts",()=>{
+  assert.match(rust,/fn git_local_context\(path: &str\) -> Result<Value, String>/);
+  assert.match(rust,/"repo_root": repo_root/);
+  assert.match(rust,/"branch": branch/);
+  assert.match(rust,/"head": head/);
+  assert.match(rust,/"upstream": upstream/);
+  assert.match(rust,/"upstream_head": upstream_head/);
+  assert.match(rust,/\[SHUVI_GIT_CONTEXT_V1\]/);
+  for(const arm of [
+    "ToolAction::GitStatus { path }",
+    "ToolAction::GitDiff { path }",
+    "ToolAction::GitCommit { path, message, files }",
+    "ToolAction::GitPush { path }"
+  ]) {
+    const start=rust.indexOf(arm);
+    assert.ok(start>=0);
+    assert.match(rust.slice(start,start+4200),/git_context_stdout\(&path/);
+  }
+});
+
+test("project validation refuses commit-bound evidence if HEAD changes mid-task",()=>{
+  const start=rust.indexOf("ToolAction::RunProjectTask { path, task }");
+  const end=rust.indexOf("ToolAction::GitStatus { path }",start);
+  const block=rust.slice(start,end);
+  assert.match(block,/let git_before = if Path::new\(&path\)\.join\("\.git"\)\.exists\(\)/);
+  assert.match(block,/before\.get\("head"\) != after\.get\("head"\)/);
+  assert.match(block,/Git HEAD changed while the validation task was running/);
+  assert.match(block,/\[SHUVI_GIT_CONTEXT_V1\]/);
+});

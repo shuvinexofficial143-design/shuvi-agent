@@ -5684,6 +5684,53 @@ fn git_staged_files(path: &str) -> Result<Vec<String>, String> {
         .collect())
 }
 
+fn git_local_context(path: &str) -> Result<Value, String> {
+    let repo_root = git_command_text(
+        path,
+        &["rev-parse", "--show-toplevel"],
+        "Could not identify the Git repository root",
+    )?;
+    let head = git_command_text(path, &["rev-parse", "HEAD"], "Could not read local Git HEAD")?;
+    let branch_probe = run_git(path, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
+    let branch = if branch_probe.status.success() {
+        Some(String::from_utf8_lossy(&branch_probe.stdout).trim().to_string())
+    } else {
+        None
+    };
+    let upstream_probe = run_git(
+        path,
+        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+    )?;
+    let upstream = if upstream_probe.status.success() {
+        let value = String::from_utf8_lossy(&upstream_probe.stdout).trim().to_string();
+        if value.is_empty() { None } else { Some(value) }
+    } else {
+        None
+    };
+    let upstream_head = if upstream.is_some() {
+        Some(git_command_text(
+            path,
+            &["rev-parse", "@{u}"],
+            "Could not read configured upstream HEAD",
+        )?)
+    } else {
+        None
+    };
+    Ok(json!({
+        "schema": 1,
+        "repo_root": repo_root,
+        "branch": branch,
+        "head": head,
+        "upstream": upstream,
+        "upstream_head": upstream_head
+    }))
+}
+
+fn git_context_stdout(path: &str, body: String) -> Result<String, String> {
+    let receipt = git_local_context(path)?;
+    Ok(format!("[SHUVI_GIT_CONTEXT_V1]{}\n{}", receipt, body))
+}
+
 fn git_remote_freshness(path: &str) -> Result<String, String> {
     let branch = git_command_text(
         path,
@@ -10946,6 +10993,11 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
         }
         ToolAction::RunProjectTask { path, task } => {
             let (program, args) = project_task_command(&path, &task)?;
+            let git_before = if Path::new(&path).join(".git").exists() {
+                Some(git_local_context(&path)?)
+            } else {
+                None
+            };
 
             let output = Command::new(&program)
                 .args(&args)
@@ -10954,30 +11006,57 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 .output()
                 .map_err(|error| format!("Could not run project task: {error}"))?;
 
+            let mut success = output.status.success();
+            let mut stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let mut stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            if let Some(before) = git_before {
+                let after = git_local_context(&path)?;
+                if before.get("head") != after.get("head") {
+                    success = false;
+                    let warning = "Git HEAD changed while the validation task was running; validation evidence is not bound to one commit.";
+                    stderr = if stderr.trim().is_empty() {
+                        warning.into()
+                    } else {
+                        format!("{warning}\n{stderr}")
+                    };
+                }
+                stdout = format!("[SHUVI_GIT_CONTEXT_V1]{}\n{}", after, stdout);
+            }
+
             Ok(ActionResult {
-                success: output.status.success(),
+                success,
                 tool,
-                stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
-                stderr: truncate_output(String::from_utf8_lossy(&output.stderr).to_string()),
+                stdout: truncate_output(stdout),
+                stderr: truncate_output(stderr),
                 exit_code: output.status.code(),
             })
         }
         ToolAction::GitStatus { path } => {
             let output = run_git(&path, &["status", "--short", "--branch"])?;
+            let stdout = if output.status.success() {
+                git_context_stdout(&path, String::from_utf8_lossy(&output.stdout).to_string())?
+            } else {
+                String::from_utf8_lossy(&output.stdout).to_string()
+            };
             Ok(ActionResult {
                 success: output.status.success(),
                 tool,
-                stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                stdout: truncate_output(stdout),
                 stderr: truncate_output(String::from_utf8_lossy(&output.stderr).to_string()),
                 exit_code: output.status.code(),
             })
         }
         ToolAction::GitDiff { path } => {
             let output = run_git(&path, &["diff", "--no-ext-diff", "--unified=3"])?;
+            let stdout = if output.status.success() {
+                git_context_stdout(&path, String::from_utf8_lossy(&output.stdout).to_string())?
+            } else {
+                String::from_utf8_lossy(&output.stdout).to_string()
+            };
             Ok(ActionResult {
                 success: output.status.success(),
                 tool,
-                stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                stdout: truncate_output(stdout),
                 stderr: truncate_output(String::from_utf8_lossy(&output.stderr).to_string()),
                 exit_code: output.status.code(),
             })
@@ -11028,10 +11107,15 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             }
 
             let output = run_git(&path, &["commit", "-m", &message])?;
-            let stdout = format!(
+            let body = format!(
                 "Remote freshness: {remote_receipt}\n{}",
                 String::from_utf8_lossy(&output.stdout)
             );
+            let stdout = if output.status.success() {
+                git_context_stdout(&path, body)?
+            } else {
+                body
+            };
 
             Ok(ActionResult {
                 success: output.status.success(),
@@ -11044,10 +11128,15 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
         ToolAction::GitPush { path } => {
             let remote_receipt = git_remote_freshness(&path)?;
             let output = run_git(&path, &["push"])?;
-            let stdout = format!(
+            let body = format!(
                 "Remote freshness: {remote_receipt}\n{}",
                 String::from_utf8_lossy(&output.stdout)
             );
+            let stdout = if output.status.success() {
+                git_context_stdout(&path, body)?
+            } else {
+                body
+            };
 
             Ok(ActionResult {
                 success: output.status.success(),
