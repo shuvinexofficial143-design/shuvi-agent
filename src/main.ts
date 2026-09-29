@@ -660,18 +660,54 @@ function setBusy(value: boolean): void {
   stop.classList.toggle("hidden", !value);
 }
 
-function toolResultMessage(result: ActionResult): ChatMessage {
-  const payload = JSON.stringify({
-    tool: result.tool,
-    success: result.success,
-    stdout: result.stdout,
-    stderr: result.stderr,
-    exit_code: result.exit_code
-  });
+function providerToolEnvelope(payload: Record<string, unknown>): string {
+  const wrap = (value: Record<string, unknown>) =>
+    `[SHUVI_TOOL_RESULT]\n${JSON.stringify(value)}\n[/SHUVI_TOOL_RESULT]`;
 
+  let candidate = { ...payload };
+  let content = wrap(candidate);
+  if (boundedMessageBytes(content) != null) return content;
+
+  const originals = new Map(
+    Object.entries(candidate)
+      .filter(([key, value]) => key !== "tool" && typeof value === "string")
+      .map(([key, value]) => [key, value as string])
+  );
+
+  for (let pass = 1; pass <= 16 && originals.size; pass += 1) {
+    const divisor = 1 << Math.min(pass, 15);
+    for (const [key, original] of originals) {
+      const keep = Math.max(64, Math.floor(original.length / divisor));
+      if (original.length <= keep) continue;
+      const head = Math.ceil(keep * 0.6);
+      const tail = keep - head;
+      candidate[key] =
+        original.slice(0, head) +
+        "\n[...provider envelope truncated...]\n" +
+        (tail ? original.slice(-tail) : "");
+    }
+    content = wrap(candidate);
+    if (boundedMessageBytes(content) != null) return content;
+  }
+
+  return wrap({
+    tool: typeof payload.tool === "string" ? payload.tool.slice(0, 160) : "unknown",
+    success: payload.success === true,
+    provider_envelope_truncated: true,
+    retry_automatically: false
+  });
+}
+
+function toolResultMessage(result: ActionResult): ChatMessage {
   return {
     role: "user",
-    content: `[SHUVI_TOOL_RESULT]\n${payload}\n[/SHUVI_TOOL_RESULT]`
+    content: providerToolEnvelope({
+      tool: result.tool,
+      success: result.success,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      exit_code: result.exit_code
+    })
   };
 }
 
@@ -722,11 +758,11 @@ function hiddenToolFailure(
 ): ChatMessage {
   return {
     role: "user",
-    content: `[SHUVI_TOOL_RESULT]\n${JSON.stringify({
+    content: providerToolEnvelope({
       tool: proposal.tool,
       success: false,
       ...detail
-    })}\n[/SHUVI_TOOL_RESULT]`
+    })
   };
 }
 
