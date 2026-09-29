@@ -14,7 +14,7 @@ test("running project task is correlated to the exact prepared action ID",()=>{
   assert.match(run,/running\.insert\(action_id\.to_string\(\), child_pid\)/);
   assert.match(run,/running\.remove\(action_id\)/);
   const execute=rust.slice(rust.indexOf("async fn execute_action("),rust.indexOf("async fn execute_powershell"));
-  assert.match(execute,/execute_tool_with_action_id\(action, state\.inner\(\), &app, Some\(action_id\.as_str\(\)\)\)/);
+  assert.match(execute,/execute_tool_with_action_id\([\s\S]*?action,[\s\S]*?state\.inner\(\),[\s\S]*?&app,[\s\S]*?Some\(action_id\.as_str\(\)\),?[\s\S]*?\)\.await/);
 });
 
 test("cancel_running_action only denies or stops the exact run_project_task action UUID",()=>{
