@@ -5577,6 +5577,38 @@ fn read_audit(app: &AppHandle, limit: usize) -> Result<Vec<AuditEntry>, String> 
     Ok(entries.into_iter().rev().collect())
 }
 
+fn read_action_audit_receipt(
+    app: &AppHandle,
+    action_id: &str,
+) -> Result<Option<AuditEntry>, String> {
+    Uuid::parse_str(action_id).map_err(|_| "Invalid action ID for audit receipt.")?;
+    let _guard = audit_io_lock()
+        .lock()
+        .map_err(|_| "Audit I/O state is unavailable.".to_string())?;
+    let path = audit_path(app)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let file = OpenOptions::new()
+        .read(true)
+        .open(path)
+        .map_err(|error| format!("Could not open audit log: {error}"))?;
+
+    let mut matched = None;
+    for line in BufReader::new(file).lines().filter_map(Result::ok) {
+        let Ok(entry) = serde_json::from_str::<AuditEntry>(&line) else {
+            continue;
+        };
+        if entry.action_id.as_deref() == Some(action_id)
+            && matches!(entry.event.as_str(), "executed" | "failed" | "denied")
+        {
+            matched = Some(entry);
+        }
+    }
+    Ok(matched)
+}
+
 fn prune_screenshot_dir(dir: &Path, keep_existing: usize) -> Result<(), String> {
     let mut screenshots = fs::read_dir(dir)
         .map_err(|error| format!("Could not inspect screenshot folder: {error}"))?
@@ -9003,12 +9035,13 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             job.identity(&context)?;
             let pending=job.pending().cloned().ok_or("Edit job has no pending phase.")?;
             if pending.id!=phase_id{return Err("Receipt phase is not the current edit-job phase.".into());}
-            let receipt=read_audit(app,300)?.into_iter().find(|entry|
-                entry.action_id.as_deref()==Some(action_id.as_str())
-                &&entry.timestamp_ms>=job.created_at_ms
-                &&entry.tool==pending.tool
-                &&matches!(entry.event.as_str(),"executed"|"failed")
-            ).ok_or("No matching recent typed action audit receipt for this edit-job phase.")?;
+            let receipt=read_action_audit_receipt(app,&action_id)?
+                .filter(|entry|
+                    entry.timestamp_ms>=job.created_at_ms
+                    &&entry.tool==pending.tool
+                    &&matches!(entry.event.as_str(),"executed"|"failed")
+                )
+                .ok_or("No matching typed action audit receipt for this edit-job phase.")?;
             let success=receipt.event=="executed"&&receipt.success;
             job.record(&phase_id,&receipt.tool,&action_id,success,now_ms())?;
             premiere_edit_job::save(&path,&job)?;
@@ -9064,9 +9097,9 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             session.identity(&context)?;
             let stage=session.recipe.stages.iter().find(|s|s.id==stage_id).ok_or("Unknown editorial stage.")?;
             let required_capability=stage.required_capability.clone();let review_required=stage.review_required;
-            let receipt=read_audit(app,200)?.into_iter().find(|e|e.action_id.as_deref()==Some(action_id.as_str())
-                && e.timestamp_ms>=session.created_at_ms && e.event=="executed" && e.tool==required_capability)
-                .ok_or("No matching recent typed action audit receipt for this stage.")?;
+            let receipt=read_action_audit_receipt(app,&action_id)?
+                .filter(|e|e.timestamp_ms>=session.created_at_ms && e.event=="executed" && e.tool==required_capability)
+                .ok_or("No matching typed action audit receipt for this stage.")?;
             session.record(&stage_id,&action_id,&receipt.tool,receipt.success)?;
             premiere_edit_session::save(&path,&session)?;
             Ok(ActionResult {success:true,tool,stdout:json!({"stage_id":stage_id,"state":session.stages.iter().find(|s|s.id==stage_id).map(|s|s.state.as_str()),
@@ -9145,11 +9178,11 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let project=context.get("projectGuid").and_then(Value::as_str).unwrap_or("");
             let sequence=context.pointer("/activeSequence/guid").and_then(Value::as_str).unwrap_or("");
             if let Err(error)=session.check_identity(project,sequence) { premiere_review::save(&path,&session)?; return Err(error); }
-            let audit=read_audit(app,200)?;
-            if !audit.iter().any(|entry| entry.action_id.as_deref()==Some(approved_action_id.as_str())
-                && entry.success && entry.event=="executed" && matches!(entry.tool.as_str(),
+            let approved_receipt=read_action_audit_receipt(app,&approved_action_id)?;
+            if !approved_receipt.as_ref().is_some_and(|entry|
+                entry.success && entry.event=="executed" && matches!(entry.tool.as_str(),
                 "premiere_apply_video_recipe"|"premiere_apply_audio_recipe"|"premiere_add_video_transition"|"premiere_apply_saved_recipe")) {
-                return Err("No successful approved typed Premiere edit with this action ID in recent audit.".into());
+                return Err("No successful approved typed Premiere edit with this action ID in audit evidence.".into());
             }
             let issue=session.reviews.last().and_then(|r| r.issues.iter().find(|i| i.id==issue_id))
                 .ok_or("Unknown review issue.")?;
@@ -12215,11 +12248,7 @@ fn audit_log(app: AppHandle, limit: Option<usize>) -> Result<Vec<AuditEntry>, St
 
 #[tauri::command]
 fn action_audit_receipt(action_id:String,app:AppHandle)->Result<Option<AuditEntry>,String>{
-    Uuid::parse_str(&action_id).map_err(|_|"Invalid action ID for audit receipt.")?;
-    Ok(read_audit(&app,200)?.into_iter().find(|entry|
-        entry.action_id.as_deref()==Some(action_id.as_str())
-        && matches!(entry.event.as_str(),"executed"|"failed"|"denied")
-    ))
+    read_action_audit_receipt(&app, &action_id)
 }
 
 #[tauri::command]
