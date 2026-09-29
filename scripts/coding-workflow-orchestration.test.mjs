@@ -190,3 +190,19 @@ test("untracked commit files require post-mutation inspection evidence",()=>{
   assert.match(orchestrator,/read each untracked commit file after the latest mutation before git_commit/);
   assert.match(orchestrator,/coding\.inspection_steps\[absoluteFile\]/);
 });
+
+
+test("untracked and commit-file arrays are bounded before normalization work",()=>{
+  const normalize=orchestrator.slice(
+    orchestrator.indexOf("function normalizeCodingWorkflowState"),
+    orchestrator.indexOf("export function proposalFingerprint")
+  );
+  assert.match(normalize,/rawStatusUntracked\.length > 64/);
+  assert.match(normalize,/rawStatusUntracked[\s\S]*\.slice\(0, 64\)[\s\S]*\.map\(normalizeRelativeGitPath\)/);
+  const dependency=orchestrator.slice(
+    orchestrator.indexOf("function dependencyFailure"),
+    orchestrator.indexOf("export function evaluateProposal")
+  );
+  assert.match(dependency,/rawCommitFiles\.length < 1 \|\| rawCommitFiles\.length > 64/);
+  assert.match(dependency,/rawCommitFiles\.slice\(0, 64\)\.map\(normalizeRelativeGitPath\)/);
+});
