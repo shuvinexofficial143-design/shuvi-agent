@@ -753,6 +753,15 @@ function sessionPermissionLabel(proposal: ToolProposal): string {
   return "Allow this read tool for session";
 }
 
+function revokeBrowserSessionPermissions(pid?: number): void {
+  const exactSuffix = typeof pid === "number" ? "|pid:" + String(pid) : null;
+  for (const key of [...sessionAllowedScopes]) {
+    if (exactSuffix ? key.endsWith(exactSuffix) : key.includes("|pid:")) {
+      sessionAllowedScopes.delete(key);
+    }
+  }
+}
+
 function hiddenToolFailure(
   proposal: ToolProposal,
   detail: Record<string, unknown>
@@ -969,6 +978,16 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
       result.success
     );
     const cancelledByUser = await actionCancellationConfirmed(actionId);
+    if (!cancelledByUser && result.success) {
+      if (proposal.tool === "browser_start") {
+        // A newly launched browser may receive an OS PID used by an older session.
+        // Revoke all PID-scoped read grants so the new process must be approved.
+        revokeBrowserSessionPermissions();
+      } else if (proposal.tool === "stop_managed_process"
+          && typeof proposal.arguments.pid === "number") {
+        revokeBrowserSessionPermissions(proposal.arguments.pid);
+      }
+    }
     void refreshAudit();
     orchestration = recordToolOutcome(
       orchestration,
