@@ -261,7 +261,7 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - run_project_task: {"path":"absolute project path","task":"test|build|lint|typecheck"}
 - git_status: {"path":"absolute repository path"}
 - git_diff: {"path":"absolute repository path"}
-- git_commit: {"path":"absolute repository path","message":"commit message"}
+- git_commit: {"path":"absolute repository path","message":"commit message","files":["exact/relative/file1","exact/relative/file2"]}
 - git_push: {"path":"absolute repository path"}
 - powershell: {"command":"PowerShell command"}
 
@@ -276,7 +276,7 @@ Rules:
 - Multi-step tasks may include top-level task_graph: {"objective":"stable goal","revision":1,"steps":[{"step_id":"inspect","title":"Inspect source","purpose":"Observe current implementation","success_criteria":"Typed read_file succeeds","depends_on":[],"expected_tool":"read_file"}]} and task_step_id:"inspect". Use 1..8 steps, IDs 1..48 ASCII letters/digits/_/-, title <=100, purpose <=300, success_criteria <=500, objective <=500; at most 7 unique predecessor IDs. Only exact successful typed tools complete steps; never send status/evidence or claim completion from prose. expected_tool must match the associated proposal; validation requires run_project_task with successful exit status. One graph step corresponds to one typed action, so status and diff need separate steps.
 - Once a graph exists every action needs task_step_id. A separate recovery inspection may use task_recovery:true without task_step_id, using read_file/list_directory/workspace_scan/search_text/git_status/git_diff/list_processes/ui_find/browser_dom_read/premiere_context/premiere_timeline/premiere_bridge_status. A successful inspection after a failure permits a next-revision graph with recover_steps:["failed_id"]. Recovery does not itself complete or retry the failed step. Exact unsuccessful proposals remain blocked across revisions.
 - Replan with a full graph, stable objective, revision incremented by exactly one (max 8). Preserve completed specifications/evidence and attempted step IDs. Only future steps can change. Replanning never resets the eight-action budget or grants permission; incompatible history needs a new user instruction/reset.
-- Coding workflow dependencies are enforced locally. Before replace_text, successfully read the exact target file after its latest Shuvi mutation. Before apply_patch, run fresh git_status for that exact repository after the latest Shuvi mutation. Before git_commit, run fresh git_status and git_diff after the latest edit; a successful commit invalidates that review snapshot. git_push requires a successful same-repository git_commit after the latest edit, and a later edit invalidates prior pushed-complete phase evidence.
+- Coding workflow dependencies are enforced locally. Before replace_text, successfully read the exact target file after its latest Shuvi mutation. Before apply_patch, run fresh git_status for that exact repository after the latest Shuvi mutation. Before git_commit, run fresh git_status and git_diff after the latest edit, pass only the exact reviewed relative files, and let the typed tool recheck upstream freshness immediately before staging; a successful commit invalidates that review snapshot. git_push requires a successful same-repository git_commit after the latest edit and performs the same upstream freshness check immediately before push; a later edit invalidates prior pushed-complete phase evidence.
 - After a code mutation, prefer run_project_task for an appropriate test/build/lint/typecheck before review/commit when such a task exists. Validation status is tracked, but a missing validation step alone does not authorize or fabricate a pass/fail result.
 - Before git_commit, inspect git_status and git_diff so the user can review what will be committed.
 - Treat git_push as a remote write and request it only after a successful commit when the user asked for a push.
@@ -590,7 +590,7 @@ enum ToolAction {
     RunProjectTask { path: String, task: String },
     GitStatus { path: String },
     GitDiff { path: String },
-    GitCommit { path: String, message: String },
+    GitCommit { path: String, message: String, files: Vec<String> },
     GitPush { path: String },
     PowerShell { command: String },
 }
@@ -5031,14 +5031,41 @@ fn stage_tool(
             if message.len() > 500 {
                 return Err("Git commit message is too long.".into());
             }
+            let raw_files = arg_string_array(&proposal.arguments, "files")?;
+            if raw_files.is_empty() || raw_files.len() > 64 {
+                return Err("git_commit requires between 1 and 64 exact reviewed relative file paths.".into());
+            }
+            let mut files = Vec::new();
+            let mut seen = HashSet::new();
+            for raw in raw_files {
+                let file = raw.trim().replace('\\', "/");
+                if file.is_empty()
+                    || file.len() > 2_048
+                    || Path::new(&file).is_absolute()
+                    || file == "."
+                    || file == ".git"
+                    || file.starts_with(".git/")
+                    || file.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+                    || file.chars().any(|ch| ch == '\0' || ch == '\r' || ch == '\n')
+                {
+                    return Err("git_commit files must be exact safe relative file paths inside the repository.".into());
+                }
+                if Path::new(&path).join(&file).is_dir() {
+                    return Err("git_commit files must name exact files, not directories.".into());
+                }
+                if seen.insert(file.clone()) {
+                    files.push(file);
+                }
+            }
 
             (
                 ToolAction::GitCommit {
                     path: path.clone(),
                     message: message.clone(),
+                    files: files.clone(),
                 },
-                "Stage and commit Git changes".to_string(),
-                format!("{path} | message={message}"),
+                "Stage reviewed files and commit Git changes".to_string(),
+                format!("{path} | files={} | message={message}", files.join(",")),
                 RiskLevel::Medium,
             )
         }
@@ -5631,6 +5658,83 @@ fn run_git_with_stdin(
         .wait_with_output()
         .map_err(|error| format!("Could not wait for Git: {error}"))
 }
+
+fn git_command_text(path: &str, args: &[&str], label: &str) -> Result<String, String> {
+    let output = run_git(path, args)?;
+    if !output.status.success() {
+        let stderr = truncate_output(String::from_utf8_lossy(&output.stderr).to_string());
+        return Err(format!("{label}: {stderr}"));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn git_staged_files(path: &str) -> Result<Vec<String>, String> {
+    let output = run_git(path, &["diff", "--cached", "--name-only", "-z", "--"])?;
+    if !output.status.success() {
+        return Err(format!(
+            "Could not inspect staged files: {}",
+            truncate_output(String::from_utf8_lossy(&output.stderr).to_string())
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .split('\0')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(|item| item.replace('\\', "/"))
+        .collect())
+}
+
+fn git_remote_freshness(path: &str) -> Result<String, String> {
+    let branch = git_command_text(
+        path,
+        &["symbolic-ref", "--quiet", "--short", "HEAD"],
+        "Could not identify the current Git branch",
+    )?;
+    let upstream_probe = run_git(
+        path,
+        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+    )?;
+    if !upstream_probe.status.success() {
+        return Ok(format!("branch={branch}; upstream=none; remote_check=not_configured"));
+    }
+    let upstream = String::from_utf8_lossy(&upstream_probe.stdout).trim().to_string();
+    if upstream.is_empty() {
+        return Ok(format!("branch={branch}; upstream=none; remote_check=not_configured"));
+    }
+
+    let remote_key = format!("branch.{branch}.remote");
+    let remote = git_command_text(
+        path,
+        &["config", "--get", remote_key.as_str()],
+        "Could not identify the configured Git remote",
+    )?;
+    if remote != "." {
+        let fetch = run_git(path, &["fetch", "--prune", remote.as_str()])?;
+        if !fetch.status.success() {
+            return Err(format!(
+                "Remote freshness check failed before Git write: {}",
+                truncate_output(String::from_utf8_lossy(&fetch.stderr).to_string())
+            ));
+        }
+    }
+
+    let head = git_command_text(path, &["rev-parse", "HEAD"], "Could not read local HEAD")?;
+    let upstream_head = git_command_text(
+        path,
+        &["rev-parse", "@{u}"],
+        "Could not read upstream HEAD after fetch",
+    )?;
+    let ancestor = run_git(path, &["merge-base", "--is-ancestor", "@{u}", "HEAD"])?;
+    if !ancestor.status.success() {
+        return Err(format!(
+            "Remote branch advanced or diverged; refusing Git write until the repository is reconciled. branch={branch}; local_head={head}; upstream={upstream}; upstream_head={upstream_head}"
+        ));
+    }
+    Ok(format!(
+        "branch={branch}; local_head={head}; upstream={upstream}; upstream_head={upstream_head}"
+    ))
+}
+
 
 fn project_task_command(path: &str, task: &str) -> Result<(String, Vec<String>), String> {
     let root = Path::new(path);
@@ -10878,8 +10982,28 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 exit_code: output.status.code(),
             })
         }
-        ToolAction::GitCommit { path, message } => {
-            let add = run_git(&path, &["add", "-A"])?;
+        ToolAction::GitCommit { path, message, files } => {
+            let remote_receipt = git_remote_freshness(&path)?;
+            let requested: HashSet<&str> = files.iter().map(String::as_str).collect();
+            let staged_before = git_staged_files(&path)?;
+            let unrelated_before: Vec<String> = staged_before
+                .into_iter()
+                .filter(|file| !requested.contains(file.as_str()))
+                .collect();
+            if !unrelated_before.is_empty() {
+                return Err(format!(
+                    "Refusing git_commit because unrelated files are already staged: {}",
+                    unrelated_before.join(", ")
+                ));
+            }
+
+            let pathspecs: Vec<String> = files
+                .iter()
+                .map(|file| format!(":(literal){file}"))
+                .collect();
+            let mut add_args: Vec<&str> = vec!["add", "--"];
+            add_args.extend(pathspecs.iter().map(String::as_str));
+            let add = run_git(&path, &add_args)?;
             if !add.status.success() {
                 return Err(format!(
                     "Git staging failed: {}",
@@ -10887,23 +11011,48 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 ));
             }
 
+            let staged_after = git_staged_files(&path)?;
+            if staged_after.is_empty() {
+                return Err("git_commit found no staged changes in the exact reviewed file list.".into());
+            }
+            let unrelated_after: Vec<String> = staged_after
+                .iter()
+                .filter(|file| !requested.contains(file.as_str()))
+                .cloned()
+                .collect();
+            if !unrelated_after.is_empty() {
+                return Err(format!(
+                    "Refusing git_commit because staging contains files outside the reviewed list: {}",
+                    unrelated_after.join(", ")
+                ));
+            }
+
             let output = run_git(&path, &["commit", "-m", &message])?;
+            let stdout = format!(
+                "Remote freshness: {remote_receipt}\n{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
 
             Ok(ActionResult {
                 success: output.status.success(),
                 tool,
-                stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                stdout: truncate_output(stdout),
                 stderr: truncate_output(String::from_utf8_lossy(&output.stderr).to_string()),
                 exit_code: output.status.code(),
             })
         }
         ToolAction::GitPush { path } => {
+            let remote_receipt = git_remote_freshness(&path)?;
             let output = run_git(&path, &["push"])?;
+            let stdout = format!(
+                "Remote freshness: {remote_receipt}\n{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
 
             Ok(ActionResult {
                 success: output.status.success(),
                 tool,
-                stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                stdout: truncate_output(stdout),
                 stderr: truncate_output(String::from_utf8_lossy(&output.stderr).to_string()),
                 exit_code: output.status.code(),
             })

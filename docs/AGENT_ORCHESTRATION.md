@@ -112,8 +112,9 @@ Coding actions now have local predecessor checks. These checks are deterministic
 
 - `replace_text` requires a successful `read_file` for the exact normalized target path. A successful write/replace of that path invalidates the read receipt; `apply_patch` conservatively invalidates all exact-file read receipts because it may touch multiple files.
 - `apply_patch` requires a fresh successful `git_status` for the exact repository path after the most recent Shuvi code mutation. A previous mutation cannot reuse an older status snapshot.
-- `git_commit` requires both `git_status` and `git_diff` for the same repository after the most recent Shuvi code mutation. A successful commit invalidates those review receipts so they cannot authorize a second commit.
-- `git_push` requires a successful `git_commit` for the same repository after the most recent Shuvi code mutation. A later edit makes a previous push stale, so the phase cannot remain falsely `complete`.
+- `git_commit` requires both `git_status` and `git_diff` for the same repository after the most recent Shuvi code mutation. The proposal must also name 1..64 exact reviewed relative files. The Rust tool refuses `git add -A`, refuses pre-staged files outside that reviewed list, stages only literal requested file pathspecs, and invalidates the review receipts after a successful commit.
+- Immediately inside `git_commit`, Shuvi resolves the current branch/upstream, fetches the configured remote, and refuses the write if the refreshed upstream is not an ancestor of local `HEAD`. Repositories without an upstream can still make local commits, but no remote-freshness claim is invented.
+- `git_push` requires a successful `git_commit` for the same repository after the most recent Shuvi code mutation and repeats the upstream fetch/ancestry check immediately before push. A later edit makes a previous push stale, so the phase cannot remain falsely `complete`.
 - `run_project_task` is tracked as validation evidence. It is strongly preferred after a mutation when an appropriate test/build/lint/typecheck exists, but a missing validation action is not converted into a fabricated pass or a universal hard commit block.
 
 Successful coding actions advance a bounded local phase:
@@ -124,7 +125,7 @@ The phase is shown in the local agent progress indicator and persisted in the or
 
 Only successful tool results update dependency evidence. Failed, denied, blocked, or merely proposed actions do not satisfy a dependency. A new user task starts a fresh dependency state; resume restores the persisted state. Per-path read receipts now carry their orchestration step. Persisted coding step receipts at or beyond `next_step` are discarded, and older checkpoints that lack per-path read steps drop ambiguous file-read evidence once a mutation has occurred rather than inventing freshness.
 
-The dependency graph intentionally stays narrow. It does not require every valid file creation to have a prior read, and it does not infer a test pass from source inspection. This avoids turning a safety layer into an unrestricted workflow language.
+The dependency graph intentionally stays narrow. It does not require every valid file creation to have a prior read, and it does not infer a test pass from source inspection. This avoids turning a safety layer into an unrestricted workflow language. Remote freshness and exact-file commit staging are enforced inside the existing typed Git write tools, so they do not consume extra model-selected graph steps or weaken the eight-step ceiling.
 
 ## Evidence-based task graph and progress engine
 
