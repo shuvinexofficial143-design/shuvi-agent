@@ -1492,7 +1492,16 @@ fn current_runtime_status(state: &ActionState) -> Result<RuntimeStatus, String> 
         stored.retain(|root_pid, _| live_roots.contains(root_pid));
     }
     if let Ok(mut sessions) = state.browser_sessions.lock() {
+        let stale_profiles = sessions
+            .iter()
+            .filter(|(root_pid, _)| !live_roots.contains(root_pid))
+            .map(|(_, session)| session.profile_dir.clone())
+            .collect::<Vec<_>>();
         sessions.retain(|root_pid, _| live_roots.contains(root_pid));
+        drop(sessions);
+        for profile_dir in stale_profiles {
+            let _ = fs::remove_dir_all(profile_dir);
+        }
     }
 
     let managed_tree = managed_tree_pids(&system, &live_roots);

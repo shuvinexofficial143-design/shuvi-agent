@@ -27,3 +27,15 @@ test("all browser DOM and navigation actions go through browser_session",()=>{
     assert.match(rust.slice(start,start+3600),/let session = browser_session\(state, pid\)\?/);
   }
 });
+
+
+test("runtime refresh removes stale browser profile directories",()=>{
+  const start=rust.indexOf("fn current_runtime_status");
+  const end=rust.indexOf("fn ensure_memory_budget",start);
+  const block=rust.slice(start,end);
+  assert.match(block,/let stale_profiles = sessions/);
+  assert.match(block,/!live_roots\.contains\(root_pid\)/);
+  assert.match(block,/session\.profile_dir\.clone\(\)/);
+  assert.match(block,/sessions\.retain\(\|root_pid, _\| live_roots\.contains\(root_pid\)\)/);
+  assert.match(block,/fs::remove_dir_all\(profile_dir\)/);
+});
