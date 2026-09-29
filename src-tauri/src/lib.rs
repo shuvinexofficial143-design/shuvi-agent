@@ -78,6 +78,8 @@ const MAX_LAUNCH_ARGS_BYTES: usize = 32 * 1024;
 const MAX_CHAT_MESSAGES: usize = 120;
 const MAX_CHAT_MESSAGE_BYTES: usize = 256 * 1024;
 const MAX_CHAT_CONTEXT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_PROVIDER_RESPONSE_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_ASSISTANT_RESPONSE_BYTES: usize = 512 * 1024;
 const MAX_SCREENSHOT_FILES: usize = 64;
 const MAX_STALE_BROWSER_PROFILES: usize = 8;
 const MAX_DIAGNOSTIC_FILES: usize = 16;
@@ -834,6 +836,42 @@ async fn send_with_retry(
     ))
 }
 
+fn ensure_provider_response_size(
+    response: &reqwest::Response,
+    label: &str,
+) -> Result<(), String> {
+    if response
+        .content_length()
+        .is_some_and(|bytes| bytes > MAX_PROVIDER_RESPONSE_BYTES)
+    {
+        return Err(format!(
+            "{label} response exceeds Shuvi's 8 MB declared-size safety limit."
+        ));
+    }
+    Ok(())
+}
+
+fn collect_provider_text<'a>(
+    parts: impl Iterator<Item = &'a str>,
+    label: &str,
+) -> Result<String, String> {
+    let mut output = String::new();
+    for part in parts {
+        if output.len().saturating_add(part.len()) > MAX_ASSISTANT_RESPONSE_BYTES {
+            return Err(format!("{label} text exceeds Shuvi's 512 KB safety limit."));
+        }
+        output.push_str(part);
+    }
+    Ok(output)
+}
+
+fn bounded_provider_text(value: &str, label: &str) -> Result<String, String> {
+    if value.len() > MAX_ASSISTANT_RESPONSE_BYTES {
+        return Err(format!("{label} text exceeds Shuvi's 512 KB safety limit."));
+    }
+    Ok(value.to_string())
+}
+
 fn compact_error(body: &Value) -> String {
     body.pointer("/error/message")
         .and_then(Value::as_str)
@@ -1197,6 +1235,7 @@ async fn openai_compatible_chat(
     let response = send_with_retry(request, "Provider request").await?;
 
     let status = response.status();
+    ensure_provider_response_size(&response, "Provider")?;
     let body: Value = response
         .json()
         .await
@@ -1206,11 +1245,12 @@ async fn openai_compatible_chat(
         return Err(format!("Provider returned {status}: {}", compact_error(&body)));
     }
 
-    let content = body
-        .pointer("/choices/0/message/content")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "Provider response had no assistant text.".to_string())?
-        .to_string();
+    let content = bounded_provider_text(
+        body.pointer("/choices/0/message/content")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Provider response had no assistant text.".to_string())?,
+        "Provider assistant",
+    )?;
 
     let usage = usage_from_openai(&body);
     Ok(chat_response(content, input.provider, input.model, usage))
@@ -1254,6 +1294,7 @@ async fn gemini_chat(input: ChatInput, api_key: Option<String>) -> Result<ChatRe
     let response = send_with_retry(request, "Gemini request").await?;
 
     let status = response.status();
+    ensure_provider_response_size(&response, "Gemini")?;
     let body: Value = response
         .json()
         .await
@@ -1268,11 +1309,10 @@ async fn gemini_chat(input: ChatInput, api_key: Option<String>) -> Result<ChatRe
         .and_then(Value::as_array)
         .ok_or_else(|| "Gemini returned no candidate text.".to_string())?;
 
-    let content = parts
-        .iter()
-        .filter_map(|part| part.get("text").and_then(Value::as_str))
-        .collect::<Vec<_>>()
-        .join("");
+    let content = collect_provider_text(
+        parts.iter().filter_map(|part| part.get("text").and_then(Value::as_str)),
+        "Gemini assistant",
+    )?;
 
     if content.is_empty() {
         return Err("Gemini returned an empty response.".into());
@@ -1326,6 +1366,7 @@ async fn anthropic_chat(
     let response = send_with_retry(request, "Anthropic request").await?;
 
     let status = response.status();
+    ensure_provider_response_size(&response, "Anthropic")?;
     let body: Value = response
         .json()
         .await
@@ -1335,20 +1376,20 @@ async fn anthropic_chat(
         return Err(format!("Anthropic returned {status}: {}", compact_error(&body)));
     }
 
-    let content = body
-        .get("content")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|part| {
-            if part.get("type").and_then(Value::as_str) == Some("text") {
-                part.get("text").and_then(Value::as_str)
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("");
+    let content = collect_provider_text(
+        body.get("content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|part| {
+                if part.get("type").and_then(Value::as_str) == Some("text") {
+                    part.get("text").and_then(Value::as_str)
+                } else {
+                    None
+                }
+            }),
+        "Anthropic assistant",
+    )?;
 
     if content.is_empty() {
         return Err("Anthropic returned an empty response.".into());
@@ -5530,6 +5571,7 @@ async fn analyze_png_with_provider(
                 .map_err(|error| format!("Gemini vision request failed: {error}"))?;
 
             let status = response.status();
+            ensure_provider_response_size(&response, "Gemini vision")?;
             let body: Value = response
                 .json()
                 .await
@@ -5544,11 +5586,10 @@ async fn analyze_png_with_provider(
                 .and_then(Value::as_array)
                 .ok_or_else(|| "Gemini vision returned no candidate text.".to_string())?;
 
-            let text = parts
-                .iter()
-                .filter_map(|part| part.get("text").and_then(Value::as_str))
-                .collect::<Vec<_>>()
-                .join("");
+            let text = collect_provider_text(
+                parts.iter().filter_map(|part| part.get("text").and_then(Value::as_str)),
+                "Gemini vision",
+            )?;
 
             if text.is_empty() {
                 return Err("Gemini vision returned an empty response.".into());
@@ -5588,6 +5629,7 @@ async fn analyze_png_with_provider(
                 .map_err(|error| format!("Anthropic vision request failed: {error}"))?;
 
             let status = response.status();
+            ensure_provider_response_size(&response, "Anthropic vision")?;
             let body: Value = response
                 .json()
                 .await
@@ -5597,20 +5639,20 @@ async fn analyze_png_with_provider(
                 return Err(format!("Anthropic vision returned {status}: {}", compact_error(&body)));
             }
 
-            let text = body
-                .get("content")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|part| {
-                    if part.get("type").and_then(Value::as_str) == Some("text") {
-                        part.get("text").and_then(Value::as_str)
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("");
+            let text = collect_provider_text(
+                body.get("content")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|part| {
+                        if part.get("type").and_then(Value::as_str) == Some("text") {
+                            part.get("text").and_then(Value::as_str)
+                        } else {
+                            None
+                        }
+                    }),
+                "Anthropic vision",
+            )?;
 
             if text.is_empty() {
                 return Err("Anthropic vision returned an empty response.".into());
@@ -5666,6 +5708,7 @@ async fn analyze_png_with_provider(
                 .map_err(|error| format!("Vision request failed: {error}"))?;
 
             let status = response.status();
+            ensure_provider_response_size(&response, "Vision provider")?;
             let body: Value = response
                 .json()
                 .await
@@ -5680,7 +5723,7 @@ async fn analyze_png_with_provider(
                 .and_then(Value::as_str)
                 .ok_or_else(|| "Vision provider returned no assistant text.".to_string())?;
 
-            Ok(text.to_string())
+            bounded_provider_text(text, "Vision provider")
         }
         other => Err(format!("Provider '{other}' is not supported for screen vision.")),
     }
