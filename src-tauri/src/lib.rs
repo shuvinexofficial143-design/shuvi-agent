@@ -79,6 +79,7 @@ const MAX_CHAT_MESSAGES: usize = 120;
 const MAX_CHAT_MESSAGE_BYTES: usize = 256 * 1024;
 const MAX_CHAT_CONTEXT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_SCREENSHOT_FILES: usize = 64;
+const MAX_STALE_BROWSER_PROFILES: usize = 8;
 const MAX_WORKSPACE_SCAN_ENTRIES: usize = 1_200;
 const MAX_WORKSPACE_DIRECTORY_ENTRIES: usize = 2_000;
 const MAX_SEARCH_MATCHES: usize = 150;
@@ -1382,6 +1383,10 @@ fn current_runtime_status(state: &ActionState) -> Result<RuntimeStatus, String> 
 
     managed.retain(|child_pid| system.process(Pid::from_u32(*child_pid)).is_some());
 
+    if let Ok(mut sessions) = state.browser_sessions.lock() {
+        sessions.retain(|root_pid, _| system.process(Pid::from_u32(*root_pid)).is_some());
+    }
+
     let managed_tree = managed_tree_pids(&system, &managed);
     let managed_children_bytes = managed_tree
         .iter()
@@ -1743,6 +1748,42 @@ fn find_browser_executable(browser: &str) -> Result<std::path::PathBuf, String> 
         let _ = browser;
         Err("Controlled browser sessions are currently implemented for Windows only.".into())
     }
+}
+
+fn prune_inactive_browser_profiles(
+    state: &ActionState,
+    profiles_root: &Path,
+) -> Result<(), String> {
+    if !profiles_root.exists() {
+        return Ok(());
+    }
+
+    let active_profiles = state
+        .browser_sessions
+        .lock()
+        .map_err(|_| "Browser-session state is unavailable.".to_string())?
+        .values()
+        .map(|session| session.profile_dir.clone())
+        .collect::<HashSet<_>>();
+
+    let mut stale = fs::read_dir(profiles_root)
+        .map_err(|error| format!("Could not inspect browser profile folder: {error}"))?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path.is_dir() || active_profiles.contains(&path) {
+                return None;
+            }
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((modified, path))
+        })
+        .collect::<Vec<_>>();
+
+    stale.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, path) in stale.into_iter().skip(MAX_STALE_BROWSER_PROFILES) {
+        let _ = fs::remove_dir_all(path);
+    }
+    Ok(())
 }
 
 fn browser_session(state: &ActionState, pid: u32) -> Result<BrowserSession, String> {
@@ -6514,10 +6555,14 @@ async fn execute_tool_with_action_id(
         }
         ToolAction::BrowserStart { browser, url } => {
             let executable = find_browser_executable(&browser)?;
-            let profile_dir = std::env::temp_dir()
+            let profiles_root = std::env::temp_dir()
                 .join("Shuvi")
-                .join("browser-profiles")
-                .join(format!("{}-{}", browser, now_ms()));
+                .join("browser-profiles");
+            fs::create_dir_all(&profiles_root)
+                .map_err(|error| format!("Could not create browser profile root: {error}"))?;
+            let _ = prune_inactive_browser_profiles(state, &profiles_root);
+            let profile_dir = profiles_root
+                .join(format!("{}-{}-{}", browser, now_ms(), Uuid::new_v4()));
 
             fs::create_dir_all(&profile_dir)
                 .map_err(|error| format!("Could not create managed browser profile: {error}"))?;
