@@ -18,6 +18,46 @@ let bridgeToken = "";
 let pollTimer = null;
 let busy = false;
 let activeExpectation = null;
+let deliverySession = null;
+const deliveredCommands = new Set();
+
+// Retain IDs for the whole pairing. Never evict an ID and permit its replay.
+function claimCommand(command, sessionToken) {
+  if (deliverySession !== sessionToken) { deliveredCommands.clear(); deliverySession = sessionToken; }
+  if (typeof command.id !== "string" || !command.id || command.id.length > 80 ||
+      typeof command.action !== "string" || !command.action || command.action.length > 80) {
+    throw new Error("Invalid native request identity.");
+  }
+  if (deliveredCommands.has(command.id)) throw new Error("Duplicate native delivery rejected; inspect before retrying.");
+  if (deliveredCommands.size >= 1024) throw new Error("Pairing delivery budget exhausted; rotate the Shuvi pairing token.");
+  deliveredCommands.add(command.id);
+}
+
+// Inspect before serialization, so large/cyclic native values cannot allocate an
+// unbounded JSON string. Reject rather than truncate mutation evidence.
+function boundedResultJson(value) {
+  let budget = 240 * 1024, nodes = 0;
+  const ancestors = new Set();
+  function walk(item, depth) {
+    if (++nodes > 20000 || depth > 32) throw new Error("Result structure exceeds bound");
+    if (typeof item === "string") budget -= item.length * 6 + 2;
+    else if (item && typeof item === "object") {
+      if (ancestors.has(item)) throw new Error("Cyclic result");
+      ancestors.add(item);
+      if (Array.isArray(item) && item.length > 20000) throw new Error("Result array exceeds bound");
+      for (const key in item) if (Object.prototype.hasOwnProperty.call(item, key)) {
+        budget -= key.length * 6 + 4;
+        walk(item[key], depth + 1);
+      }
+      ancestors.delete(item);
+    } else budget -= 32;
+    if (budget < 0) throw new Error("Result exceeds byte budget");
+  }
+  walk(value, 0);
+  const body = JSON.stringify(value);
+  if (utf8ByteLength(body) > 240 * 1024) throw new Error("Result exceeds 240 KiB");
+  return body;
+}
 
 function el(id) {
   return document.getElementById(id);
@@ -164,7 +204,9 @@ async function executeCommand(command) {
   activeExpectation = command.arguments?._expected || null;
   try {
     await assertExpectedTargets(command);
-    return await dispatchNativeCommand(command);
+    const result = await dispatchNativeCommand(command);
+    if (activeExpectation) await assertExpectedProject(await requireProject(), activeExpectation);
+    return result;
   } finally {
     activeExpectation = previous;
   }
@@ -5393,10 +5435,10 @@ function utf8ByteLength(text) {
 async function postResult(command, success, data, error, sessionToken) {
   let body;
   try {
-    body = JSON.stringify({ id: command.id, success, data: success ? data : null, error: success ? null : String(error || "Unknown Premiere bridge error") });
+    body = boundedResultJson({ id: command.id, action: command.action, success, data: success ? data : null, error: success ? null : String(error || "Unknown Premiere bridge error") });
     if (utf8ByteLength(body) > 240 * 1024) throw new Error("Result exceeds 240 KiB");
   } catch {
-    body = JSON.stringify({ id: command.id, success: false, data: null, error: "Result could not be serialized within 240 KiB. The operation may have completed; inspect Premiere before retrying." });
+    body = JSON.stringify({ id: command.id, action: command.action, success: false, data: null, error: "Result could not be serialized within 240 KiB. The operation may have completed; inspect Premiere before retrying." });
   }
   await bridgeFetch(
     "/result",
@@ -5421,6 +5463,7 @@ async function pollBridge() {
     setStatus("Connected to Shuvi", true);
 
     if (command && command.id && command.action) {
+      claimCommand(command, sessionToken);
       show("Running: " + command.action);
 
       let data = null;

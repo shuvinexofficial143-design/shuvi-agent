@@ -73,3 +73,37 @@ test("oversized Unicode and cyclic results return bounded uncertainty", async ()
   await panel.postResult({ id: "two" }, true, cyclic, null, "initial");
   assert.equal(panel.utf8ByteLength("aé🎬"), Buffer.byteLength("aé🎬"));
 });
+
+test("duplicate deliveries cannot execute twice even after lost result acknowledgement", async () => {
+  const panel = loadPanel();
+  let edits = 0;
+  panel.executeCommand = async () => { edits++; return {}; };
+  panel.bridgeFetch = async path => {
+    if (path === "/command") return {id: "same", action: "trim_clip"};
+    throw Error("lost acknowledgement");
+  };
+  await panel.pollBridge();
+  await panel.pollBridge();
+  assert.equal(edits, 1);
+});
+
+test("delivery history fails closed at capacity and only a new session resets it", () => {
+  const panel = loadPanel();
+  for (let i = 0; i < 1024; i++) panel.claimCommand({id: String(i), action: "trim_clip"}, "a");
+  assert.throws(() => panel.claimCommand({id: "extra", action: "trim_clip"}, "a"), /budget exhausted/);
+  assert.throws(() => panel.claimCommand({id: "0", action: "delete_clip"}, "a"), /Duplicate/);
+  panel.claimCommand({id: "extra", action: "trim_clip"}, "b");
+});
+
+test("result envelope echoes action and rejects oversized structure before JSON serialization", async () => {
+  const panel = loadPanel();
+  panel.bridgeFetch = async (path, options) => {
+    assert.deepEqual(JSON.parse(options.body), {id:"one", action:"trim_clip", success:true, data:{ok:true}, error:null});
+  };
+  await panel.postResult({id:"one", action:"trim_clip"}, true, {ok:true}, null, "initial");
+  const sparse = []; sparse.length = 100000000;
+  assert.throws(() => panel.boundedResultJson(sparse), /array exceeds/);
+  let deep = {};
+  for (let i = 0; i < 40; i++) deep = {deep};
+  assert.throws(() => panel.boundedResultJson(deep), /structure exceeds/);
+});

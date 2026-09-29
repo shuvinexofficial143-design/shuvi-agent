@@ -102,8 +102,10 @@ pub struct PremiereBridgeCommand {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PremiereBridgeResult {
     pub id: String,
+    pub action: String,
     pub success: bool,
     pub data: Option<Value>,
     pub error: Option<String>,
@@ -317,7 +319,7 @@ impl PremiereBridgeShared {
         let _guard = PendingGuard { shared: self, id: id.clone() };
         loop {
             if !self.authenticate(status.token.as_deref()) {
-                return Err("Premiere pairing ended or expired. Inspect before retrying any dispatched edit.".into());
+                return Err("execution_status_unknown: Premiere pairing ended or expired. Inspect before retrying any dispatched edit.".into());
             }
             let result = {
                 let mut work = self.work.lock().map_err(|_| "Premiere work queue is unavailable.".to_string())?;
@@ -325,8 +327,8 @@ impl PremiereBridgeShared {
             };
             if let Some(result) = result {
                 if result.success { return Ok(result.data.unwrap_or(Value::Null)); }
-                return Err(result.error.filter(|value| !value.trim().is_empty())
-                    .unwrap_or_else(|| "Premiere command failed without an error message.".into()));
+                return Err(format!("execution_status_unknown: Native action {action} returned an error; inspect before retrying. {}", result.error.filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| "Premiere command failed without an error message.".into())));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
