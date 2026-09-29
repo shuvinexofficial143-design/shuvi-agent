@@ -5,7 +5,7 @@ import {readFileSync} from "node:fs";
 const rust=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
 
 test("git_commit stages only exact reviewed files",()=>{
-  assert.match(rust,/GitCommit \\{ path: String, message: String, files: Vec<String>, expected_head: String \\}/);
+  assert.match(rust,/GitCommit \{ path: String, message: String, files: Vec<String>, expected_head: String \}/);
   assert.match(rust,/git_commit requires between 1 and 64 exact reviewed relative file paths/);
   assert.match(rust,/files must name exact files, not directories/);
   const execution=rust.slice(rust.indexOf("ToolAction::GitCommit { path, message, files, expected_head }"),rust.indexOf("ToolAction::GitPush { path, expected_head }"));
