@@ -334,15 +334,24 @@ test("progress completion count requires typed evidence even for forged in-memor
   assert.equal(progress.completed,0);
   assert.equal(progress.steps[0].status,"pending");
 });
-test("UI stages only after local graph/coding checks and persists in-flight state", () => {
+test("UI binds exact prepared action before approval or execution", () => {
   const main=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
   const stage=main.slice(main.indexOf("async function stageProposal"),main.indexOf("function clearChatPermission"));
   assert.ok(stage.indexOf("evaluateProposal")<stage.indexOf('"prepare_tool"'));
   assert.ok(stage.indexOf("recordProposalStart")<stage.indexOf('"save_session_checkpoint"'));
-  assert.ok(stage.indexOf('"save_session_checkpoint"')<stage.indexOf('"prepare_tool"'));
+  const prepare=stage.indexOf('"prepare_tool"');
+  const bind=stage.indexOf("bindPreparedAction");
+  const boundSave=stage.indexOf('"save_session_checkpoint"',prepare);
+  const autoExecute=stage.indexOf("executePendingProposal(proposal)",prepare);
+  const permission=stage.indexOf("renderChatPermission(proposal, step)",prepare);
+  assert.ok(prepare>=0 && bind>prepare);
+  assert.ok(boundSave>bind);
+  assert.ok(autoExecute>boundSave);
+  assert.ok(permission>boundSave);
+  assert.match(main,/recordToolOutcome\([\s\S]{0,260}result\.success \? "success" : "failure",[\s\S]{0,180}actionId/);
+  assert.match(main,/recordToolOutcome\(orchestration, proposal, "denied", undefined, false, actionId\)/);
   assert.match(main,/taskGraphProgress\(orchestration.task_graph\)/);
   assert.match(main,/row.textContent/);
-  assert.match(main,/result.success \? "success" : "failure",\s+result/);
   assert.match(main,/progress.completed < progress.total/);
 });
 test("strict Rust event allowlist matches all graph audit events", () => {
