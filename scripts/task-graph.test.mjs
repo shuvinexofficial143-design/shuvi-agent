@@ -26,6 +26,9 @@ function result(tool = "read_file", success = true, exit_code = 0) {
 function actionIdFor(stepNumber) {
   return `00000000-0000-4000-8000-${String(stepNumber).padStart(12,"0")}`;
 }
+function auditReceipt(action_id, tool, success = true, event = "executed") {
+  return { timestamp_ms: 1, event, tool, detail: "receipt", success, action_id };
+}
 function staged(state, p) {
   assert.equal(agent.evaluateProposal(state, p).allowed, true);
   state = agent.acceptProposalGraph(state, p).state;
@@ -42,13 +45,15 @@ function runningActionId(state, p) {
 }
 function done(state, p, r = result(p.tool)) {
   state = staged(state, p);
+  const actionId = runningActionId(state, p);
   return agent.recordToolOutcome(
     state,
     p,
     r.success ? "success" : "failure",
     r,
     true,
-    runningActionId(state, p)
+    actionId,
+    actionId ? auditReceipt(actionId, r.tool, r.success, "executed") : null
   );
 }
 function initial(p = plan()) {
@@ -119,7 +124,11 @@ test("failed typed result does not complete or satisfy dependencies", () => {
 });
 test("mismatched typed tool cannot become completion evidence", () => {
   const p = proposal(), s = staged(initial(),p);
-  const after = agent.recordToolOutcome(s,p,"success",result("git_status"),true,runningActionId(s,p));
+  const id = runningActionId(s,p);
+  const after = agent.recordToolOutcome(
+    s,p,"success",result("git_status"),true,id,
+    auditReceipt(id,"git_status",true,"executed")
+  );
   assert.equal(graph.taskGraphProgress(after.task_graph).completed,0);
 });
 test("prepared action UUID is required and must match the running receipt", () => {
@@ -141,9 +150,37 @@ test("prepared action UUID is required and must match the running receipt", () =
   const rebound = agent.bindPreparedAction(s,p,actionIdFor(7));
   assert.equal(rebound.ok,false);
 
-  const wrong = agent.recordToolOutcome(s,p,"success",result(),true,actionIdFor(6));
+  const wrongId = actionIdFor(6);
+  const wrong = agent.recordToolOutcome(
+    s,p,"success",result(),true,wrongId,
+    auditReceipt(wrongId,"read_file",true,"executed")
+  );
   assert.equal(wrong.task_graph.steps[0].status,"failed");
   assert.equal(graph.taskGraphProgress(wrong.task_graph).completed,0);
+});
+
+test("task completion requires exact Rust audit receipt correlation", () => {
+  const p=proposal();
+  let s=staged(initial(),p);
+  const id=runningActionId(s,p);
+
+  for (const receipt of [
+    null,
+    auditReceipt(actionIdFor(7),"read_file",true,"executed"),
+    auditReceipt(id,"git_status",true,"executed"),
+    auditReceipt(id,"read_file",false,"executed"),
+    auditReceipt(id,"read_file",true,"denied")
+  ]) {
+    const after=agent.recordToolOutcome(s,p,"success",result(),false,id,receipt);
+    assert.equal(after.task_graph.steps[0].status,"failed");
+    assert.equal(graph.taskGraphProgress(after.task_graph).completed,0);
+  }
+
+  const ok=agent.recordToolOutcome(
+    s,p,"success",result(),true,id,auditReceipt(id,"read_file",true,"executed")
+  );
+  assert.equal(ok.task_graph.steps[0].status,"completed");
+  assert.equal(ok.task_graph.steps[0].evidence[0].audit_event,"executed");
 });
 
 test("successful evidence stores exact prepared action ID and restore rejects missing binding", () => {
@@ -151,7 +188,12 @@ test("successful evidence stores exact prepared action ID and restore rejects mi
   const s=done(initial(),p);
   const e=s.task_graph.steps[0].evidence[0];
   assert.equal(e.action_id,actionIdFor(1));
+  assert.equal(e.audit_event,"executed");
   assert.equal(e.success,true);
+
+  const missingAudit=json(s);
+  delete missingAudit.task_graph.steps[0].evidence[0].audit_event;
+  assert.equal(agent.normalizeAgentOrchestrationState(missingAudit).recovery_mode,"stopped");
 
   const missing=json(s);
   delete missing.task_graph.steps[0].evidence[0].action_id;
@@ -187,7 +229,12 @@ test("validation step requires run_project_task with a successful exit code", ()
 test("denial remains failed and its fingerprint survives successful inspection and renaming", () => {
   const p = proposal();
   let s = staged(initial(),p);
-  s = agent.recordToolOutcome(s,p,"denied",undefined,false,runningActionId(s,p));
+  {
+    const id=runningActionId(s,p);
+    s = agent.recordToolOutcome(
+      s,p,"denied",undefined,false,id,auditReceipt(id,p.tool,false,"denied")
+    );
+  }
   s = done(s,proposal(undefined,"git_status",{task_step_id:undefined,task_recovery:true,arguments:{path:"/repo"}}));
   const renamed = proposal("new_step","read_file",{task_graph:plan([step("inspect"),step("new_step")],2)});
   assert.equal(agent.evaluateProposal(s,renamed).allowed,false);
