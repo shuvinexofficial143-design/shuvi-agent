@@ -22,6 +22,7 @@ export type AgentPlanMeta = {
 export type CodingWorkflowCheckpoint = {
   active: boolean;
   inspected_paths: string[];
+  inspection_steps?: Record<string, number>;
   last_mutation_step: number;
   last_validation_step: number;
   last_git_status_step: number;

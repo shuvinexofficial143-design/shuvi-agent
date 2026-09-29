@@ -30,6 +30,7 @@ export type CodingPhase =
 export type CodingWorkflowState = {
   active: boolean;
   inspected_paths: string[];
+  inspection_steps: Record<string, number>;
   last_mutation_step: number;
   last_validation_step: number;
   last_git_status_step: number;
@@ -129,6 +130,7 @@ function createCodingWorkflowState(): CodingWorkflowState {
   return {
     active: false,
     inspected_paths: [],
+    inspection_steps: {},
     last_mutation_step: 0,
     last_validation_step: 0,
     last_git_status_step: 0,
@@ -142,29 +144,67 @@ function createCodingWorkflowState(): CodingWorkflowState {
   };
 }
 
-function normalizeCodingWorkflowState(value: unknown): CodingWorkflowState {
+function normalizeCodingWorkflowState(value: unknown, nextStep: number): CodingWorkflowState {
   const base = createCodingWorkflowState();
   if (!value || typeof value !== "object") return base;
   const input = value as Partial<CodingWorkflowState>;
+  const pastStep = (raw: unknown): number => {
+    const step = boundedStep(raw);
+    return step > 0 && step < nextStep ? step : 0;
+  };
+  const lastMutationStep = pastStep(input.last_mutation_step);
+  const rawInspectionSteps = input.inspection_steps
+    && typeof input.inspection_steps === "object"
+    && !Array.isArray(input.inspection_steps)
+      ? input.inspection_steps as Record<string, unknown>
+      : null;
+  const savedInspectionSteps: Record<string, number> = {};
+  if (rawInspectionSteps) {
+    for (const [rawPath, rawStep] of Object.entries(rawInspectionSteps)) {
+      const path = normalizePath(rawPath);
+      const step = pastStep(rawStep);
+      if (path && step > 0) savedInspectionSteps[path] = step;
+    }
+  }
   const inspected = Array.isArray(input.inspected_paths)
     ? input.inspected_paths
         .map(normalizePath)
         .filter((item): item is string => Boolean(item))
         .slice(-MAX_INSPECTED_PATHS)
     : [];
+  const inspectionSteps: Record<string, number> = {};
+  const safeInspected: string[] = [];
+  for (const path of [...new Set(inspected)]) {
+    const savedStep = savedInspectionSteps[path] ?? 0;
+    // Older checkpoints had no per-path read step. Once a mutation exists, that
+    // legacy path evidence is ambiguous and must be re-read after resume.
+    const legacySafe = rawInspectionSteps === null && lastMutationStep === 0 && nextStep > 1;
+    if (savedStep > 0 || legacySafe) {
+      safeInspected.push(path);
+      inspectionSteps[path] = savedStep || 1;
+    }
+  }
+  const lastValidationStep = pastStep(input.last_validation_step);
+  const lastGitStatusStep = pastStep(input.last_git_status_step);
+  const lastGitDiffStep = pastStep(input.last_git_diff_step);
+  const lastCommitStep = pastStep(input.last_commit_step);
+  const lastPushStep = pastStep(input.last_push_step);
   return {
     active: input.active === true,
-    inspected_paths: [...new Set(inspected)],
-    last_mutation_step: boundedStep(input.last_mutation_step),
-    last_validation_step: boundedStep(input.last_validation_step),
-    last_git_status_step: boundedStep(input.last_git_status_step),
-    last_git_status_path: normalizePath(input.last_git_status_path),
-    last_git_diff_step: boundedStep(input.last_git_diff_step),
-    last_git_diff_path: normalizePath(input.last_git_diff_path),
-    last_commit_step: boundedStep(input.last_commit_step),
-    last_commit_path: normalizePath(input.last_commit_path),
-    last_push_step: boundedStep(input.last_push_step),
-    last_push_path: normalizePath(input.last_push_path)
+    inspected_paths: safeInspected.slice(-MAX_INSPECTED_PATHS),
+    inspection_steps: Object.fromEntries(
+      safeInspected.slice(-MAX_INSPECTED_PATHS).map(path => [path, inspectionSteps[path]])
+    ),
+    last_mutation_step: lastMutationStep,
+    last_validation_step: lastValidationStep,
+    last_git_status_step: lastGitStatusStep,
+    last_git_status_path: lastGitStatusStep ? normalizePath(input.last_git_status_path) : null,
+    last_git_diff_step: lastGitDiffStep,
+    last_git_diff_path: lastGitDiffStep ? normalizePath(input.last_git_diff_path) : null,
+    last_commit_step: lastCommitStep,
+    last_commit_path: lastCommitStep ? normalizePath(input.last_commit_path) : null,
+    last_push_step: lastPushStep,
+    last_push_path: lastPushStep ? normalizePath(input.last_push_path) : null
   };
 }
 
@@ -242,7 +282,7 @@ export function normalizeAgentOrchestrationState(value: unknown): AgentOrchestra
     last_success_criteria: boundedText(input.last_success_criteria, 800),
     stop_reason: boundedText(input.stop_reason, 800),
     coding: input.version === 2 || input.version === 3 || input.version === 4 || input.version === 5
-      ? normalizeCodingWorkflowState(input.coding)
+      ? normalizeCodingWorkflowState(input.coding, nextStep)
       : createCodingWorkflowState(),
     task_graph: restored.ok ? restored.graph : null,
     unsuccessful_fingerprints: validReceipts ? [...new Set([...receipts, ...interrupted])].slice(-MAX_AGENT_STEPS) : [],
@@ -274,14 +314,16 @@ function dependencyFailure(
   const path = normalizePath(proposal.arguments.path);
 
   if (proposal.tool === "replace_text") {
-    if (!path || !coding.inspected_paths.includes(path)) {
-      return "Coding dependency missing: read the exact target file successfully before replace_text.";
+    if (!path || !coding.inspected_paths.includes(path) || !coding.inspection_steps[path]) {
+      return "Coding dependency missing: read the exact target file successfully after its latest Shuvi mutation before replace_text.";
     }
   }
 
   if (proposal.tool === "apply_patch") {
-    if (!path || coding.last_git_status_path !== path || coding.last_git_status_step === 0) {
-      return "Coding dependency missing: inspect git_status for this exact repository before apply_patch.";
+    const freshStatus = path && coding.last_git_status_path === path
+      && coding.last_git_status_step > coding.last_mutation_step;
+    if (!freshStatus) {
+      return "Coding dependency missing: run fresh git_status for this exact repository after the latest Shuvi mutation before apply_patch.";
     }
   }
 
@@ -424,6 +466,7 @@ function withSuccessfulCodingEvidence(
   const path = normalizePath(proposal.arguments.path);
   const coding: CodingWorkflowState = {
     ...state.coding,
+    inspection_steps: { ...state.coding.inspection_steps },
     active: state.coding.active || isCodingProposal(proposal)
   };
 
@@ -432,9 +475,23 @@ function withSuccessfulCodingEvidence(
       ...coding.inspected_paths.filter((item) => item !== path),
       path
     ].slice(-MAX_INSPECTED_PATHS);
+    coding.inspection_steps[path] = step;
   }
   if (CODE_MUTATION_TOOLS.has(proposal.tool)) {
     coding.last_mutation_step = step;
+    coding.last_validation_step = 0;
+    coding.last_git_status_step = 0;
+    coding.last_git_status_path = null;
+    coding.last_git_diff_step = 0;
+    coding.last_git_diff_path = null;
+
+    if (proposal.tool === "apply_patch" || !path) {
+      coding.inspected_paths = [];
+      coding.inspection_steps = {};
+    } else {
+      coding.inspected_paths = coding.inspected_paths.filter((item) => item !== path);
+      delete coding.inspection_steps[path];
+    }
   }
   if (proposal.tool === "run_project_task") {
     coding.last_validation_step = step;
@@ -450,6 +507,12 @@ function withSuccessfulCodingEvidence(
   if (proposal.tool === "git_commit") {
     coding.last_commit_step = step;
     coding.last_commit_path = path;
+    // A commit changes HEAD/index state, so the reviewed status/diff snapshot
+    // must not authorize another commit without a fresh review.
+    coding.last_git_status_step = 0;
+    coding.last_git_status_path = null;
+    coding.last_git_diff_step = 0;
+    coding.last_git_diff_path = null;
   }
   if (proposal.tool === "git_push") {
     coding.last_push_step = step;
@@ -553,7 +616,9 @@ export function recordProposalBlock(
 export function codingPhase(state: AgentOrchestrationState): CodingPhase {
   const coding = state.coding;
   if (!coding.active) return "inspect";
-  if (coding.last_push_step > coding.last_commit_step && coding.last_push_step > 0) return "complete";
+  if (coding.last_push_step > coding.last_commit_step
+      && coding.last_push_step > coding.last_mutation_step
+      && coding.last_push_step > 0) return "complete";
   if (coding.last_commit_step > coding.last_mutation_step && coding.last_commit_step > 0) return "push_ready";
   const reviewed = coding.last_git_status_step > coding.last_mutation_step
     && coding.last_git_diff_step > coding.last_mutation_step;

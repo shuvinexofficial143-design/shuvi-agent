@@ -7,18 +7,22 @@ const main=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
 const types=readFileSync(new URL("../src/types.ts",import.meta.url),"utf8");
 const rust=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
 
-test("replace_text requires exact successful file inspection",()=>{
+test("replace_text requires fresh exact file inspection and mutations invalidate stale reads",()=>{
   assert.match(orchestrator,/proposal\.tool === "replace_text"/);
   assert.match(orchestrator,/coding\.inspected_paths\.includes\(path\)/);
-  assert.match(orchestrator,/read the exact target file successfully before replace_text/);
-  assert.match(orchestrator,/proposal\.tool === "read_file" && path/);
+  assert.match(orchestrator,/coding\.inspection_steps\[path\]/);
+  assert.match(orchestrator,/after its latest Shuvi mutation before replace_text/);
+  assert.match(orchestrator,/coding\.inspection_steps\[path\] = step/);
+  assert.match(orchestrator,/delete coding\.inspection_steps\[path\]/);
+  assert.match(orchestrator,/proposal\.tool === "apply_patch" \|\| !path[\s\S]*coding\.inspection_steps = \{\}/);
   assert.match(orchestrator,/MAX_INSPECTED_PATHS = 12/);
 });
 
-test("apply_patch requires same repository git status first",()=>{
+test("apply_patch requires fresh same-repository git status after the latest mutation",()=>{
   assert.match(orchestrator,/proposal\.tool === "apply_patch"/);
-  assert.match(orchestrator,/coding\.last_git_status_path !== path/);
-  assert.match(orchestrator,/inspect git_status for this exact repository before apply_patch/);
+  assert.match(orchestrator,/coding\.last_git_status_path === path/);
+  assert.match(orchestrator,/coding\.last_git_status_step > coding\.last_mutation_step/);
+  assert.match(orchestrator,/fresh git_status for this exact repository after the latest Shuvi mutation before apply_patch/);
   assert.match(orchestrator,/proposal\.tool === "git_status"/);
   assert.match(orchestrator,/coding\.last_git_status_path = path/);
 });
@@ -50,7 +54,22 @@ test("coding phases progress from edit through review commit and push",()=>{
   assert.match(orchestrator,/return "commit_ready"/);
   assert.match(orchestrator,/return "push_ready"/);
   assert.match(orchestrator,/return coding\.last_validation_step > coding\.last_mutation_step \? "review" : "validate"/);
-  assert.match(orchestrator,/last_push_step > coding\.last_commit_step[\s\S]*return "complete"/);
+  assert.match(orchestrator,/last_push_step > coding\.last_commit_step[\s\S]*last_push_step > coding\.last_mutation_step[\s\S]*return "complete"/);
+});
+
+test("mutations and commits invalidate stale review evidence",()=>{
+  assert.match(orchestrator,/CODE_MUTATION_TOOLS\.has\(proposal\.tool\)[\s\S]*coding\.last_validation_step = 0/);
+  assert.match(orchestrator,/CODE_MUTATION_TOOLS\.has\(proposal\.tool\)[\s\S]*coding\.last_git_status_step = 0/);
+  assert.match(orchestrator,/CODE_MUTATION_TOOLS\.has\(proposal\.tool\)[\s\S]*coding\.last_git_diff_step = 0/);
+  assert.match(orchestrator,/proposal\.tool === "git_commit"[\s\S]*coding\.last_git_status_step = 0[\s\S]*coding\.last_git_diff_step = 0/);
+});
+
+test("checkpoint normalization bounds coding evidence to past steps and drops ambiguous legacy reads",()=>{
+  assert.match(types,/inspection_steps\?: Record<string, number>/);
+  assert.match(orchestrator,/step > 0 && step < nextStep/);
+  assert.match(orchestrator,/rawInspectionSteps === null && lastMutationStep === 0 && nextStep > 1/);
+  assert.match(orchestrator,/legacy path evidence is ambiguous and must be re-read after resume/);
+  assert.match(orchestrator,/normalizeCodingWorkflowState\(input\.coding, nextStep\)/);
 });
 
 test("coding dependency state persists across orchestration v5 and legacy non-graph states",()=>{

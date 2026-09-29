@@ -110,10 +110,10 @@ Runtime correctness still requires current-head frontend/Rust execution and, for
 
 Coding actions now have local predecessor checks. These checks are deterministic and run before permission staging; they are not model suggestions.
 
-- `replace_text` requires a successful `read_file` for the exact normalized target path in the current task.
-- `apply_patch` requires a successful `git_status` for the exact repository path first.
-- `git_commit` requires both `git_status` and `git_diff` for the same repository after the most recent Shuvi code mutation.
-- `git_push` requires a successful `git_commit` for the same repository after the most recent Shuvi code mutation.
+- `replace_text` requires a successful `read_file` for the exact normalized target path. A successful write/replace of that path invalidates the read receipt; `apply_patch` conservatively invalidates all exact-file read receipts because it may touch multiple files.
+- `apply_patch` requires a fresh successful `git_status` for the exact repository path after the most recent Shuvi code mutation. A previous mutation cannot reuse an older status snapshot.
+- `git_commit` requires both `git_status` and `git_diff` for the same repository after the most recent Shuvi code mutation. A successful commit invalidates those review receipts so they cannot authorize a second commit.
+- `git_push` requires a successful `git_commit` for the same repository after the most recent Shuvi code mutation. A later edit makes a previous push stale, so the phase cannot remain falsely `complete`.
 - `run_project_task` is tracked as validation evidence. It is strongly preferred after a mutation when an appropriate test/build/lint/typecheck exists, but a missing validation action is not converted into a fabricated pass or a universal hard commit block.
 
 Successful coding actions advance a bounded local phase:
@@ -122,7 +122,7 @@ Successful coding actions advance a bounded local phase:
 
 The phase is shown in the local agent progress indicator and persisted in the orchestration checkpoint. It is guidance and dependency evidence, not proof that source code is correct.
 
-Only successful tool results update dependency evidence. Failed, denied, blocked, or merely proposed actions do not satisfy a dependency. A new user task starts a fresh dependency state; resume restores the persisted state.
+Only successful tool results update dependency evidence. Failed, denied, blocked, or merely proposed actions do not satisfy a dependency. A new user task starts a fresh dependency state; resume restores the persisted state. Per-path read receipts now carry their orchestration step. Persisted coding step receipts at or beyond `next_step` are discarded, and older checkpoints that lack per-path read steps drop ambiguous file-read evidence once a mutation has occurred rather than inventing freshness.
 
 The dependency graph intentionally stays narrow. It does not require every valid file creation to have a prior read, and it does not infer a test pass from source inspection. This avoids turning a safety layer into an unrestricted workflow language.
 
