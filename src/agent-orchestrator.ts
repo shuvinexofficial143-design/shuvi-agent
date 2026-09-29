@@ -33,6 +33,7 @@ export type GitIdentity = {
   head: string;
   upstream: string | null;
   upstream_head: string | null;
+  worktree_clean: boolean | null;
 };
 
 export type CodingWorkflowState = {
@@ -149,10 +150,18 @@ function normalizeGitIdentity(value: unknown): GitIdentity | null {
   const branch = input.branch == null ? null : boundedText(input.branch, 240);
   const upstream = input.upstream == null ? null : boundedText(input.upstream, 500);
   const upstreamHead = input.upstream_head == null ? null : gitObjectId(input.upstream_head);
+  const worktreeClean = typeof input.worktree_clean === "boolean" ? input.worktree_clean : null;
   if (!repoRoot || !head || (input.branch != null && !branch)
       || (input.upstream != null && !upstream)
       || (input.upstream_head != null && !upstreamHead)) return null;
-  return { repo_root: repoRoot, branch, head, upstream, upstream_head: upstreamHead };
+  return {
+    repo_root: repoRoot,
+    branch,
+    head,
+    upstream,
+    upstream_head: upstreamHead,
+    worktree_clean: worktreeClean
+  };
 }
 
 function resultGitIdentity(result: ActionResult | undefined): GitIdentity | null {
@@ -533,9 +542,10 @@ function dependencyFailure(
       const commitValidated = coding.last_validation_step > coding.last_commit_step
         && coding.last_validation_path === path
         && coding.last_validation_git?.repo_root === commitGit.repo_root
-        && coding.last_validation_git.head === commitGit.head;
+        && coding.last_validation_git.head === commitGit.head
+        && coding.last_validation_git.worktree_clean === true;
       if (!commitValidated) {
-        return "Coding dependency missing: re-run project validation on the exact committed HEAD before git_push because pre-commit validation evidence existed.";
+        return "Coding dependency missing: re-run project validation on the exact committed HEAD with a clean resulting worktree before git_push because pre-commit validation evidence existed.";
       }
     }
   }
@@ -854,7 +864,8 @@ export function codingPhase(state: AgentOrchestrationState): CodingPhase {
     const commitValidated = coding.last_validation_step > coding.last_commit_step
       && coding.last_validation_path === coding.last_commit_path
       && coding.last_validation_git?.repo_root === coding.last_commit_git.repo_root
-      && coding.last_validation_git.head === coding.last_commit_git.head;
+      && coding.last_validation_git.head === coding.last_commit_git.head
+      && coding.last_validation_git.worktree_clean === true;
     return commitValidated ? "push_ready" : "validate";
   }
   const reviewed = coding.last_git_status_step > coding.last_mutation_step

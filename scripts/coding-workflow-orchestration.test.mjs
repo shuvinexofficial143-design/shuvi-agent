@@ -206,3 +206,11 @@ test("untracked and commit-file arrays are bounded before normalization work",()
   assert.match(dependency,/rawCommitFiles\.length < 1 \|\| rawCommitFiles\.length > 64/);
   assert.match(dependency,/rawCommitFiles\.slice\(0, 64\)\.map\(normalizeRelativeGitPath\)/);
 });
+
+
+test("post-commit validation requires a clean resulting worktree",()=>{
+  assert.match(types,/worktree_clean\?: boolean \| null/);
+  assert.match(orchestrator,/worktree_clean: boolean \| null/);
+  assert.match(orchestrator,/coding\.last_validation_git\.worktree_clean === true/);
+  assert.match(orchestrator,/clean resulting worktree before git_push/);
+});

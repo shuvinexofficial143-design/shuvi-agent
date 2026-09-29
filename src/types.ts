@@ -25,6 +25,7 @@ export type GitIdentityCheckpoint = {
   head: string;
   upstream: string | null;
   upstream_head: string | null;
+  worktree_clean?: boolean | null;
 };
 
 export type CodingWorkflowCheckpoint = {

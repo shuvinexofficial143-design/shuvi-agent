@@ -18,8 +18,11 @@ function proposal(tool,args={}) {
 function result(tool,stdout="",success=true) {
   return {tool,success,stdout,stderr:"",exit_code:success?0:1};
 }
-function gitResult(tool,head,branch="main",body="observed") {
-  const receipt={schema:1,repo_root:"/repo",branch,head,upstream:"origin/main",upstream_head:HEAD_A};
+function gitResult(tool,head,branch="main",body="observed",worktree_clean=false) {
+  const receipt={
+    schema:1,repo_root:"/repo",branch,head,upstream:"origin/main",
+    upstream_head:HEAD_A,worktree_clean
+  };
   return result(tool,"[SHUVI_GIT_CONTEXT_V1]"+JSON.stringify(receipt)+"\n"+body);
 }
 function done(state,p,r) {
@@ -64,7 +67,7 @@ test("successful commit invalidates pre-commit validation and can bind validatio
   assert.match(pushDecision.reason,/exact committed HEAD before git_push/);
   assert.equal(agent.evaluateProposal(s,proposal("git_push",{expected_head:HEAD_A})).allowed,false);
 
-  s=done(s,proposal("run_project_task",{task:"test"}),gitResult("run_project_task",HEAD_C));
+  s=done(s,proposal("run_project_task",{task:"test"}),gitResult("run_project_task",HEAD_C,"main","observed",true));
   assert.equal(s.coding.last_validation_git.head,HEAD_C);
   assert.equal(agent.evaluateProposal(s,push).allowed,true);
   assert.equal(agent.codingPhase(s),"push_ready");
@@ -117,4 +120,22 @@ test("untracked commit files require exact post-mutation read evidence",()=>{
   s=done(s,proposal("git_status"),gitResult("git_status",HEAD_A,"main","## main\n?? new.ts"));
   s=done(s,proposal("git_diff"),gitResult("git_diff",HEAD_A));
   assert.equal(agent.evaluateProposal(s,commit).allowed,true);
+});
+
+
+test("dirty post-commit validation cannot unlock push",()=>{
+  let s=agent.createAgentOrchestrationState();
+  s=done(s,proposal("git_status"),gitResult("git_status",HEAD_A));
+  s=done(s,proposal("apply_patch"),result("apply_patch","patched"));
+  s=done(s,proposal("run_project_task",{task:"test"}),gitResult("run_project_task",HEAD_A));
+  s=done(s,proposal("git_status"),gitResult("git_status",HEAD_A));
+  s=done(s,proposal("git_diff"),gitResult("git_diff",HEAD_A));
+  const commit=proposal("git_commit",{message:"x",files:["a.ts"],expected_head:HEAD_A});
+  s=done(s,commit,gitResult("git_commit",HEAD_C));
+  const push=proposal("git_push",{expected_head:HEAD_C});
+  s=done(s,proposal("run_project_task",{task:"test"}),gitResult("run_project_task",HEAD_C,"main","observed",false));
+  const decision=agent.evaluateProposal(s,push);
+  assert.equal(decision.allowed,false);
+  assert.match(decision.reason,/clean resulting worktree/);
+  assert.equal(agent.codingPhase(s),"validate");
 });

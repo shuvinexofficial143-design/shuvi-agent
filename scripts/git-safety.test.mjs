@@ -182,3 +182,11 @@ test("git_push sends only the reviewed commit to the configured upstream ref",()
   assert.doesNotMatch(push,/run_git\(&path, &\["push"\]\)/);
   assert.match(push,/Exact push: \{expected_head\} -> \{remote\}\/\{merge_ref\}/);
 });
+
+
+test("Git identity receipts include worktree cleanliness",()=>{
+  const helper=rust.slice(rust.indexOf("fn git_local_context"),rust.indexOf("fn git_context_stdout"));
+  assert.match(helper,/\["status", "--porcelain", "--untracked-files=all"\]/);
+  assert.match(helper,/\.is_empty\(\)/);
+  assert.match(helper,/"worktree_clean": worktree_clean/);
+});

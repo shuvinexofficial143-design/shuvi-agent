@@ -5729,13 +5729,19 @@ fn git_local_context(path: &str) -> Result<Value, String> {
     } else {
         None
     };
+    let worktree_clean = git_command_text(
+        path,
+        &["status", "--porcelain", "--untracked-files=all"],
+        "Could not inspect Git worktree cleanliness",
+    )?.is_empty();
     Ok(json!({
         "schema": 1,
         "repo_root": repo_root,
         "branch": branch,
         "head": head,
         "upstream": upstream,
-        "upstream_head": upstream_head
+        "upstream_head": upstream_head,
+        "worktree_clean": worktree_clean
     }))
 }
 
