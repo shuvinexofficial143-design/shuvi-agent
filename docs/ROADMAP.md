@@ -606,3 +606,19 @@ This work improves coding-agent sequencing without adding unrestricted shell exe
 
 Production readiness remains **not established**. Rust verification, desktop restart/permission
 acceptance and paired Premiere runtime acceptance remain separate requirements.
+
+
+### Task-graph prepared-action binding / replay hardening (2026-09-29)
+
+- Started from remote `main` `71f6869fecc29c829650ec012972ac32f6e10c6c` after the evidence-based task-graph pass.
+- Found a remaining coordinator gap: completed graph evidence was bound to the proposal fingerprint and orchestration turn, but not to the exact Rust `prepare_tool` pending-action UUID. A stale or mismatched local result should not be able to satisfy a graph step merely because its tool/arguments match.
+- Graph running receipts now begin with `action_id=null`, then `bindTaskStepAction` accepts only a UUID-shaped prepared action ID matching the same running fingerprint/turn. Rebinding to a different pending action fails closed.
+- The frontend now persists two graph safety checkpoints: the pre-staging running receipt, then the exact prepared-action UUID after `prepare_tool` and before approval UI or session auto-execution. If the second persistence fails, Shuvi best-effort denies the pending action and stops instead of intentionally executing it.
+- `execute_action`, denial and execution-error paths pass the exact locally captured pending action ID back into orchestration. A graph step completes only when typed success, expected tool, running fingerprint/turn and the exact bound prepared action UUID all agree.
+- Completion evidence now stores the prepared action UUID. Missing/malformed/different IDs cannot create successful evidence. Interrupted checkpoints preserve the prepared UUID when one existed, or explicitly record no UUID if interruption happened before preparation completed.
+- Orchestration payload advanced to v4. v1/v2 and non-graph v3 state still migrate without invented progress. A v3 checkpoint containing graph evidence fails closed because the historical prepared action IDs were never stored and cannot be reconstructed safely.
+- Updated deterministic task-graph tests cover invalid UUIDs, rebinding, wrong action replay, successful action-ID evidence, malformed/missing saved IDs, legacy v3 graph fail-closed behavior, and frontend ordering `prepare_tool -> bind -> checkpoint -> approval/auto-execute`.
+- Updated coding-workflow structural coverage and task-graph/orchestration documentation for v4 action-bound evidence.
+- GitHub source-level static checks confirmed all expected bindings are present. These checks are not a runtime/build attestation and do not prove desktop behavior.
+
+This hardens evidence provenance without weakening existing permission gates or adding new execution capability. Current-head Node/TypeScript/Rust execution remains separately required.
