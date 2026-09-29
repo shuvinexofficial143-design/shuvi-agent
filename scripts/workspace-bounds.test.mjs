@@ -25,7 +25,8 @@ test("text search has a hard visited-file budget as well as a match budget",()=>
   assert.match(block,/\*visited_files >= MAX_SEARCH_FILES/);
   assert.match(block,/\*visited_files = visited_files\.saturating_add\(1\)/);
   assert.match(block,/matches\.len\(\) >= MAX_SEARCH_MATCHES/);
-  const exec=rust.slice(rust.indexOf("ToolAction::SearchText"),rust.indexOf("ToolAction::ReplaceText"));
+  const startExec=rust.indexOf("ToolAction::SearchText { path, query }");
+  const exec=rust.slice(startExec,rust.indexOf("ToolAction::ReplaceText",startExec));
   assert.match(exec,/let mut visited_files = 0_usize/);
-  assert.match(exec,/search_text_recursive\(root, root, &query, 0, &mut matches, &mut visited_files\)/);
+  assert.match(exec,/search_text_recursive\(&canonical_root, &canonical_root, &query, 0, &mut matches, &mut visited_files\)/);
 });
