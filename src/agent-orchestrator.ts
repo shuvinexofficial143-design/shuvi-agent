@@ -34,6 +34,7 @@ export type GitIdentity = {
   upstream: string | null;
   upstream_head: string | null;
   worktree_clean: boolean | null;
+  worktree_fingerprint: string;
 };
 
 export type CodingWorkflowState = {
@@ -151,7 +152,8 @@ function normalizeGitIdentity(value: unknown): GitIdentity | null {
   const upstream = input.upstream == null ? null : boundedText(input.upstream, 500);
   const upstreamHead = input.upstream_head == null ? null : gitObjectId(input.upstream_head);
   const worktreeClean = typeof input.worktree_clean === "boolean" ? input.worktree_clean : null;
-  if (!repoRoot || !head || (input.branch != null && !branch)
+  const worktreeFingerprint = gitObjectId(input.worktree_fingerprint);
+  if (!repoRoot || !head || !worktreeFingerprint || (input.branch != null && !branch)
       || (input.upstream != null && !upstream)
       || (input.upstream_head != null && !upstreamHead)) return null;
   return {
@@ -160,7 +162,8 @@ function normalizeGitIdentity(value: unknown): GitIdentity | null {
     head,
     upstream,
     upstream_head: upstreamHead,
-    worktree_clean: worktreeClean
+    worktree_clean: worktreeClean,
+    worktree_fingerprint: worktreeFingerprint
   };
 }
 
@@ -500,13 +503,18 @@ function dependencyFailure(
       && coding.last_git_diff_step > coding.last_mutation_step;
     const sameSnapshot = Boolean(statusGit && diffGit
       && statusGit.head === diffGit.head
-      && statusGit.branch === diffGit.branch);
+      && statusGit.branch === diffGit.branch
+      && statusGit.worktree_fingerprint === diffGit.worktree_fingerprint);
     if (!freshStatus || !freshDiff || !sameSnapshot) {
-      return "Coding dependency missing: run fresh git_status and git_diff on the same repository branch/HEAD after the latest edit before git_commit.";
+      return "Coding dependency missing: run fresh git_status and git_diff on the same repository branch/HEAD/worktree snapshot after the latest edit before git_commit.";
     }
     const expectedHead = gitObjectId(proposal.arguments.expected_head);
     if (!expectedHead || expectedHead !== statusGit?.head) {
       return "Coding dependency missing: git_commit expected_head must exactly match the reviewed git_status/git_diff HEAD.";
+    }
+    const expectedWorktree = gitObjectId(proposal.arguments.expected_worktree_fingerprint);
+    if (!expectedWorktree || expectedWorktree !== statusGit?.worktree_fingerprint) {
+      return "Coding dependency missing: git_commit expected_worktree_fingerprint must exactly match the reviewed git_status/git_diff worktree snapshot.";
     }
     const rawCommitFiles = proposal.arguments.files;
     if (!Array.isArray(rawCommitFiles) || rawCommitFiles.length < 1 || rawCommitFiles.length > 64) {
@@ -878,7 +886,8 @@ export function codingPhase(state: AgentOrchestrationState): CodingPhase {
     && coding.last_git_diff_git != null
     && coding.last_git_status_git.repo_root === coding.last_git_diff_git.repo_root
     && coding.last_git_status_git.head === coding.last_git_diff_git.head
-    && coding.last_git_status_git.branch === coding.last_git_diff_git.branch;
+    && coding.last_git_status_git.branch === coding.last_git_diff_git.branch
+    && coding.last_git_status_git.worktree_fingerprint === coding.last_git_diff_git.worktree_fingerprint;
   if (reviewed) return "commit_ready";
   if (coding.last_mutation_step > 0) {
     return coding.last_validation_step > coding.last_mutation_step ? "review" : "validate";
@@ -911,9 +920,11 @@ export function orchestrationContext(state: AgentOrchestrationState): string {
     const reviewedHead = state.coding.last_git_status_git
       && state.coding.last_git_diff_git
       && state.coding.last_git_status_git.head === state.coding.last_git_diff_git.head
+      && state.coding.last_git_status_git.worktree_fingerprint === state.coding.last_git_diff_git.worktree_fingerprint
       ? state.coding.last_git_status_git.head : null;
-    if (reviewedHead) {
+    if (reviewedHead && state.coding.last_git_status_git) {
       parts.push(`- reviewed Git HEAD: ${reviewedHead}; git_commit expected_head must match exactly.`);
+      parts.push(`- reviewed Git worktree fingerprint: ${state.coding.last_git_status_git.worktree_fingerprint}; git_commit expected_worktree_fingerprint must match exactly.`);
     }
     if (state.coding.last_commit_git?.head) {
       parts.push(`- committed Git HEAD: ${state.coding.last_commit_git.head}; git_push expected_head must match exactly.`);
