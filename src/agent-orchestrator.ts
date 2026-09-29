@@ -27,20 +27,34 @@ export type CodingPhase =
   | "push_ready"
   | "complete";
 
+export type GitIdentity = {
+  repo_root: string;
+  branch: string | null;
+  head: string;
+  upstream: string | null;
+  upstream_head: string | null;
+};
+
 export type CodingWorkflowState = {
   active: boolean;
   inspected_paths: string[];
   inspection_steps: Record<string, number>;
   last_mutation_step: number;
   last_validation_step: number;
+  last_validation_path: string | null;
+  last_validation_git: GitIdentity | null;
   last_git_status_step: number;
   last_git_status_path: string | null;
+  last_git_status_git: GitIdentity | null;
   last_git_diff_step: number;
   last_git_diff_path: string | null;
+  last_git_diff_git: GitIdentity | null;
   last_commit_step: number;
   last_commit_path: string | null;
+  last_commit_git: GitIdentity | null;
   last_push_step: number;
   last_push_path: string | null;
+  last_push_git: GitIdentity | null;
 };
 
 export type AgentOrchestrationState = {
@@ -118,6 +132,40 @@ function normalizePath(value: unknown): string | null {
   return trimmed.replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase().slice(0, 2_048);
 }
 
+function gitObjectId(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(normalized) ? normalized : null;
+}
+
+function normalizeGitIdentity(value: unknown): GitIdentity | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const input = value as Record<string, unknown>;
+  const repoRoot = normalizePath(input.repo_root);
+  const head = gitObjectId(input.head);
+  const branch = input.branch == null ? null : boundedText(input.branch, 240);
+  const upstream = input.upstream == null ? null : boundedText(input.upstream, 500);
+  const upstreamHead = input.upstream_head == null ? null : gitObjectId(input.upstream_head);
+  if (!repoRoot || !head || (input.branch != null && !branch)
+      || (input.upstream != null && !upstream)
+      || (input.upstream_head != null && !upstreamHead)) return null;
+  return { repo_root: repoRoot, branch, head, upstream, upstream_head: upstreamHead };
+}
+
+function resultGitIdentity(result: ActionResult | undefined): GitIdentity | null {
+  if (!result || typeof result.stdout !== "string") return null;
+  const firstLine = result.stdout.split(/\r?\n/, 1)[0] ?? "";
+  const prefix = "[SHUVI_GIT_CONTEXT_V1]";
+  if (!firstLine.startsWith(prefix)) return null;
+  try {
+    const parsed = JSON.parse(firstLine.slice(prefix.length)) as Record<string, unknown>;
+    if (parsed.schema !== 1) return null;
+    return normalizeGitIdentity(parsed);
+  } catch {
+    return null;
+  }
+}
+
 function canonical(value: unknown): string {
   if (value === undefined) return "null";
   if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
@@ -133,14 +181,20 @@ function createCodingWorkflowState(): CodingWorkflowState {
     inspection_steps: {},
     last_mutation_step: 0,
     last_validation_step: 0,
+    last_validation_path: null,
+    last_validation_git: null,
     last_git_status_step: 0,
     last_git_status_path: null,
+    last_git_status_git: null,
     last_git_diff_step: 0,
     last_git_diff_path: null,
+    last_git_diff_git: null,
     last_commit_step: 0,
     last_commit_path: null,
+    last_commit_git: null,
     last_push_step: 0,
-    last_push_path: null
+    last_push_path: null,
+    last_push_git: null
   };
 }
 
@@ -186,10 +240,29 @@ function normalizeCodingWorkflowState(value: unknown, nextStep: number): CodingW
     }
   }
   const lastValidationStep = pastStep(input.last_validation_step);
-  const lastGitStatusStep = pastStep(input.last_git_status_step);
-  const lastGitDiffStep = pastStep(input.last_git_diff_step);
-  const lastCommitStep = pastStep(input.last_commit_step);
-  const lastPushStep = pastStep(input.last_push_step);
+  const lastValidationPath = lastValidationStep ? normalizePath(input.last_validation_path) : null;
+  const lastValidationGit = lastValidationStep ? normalizeGitIdentity(input.last_validation_git) : null;
+
+  const savedStatusGit = normalizeGitIdentity(input.last_git_status_git);
+  const savedStatusPath = normalizePath(input.last_git_status_path);
+  const lastGitStatusStep = savedStatusGit && savedStatusPath === savedStatusGit.repo_root
+    ? pastStep(input.last_git_status_step) : 0;
+
+  const savedDiffGit = normalizeGitIdentity(input.last_git_diff_git);
+  const savedDiffPath = normalizePath(input.last_git_diff_path);
+  const lastGitDiffStep = savedDiffGit && savedDiffPath === savedDiffGit.repo_root
+    ? pastStep(input.last_git_diff_step) : 0;
+
+  const savedCommitGit = normalizeGitIdentity(input.last_commit_git);
+  const savedCommitPath = normalizePath(input.last_commit_path);
+  const lastCommitStep = savedCommitGit && savedCommitPath === savedCommitGit.repo_root
+    ? pastStep(input.last_commit_step) : 0;
+
+  const savedPushGit = normalizeGitIdentity(input.last_push_git);
+  const savedPushPath = normalizePath(input.last_push_path);
+  const lastPushStep = savedPushGit && savedPushPath === savedPushGit.repo_root
+    ? pastStep(input.last_push_step) : 0;
+
   return {
     active: input.active === true,
     inspected_paths: safeInspected.slice(-MAX_INSPECTED_PATHS),
@@ -198,14 +271,21 @@ function normalizeCodingWorkflowState(value: unknown, nextStep: number): CodingW
     ),
     last_mutation_step: lastMutationStep,
     last_validation_step: lastValidationStep,
+    last_validation_path: lastValidationPath,
+    last_validation_git: lastValidationGit && lastValidationPath === lastValidationGit.repo_root
+      ? lastValidationGit : null,
     last_git_status_step: lastGitStatusStep,
-    last_git_status_path: lastGitStatusStep ? normalizePath(input.last_git_status_path) : null,
+    last_git_status_path: lastGitStatusStep ? savedStatusPath : null,
+    last_git_status_git: lastGitStatusStep ? savedStatusGit : null,
     last_git_diff_step: lastGitDiffStep,
-    last_git_diff_path: lastGitDiffStep ? normalizePath(input.last_git_diff_path) : null,
+    last_git_diff_path: lastGitDiffStep ? savedDiffPath : null,
+    last_git_diff_git: lastGitDiffStep ? savedDiffGit : null,
     last_commit_step: lastCommitStep,
-    last_commit_path: lastCommitStep ? normalizePath(input.last_commit_path) : null,
+    last_commit_path: lastCommitStep ? savedCommitPath : null,
+    last_commit_git: lastCommitStep ? savedCommitGit : null,
     last_push_step: lastPushStep,
-    last_push_path: lastPushStep ? normalizePath(input.last_push_path) : null
+    last_push_path: lastPushStep ? savedPushPath : null,
+    last_push_git: lastPushStep ? savedPushGit : null
   };
 }
 
@@ -322,6 +402,7 @@ function dependencyFailure(
 
   if (proposal.tool === "apply_patch") {
     const freshStatus = path && coding.last_git_status_path === path
+      && coding.last_git_status_git?.repo_root === path
       && coding.last_git_status_step > coding.last_mutation_step;
     if (!freshStatus) {
       return "Coding dependency missing: run fresh git_status for this exact repository after the latest Shuvi mutation before apply_patch.";
@@ -330,21 +411,38 @@ function dependencyFailure(
 
   if (proposal.tool === "git_commit") {
     if (!path) return "Coding dependency missing: git_commit requires an exact repository path.";
+    const statusGit = coding.last_git_status_git;
+    const diffGit = coding.last_git_diff_git;
     const freshStatus = coding.last_git_status_path === path
+      && statusGit?.repo_root === path
       && coding.last_git_status_step > coding.last_mutation_step;
     const freshDiff = coding.last_git_diff_path === path
+      && diffGit?.repo_root === path
       && coding.last_git_diff_step > coding.last_mutation_step;
-    if (!freshStatus || !freshDiff) {
-      return "Coding dependency missing: run fresh git_status and git_diff for this repository after the latest edit before git_commit.";
+    const sameSnapshot = Boolean(statusGit && diffGit
+      && statusGit.head === diffGit.head
+      && statusGit.branch === diffGit.branch);
+    if (!freshStatus || !freshDiff || !sameSnapshot) {
+      return "Coding dependency missing: run fresh git_status and git_diff on the same repository branch/HEAD after the latest edit before git_commit.";
+    }
+    const expectedHead = gitObjectId(proposal.arguments.expected_head);
+    if (!expectedHead || expectedHead !== statusGit?.head) {
+      return "Coding dependency missing: git_commit expected_head must exactly match the reviewed git_status/git_diff HEAD.";
     }
   }
 
   if (proposal.tool === "git_push") {
     if (!path) return "Coding dependency missing: git_push requires an exact repository path.";
+    const commitGit = coding.last_commit_git;
     const committedHere = coding.last_commit_path === path
+      && commitGit?.repo_root === path
       && coding.last_commit_step > coding.last_mutation_step;
     if (!committedHere) {
-      return "Coding dependency missing: a successful git_commit for this repository must follow the latest edit before git_push.";
+      return "Coding dependency missing: a successful identity-bound git_commit for this repository must follow the latest edit before git_push.";
+    }
+    const expectedHead = gitObjectId(proposal.arguments.expected_head);
+    if (!expectedHead || expectedHead !== commitGit?.head) {
+      return "Coding dependency missing: git_push expected_head must exactly match the successful git_commit HEAD.";
     }
   }
 
@@ -461,10 +559,13 @@ function planFields(
 
 function withSuccessfulCodingEvidence(
   state: AgentOrchestrationState,
-  proposal: ToolProposal
+  proposal: ToolProposal,
+  result?: ActionResult
 ): CodingWorkflowState {
   const step = Math.min(MAX_AGENT_STEPS, state.next_step);
   const path = normalizePath(proposal.arguments.path);
+  const git = resultGitIdentity(result);
+  const exactGit = git && path === git.repo_root ? git : null;
   const coding: CodingWorkflowState = {
     ...state.coding,
     inspection_steps: { ...state.coding.inspection_steps },
@@ -481,10 +582,14 @@ function withSuccessfulCodingEvidence(
   if (CODE_MUTATION_TOOLS.has(proposal.tool)) {
     coding.last_mutation_step = step;
     coding.last_validation_step = 0;
+    coding.last_validation_path = null;
+    coding.last_validation_git = null;
     coding.last_git_status_step = 0;
     coding.last_git_status_path = null;
+    coding.last_git_status_git = null;
     coding.last_git_diff_step = 0;
     coding.last_git_diff_path = null;
+    coding.last_git_diff_git = null;
 
     if (proposal.tool === "apply_patch" || !path) {
       coding.inspected_paths = [];
@@ -496,28 +601,39 @@ function withSuccessfulCodingEvidence(
   }
   if (proposal.tool === "run_project_task") {
     coding.last_validation_step = step;
+    coding.last_validation_path = path;
+    coding.last_validation_git = exactGit;
   }
   if (proposal.tool === "git_status") {
-    coding.last_git_status_step = step;
-    coding.last_git_status_path = path;
+    coding.last_git_status_step = exactGit ? step : 0;
+    coding.last_git_status_path = exactGit ? path : null;
+    coding.last_git_status_git = exactGit;
   }
   if (proposal.tool === "git_diff") {
-    coding.last_git_diff_step = step;
-    coding.last_git_diff_path = path;
+    coding.last_git_diff_step = exactGit ? step : 0;
+    coding.last_git_diff_path = exactGit ? path : null;
+    coding.last_git_diff_git = exactGit;
   }
   if (proposal.tool === "git_commit") {
-    coding.last_commit_step = step;
-    coding.last_commit_path = path;
-    // A commit changes HEAD/index state, so the reviewed status/diff snapshot
-    // must not authorize another commit without a fresh review.
+    coding.last_commit_step = exactGit ? step : 0;
+    coding.last_commit_path = exactGit ? path : null;
+    coding.last_commit_git = exactGit;
+    // A commit changes HEAD/index state. Review and pre-commit validation
+    // receipts cannot be reused as evidence for the newly committed HEAD.
+    coding.last_validation_step = 0;
+    coding.last_validation_path = null;
+    coding.last_validation_git = null;
     coding.last_git_status_step = 0;
     coding.last_git_status_path = null;
+    coding.last_git_status_git = null;
     coding.last_git_diff_step = 0;
     coding.last_git_diff_path = null;
+    coding.last_git_diff_git = null;
   }
   if (proposal.tool === "git_push") {
-    coding.last_push_step = step;
-    coding.last_push_path = path;
+    coding.last_push_step = exactGit ? step : 0;
+    coding.last_push_path = exactGit ? path : null;
+    coding.last_push_git = exactGit;
   }
 
   return coding;
@@ -585,7 +701,7 @@ export function recordToolOutcome(
     recovery_step: typedSuccess && proposal.task_recovery === true && RECOVERY_TOOLS.includes(proposal.tool)
       ? state.next_step : state.recovery_step,
     coding: outcome === "success"
-      ? withSuccessfulCodingEvidence(state, proposal)
+      ? withSuccessfulCodingEvidence(state, proposal, result)
       : state.coding
   };
 }
@@ -617,12 +733,30 @@ export function recordProposalBlock(
 export function codingPhase(state: AgentOrchestrationState): CodingPhase {
   const coding = state.coding;
   if (!coding.active) return "inspect";
-  if (coding.last_push_step > coding.last_commit_step
-      && coding.last_push_step > coding.last_mutation_step
-      && coding.last_push_step > 0) return "complete";
-  if (coding.last_commit_step > coding.last_mutation_step && coding.last_commit_step > 0) return "push_ready";
+  const pushedCommit = coding.last_push_step > coding.last_commit_step
+    && coding.last_push_step > coding.last_mutation_step
+    && coding.last_push_step > 0
+    && coding.last_push_git != null
+    && coding.last_commit_git != null
+    && coding.last_push_git.repo_root === coding.last_commit_git.repo_root
+    && coding.last_push_git.head === coding.last_commit_git.head;
+  if (pushedCommit) return "complete";
+  if (coding.last_commit_step > coding.last_mutation_step
+      && coding.last_commit_step > 0
+      && coding.last_commit_git) {
+    const commitValidated = coding.last_validation_step > coding.last_commit_step
+      && coding.last_validation_path === coding.last_commit_path
+      && coding.last_validation_git?.repo_root === coding.last_commit_git.repo_root
+      && coding.last_validation_git.head === coding.last_commit_git.head;
+    return commitValidated ? "push_ready" : "validate";
+  }
   const reviewed = coding.last_git_status_step > coding.last_mutation_step
-    && coding.last_git_diff_step > coding.last_mutation_step;
+    && coding.last_git_diff_step > coding.last_mutation_step
+    && coding.last_git_status_git != null
+    && coding.last_git_diff_git != null
+    && coding.last_git_status_git.repo_root === coding.last_git_diff_git.repo_root
+    && coding.last_git_status_git.head === coding.last_git_diff_git.head
+    && coding.last_git_status_git.branch === coding.last_git_diff_git.branch;
   if (reviewed) return "commit_ready";
   if (coding.last_mutation_step > 0) {
     return coding.last_validation_step > coding.last_mutation_step ? "review" : "validate";
@@ -652,8 +786,20 @@ export function orchestrationContext(state: AgentOrchestrationState): string {
     if (state.coding.last_mutation_step > state.coding.last_validation_step) {
       parts.push("- validation has not succeeded since the latest edit; prefer run_project_task when an appropriate project task exists.");
     }
+    const reviewedHead = state.coding.last_git_status_git
+      && state.coding.last_git_diff_git
+      && state.coding.last_git_status_git.head === state.coding.last_git_diff_git.head
+      ? state.coding.last_git_status_git.head : null;
+    if (reviewedHead) {
+      parts.push(`- reviewed Git HEAD: ${reviewedHead}; git_commit expected_head must match exactly.`);
+    }
+    if (state.coding.last_commit_git?.head) {
+      parts.push(`- committed Git HEAD: ${state.coding.last_commit_git.head}; git_push expected_head must match exactly.`);
+    }
     if (phase === "validate") {
-      parts.push("- preferred next coding step: run an appropriate test/build/lint/typecheck task, or explain why validation is unavailable.");
+      parts.push(state.coding.last_commit_git
+        ? "- preferred next coding step: validate the committed HEAD with run_project_task before push so validation evidence is commit-bound."
+        : "- preferred next coding step: run an appropriate test/build/lint/typecheck task, or explain why validation is unavailable.");
     } else if (phase === "review") {
       parts.push("- preferred next coding step: inspect fresh git_status and git_diff before committing.");
     } else if (phase === "commit_ready") {

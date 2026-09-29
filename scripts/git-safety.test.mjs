@@ -29,7 +29,7 @@ test("git writes recheck refreshed upstream ancestry immediately inside typed to
 });
 
 test("tool protocol requires reviewed commit file list",()=>{
-  assert.match(rust,/- git_commit: \{"path":"absolute repository path","message":"commit message","files":\["exact\/relative\/file1","exact\/relative\/file2"\]\}/);
+  assert.match(rust,/- git_commit: \{"path":"absolute repository path","message":"commit message","files":\["exact\/relative\/file1","exact\/relative\/file2"\],"expected_head":/);
   assert.match(rust,/pass only the exact reviewed relative files/);
 });
 

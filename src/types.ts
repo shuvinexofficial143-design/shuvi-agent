@@ -19,20 +19,34 @@ export type AgentPlanMeta = {
   success_criteria: string;
 };
 
+export type GitIdentityCheckpoint = {
+  repo_root: string;
+  branch: string | null;
+  head: string;
+  upstream: string | null;
+  upstream_head: string | null;
+};
+
 export type CodingWorkflowCheckpoint = {
   active: boolean;
   inspected_paths: string[];
   inspection_steps?: Record<string, number>;
   last_mutation_step: number;
   last_validation_step: number;
+  last_validation_path?: string | null;
+  last_validation_git?: GitIdentityCheckpoint | null;
   last_git_status_step: number;
   last_git_status_path: string | null;
+  last_git_status_git?: GitIdentityCheckpoint | null;
   last_git_diff_step: number;
   last_git_diff_path: string | null;
+  last_git_diff_git?: GitIdentityCheckpoint | null;
   last_commit_step: number;
   last_commit_path: string | null;
+  last_commit_git?: GitIdentityCheckpoint | null;
   last_push_step: number;
   last_push_path: string | null;
+  last_push_git?: GitIdentityCheckpoint | null;
 };
 
 export type AgentOrchestrationCheckpoint = {

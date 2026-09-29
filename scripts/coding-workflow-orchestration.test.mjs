@@ -21,6 +21,7 @@ test("replace_text requires fresh exact file inspection and mutations invalidate
 test("apply_patch requires fresh same-repository git status after the latest mutation",()=>{
   assert.match(orchestrator,/proposal\.tool === "apply_patch"/);
   assert.match(orchestrator,/coding\.last_git_status_path === path/);
+  assert.match(orchestrator,/coding\.last_git_status_git\?\.repo_root === path/);
   assert.match(orchestrator,/coding\.last_git_status_step > coding\.last_mutation_step/);
   assert.match(orchestrator,/fresh git_status for this exact repository after the latest Shuvi mutation before apply_patch/);
   assert.match(orchestrator,/proposal\.tool === "git_status"/);
@@ -31,7 +32,8 @@ test("git commit requires fresh status and diff after latest mutation",()=>{
   assert.match(orchestrator,/proposal\.tool === "git_commit"/);
   assert.match(orchestrator,/coding\.last_git_status_step > coding\.last_mutation_step/);
   assert.match(orchestrator,/coding\.last_git_diff_step > coding\.last_mutation_step/);
-  assert.match(orchestrator,/fresh git_status and git_diff for this repository after the latest edit before git_commit/);
+  assert.match(orchestrator,/same repository branch\/HEAD after the latest edit before git_commit/);
+  assert.match(orchestrator,/git_commit expected_head must exactly match the reviewed git_status\/git_diff HEAD/);
   assert.match(orchestrator,/CODE_MUTATION_TOOLS\.has\(proposal\.tool\)/);
 });
 
@@ -39,12 +41,14 @@ test("git push requires a same-repository post-edit commit",()=>{
   assert.match(orchestrator,/proposal\.tool === "git_push"/);
   assert.match(orchestrator,/coding\.last_commit_path === path/);
   assert.match(orchestrator,/coding\.last_commit_step > coding\.last_mutation_step/);
-  assert.match(orchestrator,/successful git_commit for this repository must follow the latest edit before git_push/);
+  assert.match(orchestrator,/successful identity-bound git_commit for this repository must follow the latest edit before git_push/);
+  assert.match(orchestrator,/git_push expected_head must exactly match the successful git_commit HEAD/);
 });
 
 test("validation is tracked but is not fabricated as a hard pass",()=>{
   assert.match(orchestrator,/proposal\.tool === "run_project_task"/);
   assert.match(orchestrator,/coding\.last_validation_step = step/);
+  assert.match(orchestrator,/coding\.last_validation_git = exactGit/);
   assert.match(orchestrator,/validation has not succeeded since the latest edit/);
   assert.match(rust,/Validation status is tracked, but a missing validation step alone does not authorize or fabricate a pass\/fail result/);
 });
@@ -52,7 +56,7 @@ test("validation is tracked but is not fabricated as a hard pass",()=>{
 test("coding phases progress from edit through review commit and push",()=>{
   assert.match(orchestrator,/export type CodingPhase/);
   assert.match(orchestrator,/return "commit_ready"/);
-  assert.match(orchestrator,/return "push_ready"/);
+  assert.match(orchestrator,/return commitValidated \? "push_ready" : "validate"/);
   assert.match(orchestrator,/return coding\.last_validation_step > coding\.last_mutation_step \? "review" : "validate"/);
   assert.match(orchestrator,/last_push_step > coding\.last_commit_step[\s\S]*last_push_step > coding\.last_mutation_step[\s\S]*return "complete"/);
 });
@@ -114,4 +118,17 @@ test("future mutation receipt cannot make legacy file inspection look fresh",()=
   assert.deepEqual(restored.coding.inspected_paths,[]);
   assert.deepEqual(restored.coding.inspection_steps,{});
   assert.equal(restored.coding.last_mutation_step,0);
+});
+
+
+test("coding state persists bounded Git identity receipts",()=>{
+  assert.match(types,/export type GitIdentityCheckpoint/);
+  assert.match(types,/last_git_status_git\?: GitIdentityCheckpoint \| null/);
+  assert.match(types,/last_commit_git\?: GitIdentityCheckpoint \| null/);
+  assert.match(orchestrator,/function resultGitIdentity\(result: ActionResult \| undefined\)/);
+  assert.match(orchestrator,/\[SHUVI_GIT_CONTEXT_V1\]/);
+  assert.match(orchestrator,/savedStatusPath === savedStatusGit\.repo_root/);
+  assert.match(orchestrator,/savedCommitPath === savedCommitGit\.repo_root/);
+  assert.match(orchestrator,/reviewed Git HEAD:/);
+  assert.match(orchestrator,/committed Git HEAD:/);
 });
