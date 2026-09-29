@@ -1854,6 +1854,17 @@ fn absolute_path(value: String) -> Result<String, String> {
     Ok(value)
 }
 
+fn reject_existing_symlink_target(path: &Path, label: &str) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Err(format!("{label} refuses to write through a symbolic link or junction-like link target."))
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("Could not inspect {label} target: {error}")),
+    }
+}
+
 fn read_utf8_file_bounded(path: &Path, max_bytes: usize, label: &str) -> Result<String, String> {
     let file = fs::File::open(path)
         .map_err(|error| format!("Could not open {label}: {error}"))?;
@@ -6859,6 +6870,7 @@ async fn execute_tool_with_action_id(
             })
         }
         ToolAction::WriteFile { path, content } => {
+            reject_existing_symlink_target(Path::new(&path), "write_file")?;
             fs::write(&path, content.as_bytes())
                 .map_err(|error| format!("Could not write file: {error}"))?;
 
@@ -11626,6 +11638,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::ReplaceText { path, old, new_value } => {
+            reject_existing_symlink_target(Path::new(&path), "replace_text")?;
             let source = read_utf8_file_bounded(
                 Path::new(&path),
                 MAX_WRITE_BYTES,
