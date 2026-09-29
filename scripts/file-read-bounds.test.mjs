@@ -25,7 +25,7 @@ test("read_file replace_text and search use the bounded reader",()=>{
 
   const replaceStart=rust.indexOf("ToolAction::ReplaceText { path, old, new_value }",rust.indexOf("async fn execute_tool_with_action_id"));
   const replaceEnd=rust.indexOf("ToolAction::ApplyPatch",replaceStart);
-  assert.match(rust.slice(replaceStart,replaceEnd),/read_utf8_file_bounded/);
+  assert.match(rust.slice(replaceStart,replaceEnd),/read_utf8_open_file_bounded/);
   assert.doesNotMatch(rust.slice(replaceStart,replaceEnd),/fs::read_to_string/);
 
   const searchStart=rust.indexOf("fn search_text_recursive");
