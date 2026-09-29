@@ -95,6 +95,7 @@ const MAX_WORKSPACE_DIRECTORY_ENTRIES: usize = 2_000;
 const MAX_SEARCH_MATCHES: usize = 150;
 const MAX_SEARCH_FILES: usize = 5_000;
 const MAX_SEARCH_ENTRIES: usize = 10_000;
+const MAX_GIT_FINGERPRINT_UNTRACKED_FILES: usize = 256;
 
 const TOOL_PROTOCOL: &str = r#"You are Shuvi, a permission-first Windows desktop AI agent.
 If the user's request requires a computer action, choose ONE tool and respond ONLY with a JSON object:
@@ -288,7 +289,7 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - run_project_task: {"path":"absolute project path","task":"test|build|lint|typecheck"}
 - git_status: {"path":"absolute repository path"}
 - git_diff: {"path":"absolute repository path"}
-- git_commit: {"path":"absolute repository path","message":"commit message","files":["exact/relative/file1","exact/relative/file2"],"expected_head":"exact local HEAD copied from the latest matching git_status/git_diff receipt"}
+- git_commit: {"path":"absolute repository path","message":"commit message","files":["exact/relative/file1","exact/relative/file2"],"expected_head":"exact local HEAD copied from the latest matching git_status/git_diff receipt","expected_worktree_fingerprint":"exact worktree fingerprint copied from the latest matching git_status/git_diff receipt"}
 - git_push: {"path":"absolute repository path","expected_head":"exact committed HEAD copied from the successful git_commit receipt"}
 
 Rules:
@@ -302,7 +303,7 @@ Rules:
 - Multi-step tasks may include top-level task_graph: {"objective":"stable goal","revision":1,"steps":[{"step_id":"inspect","title":"Inspect source","purpose":"Observe current implementation","success_criteria":"Typed read_file succeeds","depends_on":[],"expected_tool":"read_file"}]} and task_step_id:"inspect". Use 1..8 steps, IDs 1..48 ASCII letters/digits/_/-, title <=100, purpose <=300, success_criteria <=500, objective <=500; at most 7 unique predecessor IDs. Only exact successful typed tools complete steps; never send status/evidence or claim completion from prose. expected_tool must match the associated proposal; validation requires run_project_task with successful exit status. One graph step corresponds to one typed action, so status and diff need separate steps.
 - Once a graph exists every action needs task_step_id. A separate recovery inspection may use task_recovery:true without task_step_id, using read_file/list_directory/workspace_scan/search_text/git_status/git_diff/list_processes/ui_find/browser_dom_read/premiere_context/premiere_timeline/premiere_bridge_status. A successful inspection after a failure permits a next-revision graph with recover_steps:["failed_id"]. Recovery does not itself complete or retry the failed step. Exact unsuccessful proposals remain blocked across revisions.
 - Replan with a full graph, stable objective, revision incremented by exactly one (max 8). Preserve completed specifications/evidence and attempted step IDs. Only future steps can change. Replanning never resets the eight-action budget or grants permission; incompatible history needs a new user instruction/reset.
-- Coding workflow dependencies are enforced locally. Before replace_text, successfully read the exact target file after its latest Shuvi mutation. Before apply_patch, run fresh git_status for that exact repository after the latest Shuvi mutation. Before git_commit, run fresh git_status and git_diff after the latest edit, pass only the exact reviewed relative files, and let the typed tool recheck upstream freshness immediately before staging; a successful commit invalidates that review snapshot. git_push requires a successful same-repository git_commit after the latest edit and performs the same upstream freshness check immediately before push; a later edit invalidates prior pushed-complete phase evidence.
+- Coding workflow dependencies are enforced locally. Before replace_text, successfully read the exact target file after its latest Shuvi mutation. Before apply_patch, run fresh git_status for that exact repository after the latest Shuvi mutation. Before git_commit, run fresh git_status and git_diff after the latest edit, copy both the exact reviewed HEAD and worktree fingerprint, pass only the exact reviewed relative files, and let the typed tool recheck both the worktree fingerprint and upstream freshness immediately before staging; a successful commit invalidates that review snapshot. git_push requires a successful same-repository git_commit after the latest edit and performs the same upstream freshness check immediately before push; a later edit invalidates prior pushed-complete phase evidence.
 - After a code mutation, prefer run_project_task for an appropriate test/build/lint/typecheck before review/commit when such a task exists. Validation status is tracked, but a missing validation step alone does not authorize or fabricate a pass/fail result.
 - Before git_commit, inspect git_status and git_diff so the user can review what will be committed.
 - Treat git_push as a remote write and request it only after a successful commit when the user asked for a push.
@@ -616,7 +617,7 @@ enum ToolAction {
     RunProjectTask { path: String, task: String },
     GitStatus { path: String },
     GitDiff { path: String },
-    GitCommit { path: String, message: String, files: Vec<String>, expected_head: String },
+    GitCommit { path: String, message: String, files: Vec<String>, expected_head: String, expected_worktree_fingerprint: String },
     GitPush { path: String, expected_head: String },
     PowerShell { command: String },
 }
@@ -5424,6 +5425,7 @@ fn stage_tool(
                 return Err("Git commit message is too long.".into());
             }
             let expected_head = arg_git_head(&proposal.arguments, "expected_head")?;
+            let expected_worktree_fingerprint = arg_git_head(&proposal.arguments, "expected_worktree_fingerprint")?;
             let raw_files = arg_string_array(&proposal.arguments, "files")?;
             if raw_files.is_empty() || raw_files.len() > 64 {
                 return Err("git_commit requires between 1 and 64 exact reviewed relative file paths.".into());
@@ -5457,9 +5459,10 @@ fn stage_tool(
                     message: message.clone(),
                     files: files.clone(),
                     expected_head: expected_head.clone(),
+                    expected_worktree_fingerprint: expected_worktree_fingerprint.clone(),
                 },
                 "Stage reviewed files and commit Git changes".to_string(),
-                format!("{path} | expected_head={expected_head} | files={} | message={message}", files.join(",")),
+                format!("{path} | expected_head={expected_head} | expected_worktree_fingerprint={expected_worktree_fingerprint} | files={} | message={message}", files.join(",")),
                 RiskLevel::Medium,
             )
         }
@@ -6165,10 +6168,11 @@ fn run_git(path: &str, args: &[&str]) -> Result<std::process::Output, String> {
         .map_err(|error| format!("Could not run Git: {error}"))
 }
 
-fn run_git_with_stdin(
+fn run_git_with_bytes(
     path: &str,
     args: &[&str],
-    input: &str,
+    input: &[u8],
+    label: &str,
 ) -> Result<std::process::Output, String> {
     if !Path::new(path).join(".git").exists() {
         return Err("The selected path does not contain a .git repository.".into());
@@ -6186,13 +6190,21 @@ fn run_git_with_stdin(
 
     if let Some(stdin) = child.stdin.as_mut() {
         stdin
-            .write_all(input.as_bytes())
-            .map_err(|error| format!("Could not send patch to Git: {error}"))?;
+            .write_all(input)
+            .map_err(|error| format!("Could not send {label} to Git: {error}"))?;
     }
 
     child
         .wait_with_output()
         .map_err(|error| format!("Could not wait for Git: {error}"))
+}
+
+fn run_git_with_stdin(
+    path: &str,
+    args: &[&str],
+    input: &str,
+) -> Result<std::process::Output, String> {
+    run_git_with_bytes(path, args, input.as_bytes(), "input")
 }
 
 fn git_command_text(path: &str, args: &[&str], label: &str) -> Result<String, String> {
@@ -6202,6 +6214,94 @@ fn git_command_text(path: &str, args: &[&str], label: &str) -> Result<String, St
         return Err(format!("{label}: {stderr}"));
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn git_worktree_fingerprint(path: &str) -> Result<String, String> {
+    let diff = run_git(path, &["diff", "HEAD", "--no-ext-diff", "--binary", "--"])?;
+    if !diff.status.success() {
+        return Err(format!(
+            "Could not fingerprint tracked Git worktree changes: {}",
+            truncate_output(String::from_utf8_lossy(&diff.stderr).to_string())
+        ));
+    }
+
+    let untracked = run_git(path, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+    if !untracked.status.success() {
+        return Err(format!(
+            "Could not fingerprint untracked Git worktree paths: {}",
+            truncate_output(String::from_utf8_lossy(&untracked.stderr).to_string())
+        ));
+    }
+
+    let mut untracked_paths = Vec::new();
+    for raw in untracked.stdout.split(|byte| *byte == 0).filter(|item| !item.is_empty()) {
+        if untracked_paths.len() >= MAX_GIT_FINGERPRINT_UNTRACKED_FILES {
+            return Err(format!(
+                "Git worktree has more than {MAX_GIT_FINGERPRINT_UNTRACKED_FILES} untracked files; refusing to create an incomplete review fingerprint."
+            ));
+        }
+        let file = std::str::from_utf8(raw)
+            .map_err(|_| "Git worktree contains a non-UTF-8 untracked path; refusing an ambiguous review fingerprint.")?;
+        if file.chars().any(|ch| ch == '\r' || ch == '\n') {
+            return Err("Git worktree contains an untracked path with a newline; refusing an ambiguous review fingerprint.".into());
+        }
+        untracked_paths.push(file.to_string());
+    }
+
+    let mut snapshot = Vec::with_capacity(diff.stdout.len().saturating_add(untracked.stdout.len()).saturating_add(1024));
+    snapshot.extend_from_slice(b"tracked-diff\0");
+    snapshot.extend_from_slice(&diff.stdout);
+    snapshot.extend_from_slice(b"\0untracked\0");
+
+    for file in untracked_paths {
+        let hash = run_git(path, &["hash-object", "--no-filters", "--", file.as_str()])?;
+        if !hash.status.success() {
+            return Err(format!(
+                "Could not fingerprint untracked file {file}: {}",
+                truncate_output(String::from_utf8_lossy(&hash.stderr).to_string())
+            ));
+        }
+        let oid = String::from_utf8_lossy(&hash.stdout).trim().to_ascii_lowercase();
+        if !matches!(oid.len(), 40 | 64) || !oid.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err("Git returned an invalid object ID while fingerprinting an untracked file.".into());
+        }
+        snapshot.extend_from_slice(file.as_bytes());
+        snapshot.push(0);
+        snapshot.extend_from_slice(oid.as_bytes());
+        snapshot.push(0);
+    }
+
+    let fingerprint = run_git_with_bytes(
+        path,
+        &["hash-object", "--stdin"],
+        &snapshot,
+        "worktree snapshot",
+    )?;
+    if !fingerprint.status.success() {
+        return Err(format!(
+            "Could not hash Git worktree snapshot: {}",
+            truncate_output(String::from_utf8_lossy(&fingerprint.stderr).to_string())
+        ));
+    }
+    let oid = String::from_utf8_lossy(&fingerprint.stdout).trim().to_ascii_lowercase();
+    if !matches!(oid.len(), 40 | 64) || !oid.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("Git returned an invalid worktree fingerprint.".into());
+    }
+    Ok(oid)
+}
+
+fn require_expected_git_worktree(
+    path: &str,
+    expected_fingerprint: &str,
+    action: &str,
+) -> Result<(), String> {
+    let current = git_worktree_fingerprint(path)?;
+    if current != expected_fingerprint {
+        return Err(format!(
+            "Git worktree changed before {action}; refusing Git write. expected_worktree_fingerprint={expected_fingerprint}; current_worktree_fingerprint={current}"
+        ));
+    }
+    Ok(())
 }
 
 fn git_staged_files(path: &str) -> Result<Vec<String>, String> {
@@ -6257,6 +6357,7 @@ fn git_local_context(path: &str) -> Result<Value, String> {
         &["status", "--porcelain", "--untracked-files=all"],
         "Could not inspect Git worktree cleanliness",
     )?.is_empty();
+    let worktree_fingerprint = git_worktree_fingerprint(path)?;
     Ok(json!({
         "schema": 1,
         "repo_root": repo_root,
@@ -6264,7 +6365,8 @@ fn git_local_context(path: &str) -> Result<Value, String> {
         "head": head,
         "upstream": upstream,
         "upstream_head": upstream_head,
-        "worktree_clean": worktree_clean
+        "worktree_clean": worktree_clean,
+        "worktree_fingerprint": worktree_fingerprint
     }))
 }
 
@@ -6277,6 +6379,7 @@ fn git_same_local_snapshot(before: &Value, after: &Value) -> bool {
     before.get("repo_root") == after.get("repo_root")
         && before.get("branch") == after.get("branch")
         && before.get("head") == after.get("head")
+        && before.get("worktree_fingerprint") == after.get("worktree_fingerprint")
 }
 
 fn require_expected_git_head(path: &str, expected_head: &str, action: &str) -> Result<(), String> {
@@ -11847,10 +11950,12 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 exit_code: output.status.code(),
             })
         }
-        ToolAction::GitCommit { path, message, files, expected_head } => {
+        ToolAction::GitCommit { path, message, files, expected_head, expected_worktree_fingerprint } => {
             require_expected_git_head(&path, &expected_head, "git_commit")?;
+            require_expected_git_worktree(&path, &expected_worktree_fingerprint, "git_commit")?;
             let remote_receipt = git_remote_freshness(&path, false)?;
             require_expected_git_head(&path, &expected_head, "git_commit after remote freshness check")?;
+            require_expected_git_worktree(&path, &expected_worktree_fingerprint, "git_commit after remote freshness check")?;
             let requested: HashSet<&str> = files.iter().map(String::as_str).collect();
             let staged_before = git_staged_files(&path)?;
             let unrelated_before: Vec<String> = staged_before
@@ -11868,6 +11973,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 .iter()
                 .map(|file| format!(":(literal){file}"))
                 .collect();
+            require_expected_git_worktree(&path, &expected_worktree_fingerprint, "git_commit before staging")?;
             let mut add_args: Vec<&str> = vec!["add", "--"];
             add_args.extend(pathspecs.iter().map(String::as_str));
             let add = run_git(&path, &add_args)?;
