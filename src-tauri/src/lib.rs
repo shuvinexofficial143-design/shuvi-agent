@@ -273,6 +273,9 @@ Rules:
 - inspect_screen captures the screen and sends it to the currently selected vision-capable provider after user approval.
 - Do not put tool JSON inside markdown fences.
 - For destructive/system/security-sensitive work, explain the intent in reason.
+- Multi-step tasks may include top-level task_graph: {"objective":"stable goal","revision":1,"steps":[{"step_id":"inspect","title":"Inspect source","purpose":"Observe current implementation","success_criteria":"Typed read_file succeeds","depends_on":[],"expected_tool":"read_file"}]} and task_step_id:"inspect". Use 1..8 steps, IDs 1..48 ASCII letters/digits/_/-, title <=100, purpose <=300, success_criteria <=500, objective <=500; at most 7 unique predecessor IDs. Only exact successful typed tools complete steps; never send status/evidence or claim completion from prose. expected_tool must match the associated proposal; validation requires run_project_task with successful exit status. One graph step corresponds to one typed action, so status and diff need separate steps.
+- Once a graph exists every action needs task_step_id. A separate recovery inspection may use task_recovery:true without task_step_id, using read_file/list_directory/workspace_scan/search_text/git_status/git_diff/list_processes/ui_find/browser_dom_read/premiere_context/premiere_timeline/premiere_bridge_status. A successful inspection after a failure permits a next-revision graph with recover_steps:["failed_id"]. Recovery does not itself complete or retry the failed step. Exact unsuccessful proposals remain blocked across revisions.
+- Replan with a full graph, stable objective, revision incremented by exactly one (max 8). Preserve completed specifications/evidence and attempted step IDs. Only future steps can change. Replanning never resets the eight-action budget or grants permission; incompatible history needs a new user instruction/reset.
 - Coding workflow dependencies are enforced locally. Before replace_text, successfully read the exact target file. Before apply_patch, inspect git_status for that exact repository. Before git_commit, run fresh git_status and git_diff after the latest edit. git_push requires a successful same-repository git_commit after the latest edit.
 - After a code mutation, prefer run_project_task for an appropriate test/build/lint/typecheck before review/commit when such a task exists. Validation status is tracked, but a missing validation step alone does not authorize or fabricate a pass/fail result.
 - Before git_commit, inspect git_status and git_diff so the user can review what will be committed.
@@ -351,6 +354,13 @@ struct ToolProposal {
     reason: Option<String>,
     #[serde(default)]
     plan: Option<AgentPlanMeta>,
+    // Opaque untrusted metadata; frontend validation only adds restrictions.
+    #[serde(default)]
+    task_graph: Option<Value>,
+    #[serde(default)]
+    task_step_id: Option<Value>,
+    #[serde(default)]
+    task_recovery: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -832,6 +842,17 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         !bounded(&plan.objective,500) || !bounded(&plan.step,500) || !bounded(&plan.success_criteria,800)
     }) {
         proposal.plan=None;
+    }
+
+    // Keep an invalid marker instead of dropping a graph and accidentally removing restrictions.
+    if proposal.task_graph.as_ref().is_some_and(|v| v.to_string().len()>24_000) {
+        proposal.task_graph=Some(Value::Bool(false));
+    }
+    if proposal.task_step_id.as_ref().is_some_and(|v| v.as_str().is_none_or(|s| s.len()>48)) {
+        proposal.task_step_id=Some(Value::Bool(false));
+    }
+    if proposal.task_recovery.as_ref().is_some_and(|v| !v.is_boolean()) {
+        proposal.task_recovery=Some(Value::String("invalid".into()));
     }
 
     match proposal.tool.as_str() {
@@ -11007,6 +11028,10 @@ fn prepare_powershell(
         tool: "powershell".into(),
         arguments: json!({ "command": command }),
         reason: Some("Manual PowerShell action".into()),
+        plan: None,
+        task_graph: None,
+        task_step_id: None,
+        task_recovery: None,
     };
 
     stage_tool(proposal, None, state.inner())
@@ -11112,7 +11137,7 @@ fn record_agent_event(
     detail: String,
     app: AppHandle,
 ) -> Result<(), String> {
-    if !matches!(event.as_str(),"orchestration_blocked"|"orchestration_stopped"|"orchestration_replan") {
+    if !matches!(event.as_str(),"orchestration_blocked"|"orchestration_stopped"|"orchestration_replan"|"task_graph_created"|"task_step_completed"|"task_step_failed"|"task_dependency_blocked"|"task_graph_replanned"|"task_graph_stopped") {
         return Err("Unsupported agent orchestration audit event.".into());
     }
     if detail.trim().is_empty() || detail.chars().count()>1_200 {
@@ -11122,12 +11147,13 @@ fn record_agent_event(
     if tool.trim().is_empty() || tool.chars().count()>160 {
         return Err("Agent orchestration audit tool label must be 1..160 characters.".into());
     }
+    let success=event=="task_step_completed";
     append_audit(&app,&AuditEntry {
         timestamp_ms:now_ms(),
         event,
         tool,
         detail,
-        success:false,
+        success,
         action_id:None,
     })
 }

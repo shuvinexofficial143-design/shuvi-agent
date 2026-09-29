@@ -22,8 +22,12 @@ import {
   orchestrationSummary,
   recordProposalBlock,
   recordToolOutcome,
+  acceptProposalGraph,
+  recordProposalStart,
   type AgentOrchestrationState
 } from "./agent-orchestrator";
+
+import { taskGraphProgress, type GraphAuditEvent } from "./task-graph.mjs";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("Missing app root");
@@ -105,7 +109,7 @@ root.innerHTML = `
 
       <div id="resumeBanner" class="resume-banner hidden">
         <div>
-          <strong>Interrupted task found</strong>
+          <strong>Saved task found</strong>
           <p id="resumeSummary">Shuvi saved a safe checkpoint before the previous session ended.</p>
         </div>
         <div class="button-row">
@@ -675,7 +679,7 @@ function hiddenToolFailure(
 }
 
 async function recordOrchestrationAudit(
-  event: "orchestration_blocked" | "orchestration_stopped" | "orchestration_replan",
+  event: "orchestration_blocked" | "orchestration_stopped" | "orchestration_replan" | GraphAuditEvent,
   detail: string,
   tool: string | null = null
 ): Promise<void> {
@@ -688,11 +692,13 @@ async function recordOrchestrationAudit(
 }
 
 async function stopAgentForSafety(reason: string): Promise<void> {
+  orchestration = { ...orchestration, recovery_mode: "stopped", stop_reason: reason.slice(0, 800) };
+  if (orchestration.task_graph) await recordOrchestrationAudit("task_graph_stopped", reason.slice(0, 1200));
   renderOrchestrationStatus();
   await recordOrchestrationAudit("orchestration_stopped", reason, orchestration.last_tool);
   messages.push({ role: "assistant", content: reason });
   renderMessages();
-  await clearActiveCheckpoint();
+  await saveActiveCheckpoint();
   setBusy(false);
 }
 
@@ -714,6 +720,8 @@ async function stageProposal(proposal: ToolProposal): Promise<void> {
   if (!decision.allowed) {
     orchestration = recordProposalBlock(orchestration, proposal, decision);
     await recordOrchestrationAudit("orchestration_blocked", decision.reason, proposal.tool);
+    if (orchestration.task_graph || proposal.task_graph != null)
+      await recordOrchestrationAudit("task_dependency_blocked", decision.reason.slice(0, 1200), proposal.tool);
     messages.push(hiddenToolFailure(proposal, {
       orchestration_blocked: true,
       reason: decision.reason,
@@ -723,6 +731,20 @@ async function stageProposal(proposal: ToolProposal): Promise<void> {
     return;
   }
 
+  const accepted = acceptProposalGraph(orchestration, proposal);
+  orchestration = accepted.state;
+  if (accepted.event) await recordOrchestrationAudit(accepted.event, `Task graph revision ${orchestration.task_graph?.revision}`, proposal.tool);
+  orchestration = recordProposalStart(orchestration, proposal);
+  renderOrchestrationStatus();
+  // Persist the in-flight receipt before permission staging/execution. Failure closes the graph path.
+  if (orchestration.task_graph) {
+    try {
+      await invoke("save_session_checkpoint", { checkpoint: currentCheckpoint() });
+    } catch {
+      await stopAgentForSafety("Could not save task progress before staging the action. A new instruction or safe resume is required.");
+      return;
+    }
+  }
   const step = orchestration.next_step;
   try {
     pendingAction = await invoke<PendingAction>("prepare_tool", {
@@ -743,7 +765,8 @@ async function stageProposal(proposal: ToolProposal): Promise<void> {
 
     renderChatPermission(proposal, step);
   } catch (error) {
-    orchestration = recordToolOutcome(orchestration, proposal, "failure");
+    orchestration = recordToolOutcome(orchestration, proposal, "failure", undefined, false);
+    await auditGraphOutcome(proposal);
     await recordOrchestrationAudit(
       "orchestration_replan",
       `Tool preparation failed and requires replanning: ${String(error)}`.slice(0, 1_200),
@@ -765,6 +788,14 @@ function clearChatPermission(): void {
   chatPermission.innerHTML = "";
 }
 
+async function auditGraphOutcome(proposal: ToolProposal): Promise<void> {
+  const step = orchestration.task_graph?.steps.find(s => s.step_id === proposal.task_step_id);
+  if (step && (step.status === "completed" || step.status === "failed")) {
+    await recordOrchestrationAudit(step.status === "completed" ? "task_step_completed" : "task_step_failed",
+      `Step ${step.step_id}: ${step.status}; observed action ${orchestration.next_step - 1}`, proposal.tool);
+  }
+}
+
 async function executePendingProposal(proposal: ToolProposal): Promise<void> {
   if (!pendingAction || cancelRequested) return;
 
@@ -777,12 +808,15 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
     orchestration = recordToolOutcome(
       orchestration,
       proposal,
-      result.success ? "success" : "failure"
+      result.success ? "success" : "failure",
+      result
     );
+    await auditGraphOutcome(proposal);
     messages.push(toolResultMessage(result));
     await continueAfterOutcome();
   } catch (error) {
     orchestration = recordToolOutcome(orchestration, proposal, "failure");
+    await auditGraphOutcome(proposal);
     messages.push(hiddenToolFailure(proposal, {
       error: String(error),
       retry_automatically: false
@@ -877,6 +911,7 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
         void refreshAudit();
       } finally {
         orchestration = recordToolOutcome(orchestration, proposal, "denied");
+        await auditGraphOutcome(proposal);
         messages.push(hiddenToolFailure(proposal, {
           denied_by_user: true,
           retry_automatically: false
@@ -891,7 +926,10 @@ async function runAgentStep(): Promise<void> {
   if (cancelRequested) {
     messages.push({ role: "assistant", content: "Task stopped." });
     renderMessages();
-    await clearActiveCheckpoint();
+    if (orchestration.task_graph) {
+      await recordOrchestrationAudit("task_graph_stopped", "User stopped the task; progress retained.");
+      await saveActiveCheckpoint();
+    } else await clearActiveCheckpoint();
     setBusy(false);
     return;
   }
@@ -931,7 +969,10 @@ async function runAgentStep(): Promise<void> {
     if (cancelRequested) {
       messages.push({ role: "assistant", content: "Task stopped after the current provider request finished." });
       renderMessages();
-      await clearActiveCheckpoint();
+      if (orchestration.task_graph) {
+        await recordOrchestrationAudit("task_graph_stopped", "User stopped the task after the provider returned; progress retained.");
+        await saveActiveCheckpoint();
+      } else await clearActiveCheckpoint();
       setBusy(false);
       return;
     }
@@ -945,7 +986,15 @@ async function runAgentStep(): Promise<void> {
       return;
     }
 
-    await clearActiveCheckpoint();
+    const progress = taskGraphProgress(orchestration.task_graph);
+    if (progress.total && progress.completed < progress.total) {
+      messages.push({ role: "assistant", content: `Task paused with ${progress.completed}/${progress.total} steps supported by successful tool evidence. Unfinished steps remain saved.` });
+      renderMessages();
+      await saveActiveCheckpoint();
+      await loadRecoveryCheckpoint();
+    } else {
+      await clearActiveCheckpoint();
+    }
     setBusy(false);
   } catch (error) {
     messages.push({ role: "assistant", content: `Error: ${String(error)}` });
@@ -1238,6 +1287,9 @@ el<HTMLButtonElement>("#stopButton").addEventListener("click", async () => {
     } catch {
       // The action may already have expired. Cancellation still continues locally.
     }
+    // No provider/tool request is active while waiting for permission.
+    await runAgentStep();
+    return;
   }
 
   el<HTMLButtonElement>("#stopButton").textContent = "Stopping…";

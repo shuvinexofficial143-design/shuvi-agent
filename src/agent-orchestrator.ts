@@ -1,4 +1,9 @@
-import type { ToolProposal } from "./types";
+import type { ActionResult, ToolProposal } from "./types";
+import {
+  blockTaskStep, finishTaskStep, graphDependencyFailure, RECOVERY_TOOLS,
+  restoreTaskGraph, reviseTaskGraph, startTaskStep, taskGraphProgress,
+  type TaskGraph, type GraphAuditEvent
+} from "./task-graph.mjs";
 
 export const MAX_AGENT_STEPS = 8;
 export const MAX_CONSECUTIVE_FAILURES = 3;
@@ -31,7 +36,7 @@ export type CodingWorkflowState = {
 };
 
 export type AgentOrchestrationState = {
-  version: 2;
+  version: 3;
   next_step: number;
   tool_actions: number;
   consecutive_failures: number;
@@ -45,6 +50,9 @@ export type AgentOrchestrationState = {
   last_success_criteria: string | null;
   stop_reason: string | null;
   coding: CodingWorkflowState;
+  task_graph: TaskGraph | null;
+  unsuccessful_fingerprints: string[];
+  recovery_step: number;
 };
 
 export type ProposalDecision =
@@ -159,7 +167,7 @@ export function proposalFingerprint(proposal: ToolProposal): string {
 
 export function createAgentOrchestrationState(): AgentOrchestrationState {
   return {
-    version: 2,
+    version: 3,
     next_step: 1,
     tool_actions: 0,
     consecutive_failures: 0,
@@ -172,7 +180,10 @@ export function createAgentOrchestrationState(): AgentOrchestrationState {
     last_plan_step: null,
     last_success_criteria: null,
     stop_reason: null,
-    coding: createCodingWorkflowState()
+    coding: createCodingWorkflowState(),
+    task_graph: null,
+    unsuccessful_fingerprints: [],
+    recovery_step: 0
   };
 }
 
@@ -183,7 +194,9 @@ export function normalizeAgentOrchestrationState(value: unknown): AgentOrchestra
     version?: number;
     coding?: unknown;
   };
-  if (input.version !== 1 && input.version !== 2) return base;
+  if (input.version !== 1 && input.version !== 2 && input.version !== 3) {
+    return { ...base, recovery_mode: "stopped", stop_reason: "Unsupported saved orchestration state; start a new task." };
+  }
 
   const nextStep = Number.isInteger(input.next_step) ? Number(input.next_step) : 1;
   const toolActions = Number.isInteger(input.tool_actions) ? Number(input.tool_actions) : 0;
@@ -196,8 +209,17 @@ export function normalizeAgentOrchestrationState(value: unknown): AgentOrchestra
     ? input.recovery_mode ?? "normal"
     : "normal";
 
-  return {
-    version: 2,
+  const restored = restoreTaskGraph(input.version === 3 ? input.task_graph : null, nextStep);
+  const receipts = input.version === 3 ? input.unsuccessful_fingerprints
+    : input.last_proposal_fingerprint && ["failure", "denied", "blocked"].includes(String(input.last_outcome))
+      ? [input.last_proposal_fingerprint] : [];
+  const validReceipts = Array.isArray(receipts) && receipts.length <= MAX_AGENT_STEPS
+    && receipts.every(x => typeof x === "string" && x.length > 0 && x.length <= 16_384);
+  const interrupted = restored.ok ? restored.interrupted : [];
+  const invalid = !restored.ok || !validReceipts
+    || (restored.ok && restored.graph && restored.graph.objective !== input.objective);
+  const result: AgentOrchestrationState = {
+    version: 3,
     next_step: Math.max(1, Math.min(MAX_AGENT_STEPS + 1, nextStep)),
     tool_actions: Math.max(0, Math.min(MAX_AGENT_STEPS, toolActions)),
     consecutive_failures: Math.max(0, Math.min(MAX_CONSECUTIVE_FAILURES, failures)),
@@ -210,10 +232,24 @@ export function normalizeAgentOrchestrationState(value: unknown): AgentOrchestra
     last_plan_step: boundedText(input.last_plan_step, 500),
     last_success_criteria: boundedText(input.last_success_criteria, 800),
     stop_reason: boundedText(input.stop_reason, 800),
-    coding: input.version === 2
+    coding: input.version === 2 || input.version === 3
       ? normalizeCodingWorkflowState(input.coding)
-      : createCodingWorkflowState()
+      : createCodingWorkflowState(),
+    task_graph: restored.ok ? restored.graph : null,
+    unsuccessful_fingerprints: validReceipts ? [...new Set([...receipts, ...interrupted])].slice(-MAX_AGENT_STEPS) : [],
+    recovery_step: boundedStep(input.recovery_step)
   };
+  if (invalid) return { ...result, recovery_mode: "stopped", stop_reason: "Invalid saved graph/evidence; a new user instruction/reset is required." };
+  if (interrupted.length) {
+    result.next_step = Math.min(MAX_AGENT_STEPS + 1, result.next_step + 1);
+    result.tool_actions = Math.min(MAX_AGENT_STEPS, result.tool_actions + 1);
+    if (result.recovery_mode !== "stopped") result.recovery_mode = "replan_required";
+    result.last_outcome = "failure";
+    result.last_proposal_fingerprint = interrupted[0];
+  }
+  if (result.task_graph?.steps.some(s => s.status === "failed") && result.recovery_mode === "normal")
+    result.recovery_mode = "replan_required";
+  return result;
 }
 
 function dependencyFailure(
@@ -295,12 +331,47 @@ export function evaluateProposal(
     };
   }
 
+  if (state.unsuccessful_fingerprints.includes(fingerprint)) {
+    return { allowed: false, fingerprint, reason: "This unsuccessful action remains blocked across replans; inspect and change the action or start a new task.", stop: false };
+  }
+  if (proposal.task_recovery !== true && state.task_graph?.steps.some(s => s.evidence.some(e => e.success && e.fingerprint === fingerprint))) {
+    return { allowed: false, fingerprint, reason: "This completed action cannot automatically rerun under another step ID.", stop: false };
+  }
+  if (proposal.plan?.objective && state.objective && proposal.plan.objective !== state.objective) {
+    return { allowed: false, fingerprint, reason: "The stable objective cannot be silently changed.", stop: false };
+  }
+  const graphPlan = proposal.task_graph == null ? null
+    : reviseTaskGraph(state.task_graph, proposal.task_graph, state.objective ?? proposal.plan?.objective ?? null, state.recovery_step);
+  if (graphPlan && !graphPlan.ok) return { allowed: false, fingerprint, reason: graphPlan.error, stop: false };
+  const graph = graphPlan?.ok ? graphPlan.graph : state.task_graph;
+  const graphFailure = graphDependencyFailure(graph, proposal);
+  if (graphFailure) return { allowed: false, fingerprint, reason: graphFailure, stop: false };
+
   const dependency = dependencyFailure(state, proposal);
   if (dependency) {
     return { allowed: false, fingerprint, reason: dependency, stop: false };
   }
 
   return { allowed: true, fingerprint };
+}
+
+
+export function acceptProposalGraph(state: AgentOrchestrationState, proposal: ToolProposal):
+  { state: AgentOrchestrationState; event: GraphAuditEvent | null } {
+  // Called only after evaluateProposal; repeat the decision to keep this entry point fail-closed.
+  if (!evaluateProposal(state, proposal).allowed) return { state, event: null };
+  if (proposal.task_graph == null) return { state, event: null };
+  const change = reviseTaskGraph(state.task_graph, proposal.task_graph,
+    state.objective ?? proposal.plan?.objective ?? null, state.recovery_step);
+  if (!change.ok) return { state, event: null };
+  return { state: { ...state, task_graph: change.graph, objective: change.graph.objective }, event: change.event };
+}
+
+export function recordProposalStart(state: AgentOrchestrationState, proposal: ToolProposal): AgentOrchestrationState {
+  // The graph revision was accepted atomically before this call. Do not apply recover_steps twice.
+  const selected = { ...proposal, task_graph: undefined };
+  if (!evaluateProposal(state, selected).allowed) return state;
+  return { ...state, task_graph: startTaskStep(state.task_graph, proposal, proposalFingerprint(proposal), state.next_step) };
 }
 
 function planFields(
@@ -360,12 +431,21 @@ function withSuccessfulCodingEvidence(
 export function recordToolOutcome(
   state: AgentOrchestrationState,
   proposal: ToolProposal,
-  outcome: Exclude<ToolOutcome, "blocked">
+  outcome: Exclude<ToolOutcome, "blocked">,
+  result?: ActionResult,
+  actualFailure = true
 ): AgentOrchestrationState {
   const fingerprint = proposalFingerprint(proposal);
-  const failures = outcome === "success" ? 0 : state.consecutive_failures + (outcome === "failure" ? 1 : 0);
+  // A provider claim or a success enum alone cannot create graph/coding evidence.
+  const typedSuccess = outcome === "success" && result?.success === true
+    && result.tool === proposal.tool && typeof result.stdout === "string"
+    && typeof result.stderr === "string" && (result.exit_code === null || Number.isInteger(result.exit_code))
+    && (proposal.tool !== "run_project_task" || result.exit_code === 0);
+  if (outcome === "success" && !typedSuccess) outcome = "failure";
+  const taskGraph = finishTaskStep(state.task_graph, proposal, fingerprint, state.next_step, outcome, result);
+  const failures = outcome === "success" ? 0 : state.consecutive_failures + (outcome === "failure" && actualFailure ? 1 : 0);
   const stopped = failures >= MAX_CONSECUTIVE_FAILURES;
-  const replan = outcome !== "success";
+  const replan = outcome !== "success" || Boolean(taskGraph?.steps.some(s => s.status === "failed"));
   return {
     ...state,
     ...planFields(state, proposal),
@@ -380,6 +460,11 @@ export function recordToolOutcome(
     stop_reason: stopped
       ? `Stopped after ${MAX_CONSECUTIVE_FAILURES} consecutive tool failures. A new user instruction is required before more computer actions.`
       : null,
+    task_graph: taskGraph,
+    unsuccessful_fingerprints: outcome === "success" ? state.unsuccessful_fingerprints
+      : [...new Set([...state.unsuccessful_fingerprints, fingerprint])].slice(-MAX_AGENT_STEPS),
+    recovery_step: typedSuccess && proposal.task_recovery === true && RECOVERY_TOOLS.includes(proposal.tool)
+      ? state.next_step : state.recovery_step,
     coding: outcome === "success"
       ? withSuccessfulCodingEvidence(state, proposal)
       : state.coding
@@ -397,6 +482,7 @@ export function recordProposalBlock(
     ...planFields(state, proposal),
     next_step: Math.min(MAX_AGENT_STEPS + 1, state.next_step + 1),
     blocked_repeats: blocks,
+    task_graph: blockTaskStep(state.task_graph, proposal.task_step_id, decision.reason),
     last_proposal_fingerprint: decision.fingerprint,
     last_tool: boundedText(proposal.tool, 160),
     last_outcome: "blocked",
@@ -426,6 +512,11 @@ export function codingPhase(state: AgentOrchestrationState): CodingPhase {
 export function orchestrationContext(state: AgentOrchestrationState): string {
   const parts = [
     "Agent orchestration state:",
+    ...(state.task_graph ? [
+      `- graph revision: ${state.task_graph.revision}; objective: ${state.task_graph.objective}`,
+      ...state.task_graph.steps.map(s => `- ${s.step_id}: ${s.status}; tool=${s.expected_tool}; needs=${s.depends_on.join(",") || "none"}`),
+      "- Use task_step_id. For recovery use task_recovery:true with an unassociated inspection; then submit next graph revision with recover_steps.",
+    ] : []),
     `- next step: ${state.next_step}/${MAX_AGENT_STEPS}`,
     `- previous outcome: ${state.last_outcome ?? "none"}`,
     `- consecutive failures: ${state.consecutive_failures}/${MAX_CONSECUTIVE_FAILURES}`,
@@ -459,5 +550,7 @@ export function orchestrationContext(state: AgentOrchestrationState): string {
 export function orchestrationSummary(state: AgentOrchestrationState): string {
   const mode = state.recovery_mode === "normal" ? "normal" : state.recovery_mode.replaceAll("_", " ");
   const coding = state.coding.active ? ` · coding ${codingPhase(state).replaceAll("_", " ")}` : "";
-  return `step ${Math.min(state.next_step, MAX_AGENT_STEPS)}/${MAX_AGENT_STEPS} · ${mode}${coding}`;
+  const progress = taskGraphProgress(state.task_graph);
+  const graph = progress.total ? `${progress.completed}/${progress.total} steps complete · ` : "";
+  return `${graph}step ${Math.min(state.next_step, MAX_AGENT_STEPS)}/${MAX_AGENT_STEPS} · ${mode}${coding}`;
 }
