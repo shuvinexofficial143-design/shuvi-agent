@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs::{self, OpenOptions},
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     net::IpAddr,
     path::{Component, Path},
     process::{Command, Stdio},
@@ -1852,6 +1852,21 @@ fn absolute_path(value: String) -> Result<String, String> {
         return Err("File-tool paths must not contain '.' or '..' path segments.".into());
     }
     Ok(value)
+}
+
+fn read_utf8_file_bounded(path: &Path, max_bytes: usize, label: &str) -> Result<String, String> {
+    let file = fs::File::open(path)
+        .map_err(|error| format!("Could not open {label}: {error}"))?;
+    let limit = (max_bytes as u64).saturating_add(1);
+    let mut bytes = Vec::with_capacity(max_bytes.min(64 * 1024));
+    file.take(limit)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("Could not read {label}: {error}"))?;
+    if bytes.len() > max_bytes {
+        return Err(format!("{label} exceeds Shuvi's bounded read limit."));
+    }
+    String::from_utf8(bytes)
+        .map_err(|error| format!("{label} is not valid UTF-8: {error}"))
 }
 
 fn safe_web_url(value: String) -> Result<String, String> {
@@ -6101,16 +6116,7 @@ fn search_text_recursive(
             break;
         }
 
-        let metadata = match entry.metadata() {
-            Ok(metadata) => metadata,
-            Err(_) => continue,
-        };
-
-        if metadata.len() > 768 * 1024 {
-            continue;
-        }
-
-        let content = match fs::read_to_string(&canonical) {
+        let content = match read_utf8_file_bounded(&canonical, 768 * 1024, "search candidate") {
             Ok(content) => content,
             Err(_) => continue,
         };
@@ -6838,15 +6844,11 @@ async fn execute_tool_with_action_id(
             })
         }
         ToolAction::ReadFile { path } => {
-            let metadata = fs::metadata(&path)
-                .map_err(|error| format!("Could not inspect file: {error}"))?;
-
-            if metadata.len() > MAX_READ_BYTES {
-                return Err("File is larger than Shuvi's 1 MB direct-read limit.".into());
-            }
-
-            let content = fs::read_to_string(&path)
-                .map_err(|error| format!("Could not read UTF-8 text file: {error}"))?;
+            let content = read_utf8_file_bounded(
+                Path::new(&path),
+                MAX_READ_BYTES as usize,
+                "file",
+            )?;
 
             Ok(ActionResult {
                 success: true,
@@ -11624,15 +11626,11 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::ReplaceText { path, old, new_value } => {
-            let metadata = fs::metadata(&path)
-                .map_err(|error| format!("Could not inspect file: {error}"))?;
-
-            if metadata.len() > MAX_WRITE_BYTES as u64 {
-                return Err("File is larger than Shuvi's 2 MB edit limit.".into());
-            }
-
-            let source = fs::read_to_string(&path)
-                .map_err(|error| format!("Could not read UTF-8 text file: {error}"))?;
+            let source = read_utf8_file_bounded(
+                Path::new(&path),
+                MAX_WRITE_BYTES,
+                "editable file",
+            )?;
 
             let count = source.matches(&old).count();
             if count == 0 {
