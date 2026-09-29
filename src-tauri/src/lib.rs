@@ -83,6 +83,7 @@ const MAX_ASSISTANT_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_PROVIDER_MODEL_BYTES: usize = 256;
 const MAX_PROVIDER_BASE_URL_BYTES: usize = 4 * 1024;
 const MAX_API_KEY_BYTES: usize = 16 * 1024;
+const MAX_WORKSPACE_PATH_BYTES: u64 = 32 * 1024;
 const MAX_SCREENSHOT_FILES: usize = 64;
 const MAX_STALE_BROWSER_PROFILES: usize = 8;
 const MAX_DIAGNOSTIC_FILES: usize = 16;
@@ -6367,6 +6368,32 @@ fn session_checkpoint_path(app: &AppHandle) -> Result<std::path::PathBuf, String
     Ok(dir.join("session-checkpoint.json"))
 }
 
+fn validate_session_checkpoint_payload(checkpoint: &SessionCheckpoint) -> Result<(), String> {
+    validate_provider_fields(
+        checkpoint.provider.as_str(),
+        checkpoint.model.as_str(),
+        checkpoint.base_url.as_deref(),
+    )?;
+
+    if checkpoint.messages.len() > MAX_CHAT_MESSAGES {
+        return Err("Saved session contains too many chat messages.".into());
+    }
+    let mut total_bytes = 0_usize;
+    for message in &checkpoint.messages {
+        if !matches!(message.role.as_str(), "user" | "assistant" | "system") {
+            return Err("Saved session contains an unsupported chat role.".into());
+        }
+        if message.content.len() > MAX_CHAT_MESSAGE_BYTES {
+            return Err("Saved session contains an oversized chat message.".into());
+        }
+        total_bytes = total_bytes.saturating_add(message.content.len());
+        if total_bytes > MAX_CHAT_CONTEXT_BYTES {
+            return Err("Saved session chat context exceeds Shuvi's 2 MB safety limit.".into());
+        }
+    }
+    Ok(())
+}
+
 fn write_session_checkpoint(
     app: &AppHandle,
     mut checkpoint: SessionCheckpoint,
@@ -6378,6 +6405,7 @@ fn write_session_checkpoint(
 
     checkpoint.version = 2;
     checkpoint.updated_at_ms = now_ms();
+    validate_session_checkpoint_payload(&checkpoint)?;
 
     let content = serde_json::to_vec_pretty(&checkpoint)
         .map_err(|error| format!("Could not encode session checkpoint: {error}"))?;
@@ -6427,6 +6455,7 @@ fn read_session_checkpoint(app: &AppHandle) -> Result<Option<SessionCheckpoint>,
         checkpoint.version=2;
         checkpoint.orchestration=None;
     }
+    validate_session_checkpoint_payload(&checkpoint)?;
 
     Ok(Some(checkpoint))
 }
@@ -6460,6 +6489,12 @@ fn read_workspace(app: &AppHandle) -> Result<Option<String>, String> {
     if !path.exists() {
         return Ok(None);
     }
+    if fs::metadata(&path)
+        .map_err(|error| format!("Could not inspect workspace setting: {error}"))?
+        .len() > MAX_WORKSPACE_PATH_BYTES
+    {
+        return Err("Saved workspace path is unexpectedly large.".into());
+    }
 
     let value = fs::read_to_string(path)
         .map_err(|error| format!("Could not read workspace setting: {error}"))?
@@ -6467,17 +6502,27 @@ fn read_workspace(app: &AppHandle) -> Result<Option<String>, String> {
         .to_string();
 
     if value.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(value))
+        return Ok(None);
     }
+    if value.chars().any(char::is_control)
+        || !Path::new(&value).is_absolute()
+        || !Path::new(&value).is_dir()
+    {
+        return Err("Saved workspace must be an existing absolute path without control characters.".into());
+    }
+    Ok(Some(value))
 }
 
 fn write_workspace(app: &AppHandle, path: &str) -> Result<(), String> {
+    let path = path.trim();
     let absolute = Path::new(path);
 
-    if !absolute.is_absolute() || !absolute.is_dir() {
-        return Err("Workspace must be an existing absolute directory.".into());
+    if path.len() as u64 > MAX_WORKSPACE_PATH_BYTES
+        || path.chars().any(char::is_control)
+        || !absolute.is_absolute()
+        || !absolute.is_dir()
+    {
+        return Err("Workspace must be an existing absolute directory without control characters and within Shuvi's path-size limit.".into());
     }
 
     fs::write(workspace_config_path(app)?, path.as_bytes())
