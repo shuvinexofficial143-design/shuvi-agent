@@ -285,7 +285,7 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - workspace_scan: {"path":"absolute workspace path"}
 - search_text: {"path":"absolute workspace path","query":"text to find"}
 - replace_text: {"path":"absolute file path","old":"exact old text","new":"replacement text"}
-- apply_patch: {"path":"absolute Git repository path","patch":"unified diff patch"}
+- apply_patch: {"path":"absolute Git repository path","patch":"unified diff patch","expected_worktree_fingerprint":"exact worktree fingerprint copied from the latest matching git_status receipt"}
 - run_project_task: {"path":"absolute project path","task":"test|build|lint|typecheck"}
 - git_status: {"path":"absolute repository path"}
 - git_diff: {"path":"absolute repository path"}
@@ -303,7 +303,7 @@ Rules:
 - Multi-step tasks may include top-level task_graph: {"objective":"stable goal","revision":1,"steps":[{"step_id":"inspect","title":"Inspect source","purpose":"Observe current implementation","success_criteria":"Typed read_file succeeds","depends_on":[],"expected_tool":"read_file"}]} and task_step_id:"inspect". Use 1..8 steps, IDs 1..48 ASCII letters/digits/_/-, title <=100, purpose <=300, success_criteria <=500, objective <=500; at most 7 unique predecessor IDs. Only exact successful typed tools complete steps; never send status/evidence or claim completion from prose. expected_tool must match the associated proposal; validation requires run_project_task with successful exit status. One graph step corresponds to one typed action, so status and diff need separate steps.
 - Once a graph exists every action needs task_step_id. A separate recovery inspection may use task_recovery:true without task_step_id, using read_file/list_directory/workspace_scan/search_text/git_status/git_diff/list_processes/ui_find/browser_dom_read/premiere_context/premiere_timeline/premiere_bridge_status. A successful inspection after a failure permits a next-revision graph with recover_steps:["failed_id"]. Recovery does not itself complete or retry the failed step. Exact unsuccessful proposals remain blocked across revisions.
 - Replan with a full graph, stable objective, revision incremented by exactly one (max 8). Preserve completed specifications/evidence and attempted step IDs. Only future steps can change. Replanning never resets the eight-action budget or grants permission; incompatible history needs a new user instruction/reset.
-- Coding workflow dependencies are enforced locally. Before replace_text, successfully read the exact target file after its latest Shuvi mutation. Before apply_patch, run fresh git_status for that exact repository after the latest Shuvi mutation. Before git_commit, run fresh git_status and git_diff after the latest edit, copy both the exact reviewed HEAD and worktree fingerprint, pass only the exact reviewed relative files, and let the typed tool recheck both the worktree fingerprint and upstream freshness immediately before staging; a successful commit invalidates that review snapshot. git_push requires a successful same-repository git_commit after the latest edit and performs the same upstream freshness check immediately before push; a later edit invalidates prior pushed-complete phase evidence.
+- Coding workflow dependencies are enforced locally. Before replace_text, successfully read the exact target file after its latest Shuvi mutation. Before apply_patch, run fresh git_status for that exact repository after the latest Shuvi mutation, copy its exact worktree fingerprint, and let the typed tool recheck the fingerprint both before validation and immediately before applying. Before git_commit, run fresh git_status and git_diff after the latest edit, copy both the exact reviewed HEAD and worktree fingerprint, pass only the exact reviewed relative files, and let the typed tool recheck both the worktree fingerprint and upstream freshness immediately before staging; a successful commit invalidates that review snapshot. git_push requires a successful same-repository git_commit after the latest edit and performs the same upstream freshness check immediately before push; a later edit invalidates prior pushed-complete phase evidence.
 - After a code mutation, prefer run_project_task for an appropriate test/build/lint/typecheck before review/commit when such a task exists. Validation status is tracked, but a missing validation step alone does not authorize or fabricate a pass/fail result.
 - Before git_commit, inspect git_status and git_diff so the user can review what will be committed.
 - Treat git_push as a remote write and request it only after a successful commit when the user asked for a push.
@@ -613,7 +613,7 @@ enum ToolAction {
     WorkspaceScan { path: String },
     SearchText { path: String, query: String },
     ReplaceText { path: String, old: String, new_value: String },
-    ApplyPatch { path: String, patch: String },
+    ApplyPatch { path: String, patch: String, expected_worktree_fingerprint: String },
     RunProjectTask { path: String, task: String },
     GitStatus { path: String },
     GitDiff { path: String },
@@ -5425,6 +5425,7 @@ fn stage_tool(
         "apply_patch" => {
             let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
             let patch = arg_raw_string(&proposal.arguments, "patch")?;
+            let expected_worktree_fingerprint = arg_git_head(&proposal.arguments, "expected_worktree_fingerprint")?;
             if patch.trim().is_empty() {
                 return Err("apply_patch requires a non-empty unified diff.".into());
             }
@@ -5436,9 +5437,10 @@ fn stage_tool(
                 ToolAction::ApplyPatch {
                     path: path.clone(),
                     patch: patch.clone(),
+                    expected_worktree_fingerprint: expected_worktree_fingerprint.clone(),
                 },
                 "Apply structured Git patch".to_string(),
-                format!("{} | patch_chars={}", path, patch.chars().count()),
+                format!("{} | expected_worktree_fingerprint={} | patch_chars={}", path, expected_worktree_fingerprint, patch.chars().count()),
                 RiskLevel::Medium,
             )
         }
@@ -11860,7 +11862,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 exit_code: Some(0),
             })
         }
-        ToolAction::ApplyPatch { path, patch } => {
+        ToolAction::ApplyPatch { path, patch, expected_worktree_fingerprint } => {
+            require_expected_git_worktree(&path, &expected_worktree_fingerprint, "apply_patch before validation")?;
             let check = run_git_with_stdin(
                 &path,
                 &["apply", "--check", "--whitespace=nowarn", "-"],
@@ -11874,6 +11877,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 ));
             }
 
+            require_expected_git_worktree(&path, &expected_worktree_fingerprint, "apply_patch before mutation")?;
             let output = run_git_with_stdin(
                 &path,
                 &["apply", "--whitespace=nowarn", "-"],
