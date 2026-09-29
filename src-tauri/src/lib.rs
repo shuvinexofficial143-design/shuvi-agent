@@ -6783,14 +6783,12 @@ fn read_session_checkpoint(app: &AppHandle) -> Result<Option<SessionCheckpoint>,
     }
 
     let decode = |candidate: &Path| -> Result<SessionCheckpoint, String> {
-        let metadata = fs::metadata(candidate)
-            .map_err(|error| format!("Could not inspect session checkpoint: {error}"))?;
-        if metadata.len() > 2 * 1024 * 1024 {
-            return Err("Saved session checkpoint is unexpectedly large.".into());
-        }
-        let content = fs::read(candidate)
-            .map_err(|error| format!("Could not read session checkpoint: {error}"))?;
-        serde_json::from_slice(&content)
+        let content = read_utf8_file_bounded(
+            candidate,
+            2 * 1024 * 1024,
+            "saved session checkpoint",
+        )?;
+        serde_json::from_str(&content)
             .map_err(|error| format!("Saved session checkpoint is invalid: {error}"))
     };
 
