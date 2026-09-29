@@ -69,16 +69,20 @@ test("git writes require the exact reviewed local HEAD",()=>{
   assert.match(rust,/fn arg_git_head\(arguments: &Value, name: &str\)/);
   assert.match(rust,/expected_head":"exact local HEAD copied from the latest matching git_status\/git_diff receipt/);
   assert.match(rust,/expected_head":"exact committed HEAD copied from the successful git_commit receipt/);
-  const commit=rust.slice(rust.indexOf("ToolAction::GitCommit { path, message, files, expected_head }"),rust.indexOf("ToolAction::GitPush { path, expected_head }"));
-  assert.match(commit,/current_head\.to_ascii_lowercase\(\) != expected_head/);
-  assert.match(commit,/Local HEAD changed after review; refusing git_commit/);
-  assert.ok(commit.indexOf("current_head.to_ascii_lowercase() != expected_head") < commit.indexOf("git_remote_freshness(&path, false)"));
-  const push=rust.slice(rust.indexOf("ToolAction::GitPush { path, expected_head }"),rust.indexOf("ToolAction::PowerShell"));
-  assert.match(push,/current_head\.to_ascii_lowercase\(\) != expected_head/);
-  assert.match(push,/Local HEAD changed after commit; refusing git_push/);
-  assert.ok(push.indexOf("current_head.to_ascii_lowercase() != expected_head") < push.indexOf("git_remote_freshness(&path, true)"));
+  assert.match(rust,/fn require_expected_git_head\(path: &str, expected_head: &str, action: &str\)/);
+  const commit=rust.slice(
+    rust.indexOf("ToolAction::GitCommit { path, message, files, expected_head }"),
+    rust.indexOf("ToolAction::GitPush { path, expected_head }")
+  );
+  assert.match(commit,/require_expected_git_head\(&path, &expected_head, "git_commit"\)/);
+  assert.match(commit,/require_expected_git_head\(&path, &expected_head, "git_commit after remote freshness check"\)/);
+  assert.match(commit,/require_expected_git_head\(&path, &expected_head, "git_commit after staging"\)/);
+  assert.match(commit,/require_expected_git_head\(&path, &expected_head, "git_commit after final remote freshness check"\)/);
+  const pushStart=rust.indexOf("ToolAction::GitPush { path, expected_head }");
+  const push=rust.slice(pushStart,rust.indexOf("ToolAction::PowerShell",pushStart));
+  assert.match(push,/require_expected_git_head\(&path, &expected_head, "git_push"\)/);
+  assert.match(push,/require_expected_git_head\(&path, &expected_head, "git_push after remote freshness check"\)/);
 });
-
 
 test("git_diff reviews the combined tracked delta against HEAD",()=>{
   const start=rust.indexOf("ToolAction::GitDiff { path }");
@@ -143,6 +147,11 @@ test("Git writes recheck reviewed HEAD after freshness and staging boundaries",(
   assert.match(commit,/git_remote_freshness\(&path, false\)/);
   assert.match(commit,/git_commit after remote freshness check/);
   assert.match(commit,/git_commit after staging/);
+  const freshnessChecks=[...commit.matchAll(/git_remote_freshness\(&path, false\)/g)];
+  assert.equal(freshnessChecks.length,2);
+  assert.ok(commit.indexOf("git_commit after staging") < freshnessChecks[1].index);
+  assert.ok(freshnessChecks[1].index < commit.indexOf('run_git(&path, &["commit", "-m", &message])'));
+  assert.match(commit,/git_commit after final remote freshness check/);
   const pushStart=rust.indexOf("ToolAction::GitPush { path, expected_head }");
   const push=rust.slice(pushStart,rust.indexOf("ToolAction::PowerShell",pushStart));
   assert.match(push,/require_expected_git_head\(&path, &expected_head, "git_push"\)/);
