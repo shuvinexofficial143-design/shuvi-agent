@@ -851,6 +851,30 @@ async function auditGraphOutcome(proposal: ToolProposal): Promise<void> {
   }
 }
 
+async function readActionAuditReceipt(actionId: string): Promise<AuditEntry | null> {
+  try {
+    return await invoke<AuditEntry | null>("action_audit_receipt", { actionId });
+  } catch {
+    return null;
+  }
+}
+
+function exactActionReceipt(
+  receipt: AuditEntry | null,
+  actionId: string,
+  tool: string,
+  event: "executed" | "failed" | "denied",
+  success: boolean
+): boolean {
+  return Boolean(
+    receipt &&
+    receipt.action_id === actionId &&
+    receipt.tool === tool &&
+    receipt.event === event &&
+    receipt.success === success
+  );
+}
+
 async function executePendingProposal(proposal: ToolProposal): Promise<void> {
   if (!pendingAction || cancelRequested) return;
 
@@ -859,23 +883,52 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
 
   try {
     const result = await invoke<ActionResult>("execute_action", { actionId });
+    const receipt = await readActionAuditReceipt(actionId);
+    const receiptMatches = exactActionReceipt(
+      receipt,
+      actionId,
+      result.tool,
+      "executed",
+      result.success
+    );
     void refreshAudit();
     orchestration = recordToolOutcome(
       orchestration,
       proposal,
       result.success ? "success" : "failure",
       result,
-      true,
-      actionId
+      !result.success && receiptMatches,
+      actionId,
+      receipt
     );
     await auditGraphOutcome(proposal);
     messages.push(toolResultMessage(result));
+    if (proposal.task_step_id != null && !receiptMatches) {
+      messages.push(hiddenToolFailure(proposal, {
+        evidence_verification_failed: true,
+        action_id: actionId,
+        reason: "The typed result did not have a matching Rust executed audit receipt, so the task step was not completed.",
+        retry_automatically: false
+      }));
+    }
     await continueAfterOutcome();
   } catch (error) {
-    orchestration = recordToolOutcome(orchestration, proposal, "failure", undefined, true, actionId);
+    const receipt = await readActionAuditReceipt(actionId);
+    const confirmedFailure = exactActionReceipt(receipt, actionId, proposal.tool, "failed", false);
+    orchestration = recordToolOutcome(
+      orchestration,
+      proposal,
+      "failure",
+      undefined,
+      confirmedFailure,
+      actionId,
+      receipt
+    );
     await auditGraphOutcome(proposal);
     messages.push(hiddenToolFailure(proposal, {
       error: String(error),
+      action_id: actionId,
+      execution_failure_audit_confirmed: confirmedFailure,
       retry_automatically: false
     }));
     await continueAfterOutcome();
@@ -963,18 +1016,40 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
       const actionId = pendingAction.id;
       clearChatPermission();
 
+      let deniedConfirmed = false;
       try {
         await invoke("deny_action", { actionId });
+        const receipt = await readActionAuditReceipt(actionId);
+        deniedConfirmed = exactActionReceipt(receipt, actionId, proposal.tool, "denied", false);
         void refreshAudit();
-      } finally {
-        orchestration = recordToolOutcome(orchestration, proposal, "denied", undefined, false, actionId);
-        await auditGraphOutcome(proposal);
-        messages.push(hiddenToolFailure(proposal, {
-          denied_by_user: true,
-          retry_automatically: false
-        }));
-        await continueAfterOutcome();
+        orchestration = recordToolOutcome(
+          orchestration,
+          proposal,
+          deniedConfirmed ? "denied" : "failure",
+          undefined,
+          false,
+          actionId,
+          receipt
+        );
+      } catch {
+        orchestration = recordToolOutcome(
+          orchestration,
+          proposal,
+          "failure",
+          undefined,
+          false,
+          actionId,
+          null
+        );
       }
+      await auditGraphOutcome(proposal);
+      messages.push(hiddenToolFailure(proposal, {
+        denied_by_user: deniedConfirmed,
+        denial_audit_confirmed: deniedConfirmed,
+        action_id: actionId,
+        retry_automatically: false
+      }));
+      await continueAfterOutcome();
     };
   }
 }
@@ -1341,9 +1416,11 @@ el<HTMLButtonElement>("#stopButton").addEventListener("click", async () => {
     clearChatPermission();
 
     let denied = false;
+    let receipt: AuditEntry | null = null;
     try {
       await invoke("deny_action", { actionId });
-      denied = true;
+      receipt = await readActionAuditReceipt(actionId);
+      denied = exactActionReceipt(receipt, actionId, proposal.tool, "denied", false);
       void refreshAudit();
     } catch {
       // If Rust cannot confirm denial, keep the graph conservative: the bound
@@ -1356,7 +1433,8 @@ el<HTMLButtonElement>("#stopButton").addEventListener("click", async () => {
       denied ? "denied" : "failure",
       undefined,
       false,
-      actionId
+      actionId,
+      receipt
     );
     await auditGraphOutcome(proposal);
     await saveActiveCheckpoint();
