@@ -11824,6 +11824,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 .map_err(|error| format!("Could not run project task: {error}"))?;
             let child_pid = child.id();
             if let Err(error) = register_managed_process(state, child_pid) {
+                let _ = terminate_managed_process_tree(child_pid);
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(format!(
@@ -11836,9 +11837,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                         running.insert(action_id.to_string(), child_pid);
                     }
                     Err(_) => {
-                        if let Ok(mut managed) = state.managed_children.lock() {
-                            managed.remove(&child_pid);
-                        }
+                        let _ = terminate_registered_process_tree(state, child_pid);
+                        unregister_managed_process(state, child_pid);
                         let _ = child.kill();
                         let _ = child.wait();
                         return Err("Running-action state is unavailable; project task was stopped before execution could continue safely.".into());
