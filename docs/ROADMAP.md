@@ -576,3 +576,33 @@ This improves Shuvi's general multi-step reliability and recovery behavior witho
 - Static source wiring checks on GitHub confirmed all expected dependency, persistence, provider-guidance, UI and test markers are present. This is not a current-head runtime/build attestation.
 
 This work improves coding-agent sequencing without adding unrestricted shell execution or increasing the eight-step safety ceiling.
+
+
+### Evidence-based task graph and progress engine (2026-09-29)
+
+- Added a bounded optional DAG with stable objective/step IDs, explicit typed-tool binding,
+  strict metadata validation, up to eight steps/revisions, and local dependency enforcement.
+- Wired creation/replan, permission staging, real typed result evidence, failed-step recovery,
+  checkpoint persistence/resume, compact progress summary and collapsible status list.
+- Provider-supplied status/evidence is rejected. Completion needs a matching successful typed
+  result; project validation additionally needs exit code zero. Prose never completes work.
+- Replans preserve completed specifications and all attempted-step history. Failed steps reopen
+  only after successful inspection and an explicit recovery revision. Failed/denied action
+  fingerprints survive intervening successes and step renames; existing coding checks and
+  permission/risk controls remain authoritative.
+- Orchestration payload v3 migrates v1/v2 without fabricated graphs. Running receipts are saved
+  before staging and become uncertain failures after interruption; stopped tasks stay stopped.
+  Unfinished text-only responses, cancellation and safety stops retain progress for resume.
+- Added deterministic source tests, exhaustive four-node DAG validation, integration checks,
+  six strictly allowlisted graph audit events and docs/TASK_GRAPH.md. No new execution tool,
+  automatic Premiere rollback or Premiere runtime capability claim was introduced.
+- Source verification uses existing local Node/dependencies without installing anything.
+  Node tests, registry/source validation, TypeScript checking and frontend bundling execute
+  against the changed source snapshot; the final delivery report records exact results and
+  remote commit identity. This is distinct from hosted CI or Rust/desktop execution evidence.
+- Baseline GitHub CI run 36446955220 for acf5e40570262a6a3d907a04950b8e1f0e2db286 had both
+  jobs at runner_id=0 with empty steps. No commands executed in that baseline run. Final-head
+  CI must be inspected separately; old passes are never evidence for a new commit.
+
+Production readiness remains **not established**. Rust verification, desktop restart/permission
+acceptance and paired Premiere runtime acceptance remain separate requirements.

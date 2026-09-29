@@ -19,7 +19,7 @@ For multi-step work, a tool proposal may carry:
 }
 ```
 
-Only one tool is proposed at a time. The plan metadata is descriptive context, not authorization. Invalid or oversized plan metadata is discarded without disabling an otherwise valid typed tool proposal.
+Only one tool is proposed at a time. The plan metadata is descriptive context, not authorization. Invalid or oversized legacy descriptive plan metadata is discarded without disabling an otherwise valid typed tool proposal. Optional task-graph metadata follows the stricter fail-closed rules in [TASK_GRAPH.md](TASK_GRAPH.md): malformed graph restrictions block staging rather than disappearing.
 
 Bounds:
 - objective: 500 characters
@@ -50,12 +50,12 @@ The hard agent limit remains 8 steps. Resume restores the persisted next step in
 
 ## Failure recovery
 
-After a successful tool result:
+After a successful typed tool result:
 - consecutive failure count resets;
-- recovery mode returns to normal;
+- recovery mode returns to normal unless a graph step still requires recovery;
 - the next provider turn receives the observed result plus updated orchestration context.
 
-After a failed tool result or tool-preparation failure:
+After a failed tool result or tool-preparation failure (only actual execution failures increment the failure counter):
 - recovery mode becomes `replan_required`;
 - the provider is told not to blind retry;
 - the actual tool error remains in the hidden tool-result conversation context.
@@ -64,7 +64,7 @@ The exact same unsuccessful tool+arguments proposal is blocked locally before pe
 
 Changed arguments or a different typed inspection tool are allowed so the model can recover from an observed error.
 
-A user denial is also treated as a replan signal; the identical denied action cannot simply be proposed again unchanged.
+A user denial is also treated as a replan signal; the identical denied action cannot simply be proposed again unchanged. Orchestration v3 retains unsuccessful action fingerprints across intervening successes and graph revisions.
 
 ## Permission boundary
 
@@ -125,3 +125,19 @@ The phase is shown in the local agent progress indicator and persisted in the or
 Only successful tool results update dependency evidence. Failed, denied, blocked, or merely proposed actions do not satisfy a dependency. A new user task starts a fresh dependency state; resume restores the persisted state.
 
 The dependency graph intentionally stays narrow. It does not require every valid file creation to have a prior read, and it does not infer a test pass from source inspection. This avoids turning a safety layer into an unrestricted workflow language.
+
+## Evidence-based task graph and progress engine
+
+See [TASK_GRAPH.md](TASK_GRAPH.md) for the complete protocol, bounds and recovery rules.
+Optional graphs now cover the full proposal → dependency → permission → result → evidence →
+checkpoint → resume → progress flow. Graph restrictions supplement the coding checks above.
+
+The outer session schema remains v2; the orchestration payload is v3. Older payloads load
+without invented progress. A graph action's running receipt must be saved before staging.
+Interrupted running steps resume as uncertain failures requiring inspection/replan, while
+completed evidence and the next turn are preserved. Text-only provider replies, cancellation
+and safety stops cannot erase unfinished graph work.
+
+Graph statuses and completed counts come from local evidence only. Completed specifications
+cannot be changed in a replan, failed history cannot be deleted, and a stable objective cannot
+be silently replaced. Six additional strict graph audit events are documented in TASK_GRAPH.md.
