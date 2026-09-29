@@ -28,9 +28,10 @@ test("workspace and search entry points canonicalize roots before recursion",()=
     rust.indexOf("ToolAction::WorkspaceScan { path }"),
     rust.indexOf("ToolAction::SearchText { path, query }")
   );
+  const searchStart=rust.indexOf("ToolAction::SearchText { path, query }");
   const searchExec=rust.slice(
-    rust.indexOf("ToolAction::SearchText { path, query }"),
-    rust.indexOf("ToolAction::ReplaceText")
+    searchStart,
+    rust.indexOf("ToolAction::ReplaceText",searchStart)
   );
   assert.match(scanExec,/let canonical_root = root\.canonicalize\(\)/);
   assert.match(scanExec,/workspace_scan_recursive\(&canonical_root, &canonical_root/);
