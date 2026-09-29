@@ -11058,7 +11058,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::GitDiff { path } => {
-            let output = run_git(&path, &["diff", "--no-ext-diff", "--unified=3"])?;
+            let output = run_git(&path, &["diff", "HEAD", "--no-ext-diff", "--unified=3", "--"])?;
             let stdout = if output.status.success() {
                 git_context_stdout(&path, String::from_utf8_lossy(&output.stdout).to_string())?
             } else {

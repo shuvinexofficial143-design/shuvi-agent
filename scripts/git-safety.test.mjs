@@ -78,3 +78,12 @@ test("git writes require the exact reviewed local HEAD",()=>{
   assert.match(push,/Local HEAD changed after commit; refusing git_push/);
   assert.ok(push.indexOf("current_head.to_ascii_lowercase() != expected_head") < push.indexOf("git_remote_freshness(&path)"));
 });
+
+
+test("git_diff reviews the combined tracked delta against HEAD",()=>{
+  const start=rust.indexOf("ToolAction::GitDiff { path }");
+  const end=rust.indexOf("ToolAction::GitCommit",start);
+  const block=rust.slice(start,end);
+  assert.match(block,/\["diff", "HEAD", "--no-ext-diff", "--unified=3", "--"\]/);
+  assert.doesNotMatch(block,/\["diff", "--no-ext-diff", "--unified=3"\]/);
+});
