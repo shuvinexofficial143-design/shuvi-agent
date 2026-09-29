@@ -1405,6 +1405,30 @@ fn ensure_memory_budget(state: &ActionState) -> Result<(), String> {
     }
 }
 
+fn process_is_alive(pid: u32) -> bool {
+    let mut system = System::new_all();
+    system.refresh_all();
+    system.process(Pid::from_u32(pid)).is_some()
+}
+
+fn terminate_managed_process_tree(pid: u32) -> Result<bool, String> {
+    let pid_string = pid.to_string();
+
+    #[cfg(target_os = "windows")]
+    let output = Command::new("taskkill")
+        .args(["/PID", pid_string.as_str(), "/T", "/F"])
+        .output()
+        .map_err(|error| format!("Could not stop managed process tree at the RAM hard ceiling: {error}"))?;
+
+    #[cfg(not(target_os = "windows"))]
+    let output = Command::new("kill")
+        .args(["-TERM", pid_string.as_str()])
+        .output()
+        .map_err(|error| format!("Could not stop managed process at the RAM hard ceiling: {error}"))?;
+
+    Ok(output.status.success())
+}
+
 fn classify_powershell(command: &str) -> RiskLevel {
     let lower = command.to_ascii_lowercase();
 
@@ -11113,7 +11137,28 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     }
                 }
             }
-            let output_result = child.wait_with_output();
+            let hard_limit_triggered = AtomicBool::new(false);
+            let hard_limit_terminated = AtomicBool::new(false);
+            let output_result = std::thread::scope(|scope| {
+                let monitor = scope.spawn(|| {
+                    while process_is_alive(child_pid) {
+                        match current_runtime_status(state) {
+                            Ok(status) if status.over_hard_limit => {
+                                hard_limit_triggered.store(true, Ordering::Release);
+                                let stopped = terminate_managed_process_tree(child_pid).unwrap_or(false);
+                                hard_limit_terminated.store(stopped, Ordering::Release);
+                                break;
+                            }
+                            Ok(_) => {}
+                            Err(_) => break,
+                        }
+                        std::thread::sleep(Duration::from_millis(250));
+                    }
+                });
+                let output = child.wait_with_output();
+                let _ = monitor.join();
+                output
+            });
             if let Some(action_id) = execution_action_id {
                 if let Ok(mut running) = state.running_action_children.lock() {
                     running.remove(action_id);
@@ -11125,9 +11170,22 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let output = output_result
                 .map_err(|error| format!("Could not wait for project task: {error}"))?;
 
-            let mut success = output.status.success();
+            let exceeded_hard_limit = hard_limit_triggered.load(Ordering::Acquire);
+            let mut success = output.status.success() && !exceeded_hard_limit;
             let mut stdout = String::from_utf8_lossy(&output.stdout).to_string();
             let mut stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            if exceeded_hard_limit {
+                let warning = if hard_limit_terminated.load(Ordering::Acquire) {
+                    "Project validation exceeded Shuvi's 4 GB hard RAM ceiling and its managed process tree was stopped."
+                } else {
+                    "Project validation exceeded Shuvi's 4 GB hard RAM ceiling; termination could not be confirmed, so validation is failed closed."
+                };
+                stderr = if stderr.trim().is_empty() {
+                    warning.into()
+                } else {
+                    format!("{warning}\n{stderr}")
+                };
+            }
             if let Some(before) = git_before {
                 let after = git_local_context(&path)?;
                 if before.get("head") != after.get("head") {
