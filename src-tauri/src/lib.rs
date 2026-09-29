@@ -654,6 +654,7 @@ struct BrowserSession {
 struct ActionState {
     pending: Mutex<HashMap<String, PendingAction>>,
     managed_children: Mutex<HashSet<u32>>,
+    running_action_children: Mutex<HashMap<String, u32>>,
     browser_sessions: Mutex<HashMap<u32, BrowserSession>>,
     premiere_bridge: Arc<PremiereBridgeShared>,
     acceptance_probe_running: AtomicBool,
@@ -6167,6 +6168,15 @@ fn truncate_output(value: String) -> String {
 }
 
 async fn execute_tool(action: PendingAction, state: &ActionState, app: &AppHandle) -> Result<ActionResult, String> {
+    execute_tool_with_action_id(action, state, app, None).await
+}
+
+async fn execute_tool_with_action_id(
+    action: PendingAction,
+    state: &ActionState,
+    app: &AppHandle,
+    execution_action_id: Option<&str>,
+) -> Result<ActionResult, String> {
     let tool = action.tool.clone();
     let premiere_bridge = PremiereClient { bridge: &state.premiere_bridge, expected: action.premiere_expectation.as_ref() };
 
@@ -11035,7 +11045,27 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     return Err("Managed-process state is unavailable; project task was stopped before execution could continue safely.".into());
                 }
             }
+            if let Some(action_id) = execution_action_id {
+                match state.running_action_children.lock() {
+                    Ok(mut running) => {
+                        running.insert(action_id.to_string(), child_pid);
+                    }
+                    Err(_) => {
+                        if let Ok(mut managed) = state.managed_children.lock() {
+                            managed.remove(&child_pid);
+                        }
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err("Running-action state is unavailable; project task was stopped before execution could continue safely.".into());
+                    }
+                }
+            }
             let output_result = child.wait_with_output();
+            if let Some(action_id) = execution_action_id {
+                if let Ok(mut running) = state.running_action_children.lock() {
+                    running.remove(action_id);
+                }
+            }
             if let Ok(mut managed) = state.managed_children.lock() {
                 managed.remove(&child_pid);
             }
@@ -11353,6 +11383,61 @@ fn deny_action(
 }
 
 #[tauri::command]
+fn cancel_running_action(
+    action_id: String,
+    state: State<'_, ActionState>,
+) -> Result<bool, String> {
+    Uuid::parse_str(&action_id).map_err(|_| "Invalid running action ID.")?;
+    let pid = {
+        let running = state
+            .running_action_children
+            .lock()
+            .map_err(|_| "Running-action state is unavailable.".to_string())?;
+        running.get(&action_id).copied()
+    };
+    let Some(pid) = pid else {
+        return Ok(false);
+    };
+
+    let is_managed = state
+        .managed_children
+        .lock()
+        .map_err(|_| "Managed-process state is unavailable.".to_string())?
+        .contains(&pid);
+    if !is_managed {
+        if let Ok(mut running) = state.running_action_children.lock() {
+            running.remove(&action_id);
+        }
+        return Ok(false);
+    }
+
+    let pid_string = pid.to_string();
+    #[cfg(target_os = "windows")]
+    let output = Command::new("taskkill")
+        .args(["/PID", pid_string.as_str(), "/T", "/F"])
+        .output()
+        .map_err(|error| format!("Could not cancel running action: {error}"))?;
+
+    #[cfg(not(target_os = "windows"))]
+    let output = Command::new("kill")
+        .args(["-TERM", pid_string.as_str()])
+        .output()
+        .map_err(|error| format!("Could not cancel running action: {error}"))?;
+
+    if output.status.success() {
+        if let Ok(mut managed) = state.managed_children.lock() {
+            managed.remove(&pid);
+        }
+        if let Ok(mut running) = state.running_action_children.lock() {
+            running.remove(&action_id);
+        }
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+#[tauri::command]
 async fn execute_action(
     action_id: String,
     state: State<'_, ActionState>,
@@ -11370,7 +11455,7 @@ async fn execute_action(
     let tool = action.tool.clone();
     let detail = action.detail.clone();
 
-    match execute_tool(action, state.inner(), &app).await {
+    match execute_tool_with_action_id(action, state.inner(), &app, Some(action_id.as_str())).await {
         Ok(result) => {
             append_audit(
                 &app,
@@ -11579,6 +11664,7 @@ pub fn run() {
             prepare_tool,
             prepare_powershell,
             deny_action,
+            cancel_running_action,
             execute_action,
             execute_powershell,
             audit_log,
