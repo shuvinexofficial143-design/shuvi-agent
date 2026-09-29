@@ -68,6 +68,7 @@ const HARD_LIMIT_MB: f64 = 4096.0;
 const MAX_READ_BYTES: u64 = 1_048_576;
 const MAX_WRITE_BYTES: usize = 2_097_152;
 const MAX_TOOL_OUTPUT_CHARS: usize = 120_000;
+const MAX_SCREENSHOT_FILES: usize = 64;
 
 const TOOL_PROTOCOL: &str = r#"You are Shuvi, a permission-first Windows desktop AI agent.
 If the user's request requires a computer action, choose ONE tool and respond ONLY with a JSON object:
@@ -5288,6 +5289,28 @@ fn read_audit(app: &AppHandle, limit: usize) -> Result<Vec<AuditEntry>, String> 
     Ok(entries.into_iter().rev().collect())
 }
 
+fn prune_screenshot_dir(dir: &Path, keep_existing: usize) -> Result<(), String> {
+    let mut screenshots = fs::read_dir(dir)
+        .map_err(|error| format!("Could not inspect screenshot folder: {error}"))?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = path.file_name()?.to_str()?;
+            if !name.starts_with("screen-") || !name.ends_with(".png") || !path.is_file() {
+                return None;
+            }
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((modified, path))
+        })
+        .collect::<Vec<_>>();
+
+    screenshots.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, path) in screenshots.into_iter().skip(keep_existing) {
+        let _ = fs::remove_file(path);
+    }
+    Ok(())
+}
+
 fn capture_screen_png() -> Result<std::path::PathBuf, String> {
     #[cfg(target_os = "windows")]
     {
@@ -5295,7 +5318,10 @@ fn capture_screen_png() -> Result<std::path::PathBuf, String> {
         fs::create_dir_all(&dir)
             .map_err(|error| format!("Could not create screenshot folder: {error}"))?;
 
-        let path = dir.join(format!("screen-{}.png", now_ms()));
+        // Keep room for the screenshot being created. Cleanup is deliberately
+        // scoped to Shuvi-owned screen-*.png files in this one temp directory.
+        let _ = prune_screenshot_dir(&dir, MAX_SCREENSHOT_FILES.saturating_sub(1));
+        let path = dir.join(format!("screen-{}-{}.png", now_ms(), Uuid::new_v4()));
         let ps_path = path.to_string_lossy().replace("'", "''");
 
         let script = format!(
