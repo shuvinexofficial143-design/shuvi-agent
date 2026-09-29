@@ -87,14 +87,20 @@ blocked on dependencies becomes ready when they genuinely complete. Completed st
 rerun, and the same completed action cannot be disguised under a new step ID.
 An explicitly requested inspection recovery can reread a previously inspected target.
 
-Before staging a graph action, Shuvi saves its running receipt and fingerprint.
-If saving fails, staging stops. Successful completion requires the local `execute_action`
-return value, a matching tool, a successful typed result, and a matching running receipt.
-The graph records step ID, tool, fingerprint, success/outcome, evidence source, local
-orchestration turn and a fixed short summary. No timestamp is invented and no raw output is
-copied into the graph. Preparation errors, denials, exceptions, and failed results cannot
-satisfy dependencies. Provider prose and a success flag supplied without a typed result
-cannot complete a step.
+Before Rust permission staging, Shuvi saves the running step fingerprint/turn receipt.
+After `prepare_tool` creates the exact UUID pending action, that UUID is bound into the
+running receipt and checkpointed again before approval UI or session auto-execution.
+If either checkpoint save fails, the graph path stops and Shuvi does not intentionally
+execute the prepared action.
+
+Successful completion requires the local `execute_action` return value, matching tool,
+successful typed result, matching running fingerprint/turn, and the exact prepared action UUID
+that was bound before execution. A missing, malformed, stale or different action UUID cannot
+complete the graph step even if the tool/result shape otherwise looks successful.
+The graph records step ID, tool, fingerprint, prepared action ID, success/outcome, evidence
+source, local orchestration turn and a fixed short summary. No timestamp is invented and no
+raw output is copied into the graph. Preparation errors, denials, exceptions, failed results
+or provider prose cannot satisfy dependencies.
 
 Failure changes the step to failed and the coordinator to `replan_required`. Three
 consecutive actual execution failures retain the existing stop behavior. Preparation
@@ -132,9 +138,11 @@ actions still require the existing approval flow.
 
 ## Checkpoint and resume
 
-The outer session schema remains v2. Its orchestration payload is now v3 and contains graph,
-evidence, retained unsuccessful fingerprints and the last successful recovery turn.
-Orchestration v1/v2 remains readable with no invented graph or completion history.
+The outer session schema remains v2. Its orchestration payload is now v4 and contains graph,
+action-bound evidence, retained unsuccessful fingerprints and the last successful recovery
+turn. Orchestration v1/v2 and non-graph v3 payloads remain readable with no invented graph or
+completion history. A v3 payload that already contains graph evidence fails closed because
+the historical prepared action UUID was never recorded and cannot be invented safely.
 A known last unsuccessful legacy fingerprint is retained conservatively.
 
 Resume validates graph structure, evidence bounds, tool/source/outcome consistency, evidence
@@ -143,9 +151,11 @@ pending/ready states, and restores the next turn. Invalid graph receipts stop th
 instead of silently discarding graph restrictions.
 
 A saved running step has an unknown outcome. Resume converts it to a failed interrupted
-receipt, consumes that turn, and retains the fingerprint against automatic retry. It must
-be inspected and explicitly recovered; it is never declared successful. A stopped task
-stays stopped, including when it contains an interrupted receipt.
+receipt, consumes that turn, and retains the fingerprint against automatic retry. If the
+pending action had already been prepared, its UUID is retained in the interrupted evidence;
+if preparation had not completed, the interrupted evidence explicitly has no action UUID.
+Neither case is declared successful. It must be inspected and explicitly recovered. A
+stopped task stays stopped, including when it contains an interrupted receipt.
 
 Text-only provider replies with unfinished graph work pause and retain the checkpoint and
 show the saved-task resume control. Safety stops and user cancellation also retain graph
