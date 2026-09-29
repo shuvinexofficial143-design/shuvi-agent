@@ -2343,7 +2343,7 @@ fn stage_tool(
         }
         "ui_set_value" => {
             let (name, automation_id, window) = ui_selector(&proposal.arguments)?;
-            let value = arg_string(&proposal.arguments, "value")?;
+            let value = arg_raw_string(&proposal.arguments, "value")?;
             if value.len() > 20_000 {
                 return Err("UI value is too large.".into());
             }
