@@ -392,6 +392,24 @@ test("progress completion count requires typed evidence even for forged in-memor
   assert.equal(progress.completed,0);
   assert.equal(progress.steps[0].status,"pending");
 });
+test("frontend correlates execution with exact Rust audit receipt before evidence update", () => {
+  const main=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
+  const execute=main.slice(
+    main.indexOf("async function executePendingProposal"),
+    main.indexOf("function renderChatPermission")
+  );
+  const executeCall=execute.indexOf('"execute_action"');
+  const receiptCall=execute.indexOf('"action_audit_receipt"');
+  const outcomeCall=execute.indexOf("recordToolOutcome");
+  assert.ok(executeCall>=0);
+  assert.ok(receiptCall>executeCall);
+  assert.ok(outcomeCall>receiptCall);
+  assert.match(execute,/exactActionReceipt\([\s\S]{0,180}"executed"/);
+  assert.match(execute,/evidence_verification_failed: true/);
+  assert.match(execute,/execution_failure_audit_confirmed: confirmedFailure/);
+  assert.match(main,/action_audit_receipt/);
+});
+
 test("UI binds exact prepared action before approval or execution", () => {
   const main=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
   const stage=main.slice(main.indexOf("async function stageProposal"),main.indexOf("function clearChatPermission"));
