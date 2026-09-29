@@ -6648,15 +6648,12 @@ fn read_premiere_recipes(app: &AppHandle) -> Result<Vec<PremiereSavedRecipe>, St
         return Ok(Vec::new());
     }
 
-    let metadata = fs::metadata(&path)
-        .map_err(|error| format!("Could not inspect Premiere recipes: {error}"))?;
-    if metadata.len() > 2 * 1024 * 1024 {
-        return Err("Premiere recipe library is unexpectedly larger than 2 MB.".into());
-    }
-
-    let content = fs::read(&path)
-        .map_err(|error| format!("Could not read Premiere recipes: {error}"))?;
-    let recipes: Vec<PremiereSavedRecipe> = serde_json::from_slice(&content)
+    let content = read_utf8_file_bounded(
+        &path,
+        2 * 1024 * 1024,
+        "Premiere recipe library",
+    )?;
+    let recipes: Vec<PremiereSavedRecipe> = serde_json::from_str(&content)
         .map_err(|error| format!("Premiere recipe library is invalid: {error}"))?;
 
     Ok(recipes)
@@ -6672,6 +6669,7 @@ fn write_premiere_recipes(
 
     let path = premiere_recipes_path(app)?;
     let temp = path.with_extension("json.tmp");
+    let backup = path.with_extension("json.bak");
     let content = serde_json::to_vec_pretty(recipes)
         .map_err(|error| format!("Could not encode Premiere recipes: {error}"))?;
 
@@ -6682,12 +6680,23 @@ fn write_premiere_recipes(
     fs::write(&temp, &content)
         .map_err(|error| format!("Could not write temporary Premiere recipe library: {error}"))?;
 
-    if path.exists() {
-        let _ = fs::remove_file(&path);
+    if backup.exists() {
+        let _ = fs::remove_file(&backup);
     }
-
-    fs::rename(&temp, &path)
-        .map_err(|error| format!("Could not finalize Premiere recipe library: {error}"))
+    if path.exists() {
+        fs::rename(&path, &backup)
+            .map_err(|error| format!("Could not preserve the previous Premiere recipe library: {error}"))?;
+    }
+    if let Err(error) = fs::rename(&temp, &path) {
+        if backup.exists() {
+            let _ = fs::rename(&backup, &path);
+        }
+        return Err(format!("Could not finalize Premiere recipe library: {error}"));
+    }
+    if backup.exists() {
+        let _ = fs::remove_file(&backup);
+    }
+    Ok(())
 }
 
 fn session_checkpoint_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
