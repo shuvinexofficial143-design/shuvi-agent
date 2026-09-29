@@ -64,7 +64,7 @@ The exact same unsuccessful tool+arguments proposal is blocked locally before pe
 
 Changed arguments or a different typed inspection tool are allowed so the model can recover from an observed error.
 
-A user denial is also treated as a replan signal; the identical denied action cannot simply be proposed again unchanged. Orchestration v5 retains unsuccessful action fingerprints across intervening successes and graph revisions. Runtime graph/coding evidence is bound to the exact Rust-prepared action UUID and correlated Rust audit receipt; an uncorrelated frontend result cannot advance dependency evidence.
+A user denial is also treated as a replan signal; the identical denied action cannot simply be proposed again unchanged. Orchestration v5 retains unsuccessful action fingerprints across intervening successes and graph revisions. Runtime graph/coding evidence is bound to the exact Rust-prepared action UUID and correlated Rust audit receipt; an uncorrelated frontend result cannot advance dependency evidence. While a typed `run_project_task` is executing, its exact prepared action UUID is correlated to the managed child PID. Pressing Stop requests cancellation only for that registered action child; a confirmed user cancellation is recorded as a denied/replan outcome rather than a consecutive real tool failure. Non-cancellable actions are not force-killed and stop after their current result returns.
 
 ## Permission boundary
 

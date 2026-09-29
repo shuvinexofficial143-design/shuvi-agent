@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 
 const rust=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
+const main=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
 
 test("running project task is correlated to the exact prepared action ID",()=>{
   assert.match(rust,/running_action_children: Mutex<HashMap<String, u32>>/);
@@ -24,4 +25,29 @@ test("cancel_running_action only targets the child registered for that action UU
   assert.match(cancel,/running\.remove\(&action_id\)/);
   assert.doesNotMatch(cancel,/arg_u32/);
   assert.match(rust,/cancel_running_action,[\s\S]*execute_action/);
+});
+
+
+test("Stop button requests cancellation by exact executing action ID",()=>{
+  assert.match(main,/let executingActionId: string \| null = null/);
+  assert.match(main,/let cancelConfirmedActionId: string \| null = null/);
+  const execute=main.slice(main.indexOf("async function executePendingProposal"),main.indexOf("function renderChatPermission"));
+  assert.match(execute,/executingActionId = actionId/);
+  assert.match(execute,/cancelConfirmedActionId === actionId/);
+  assert.match(execute,/cancelledByUser \? "denied"/);
+  assert.match(execute,/cancelledByUser \? false : !result\.success && receiptMatches/);
+  assert.match(execute,/cancelled_by_user: true/);
+  assert.match(execute,/finally \{/);
+  const stop=main.slice(main.indexOf('el<HTMLButtonElement>("#stopButton")'),main.indexOf("document.querySelectorAll<HTMLButtonElement>"));
+  assert.match(stop,/if \(executingActionId\)/);
+  assert.match(stop,/invoke<boolean>\("cancel_running_action", \{ actionId \}\)/);
+  assert.match(stop,/cancelConfirmedActionId = actionId/);
+  assert.match(stop,/Non-cancellable or already-finished actions still stop after their current result returns/);
+});
+
+test("user-cancelled execution is not counted as a confirmed real tool failure",()=>{
+  const execute=main.slice(main.indexOf("async function executePendingProposal"),main.indexOf("function renderChatPermission"));
+  assert.match(execute,/cancelledByUser \? false : confirmedFailure/);
+  assert.match(execute,/execution_failure_audit_confirmed: cancelledByUser \? false : confirmedFailure/);
+  assert.match(execute,/retry_automatically: false/);
 });

@@ -37,6 +37,8 @@ let providers: ProviderDescriptor[] = [];
 let messages: ChatMessage[] = [];
 let pendingAction: PendingAction | null = null;
 let pendingChatProposal: ToolProposal | null = null;
+let executingActionId: string | null = null;
+let cancelConfirmedActionId: string | null = null;
 let orchestration: AgentOrchestrationState = createAgentOrchestrationState();
 let busy = false;
 let cancelRequested = false;
@@ -883,6 +885,8 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
   if (!pendingAction || cancelRequested) return;
 
   const actionId = pendingAction.id;
+  executingActionId = actionId;
+  cancelConfirmedActionId = null;
   clearChatPermission();
 
   try {
@@ -895,19 +899,26 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
       "executed",
       result.success
     );
+    const cancelledByUser = cancelConfirmedActionId === actionId;
     void refreshAudit();
     orchestration = recordToolOutcome(
       orchestration,
       proposal,
-      result.success ? "success" : "failure",
+      cancelledByUser ? "denied" : result.success ? "success" : "failure",
       result,
-      !result.success && receiptMatches,
+      cancelledByUser ? false : !result.success && receiptMatches,
       actionId,
       receipt
     );
     await auditGraphOutcome(proposal);
     messages.push(toolResultMessage(result));
-    if (proposal.task_step_id != null && !receiptMatches) {
+    if (cancelledByUser) {
+      messages.push(hiddenToolFailure(proposal, {
+        cancelled_by_user: true,
+        action_id: actionId,
+        retry_automatically: false
+      }));
+    } else if (proposal.task_step_id != null && !receiptMatches) {
       messages.push(hiddenToolFailure(proposal, {
         evidence_verification_failed: true,
         action_id: actionId,
@@ -918,13 +929,14 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
     await continueAfterOutcome();
   } catch (error) {
     const receipt = await readActionAuditReceipt(actionId);
+    const cancelledByUser = cancelConfirmedActionId === actionId;
     const confirmedFailure = exactActionReceipt(receipt, actionId, proposal.tool, "failed", false);
     orchestration = recordToolOutcome(
       orchestration,
       proposal,
-      "failure",
+      cancelledByUser ? "denied" : "failure",
       undefined,
-      confirmedFailure,
+      cancelledByUser ? false : confirmedFailure,
       actionId,
       receipt
     );
@@ -932,13 +944,16 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
     messages.push(hiddenToolFailure(proposal, {
       error: String(error),
       action_id: actionId,
-      execution_failure_audit_confirmed: confirmedFailure,
+      cancelled_by_user: cancelledByUser,
+      execution_failure_audit_confirmed: cancelledByUser ? false : confirmedFailure,
       retry_automatically: false
     }));
     await continueAfterOutcome();
+  } finally {
+    if (executingActionId === actionId) executingActionId = null;
+    if (cancelConfirmedActionId === actionId) cancelConfirmedActionId = null;
   }
 }
-
 function renderChatPermission(proposal: ToolProposal, step: number): void {
   if (!pendingAction) {
     clearChatPermission();
@@ -1445,6 +1460,20 @@ el<HTMLButtonElement>("#stopButton").addEventListener("click", async () => {
 
     // No provider/tool request is active while waiting for permission.
     await runAgentStep();
+    return;
+  }
+
+  if (executingActionId) {
+    const actionId = executingActionId;
+    el<HTMLButtonElement>("#stopButton").textContent = "Stopping…";
+    try {
+      const cancelled = await invoke<boolean>("cancel_running_action", { actionId });
+      if (cancelled && executingActionId === actionId) {
+        cancelConfirmedActionId = actionId;
+      }
+    } catch {
+      // Non-cancellable or already-finished actions still stop after their current result returns.
+    }
     return;
   }
 
