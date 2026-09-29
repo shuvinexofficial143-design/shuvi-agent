@@ -118,6 +118,11 @@ for(const mode of ['extend','audio','missing trim']) test('unsupported duration 
 for(const mode of ['emptyReceipt','wrongReceipt','throwAfterInsert','switchSequence','ignoreWrite','ignoreTrim','transactionFailure']) {
   test(mode+' stops as uncertain with no blind retry',async () => {
     const f=fixture({[mode]:true});if(mode==='ignoreTrim')f.args.item.duration_seconds=2;
+    if (mode === 'switchSequence') {
+      await assert.rejects(f.run(), /sequence changed/);
+      assert.equal(f.stats().insertCalls, 1);
+      return;
+    }
     const r=await f.run();assert.equal(r.status,'uncertain',r.reason);assert.equal(r.uncertain,true);assert.equal(r.stop_batch,true);
     assert.equal(f.stats().insertCalls,1);assert.equal(r.automatic_rollback,false);
   });

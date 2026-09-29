@@ -1,3 +1,4 @@
+mod premiere_execution;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs::{self, OpenOptions},
@@ -546,20 +547,20 @@ enum ToolAction {
     PremiereTranscriptDucking { item_id: String, target: ParameterTarget, request: AudioPlanRequest, transcript_offset: f64, music_start: f64, merge_gap: f64, apply: bool },
     PremiereTranscriptCuts { request: premiere_talking_head::Request, apply: bool, transcript_snapshot: Option<String> },
     PremiereTranscriptRebuild { request: premiere_transcript_rebuild::Request, apply: bool, plan_snapshot: Option<String> },
-    PremiereCancelTranscriptRebuild,
+    PremiereCancelTranscriptRebuild { generation: u64 },
     PremierePlanSceneDetection { request: premiere_scene_detection::Request },
     PremiereSceneDetection { request: premiere_scene_detection::Request },
     PremierePlanSceneRoughCut { request: premiere_scene_rough_cut::Request },
     PremiereBatchFinish { targets: Vec<Value> },
     PremiereFinishMediaBatch { request: premiere_finishing::Request, provider: Option<ProviderContext> },
-    PremiereBatchFinishCancel,
+    PremiereBatchFinishCancel { generation: u64 },
     PremiereSaveGraphicsMapping { mapping: premiere_graphics::Mapping, track: u32, clip_index: u32, expected_revision: Option<u32> },
     PremiereListGraphicsMappings,
     PremiereDeleteGraphicsMapping { name: String, revision: u32 },
     PremiereBatchGraphics { batch: premiere_graphics::Batch },
-    PremiereCancelGraphicsBatch,
+    PremiereCancelGraphicsBatch { generation: u64 },
     PremiereAssembly { assembly: premiere_assembly::Assembly, apply: bool },
-    PremiereAssemblyCancel,
+    PremiereAssemblyCancel { generation: u64 },
     PremierePopulateMogrt { track: u32, clip_index: u32, request: GraphicsRequest },
     PremiereImportTranscript { item_id: String, transcript_json: String },
     PremiereAttachProxy { item_id: String, proxy_path: String },
@@ -567,7 +568,7 @@ enum ToolAction {
     PremiereInspectMediaInterpretation { item_id: String },
     PremierePrepareMediaItem { request: premiere_media_prep::ItemPrep },
     PremierePrepareMediaBatch { batch: premiere_media_prep::Batch },
-    PremiereCancelMediaPrep,
+    PremiereCancelMediaPrep { generation: u64 },
     PremiereCreateSequenceFromPreset { name: String, preset_path: String },
     PremiereGetWorkArea,
     PremiereSetWorkArea { request: premiere_media_prep::WorkArea },
@@ -585,7 +586,7 @@ enum ToolAction {
     PremiereCloneClip { kind: String, track: u32, clip_index: u32, time_offset_seconds: f64, video_track_offset: i32, audio_track_offset: i32, align_to_video: bool, insert: bool },
     PremiereCloneClipToTrack { request: premiere_layering::CloneToTrack },
     PremiereLayerClips { batch: premiere_layering::LayerBatch },
-    PremiereCancelLayerClips,
+    PremiereCancelLayerClips { generation: u64 },
     PremiereRenameTrack { request: premiere_layering::TrackRename },
     PremiereOrganizeTracks { request: premiere_layering::TrackOrganization },
     PremiereDeleteClip { kind: String, track: u32, clip_index: u32, ripple: bool },
@@ -606,7 +607,7 @@ enum ToolAction {
     PremiereExportInterchange { request: premiere_delivery::InterchangeRequest },
     PremiereExportFrame { request: premiere_delivery::FrameRequest },
     PremiereExportReviewFrames { batch: premiere_delivery::FrameBatch },
-    PremiereCancelReviewFrameExport,
+    PremiereCancelReviewFrameExport { generation: u64 },
     PremiereExportStatus { job_id: String },
     PremiereReadinessReport,
     PremiereSaveProject,
@@ -689,18 +690,18 @@ struct ActionState {
     browser_sessions: Mutex<HashMap<u32, BrowserSession>>,
     premiere_bridge: Arc<PremiereBridgeShared>,
     acceptance_probe_running: AtomicBool,
-    finishing_running: AtomicBool,
+    finishing_running: premiere_execution::Execution,
     finishing_cancelled: AtomicBool,
-    graphics_running: AtomicBool,
+    graphics_running: premiere_execution::Execution,
     graphics_cancelled: AtomicBool,
-    assembly_running: AtomicBool,
-    rebuild_running: AtomicBool,
+    assembly_running: premiere_execution::Execution,
+    rebuild_running: premiere_execution::Execution,
     rebuild_cancelled: AtomicBool,
-    layering_running: AtomicBool,
+    layering_running: premiere_execution::Execution,
     layering_cancelled: AtomicBool,
-    media_prep_running: AtomicBool,
+    media_prep_running: premiere_execution::Execution,
     media_prep_cancelled: AtomicBool,
-    delivery_running: AtomicBool,
+    delivery_running: premiere_execution::Execution,
     delivery_cancelled: AtomicBool,
     assembly_cancelled: AtomicBool,
 }
@@ -2842,7 +2843,7 @@ fn stage_tool(
             let detail = format!("Insert and populate {} lower thirds using '{}' revision {}; one project checkpoint and explicit native targets.", batch.items.len(), batch.mapping, batch.revision);
             (ToolAction::PremiereBatchGraphics {batch}, "Insert mapped lower thirds".into(), detail, RiskLevel::High)
         }
-        "premiere_cancel_graphics_batch" => (ToolAction::PremiereCancelGraphicsBatch, "Cancel graphics batch".into(), "Stop between graphics; the current native item may still finish.".into(), RiskLevel::Low),
+        "premiere_cancel_graphics_batch" => (ToolAction::PremiereCancelGraphicsBatch { generation: state.graphics_running.generation()? }, "Cancel graphics batch".into(), "Stop between graphics; the current native item may still finish.".into(), RiskLevel::Low),
         "premiere_plan_mogrt_recipe" => {
             let track = proposal.arguments.get("track").and_then(Value::as_u64).filter(|v| *v <= 128).ok_or("Track must be 0–128.")? as u32;
             let clip_index = proposal.arguments.get("clip_index").and_then(Value::as_u64).filter(|v| *v <= 10000).ok_or("Clip index must be 0–10000.")? as u32;
@@ -2911,7 +2912,7 @@ fn stage_tool(
                 "Create hard-bounded source subclips and assemble into a separate explicit empty sequence; preserve original, use only supplied removals and media flags.".into(),
                 if apply {RiskLevel::High} else {RiskLevel::Low})
         }
-        "premiere_cancel_transcript_rebuild" => (ToolAction::PremiereCancelTranscriptRebuild, "Cancel transcript rebuild".into(), "Stop before the next subclip or insertion; completed pieces remain available.".into(), RiskLevel::Low),
+        "premiere_cancel_transcript_rebuild" => (ToolAction::PremiereCancelTranscriptRebuild { generation: state.rebuild_running.generation()? }, "Cancel transcript rebuild".into(), "Stop before the next subclip or insertion; completed pieces remain available.".into(), RiskLevel::Low),
         "premiere_plan_scene_detection" => {
             let request: premiere_scene_detection::Request = serde_json::from_value(
                 proposal.arguments.get("request").cloned().unwrap_or(Value::Null)
@@ -3023,7 +3024,7 @@ fn stage_tool(
             }
             (ToolAction::PremiereAssembly{assembly,apply:true},if true{"Assemble explicit Premiere shot list"}else{"Plan explicit Premiere shot list"}.into(),"Use inspected project items and existing typed insert/overwrite; no inferred source trims or media assets.".into(),if true{RiskLevel::High}else{RiskLevel::Low})
         }
-        "premiere_cancel_assembly" => (ToolAction::PremiereAssemblyCancel,"Cancel Premiere assembly".into(),"Stop launching further shots after current native action.".into(),RiskLevel::Low),
+        "premiere_cancel_assembly" => (ToolAction::PremiereAssemblyCancel { generation: state.assembly_running.generation()? },"Cancel Premiere assembly".into(),"Stop launching further shots after current native action.".into(),RiskLevel::Low),
         "premiere_finish_media_batch" => {
             let request: premiere_finishing::Request = serde_json::from_value(
                 proposal.arguments.get("request").cloned().unwrap_or(Value::Null)
@@ -3054,7 +3055,7 @@ fn stage_tool(
             )
         }
         "premiere_finish_media_batch_cancel" => (
-            ToolAction::PremiereBatchFinishCancel,
+            ToolAction::PremiereBatchFinishCancel { generation: state.finishing_running.generation()? },
             "Cancel mixed Premiere finishing".into(),
             "Stop before the next finishing target; a current native command may still complete.".into(),
             RiskLevel::Low,
@@ -3074,7 +3075,7 @@ fn stage_tool(
             }
             (ToolAction::PremiereBatchFinish{targets:targets.clone()},"Finish explicit Premiere clips".into(),format!("Apply inspected native motion/color recipes on {} exact clips, with per-clip results and project checkpoint.",targets.len()),RiskLevel::High)
         }
-        "premiere_batch_finish_cancel" => (ToolAction::PremiereBatchFinishCancel,"Cancel Premiere batch finishing".into(),"Stop before the next clip; any current Premiere command may still finish.".into(),RiskLevel::Low),
+        "premiere_batch_finish_cancel" => (ToolAction::PremiereBatchFinishCancel { generation: state.finishing_running.generation()? },"Cancel Premiere batch finishing".into(),"Stop before the next clip; any current Premiere command may still finish.".into(),RiskLevel::Low),
         "premiere_plan_video_recipe" => {
             let track = proposal.arguments.get("track").and_then(Value::as_u64).filter(|v| *v <= 128).ok_or("Track must be 0–128.")? as u32;
             let clip_index = proposal.arguments.get("clip_index").and_then(Value::as_u64).filter(|v| *v <= 10000).ok_or("Clip index must be 0–10000.")? as u32;
@@ -4309,7 +4310,7 @@ fn stage_tool(
             )
         }
         "premiere_cancel_media_prep" => (
-            ToolAction::PremiereCancelMediaPrep,
+            ToolAction::PremiereCancelMediaPrep { generation: state.media_prep_running.generation()? },
             "Cancel Premiere media preparation".into(),
             "Stop before the next project item; a native transaction already dispatched may still complete.".into(),
             RiskLevel::Low,
@@ -5069,7 +5070,7 @@ fn stage_tool(
             )
         }
         "premiere_cancel_layer_clips" => (
-            ToolAction::PremiereCancelLayerClips,
+            ToolAction::PremiereCancelLayerClips { generation: state.layering_running.generation()? },
             "Cancel Premiere layering batch".into(),
             "Stop before the next clone operation; a native clone already dispatched may still complete.".into(),
             RiskLevel::Low,
@@ -5326,7 +5327,7 @@ fn stage_tool(
             )
         }
         "premiere_cancel_review_frame_export" => (
-            ToolAction::PremiereCancelReviewFrameExport,
+            ToolAction::PremiereCancelReviewFrameExport { generation: state.delivery_running.generation()? },
             "Cancel Premiere review-frame export".into(),
             "Stop before the next native frame export; an already dispatched frame may still complete.".into(),
             RiskLevel::Low,
@@ -8092,9 +8093,9 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 exit_code:Some(if accepted {0}else{1}),
             })
         }
-        ToolAction::PremiereCancelTranscriptRebuild => {
-            state.rebuild_cancelled.store(true, Ordering::Release);
-            Ok(ActionResult {success:true, tool, stdout:json!({"cancel_requested":true,"running":state.rebuild_running.load(Ordering::Acquire)}).to_string(), stderr:String::new(), exit_code:Some(0)})
+        ToolAction::PremiereCancelTranscriptRebuild { generation } => {
+            let cancelled = state.rebuild_running.cancel(generation, &state.rebuild_cancelled)?;
+            Ok(ActionResult {success:true, tool, stdout:json!({"cancel_requested":cancelled,"generation":generation,"native_inflight_may_finish":cancelled}).to_string(), stderr:String::new(), exit_code:Some(0)})
         }
         ToolAction::PremiereTranscriptRebuild {request, apply, plan_snapshot} => {
             request.validate()?;
@@ -8102,9 +8103,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 let plan = premiere_bridge.request("plan_transcript_rebuild", json!({"request":request}), Duration::from_secs(60)).await?;
                 return Ok(ActionResult {success:true, tool, stdout:plan.to_string(), stderr:String::new(), exit_code:Some(0)});
             }
-            if state.rebuild_running.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err() { return Err("Another transcript rebuild is running.".into()); }
-            let _guard = AcceptanceProbeGuard(&state.rebuild_running);
-            state.rebuild_cancelled.store(false,Ordering::Release);
+            let _guard = state.rebuild_running.begin(&state.rebuild_cancelled)?;
             // Checkpoint first; native begin then rechecks the approved snapshot before any media mutation.
             let checkpoint = backup_premiere_project(&premiere_bridge).await?;
             let prepared = premiere_bridge.request("begin_transcript_rebuild", json!({"request":request,"plan_snapshot":plan_snapshot}), Duration::from_secs(60)).await?;
@@ -8127,19 +8126,13 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let success = result.get("complete").and_then(Value::as_bool)==Some(true);
             Ok(ActionResult {success,tool,stdout:result.to_string(),stderr:String::new(),exit_code:Some(if success {0} else {1})})
         }
-        ToolAction::PremiereAssemblyCancel => {
-            state.assembly_cancelled.store(true,Ordering::Release);
-            Ok(ActionResult{success:true,tool,stdout:json!({"cancel_requested":true,"running":state.assembly_running.load(Ordering::Acquire)}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        ToolAction::PremiereAssemblyCancel { generation } => {
+            let cancelled = state.assembly_running.cancel(generation, &state.assembly_cancelled)?;
+            Ok(ActionResult{success:true,tool,stdout:json!({"cancel_requested":cancelled,"generation":generation,"native_inflight_may_finish":cancelled}).to_string(),stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::PremiereAssembly{assembly,apply} => {
             let expected=premiere_bridge.expected;
-            if apply {
-                if state.assembly_running.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err() {
-                    return Err("Another assembly is active.".into());
-                }
-                state.assembly_cancelled.store(false,Ordering::Release);
-            }
-            let _running_guard=if apply{Some(AcceptanceProbeGuard(&state.assembly_running))}else{None};
+            let _running_guard = if apply { Some(state.assembly_running.begin(&state.assembly_cancelled)?) } else { None };
 
             let ids=assembly.all_item_ids();
             let inspected=premiere_bridge.request(
@@ -8278,6 +8271,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     }
                 }
 
+                if state.assembly_cancelled.load(Ordering::Acquire) { break; }
                 match premiere_bridge.request(
                     "insert_project_item",
                     json!({
@@ -8430,11 +8424,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereFinishMediaBatch { request, provider } => {
-            if state.finishing_running.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err() {
-                return Err("Another finishing batch is active.".into());
-            }
-            let _guard = AcceptanceProbeGuard(&state.finishing_running);
-            state.finishing_cancelled.store(false, Ordering::Release);
+            let _guard = state.finishing_running.begin(&state.finishing_cancelled)?;
             let expected = premiere_bridge.expected.ok_or("Mixed finishing requires inspected Premiere expectations.")?.clone();
 
             let timeline = premiere_bridge.request("inspect_timeline", json!({}), Duration::from_secs(25)).await?;
@@ -8702,9 +8692,9 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 exit_code:Some(if success{0}else{1}),
             })
         }
-        ToolAction::PremiereBatchFinishCancel => {
-            state.finishing_cancelled.store(true,Ordering::Release);
-            Ok(ActionResult{success:true,tool,stdout:json!({"cancel_requested":true,"running":state.finishing_running.load(Ordering::Acquire)}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        ToolAction::PremiereBatchFinishCancel { generation } => {
+            let cancelled = state.finishing_running.cancel(generation, &state.finishing_cancelled)?;
+            Ok(ActionResult{success:true,tool,stdout:json!({"cancel_requested":cancelled,"generation":generation,"native_inflight_may_finish":cancelled}).to_string(),stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::PremiereSaveGraphicsMapping {mapping,track,clip_index,expected_revision} => {
             mapping.validate_local_template()?;
@@ -8727,14 +8717,12 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             premiere_graphics::delete(&graphics_library_path(app)?, &name, revision)?;
             Ok(ActionResult {success:true,tool,stdout:json!({"deleted":name,"revision":revision}).to_string(),stderr:String::new(),exit_code:Some(0)})
         }
-        ToolAction::PremiereCancelGraphicsBatch => {
-            state.graphics_cancelled.store(true, Ordering::Release);
-            Ok(ActionResult {success:true,tool,stdout:json!({"cancel_requested":true,"running":state.graphics_running.load(Ordering::Acquire)}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        ToolAction::PremiereCancelGraphicsBatch { generation } => {
+            let cancelled = state.graphics_running.cancel(generation, &state.graphics_cancelled)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"cancel_requested":cancelled,"generation":generation,"native_inflight_may_finish":cancelled}).to_string(),stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::PremiereBatchGraphics {batch} => {
-            if state.graphics_running.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err() { return Err("Another graphics batch is active.".into()); }
-            let _guard = AcceptanceProbeGuard(&state.graphics_running);
-            state.graphics_cancelled.store(false, Ordering::Release);
+            let _guard = state.graphics_running.begin(&state.graphics_cancelled)?;
             let expected = premiere_bridge.expected.ok_or("Graphics project/sequence expectation missing.")?;
             stage_graphics_batch(&serde_json::to_value(&batch).map_err(|e| e.to_string())?, Some(expected))?;
             let saved = premiere_graphics::list(&graphics_library_path(app)?)?.into_iter().find(|s| s.mapping.name == batch.mapping).ok_or("Unknown graphics mapping.")?;
@@ -8758,11 +8746,11 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             Ok(ActionResult {success,tool,stdout:result.to_string(),stderr:String::new(),exit_code:Some(if success {0} else {1})})
         }
         ToolAction::PremiereBatchFinish{targets} => {
-            if state.finishing_running.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){return Err("Another finishing batch is active.".into());}
-            let _guard=AcceptanceProbeGuard(&state.finishing_running);
-            state.finishing_cancelled.store(false,Ordering::Release);
+            let _guard = state.finishing_running.begin(&state.finishing_cancelled)?;
             let expected=premiere_bridge.expected.ok_or("Batch requires inspected Premiere expectation.")?;
             let mut results=Vec::new();let mut checkpoint:Option<String>=None;
+            let requested = targets.len();
+            let mut uncertain = false;
             for target in targets {
                 if state.finishing_cancelled.load(Ordering::Acquire){break;}
                 let track=target["track"].as_u64().ok_or("Invalid batch track.")? as u32;
@@ -8772,6 +8760,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 let client=PremiereClient{bridge:&state.premiere_bridge,expected:Some(&guard)};
                 let request=target.get("request").ok_or("Missing batch recipe request.")?;
                 let plan=client.request("plan_video_recipe",json!({"track":track,"clipIndex":index,"request":request}),Duration::from_secs(30)).await;
+                let mut dispatched = false;
                 let outcome=match plan {
                     Ok(plan) => {
                         if plan.get("expected")!=Some(&serde_json::to_value(&guard).map_err(|e|e.to_string())?) {Err("Native clip expectation changed during planning.".into())}
@@ -8780,6 +8769,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                             if state.finishing_cancelled.load(Ordering::Acquire){Err("Cancelled before clip edit.".into())}
                             else {
                                 if checkpoint.is_none(){checkpoint=Some(backup_premiere_project(&client).await?);}
+                                if state.finishing_cancelled.load(Ordering::Acquire) { break; }
+                                dispatched = true;
                                 client.request("apply_video_recipe",json!({"track":track,"clipIndex":index,"settings":settings}),Duration::from_secs(45)).await
                             }
                         }else{Err("Native planner returned no bounded executable settings.".into())}
@@ -8788,7 +8779,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 match outcome {
                     Ok(result)=>results.push(json!({"track":track,"clip_index":index,"status":"applied","result":result})),
                     Err(error)=>{
-                        let uncertain=error.contains("unknown")||error.contains("timed out")||error.contains("timeout");
+                        uncertain = dispatched;
                         results.push(json!({"track":track,"clip_index":index,"status":if uncertain{"uncertain"}else{"failed"},"reason":error.chars().take(240).collect::<String>()}));
                         if uncertain {break;}
                     }
@@ -8796,7 +8787,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             }
             let done=results.iter().filter(|r|r["status"]=="applied").count();
             let cancelled=state.finishing_cancelled.load(Ordering::Acquire);
-            Ok(ActionResult{success:done==results.len()&&!cancelled,tool,stdout:json!({"checkpoint":checkpoint,"requested":expected.clips.len(),"processed":results.len(),"applied":done,"cancelled":cancelled,"results":results,"review_recommended":done>0}).to_string(),stderr:String::new(),exit_code:Some(if done==expected.clips.len()&&!cancelled{0}else{1})})
+            Ok(ActionResult{success:done==requested&&!cancelled&&!uncertain,tool,stdout:json!({"checkpoint":checkpoint,"requested":requested,"uncertain":uncertain,"processed":results.len(),"applied":done,"cancelled":cancelled,"results":results,"review_recommended":done>0}).to_string(),stderr:String::new(),exit_code:Some(if done==requested&&!cancelled&&!uncertain{0}else{1})})
         }
         ToolAction::PremierePlanVideoRecipe { track, clip_index, request } => {
             let mut value = premiere_bridge.request("plan_video_recipe", json!({"track":track,"clipIndex":clip_index,"request":request}), Duration::from_secs(30)).await?;
@@ -9418,7 +9409,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let path=premiere_edit_session_path(app,&session_id)?;
             let mut session=premiere_edit_session::load(&path)?;
             session.cancel();premiere_edit_session::save(&path,&session)?;
-            Ok(ActionResult {success:true,tool,stdout:json!({"session_id":session_id,"status":"cancelled"}).to_string(),stderr:String::new(),exit_code:Some(0)})
+            Ok(ActionResult {success:true,tool,stdout:json!({"session_id":session_id,"status":session.status}).to_string(),stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::PremiereEditSessionNext {session_id} => {
             let path=premiere_edit_session_path(app,&session_id)?;
@@ -10343,21 +10334,17 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 exit_code:Some(if accepted{0}else{1}),
             })
         }
-        ToolAction::PremiereCancelMediaPrep => {
-            state.media_prep_cancelled.store(true,Ordering::Release);
+        ToolAction::PremiereCancelMediaPrep { generation } => {
+            let cancelled = state.media_prep_running.cancel(generation, &state.media_prep_cancelled)?;
             Ok(ActionResult{
                 success:true,tool,
-                stdout:json!({"cancel_requested":true,"running":state.media_prep_running.load(Ordering::Acquire)}).to_string(),
+                stdout:json!({"cancel_requested":cancelled,"generation":generation,"native_inflight_may_finish":cancelled}).to_string(),
                 stderr:String::new(),exit_code:Some(0)
             })
         }
         ToolAction::PremierePrepareMediaBatch {batch} => {
             batch.validate()?;
-            if state.media_prep_running.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){
-                return Err("Another Premiere media preparation batch is running.".into());
-            }
-            let _guard=AcceptanceProbeGuard(&state.media_prep_running);
-            state.media_prep_cancelled.store(false,Ordering::Release);
+            let _guard = state.media_prep_running.begin(&state.media_prep_cancelled)?;
             let expected=premiere_bridge.expected.ok_or("Media preparation batch requires project expectation.")?.clone();
             let checkpoint=backup_premiere_project(&premiere_bridge).await?;
             let client=PremiereClient{bridge:&state.premiere_bridge,expected:Some(&expected)};
@@ -10926,12 +10913,12 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 exit_code: Some(0),
             })
         }
-        ToolAction::PremiereCancelLayerClips => {
-            state.layering_cancelled.store(true, Ordering::Release);
+        ToolAction::PremiereCancelLayerClips { generation } => {
+            let cancelled = state.layering_running.cancel(generation, &state.layering_cancelled)?;
             Ok(ActionResult {
                 success:true,
                 tool,
-                stdout:json!({"cancel_requested":true,"running":state.layering_running.load(Ordering::Acquire)}).to_string(),
+                stdout:json!({"cancel_requested":cancelled,"generation":generation,"native_inflight_may_finish":cancelled}).to_string(),
                 stderr:String::new(),
                 exit_code:Some(0),
             })
@@ -10972,11 +10959,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
         }
         ToolAction::PremiereLayerClips { batch } => {
             batch.validate()?;
-            if state.layering_running.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err() {
-                return Err("Another Premiere layering batch is already running.".into());
-            }
-            let _guard = AcceptanceProbeGuard(&state.layering_running);
-            state.layering_cancelled.store(false,Ordering::Release);
+            let _guard = state.layering_running.begin(&state.layering_cancelled)?;
             let expected = premiere_bridge.expected.ok_or("Layer batch requires exact source expectations.")?.clone();
             let checkpoint = backup_premiere_project(&premiere_bridge).await?;
             let mut results = Vec::new();
@@ -11633,21 +11616,17 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 stderr:String::new(),exit_code:Some(if accepted&&observed{0}else{1})
             })
         }
-        ToolAction::PremiereCancelReviewFrameExport => {
-            state.delivery_cancelled.store(true,Ordering::Release);
+        ToolAction::PremiereCancelReviewFrameExport { generation } => {
+            let cancelled = state.delivery_running.cancel(generation, &state.delivery_cancelled)?;
             Ok(ActionResult{
                 success:true,tool,
-                stdout:json!({"cancel_requested":true,"running":state.delivery_running.load(Ordering::Acquire)}).to_string(),
+                stdout:json!({"cancel_requested":cancelled,"generation":generation,"native_inflight_may_finish":cancelled}).to_string(),
                 stderr:String::new(),exit_code:Some(0)
             })
         }
         ToolAction::PremiereExportReviewFrames {batch} => {
             batch.validate()?;
-            if state.delivery_running.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){
-                return Err("Another Premiere review-frame export is running.".into());
-            }
-            let _guard=AcceptanceProbeGuard(&state.delivery_running);
-            state.delivery_cancelled.store(false,Ordering::Release);
+            let _guard = state.delivery_running.begin(&state.delivery_cancelled)?;
             let expected=premiere_bridge.expected.ok_or("Review-frame export requires project/sequence expectation.")?.clone();
             let client=PremiereClient{bridge:&state.premiere_bridge,expected:Some(&expected)};
             let mut results=Vec::new();

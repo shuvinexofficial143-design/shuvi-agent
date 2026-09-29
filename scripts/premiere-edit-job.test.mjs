@@ -49,7 +49,8 @@ test("mutating phases are never silently dispatched by edit job next",()=>{
 });
 
 test("phase advancement requires matching audit action receipt",()=>{
-  assert.match(rust,/No matching recent typed action audit receipt for this edit-job phase/);
+  assert.match(rust,/read_action_audit_receipt\(app,&action_id\)\?/);
+  assert.match(rust,/No matching typed action audit receipt for this edit-job phase/);
   assert.match(job,/Audit receipt does not match the next edit-job phase/);
   assert.match(rust,/entry\.tool==pending\.tool/);
 });

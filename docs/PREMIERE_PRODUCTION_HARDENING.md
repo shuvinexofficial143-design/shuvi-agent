@@ -23,3 +23,19 @@ Result structure/size is checked before JSON serialization. Oversized, cyclic or
 deep results return bounded uncertainty instead of truncated authorization data.
 Node transport tests exercise mocked behavior. Rust queue tests cover action
 mismatch and contradictory envelopes; Rust execution must be reported separately.
+
+## Workflow cancellation
+
+Transcript rebuild, assembly, mixed/ordinary finishing, graphics, media prep,
+layering and review-frame delivery use a mutex-protected execution generation.
+A cancel proposal captures the active generation when prepared. A delayed or late
+cancel is a no-op after that execution ends, even if a new one starts. Start and
+cancel-flag reset are atomic with respect to cancellation. Only one execution per
+family is admitted. The native operation already in flight may still finish.
+Advanced assembly checks cancellation again between subclip creation and insertion.
+Finishing treats every error after mutation dispatch as uncertain and stops; its
+success and exit status both require all requested targets to finish.
+Completed edit sessions remain completed after a late cancel.
+
+Rust execution lifecycle tests are included. Node tests check all seven call-site
+bindings; these are structural checks, not a substitute for Rust or host race tests.

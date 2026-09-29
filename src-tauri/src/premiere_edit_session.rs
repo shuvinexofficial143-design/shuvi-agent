@@ -117,7 +117,7 @@ impl Session {
         self.event(i,"reviewing",None)?;
         if acceptable {self.event(i,"completed",None)}else{self.event(i,"failed",None)}
     }
-    pub fn cancel(&mut self){self.status="cancelled".into();self.current_stage=None;
+    pub fn cancel(&mut self){if self.status!="running" {return;} self.status="cancelled".into();self.current_stage=None;
         for run in &mut self.stages {if matches!(run.state.as_str(),"pending"|"ready"|"awaiting_approval"|"review_required"|"reviewing") {run.state="cancelled".into();}}
     }
 }
