@@ -34,3 +34,14 @@ test("clearing a task removes primary temp and backup checkpoint files",()=>{
   assert.match(block,/path\.with_extension\("json\.bak"\)/);
   assert.match(block,/fs::remove_file\(&candidate\)/);
 });
+
+
+test("session checkpoint decode reads through the bounded open-handle helper",()=>{
+  const start=rust.indexOf("fn read_session_checkpoint(");
+  const end=rust.indexOf("fn remove_session_checkpoint",start);
+  const block=rust.slice(start,end);
+  assert.match(block,/read_utf8_file_bounded\([\s\S]*2 \* 1024 \* 1024[\s\S]*"saved session checkpoint"/);
+  assert.match(block,/serde_json::from_str\(&content\)/);
+  assert.doesNotMatch(block,/fs::metadata\(candidate\)/);
+  assert.doesNotMatch(block,/fs::read\(candidate\)/);
+});
