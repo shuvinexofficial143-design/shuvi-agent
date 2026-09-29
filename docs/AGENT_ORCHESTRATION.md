@@ -90,6 +90,10 @@ Only one approved manual PowerShell action may execute at a time. While it is ru
 
 The approved manual shell process tree participates in the same managed RAM accounting as other Shuvi-launched children. A bounded watchdog samples it while the shell is active; crossing the 4 GB hard ceiling stops that exact shell process tree and fails the action closed.
 
+### Provider transport boundary
+
+Saved API keys for the custom OpenAI-compatible provider are never sent to a remote plain-HTTP endpoint. Custom provider URLs must use HTTPS unless the host is loopback-only (`localhost`, a loopback IP such as `127.0.0.1`, or `::1`). Local Ollama remains usable over its normal local HTTP endpoint because it does not load or attach a saved provider API key.
+
 ## Permission boundary
 
 Planning never executes a tool.

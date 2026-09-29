@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs::{self, OpenOptions},
     io::{BufRead, BufReader, Write},
+    net::IpAddr,
     path::{Component, Path},
     process::{Command, Stdio},
     sync::{Arc, Mutex, OnceLock, atomic::{AtomicBool, Ordering}},
@@ -765,6 +766,16 @@ fn provider_ids() -> HashSet<&'static str> {
     providers().into_iter().map(|provider| provider.id).collect()
 }
 
+fn url_host_is_loopback(parsed: &Url) -> bool {
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
 fn validate_provider_fields(
     provider: &str,
     model: &str,
@@ -797,6 +808,9 @@ fn validate_provider_fields(
         }
         if !parsed.username().is_empty() || parsed.password().is_some() {
             return Err("Provider base URL must not contain embedded credentials; use the credential store for API keys.".into());
+        }
+        if provider == "custom" && parsed.scheme() != "https" && !url_host_is_loopback(&parsed) {
+            return Err("Custom provider URLs carrying a saved API key must use HTTPS unless the endpoint is loopback-only.".into());
         }
     }
 
