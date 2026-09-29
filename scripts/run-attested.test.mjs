@@ -18,13 +18,13 @@ test("attestation filename and shape are commit bound",()=>{
     schema_version:SCHEMA_VERSION,scope:"full",repository_commit:sha,
     repository_commit_after:sha,head_unchanged:true,
     clean_worktree_before:true,clean_worktree_after:true,clean_worktree:true,
-    commands:[{name:"x",command:"x",exit_code:0,launch_error:null}],passed:true,assurance:ASSURANCE
+    commands:[{name:"validate",command:"validate",exit_code:0,launch_error:null},{name:"node_tests",command:"node_tests",exit_code:0,launch_error:null},{name:"frontend_build",command:"frontend_build",exit_code:0,launch_error:null},{name:"cargo_check",command:"cargo_check",exit_code:0,launch_error:null},{name:"cargo_tests",command:"cargo_tests",exit_code:0,launch_error:null}],passed:true,assurance:ASSURANCE
   }),true);
   assert.equal(validateAttestation({
     schema_version:SCHEMA_VERSION,scope:"full",repository_commit:"main",
     repository_commit_after:sha,head_unchanged:false,
     clean_worktree_before:true,clean_worktree_after:true,clean_worktree:true,
-    commands:[{name:"x",command:"x",exit_code:0,launch_error:null}],passed:true,assurance:ASSURANCE
+    commands:[{name:"validate",command:"validate",exit_code:0,launch_error:null},{name:"node_tests",command:"node_tests",exit_code:0,launch_error:null},{name:"frontend_build",command:"frontend_build",exit_code:0,launch_error:null},{name:"cargo_check",command:"cargo_check",exit_code:0,launch_error:null},{name:"cargo_tests",command:"cargo_tests",exit_code:0,launch_error:null}],passed:true,assurance:ASSURANCE
   }),false);
 });
 
@@ -34,7 +34,7 @@ test("attestation rejects dirty or internally inconsistent worktree receipts",()
   const base={
     schema_version:SCHEMA_VERSION,scope:"frontend",repository_commit:sha,
     repository_commit_after:sha,head_unchanged:true,
-    commands:[{name:"validate",command:"npm run validate",exit_code:0,launch_error:null}],passed:false,assurance:ASSURANCE
+    commands:[{name:"validate",command:"validate",exit_code:0,launch_error:null},{name:"node_tests",command:"node_tests",exit_code:0,launch_error:null},{name:"frontend_build",command:"frontend_build",exit_code:0,launch_error:null}],passed:false,assurance:ASSURANCE
   };
   assert.equal(validateAttestation({
     ...base,clean_worktree_before:false,clean_worktree_after:true,clean_worktree:false
@@ -64,7 +64,7 @@ test("attestation rejects HEAD changes during verification",()=>{
   const common={
     schema_version:SCHEMA_VERSION,scope:"frontend",repository_commit:before,
     clean_worktree_before:true,clean_worktree_after:true,clean_worktree:true,
-    commands:[{name:"validate",command:"npm run validate",exit_code:0,launch_error:null}],assurance:ASSURANCE
+    commands:[{name:"validate",command:"validate",exit_code:0,launch_error:null},{name:"node_tests",command:"node_tests",exit_code:0,launch_error:null},{name:"frontend_build",command:"frontend_build",exit_code:0,launch_error:null}],assurance:ASSURANCE
   };
   assert.equal(validateAttestation({
     ...common,repository_commit_after:after,head_unchanged:false,passed:false
@@ -97,21 +97,12 @@ test("attestation passed flag must match observed command outcomes",()=>{
     clean_worktree_before:true,clean_worktree_after:true,clean_worktree:true,
     assurance:ASSURANCE
   };
-  assert.equal(validateAttestation({
-    ...base,
-    commands:[{name:"validate",command:"npm run validate",exit_code:1,launch_error:null}],
-    passed:true
-  }),false);
-  assert.equal(validateAttestation({
-    ...base,
-    commands:[{name:"validate",command:"npm run validate",exit_code:1,launch_error:null}],
-    passed:false
-  }),true);
-  assert.equal(validateAttestation({
-    ...base,
-    commands:[{name:"validate",command:"npm run validate",exit_code:0,launch_error:"spawn failed"}],
-    passed:true
-  }),false);
+  const passing=[{name:"validate",command:"validate",exit_code:0,launch_error:null},{name:"node_tests",command:"node_tests",exit_code:0,launch_error:null},{name:"frontend_build",command:"frontend_build",exit_code:0,launch_error:null}];
+  const failedExit=passing.map((command,index)=>index===0?{...command,exit_code:1}:command);
+  const launchFailure=passing.map((command,index)=>index===0?{...command,launch_error:"spawn failed"}:command);
+  assert.equal(validateAttestation({...base,commands:failedExit,passed:true}),false);
+  assert.equal(validateAttestation({...base,commands:failedExit,passed:false}),true);
+  assert.equal(validateAttestation({...base,commands:launchFailure,passed:true}),false);
 });
 
 test("attestation rejects malformed command execution records",()=>{
@@ -122,7 +113,24 @@ test("attestation rejects malformed command execution records",()=>{
     clean_worktree_before:true,clean_worktree_after:true,clean_worktree:true,
     passed:true,assurance:ASSURANCE
   };
-  assert.equal(validateAttestation({...base,commands:[{name:"x",command:"x",exit_code:"0",launch_error:null}]}),false);
-  assert.equal(validateAttestation({...base,commands:[{name:"",command:"x",exit_code:0,launch_error:null}]}),false);
-  assert.equal(validateAttestation({...base,commands:[{name:"x",command:"",exit_code:0,launch_error:null}]}),false);
+  const passing=[{name:"validate",command:"validate",exit_code:0,launch_error:null},{name:"node_tests",command:"node_tests",exit_code:0,launch_error:null},{name:"frontend_build",command:"frontend_build",exit_code:0,launch_error:null}];
+  assert.equal(validateAttestation({...base,commands:passing.map((command,index)=>index===0?{...command,exit_code:"0"}:command)}),false);
+  assert.equal(validateAttestation({...base,commands:passing.map((command,index)=>index===0?{...command,name:""}:command)}),false);
+  assert.equal(validateAttestation({...base,commands:passing.map((command,index)=>index===0?{...command,command:""}:command)}),false);
+});
+
+
+test("attestation requires the exact command names for its scope",()=>{
+  const sha="1".repeat(40);
+  const base={
+    schema_version:SCHEMA_VERSION,scope:"frontend",
+    repository_commit:sha,repository_commit_after:sha,head_unchanged:true,
+    clean_worktree_before:true,clean_worktree_after:true,clean_worktree:true,
+    passed:true,assurance:ASSURANCE
+  };
+  const passing=[{name:"validate",command:"validate",exit_code:0,launch_error:null},{name:"node_tests",command:"node_tests",exit_code:0,launch_error:null},{name:"frontend_build",command:"frontend_build",exit_code:0,launch_error:null}];
+  assert.equal(validateAttestation({...base,commands:passing}),true);
+  assert.equal(validateAttestation({...base,commands:passing.slice(0,2)}),false);
+  assert.equal(validateAttestation({...base,commands:[passing[1],passing[0],passing[2]]}),false);
+  assert.equal(validateAttestation({...base,commands:passing.map((command,index)=>index===1?{...command,name:"other"}:command)}),false);
 });
