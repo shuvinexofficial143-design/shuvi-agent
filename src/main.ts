@@ -41,6 +41,7 @@ let executingActionId: string | null = null;
 let executingCancellation: { actionId: string; promise: Promise<boolean> } | null = null;
 let orchestration: AgentOrchestrationState = createAgentOrchestrationState();
 let busy = false;
+let manualActionRunning = false;
 let cancelRequested = false;
 let sessionInputTokens = 0;
 let sessionOutputTokens = 0;
@@ -1391,7 +1392,7 @@ el<HTMLButtonElement>("#deleteKey").addEventListener("click", async () => {
 
 el<HTMLFormElement>("#chatForm").addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (busy || pendingAction) return;
+  if (busy || manualActionRunning || pendingAction) return;
 
   const prompt = el<HTMLTextAreaElement>("#prompt");
   const content = prompt.value.trim();
@@ -1420,6 +1421,11 @@ el<HTMLButtonElement>("#prepareAction").addEventListener("click", async () => {
   if (!command) return;
 
   const output = el<HTMLElement>("#actionOutput");
+  if (manualActionRunning) {
+    output.classList.remove("hidden");
+    output.textContent = "A manual PowerShell action is already running. Resolve it before preparing another action.";
+    return;
+  }
   if (pendingAction && pendingChatProposal) {
     output.classList.remove("hidden");
     output.textContent = "Resolve the current chat permission before preparing a manual PowerShell action.";
@@ -1479,7 +1485,9 @@ function renderManualPending(): void {
 
       const actionId = pendingAction.id;
       pendingAction = null;
+      manualActionRunning = true;
       renderManualPending();
+      el<HTMLButtonElement>("#prepareAction").disabled = true;
 
       const output = el<HTMLElement>("#actionOutput");
       output.classList.remove("hidden");
@@ -1498,6 +1506,9 @@ function renderManualPending(): void {
           .join("\n");
       } catch (error) {
         output.textContent = String(error);
+      } finally {
+        manualActionRunning = false;
+        el<HTMLButtonElement>("#prepareAction").disabled = false;
       }
     };
   }

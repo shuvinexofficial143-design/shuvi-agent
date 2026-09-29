@@ -82,6 +82,8 @@ A new manual PowerShell preparation cannot replace an unresolved chat permission
 ### Prepared action TTL
 
 Rust bounds the unresolved permission store independently of the frontend. At most 16 prepared actions may exist, and staging prunes actions older than 10 minutes. `execute_action` rechecks the exact action UUID age and records an expired action as denied instead of executing it, so stale approvals cannot remain indefinitely executable after a UI crash or orphaned flow.
+Only one approved manual PowerShell action may execute at a time. While it is running, Shuvi blocks a second manual preparation and a new chat task from starting; the UI re-enables manual preparation only in the execution `finally` path.
+
 ## Permission boundary
 
 Planning never executes a tool.
