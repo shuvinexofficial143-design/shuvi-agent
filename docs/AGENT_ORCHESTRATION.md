@@ -79,6 +79,9 @@ A Shuvi-launched application/browser is not allowed to survive a failed tracking
 
 A new manual PowerShell preparation cannot replace an unresolved chat permission. If an earlier manual action is still pending, Shuvi first records a real denial for that exact action UUID; only after that succeeds may the replacement action be prepared. This prevents orphaned prepared permissions from accumulating in backend state.
 
+### Prepared action TTL
+
+Rust bounds the unresolved permission store independently of the frontend. At most 16 prepared actions may exist, and staging prunes actions older than 10 minutes. `execute_action` rechecks the exact action UUID age and records an expired action as denied instead of executing it, so stale approvals cannot remain indefinitely executable after a UI crash or orphaned flow.
 ## Permission boundary
 
 Planning never executes a tool.
