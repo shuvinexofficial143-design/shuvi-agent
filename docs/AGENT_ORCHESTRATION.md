@@ -70,6 +70,9 @@ A user denial is also treated as a replan signal; the identical denied action ca
 
 PowerShell remains available only from the local **Permission Lab** command path. It is intentionally absent from the provider TOOL_PROTOCOL and provider proposal allowlist, and the Rust staging layer rejects PowerShell whenever an active provider context is present. This prevents an AI proposal from bypassing typed file, Git, task-graph, or coding dependency rules through arbitrary shell commands. Manual PowerShell still goes through the normal local approval gate and audit log.
 
+### Session path approvals
+
+Low-risk session approvals for path-bearing tools are **exact-path only**. Shuvi does not expand one approved path to an entire workspace by frontend string prefix because `..` segments, Windows junctions and symlinks can resolve outside the visible workspace path. Broader workspace discovery remains available through typed canonicalized tools, but auto-execution for a path-bearing read requires the exact previously approved normalized path.
 ## Permission boundary
 
 Planning never executes a tool.
