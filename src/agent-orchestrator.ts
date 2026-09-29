@@ -476,9 +476,7 @@ function dependencyFailure(
   }
 
   if (proposal.tool === "write_file" && isCodingProposal(proposal)) {
-    if (!path || !coding.inspected_paths.includes(path) || !coding.inspection_steps[path]) {
-      return "Coding dependency missing: read the exact existing code/config target before write_file. Create new code files through structured apply_patch.";
-    }
+    return "Coding dependency missing: whole-file write_file is disabled for code/config targets. Use replace_text for an exact inspected edit or structured apply_patch for repository changes/new files.";
   }
 
   if (proposal.tool === "apply_patch") {
