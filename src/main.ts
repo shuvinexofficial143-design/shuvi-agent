@@ -97,6 +97,10 @@ root.innerHTML = `
       <small id="ramChildren" class="ram-children">0 managed processes</small>
       <small id="tokenMeter" class="ram-children">0 session tokens</small>
       <small id="agentProgress" class="ram-children">Agent idle</small>
+      <details id="taskProgress" class="ram-children hidden">
+        <summary id="taskProgressSummary">Task progress</summary>
+        <div id="taskProgressSteps"></div>
+      </details>
     </div>
   </aside>
 
@@ -369,6 +373,24 @@ function currentCheckpoint(): SessionCheckpoint {
 
 function renderOrchestrationStatus(): void {
   const progress = el<HTMLElement>("#agentProgress");
+  const graphProgress = taskGraphProgress(orchestration.task_graph);
+  const graphView = el<HTMLElement>("#taskProgress");
+  graphView.classList.toggle("hidden", !graphProgress.total);
+  const list = el<HTMLElement>("#taskProgressSteps");
+  list.replaceChildren();
+  if (orchestration.task_graph) {
+    el<HTMLElement>("#taskProgressSummary").textContent =
+      `${graphProgress.completed}/${graphProgress.total} steps complete`;
+    const symbols: Record<string, string> = { completed: "✓", running: "→", ready: "→", pending: "○", failed: "!", blocked: "!", skipped: "–" };
+    for (const step of graphProgress.steps) {
+      const row = document.createElement("div");
+      row.textContent = `${symbols[step.status]} ${step.title} (${step.status})`;
+      row.title = step.reason ?? step.status;
+      list.append(row);
+    }
+    progress.textContent = `Task: ${orchestration.task_graph.objective} · ${graphProgress.completed}/${graphProgress.total} steps complete · Current: ${graphProgress.current ?? "none"} · Phase: ${orchestration.coding.active ? codingPhase(orchestration) : "general"} · State: ${orchestration.recovery_mode}`;
+    return;
+  }
   if (!orchestration.objective && orchestration.tool_actions === 0 && orchestration.next_step === 1) {
     progress.textContent = "Agent idle";
     return;
