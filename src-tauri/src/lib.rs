@@ -1945,6 +1945,16 @@ fn prune_inactive_browser_profiles(
 }
 
 fn browser_session(state: &ActionState, pid: u32) -> Result<BrowserSession, String> {
+    if !managed_process_identity_matches(state, pid)? {
+        unregister_managed_process(state, pid);
+        if let Ok(mut sessions) = state.browser_sessions.lock() {
+            if let Some(session) = sessions.remove(&pid) {
+                let _ = fs::remove_dir_all(session.profile_dir);
+            }
+        }
+        return Err("The Shuvi-managed browser process is no longer the exact live process instance that was launched.".into());
+    }
+
     state
         .browser_sessions
         .lock()
