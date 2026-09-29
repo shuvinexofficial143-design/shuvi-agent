@@ -221,3 +221,14 @@ test("coding write_file cannot perform whole-file source overwrites",()=>{
   assert.match(orchestrator,/whole-file write_file is disabled for code\/config targets/);
   assert.match(orchestrator,/Use replace_text for an exact inspected edit or structured apply_patch/);
 });
+
+
+test("project validation fails if branch HEAD or worktree changes during the task",()=>{
+  const start=rust.indexOf("ToolAction::RunProjectTask { path, task } =>");
+  const end=rust.indexOf("ToolAction::GitStatus",start);
+  const block=rust.slice(start,end);
+  assert.match(block,/let before = git_before/);
+  assert.match(block,/git_same_local_snapshot\(&before, &after\)/);
+  assert.match(block,/Git branch, HEAD, or worktree changed while the validation task was running/);
+  assert.match(block,/validation evidence is not bound to one repository snapshot/);
+});
