@@ -38,7 +38,7 @@ let messages: ChatMessage[] = [];
 let pendingAction: PendingAction | null = null;
 let pendingChatProposal: ToolProposal | null = null;
 let executingActionId: string | null = null;
-let cancelConfirmedActionId: string | null = null;
+let executingCancellation: { actionId: string; promise: Promise<boolean> } | null = null;
 let orchestration: AgentOrchestrationState = createAgentOrchestrationState();
 let busy = false;
 let cancelRequested = false;
@@ -881,12 +881,22 @@ function exactActionReceipt(
   );
 }
 
+async function actionCancellationConfirmed(actionId: string): Promise<boolean> {
+  const request = executingCancellation;
+  if (!request || request.actionId !== actionId) return false;
+  try {
+    return await request.promise;
+  } catch {
+    return false;
+  }
+}
+
 async function executePendingProposal(proposal: ToolProposal): Promise<void> {
   if (!pendingAction || cancelRequested) return;
 
   const actionId = pendingAction.id;
   executingActionId = actionId;
-  cancelConfirmedActionId = null;
+  executingCancellation = null;
   clearChatPermission();
 
   try {
@@ -899,7 +909,7 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
       "executed",
       result.success
     );
-    const cancelledByUser = cancelConfirmedActionId === actionId;
+    const cancelledByUser = await actionCancellationConfirmed(actionId);
     void refreshAudit();
     orchestration = recordToolOutcome(
       orchestration,
@@ -929,7 +939,7 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
     await continueAfterOutcome();
   } catch (error) {
     const receipt = await readActionAuditReceipt(actionId);
-    const cancelledByUser = cancelConfirmedActionId === actionId;
+    const cancelledByUser = await actionCancellationConfirmed(actionId);
     const confirmedFailure = exactActionReceipt(receipt, actionId, proposal.tool, "failed", false);
     orchestration = recordToolOutcome(
       orchestration,
@@ -951,7 +961,7 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
     await continueAfterOutcome();
   } finally {
     if (executingActionId === actionId) executingActionId = null;
-    if (cancelConfirmedActionId === actionId) cancelConfirmedActionId = null;
+    if (executingCancellation?.actionId === actionId) executingCancellation = null;
   }
 }
 function renderChatPermission(proposal: ToolProposal, step: number): void {
@@ -1466,14 +1476,12 @@ el<HTMLButtonElement>("#stopButton").addEventListener("click", async () => {
   if (executingActionId) {
     const actionId = executingActionId;
     el<HTMLButtonElement>("#stopButton").textContent = "Stopping…";
-    try {
-      const cancelled = await invoke<boolean>("cancel_running_action", { actionId });
-      if (cancelled && executingActionId === actionId) {
-        cancelConfirmedActionId = actionId;
-      }
-    } catch {
-      // Non-cancellable or already-finished actions still stop after their current result returns.
-    }
+    const promise = invoke<boolean>("cancel_running_action", { actionId })
+      .catch(() => false);
+    executingCancellation = { actionId, promise };
+    await promise;
+    // Classification waits on this same promise, so a fast execute_action result
+    // cannot race ahead of cancellation confirmation.
     return;
   }
 

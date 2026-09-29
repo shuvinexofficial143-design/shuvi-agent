@@ -30,10 +30,10 @@ test("cancel_running_action only targets the child registered for that action UU
 
 test("Stop button requests cancellation by exact executing action ID",()=>{
   assert.match(main,/let executingActionId: string \| null = null/);
-  assert.match(main,/let cancelConfirmedActionId: string \| null = null/);
+  assert.match(main,/let executingCancellation: \{ actionId: string; promise: Promise<boolean> \} \| null = null/);
   const execute=main.slice(main.indexOf("async function executePendingProposal"),main.indexOf("function renderChatPermission"));
   assert.match(execute,/executingActionId = actionId/);
-  assert.match(execute,/cancelConfirmedActionId === actionId/);
+  assert.match(execute,/await actionCancellationConfirmed\(actionId\)/);
   assert.match(execute,/cancelledByUser \? "denied"/);
   assert.match(execute,/cancelledByUser \? false : !result\.success && receiptMatches/);
   assert.match(execute,/cancelled_by_user: true/);
@@ -41,8 +41,8 @@ test("Stop button requests cancellation by exact executing action ID",()=>{
   const stop=main.slice(main.indexOf('el<HTMLButtonElement>("#stopButton")'),main.indexOf("document.querySelectorAll<HTMLButtonElement>"));
   assert.match(stop,/if \(executingActionId\)/);
   assert.match(stop,/invoke<boolean>\("cancel_running_action", \{ actionId \}\)/);
-  assert.match(stop,/cancelConfirmedActionId = actionId/);
-  assert.match(stop,/Non-cancellable or already-finished actions still stop after their current result returns/);
+  assert.match(stop,/executingCancellation = \{ actionId, promise \}/);
+  assert.match(stop,/cannot race ahead of cancellation confirmation/);
 });
 
 test("user-cancelled execution is not counted as a confirmed real tool failure",()=>{
@@ -50,4 +50,17 @@ test("user-cancelled execution is not counted as a confirmed real tool failure",
   assert.match(execute,/cancelledByUser \? false : confirmedFailure/);
   assert.match(execute,/execution_failure_audit_confirmed: cancelledByUser \? false : confirmedFailure/);
   assert.match(execute,/retry_automatically: false/);
+});
+
+
+test("cancellation classification awaits the exact in-flight cancellation promise",()=>{
+  assert.match(main,/async function actionCancellationConfirmed\(actionId: string\): Promise<boolean>/);
+  assert.match(main,/request\.actionId !== actionId/);
+  assert.match(main,/return await request\.promise/);
+  const stop=main.slice(main.indexOf('el<HTMLButtonElement>("#stopButton")'),main.indexOf("document.querySelectorAll<HTMLButtonElement>"));
+  assert.match(stop,/const promise = invoke<boolean>\("cancel_running_action", \{ actionId \}\)/);
+  assert.ok(stop.indexOf("executingCancellation = { actionId, promise }") < stop.indexOf("await promise"));
+  const execute=main.slice(main.indexOf("async function executePendingProposal"),main.indexOf("function renderChatPermission"));
+  assert.match(execute,/const cancelledByUser = await actionCancellationConfirmed\(actionId\)/);
+  assert.match(execute,/executingCancellation\?\.actionId === actionId/);
 });
