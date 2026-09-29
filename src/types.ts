@@ -122,6 +122,7 @@ export type AuditEntry = {
   tool: string;
   detail: string;
   success: boolean;
+  action_id: string | null;
 };
 
 export type PremiereBridgeStatus = {
