@@ -74,3 +74,25 @@ test("RAM watchdogs stop only the exact registered process instance",()=>{
     assert.doesNotMatch(block,/while process_is_alive\(child_pid\)/);
   }
 });
+
+
+test("project task registration failures tear down the process tree and clear identity state",()=>{
+  const start=rust.indexOf("ToolAction::RunProjectTask { path, task } =>");
+  const end=rust.indexOf("ToolAction::GitStatus",start);
+  const block=rust.slice(start,end);
+
+  const registerFailure=block.slice(
+    block.indexOf("if let Err(error) = register_managed_process(state, child_pid)"),
+    block.indexOf("if let Some(action_id) = execution_action_id")
+  );
+  assert.match(registerFailure,/terminate_managed_process_tree\(child_pid\)/);
+  assert.match(registerFailure,/child\.wait\(\)/);
+
+  const lockFailureIndex=block.indexOf("Running-action state is unavailable");
+  assert.ok(lockFailureIndex>=0);
+  const lockFailure=block.slice(Math.max(0,lockFailureIndex-700),lockFailureIndex);
+  assert.match(lockFailure,/terminate_registered_process_tree\(state, child_pid\)/);
+  assert.match(lockFailure,/unregister_managed_process\(state, child_pid\)/);
+  assert.doesNotMatch(lockFailure,/managed\.remove\(&child_pid\)/);
+  assert.match(lockFailure,/child\.wait\(\)/);
+});
