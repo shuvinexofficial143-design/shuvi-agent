@@ -842,8 +842,11 @@ async fn send_with_retry(
         match attempt_request.send().await {
             Ok(response) => {
                 let status = response.status();
+                // Retry only statuses that strongly indicate throttling/gateway availability.
+                // 500/504 can be ambiguous after provider-side generation began, so fail
+                // closed instead of risking a duplicate billed generation.
                 let retryable = status.as_u16() == 429
-                    || matches!(status.as_u16(), 500 | 502 | 503 | 504);
+                    || matches!(status.as_u16(), 502 | 503);
 
                 if retryable && attempt < 2 {
                     last_error = Some(format!("HTTP {status}"));
@@ -855,7 +858,10 @@ async fn send_with_retry(
                 return Ok(response);
             }
             Err(error) => {
-                let retryable = error.is_connect() || error.is_timeout() || error.is_request();
+                // A connect failure is the only transport error retried automatically.
+                // Timeouts/request errors are ambiguous: the provider may already have
+                // accepted the generation, so a duplicate request could incur duplicate cost.
+                let retryable = error.is_connect();
 
                 if retryable && attempt < 2 {
                     last_error = Some(error.to_string());
