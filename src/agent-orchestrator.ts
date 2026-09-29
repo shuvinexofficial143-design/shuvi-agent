@@ -213,14 +213,6 @@ function normalizeCodingWorkflowState(value: unknown, nextStep: number): CodingW
     && !Array.isArray(input.inspection_steps)
       ? input.inspection_steps as Record<string, unknown>
       : null;
-  const savedInspectionSteps: Record<string, number> = {};
-  if (rawInspectionSteps) {
-    for (const [rawPath, rawStep] of Object.entries(rawInspectionSteps)) {
-      const path = normalizePath(rawPath);
-      const step = pastStep(rawStep);
-      if (path && step > 0) savedInspectionSteps[path] = step;
-    }
-  }
   const inspected = Array.isArray(input.inspected_paths)
     ? input.inspected_paths
         .map(normalizePath)
@@ -229,8 +221,11 @@ function normalizeCodingWorkflowState(value: unknown, nextStep: number): CodingW
     : [];
   const inspectionSteps: Record<string, number> = {};
   const safeInspected: string[] = [];
+  // Persisted read receipts are keyed by the same normalized paths Shuvi writes.
+  // Only consult the bounded inspected-path list; never enumerate an unbounded
+  // checkpoint object supplied from disk.
   for (const path of [...new Set(inspected)]) {
-    const savedStep = savedInspectionSteps[path] ?? 0;
+    const savedStep = rawInspectionSteps ? pastStep(rawInspectionSteps[path]) : 0;
     // Older checkpoints had no per-path read step. Once a mutation exists, that
     // legacy path evidence is ambiguous and must be re-read after resume.
     const legacySafe = rawInspectionSteps === null && rawMutationStep === 0 && nextStep > 1;

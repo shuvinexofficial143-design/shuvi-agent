@@ -132,3 +132,15 @@ test("coding state persists bounded Git identity receipts",()=>{
   assert.match(orchestrator,/reviewed Git HEAD:/);
   assert.match(orchestrator,/committed Git HEAD:/);
 });
+
+
+test("checkpoint normalization never enumerates unbounded inspection receipt keys",()=>{
+  const normalize=orchestrator.slice(
+    orchestrator.indexOf("function normalizeCodingWorkflowState"),
+    orchestrator.indexOf("export function proposalFingerprint")
+  );
+  assert.doesNotMatch(normalize,/Object\.entries\(rawInspectionSteps\)/);
+  assert.match(normalize,/slice\(-MAX_INSPECTED_PATHS\)/);
+  assert.match(normalize,/rawInspectionSteps\[path\]/);
+  assert.match(normalize,/never enumerate an unbounded/);
+});
