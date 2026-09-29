@@ -107,7 +107,7 @@ This system does not:
 - increase the 8-step safety limit;
 - turn plan metadata into a new unrestricted command language.
 
-Runtime correctness still requires current-head frontend/Rust execution and, for Premiere behavior, paired-host acceptance evidence.
+Runtime correctness still requires current-head frontend/Rust execution and, for Premiere behavior, paired-host acceptance evidence. Provider requests are memory-bounded as well: the frontend sends only the most recent bounded context window, and Rust independently rejects more than 120 messages, any message over 256 KB, or aggregate chat content over 2 MB before inserting Shuvi's system/orchestration context.
 
 
 ## Coding workflow dependencies

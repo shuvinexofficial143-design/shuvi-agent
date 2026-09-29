@@ -363,6 +363,32 @@ function prepareOnboarding(): void {
   }
 }
 
+const MAX_PROVIDER_MESSAGES = 80;
+const MAX_PROVIDER_MESSAGE_BYTES = 256 * 1024;
+const MAX_PROVIDER_CONTEXT_BYTES = 1_500_000;
+
+function providerMessageWindow(source: ChatMessage[]): ChatMessage[] {
+  const encoder = new TextEncoder();
+  const selected: ChatMessage[] = [];
+  let bytes = 0;
+
+  for (let index = source.length - 1; index >= 0 && selected.length < MAX_PROVIDER_MESSAGES; index -= 1) {
+    const message = source[index];
+    const messageBytes = encoder.encode(message.content).byteLength;
+    if (messageBytes > MAX_PROVIDER_MESSAGE_BYTES) {
+      if (selected.length === 0) {
+        throw new Error("The latest chat message is too large for a bounded provider request.");
+      }
+      break;
+    }
+    if (bytes + messageBytes > MAX_PROVIDER_CONTEXT_BYTES) break;
+    selected.push(message);
+    bytes += messageBytes;
+  }
+
+  return selected.reverse();
+}
+
 function currentCheckpoint(): SessionCheckpoint {
   return {
     version: 2,
@@ -1114,7 +1140,7 @@ async function runAgentStep(): Promise<void> {
         provider: providerSelect.value,
         model: modelInput.value.trim(),
         base_url: baseUrlInput.value.trim() || null,
-        messages,
+        messages: providerMessageWindow(messages),
         orchestration_context: orchestrationContext(orchestration)
       }
     });

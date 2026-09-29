@@ -68,6 +68,9 @@ const HARD_LIMIT_MB: f64 = 4096.0;
 const MAX_READ_BYTES: u64 = 1_048_576;
 const MAX_WRITE_BYTES: usize = 2_097_152;
 const MAX_TOOL_OUTPUT_CHARS: usize = 120_000;
+const MAX_CHAT_MESSAGES: usize = 120;
+const MAX_CHAT_MESSAGE_BYTES: usize = 256 * 1024;
+const MAX_CHAT_CONTEXT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_SCREENSHOT_FILES: usize = 64;
 
 const TOOL_PROTOCOL: &str = r#"You are Shuvi, a permission-first Windows desktop AI agent.
@@ -11430,6 +11433,24 @@ async fn chat(
     app: AppHandle,
 ) -> Result<ChatResponse, String> {
     ensure_memory_budget(state.inner())?;
+
+    if input.messages.len() > MAX_CHAT_MESSAGES {
+        return Err(format!("Provider context exceeds Shuvi's {MAX_CHAT_MESSAGES}-message safety limit."));
+    }
+    let mut chat_bytes = 0_usize;
+    for message in &input.messages {
+        if !matches!(message.role.as_str(), "user" | "assistant" | "system") {
+            return Err("Provider context contains an unsupported chat role.".into());
+        }
+        let message_bytes = message.content.len();
+        if message_bytes > MAX_CHAT_MESSAGE_BYTES {
+            return Err("A provider-context message exceeds Shuvi's 256 KB safety limit.".into());
+        }
+        chat_bytes = chat_bytes.saturating_add(message_bytes);
+        if chat_bytes > MAX_CHAT_CONTEXT_BYTES {
+            return Err("Provider context exceeds Shuvi's 2 MB safety limit.".into());
+        }
+    }
 
     let workspace = read_workspace(&app)?;
     let workspace_context = workspace
