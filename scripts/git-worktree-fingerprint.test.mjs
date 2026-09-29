@@ -39,3 +39,24 @@ test("git_commit is bound to the exact reviewed worktree snapshot",()=>{
   assert.match(orchestration,/expected_worktree_fingerprint/);
   assert.match(orchestration,/expectedWorktree !== statusGit\?\.worktree_fingerprint/);
 });
+
+
+test("apply_patch is bound to the exact latest git_status worktree snapshot",()=>{
+  assert.match(rust,/ApplyPatch \{ path: String, patch: String, expected_worktree_fingerprint: String \}/);
+  const stageStart=rust.indexOf('"apply_patch" => {');
+  const stageEnd=rust.indexOf('"run_project_task" =>',stageStart);
+  const stage=rust.slice(stageStart,stageEnd);
+  assert.match(stage,/arg_git_head\(&proposal\.arguments, "expected_worktree_fingerprint"\)/);
+
+  const executeStart=rust.indexOf("ToolAction::ApplyPatch { path, patch, expected_worktree_fingerprint }");
+  const executeEnd=rust.indexOf("ToolAction::RunProjectTask",executeStart);
+  const execute=rust.slice(executeStart,executeEnd);
+  assert.match(execute,/require_expected_git_worktree\(&path, &expected_worktree_fingerprint, "apply_patch before validation"\)\?/);
+  assert.match(execute,/require_expected_git_worktree\(&path, &expected_worktree_fingerprint, "apply_patch before mutation"\)\?/);
+
+  const dependencyStart=orchestration.indexOf('if (proposal.tool === "apply_patch")');
+  const dependencyEnd=orchestration.indexOf('if (proposal.tool === "git_commit")',dependencyStart);
+  const dependency=orchestration.slice(dependencyStart,dependencyEnd);
+  assert.match(dependency,/expected_worktree_fingerprint/);
+  assert.match(dependency,/expectedWorktree !== coding\.last_git_status_git\?\.worktree_fingerprint/);
+});
