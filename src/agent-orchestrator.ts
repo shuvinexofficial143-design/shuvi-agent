@@ -36,7 +36,7 @@ export type CodingWorkflowState = {
 };
 
 export type AgentOrchestrationState = {
-  version: 3;
+  version: 4;
   next_step: number;
   tool_actions: number;
   consecutive_failures: number;
@@ -167,7 +167,7 @@ export function proposalFingerprint(proposal: ToolProposal): string {
 
 export function createAgentOrchestrationState(): AgentOrchestrationState {
   return {
-    version: 3,
+    version: 4,
     next_step: 1,
     tool_actions: 0,
     consecutive_failures: 0,
@@ -194,7 +194,7 @@ export function normalizeAgentOrchestrationState(value: unknown): AgentOrchestra
     version?: number;
     coding?: unknown;
   };
-  if (input.version !== 1 && input.version !== 2 && input.version !== 3) {
+  if (input.version !== 1 && input.version !== 2 && input.version !== 3 && input.version !== 4) {
     return { ...base, recovery_mode: "stopped", stop_reason: "Unsupported saved orchestration state; start a new task." };
   }
 
@@ -209,17 +209,18 @@ export function normalizeAgentOrchestrationState(value: unknown): AgentOrchestra
     ? input.recovery_mode ?? "normal"
     : "normal";
 
-  const restored = restoreTaskGraph(input.version === 3 ? input.task_graph : null, nextStep);
-  const receipts = input.version === 3 ? input.unsuccessful_fingerprints
+  const legacyUnboundGraph = input.version === 3 && input.task_graph != null;
+  const restored = restoreTaskGraph(input.version === 4 ? input.task_graph : null, nextStep);
+  const receipts = input.version === 3 || input.version === 4 ? input.unsuccessful_fingerprints
     : input.last_proposal_fingerprint && ["failure", "denied", "blocked"].includes(String(input.last_outcome))
       ? [input.last_proposal_fingerprint] : [];
   const validReceipts = Array.isArray(receipts) && receipts.length <= MAX_AGENT_STEPS
     && receipts.every(x => typeof x === "string" && x.length > 0 && x.length <= 16_384);
   const interrupted = restored.ok ? restored.interrupted : [];
-  const invalid = !restored.ok || !validReceipts
+  const invalid = legacyUnboundGraph || !restored.ok || !validReceipts
     || (restored.ok && restored.graph && restored.graph.objective !== input.objective);
   const result: AgentOrchestrationState = {
-    version: 3,
+    version: 4,
     next_step: Math.max(1, Math.min(MAX_AGENT_STEPS + 1, nextStep)),
     tool_actions: Math.max(0, Math.min(MAX_AGENT_STEPS, toolActions)),
     consecutive_failures: Math.max(0, Math.min(MAX_CONSECUTIVE_FAILURES, failures)),
@@ -232,14 +233,17 @@ export function normalizeAgentOrchestrationState(value: unknown): AgentOrchestra
     last_plan_step: boundedText(input.last_plan_step, 500),
     last_success_criteria: boundedText(input.last_success_criteria, 800),
     stop_reason: boundedText(input.stop_reason, 800),
-    coding: input.version === 2 || input.version === 3
+    coding: input.version === 2 || input.version === 3 || input.version === 4
       ? normalizeCodingWorkflowState(input.coding)
       : createCodingWorkflowState(),
     task_graph: restored.ok ? restored.graph : null,
     unsuccessful_fingerprints: validReceipts ? [...new Set([...receipts, ...interrupted])].slice(-MAX_AGENT_STEPS) : [],
     recovery_step: boundedStep(input.recovery_step)
   };
-  if (invalid) return { ...result, recovery_mode: "stopped", stop_reason: "Invalid saved graph/evidence; a new user instruction/reset is required." };
+  if (invalid) return { ...result, recovery_mode: "stopped",
+    stop_reason: legacyUnboundGraph
+      ? "Saved task graph predates prepared-action binding; start a new task so completion evidence can be rebound safely."
+      : "Invalid saved graph/evidence; a new user instruction/reset is required." };
   if (interrupted.length) {
     result.next_step = Math.min(MAX_AGENT_STEPS + 1, result.next_step + 1);
     result.tool_actions = Math.min(MAX_AGENT_STEPS, result.tool_actions + 1);
