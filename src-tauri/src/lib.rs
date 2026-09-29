@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs::{self, OpenOptions},
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     net::IpAddr,
     path::{Component, Path},
     process::{Command, Stdio},
@@ -1864,6 +1864,55 @@ fn reject_existing_symlink_target(path: &Path, label: &str) -> Result<(), String
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(format!("Could not inspect {label} target: {error}")),
     }
+}
+
+fn open_existing_file_for_mutation(path: &Path, label: &str) -> Result<fs::File, String> {
+    reject_existing_symlink_target(path, label)?;
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|error| format!("Could not open {label} target for mutation: {error}"))?;
+    reject_existing_symlink_target(path, label)?;
+    if !file
+        .metadata()
+        .map_err(|error| format!("Could not inspect opened {label} target: {error}"))?
+        .is_file()
+    {
+        return Err(format!("{label} target must be a regular file."));
+    }
+    Ok(file)
+}
+
+fn read_utf8_open_file_bounded(
+    file: &mut fs::File,
+    max_bytes: usize,
+    label: &str,
+) -> Result<String, String> {
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| format!("Could not seek {label}: {error}"))?;
+    let limit = (max_bytes as u64).saturating_add(1);
+    let mut bytes = Vec::with_capacity(max_bytes.min(64 * 1024));
+    (&mut *file)
+        .take(limit)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("Could not read {label}: {error}"))?;
+    if bytes.len() > max_bytes {
+        return Err(format!("{label} exceeds Shuvi's bounded read limit."));
+    }
+    String::from_utf8(bytes)
+        .map_err(|error| format!("{label} is not valid UTF-8: {error}"))
+}
+
+fn overwrite_open_file(file: &mut fs::File, bytes: &[u8], label: &str) -> Result<(), String> {
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| format!("Could not seek {label} target: {error}"))?;
+    file.set_len(0)
+        .map_err(|error| format!("Could not truncate {label} target: {error}"))?;
+    file.write_all(bytes)
+        .map_err(|error| format!("Could not write {label} target: {error}"))?;
+    file.sync_all()
+        .map_err(|error| format!("Could not flush {label} target: {error}"))
 }
 
 fn read_utf8_file_bounded(path: &Path, max_bytes: usize, label: &str) -> Result<String, String> {
@@ -7000,9 +7049,20 @@ async fn execute_tool_with_action_id(
             })
         }
         ToolAction::WriteFile { path, content } => {
-            reject_existing_symlink_target(Path::new(&path), "write_file")?;
-            fs::write(&path, content.as_bytes())
-                .map_err(|error| format!("Could not write file: {error}"))?;
+            let target = Path::new(&path);
+            match OpenOptions::new().write(true).create_new(true).open(target) {
+                Ok(mut file) => {
+                    file.write_all(content.as_bytes())
+                        .map_err(|error| format!("Could not write new file: {error}"))?;
+                    file.sync_all()
+                        .map_err(|error| format!("Could not flush new file: {error}"))?;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let mut file = open_existing_file_for_mutation(target, "write_file")?;
+                    overwrite_open_file(&mut file, content.as_bytes(), "write_file")?;
+                }
+                Err(error) => return Err(format!("Could not create file: {error}")),
+            }
 
             Ok(ActionResult {
                 success: true,
@@ -11772,9 +11832,9 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::ReplaceText { path, old, new_value } => {
-            reject_existing_symlink_target(Path::new(&path), "replace_text")?;
-            let source = read_utf8_file_bounded(
-                Path::new(&path),
+            let mut file = open_existing_file_for_mutation(Path::new(&path), "replace_text")?;
+            let source = read_utf8_open_file_bounded(
+                &mut file,
                 MAX_WRITE_BYTES,
                 "editable file",
             )?;
@@ -11790,8 +11850,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             }
 
             let updated = source.replacen(&old, &new_value, 1);
-            fs::write(&path, updated.as_bytes())
-                .map_err(|error| format!("Could not write edited file: {error}"))?;
+            overwrite_open_file(&mut file, updated.as_bytes(), "replace_text")?;
 
             Ok(ActionResult {
                 success: true,
