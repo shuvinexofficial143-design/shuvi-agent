@@ -367,6 +367,12 @@ const MAX_PROVIDER_MESSAGES = 80;
 const MAX_PROVIDER_MESSAGE_BYTES = 256 * 1024;
 const MAX_PROVIDER_CONTEXT_BYTES = 1_500_000;
 
+function boundedMessageBytes(content: string, encoder = new TextEncoder()): number | null {
+  if (content.length > MAX_PROVIDER_MESSAGE_BYTES) return null;
+  const bytes = encoder.encode(content).byteLength;
+  return bytes <= MAX_PROVIDER_MESSAGE_BYTES ? bytes : null;
+}
+
 function providerMessageWindow(source: ChatMessage[]): ChatMessage[] {
   const encoder = new TextEncoder();
   const selected: ChatMessage[] = [];
@@ -374,8 +380,8 @@ function providerMessageWindow(source: ChatMessage[]): ChatMessage[] {
 
   for (let index = source.length - 1; index >= 0 && selected.length < MAX_PROVIDER_MESSAGES; index -= 1) {
     const message = source[index];
-    const messageBytes = encoder.encode(message.content).byteLength;
-    if (messageBytes > MAX_PROVIDER_MESSAGE_BYTES) {
+    const messageBytes = boundedMessageBytes(message.content, encoder);
+    if (messageBytes == null) {
       if (selected.length === 0) {
         throw new Error("The latest chat message is too large for a bounded provider request.");
       }
@@ -1354,6 +1360,12 @@ el<HTMLFormElement>("#chatForm").addEventListener("submit", async (event) => {
   const prompt = el<HTMLTextAreaElement>("#prompt");
   const content = prompt.value.trim();
   if (!content) return;
+  if (boundedMessageBytes(content) == null) {
+    prompt.setCustomValidity("Message is too large. Keep it under Shuvi's 256 KB message limit.");
+    prompt.reportValidity();
+    return;
+  }
+  prompt.setCustomValidity("");
 
   saveProviderSettings();
   cancelRequested = false;
