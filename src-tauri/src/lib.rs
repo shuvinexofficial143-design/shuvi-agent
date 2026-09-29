@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs::{self, OpenOptions},
     io::{BufRead, BufReader, Write},
-    path::Path,
+    path::{Component, Path},
     process::{Command, Stdio},
     sync::{Arc, Mutex, OnceLock, atomic::{AtomicBool, Ordering}},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -1803,8 +1803,15 @@ fn arg_string_array(arguments: &Value, name: &str) -> Result<Vec<String>, String
 }
 
 fn absolute_path(value: String) -> Result<String, String> {
-    if !Path::new(&value).is_absolute() {
+    if value.len() as u64 > MAX_WORKSPACE_PATH_BYTES || value.chars().any(char::is_control) {
+        return Err("File-tool path is too large or contains control characters.".into());
+    }
+    let path = Path::new(&value);
+    if !path.is_absolute() {
         return Err("File tools require an absolute path.".into());
+    }
+    if path.components().any(|component| matches!(component, Component::CurDir | Component::ParentDir)) {
+        return Err("File-tool paths must not contain '.' or '..' path segments.".into());
     }
     Ok(value)
 }
