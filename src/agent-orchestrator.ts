@@ -298,6 +298,15 @@ function normalizeCodingWorkflowState(value: unknown, nextStep: number): CodingW
   const lastPushStep = savedPushGit && savedPushPath === savedPushGit.repo_root
     ? pastStep(input.last_push_step) : 0;
 
+  const rawStatusUntracked = Array.isArray(input.last_git_status_untracked)
+    ? input.last_git_status_untracked
+    : [];
+  const statusUntrackedOverflow = rawStatusUntracked.length > 64;
+  const normalizedStatusUntracked = rawStatusUntracked
+    .slice(0, 64)
+    .map(normalizeRelativeGitPath)
+    .filter((item): item is string => Boolean(item));
+
   return {
     active: input.active === true,
     inspected_paths: safeInspected.slice(-MAX_INSPECTED_PATHS),
@@ -313,14 +322,9 @@ function normalizeCodingWorkflowState(value: unknown, nextStep: number): CodingW
     last_git_status_step: lastGitStatusStep,
     last_git_status_path: lastGitStatusStep ? savedStatusPath : null,
     last_git_status_git: lastGitStatusStep ? savedStatusGit : null,
-    last_git_status_untracked: lastGitStatusStep && Array.isArray(input.last_git_status_untracked)
-      ? input.last_git_status_untracked
-          .map(normalizeRelativeGitPath)
-          .filter((item): item is string => Boolean(item))
-          .slice(0, 64)
-      : [],
+    last_git_status_untracked: lastGitStatusStep ? normalizedStatusUntracked : [],
     last_git_status_untracked_ambiguous: lastGitStatusStep
-      ? input.last_git_status_untracked_ambiguous === true
+      ? input.last_git_status_untracked_ambiguous === true || statusUntrackedOverflow
       : false,
     last_git_diff_step: lastGitDiffStep,
     last_git_diff_path: lastGitDiffStep ? savedDiffPath : null,
@@ -491,10 +495,12 @@ function dependencyFailure(
     if (!expectedHead || expectedHead !== statusGit?.head) {
       return "Coding dependency missing: git_commit expected_head must exactly match the reviewed git_status/git_diff HEAD.";
     }
-    const commitFiles = Array.isArray(proposal.arguments.files)
-      ? proposal.arguments.files.map(normalizeRelativeGitPath)
-      : [];
-    if (!commitFiles.length || commitFiles.some(file => !file)) {
+    const rawCommitFiles = proposal.arguments.files;
+    if (!Array.isArray(rawCommitFiles) || rawCommitFiles.length < 1 || rawCommitFiles.length > 64) {
+      return "Coding dependency missing: git_commit requires 1..64 exact safe reviewed relative file paths.";
+    }
+    const commitFiles = rawCommitFiles.slice(0, 64).map(normalizeRelativeGitPath);
+    if (commitFiles.some(file => !file)) {
       return "Coding dependency missing: git_commit requires exact safe reviewed relative file paths.";
     }
     if (coding.last_git_status_untracked_ambiguous) {
