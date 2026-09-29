@@ -43,3 +43,32 @@ test("workspace config uses the bounded open-handle reader",()=>{
   assert.doesNotMatch(block,/fs::metadata\(&path\)/);
   assert.doesNotMatch(block,/fs::read_to_string/);
 });
+
+
+test("binary screenshots transcripts and package metadata are bounded while reading",()=>{
+  const bytesStart=rust.indexOf("fn read_file_bytes_bounded");
+  const bytesEnd=rust.indexOf("fn safe_web_url",bytesStart);
+  const bytesBlock=rust.slice(bytesStart,bytesEnd);
+  assert.match(bytesBlock,/fs::File::open\(path\)/);
+  assert.match(bytesBlock,/\.take\(limit\)/);
+  assert.match(bytesBlock,/bytes\.len\(\) > max_bytes/);
+
+  const transcriptStart=rust.indexOf('"premiere_import_transcript" => {');
+  const transcriptEnd=rust.indexOf('"premiere_attach_proxy"',transcriptStart);
+  const transcript=rust.slice(transcriptStart,transcriptEnd);
+  assert.match(transcript,/read_utf8_file_bounded\([\s\S]*1024 \* 1024[\s\S]*"Premiere transcript JSON"/);
+  assert.doesNotMatch(transcript,/fs::metadata\(path\)/);
+  assert.doesNotMatch(transcript,/fs::read_to_string\(path\)/);
+
+  const packageStart=rust.indexOf("fn project_task_command");
+  const packageEnd=rust.indexOf("fn git_worktree_fingerprint",packageStart);
+  const packageBlock=rust.slice(packageStart,packageEnd);
+  assert.match(packageBlock,/read_utf8_file_bounded\([\s\S]*1024 \* 1024[\s\S]*"package\.json"/);
+  assert.doesNotMatch(packageBlock,/fs::read_to_string\(root\.join\("package\.json"\)\)/);
+
+  const visionStart=rust.indexOf("async fn analyze_png_with_provider");
+  const visionEnd=rust.indexOf("fn provider_descriptor",visionStart);
+  const vision=rust.slice(visionStart,visionEnd);
+  assert.match(vision,/read_file_bytes_bounded\([\s\S]*12 \* 1024 \* 1024[\s\S]*"captured screenshot"/);
+  assert.doesNotMatch(vision,/fs::read\(path\)/);
+});
