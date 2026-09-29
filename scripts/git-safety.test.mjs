@@ -21,7 +21,8 @@ test("git writes recheck refreshed upstream ancestry immediately inside typed to
   assert.match(helper,/\["merge-base", "--is-ancestor", "@\{u\}", "HEAD"\]/);
   assert.match(helper,/Remote branch advanced or diverged; refusing Git write/);
   const commit=rust.slice(rust.indexOf("ToolAction::GitCommit { path, message, files, expected_head }"),rust.indexOf("ToolAction::GitPush { path, expected_head }"));
-  const push=rust.slice(rust.indexOf("ToolAction::GitPush { path, expected_head }"),rust.indexOf("ToolAction::PowerShell"));
+  const pushStart=rust.indexOf("ToolAction::GitPush { path, expected_head }");
+  const push=rust.slice(pushStart,rust.indexOf("ToolAction::PowerShell",pushStart));
   assert.ok(commit.indexOf("git_remote_freshness(&path, false)") < commit.indexOf("git_staged_files(&path)"));
   assert.ok(push.indexOf("git_remote_freshness(&path, true)") < push.indexOf('run_git(&path, &["push", "--", remote.as_str(), refspec.as_str()])'));
   assert.match(commit,/Remote freshness: \{remote_receipt\}/);
@@ -42,15 +43,23 @@ test("typed Git results carry bounded repository identity receipts",()=>{
   assert.match(rust,/"upstream": upstream/);
   assert.match(rust,/"upstream_head": upstream_head/);
   assert.match(rust,/\[SHUVI_GIT_CONTEXT_V1\]/);
+  const status=rust.slice(
+    rust.indexOf("ToolAction::GitStatus { path }"),
+    rust.indexOf("ToolAction::GitDiff { path }")
+  );
+  const diff=rust.slice(
+    rust.indexOf("ToolAction::GitDiff { path }"),
+    rust.indexOf("ToolAction::GitCommit { path, message, files, expected_head }")
+  );
+  assert.match(status,/\[SHUVI_GIT_CONTEXT_V1\]/);
+  assert.match(diff,/\[SHUVI_GIT_CONTEXT_V1\]/);
   for(const arm of [
-    "ToolAction::GitStatus { path }",
-    "ToolAction::GitDiff { path }",
     "ToolAction::GitCommit { path, message, files, expected_head }",
     "ToolAction::GitPush { path, expected_head }"
   ]) {
     const start=rust.indexOf(arm);
     assert.ok(start>=0);
-    assert.match(rust.slice(start,start+4200),/git_context_stdout\(&path/);
+    assert.match(rust.slice(start,start+5200),/git_context_stdout\(&path/);
   }
 });
 
