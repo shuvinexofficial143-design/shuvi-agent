@@ -622,3 +622,15 @@ acceptance and paired Premiere runtime acceptance remain separate requirements.
 - GitHub source-level static checks confirmed all expected bindings are present. These checks are not a runtime/build attestation and do not prove desktop behavior.
 
 This hardens evidence provenance without weakening existing permission gates or adding new execution capability. Current-head Node/TypeScript/Rust execution remains separately required.
+
+
+### Pending approval cancellation hardening (2026-09-29)
+
+- Added a dedicated local `pendingChatProposal` binding so the Stop control knows which graph proposal owns the current Rust pending action.
+- When Stop is pressed while chat approval is pending, Shuvi captures the exact bound action ID/proposal, clears the permission UI, best-effort calls `deny_action`, then finalizes the graph step before saving/resume.
+- Confirmed denial records a denied local graph outcome; an unconfirmed denial records a conservative failed outcome. Neither can satisfy dependencies or become successful completion evidence, and both retain the bound action ID.
+- The finalized checkpoint is persisted before the agent enters its cancellation path, avoiding a stale `running` receipt that would otherwise be misclassified as an unknown interrupted action on resume.
+- Manual Permission Lab actions remain separate from chat orchestration; the chat Stop path activates only when both a pending action and its bound chat proposal exist.
+- Added structural coverage enforcing `deny_action -> recordToolOutcome -> saveActiveCheckpoint -> runAgentStep` ordering.
+
+Runtime execution of the current head is still required; these source-level checks do not prove desktop cancellation behavior.
