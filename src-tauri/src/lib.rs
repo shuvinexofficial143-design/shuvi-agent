@@ -674,6 +674,7 @@ struct RuntimeStatus {
 #[derive(Debug, Clone)]
 struct BrowserSession {
     port: u16,
+    target_id: String,
     profile_dir: std::path::PathBuf,
 }
 
@@ -2021,7 +2022,33 @@ fn browser_session(state: &ActionState, pid: u32) -> Result<BrowserSession, Stri
         .ok_or_else(|| "No Shuvi-managed DevTools browser session exists for that PID.".to_string())
 }
 
-fn cdp_command(port: u16, method: &str, params: Value) -> Result<Value, String> {
+fn cdp_initial_page_target(port: u16) -> Result<String, String> {
+    let script = format!(
+        r#"$ErrorActionPreference = 'Stop'
+$targets = Invoke-RestMethod -UseBasicParsing -Uri 'http://127.0.0.1:{port}/json/list' -TimeoutSec 4
+$target = $targets | Where-Object {{ $_.type -eq 'page' -and $_.id }} | Select-Object -First 1
+if (-not $target) {{ throw 'No debuggable browser page is available.' }}
+$target.id"#
+    );
+
+    let output = run_hidden_powershell(&script)?;
+    if !output.status.success() {
+        return Err(format!(
+            "Could not bind managed browser to its initial page target: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let target_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if target_id.is_empty()
+        || target_id.len() > 256
+        || target_id.chars().any(|ch| ch.is_control())
+    {
+        return Err("Managed browser returned an invalid DevTools page target ID.".into());
+    }
+    Ok(target_id)
+}
+
+fn cdp_command(port: u16, target_id: &str, method: &str, params: Value) -> Result<Value, String> {
     let payload = json!({
         "id": 1,
         "method": method,
@@ -2030,12 +2057,14 @@ fn cdp_command(port: u16, method: &str, params: Value) -> Result<Value, String> 
     .to_string();
 
     let encoded = BASE64.encode(payload.as_bytes());
+    let target_encoded = BASE64.encode(target_id.as_bytes());
 
     let script = format!(
         r#"$ErrorActionPreference = 'Stop'
+$targetId = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{target_encoded}'))
 $targets = Invoke-RestMethod -UseBasicParsing -Uri 'http://127.0.0.1:{port}/json/list' -TimeoutSec 4
-$target = $targets | Where-Object {{ $_.type -eq 'page' -and $_.webSocketDebuggerUrl }} | Select-Object -First 1
-if (-not $target) {{ throw 'No debuggable browser page is available.' }}
+$target = $targets | Where-Object {{ $_.type -eq 'page' -and $_.id -eq $targetId -and $_.webSocketDebuggerUrl }} | Select-Object -First 1
+if (-not $target) {{ throw 'The Shuvi-bound browser page target is no longer available.' }}
 $ws = New-Object System.Net.WebSockets.ClientWebSocket
 $ws.ConnectAsync([Uri]$target.webSocketDebuggerUrl, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
 $message = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{encoded}'))
@@ -2082,9 +2111,10 @@ while ($true) {{
     Ok(response)
 }
 
-fn cdp_eval(port: u16, expression: String) -> Result<Value, String> {
+fn cdp_eval(port: u16, target_id: &str, expression: String) -> Result<Value, String> {
     let response = cdp_command(
         port,
+        target_id,
         "Runtime.evaluate",
         json!({
             "expression": expression,
@@ -6955,6 +6985,20 @@ async fn execute_tool_with_action_id(
                 return Err("Managed browser started, but its local DevTools endpoint did not become ready within 5 seconds.".into());
             };
 
+            let mut target_id = None;
+            for _ in 0..25 {
+                if let Ok(value) = cdp_initial_page_target(port) {
+                    target_id = Some(value);
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            let Some(target_id) = target_id else {
+                let _ = child.kill();
+                let _ = fs::remove_dir_all(&profile_dir);
+                return Err("Managed browser started, but no stable page target became available for Shuvi to bind.".into());
+            };
+
             if let Err(error) = register_managed_process(state, child_pid) {
                 let _ = terminate_managed_process_tree(child_pid);
                 let _ = child.wait();
@@ -6970,6 +7014,7 @@ async fn execute_tool_with_action_id(
                         child_pid,
                         BrowserSession {
                             port,
+                            target_id: target_id.clone(),
                             profile_dir: profile_dir.clone(),
                         },
                     );
@@ -6987,7 +7032,7 @@ async fn execute_tool_with_action_id(
                 success: true,
                 tool,
                 stdout: format!(
-                    "Started Shuvi-managed {browser} with root PID {child_pid} and local DevTools port {port}. Use this PID for browser DOM tools. Browser subprocesses are included in Shuvi's RAM accounting."
+                    "Started Shuvi-managed {browser} with root PID {child_pid}, local DevTools port {port}, and one bound page target. Use this PID for browser DOM tools. Browser subprocesses are included in Shuvi's RAM accounting."
                 ),
                 stderr: String::new(),
                 exit_code: Some(0),
@@ -6997,6 +7042,7 @@ async fn execute_tool_with_action_id(
             let session = browser_session(state, pid)?;
             let response = cdp_command(
                 session.port,
+                &session.target_id,
                 "Page.navigate",
                 json!({ "url": url }),
             )?;
@@ -7036,7 +7082,7 @@ async fn execute_tool_with_action_id(
 }})()"#
             );
 
-            let value = cdp_eval(session.port, expression)?;
+            let value = cdp_eval(session.port, &session.target_id, expression)?;
 
             Ok(ActionResult {
                 success: true,
@@ -7071,7 +7117,7 @@ async fn execute_tool_with_action_id(
 }})()"#
             );
 
-            let value = cdp_eval(session.port, expression)?;
+            let value = cdp_eval(session.port, &session.target_id, expression)?;
 
             Ok(ActionResult {
                 success: true,
@@ -7123,7 +7169,7 @@ async fn execute_tool_with_action_id(
 }})()"#
             );
 
-            let result = cdp_eval(session.port, expression)?;
+            let result = cdp_eval(session.port, &session.target_id, expression)?;
 
             Ok(ActionResult {
                 success: true,

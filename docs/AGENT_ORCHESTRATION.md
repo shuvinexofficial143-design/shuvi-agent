@@ -94,6 +94,10 @@ The approved manual shell process tree participates in the same managed RAM acco
 
 Saved API keys for the custom OpenAI-compatible provider are never sent to a remote plain-HTTP endpoint. Custom provider URLs must use HTTPS unless the host is loopback-only (`localhost`, a loopback IP such as `127.0.0.1`, or `::1`). Local Ollama remains usable over its normal local HTTP endpoint because it does not load or attach a saved provider API key.
 
+### Managed browser target binding
+
+A managed browser session is bound to one exact DevTools page target when it starts. DOM reads, clicks, value changes and navigation continue to address that same target ID. If the tab closes, Shuvi fails the action instead of silently switching to another popup or tab returned first by `/json/list`. This keeps browser approvals attached to the page instance Shuvi originally created.
+
 ## Permission boundary
 
 Planning never executes a tool.
