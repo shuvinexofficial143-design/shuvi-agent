@@ -7,7 +7,7 @@ const rust=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8
 test("provider responses reject declared oversized bodies before JSON decoding",()=>{
   assert.match(rust,/const MAX_PROVIDER_RESPONSE_BYTES: u64 = 8 \* 1024 \* 1024/);
   const helper=rust.slice(rust.indexOf("fn ensure_provider_response_size"),rust.indexOf("fn compact_error"));
-  assert.match(helper,/response\.content_length\(\)/);
+  assert.match(helper,/response[\s\S]*?\.content_length\(\)/);
   assert.match(helper,/bytes > MAX_PROVIDER_RESPONSE_BYTES/);
   const checks=[...rust.matchAll(/ensure_provider_response_size\(&response,/g)].length;
   assert.equal(checks,6);
