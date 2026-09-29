@@ -475,6 +475,12 @@ function dependencyFailure(
     }
   }
 
+  if (proposal.tool === "write_file" && isCodingProposal(proposal)) {
+    if (!path || !coding.inspected_paths.includes(path) || !coding.inspection_steps[path]) {
+      return "Coding dependency missing: read the exact existing code/config target before write_file. Create new code files through structured apply_patch.";
+    }
+  }
+
   if (proposal.tool === "apply_patch") {
     const freshStatus = path && coding.last_git_status_path === path
       && coding.last_git_status_git?.repo_root === path

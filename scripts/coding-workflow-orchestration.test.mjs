@@ -214,3 +214,13 @@ test("post-commit validation requires a clean resulting worktree",()=>{
   assert.match(orchestrator,/coding\.last_validation_git\.worktree_clean === true/);
   assert.match(orchestrator,/clean resulting worktree before git_push/);
 });
+
+
+test("coding write_file cannot overwrite source without exact prior inspection",()=>{
+  assert.match(orchestrator,/proposal\.tool === "write_file" && isCodingProposal\(proposal\)/);
+  assert.match(orchestrator,/read the exact existing code\/config target before write_file/);
+  assert.match(orchestrator,/Create new code files through structured apply_patch/);
+  assert.match(orchestrator,/coding\.inspected_paths\.includes\(path\)/);
+  assert.match(orchestrator,/coding\.inspection_steps\[path\]/);
+  assert.match(orchestrator,/CODE_MUTATION_TOOLS\.has\(proposal\.tool\)[\s\S]*delete coding\.inspection_steps\[path\]/);
+});
