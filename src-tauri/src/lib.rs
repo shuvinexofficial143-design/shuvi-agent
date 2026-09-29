@@ -11694,22 +11694,81 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
         }
         ToolAction::PowerShell { command } => {
             #[cfg(target_os = "windows")]
-            let output = Command::new("powershell.exe")
+            let mut child = Command::new("powershell.exe")
                 .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", &command])
-                .output()
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
                 .map_err(|error| format!("Failed to start PowerShell: {error}"))?;
 
             #[cfg(not(target_os = "windows"))]
-            let output = Command::new("sh")
+            let mut child = Command::new("sh")
                 .args(["-lc", &command])
-                .output()
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
                 .map_err(|error| format!("Failed to start shell: {error}"))?;
 
+            let child_pid = child.id();
+            match state.managed_children.lock() {
+                Ok(mut managed) => {
+                    managed.insert(child_pid);
+                }
+                Err(_) => {
+                    let _ = terminate_managed_process_tree(child_pid);
+                    let _ = child.wait();
+                    return Err("Managed-process state is unavailable; manual shell was stopped before it could remain untracked.".into());
+                }
+            }
+
+            let hard_limit_triggered = AtomicBool::new(false);
+            let hard_limit_terminated = AtomicBool::new(false);
+            let output_result = std::thread::scope(|scope| {
+                let monitor = scope.spawn(|| {
+                    while process_is_alive(child_pid) {
+                        match current_runtime_status(state) {
+                            Ok(status) if status.over_hard_limit => {
+                                hard_limit_triggered.store(true, Ordering::Release);
+                                let stopped = terminate_managed_process_tree(child_pid).unwrap_or(false);
+                                hard_limit_terminated.store(stopped, Ordering::Release);
+                                break;
+                            }
+                            Ok(_) => {}
+                            Err(_) => break,
+                        }
+                        std::thread::sleep(Duration::from_millis(250));
+                    }
+                });
+                let output = child.wait_with_output();
+                let _ = monitor.join();
+                output
+            });
+            if let Ok(mut managed) = state.managed_children.lock() {
+                managed.remove(&child_pid);
+            }
+            let output = output_result
+                .map_err(|error| format!("Could not wait for manual shell: {error}"))?;
+
+            let exceeded_hard_limit = hard_limit_triggered.load(Ordering::Acquire);
+            let mut stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            if exceeded_hard_limit {
+                let warning = if hard_limit_terminated.load(Ordering::Acquire) {
+                    "Manual shell exceeded Shuvi's 4 GB hard RAM ceiling and its managed process tree was stopped."
+                } else {
+                    "Manual shell exceeded Shuvi's 4 GB hard RAM ceiling; termination could not be confirmed, so the action is failed closed."
+                };
+                stderr = if stderr.trim().is_empty() {
+                    warning.into()
+                } else {
+                    format!("{warning}\n{stderr}")
+                };
+            }
+
             Ok(ActionResult {
-                success: output.status.success(),
+                success: output.status.success() && !exceeded_hard_limit,
                 tool,
                 stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
-                stderr: truncate_output(String::from_utf8_lossy(&output.stderr).to_string()),
+                stderr: truncate_output(stderr),
                 exit_code: output.status.code(),
             })
         }
