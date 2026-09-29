@@ -7097,7 +7097,9 @@ async fn execute_tool_with_action_id(
             }
 
             let Some(port) = devtools_port else {
+                let _ = terminate_managed_process_tree(child_pid);
                 let _ = child.kill();
+                let _ = child.wait();
                 let _ = fs::remove_dir_all(&profile_dir);
                 return Err("Managed browser started, but its local DevTools endpoint did not become ready within 5 seconds.".into());
             };
@@ -7111,7 +7113,9 @@ async fn execute_tool_with_action_id(
                 std::thread::sleep(Duration::from_millis(100));
             }
             let Some(target_id) = target_id else {
+                let _ = terminate_managed_process_tree(child_pid);
                 let _ = child.kill();
+                let _ = child.wait();
                 let _ = fs::remove_dir_all(&profile_dir);
                 return Err("Managed browser started, but no stable page target became available for Shuvi to bind.".into());
             };
