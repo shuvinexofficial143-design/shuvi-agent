@@ -36,6 +36,7 @@ if (!root) throw new Error("Missing app root");
 let providers: ProviderDescriptor[] = [];
 let messages: ChatMessage[] = [];
 let pendingAction: PendingAction | null = null;
+let pendingChatProposal: ToolProposal | null = null;
 let orchestration: AgentOrchestrationState = createAgentOrchestrationState();
 let busy = false;
 let cancelRequested = false;
@@ -777,11 +778,13 @@ async function stageProposal(proposal: ToolProposal): Promise<void> {
       baseUrl: baseUrlInput.value.trim() || null
     });
 
+    pendingChatProposal = proposal;
     const preparedId = pendingAction.id;
     const bound = bindPreparedAction(orchestration, proposal, preparedId);
     if (!bound.ok) {
       try { await invoke("deny_action", { actionId: preparedId }); } catch { /* best effort */ }
       pendingAction = null;
+      pendingChatProposal = null;
       await stopAgentForSafety(
         `Could not bind the prepared action to task progress: ${bound.error}`
       );
@@ -797,6 +800,7 @@ async function stageProposal(proposal: ToolProposal): Promise<void> {
       } catch {
         try { await invoke("deny_action", { actionId: preparedId }); } catch { /* best effort */ }
         pendingAction = null;
+        pendingChatProposal = null;
         await stopAgentForSafety(
           "Could not save the prepared-action binding before approval/execution. The action was not intentionally executed."
         );
@@ -834,6 +838,7 @@ async function stageProposal(proposal: ToolProposal): Promise<void> {
 
 function clearChatPermission(): void {
   pendingAction = null;
+  pendingChatProposal = null;
   chatPermission.classList.add("hidden");
   chatPermission.innerHTML = "";
 }
@@ -1247,6 +1252,7 @@ el<HTMLButtonElement>("#prepareAction").addEventListener("click", async () => {
   if (!command) return;
 
   try {
+    pendingChatProposal = null;
     pendingAction = await invoke<PendingAction>("prepare_powershell", { command });
     renderManualPending();
   } catch (error) {
@@ -1329,16 +1335,32 @@ el<HTMLButtonElement>("#refreshAudit").addEventListener("click", () => {
 el<HTMLButtonElement>("#stopButton").addEventListener("click", async () => {
   cancelRequested = true;
 
-  if (pendingAction) {
+  if (pendingAction && pendingChatProposal) {
     const actionId = pendingAction.id;
+    const proposal = pendingChatProposal;
     clearChatPermission();
 
+    let denied = false;
     try {
       await invoke("deny_action", { actionId });
+      denied = true;
       void refreshAudit();
     } catch {
-      // The action may already have expired. Cancellation still continues locally.
+      // If Rust cannot confirm denial, keep the graph conservative: the bound
+      // prepared action is failed locally and will still require replan/recovery.
     }
+
+    orchestration = recordToolOutcome(
+      orchestration,
+      proposal,
+      denied ? "denied" : "failure",
+      undefined,
+      false,
+      actionId
+    );
+    await auditGraphOutcome(proposal);
+    await saveActiveCheckpoint();
+
     // No provider/tool request is active while waiting for permission.
     await runAgentStep();
     return;
