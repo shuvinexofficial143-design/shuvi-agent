@@ -10,7 +10,7 @@ use std::{
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use keyring::Entry;
-use reqwest::Client;
+use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sysinfo::{Pid, System};
@@ -787,12 +787,16 @@ fn validate_provider_fields(
         return Err("Custom provider requires a base URL.".into());
     }
     if let Some(url) = base_url {
-        let lower = url.to_ascii_lowercase();
-        if url.len() > MAX_PROVIDER_BASE_URL_BYTES
-            || url.chars().any(char::is_control)
-            || !(lower.starts_with("https://") || lower.starts_with("http://"))
-        {
+        if url.len() > MAX_PROVIDER_BASE_URL_BYTES || url.chars().any(char::is_control) {
             return Err("Provider base URL must be an http(s) URL without control characters and at most 4096 bytes.".into());
+        }
+        let parsed = Url::parse(url)
+            .map_err(|_| "Provider base URL must be a valid absolute http(s) URL.".to_string())?;
+        if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+            return Err("Provider base URL must be an absolute http(s) URL with a host.".into());
+        }
+        if !parsed.username().is_empty() || parsed.password().is_some() {
+            return Err("Provider base URL must not contain embedded credentials; use the credential store for API keys.".into());
         }
     }
 
@@ -1806,20 +1810,23 @@ fn absolute_path(value: String) -> Result<String, String> {
 }
 
 fn safe_web_url(value: String) -> Result<String, String> {
-    let lower = value.to_ascii_lowercase();
-    if !(lower.starts_with("https://") || lower.starts_with("http://")) {
-        return Err("Browser tool only accepts http:// or https:// URLs.".into());
-    }
-
-    if value.chars().any(|ch| matches!(ch, '\r' | '\n' | '\0')) {
-        return Err("URL contains invalid control characters.".into());
-    }
-
     if value.len() > 4096 {
         return Err("URL is too long.".into());
     }
+    if value.chars().any(char::is_control) {
+        return Err("URL contains invalid control characters.".into());
+    }
 
-    Ok(value)
+    let parsed = Url::parse(&value)
+        .map_err(|_| "Browser tool requires a valid absolute http(s) URL.".to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return Err("Browser tool only accepts absolute http:// or https:// URLs with a host.".into());
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("Browser URLs must not contain embedded credentials.".into());
+    }
+
+    Ok(parsed.to_string())
 }
 
 fn find_premiere_installations() -> Result<Vec<std::path::PathBuf>, String> {
