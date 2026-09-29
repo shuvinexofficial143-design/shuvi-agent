@@ -23,13 +23,33 @@ function proposal(task_step_id = "inspect", tool = "read_file", extra = {}) {
 function result(tool = "read_file", success = true, exit_code = 0) {
   return { tool, success, exit_code, stdout: "observed", stderr: "" };
 }
+function actionIdFor(stepNumber) {
+  return `00000000-0000-4000-8000-${String(stepNumber).padStart(12,"0")}`;
+}
 function staged(state, p) {
   assert.equal(agent.evaluateProposal(state, p).allowed, true);
   state = agent.acceptProposalGraph(state, p).state;
-  return agent.recordProposalStart(state, p);
+  state = agent.recordProposalStart(state, p);
+  if (p.task_step_id != null) {
+    const bound = agent.bindPreparedAction(state, p, actionIdFor(state.next_step));
+    assert.equal(bound.ok, true);
+    state = bound.state;
+  }
+  return state;
+}
+function runningActionId(state, p) {
+  return state.task_graph?.steps.find(x => x.step_id === p.task_step_id)?.running?.action_id ?? null;
 }
 function done(state, p, r = result(p.tool)) {
-  return agent.recordToolOutcome(staged(state, p), p, r.success ? "success" : "failure", r);
+  state = staged(state, p);
+  return agent.recordToolOutcome(
+    state,
+    p,
+    r.success ? "success" : "failure",
+    r,
+    true,
+    runningActionId(state, p)
+  );
 }
 function initial(p = plan()) {
   return agent.acceptProposalGraph(agent.createAgentOrchestrationState(),
@@ -99,9 +119,60 @@ test("failed typed result does not complete or satisfy dependencies", () => {
 });
 test("mismatched typed tool cannot become completion evidence", () => {
   const p = proposal(), s = staged(initial(),p);
-  const after = agent.recordToolOutcome(s,p,"success",result("git_status"));
+  const after = agent.recordToolOutcome(s,p,"success",result("git_status"),true,runningActionId(s,p));
   assert.equal(graph.taskGraphProgress(after.task_graph).completed,0);
 });
+test("prepared action UUID is required and must match the running receipt", () => {
+  const p = proposal();
+  let s = initial();
+  assert.equal(agent.evaluateProposal(s,p).allowed,true);
+  s = agent.acceptProposalGraph(s,p).state;
+  s = agent.recordProposalStart(s,p);
+
+  const bad = agent.bindPreparedAction(s,p,"not-a-uuid");
+  assert.equal(bad.ok,false);
+
+  const id = actionIdFor(s.next_step);
+  const bound = agent.bindPreparedAction(s,p,id);
+  assert.equal(bound.ok,true);
+  s = bound.state;
+  assert.equal(runningActionId(s,p),id);
+
+  const rebound = agent.bindPreparedAction(s,p,actionIdFor(7));
+  assert.equal(rebound.ok,false);
+
+  const wrong = agent.recordToolOutcome(s,p,"success",result(),true,actionIdFor(6));
+  assert.equal(wrong.task_graph.steps[0].status,"failed");
+  assert.equal(graph.taskGraphProgress(wrong.task_graph).completed,0);
+});
+
+test("successful evidence stores exact prepared action ID and restore rejects missing binding", () => {
+  const p=proposal();
+  const s=done(initial(),p);
+  const e=s.task_graph.steps[0].evidence[0];
+  assert.equal(e.action_id,actionIdFor(1));
+  assert.equal(e.success,true);
+
+  const missing=json(s);
+  delete missing.task_graph.steps[0].evidence[0].action_id;
+  assert.equal(agent.normalizeAgentOrchestrationState(missing).recovery_mode,"stopped");
+
+  const malformed=json(s);
+  malformed.task_graph.steps[0].evidence[0].action_id="bad";
+  assert.equal(agent.normalizeAgentOrchestrationState(malformed).recovery_mode,"stopped");
+});
+
+test("legacy v3 graph checkpoints fail closed because prepared action IDs were not bound", () => {
+  const legacy=json(done(initial(),proposal()));
+  legacy.version=3;
+  for(const step of legacy.task_graph.steps) {
+    for(const e of step.evidence) delete e.action_id;
+  }
+  const restored=agent.normalizeAgentOrchestrationState(legacy);
+  assert.equal(restored.recovery_mode,"stopped");
+  assert.match(restored.stop_reason,/predates prepared-action binding/);
+});
+
 test("validation step requires run_project_task with a successful exit code", () => {
   const p = proposal("test","run_project_task");
   for (const code of [null,1]) {
@@ -115,7 +186,8 @@ test("validation step requires run_project_task with a successful exit code", ()
 });
 test("denial remains failed and its fingerprint survives successful inspection and renaming", () => {
   const p = proposal();
-  let s = agent.recordToolOutcome(staged(initial(),p),p,"denied");
+  let s = staged(initial(),p);
+  s = agent.recordToolOutcome(s,p,"denied",undefined,false,runningActionId(s,p));
   s = done(s,proposal(undefined,"git_status",{task_step_id:undefined,task_recovery:true,arguments:{path:"/repo"}}));
   const renamed = proposal("new_step","read_file",{task_graph:plan([step("inspect"),step("new_step")],2)});
   assert.equal(agent.evaluateProposal(s,renamed).allowed,false);
@@ -172,19 +244,19 @@ test("completed step and same completed action under another ID cannot rerun", (
   const next = plan([step("inspect"),step("again")],2);
   assert.equal(agent.evaluateProposal(s,proposal("again","read_file",{task_graph:next})).allowed,false);
 });
-test("checkpoint v3 round trip preserves evidence and next step", () => {
+test("checkpoint v4 round trip preserves action-bound evidence and next step", () => {
   const s = done(initial(),proposal());
   const restored = agent.normalizeAgentOrchestrationState(json(s));
   assert.deepEqual(restored,s);
   assert.equal(restored.next_step,2);
   assert.equal(graph.taskGraphProgress(restored.task_graph).completed,1);
 });
-test("legacy v1/v2 migration starts with no invented graph", () => {
-  for (const version of [1,2]) {
+test("legacy v1/v2/v3 non-graph migration starts with no invented graph", () => {
+  for (const version of [1,2,3]) {
     const s = agent.normalizeAgentOrchestrationState({version,next_step:4});
     assert.equal(s.task_graph,null);
     assert.equal(s.next_step,4);
-    assert.equal(s.version,3);
+    assert.equal(s.version,4);
   }
 });
 test("interrupted in-flight actions become uncertain failures, never automatic retries", () => {
