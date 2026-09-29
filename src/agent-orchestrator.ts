@@ -466,11 +466,20 @@ export function recordToolOutcome(
   auditReceipt: ExecutionAuditReceipt | null = null
 ): AgentOrchestrationState {
   const fingerprint = proposalFingerprint(proposal);
-  // A provider claim or a success enum alone cannot create graph/coding evidence.
+  const auditVerified = preparedActionId === null || Boolean(
+    auditReceipt &&
+    auditReceipt.action_id === preparedActionId &&
+    auditReceipt.event === "executed" &&
+    auditReceipt.tool === proposal.tool &&
+    auditReceipt.success === result?.success
+  );
+  // A provider claim, success enum, or uncorrelated frontend result cannot create
+  // graph/coding evidence for a prepared runtime action.
   const typedSuccess = outcome === "success" && result?.success === true
     && result.tool === proposal.tool && typeof result.stdout === "string"
     && typeof result.stderr === "string" && (result.exit_code === null || Number.isInteger(result.exit_code))
-    && (proposal.tool !== "run_project_task" || result.exit_code === 0);
+    && (proposal.tool !== "run_project_task" || result.exit_code === 0)
+    && auditVerified;
   if (outcome === "success" && !typedSuccess) outcome = "failure";
   const taskGraph = finishTaskStep(
     state.task_graph,
