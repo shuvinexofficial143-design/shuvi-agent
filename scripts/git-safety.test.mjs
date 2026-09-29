@@ -23,7 +23,7 @@ test("git writes recheck refreshed upstream ancestry immediately inside typed to
   const commit=rust.slice(rust.indexOf("ToolAction::GitCommit { path, message, files, expected_head }"),rust.indexOf("ToolAction::GitPush { path, expected_head }"));
   const push=rust.slice(rust.indexOf("ToolAction::GitPush { path, expected_head }"),rust.indexOf("ToolAction::PowerShell"));
   assert.ok(commit.indexOf("git_remote_freshness(&path, false)") < commit.indexOf("git_staged_files(&path)"));
-  assert.ok(push.indexOf("git_remote_freshness(&path, true)") < push.indexOf('run_git(&path, &["push"])'));
+  assert.ok(push.indexOf("git_remote_freshness(&path, true)") < push.indexOf('run_git(&path, &["push", "--", remote.as_str(), refspec.as_str()])'));
   assert.match(commit,/Remote freshness: \{remote_receipt\}/);
   assert.match(push,/Remote freshness: \{remote_receipt\}/);
 });
@@ -148,4 +148,19 @@ test("Git writes recheck reviewed HEAD after freshness and staging boundaries",(
   assert.match(push,/require_expected_git_head\(&path, &expected_head, "git_push"\)/);
   assert.match(push,/git_remote_freshness\(&path, true\)/);
   assert.match(push,/git_push after remote freshness check/);
+});
+
+
+test("git_push sends only the reviewed commit to the configured upstream ref",()=>{
+  assert.match(rust,/fn git_push_destination\(path: &str\) -> Result<\(String, String\), String>/);
+  assert.match(rust,/branch\.\{branch\}\.merge/);
+  assert.match(rust,/merge_ref\.starts_with\("refs\/heads\/"\)/);
+  assert.match(rust,/git_push refuses a local-dot upstream/);
+  const start=rust.indexOf("ToolAction::GitPush { path, expected_head }");
+  const push=rust.slice(start,rust.indexOf("ToolAction::PowerShell",start));
+  assert.match(push,/let \(remote, merge_ref\) = git_push_destination\(&path\)\?/);
+  assert.match(push,/let refspec = format!\("\{expected_head\}:\{merge_ref\}"\)/);
+  assert.match(push,/\["push", "--", remote\.as_str\(\), refspec\.as_str\(\)\]/);
+  assert.doesNotMatch(push,/run_git\(&path, &\["push"\]\)/);
+  assert.match(push,/Exact push: \{expected_head\} -> \{remote\}\/\{merge_ref\}/);
 });

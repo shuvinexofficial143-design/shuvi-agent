@@ -5760,6 +5760,36 @@ fn require_expected_git_head(path: &str, expected_head: &str, action: &str) -> R
     Ok(())
 }
 
+
+fn git_push_destination(path: &str) -> Result<(String, String), String> {
+    let branch = git_command_text(
+        path,
+        &["symbolic-ref", "--quiet", "--short", "HEAD"],
+        "Could not identify the current Git branch for push",
+    )?;
+    let remote_key = format!("branch.{branch}.remote");
+    let remote = git_command_text(
+        path,
+        &["config", "--get", remote_key.as_str()],
+        "Could not identify the configured Git push remote",
+    )?;
+    if remote == "." {
+        return Err("git_push refuses a local-dot upstream; configure an explicit remote before pushing.".into());
+    }
+    let merge_key = format!("branch.{branch}.merge");
+    let merge_ref = git_command_text(
+        path,
+        &["config", "--get", merge_key.as_str()],
+        "Could not identify the configured upstream branch ref",
+    )?;
+    if !merge_ref.starts_with("refs/heads/")
+        || merge_ref.chars().any(|ch| ch.is_control() || ch.is_whitespace())
+    {
+        return Err("Configured upstream branch ref is not a safe refs/heads target.".into());
+    }
+    Ok((remote, merge_ref))
+}
+
 fn git_remote_freshness(path: &str, require_upstream: bool) -> Result<String, String> {
     let branch = git_command_text(
         path,
@@ -11225,9 +11255,11 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             require_expected_git_head(&path, &expected_head, "git_push")?;
             let remote_receipt = git_remote_freshness(&path, true)?;
             require_expected_git_head(&path, &expected_head, "git_push after remote freshness check")?;
-            let output = run_git(&path, &["push"])?;
+            let (remote, merge_ref) = git_push_destination(&path)?;
+            let refspec = format!("{expected_head}:{merge_ref}");
+            let output = run_git(&path, &["push", "--", remote.as_str(), refspec.as_str()])?;
             let body = format!(
-                "Remote freshness: {remote_receipt}\n{}",
+                "Remote freshness: {remote_receipt}\nExact push: {expected_head} -> {remote}/{merge_ref}\n{}",
                 String::from_utf8_lossy(&output.stdout)
             );
             let stdout = if output.status.success() {
