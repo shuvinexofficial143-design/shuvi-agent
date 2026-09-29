@@ -364,6 +364,19 @@ test("strict Rust event allowlist matches all graph audit events", () => {
   assert.match(section,/detail.chars\(\).count\(\)>1_200/);
 });
 
+test("user stop finalizes a pending prepared graph action before resume", () => {
+  const main=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
+  const stop=main.slice(main.indexOf('el<HTMLButtonElement>("#stopButton")'),main.indexOf("document.querySelectorAll<HTMLButtonElement>"));
+  assert.match(main,/let pendingChatProposal: ToolProposal \| null = null/);
+  assert.match(stop,/pendingAction && pendingChatProposal/);
+  assert.match(stop,/const proposal = pendingChatProposal/);
+  assert.ok(stop.indexOf('"deny_action"') < stop.indexOf("recordToolOutcome"));
+  assert.match(stop,/denied \? "denied" : "failure"/);
+  assert.match(stop,/undefined,\s+false,\s+actionId/);
+  assert.ok(stop.indexOf("recordToolOutcome") < stop.indexOf("saveActiveCheckpoint"));
+  assert.ok(stop.indexOf("saveActiveCheckpoint") < stop.indexOf("runAgentStep"));
+});
+
 test("stopped checkpoint cannot be revived by an interrupted receipt", () => {
   const s = staged(initial(), proposal());
   s.recovery_mode = "stopped";
