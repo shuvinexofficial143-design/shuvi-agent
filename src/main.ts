@@ -382,12 +382,16 @@ function renderOrchestrationStatus(): void {
   list.replaceChildren();
   if (orchestration.task_graph) {
     el<HTMLElement>("#taskProgressSummary").textContent =
-      `${graphProgress.completed}/${graphProgress.total} steps complete`;
+      `${graphProgress.completed}/${graphProgress.total} evidence-verified steps complete`;
     const symbols: Record<string, string> = { completed: "✓", running: "→", ready: "→", pending: "○", failed: "!", blocked: "!", skipped: "–" };
     for (const step of graphProgress.steps) {
       const row = document.createElement("div");
-      row.textContent = `${symbols[step.status]} ${step.title} (${step.status})`;
-      row.title = step.reason ?? step.status;
+      const verified = step.evidence_verified ? " · verified evidence" : "";
+      const reason = step.reason && (step.status === "failed" || step.status === "blocked")
+        ? ` — ${step.reason}`
+        : "";
+      row.textContent = `${symbols[step.status]} ${step.title} (${step.status}${verified})${reason}`;
+      row.title = step.reason ?? (step.evidence_verified ? "Completion backed by local typed-tool evidence." : step.status);
       list.append(row);
     }
     progress.textContent = `Task: ${orchestration.task_graph.objective} · ${graphProgress.completed}/${graphProgress.total} steps complete · Current: ${graphProgress.current ?? "none"} · Phase: ${orchestration.coding.active ? codingPhase(orchestration) : "general"} · State: ${orchestration.recovery_mode}`;

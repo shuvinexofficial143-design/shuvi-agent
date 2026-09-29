@@ -537,3 +537,21 @@ test("blocked checkpoint without a bounded reason fails closed", () => {
   s.task_graph.steps[1].blocked_reason=null;
   assert.equal(agent.normalizeAgentOrchestrationState(json(s)).recovery_mode,"stopped");
 });
+
+
+test("progress exposes visible evidence verification and failure reasons", () => {
+  let s=done(initial(),proposal());
+  let progress=graph.taskGraphProgress(s.task_graph);
+  assert.equal(progress.steps[0].evidence_verified,true);
+  assert.equal(progress.steps[1].evidence_verified,false);
+
+  s=done(initial(),proposal(),result("read_file",false,1));
+  progress=graph.taskGraphProgress(s.task_graph);
+  assert.equal(progress.steps[0].status,"failed");
+  assert.match(progress.steps[0].reason,/matching typed result and Rust audit evidence/);
+
+  const main=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
+  assert.match(main,/evidence-verified steps complete/);
+  assert.match(main,/verified evidence/);
+  assert.match(main,/step\.reason && \(step\.status === "failed" \|\| step\.status === "blocked"\)/);
+});

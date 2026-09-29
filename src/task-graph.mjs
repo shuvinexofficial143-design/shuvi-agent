@@ -208,9 +208,14 @@ export function finishTaskStep(
 
 export function taskGraphProgress(graph) {
   if (!graph) return { completed: 0, total: 0, current: null, steps: [] };
-  const steps = graph.steps.map(s => ({ step_id: s.step_id, title: s.title,
-    status: s.status === "completed" && !completed(s) ? "pending" : s.status,
-    reason: s.blocked_reason }));
+  const steps = graph.steps.map(s => {
+    const verified = completed(s);
+    const status = s.status === "completed" && !verified ? "pending" : s.status;
+    const latestEvidence = s.evidence.at(-1);
+    const reason = s.blocked_reason
+      ?? (status === "failed" ? latestEvidence?.summary ?? "Step failed without completion evidence." : null);
+    return { step_id: s.step_id, title: s.title, status, reason, evidence_verified: verified };
+  });
   return { completed: graph.steps.filter(completed).length, total: steps.length,
     current: steps.find(s => s.status === "running")?.title ?? steps.find(s => s.status === "ready")?.title ?? null,
     steps };

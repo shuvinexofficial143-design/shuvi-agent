@@ -50,5 +50,5 @@ export function finishTaskStep(
   preparedActionId?: string | null,
   auditReceipt?: TaskAuditReceipt | null
 ): TaskGraph | null;
-export function taskGraphProgress(graph: TaskGraph | null): { completed: number; total: number; current: string | null; steps: { step_id: string; title: string; status: TaskStepStatus; reason: string | null }[] };
+export function taskGraphProgress(graph: TaskGraph | null): { completed: number; total: number; current: string | null; steps: { step_id: string; title: string; status: TaskStepStatus; reason: string | null; evidence_verified: boolean }[] };
 export function restoreTaskGraph(value: unknown, nextStep: number): Failure | { ok: true; graph: TaskGraph | null; interrupted: string[] };
