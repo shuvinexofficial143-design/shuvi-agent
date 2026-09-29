@@ -5459,6 +5459,21 @@ fn now_ms() -> u64 {
         .min(u64::MAX as u128) as u64
 }
 
+fn audit_safe_action_detail(tool: &str, detail: &str) -> String {
+    match tool {
+        "powershell" => format!(
+            "Manual PowerShell command omitted from persistent audit ({} characters).",
+            detail.chars().count()
+        ),
+        "launch_app" => "Application command-line arguments omitted from persistent audit.".into(),
+        "open_url" | "browser_start" | "browser_navigate" =>
+            "Browser URL omitted from persistent audit.".into(),
+        "inspect_screen" | "premiere_inspect_frame" | "premiere_review_frames" =>
+            "Vision prompt omitted from persistent audit.".into(),
+        _ => detail.chars().take(4_000).collect(),
+    }
+}
+
 fn audit_io_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -12085,13 +12100,14 @@ fn deny_action(
         .remove(&action_id);
 
     if let Some(action) = action {
+        let audit_detail = audit_safe_action_detail(&action.tool, &action.detail);
         append_audit(
             &app,
             &AuditEntry {
                 timestamp_ms: now_ms(),
                 event: "denied".into(),
                 tool: action.tool,
-                detail: action.detail,
+                detail: audit_detail,
                 success: false,
                 action_id: Some(action_id),
             },
@@ -12121,13 +12137,14 @@ fn cancel_running_action(
             let action = pending.remove(&action_id)
                 .ok_or_else(|| "Prepared action disappeared during cancellation.".to_string())?;
             drop(pending);
+            let audit_detail = audit_safe_action_detail(&action.tool, &action.detail);
             append_audit(
                 &app,
                 &AuditEntry {
                     timestamp_ms: now_ms(),
                     event: "denied".into(),
                     tool: action.tool,
-                    detail: action.detail,
+                    detail: audit_detail,
                     success: false,
                     action_id: Some(action_id),
                 },
@@ -12212,13 +12229,14 @@ async fn execute_action(
         if expired { pending.remove(&action_id) } else { None }
     };
     if let Some(action) = expired_action {
+        let safe_detail = audit_safe_action_detail(&action.tool, &action.detail);
         append_audit(
             &app,
             &AuditEntry {
                 timestamp_ms: now_ms(),
                 event: "denied".into(),
                 tool: action.tool,
-                detail: format!("Expired prepared action: {}", action.detail),
+                detail: format!("Expired prepared action: {safe_detail}"),
                 success: false,
                 action_id: Some(action_id.clone()),
             },
@@ -12246,6 +12264,7 @@ async fn execute_action(
 
     let tool = action.tool.clone();
     let detail = action.detail.clone();
+    let audit_detail = audit_safe_action_detail(&tool, &detail);
     let execution = execute_tool_with_action_id(
         action,
         state.inner(),
@@ -12268,7 +12287,7 @@ async fn execute_action(
                     timestamp_ms: now_ms(),
                     event: "executed".into(),
                     tool,
-                    detail,
+                    detail: audit_detail.clone(),
                     success: result.success,
                     action_id: Some(action_id.clone()),
                 },
@@ -12282,7 +12301,7 @@ async fn execute_action(
                     timestamp_ms: now_ms(),
                     event: "failed".into(),
                     tool,
-                    detail,
+                    detail: audit_detail,
                     success: false,
                     action_id: Some(action_id.clone()),
                 },

@@ -72,7 +72,7 @@ Browser/open-url and provider base URLs are parsed as absolute URLs rather than 
 
 ### Manual PowerShell boundary
 
-PowerShell remains available only from the local **Permission Lab** command path. It is intentionally absent from the provider TOOL_PROTOCOL and provider proposal allowlist, and the Rust staging layer rejects PowerShell whenever an active provider context is present. This prevents an AI proposal from bypassing typed file, Git, task-graph, or coding dependency rules through arbitrary shell commands. Manual PowerShell still goes through the normal local approval gate and audit log.
+PowerShell remains available only from the local **Permission Lab** command path. The approval card still shows the full proposed command, but persistent action audit redacts PowerShell command text, launch arguments, browser URLs, and vision prompts that may contain secrets; action UUID/tool/outcome evidence remains intact. It is intentionally absent from the provider TOOL_PROTOCOL and provider proposal allowlist, and the Rust staging layer rejects PowerShell whenever an active provider context is present. This prevents an AI proposal from bypassing typed file, Git, task-graph, or coding dependency rules through arbitrary shell commands. Manual PowerShell still goes through the normal local approval gate and audit log.
 
 ### Session path approvals
 
