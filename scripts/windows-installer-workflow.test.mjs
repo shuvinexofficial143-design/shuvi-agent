@@ -18,3 +18,12 @@ test("Windows installer is gated by full exact-commit verification",()=>{
   assert.match(workflow,/path: \.shuvi-attest\/full-\*\.json/);
   assert.match(workflow,/if-no-files-found: error/);
 });
+
+
+test("Windows installer uses a read-only token without persisted checkout credentials",()=>{
+  assert.match(workflow,/permissions:\s*\n\s*contents: read/);
+  const checkout=workflow.indexOf("uses: actions/checkout@v4");
+  const setupNode=workflow.indexOf("uses: actions/setup-node@v4",checkout);
+  const block=workflow.slice(checkout,setupNode);
+  assert.match(block,/persist-credentials: false/);
+});
