@@ -4,7 +4,7 @@ use std::{
     io::{BufRead, BufReader, Write},
     path::Path,
     process::{Command, Stdio},
-    sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}},
+    sync::{Arc, Mutex, OnceLock, atomic::{AtomicBool, Ordering}},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -68,6 +68,7 @@ const HARD_LIMIT_MB: f64 = 4096.0;
 const MAX_READ_BYTES: u64 = 1_048_576;
 const MAX_WRITE_BYTES: usize = 2_097_152;
 const MAX_TOOL_OUTPUT_CHARS: usize = 120_000;
+const MAX_AUDIT_LOG_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_TOOL_STRING_ARRAY_ITEMS: usize = 256;
 const MAX_TOOL_STRING_ARRAY_ITEM_BYTES: usize = 16 * 1024;
 const MAX_TOOL_STRING_ARRAY_BYTES: usize = 512 * 1024;
@@ -5204,6 +5205,11 @@ fn now_ms() -> u64 {
         .min(u64::MAX as u128) as u64
 }
 
+fn audit_io_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
 fn audit_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     let dir = app
         .path()
@@ -5284,7 +5290,24 @@ async fn premiere_plan_calibration(value:&mut Value,bridge:&PremiereClient<'_>,a
 }
 
 fn append_audit(app: &AppHandle, entry: &AuditEntry) -> Result<(), String> {
+    let _guard = audit_io_lock()
+        .lock()
+        .map_err(|_| "Audit I/O state is unavailable.".to_string())?;
     let path = audit_path(app)?;
+
+    if path.exists()
+        && fs::metadata(&path)
+            .map(|metadata| metadata.len() >= MAX_AUDIT_LOG_BYTES)
+            .unwrap_or(false)
+    {
+        let rotated = path.with_extension("jsonl.1");
+        if rotated.exists() {
+            let _ = fs::remove_file(&rotated);
+        }
+        fs::rename(&path, &rotated)
+            .map_err(|error| format!("Could not rotate audit log: {error}"))?;
+    }
+
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
@@ -5299,6 +5322,9 @@ fn append_audit(app: &AppHandle, entry: &AuditEntry) -> Result<(), String> {
 }
 
 fn read_audit(app: &AppHandle, limit: usize) -> Result<Vec<AuditEntry>, String> {
+    let _guard = audit_io_lock()
+        .lock()
+        .map_err(|_| "Audit I/O state is unavailable.".to_string())?;
     let path = audit_path(app)?;
 
     if !path.exists() {

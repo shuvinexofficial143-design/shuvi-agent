@@ -97,7 +97,7 @@ The local audit records bounded orchestration events:
 - `orchestration_replan`
 - `orchestration_stopped`
 
-These events are best-effort diagnostics only and cannot change a safety decision. Existing diagnostics exports already include recent audit entries. Audit reads are streaming and retain only the requested bounded tail (maximum 200 entries) in memory; Shuvi no longer loads an entire long-lived `audit.jsonl` before truncating it. Temporary screenshots are also bounded: before a new capture, Shuvi prunes only its own `%TEMP%/Shuvi/screenshots/screen-*.png` files so at most 64 recent captures remain. Other temp files are never candidates for this cleanup, and returned screenshot paths remain available within the bounded retention window.
+These events are best-effort diagnostics only and cannot change a safety decision. Existing diagnostics exports already include recent audit entries. Audit reads are streaming and retain only the requested bounded tail (maximum 200 entries) in memory; Shuvi no longer loads an entire long-lived `audit.jsonl` before truncating it. Audit writes are serialized and rotate the active log at 8 MB, retaining at most one previous Shuvi audit segment; this bounds long-running local audit disk growth without widening any permission. Temporary screenshots are also bounded: before a new capture, Shuvi prunes only its own `%TEMP%/Shuvi/screenshots/screen-*.png` files so at most 64 recent captures remain. Other temp files are never candidates for this cleanup, and returned screenshot paths remain available within the bounded retention window.
 
 ## Non-goals
 
