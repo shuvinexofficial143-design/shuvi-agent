@@ -40,6 +40,7 @@ export type CodingWorkflowState = {
   inspected_paths: string[];
   inspection_steps: Record<string, number>;
   last_mutation_step: number;
+  post_commit_validation_required: boolean;
   last_validation_step: number;
   last_validation_path: string | null;
   last_validation_git: GitIdentity | null;
@@ -180,6 +181,7 @@ function createCodingWorkflowState(): CodingWorkflowState {
     inspected_paths: [],
     inspection_steps: {},
     last_mutation_step: 0,
+    post_commit_validation_required: false,
     last_validation_step: 0,
     last_validation_path: null,
     last_validation_git: null,
@@ -265,6 +267,7 @@ function normalizeCodingWorkflowState(value: unknown, nextStep: number): CodingW
       safeInspected.slice(-MAX_INSPECTED_PATHS).map(path => [path, inspectionSteps[path]])
     ),
     last_mutation_step: lastMutationStep,
+    post_commit_validation_required: input.post_commit_validation_required === true,
     last_validation_step: lastValidationStep,
     last_validation_path: lastValidationPath,
     last_validation_git: lastValidationGit && lastValidationPath === lastValidationGit.repo_root
@@ -439,6 +442,15 @@ function dependencyFailure(
     if (!expectedHead || expectedHead !== commitGit?.head) {
       return "Coding dependency missing: git_push expected_head must exactly match the successful git_commit HEAD.";
     }
+    if (coding.post_commit_validation_required) {
+      const commitValidated = coding.last_validation_step > coding.last_commit_step
+        && coding.last_validation_path === path
+        && coding.last_validation_git?.repo_root === commitGit.repo_root
+        && coding.last_validation_git.head === commitGit.head;
+      if (!commitValidated) {
+        return "Coding dependency missing: re-run project validation on the exact committed HEAD before git_push because pre-commit validation evidence existed.";
+      }
+    }
   }
 
   return null;
@@ -576,6 +588,7 @@ function withSuccessfulCodingEvidence(
   }
   if (CODE_MUTATION_TOOLS.has(proposal.tool)) {
     coding.last_mutation_step = step;
+    coding.post_commit_validation_required = false;
     coding.last_validation_step = 0;
     coding.last_validation_path = null;
     coding.last_validation_git = null;
@@ -610,9 +623,13 @@ function withSuccessfulCodingEvidence(
     coding.last_git_diff_git = exactGit;
   }
   if (proposal.tool === "git_commit") {
+    const hadPreCommitValidation = coding.last_validation_step > coding.last_mutation_step
+      && coding.last_validation_path === path
+      && coding.last_validation_git?.repo_root === path;
     coding.last_commit_step = exactGit ? step : 0;
     coding.last_commit_path = exactGit ? path : null;
     coding.last_commit_git = exactGit;
+    coding.post_commit_validation_required = Boolean(exactGit && hadPreCommitValidation);
     // A commit changes HEAD/index state. Review and pre-commit validation
     // receipts cannot be reused as evidence for the newly committed HEAD.
     coding.last_validation_step = 0;
@@ -626,6 +643,7 @@ function withSuccessfulCodingEvidence(
     coding.last_git_diff_git = null;
   }
   if (proposal.tool === "git_push") {
+    coding.post_commit_validation_required = false;
     coding.last_push_step = exactGit ? step : 0;
     coding.last_push_path = exactGit ? path : null;
     coding.last_push_git = exactGit;
@@ -790,6 +808,9 @@ export function orchestrationContext(state: AgentOrchestrationState): string {
     }
     if (state.coding.last_commit_git?.head) {
       parts.push(`- committed Git HEAD: ${state.coding.last_commit_git.head}; git_push expected_head must match exactly.`);
+      if (state.coding.post_commit_validation_required) {
+        parts.push("- pre-commit validation existed; git_push is blocked until run_project_task succeeds on this exact committed HEAD.");
+      }
     }
     if (phase === "validate") {
       parts.push(state.coding.last_commit_git

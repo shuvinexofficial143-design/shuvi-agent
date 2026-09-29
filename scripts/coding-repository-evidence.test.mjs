@@ -59,11 +59,14 @@ test("successful commit invalidates pre-commit validation and can bind validatio
   assert.equal(agent.codingPhase(s),"validate");
 
   const push=proposal("git_push",{expected_head:HEAD_C});
-  assert.equal(agent.evaluateProposal(s,push).allowed,true);
+  let pushDecision=agent.evaluateProposal(s,push);
+  assert.equal(pushDecision.allowed,false);
+  assert.match(pushDecision.reason,/exact committed HEAD before git_push/);
   assert.equal(agent.evaluateProposal(s,proposal("git_push",{expected_head:HEAD_A})).allowed,false);
 
   s=done(s,proposal("run_project_task",{task:"test"}),gitResult("run_project_task",HEAD_C));
   assert.equal(s.coding.last_validation_git.head,HEAD_C);
+  assert.equal(agent.evaluateProposal(s,push).allowed,true);
   assert.equal(agent.codingPhase(s),"push_ready");
   s=done(s,push,gitResult("git_push",HEAD_C));
   assert.equal(agent.codingPhase(s),"complete");
@@ -84,4 +87,17 @@ test("legacy checkpoint Git steps without identity receipts fail closed to fresh
   assert.equal(s.coding.last_git_status_git,null);
   assert.equal(s.coding.last_git_diff_git,null);
   assert.equal(agent.evaluateProposal(s,proposal("git_commit",{message:"x",files:["a.ts"],expected_head:HEAD_A})).allowed,false);
+});
+
+
+test("push remains allowed when no pre-commit validation evidence was claimed",()=>{
+  let s=agent.createAgentOrchestrationState();
+  s=done(s,proposal("git_status"),gitResult("git_status",HEAD_A));
+  s=done(s,proposal("apply_patch"),result("apply_patch","patched"));
+  s=done(s,proposal("git_status"),gitResult("git_status",HEAD_A));
+  s=done(s,proposal("git_diff"),gitResult("git_diff",HEAD_A));
+  const commit=proposal("git_commit",{message:"x",files:["a.ts"],expected_head:HEAD_A});
+  s=done(s,commit,gitResult("git_commit",HEAD_C));
+  assert.equal(s.coding.post_commit_validation_required,false);
+  assert.equal(agent.evaluateProposal(s,proposal("git_push",{expected_head:HEAD_C})).allowed,true);
 });

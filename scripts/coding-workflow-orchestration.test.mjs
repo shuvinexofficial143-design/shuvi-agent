@@ -161,3 +161,13 @@ test("project validation child process is included in managed RAM accounting",()
   assert.doesNotMatch(block,/\.output\(\)/);
   assert.match(block,/project task was stopped before execution could continue safely/);
 });
+
+
+test("pre-commit validation can require exact post-commit validation before push",()=>{
+  assert.match(types,/post_commit_validation_required\?: boolean/);
+  assert.match(orchestrator,/hadPreCommitValidation/);
+  assert.match(orchestrator,/coding\.post_commit_validation_required = Boolean\(exactGit && hadPreCommitValidation\)/);
+  assert.match(orchestrator,/if \(coding\.post_commit_validation_required\)/);
+  assert.match(orchestrator,/re-run project validation on the exact committed HEAD before git_push/);
+  assert.match(orchestrator,/pre-commit validation existed; git_push is blocked/);
+});

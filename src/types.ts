@@ -32,6 +32,7 @@ export type CodingWorkflowCheckpoint = {
   inspected_paths: string[];
   inspection_steps?: Record<string, number>;
   last_mutation_step: number;
+  post_commit_validation_required?: boolean;
   last_validation_step: number;
   last_validation_path?: string | null;
   last_validation_git?: GitIdentityCheckpoint | null;
