@@ -842,6 +842,7 @@ fn load_api_key(provider_id: &str) -> Result<Option<String>, String> {
 fn http_client() -> Result<Client, String> {
     Client::builder()
         .timeout(Duration::from_secs(120))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|error| format!("HTTP client error: {error}"))
 }
