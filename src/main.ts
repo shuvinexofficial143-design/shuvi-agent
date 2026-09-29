@@ -23,6 +23,7 @@ import {
   recordProposalBlock,
   recordToolOutcome,
   acceptProposalGraph,
+  bindPreparedAction,
   recordProposalStart,
   type AgentOrchestrationState
 } from "./agent-orchestrator";
@@ -776,6 +777,33 @@ async function stageProposal(proposal: ToolProposal): Promise<void> {
       baseUrl: baseUrlInput.value.trim() || null
     });
 
+    const preparedId = pendingAction.id;
+    const bound = bindPreparedAction(orchestration, proposal, preparedId);
+    if (!bound.ok) {
+      try { await invoke("deny_action", { actionId: preparedId }); } catch { /* best effort */ }
+      pendingAction = null;
+      await stopAgentForSafety(
+        `Could not bind the prepared action to task progress: ${bound.error}`
+      );
+      return;
+    }
+    orchestration = bound.state;
+
+    // Once Rust has created an exact pending action UUID, persist that binding before
+    // showing approval UI or auto-executing a session-scoped low-risk action.
+    if (orchestration.task_graph && proposal.task_step_id != null) {
+      try {
+        await invoke("save_session_checkpoint", { checkpoint: currentCheckpoint() });
+      } catch {
+        try { await invoke("deny_action", { actionId: preparedId }); } catch { /* best effort */ }
+        pendingAction = null;
+        await stopAgentForSafety(
+          "Could not save the prepared-action binding before approval/execution. The action was not intentionally executed."
+        );
+        return;
+      }
+    }
+
     if (
       pendingAction.risk === "low" &&
       sessionAllowedScopes.has(sessionPermissionKey(proposal)) &&
@@ -831,13 +859,15 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
       orchestration,
       proposal,
       result.success ? "success" : "failure",
-      result
+      result,
+      true,
+      actionId
     );
     await auditGraphOutcome(proposal);
     messages.push(toolResultMessage(result));
     await continueAfterOutcome();
   } catch (error) {
-    orchestration = recordToolOutcome(orchestration, proposal, "failure");
+    orchestration = recordToolOutcome(orchestration, proposal, "failure", undefined, true, actionId);
     await auditGraphOutcome(proposal);
     messages.push(hiddenToolFailure(proposal, {
       error: String(error),
@@ -932,7 +962,7 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
         await invoke("deny_action", { actionId });
         void refreshAudit();
       } finally {
-        orchestration = recordToolOutcome(orchestration, proposal, "denied");
+        orchestration = recordToolOutcome(orchestration, proposal, "denied", undefined, false, actionId);
         await auditGraphOutcome(proposal);
         messages.push(hiddenToolFailure(proposal, {
           denied_by_user: true,
