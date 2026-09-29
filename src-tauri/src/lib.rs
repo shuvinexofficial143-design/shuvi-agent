@@ -861,11 +861,10 @@ async fn send_with_retry(
         match attempt_request.send().await {
             Ok(response) => {
                 let status = response.status();
-                // Retry only statuses that strongly indicate throttling/gateway availability.
-                // 500/504 can be ambiguous after provider-side generation began, so fail
-                // closed instead of risking a duplicate billed generation.
-                let retryable = status.as_u16() == 429
-                    || matches!(status.as_u16(), 502 | 503);
+                // Only explicit throttling is retried automatically. Gateway/server errors
+                // are ambiguous after provider-side generation may have begun, so fail closed
+                // instead of risking a duplicate billed generation.
+                let retryable = status.as_u16() == 429;
 
                 if retryable && attempt < 2 {
                     last_error = Some(format!("HTTP {status}"));
@@ -1305,7 +1304,7 @@ async fn openai_compatible_chat(
         _ => return Err("Invalid OpenAI-compatible provider.".into()),
     };
 
-    if matches!(input.provider.as_str(), "deepseek" | "openai" | "openrouter")
+    if matches!(input.provider.as_str(), "deepseek" | "openai" | "openrouter" | "custom")
         && api_key.as_deref().unwrap_or("").is_empty()
     {
         return Err("No API key saved for this provider.".into());
