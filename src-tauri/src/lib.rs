@@ -80,6 +80,9 @@ const MAX_CHAT_MESSAGE_BYTES: usize = 256 * 1024;
 const MAX_CHAT_CONTEXT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_PROVIDER_RESPONSE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_ASSISTANT_RESPONSE_BYTES: usize = 512 * 1024;
+const MAX_PROVIDER_MODEL_BYTES: usize = 256;
+const MAX_PROVIDER_BASE_URL_BYTES: usize = 4 * 1024;
+const MAX_API_KEY_BYTES: usize = 16 * 1024;
 const MAX_SCREENSHOT_FILES: usize = 64;
 const MAX_STALE_BROWSER_PROFILES: usize = 8;
 const MAX_DIAGNOSTIC_FILES: usize = 16;
@@ -758,6 +761,40 @@ fn providers() -> Vec<ProviderDescriptor> {
 
 fn provider_ids() -> HashSet<&'static str> {
     providers().into_iter().map(|provider| provider.id).collect()
+}
+
+fn validate_provider_fields(
+    provider: &str,
+    model: &str,
+    base_url: Option<&str>,
+) -> Result<(), String> {
+    if !provider_ids().contains(provider) {
+        return Err("Unknown provider.".into());
+    }
+
+    let model = model.trim();
+    if model.is_empty()
+        || model.len() > MAX_PROVIDER_MODEL_BYTES
+        || model.chars().any(char::is_control)
+    {
+        return Err("Provider model must be non-empty, control-character free, and at most 256 bytes.".into());
+    }
+
+    let base_url = base_url.map(str::trim).filter(|value| !value.is_empty());
+    if provider == "custom" && base_url.is_none() {
+        return Err("Custom provider requires a base URL.".into());
+    }
+    if let Some(url) = base_url {
+        let lower = url.to_ascii_lowercase();
+        if url.len() > MAX_PROVIDER_BASE_URL_BYTES
+            || url.chars().any(char::is_control)
+            || !(lower.starts_with("https://") || lower.starts_with("http://"))
+        {
+            return Err("Provider base URL must be an http(s) URL without control characters and at most 4096 bytes.".into());
+        }
+    }
+
+    Ok(())
 }
 
 fn key_entry(provider_id: &str) -> Result<Entry, String> {
@@ -11641,12 +11678,16 @@ fn list_providers() -> Vec<ProviderDescriptor> {
 
 #[tauri::command]
 fn save_api_key(provider: String, api_key: String) -> Result<(), String> {
-    if api_key.trim().is_empty() {
+    let api_key = api_key.trim();
+    if api_key.is_empty() {
         return Err("API key cannot be empty.".into());
+    }
+    if api_key.len() > MAX_API_KEY_BYTES || api_key.chars().any(char::is_control) {
+        return Err("API key must be control-character free and at most 16 KB.".into());
     }
 
     key_entry(&provider)?
-        .set_password(api_key.trim())
+        .set_password(api_key)
         .map_err(|error| format!("Could not save API key: {error}"))
 }
 
@@ -11667,6 +11708,11 @@ async fn chat(
     app: AppHandle,
 ) -> Result<ChatResponse, String> {
     ensure_memory_budget(state.inner())?;
+    validate_provider_fields(
+        input.provider.as_str(),
+        input.model.as_str(),
+        input.base_url.as_deref(),
+    )?;
 
     if input.messages.len() > MAX_CHAT_MESSAGES {
         return Err(format!("Provider context exceeds Shuvi's {MAX_CHAT_MESSAGES}-message safety limit."));
@@ -11727,6 +11773,7 @@ fn prepare_tool(
     state: State<'_, ActionState>,
 ) -> Result<PendingActionView, String> {
     ensure_memory_budget(state.inner())?;
+    validate_provider_fields(provider.as_str(), model.as_str(), base_url.as_deref())?;
 
     let provider_context = ProviderContext {
         provider,
