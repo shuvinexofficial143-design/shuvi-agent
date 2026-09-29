@@ -261,8 +261,8 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - run_project_task: {"path":"absolute project path","task":"test|build|lint|typecheck"}
 - git_status: {"path":"absolute repository path"}
 - git_diff: {"path":"absolute repository path"}
-- git_commit: {"path":"absolute repository path","message":"commit message","files":["exact/relative/file1","exact/relative/file2"]}
-- git_push: {"path":"absolute repository path"}
+- git_commit: {"path":"absolute repository path","message":"commit message","files":["exact/relative/file1","exact/relative/file2"],"expected_head":"exact local HEAD copied from the latest matching git_status/git_diff receipt"}
+- git_push: {"path":"absolute repository path","expected_head":"exact committed HEAD copied from the successful git_commit receipt"}
 - powershell: {"command":"PowerShell command"}
 
 Rules:
@@ -590,8 +590,8 @@ enum ToolAction {
     RunProjectTask { path: String, task: String },
     GitStatus { path: String },
     GitDiff { path: String },
-    GitCommit { path: String, message: String, files: Vec<String> },
-    GitPush { path: String },
+    GitCommit { path: String, message: String, files: Vec<String>, expected_head: String },
+    GitPush { path: String, expected_head: String },
     PowerShell { command: String },
 }
 
@@ -1437,6 +1437,14 @@ fn arg_string(arguments: &Value, name: &str) -> Result<String, String> {
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .ok_or_else(|| format!("Tool argument '{name}' must be a non-empty string."))
+}
+
+fn arg_git_head(arguments: &Value, name: &str) -> Result<String, String> {
+    let value = arg_string(arguments, name)?.to_ascii_lowercase();
+    if !matches!(value.len(), 40 | 64) || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!("Tool argument '{name}' must be an exact 40- or 64-character Git object ID."));
+    }
+    Ok(value)
 }
 
 fn arg_i32(arguments: &Value, name: &str) -> Result<i32, String> {
@@ -5031,6 +5039,7 @@ fn stage_tool(
             if message.len() > 500 {
                 return Err("Git commit message is too long.".into());
             }
+            let expected_head = arg_git_head(&proposal.arguments, "expected_head")?;
             let raw_files = arg_string_array(&proposal.arguments, "files")?;
             if raw_files.is_empty() || raw_files.len() > 64 {
                 return Err("git_commit requires between 1 and 64 exact reviewed relative file paths.".into());
@@ -5063,18 +5072,20 @@ fn stage_tool(
                     path: path.clone(),
                     message: message.clone(),
                     files: files.clone(),
+                    expected_head: expected_head.clone(),
                 },
                 "Stage reviewed files and commit Git changes".to_string(),
-                format!("{path} | files={} | message={message}", files.join(",")),
+                format!("{path} | expected_head={expected_head} | files={} | message={message}", files.join(",")),
                 RiskLevel::Medium,
             )
         }
         "git_push" => {
             let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
+            let expected_head = arg_git_head(&proposal.arguments, "expected_head")?;
             (
-                ToolAction::GitPush { path: path.clone() },
+                ToolAction::GitPush { path: path.clone(), expected_head: expected_head.clone() },
                 "Push Git commits to remote".to_string(),
-                path,
+                format!("{path} | expected_head={expected_head}"),
                 RiskLevel::High,
             )
         }
@@ -11061,7 +11072,13 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 exit_code: output.status.code(),
             })
         }
-        ToolAction::GitCommit { path, message, files } => {
+        ToolAction::GitCommit { path, message, files, expected_head } => {
+            let current_head = git_command_text(&path, &["rev-parse", "HEAD"], "Could not read local HEAD before commit")?;
+            if current_head.to_ascii_lowercase() != expected_head {
+                return Err(format!(
+                    "Local HEAD changed after review; refusing git_commit. expected_head={expected_head}; current_head={current_head}"
+                ));
+            }
             let remote_receipt = git_remote_freshness(&path)?;
             let requested: HashSet<&str> = files.iter().map(String::as_str).collect();
             let staged_before = git_staged_files(&path)?;
@@ -11125,7 +11142,13 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 exit_code: output.status.code(),
             })
         }
-        ToolAction::GitPush { path } => {
+        ToolAction::GitPush { path, expected_head } => {
+            let current_head = git_command_text(&path, &["rev-parse", "HEAD"], "Could not read local HEAD before push")?;
+            if current_head.to_ascii_lowercase() != expected_head {
+                return Err(format!(
+                    "Local HEAD changed after commit; refusing git_push. expected_head={expected_head}; current_head={current_head}"
+                ));
+            }
             let remote_receipt = git_remote_freshness(&path)?;
             let output = run_git(&path, &["push"])?;
             let body = format!(
