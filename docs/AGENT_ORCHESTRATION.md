@@ -173,3 +173,6 @@ replies, cancellation and safety stops cannot erase unfinished graph work.
 Graph statuses and completed counts come from local evidence only. Completed specifications
 cannot be changed in a replan, failed history cannot be deleted, and a stable objective cannot
 be silently replaced. Six additional strict graph audit events are documented in TASK_GRAPH.md.
+
+
+Review-session approved fixes now require an exact successful typed Premiere action receipt whose audit timestamp is at or after that persisted review session's creation time. Review session persistence schema v2 stores this creation time; legacy schema v1 review sessions fail closed and should be restarted rather than inheriting unbound historical edit evidence.

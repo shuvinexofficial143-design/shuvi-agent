@@ -40,6 +40,7 @@ pub struct Attempt {
 #[serde(deny_unknown_fields)]
 pub struct Session {
     pub schema_version: u8,
+    pub created_at_ms: u64,
     pub session_id: String,
     pub project_guid: String,
     pub sequence_guid: String,
@@ -61,13 +62,13 @@ fn samples_ok(times: &[f64]) -> bool {
 }
 
 impl Session {
-    pub fn new(id: String, project: String, sequence: String, objective: String, reference: String, samples: Vec<f64>, max: u8) -> Result<Self, String> {
+    pub fn new(id: String, project: String, sequence: String, objective: String, reference: String, samples: Vec<f64>, max: u8, created_at_ms: u64) -> Result<Self, String> {
         if !short(&id, 80) || !short(&project, 240) || !short(&sequence, 240)
             || !short(&objective, 300) || reference.chars().count() > 2000
-            || !samples_ok(&samples) || !(1..=8).contains(&max) {
+            || !samples_ok(&samples) || !(1..=8).contains(&max) || created_at_ms == 0 {
             return Err("Invalid or oversized Premiere review session input.".into());
         }
-        Ok(Self { schema_version: 1, session_id: id, project_guid: project, sequence_guid: sequence,
+        Ok(Self { schema_version: 2, created_at_ms, session_id: id, project_guid: project, sequence_guid: sequence,
             objective, reference, sample_times: samples, iteration: 1, max_iterations: max, model_calls: 0, status: "reviewing".into(),
             reviews: vec![], attempted_fixes: vec![] })
     }
@@ -213,7 +214,7 @@ pub fn load(path: &Path) -> Result<Session, String> {
         let backup = path.with_extension("json.bak");
         if backup.exists() { decode(&backup) } else { Err(error) }
     })?;
-    if session.schema_version != 1 || session.reviews.len() > 8 || session.attempted_fixes.len() > 8
+    if session.schema_version != 2 || session.created_at_ms == 0 || session.reviews.len() > 8 || session.attempted_fixes.len() > 8
         || session.model_calls > 32
         || !samples_ok(&session.sample_times) || !(1..=8).contains(&session.max_iterations)
         || session.iteration == 0 || session.iteration > session.max_iterations
@@ -226,12 +227,12 @@ pub fn load(path: &Path) -> Result<Session, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn session() -> Session { Session::new("id".into(), "p".into(), "s".into(), "clean edit".into(), "".into(), vec![1.0], 4).unwrap() }
+    fn session() -> Session { Session::new("id".into(), "p".into(), "s".into(), "clean edit".into(), "".into(), vec![1.0], 4, 1).unwrap() }
     fn issue() -> Issue { Issue { id:"i".into(), category:"color".into(), severity:"medium".into(), confidence:.9, frame_seconds:vec![1.0], observation:"too warm".into(), suggested_action_type:"color_recipe".into() } }
     fn review(iteration:u8, issues:Vec<Issue>) -> Review { Review { iteration, issues, overall_confidence:.9, stop_recommended:false } }
     #[test] fn limits_and_identity() {
-        assert!(Session::new("id".into(),"p".into(),"s".into(),"x".into(),"".into(),vec![1.0],9).is_err());
-        assert!(Session::new("id".into(),"p".into(),"s".into(),"x".into(),"".into(),vec![1.0;5],4).is_err());
+        assert!(Session::new("id".into(),"p".into(),"s".into(),"x".into(),"".into(),vec![1.0],9,1).is_err());
+        assert!(Session::new("id".into(),"p".into(),"s".into(),"x".into(),"".into(),vec![1.0;5],4,1).is_err());
         let mut s=session(); assert!(s.check_identity("p","other").is_err()); assert_eq!(s.status,"stagnated");
     }
     #[test] fn review_bounds_and_stops() {

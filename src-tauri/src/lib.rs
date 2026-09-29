@@ -3169,7 +3169,7 @@ fn stage_tool(
                 .collect::<Result<Vec<_>, _>>()?;
             let max_iterations = proposal.arguments.get("max_iterations").and_then(Value::as_u64).unwrap_or(4);
             let max_iterations = u8::try_from(max_iterations).map_err(|_| "Iteration limit exceeds 8.")?;
-            premiere_review::Session::new("validate".into(),"project".into(),"sequence".into(),objective.clone(),reference.clone(),sample_times.clone(),max_iterations)?;
+            premiere_review::Session::new("validate".into(),"project".into(),"sequence".into(),objective.clone(),reference.clone(),sample_times.clone(),max_iterations,now_ms().max(1))?;
             (ToolAction::PremiereReviewSessionStart {objective,reference,sample_times,max_iterations},
                 "Start bounded Premiere review session".into(), "Inspect active project and sequence before storing bounded session.".into(), RiskLevel::Low)
         }
@@ -9170,7 +9170,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let project=context.get("projectGuid").and_then(Value::as_str).ok_or("No active Premiere project GUID.")?;
             let sequence=context.pointer("/activeSequence/guid").and_then(Value::as_str).ok_or("No active Premiere sequence GUID.")?;
             let id=Uuid::new_v4().to_string();
-            let session=premiere_review::Session::new(id.clone(),project.into(),sequence.into(),objective,reference,sample_times,max_iterations)?;
+            let session=premiere_review::Session::new(id.clone(),project.into(),sequence.into(),objective,reference,sample_times,max_iterations,now_ms().max(1))?;
             premiere_review::save(&premiere_review_path(app,&id)?,&session)?;
             Ok(ActionResult {success:true,tool,stdout:json!({"session":session,"next":"premiere_review_session_next"}).to_string(),stderr:String::new(),exit_code:Some(0)})
         }
@@ -9194,9 +9194,10 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             if let Err(error)=session.check_identity(project,sequence) { premiere_review::save(&path,&session)?; return Err(error); }
             let approved_receipt=read_action_audit_receipt(app,&approved_action_id)?;
             if !approved_receipt.as_ref().is_some_and(|entry|
-                entry.success && entry.event=="executed" && matches!(entry.tool.as_str(),
+                entry.timestamp_ms >= session.created_at_ms
+                && entry.success && entry.event=="executed" && matches!(entry.tool.as_str(),
                 "premiere_apply_video_recipe"|"premiere_apply_audio_recipe"|"premiere_add_video_transition"|"premiere_apply_saved_recipe")) {
-                return Err("No successful approved typed Premiere edit with this action ID in audit evidence.".into());
+                return Err("No successful approved typed Premiere edit from this review session with this action ID in audit evidence.".into());
             }
             let issue=session.reviews.last().and_then(|r| r.issues.iter().find(|i| i.id==issue_id))
                 .ok_or("Unknown review issue.")?;
