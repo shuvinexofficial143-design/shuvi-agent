@@ -93,8 +93,14 @@ test("git_push refuses to write without a configured upstream",()=>{
   const helper=rust.slice(rust.indexOf("fn git_remote_freshness"),rust.indexOf("fn project_task_command"));
   assert.match(helper,/require_upstream: bool/);
   assert.match(helper,/git_push requires a configured upstream branch so remote freshness can be verified/);
-  const commit=rust.slice(rust.indexOf("ToolAction::GitCommit"),rust.indexOf("ToolAction::GitPush"));
-  const push=rust.slice(rust.indexOf("ToolAction::GitPush"),rust.indexOf("ToolAction::PowerShell"));
+  const commit=rust.slice(
+    rust.indexOf("ToolAction::GitCommit { path, message, files, expected_head }"),
+    rust.indexOf("ToolAction::GitPush { path, expected_head }")
+  );
+  const push=rust.slice(
+    rust.indexOf("ToolAction::GitPush { path, expected_head }"),
+    rust.indexOf("ToolAction::PowerShell",rust.indexOf("ToolAction::GitPush { path, expected_head }"))
+  );
   assert.match(commit,/git_remote_freshness\(&path, false\)/);
   assert.match(push,/git_remote_freshness\(&path, true\)/);
 });
