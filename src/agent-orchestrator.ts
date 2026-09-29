@@ -324,8 +324,25 @@ export function normalizeAgentOrchestrationState(value: unknown): AgentOrchestra
     return { ...base, recovery_mode: "stopped", stop_reason: "Unsupported saved orchestration state; start a new task." };
   }
 
-  const nextStep = Number.isInteger(input.next_step) ? Number(input.next_step) : 1;
+  const requestedNextStep = Number.isInteger(input.next_step) ? Number(input.next_step) : 1;
   const toolActions = Number.isInteger(input.tool_actions) ? Number(input.tool_actions) : 0;
+  const codingInput = input.coding && typeof input.coding === "object"
+    ? input.coding as Partial<CodingWorkflowState>
+    : null;
+  const persistedStepFloor = Math.max(
+    boundedStep(toolActions),
+    boundedStep(input.recovery_step),
+    boundedStep(codingInput?.last_mutation_step),
+    boundedStep(codingInput?.last_validation_step),
+    boundedStep(codingInput?.last_git_status_step),
+    boundedStep(codingInput?.last_git_diff_step),
+    boundedStep(codingInput?.last_commit_step),
+    boundedStep(codingInput?.last_push_step),
+    Array.isArray(input.unsuccessful_fingerprints)
+      ? Math.min(MAX_AGENT_STEPS, input.unsuccessful_fingerprints.length)
+      : 0
+  );
+  const nextStep = Math.max(requestedNextStep, persistedStepFloor + 1);
   const failures = Number.isInteger(input.consecutive_failures) ? Number(input.consecutive_failures) : 0;
   const blocks = Number.isInteger(input.blocked_repeats) ? Number(input.blocked_repeats) : 0;
   const outcome = ["success", "failure", "denied", "blocked"].includes(String(input.last_outcome))

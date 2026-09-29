@@ -117,7 +117,8 @@ test("future mutation receipt cannot make legacy file inspection look fresh",()=
   const restored=agent.normalizeAgentOrchestrationState(state);
   assert.deepEqual(restored.coding.inspected_paths,[]);
   assert.deepEqual(restored.coding.inspection_steps,{});
-  assert.equal(restored.coding.last_mutation_step,0);
+  assert.equal(restored.next_step,9);
+  assert.equal(restored.coding.last_mutation_step,8);
 });
 
 
@@ -170,4 +171,12 @@ test("pre-commit validation can require exact post-commit validation before push
   assert.match(orchestrator,/if \(coding\.post_commit_validation_required\)/);
   assert.match(orchestrator,/re-run project validation on the exact committed HEAD before git_push/);
   assert.match(orchestrator,/pre-commit validation existed; git_push is blocked/);
+});
+
+
+test("resume next_step cannot be lower than persisted coding receipts",()=>{
+  assert.match(orchestrator,/const persistedStepFloor = Math\.max\(/);
+  assert.match(orchestrator,/boundedStep\(codingInput\?\.last_mutation_step\)/);
+  assert.match(orchestrator,/boundedStep\(codingInput\?\.last_commit_step\)/);
+  assert.match(orchestrator,/const nextStep = Math\.max\(requestedNextStep, persistedStepFloor \+ 1\)/);
 });

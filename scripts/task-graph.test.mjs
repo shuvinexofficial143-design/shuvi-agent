@@ -555,3 +555,45 @@ test("progress exposes visible evidence verification and failure reasons", () =>
   assert.match(main,/verified evidence/);
   assert.match(main,/step\.reason && \(step\.status === "failed" \|\| step\.status === "blocked"\)/);
 });
+
+
+test("persisted action receipts cannot rewind the eight-step budget", () => {
+  const state=agent.normalizeAgentOrchestrationState({
+    version:5,
+    next_step:2,
+    tool_actions:8,
+    consecutive_failures:0,
+    blocked_repeats:0,
+    unsuccessful_fingerprints:[]
+  });
+  assert.equal(state.next_step,9);
+  const decision=agent.evaluateProposal(state,{tool:"read_file",arguments:{path:"/repo/a.ts"}});
+  assert.equal(decision.allowed,false);
+  assert.equal(decision.stop,true);
+  assert.match(decision.reason,/8-step safety limit/);
+});
+
+test("persisted coding step receipts can only advance the resume floor", () => {
+  const state=agent.normalizeAgentOrchestrationState({
+    version:5,
+    next_step:2,
+    tool_actions:1,
+    coding:{
+      active:true,
+      inspected_paths:[],
+      inspection_steps:{},
+      last_mutation_step:7,
+      last_validation_step:0,
+      last_git_status_step:0,
+      last_git_status_path:null,
+      last_git_diff_step:0,
+      last_git_diff_path:null,
+      last_commit_step:0,
+      last_commit_path:null,
+      last_push_step:0,
+      last_push_path:null
+    }
+  });
+  assert.equal(state.next_step,8);
+  assert.equal(state.coding.last_mutation_step,7);
+});
