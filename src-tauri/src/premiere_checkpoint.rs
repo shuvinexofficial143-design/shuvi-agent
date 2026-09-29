@@ -125,7 +125,7 @@ pub fn verify_checkpoint(checkpoint:&Path,expected_source:&Path)->Result<serde_j
         return Err("Checkpoint is not in the expected sibling Shuvi Backups folder.".into());
     }
     let metadata_path=checkpoint.with_extension("checkpoint.json");
-    let raw=fs::read(&metadata_path).map_err(|e|format!("Checkpoint metadata is unavailable: {e}"))?;
+    let raw=crate::read_file_bytes_bounded(&metadata_path, 16 * 1024, "Checkpoint metadata")?;
     if raw.len()>16*1024 {return Err("Checkpoint metadata exceeds limit.".into());}
     let metadata:serde_json::Value=serde_json::from_slice(&raw).map_err(|e|format!("Invalid checkpoint metadata: {e}"))?;
     if metadata.get("schema_version").and_then(serde_json::Value::as_u64)!=Some(2) {

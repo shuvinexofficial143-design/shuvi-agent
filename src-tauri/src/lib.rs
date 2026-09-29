@@ -11776,7 +11776,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                         stderr:String::new(),exit_code:Some(if accepted {0}else{1})})
                 },
                 Err(error) => {
-                    let state=if error.contains("Premiere rejected the export request") {"rejected"} else {"execution_status_unknown"};
+                    let state="execution_status_unknown";
                     record.bridge_state=state.into();premiere_export_jobs::save(&jobs_path,&jobs)?;
                     Ok(ActionResult {success:false,tool,
                         stdout:json!({"job_id":job_id,"state":state,"output_observation":observed,"retry_automatically":false,

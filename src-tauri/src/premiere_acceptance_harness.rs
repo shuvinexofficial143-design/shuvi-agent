@@ -49,7 +49,7 @@ impl Registration {
 
 pub fn load(path: &Path) -> Result<Option<Registration>,String> {
     let read=|p:&Path| -> Result<Registration,String> {
-        let bytes=fs::read(p).map_err(|e|e.to_string())?;
+        let bytes=crate::read_file_bytes_bounded(p, MAX_BYTES, "Premiere persisted state")?;
         if bytes.len()>MAX_BYTES { return Err("Disposable registration exceeds limit.".into()); }
         let r:Registration=serde_json::from_slice(&bytes).map_err(|_|"Corrupt disposable registration.")?;
         if r.schema_version!=1 || !r.explicitly_authorized {return Err("Invalid disposable registration.".into());}

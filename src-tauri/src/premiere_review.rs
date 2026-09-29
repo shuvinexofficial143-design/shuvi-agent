@@ -206,7 +206,7 @@ pub fn save(path: &Path, session: &Session) -> Result<(), String> {
 
 pub fn load(path: &Path) -> Result<Session, String> {
     let decode = |candidate: &Path| -> Result<Session, String> {
-        let data = fs::read(candidate).map_err(|e| e.to_string())?;
+        let data = crate::read_file_bytes_bounded(candidate, MAX_BYTES, "Premiere review session")?;
         if data.len() > MAX_BYTES { return Err("Premiere review session file is too large.".into()); }
         serde_json::from_slice(&data).map_err(|e| format!("Corrupt Premiere review session: {e}"))
     };

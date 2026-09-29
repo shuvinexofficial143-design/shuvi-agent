@@ -18,7 +18,9 @@ fn clean_absolute(value:&str,label:&str)->Result<String,String>{
 
 pub fn validate_output_file(value:&str,overwrite:bool)->Result<String,String>{
     let output=clean_absolute(value,"Delivery output")?;
-    let path=Path::new(&output);
+    let path=crate::premiere_export::bounded_absolute(&output)?;
+    crate::premiere_export::valid_filename(path)?;
+    if std::fs::symlink_metadata(path).is_ok_and(|m|m.file_type().is_symlink()) {return Err("Delivery output is a symbolic link.".into());}
     let parent=path.parent().ok_or("Delivery output has no parent directory.")?;
     if !parent.is_dir(){return Err("Delivery output parent directory does not exist.".into());}
     if path.exists()&&!overwrite{return Err("Delivery output already exists and overwrite=false.".into());}
@@ -86,6 +88,10 @@ impl InterchangeRequest{
             return Err("Interchange format must be aaf, fcpxml, or otio.".into());
         }
         validate_output_file(&self.output,self.overwrite)?;
+        let extension=Path::new(&self.output).extension().and_then(|v|v.to_str()).unwrap_or("").to_ascii_lowercase();
+        if !match self.format.as_str() { "fcpxml" => matches!(extension.as_str(),"xml"|"fcpxml"), "otio" => extension=="otio", "aaf" => extension=="aaf", _ => false } {
+            return Err("Interchange output extension does not match its format.".into());
+        }
         match self.format.as_str(){
             "aaf"=>{
                 self.aaf_options.as_ref().ok_or("AAF export requires explicit aaf_options.")?.validate()?;
@@ -137,7 +143,11 @@ impl FrameBatch{
         let mut outputs=HashSet::new();
         for frame in &self.frames{
             frame.validate()?;
-            let normalized=PathBuf::from(&frame.output);
+            let path=PathBuf::from(&frame.output);
+            let parent=std::fs::canonicalize(path.parent().ok_or("Frame path has no parent.")?).map_err(|e|e.to_string())?;
+            let normalized=parent.join(path.file_name().ok_or("Frame filename missing.")?).to_string_lossy().to_string();
+            #[cfg(windows)]
+            let normalized=normalized.to_ascii_lowercase();
             if !outputs.insert(normalized){return Err("Review frame batch output paths must be unique.".into());}
         }
         Ok(())
@@ -158,6 +168,17 @@ pub fn observed_file(path:&str)->serde_json::Value{
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]fn interchange_extensions_and_frame_aliases_fail_closed(){
+        let dir=std::env::temp_dir().join(format!("shuvi-delivery-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let request=InterchangeRequest{format:"otio".into(),output:dir.join("wrong.xml").to_string_lossy().into(),overwrite:false,suppress_ui:true,aaf_options:None};
+        assert!(request.validate().unwrap_err().contains("extension"));
+        let frame=FrameRequest{seconds:0.0,output:dir.join("frame.png").to_string_lossy().into(),width:100,height:100,overwrite:false};
+        let mut alias=frame.clone();alias.output=dir.join(".").join("frame.png").to_string_lossy().into();
+        assert!(FrameBatch{schema_version:1,frames:vec![frame,alias]}.validate().is_err());
+        assert!(validate_output_file(&dir.join("CON.png").to_string_lossy(),false).is_err());
+        std::fs::remove_dir(dir).unwrap();
+    }
     #[test]fn rejects_bad_frame_format(){
         let request=FrameRequest{seconds:1.0,output:"C:/tmp/a.xyz".into(),width:1920,height:1080,overwrite:false};
         assert!(request.validate().is_err());

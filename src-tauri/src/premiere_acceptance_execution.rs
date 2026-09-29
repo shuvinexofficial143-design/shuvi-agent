@@ -252,7 +252,7 @@ pub fn verify(step:&str,fixture:&Fixture,before:&Value,after:&Value)->bool{
 }
 
 pub fn load(path:&Path)->Result<Action,String>{
-    let read=|p:&Path|->Result<Action,String>{let bytes=fs::read(p).map_err(|e|e.to_string())?;
+    let read=|p:&Path|->Result<Action,String>{let bytes=crate::read_file_bytes_bounded(p, MAX_BYTES, "Premiere persisted state")?;
         if bytes.len()>MAX_BYTES {return Err("Oversized acceptance action.".into());}
         let action:Action=serde_json::from_slice(&bytes).map_err(|_|"Corrupt acceptance action.")?;action.validate()?;Ok(action)};
     read(path).or_else(|e|if path.with_extension("json.bak").exists(){read(&path.with_extension("json.bak"))}else{Err(e)})

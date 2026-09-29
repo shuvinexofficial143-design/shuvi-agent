@@ -22,7 +22,7 @@ fn same_path(a: &str, b: &str) -> bool {
     { a == b }
 }
 
-fn bounded_absolute(path: &str) -> Result<&Path, String> {
+pub(crate) fn bounded_absolute(path: &str) -> Result<&Path, String> {
     if path.is_empty() || path.len() > MAX_PATH || path.chars().any(|c| c.is_control()) {
         return Err("Export path must be a bounded absolute path without control characters.".into());
     }
@@ -31,7 +31,7 @@ fn bounded_absolute(path: &str) -> Result<&Path, String> {
     Ok(path)
 }
 
-fn valid_filename(path: &Path) -> Result<(), String> {
+pub(crate) fn valid_filename(path: &Path) -> Result<(), String> {
     let name = path.file_name().and_then(|v| v.to_str())
         .ok_or("Export requires a valid filename.")?;
     if name.ends_with('.') || name.ends_with(' ') || name.chars().any(|c| "<>:\"|?*".contains(c))
@@ -53,6 +53,10 @@ fn valid_filename(path: &Path) -> Result<(), String> {
 pub fn inspect(output: &str, preset: Option<&str>, overwrite: bool, project_path: Option<&str>) -> Result<LocalPreflight, String> {
     let output_path = bounded_absolute(output)?;
     valid_filename(output_path)?;
+    let extension = output_path.extension().and_then(|v| v.to_str()).unwrap_or("").to_ascii_lowercase();
+    if !matches!(extension.as_str(), "mp4" | "mov" | "mxf" | "avi" | "m4v" | "mpg" | "mpeg" | "m2v" | "wav" | "mp3" | "aac" | "aif" | "aiff") {
+        return Err("Sequence export extension is outside the supported media allowlist.".into());
+    }
     let parent = output_path.parent().ok_or("Export output has no parent directory.")?;
     let parent_exists = parent.is_dir();
     let output_exists = output_path.exists();

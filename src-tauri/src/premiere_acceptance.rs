@@ -273,7 +273,7 @@ fn current_report(mut report:Report)->Result<Report,String>{
 pub fn load(path:&Path) -> Result<Report,String> {
     if !path.exists() && !path.with_extension("json.bak").exists() {return Ok(Report::default());}
     let read=|p:&Path| -> Result<Report,String> {
-        let bytes=fs::read(p).map_err(|e|e.to_string())?;
+        let bytes=crate::read_file_bytes_bounded(p, MAX_REPORT_BYTES, "Premiere persisted state")?;
         if bytes.len()>MAX_REPORT_BYTES {return Err("Oversized Premiere acceptance file.".into());}
         let report:Report=serde_json::from_slice(&bytes).map_err(|e|format!("Corrupt Premiere acceptance report: {e}"))?;
         current_report(report)

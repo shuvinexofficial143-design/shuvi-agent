@@ -60,3 +60,22 @@ import now checkpoint before dispatch. Existing caption rename checkpoint was
 retained. Saved recipe, relink and proxy batches stop after any dispatch error,
 use existing family cancellation, and report processed/unattempted counts.
 Neither a rejected late response nor a retained checkpoint proves rollback.
+
+## Persistence and delivery
+
+Acceptance reports/actions/registration, calibration, edit sessions, export jobs,
+review sessions and checkpoint metadata now reuse the existing handle-bounded
+reader. The byte cap applies during reading, before allocation of the full file
+or JSON decoding; backup fallback uses the same bound.
+
+Sequence output extensions are restricted to the declared media allowlist.
+Interchange extensions must match their format, and delivery paths reject reserved
+filenames and symlink targets. Frame-batch duplicates normalize existing parent
+directories and Windows case. Export errors always retain uncertain execution;
+human-readable rejection text cannot prove no output was written.
+
+Accepted/queued exports, file presence and stable size remain distinct from encoder
+completion. Collision preflight is not an atomic reservation across the native
+encoder dispatch boundary: a third-party writer can still race a queued export.
+Eliminating this requires host-supported exclusive output or verified completion
+followed by atomic publication. This sprint does not claim that guarantee.

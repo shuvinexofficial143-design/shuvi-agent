@@ -83,7 +83,7 @@ impl Jobs {
 }
 
 pub fn load(path:&Path)->Result<Jobs,String>{
-    let read=|p:&Path|->Result<Jobs,String>{let bytes=fs::read(p).map_err(|e|e.to_string())?;
+    let read=|p:&Path|->Result<Jobs,String>{let bytes=crate::read_file_bytes_bounded(p, MAX_BYTES, "Premiere persisted state")?;
         if bytes.len()>MAX_BYTES{return Err("Oversized export job file.".into());}
         let data:Jobs=serde_json::from_slice(&bytes).map_err(|_|"Corrupt export job file.")?;data.validate()?;Ok(data)};
     if !path.exists()&&!path.with_extension("json.bak").exists(){return Ok(Jobs::default());}
@@ -100,6 +100,13 @@ pub fn save(path:&Path,jobs:&Jobs)->Result<(),String>{
 
 #[cfg(test)]mod tests{
     use super::*;
+    #[test] fn oversized_persisted_jobs_are_rejected_before_decoding() {
+        let file=std::env::temp_dir().join(format!("shuvi-oversized-jobs-{}.json",uuid::Uuid::new_v4()));
+        let handle=fs::File::create(&file).unwrap();
+        handle.set_len((MAX_BYTES+1) as u64).unwrap();drop(handle);
+        assert!(load(&file).unwrap_err().contains("bounded read limit"));
+        fs::remove_file(file).unwrap();
+    }
     #[test] fn stable_file_is_not_encoder_completion(){
         let dir=std::env::temp_dir().join(format!("shuvi-export-jobs-{}",std::process::id()));fs::create_dir_all(&dir).unwrap();
         let file=dir.join("test.mp4");fs::write(&file,b"not media").unwrap();

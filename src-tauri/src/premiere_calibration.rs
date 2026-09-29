@@ -121,7 +121,7 @@ pub fn bounded_delta(value:&Value,delta:f64,time_varying:bool)->Result<Value,Str
 }
 
 pub fn load(path:&Path)->Result<Registry,String>{
-    let read=|p:&Path|->Result<Registry,String>{let bytes=fs::read(p).map_err(|e|e.to_string())?;
+    let read=|p:&Path|->Result<Registry,String>{let bytes=crate::read_file_bytes_bounded(p, MAX_BYTES, "Premiere persisted state")?;
         if bytes.len()>MAX_BYTES{return Err("Oversized calibration registry.".into());}
         let r:Registry=serde_json::from_slice(&bytes).map_err(|_|"Corrupt calibration registry.")?;r.validate()?;Ok(r)};
     if !path.exists() && !path.with_extension("json.bak").exists(){return Ok(Registry::default());}
