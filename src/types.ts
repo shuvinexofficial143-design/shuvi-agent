@@ -1,3 +1,5 @@
+import type { TaskGraph } from "./task-graph.mjs";
+
 export type ProviderDescriptor = {
   id: string;
   name: string;
@@ -33,7 +35,7 @@ export type CodingWorkflowCheckpoint = {
 };
 
 export type AgentOrchestrationCheckpoint = {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   next_step: number;
   tool_actions: number;
   consecutive_failures: number;
@@ -47,6 +49,9 @@ export type AgentOrchestrationCheckpoint = {
   last_success_criteria: string | null;
   stop_reason: string | null;
   coding?: CodingWorkflowCheckpoint | null;
+  task_graph?: TaskGraph | null;
+  unsuccessful_fingerprints?: string[];
+  recovery_step?: number;
 };
 
 export type SessionCheckpoint = {
@@ -64,6 +69,9 @@ export type ToolProposal = {
   arguments: Record<string, unknown>;
   reason?: string | null;
   plan?: AgentPlanMeta | null;
+  task_graph?: unknown;
+  task_step_id?: unknown;
+  task_recovery?: unknown;
 };
 
 export type UsageStats = {
