@@ -4,7 +4,7 @@ import {pathToFileURL} from "node:url";
 import path from "node:path";
 import process from "node:process";
 
-export const SCHEMA_VERSION=3;
+export const SCHEMA_VERSION=4;
 export const ASSURANCE="process_execution_record_not_cryptographically_signed";
 
 export function parseScope(argv=process.argv.slice(2)){
@@ -54,8 +54,11 @@ export function outputName(scope,sha){
 }
 
 export function validateAttestation(a){
-  const expectedNames=["frontend","rust","full"].includes(a?.scope)
-    ? commandPlan(a.scope).map(command=>command.name)
+  const expectedCommands=["frontend","rust","full"].includes(a?.scope)
+    ? commandPlan(a.scope).map(spec=>({
+        name:spec.name,
+        command:[spec.command,...spec.args].join(" ")
+      }))
     : [];
   const commandsValid=Array.isArray(a?.commands) && a.commands.length>0
     && a.commands.every(command=>
@@ -82,8 +85,11 @@ export function validateAttestation(a){
     && typeof a.clean_worktree==="boolean"
     && a.clean_worktree===(a.clean_worktree_before && a.clean_worktree_after)
     && commandsValid
-    && a.commands.length===expectedNames.length
-    && a.commands.every((command,index)=>command.name===expectedNames[index])
+    && a.commands.length===expectedCommands.length
+    && a.commands.every((command,index)=>
+      command.name===expectedCommands[index].name
+      && command.command===expectedCommands[index].command
+    )
     && typeof a.passed==="boolean"
     && a.passed===observedPass
     && a.assurance===ASSURANCE;

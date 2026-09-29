@@ -3,6 +3,15 @@ import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 import {ASSURANCE,SCHEMA_VERSION,commandPlan,outputName,parseScope,validateAttestation} from "./run-attested.mjs";
 
+function passingCommands(scope){
+  return commandPlan(scope).map(spec=>({
+    name:spec.name,
+    command:[spec.command,...spec.args].join(" "),
+    exit_code:0,
+    launch_error:null
+  }));
+}
+
 test("attestation scopes use closed command plans",()=>{
   assert.deepEqual(commandPlan("frontend").map(v=>v.name),["validate","node_tests","frontend_build"]);
   assert.deepEqual(commandPlan("rust").map(v=>v.name),["cargo_check","cargo_tests"]);
@@ -18,13 +27,13 @@ test("attestation filename and shape are commit bound",()=>{
     schema_version:SCHEMA_VERSION,scope:"full",repository_commit:sha,
     repository_commit_after:sha,head_unchanged:true,
     clean_worktree_before:true,clean_worktree_after:true,clean_worktree:true,
-    commands:[{name:"validate",command:"validate",exit_code:0,launch_error:null},{name:"node_tests",command:"node_tests",exit_code:0,launch_error:null},{name:"frontend_build",command:"frontend_build",exit_code:0,launch_error:null},{name:"cargo_check",command:"cargo_check",exit_code:0,launch_error:null},{name:"cargo_tests",command:"cargo_tests",exit_code:0,launch_error:null}],passed:true,assurance:ASSURANCE
+    commands:passingCommands("full"),passed:true,assurance:ASSURANCE
   }),true);
   assert.equal(validateAttestation({
     schema_version:SCHEMA_VERSION,scope:"full",repository_commit:"main",
     repository_commit_after:sha,head_unchanged:false,
     clean_worktree_before:true,clean_worktree_after:true,clean_worktree:true,
-    commands:[{name:"validate",command:"validate",exit_code:0,launch_error:null},{name:"node_tests",command:"node_tests",exit_code:0,launch_error:null},{name:"frontend_build",command:"frontend_build",exit_code:0,launch_error:null},{name:"cargo_check",command:"cargo_check",exit_code:0,launch_error:null},{name:"cargo_tests",command:"cargo_tests",exit_code:0,launch_error:null}],passed:true,assurance:ASSURANCE
+    commands:passingCommands("full"),passed:true,assurance:ASSURANCE
   }),false);
 });
 
@@ -34,7 +43,7 @@ test("attestation rejects dirty or internally inconsistent worktree receipts",()
   const base={
     schema_version:SCHEMA_VERSION,scope:"frontend",repository_commit:sha,
     repository_commit_after:sha,head_unchanged:true,
-    commands:[{name:"validate",command:"validate",exit_code:0,launch_error:null},{name:"node_tests",command:"node_tests",exit_code:0,launch_error:null},{name:"frontend_build",command:"frontend_build",exit_code:0,launch_error:null}],passed:false,assurance:ASSURANCE
+    commands:passingCommands("frontend"),passed:false,assurance:ASSURANCE
   };
   assert.equal(validateAttestation({
     ...base,clean_worktree_before:false,clean_worktree_after:true,clean_worktree:false
@@ -64,7 +73,7 @@ test("attestation rejects HEAD changes during verification",()=>{
   const common={
     schema_version:SCHEMA_VERSION,scope:"frontend",repository_commit:before,
     clean_worktree_before:true,clean_worktree_after:true,clean_worktree:true,
-    commands:[{name:"validate",command:"validate",exit_code:0,launch_error:null},{name:"node_tests",command:"node_tests",exit_code:0,launch_error:null},{name:"frontend_build",command:"frontend_build",exit_code:0,launch_error:null}],assurance:ASSURANCE
+    commands:passingCommands("frontend"),assurance:ASSURANCE
   };
   assert.equal(validateAttestation({
     ...common,repository_commit_after:after,head_unchanged:false,passed:false
@@ -97,7 +106,7 @@ test("attestation passed flag must match observed command outcomes",()=>{
     clean_worktree_before:true,clean_worktree_after:true,clean_worktree:true,
     assurance:ASSURANCE
   };
-  const passing=[{name:"validate",command:"validate",exit_code:0,launch_error:null},{name:"node_tests",command:"node_tests",exit_code:0,launch_error:null},{name:"frontend_build",command:"frontend_build",exit_code:0,launch_error:null}];
+  const passing=passingCommands("frontend");
   const failedExit=passing.map((command,index)=>index===0?{...command,exit_code:1}:command);
   const launchFailure=passing.map((command,index)=>index===0?{...command,launch_error:"spawn failed"}:command);
   assert.equal(validateAttestation({...base,commands:failedExit,passed:true}),false);
@@ -113,14 +122,14 @@ test("attestation rejects malformed command execution records",()=>{
     clean_worktree_before:true,clean_worktree_after:true,clean_worktree:true,
     passed:true,assurance:ASSURANCE
   };
-  const passing=[{name:"validate",command:"validate",exit_code:0,launch_error:null},{name:"node_tests",command:"node_tests",exit_code:0,launch_error:null},{name:"frontend_build",command:"frontend_build",exit_code:0,launch_error:null}];
+  const passing=passingCommands("frontend");
   assert.equal(validateAttestation({...base,commands:passing.map((command,index)=>index===0?{...command,exit_code:"0"}:command)}),false);
   assert.equal(validateAttestation({...base,commands:passing.map((command,index)=>index===0?{...command,name:""}:command)}),false);
   assert.equal(validateAttestation({...base,commands:passing.map((command,index)=>index===0?{...command,command:""}:command)}),false);
 });
 
 
-test("attestation requires the exact command names for its scope",()=>{
+test("attestation requires the exact command records for its scope",()=>{
   const sha="1".repeat(40);
   const base={
     schema_version:SCHEMA_VERSION,scope:"frontend",
@@ -128,9 +137,18 @@ test("attestation requires the exact command names for its scope",()=>{
     clean_worktree_before:true,clean_worktree_after:true,clean_worktree:true,
     passed:true,assurance:ASSURANCE
   };
-  const passing=[{name:"validate",command:"validate",exit_code:0,launch_error:null},{name:"node_tests",command:"node_tests",exit_code:0,launch_error:null},{name:"frontend_build",command:"frontend_build",exit_code:0,launch_error:null}];
+  const passing=passingCommands("frontend");
   assert.equal(validateAttestation({...base,commands:passing}),true);
   assert.equal(validateAttestation({...base,commands:passing.slice(0,2)}),false);
   assert.equal(validateAttestation({...base,commands:[passing[1],passing[0],passing[2]]}),false);
   assert.equal(validateAttestation({...base,commands:passing.map((command,index)=>index===1?{...command,name:"other"}:command)}),false);
+  assert.equal(validateAttestation({...base,commands:passing.map((command,index)=>index===1?{...command,command:"echo fake"}:command)}),false);
+});
+
+
+test("attestation validator binds recorded command strings to commandPlan",()=>{
+  const source=readFileSync(new URL("./run-attested.mjs",import.meta.url),"utf8");
+  assert.match(source,/const expectedCommands=/);
+  assert.match(source,/command:\[spec\.command,\.\.\.spec\.args\]\.join\(" "\)/);
+  assert.match(source,/command\.command===expectedCommands\[index\]\.command/);
 });
