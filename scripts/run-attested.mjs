@@ -4,7 +4,7 @@ import {pathToFileURL} from "node:url";
 import path from "node:path";
 import process from "node:process";
 
-export const SCHEMA_VERSION=1;
+export const SCHEMA_VERSION=2;
 export const ASSURANCE="process_execution_record_not_cryptographically_signed";
 
 export function parseScope(argv=process.argv.slice(2)){
@@ -57,7 +57,10 @@ export function validateAttestation(a){
   return a?.schema_version===SCHEMA_VERSION
     && ["frontend","rust","full"].includes(a.scope)
     && typeof a.repository_commit==="string" && /^[a-f0-9]{40}$/i.test(a.repository_commit)
+    && typeof a.clean_worktree_before==="boolean"
+    && typeof a.clean_worktree_after==="boolean"
     && typeof a.clean_worktree==="boolean"
+    && a.clean_worktree===(a.clean_worktree_before && a.clean_worktree_after)
     && Array.isArray(a.commands) && a.commands.length>0
     && typeof a.passed==="boolean"
     && a.assurance===ASSURANCE;
@@ -65,8 +68,8 @@ export function validateAttestation(a){
 
 export function execute(scope=parseScope()){
   const sha=gitText(["rev-parse","HEAD"]);
-  const dirty=gitText(["status","--porcelain","--untracked-files=no"]);
-  const cleanWorktree=dirty.length===0;
+  const dirtyBefore=gitText(["status","--porcelain","--untracked-files=all"]);
+  const cleanWorktreeBefore=dirtyBefore.length===0;
   const commands=[];
   for(const spec of commandPlan(scope)){
     const result=run(spec.command,spec.args);
@@ -76,12 +79,17 @@ export function execute(scope=parseScope()){
       ...result,
     });
   }
+  const dirtyAfter=gitText(["status","--porcelain","--untracked-files=all"]);
+  const cleanWorktreeAfter=dirtyAfter.length===0;
+  const cleanWorktree=cleanWorktreeBefore && cleanWorktreeAfter;
   const passed=cleanWorktree && commands.every(c=>c.exit_code===0 && !c.launch_error);
   const attestation={
     schema_version:SCHEMA_VERSION,
     generated_at:new Date().toISOString(),
     scope,
     repository_commit:sha,
+    clean_worktree_before:cleanWorktreeBefore,
+    clean_worktree_after:cleanWorktreeAfter,
     clean_worktree:cleanWorktree,
     platform:{os:process.platform,arch:process.arch,node:process.version},
     commands,
@@ -94,7 +102,12 @@ export function execute(scope=parseScope()){
   mkdirSync(dir,{recursive:true});
   const file=path.join(dir,outputName(scope,sha));
   writeFileSync(file,JSON.stringify(attestation,null,2)+"\n","utf8");
-  console.log(JSON.stringify({attestation:file,scope,commit:sha,passed,clean_worktree:cleanWorktree},null,2));
+  console.log(JSON.stringify({
+    attestation:file,scope,commit:sha,passed,
+    clean_worktree_before:cleanWorktreeBefore,
+    clean_worktree_after:cleanWorktreeAfter,
+    clean_worktree:cleanWorktree
+  },null,2));
   if(!passed) process.exitCode=1;
   return attestation;
 }
