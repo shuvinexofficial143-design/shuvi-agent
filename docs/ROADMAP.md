@@ -634,3 +634,19 @@ This hardens evidence provenance without weakening existing permission gates or 
 - Added structural coverage enforcing `deny_action -> recordToolOutcome -> saveActiveCheckpoint -> runAgentStep` ordering.
 
 Runtime execution of the current head is still required; these source-level checks do not prove desktop cancellation behavior.
+
+
+### Rust audit-correlated execution evidence (2026-09-29)
+
+- Hardened prepared-action provenance one step further: a frontend `execute_action` result alone is no longer sufficient runtime evidence for graph/coding progress when a real pending action ID exists.
+- Added read-only Rust `action_audit_receipt(action_id)`, which validates the UUID and returns only the matching recent `executed`, `failed`, or `denied` audit entry. It does not create or execute actions.
+- After `execute_action`, the frontend reads the exact backend audit receipt and correlates action ID, tool, event and success flag before updating orchestration evidence.
+- Successful graph completion now requires matching running fingerprint/turn, bound prepared UUID, typed result, and Rust audit event `executed` for that same UUID/tool/success. Evidence persists the correlated `audit_event`.
+- Runtime coding dependency evidence also requires audit correlation when the action came from a real prepared chat action. An uncorrelated frontend success cannot advance read/status/test/edit prerequisites.
+- If a typed result reports success but its backend audit receipt is absent or mismatched, the graph step fails evidence verification without counting it as a confirmed tool-execution failure; a hidden `evidence_verification_failed` observation is returned for replanning and blind retry remains disabled.
+- Execute exceptions only count as actual consecutive tool failures when a matching Rust `failed` audit receipt confirms the exact action. Denial/Stop paths correlate `denied` receipts when available and otherwise remain conservative failures.
+- Orchestration payload advanced to **v5**. Non-graph legacy v1-v4 payloads remain migratable without invented progress. v3 graph state fails closed because it predates prepared-action IDs; v4 graph state fails closed because it predates Rust audit-event correlation.
+- Deterministic task-graph tests were expanded for missing/wrong action receipts, wrong tools/events/success flags, v5 round-trip/migrations, and frontend ordering `execute_action -> action_audit_receipt -> recordToolOutcome`. Rust transport coverage includes the bounded audit-receipt event contract.
+- Static source consistency checks confirmed backend command registration, exact event allowlist, graph audit requirements, v5 migration guards, frontend correlation, Stop/deny correlation, types and documentation. These checks are source-level only.
+
+This closes a stale/local-result replay gap without weakening permissions or adding execution capability. Current-head Node/TypeScript/Rust execution and desktop runtime acceptance are still separate requirements.
