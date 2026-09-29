@@ -67,7 +67,7 @@ test("mutations and commits invalidate stale review evidence",()=>{
 test("checkpoint normalization bounds coding evidence to past steps and drops ambiguous legacy reads",()=>{
   assert.match(types,/inspection_steps\?: Record<string, number>/);
   assert.match(orchestrator,/step > 0 && step < nextStep/);
-  assert.match(orchestrator,/rawInspectionSteps === null && lastMutationStep === 0 && nextStep > 1/);
+  assert.match(orchestrator,/rawInspectionSteps === null && rawMutationStep === 0 && nextStep > 1/);
   assert.match(orchestrator,/legacy path evidence is ambiguous and must be re-read after resume/);
   assert.match(orchestrator,/normalizeCodingWorkflowState\(input\.coding, nextStep\)/);
 });
