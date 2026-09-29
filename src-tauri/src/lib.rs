@@ -68,6 +68,12 @@ const HARD_LIMIT_MB: f64 = 4096.0;
 const MAX_READ_BYTES: u64 = 1_048_576;
 const MAX_WRITE_BYTES: usize = 2_097_152;
 const MAX_TOOL_OUTPUT_CHARS: usize = 120_000;
+const MAX_TOOL_STRING_ARRAY_ITEMS: usize = 256;
+const MAX_TOOL_STRING_ARRAY_ITEM_BYTES: usize = 16 * 1024;
+const MAX_TOOL_STRING_ARRAY_BYTES: usize = 512 * 1024;
+const MAX_LAUNCH_ARGS: usize = 64;
+const MAX_LAUNCH_ARG_BYTES: usize = 4 * 1024;
+const MAX_LAUNCH_ARGS_BYTES: usize = 32 * 1024;
 const MAX_CHAT_MESSAGES: usize = 120;
 const MAX_CHAT_MESSAGE_BYTES: usize = 256 * 1024;
 const MAX_CHAT_CONTEXT_BYTES: usize = 2 * 1024 * 1024;
@@ -1598,15 +1604,28 @@ fn arg_string_array(arguments: &Value, name: &str) -> Result<Vec<String>, String
     let items = value
         .as_array()
         .ok_or_else(|| format!("Tool argument '{name}' must be an array of strings."))?;
+    if items.len() > MAX_TOOL_STRING_ARRAY_ITEMS {
+        return Err(format!(
+            "Tool argument '{name}' exceeds Shuvi's {MAX_TOOL_STRING_ARRAY_ITEMS}-item safety limit."
+        ));
+    }
 
-    items
-        .iter()
-        .map(|item| {
-            item.as_str()
-                .map(str::to_string)
-                .ok_or_else(|| format!("Tool argument '{name}' must contain only strings."))
-        })
-        .collect()
+    let mut total_bytes = 0_usize;
+    let mut output = Vec::with_capacity(items.len());
+    for item in items {
+        let value = item
+            .as_str()
+            .ok_or_else(|| format!("Tool argument '{name}' must contain only strings."))?;
+        if value.len() > MAX_TOOL_STRING_ARRAY_ITEM_BYTES {
+            return Err(format!("Tool argument '{name}' contains an oversized string item."));
+        }
+        total_bytes = total_bytes.saturating_add(value.len());
+        if total_bytes > MAX_TOOL_STRING_ARRAY_BYTES {
+            return Err(format!("Tool argument '{name}' exceeds Shuvi's aggregate string-array safety limit."));
+        }
+        output.push(value.to_string());
+    }
+    Ok(output)
 }
 
 fn absolute_path(value: String) -> Result<String, String> {
@@ -1903,7 +1922,16 @@ fn stage_tool(
         }
         "launch_app" => {
             let program = arg_string(&proposal.arguments, "program")?;
+            if program.len() > 4_096 {
+                return Err("launch_app program is too long.".into());
+            }
             let args = arg_string_array(&proposal.arguments, "args")?;
+            if args.len() > MAX_LAUNCH_ARGS
+                || args.iter().any(|arg| arg.len() > MAX_LAUNCH_ARG_BYTES)
+                || args.iter().map(String::len).sum::<usize>() > MAX_LAUNCH_ARGS_BYTES
+            {
+                return Err("launch_app arguments exceed Shuvi's bounded command-line safety limits.".into());
+            }
             (
                 ToolAction::LaunchApp {
                     program: program.clone(),
