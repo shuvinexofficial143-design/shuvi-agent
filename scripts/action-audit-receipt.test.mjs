@@ -28,9 +28,9 @@ test("public action receipt command uses exact streaming lookup",()=>{
 
 test("Premiere edit evidence uses exact action-ID lookup",()=>{
   for(const arm of [
-    "ToolAction::PremiereEditJobRecordAction",
-    "ToolAction::PremiereEditSessionRecordAction",
-    "ToolAction::PremiereReviewSessionRecordFix"
+    "ToolAction::PremiereEditJobRecordAction {job_id,phase_id,action_id} =>",
+    "ToolAction::PremiereEditSessionRecordAction {session_id,stage_id,action_id} =>",
+    "ToolAction::PremiereReviewSessionRecordFix {session_id,issue_id,target,planner,settings,approved_action_id} =>"
   ]){
     const start=rust.indexOf(arm);
     assert.ok(start>=0,arm);
