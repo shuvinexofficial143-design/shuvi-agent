@@ -33,3 +33,13 @@ test("read_file replace_text and search use the bounded reader",()=>{
   assert.match(rust.slice(searchStart,searchEnd),/read_utf8_file_bounded\(&canonical, 768 \* 1024, "search candidate"\)/);
   assert.doesNotMatch(rust.slice(searchStart,searchEnd),/fs::read_to_string/);
 });
+
+
+test("workspace config uses the bounded open-handle reader",()=>{
+  const start=rust.indexOf("fn read_workspace(");
+  const end=rust.indexOf("fn write_workspace",start);
+  const block=rust.slice(start,end);
+  assert.match(block,/read_utf8_file_bounded\([\s\S]*MAX_WORKSPACE_PATH_BYTES as usize[\s\S]*"workspace setting"/);
+  assert.doesNotMatch(block,/fs::metadata\(&path\)/);
+  assert.doesNotMatch(block,/fs::read_to_string/);
+});
