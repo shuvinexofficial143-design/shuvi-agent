@@ -6644,19 +6644,28 @@ fn stage_graphics_batch(value: &Value, expected: Option<&PremiereExpectation>) -
 
 fn read_premiere_recipes(app: &AppHandle) -> Result<Vec<PremiereSavedRecipe>, String> {
     let path = premiere_recipes_path(app)?;
-    if !path.exists() {
+    let backup = path.with_extension("json.bak");
+    if !path.exists() && !backup.exists() {
         return Ok(Vec::new());
     }
 
-    let content = read_utf8_file_bounded(
-        &path,
-        2 * 1024 * 1024,
-        "Premiere recipe library",
-    )?;
-    let recipes: Vec<PremiereSavedRecipe> = serde_json::from_str(&content)
-        .map_err(|error| format!("Premiere recipe library is invalid: {error}"))?;
+    let decode = |candidate: &Path| -> Result<Vec<PremiereSavedRecipe>, String> {
+        let content = read_utf8_file_bounded(
+            candidate,
+            2 * 1024 * 1024,
+            "Premiere recipe library",
+        )?;
+        serde_json::from_str(&content)
+            .map_err(|error| format!("Premiere recipe library is invalid: {error}"))
+    };
 
-    Ok(recipes)
+    if path.exists() {
+        decode(&path).or_else(|primary_error| {
+            if backup.exists() { decode(&backup) } else { Err(primary_error) }
+        })
+    } else {
+        decode(&backup)
+    }
 }
 
 fn write_premiere_recipes(
