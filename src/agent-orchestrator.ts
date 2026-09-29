@@ -1,6 +1,6 @@
 import type { ActionResult, ToolProposal } from "./types";
 import {
-  blockTaskStep, finishTaskStep, graphDependencyFailure, RECOVERY_TOOLS,
+  bindTaskStepAction, blockTaskStep, finishTaskStep, graphDependencyFailure, RECOVERY_TOOLS,
   restoreTaskGraph, reviseTaskGraph, startTaskStep, taskGraphProgress,
   type TaskGraph, type GraphAuditEvent
 } from "./task-graph.mjs";
@@ -374,6 +374,23 @@ export function recordProposalStart(state: AgentOrchestrationState, proposal: To
   return { ...state, task_graph: startTaskStep(state.task_graph, proposal, proposalFingerprint(proposal), state.next_step) };
 }
 
+export function bindPreparedAction(
+  state: AgentOrchestrationState,
+  proposal: ToolProposal,
+  preparedActionId: string
+): { ok: true; state: AgentOrchestrationState } | { ok: false; state: AgentOrchestrationState; error: string } {
+  if (proposal.task_step_id == null) return { ok: true, state };
+  const bound = bindTaskStepAction(
+    state.task_graph,
+    proposal,
+    proposalFingerprint(proposal),
+    state.next_step,
+    preparedActionId
+  );
+  if (!bound.ok) return { ok: false, state, error: bound.error };
+  return { ok: true, state: { ...state, task_graph: bound.graph } };
+}
+
 function planFields(
   state: AgentOrchestrationState,
   proposal: ToolProposal
@@ -433,7 +450,8 @@ export function recordToolOutcome(
   proposal: ToolProposal,
   outcome: Exclude<ToolOutcome, "blocked">,
   result?: ActionResult,
-  actualFailure = true
+  actualFailure = true,
+  preparedActionId: string | null = null
 ): AgentOrchestrationState {
   const fingerprint = proposalFingerprint(proposal);
   // A provider claim or a success enum alone cannot create graph/coding evidence.
@@ -442,7 +460,19 @@ export function recordToolOutcome(
     && typeof result.stderr === "string" && (result.exit_code === null || Number.isInteger(result.exit_code))
     && (proposal.tool !== "run_project_task" || result.exit_code === 0);
   if (outcome === "success" && !typedSuccess) outcome = "failure";
-  const taskGraph = finishTaskStep(state.task_graph, proposal, fingerprint, state.next_step, outcome, result);
+  const taskGraph = finishTaskStep(
+    state.task_graph,
+    proposal,
+    fingerprint,
+    state.next_step,
+    outcome,
+    result,
+    preparedActionId
+  );
+  if (outcome === "success" && proposal.task_step_id != null) {
+    const completedStep = taskGraph?.steps.find(s => s.step_id === proposal.task_step_id);
+    if (completedStep?.status !== "completed") outcome = "failure";
+  }
   const failures = outcome === "success" ? 0 : state.consecutive_failures + (outcome === "failure" && actualFailure ? 1 : 0);
   const stopped = failures >= MAX_CONSECUTIVE_FAILURES;
   const replan = outcome !== "success" || Boolean(taskGraph?.steps.some(s => s.status === "failed"));
