@@ -314,8 +314,8 @@ Rules:
 - Project diagnostics are read-only and bounded. Inspect traversal/truncation and unknown status fields before interpreting counts; proxy attachment does not establish proxy health and duplicate path candidates are not authorization to delete/relink.
 - Graphics plans must use inspected primitive types without coercion or semantic-name inference. Copy settings and expected into premiere_apply_video_recipe; skipped fields were not applied.
 - Saved graphics mappings require an inspected reference clip and explicit caller-defined roles; saving checks every native field. Template provenance is caller-supplied, not inferred. List mappings to obtain the revision before updating/deleting/applying. Batch graphics and lower thirds share one executor for title/chapter/CTA/price/location cards. Use clear existing video/audio tracks. All mapped roles need values. Duration only shortens video-only native graphics; no extension or inferred linked audio. Batches checkpoint once and return partial results; uncertain delivery must never be blindly retried.
-- Premiere tools accept optional arguments.expected: {project_guid, project_path?, sequence_guid?, clips:[{kind,track,clip_index,signature}]}. Copy project/sequence identity and each clip targetSignature from premiere_timeline. Include every edited clip for clip guards. Stale expectations are rejected; legacy callers without expected remain compatible. Never discard an expectation after rejection to force an edit.
-- Inspect premiere_inspect_keyframes before premiere_edit_keyframe and copy the returned targetSignature and exact native ticks. A stale target is rejected. Keyframe edits are high-risk and require a project checkpoint. Do not convert keyframe ticks to timeline seconds.
+- Premiere tools accept arguments.expected: {project_guid, project_path?, sequence_guid?, clips:[{kind,track,clip_index,signature}]}. It is required for native mutations. Copy project/sequence identity and each clip targetSignature from premiere_timeline. Include every edited clip for clip guards. Stale expectations are rejected. Never discard an expectation after rejection to force an edit.
+- Every native project mutation requires expected with inspected project_guid and saved project_path; timeline mutations also require sequence_guid and all targeted clips. Numeric effect/parameter setters and keyframe additions require expected_signature from effect inspection targetSignature; marker removal requires expected_signature from marker inspection. Missing or stale evidence is rejected. Inspect premiere_inspect_keyframes before premiere_edit_keyframe and copy the returned targetSignature and exact native ticks. A stale target is rejected. Keyframe edits are high-risk and require a project checkpoint. Do not convert keyframe ticks to timeline seconds.
 - premiere_plan_speed is a read-only planner. Supply only fields for the chosen mode. It returns applied=false/executable=false because the reviewed UXP API has no documented speed write action. Never describe a plan as an applied edit, and never invoke blind UI to execute it. Inspect timeline/clip speed first.
 - Saved Premiere recipes are local reusable video/audio named-parameter recipes. Inspect a clip's effect chain first, save a recipe only after exact selectors are known, and apply saved recipes as high-risk backed-up edits.
 - Use premiere_review_frames for a bounded multi-frame visual review before/after major grading, motion, transition or graphics changes; the normal agent loop can then use the returned observations to decide whether another backed-up edit is needed.
@@ -689,6 +689,7 @@ struct ActionState {
     running_action_tools: Mutex<HashMap<String, String>>,
     browser_sessions: Mutex<HashMap<u32, BrowserSession>>,
     premiere_bridge: Arc<PremiereBridgeShared>,
+    premiere_export_jobs_io: Mutex<()>,
     acceptance_probe_running: AtomicBool,
     finishing_running: premiere_execution::Execution,
     finishing_cancelled: AtomicBool,
@@ -6977,7 +6978,8 @@ async fn backup_premiere_project(premiere_bridge: &PremiereClient<'_>) -> Result
     let before = premiere_bridge.request("inspect_context", json!({}), Duration::from_secs(8)).await?;
     let path = before.get("projectPath").and_then(Value::as_str).filter(|p| !p.trim().is_empty())
         .ok_or_else(|| "Save the active Premiere project to a .prproj file before this edit.".to_string())?;
-    if !Path::new(path).is_absolute() || !Path::new(path).is_file() {
+    if !Path::new(path).is_absolute() || !Path::new(path).is_file()
+        || !Path::new(path).extension().and_then(|e|e.to_str()).is_some_and(|e|e.eq_ignore_ascii_case("prproj")) {
         return Err("Premiere project must exist at an absolute local path before this edit.".into());
     }
     let saved = premiere_bridge.request("save_project", json!({}), Duration::from_secs(15)).await?;
@@ -6985,7 +6987,9 @@ async fn backup_premiere_project(premiere_bridge: &PremiereClient<'_>) -> Result
     if saved.get("saved").and_then(Value::as_bool) != Some(true)
         || saved.get("projectPath").and_then(Value::as_str) != Some(path)
         || after.get("projectPath").and_then(Value::as_str) != Some(path)
-        || before.get("projectGuid") != after.get("projectGuid") {
+        || before.get("projectGuid").and_then(Value::as_str).is_none_or(|guid|guid.is_empty())
+        || before.get("projectGuid") != after.get("projectGuid")
+        || before.pointer("/activeSequence/guid") != after.pointer("/activeSequence/guid") {
         return Err("Active Premiere project changed or did not save; no edit was sent. Inspect and retry.".into());
     }
     premiere_checkpoint::create_checkpoint(Path::new(path), now_ms())
@@ -11516,11 +11520,12 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
         }
         ToolAction::PremiereExportStatus {job_id} => {
             let path=premiere_export_jobs_path(app)?;
-            let mut jobs=premiere_export_jobs::load(&path)?;
-            let job=jobs.jobs.iter_mut().find(|j|j.job_id==job_id).ok_or("Export job ID not found.")?;
             let identity=if state.premiere_bridge.status()?.paired {
                 premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await.ok()
             }else{None};
+            let _io=state.premiere_export_jobs_io.lock().map_err(|_|"Export job store unavailable.")?;
+            let mut jobs=premiere_export_jobs::load(&path)?;
+            let job=jobs.jobs.iter_mut().find(|j|j.job_id==job_id).ok_or("Export job ID not found.")?;
             let stale=identity.as_ref().is_some_and(|context|
                 context.get("projectGuid").and_then(Value::as_str)!=Some(job.project_guid.as_str())
                 || context.pointer("/activeSequence/guid").and_then(Value::as_str)!=Some(job.sequence_guid.as_str()));
@@ -11533,7 +11538,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
         ToolAction::PremiereReadinessReport => {
             let report=premiere_acceptance::load(&premiere_acceptance_path(app)?)?;
             let registry=premiere_calibration::load(&premiere_calibration_path(app)?)?;
-            let jobs=premiere_export_jobs::load(&premiere_export_jobs_path(app)?)?;
+            let jobs={let _io=state.premiere_export_jobs_io.lock().map_err(|_|"Export job store unavailable.")?;premiere_export_jobs::load(&premiere_export_jobs_path(app)?)?};
             let native=report.verified_count();let total=report.capabilities.len();
             let verified=|name:&str|report.capabilities.iter().any(|c|c.name==name && c.premiere_runtime_verified);
             let recovery_count=registry.entries.iter().filter(|e|e.recovery_verified).count();
@@ -11545,8 +11550,10 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 "checkpoint_recovery":recovery_count>0,"stale_expectation_host_tested":false,
                 "export_completion_verified":export_complete>0});
             let by_state=|state:&str|report.capabilities.iter().filter(|c|c.state==state).map(|c|c.name.as_str()).collect::<Vec<_>>();
-            Ok(ActionResult {success:true,tool,stdout:json!({"code_implementation_estimate_pct":98,
-                "node_mock_verified_capabilities":report.capabilities.iter().filter(|c|c.code_tested).map(|c|c.name.as_str()).collect::<Vec<_>>(),
+            Ok(ActionResult {success:true,tool,stdout:json!({"schema_version":2,"code_implementation_estimate_pct":null,
+                "evidence_dimensions":premiere_acceptance::evidence_dimensions(&report,recovery_count,export_complete),
+                "node_mock_verified_capabilities":[],
+                "node_mock_coverage_declared_capabilities":report.capabilities.iter().filter(|c|c.code_tested).map(|c|c.name.as_str()).collect::<Vec<_>>(),
                 "node_test_run_attestation_persisted":false,"rust_verified":false,
                 "premiere_runtime_verified_count":native,"premiere_runtime_capability_count":total,
                 "premiere_runtime_verified_pct":if total>0{native*100/total}else{0},
@@ -11555,7 +11562,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 "runtime_verified":by_state("runtime_verified"),"implemented_unverified":by_state("implemented_unverified"),
                 "unsupported_documented":by_state("unsupported_documented"),"blocked_environment":by_state("blocked_environment"),
                 "runtime_failed":by_state("runtime_failed"),
-                "note":"Code/mock coverage and native acceptance are distinct. Mandatory host recovery, stale expectation and export completion evidence remain absent."}).to_string(),stderr:String::new(),exit_code:Some(0)})
+                "note":"Coverage declarations are not test-run attestations. Persisted host evidence is historical and not bound to the current source revision or live project. Current-build Windows, host, recovery, cancellation and export acceptance require fresh evidence."}).to_string(),stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::PremierePlanInterchangeExport {request} => {
             request.validate()?;
@@ -11752,15 +11759,20 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let mut job=premiere_export_jobs::Job::new(job_id.clone(),&expected.project_guid,
                 expected.sequence_guid.as_deref().ok_or("Sequence expectation missing.")?,&output,preset.as_deref(),queue_to_ame)?;
             let jobs_path=premiere_export_jobs_path(app)?;
+            {
+            let _io=state.premiere_export_jobs_io.lock().map_err(|_|"Export job store unavailable.")?;
             let mut jobs=premiere_export_jobs::load(&jobs_path)?;
             // Persist uncertainty before dispatch: a crash or lost response cannot prove that
             // the export never started and must never be followed by an automatic retry.
             job.bridge_state="execution_status_unknown".into();
             jobs.insert(job)?;premiere_export_jobs::save(&jobs_path,&jobs)?;
+            }
             let result=premiere_bridge.request("export_sequence",
                 json!({"output":output,"preset":preset,"queueToAme":queue_to_ame,"overwrite":overwrite}),
                 Duration::from_secs(if queue_to_ame {45} else {120})).await;
             let observed=premiere_export::observation(&output,local.output_exists);
+            let _io=state.premiere_export_jobs_io.lock().map_err(|_|"Export job store unavailable.")?;
+            let mut jobs=premiere_export_jobs::load(&jobs_path)?;
             let record=jobs.jobs.iter_mut().find(|j|j.job_id==job_id).ok_or("Export job record unavailable.")?;
             match result {
                 Ok(value) => {

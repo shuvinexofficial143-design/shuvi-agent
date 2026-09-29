@@ -175,6 +175,15 @@ test("empty clip evidence cannot authorize a clip mutation", async () => {
   assert.equal(f.actions.length, 0);
 });
 
+test("ambiguous effect chains stay inspectable but cannot authorize numeric mutation", async()=>{
+  const f=fixture();f.components.push(f.components[0]);
+  const result=await f.panel.inspectClipEffects(f.args);
+  assert.equal(result.components.length,2);
+  assert.equal(result.targetSignature,null);
+  assert.equal(result.indexMutationSupported,false);
+  assert.match(result.signatureUnavailableReason,/Ambiguous/);
+});
+
 for (const kind of ['video','audio']) test(`${kind}: numeric effect indexes reject missing or changed chain evidence`, async () => {
   const f=fixture(kind); const sequence=await f.project.getActiveSequence();
   const signature=await f.panel.effectIndexSignature({project:f.project,sequence,item:f.item},kind,0,0);

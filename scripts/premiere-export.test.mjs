@@ -25,6 +25,18 @@ test("read-only export inspection returns exact identity and AME capability",asy
   assert.equal(result.projectGuid,"project-A");assert.equal(result.sequenceGuid,"sequence-A");
   assert.equal(result.ameAvailable,true);assert.equal(result.defaultPresetDetailsInspectable,false);assert.equal(f.exports,0);
 });
+
+test("central delivery capability detection distinguishes unavailable APIs from host acceptance",()=>{
+  const f=fixture();const capabilities=f.panel.nativeDeliveryCapabilities();
+  assert.equal(capabilities.sequence.supported,true);
+  assert.equal(capabilities.sequence.runtimeAccepted,false);
+  for(const name of ['frame','fcpxml','otio','aaf']) {
+    assert.equal(capabilities[name].supported,false);
+    assert.equal(capabilities[name].runtimeAccepted,false);
+    assert.throws(()=>f.panel.requireDeliveryCapability(name),/requires Premiere/);
+  }
+  assert.throws(()=>f.panel.requireDeliveryCapability('unknown'),/Unknown native/);
+});
 test("immediate boolean acceptance never claims encoding completion",async()=>{
   const f=fixture();const result=await f.panel.executeCommand({action:"export_sequence",arguments:f.args});
   assert.equal(result.state,"accepted");assert.equal(result.completionVerified,false);assert.equal(result.accepted,true);

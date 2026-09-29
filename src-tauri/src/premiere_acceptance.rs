@@ -118,6 +118,7 @@ impl Report {
         }
         for e in &self.evidence {
             if !SPECS.iter().any(|s|s.0==e.capability) || e.action.len()>80
+                || (e.result_category=="runtime_verified" && !supported_evidence_pair(&e.capability,&e.action))
                 || !matches!(e.result_category.as_str(),"runtime_verified"|"runtime_failed"|"blocked_environment")
                 || [&e.premiere_version,&e.project_guid,&e.sequence_guid,&e.native_capability,&e.recovery]
                     .into_iter().flatten().any(|v|v.len()>240 || v.contains("sk-") || v.contains("Bearer ")) {
@@ -224,6 +225,33 @@ impl Report {
     pub fn verified_count(&self) -> usize {self.capabilities.iter().filter(|c|c.premiere_runtime_verified).count()}
 }
 
+pub fn evidence_dimensions(report: &Report, recovery_count: usize, export_count: usize) -> Value {
+    serde_json::json!({
+        "source_implementation":{"state":"CODE_PRESENT","completion_percentage":null},
+        "static_schema_tests":{"state":"not_verified","current_revision_attestation":false},
+        "mock_tests":{"state":"not_verified","coverage_declarations_are_run_evidence":false},
+        "rust_unit_tests":{"state":"not_verified"},
+        "frontend_tests":{"state":"not_verified"},
+        "windows_runtime":{"state":"not_verified"},
+        "uxp_bridge_pairing":{"state":"not_verified","historical_evidence_count":report.evidence.iter().filter(|e|e.capability=="bridge_pair"&&e.result_category=="runtime_verified").count()},
+        "native_mutation_acceptance":{"state":"not_verified","historical_verified_capabilities":report.capabilities.iter().filter(|c|c.group!=1&&c.premiere_runtime_verified).count()},
+        "checkpoint_recovery":{"state":"not_verified","historical_verified_entries":recovery_count},
+        "export_completion":{"state":"not_verified","historical_verified_jobs":export_count},
+        "cancellation":{"state":"not_verified"},
+        "known_unsupported":report.capabilities.iter().filter(|c|c.state=="unsupported_documented").map(|c|c.name.as_str()).collect::<Vec<_>>(),
+        "current_source_revision_bound":false,"production_ready":false
+    })
+}
+
+fn supported_evidence_pair(capability: &str, action: &str) -> bool {
+    matches!((capability, action),
+        ("bridge_pair","inspect_context") | ("project_inspection","inspect_context") |
+        ("sequence_inspection","inspect_context") | ("timeline_inspection","inspect_timeline") |
+        ("project_diagnostics","project_diagnostics") | ("trim","premiere_trim_clip") |
+        ("move_clone","premiere_move_clip") | ("move_clone","premiere_clone_clip") |
+        ("scene_edit_detection","premiere_detect_scene_markers"))
+}
+
 pub fn host_probe_identity(context:&Value,timeline:&Value,diagnostics:&Value) -> Result<(String,String,String),String> {
     let version=context.get("premiereVersion").and_then(Value::as_str).filter(|v|!v.is_empty())
         .ok_or("Premiere version unavailable.")?;
@@ -302,6 +330,18 @@ pub fn save(path:&Path,report:&Report) -> Result<(),String> {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test] fn declarations_and_historical_evidence_do_not_promote_current_build() {
+        let mut r=Report::default();
+        r.verified_probe("project_inspection","inspect_context","26.3","p","s").unwrap();
+        let dimensions=evidence_dimensions(&r,1,1);
+        for key in ["static_schema_tests","mock_tests","rust_unit_tests","frontend_tests","windows_runtime",
+            "uxp_bridge_pairing","native_mutation_acceptance","checkpoint_recovery","export_completion","cancellation"] {
+            assert_eq!(dimensions[key]["state"],"not_verified");
+        }
+        assert_eq!(dimensions["production_ready"],false);
+        r.evidence[0].action="unrelated_action".into();
+        assert!(r.validate().is_err());
+    }
     #[test] fn host_shape_checks_identity_and_read_only() {
         let context=json!({"premiereVersion":"25.6","projectDetected":true,"sequenceDetected":true,
             "projectGuid":"p","projectPath":"C:/test.prproj","activeSequence":{"guid":"s"},

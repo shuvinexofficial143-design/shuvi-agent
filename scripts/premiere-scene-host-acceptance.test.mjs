@@ -41,8 +41,9 @@ test("acceptance report migrates the immediately previous schema without fake pr
   assert.match(report,/implemented_unverified/);
 });
 
-test("readiness estimate is synchronized with AG while runtime remains evidence based",()=>{
-  assert.match(rust,/code_implementation_estimate_pct":98/);
+test("readiness does not invent a source completion percentage",()=>{
+  assert.match(rust,/code_implementation_estimate_pct":null/);
+  assert.match(rust,/"node_mock_verified_capabilities":\[\]/);
   assert.match(rust,/"scene_edit_detection":verified\("scene_edit_detection"\)/);
   assert.match(rust,/production_ready":false/);
 });

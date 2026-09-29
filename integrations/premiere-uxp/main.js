@@ -225,7 +225,7 @@ async function inspectActiveContext() {
 
   if (!project) {
     return {
-      capabilities: { targetExpectations: 1 },
+      capabilities: { targetExpectations: 1, responseCorrelation: 2, effectIndexSignatures: 1, markerSignatures: 1, delivery: nativeDeliveryCapabilities() },
     premiereVersion: host?.version || null,
       uxpVersion: versions?.uxp || null,
       projectDetected: false,
@@ -267,7 +267,7 @@ async function inspectActiveContext() {
   }
 
   return {
-    capabilities: { targetExpectations: 1 },
+    capabilities: { targetExpectations: 1, responseCorrelation: 2, effectIndexSignatures: 1, markerSignatures: 1, delivery: nativeDeliveryCapabilities() },
     premiereVersion: host?.version || null,
     uxpVersion: versions?.uxp || null,
     projectDetected: true,
@@ -966,7 +966,24 @@ async function deleteClip(argumentsValue) {
   };
 }
 
+function nativeDeliveryCapabilities() {
+  const make = (supported, apiSince, reason) => ({supported, apiSince, reason:supported ? null : reason, runtimeAccepted:false});
+  return {
+    sequence: make(typeof premiere.EncoderManager?.getManager === "function", null, "Native EncoderManager is unavailable."),
+    frame: make(typeof premiere.Exporter?.exportSequenceFrame === "function", "25.6", "Native sequence frame export requires Premiere 25.6+."),
+    fcpxml: make(typeof premiere.ProjectConverter?.exportAsFinalCutProXML === "function", "26.2", "Final Cut Pro XML export requires Premiere 26.2+."),
+    otio: make(typeof premiere.ProjectConverter?.exportAsOpenTimelineIO === "function", "26.2", "OpenTimelineIO export requires Premiere 26.2+."),
+    aaf: make(typeof premiere.ProjectConverter?.exportAAF === "function" && typeof premiere.AAFExportOptions === "function", "26.3", "AAF export requires Premiere 26.3+.")
+  };
+}
+function requireDeliveryCapability(name) {
+  const capability = nativeDeliveryCapabilities()[name];
+  if (!capability?.supported) throw new Error(capability?.reason || "Unknown native delivery capability.");
+  return capability;
+}
+
 async function inspectExport() {
+  requireDeliveryCapability("sequence");
   const project = await requireProject();
   const sequence = await project.getActiveSequence();
   if (!sequence) throw new Error("No active Premiere sequence.");
@@ -977,6 +994,7 @@ async function inspectExport() {
     sequenceGuid: plainGuid(sequence.guid),
     sequenceName: sequence.name || null,
     ameAvailable: Boolean(manager.isAMEInstalled),
+    nativeCapabilities: nativeDeliveryCapabilities(),
     defaultPresetDetailsInspectable: false
   };
 }
@@ -999,23 +1017,18 @@ async function exportInterchange(argumentsValue) {
   const sequence = await project.getActiveSequence();
   if (!sequence) throw new Error("No active Premiere sequence.");
 
+  requireDeliveryCapability(format);
   const converter = premiere.ProjectConverter;
   let accepted = false;
 
   if (format === "fcpxml") {
-    if (typeof converter?.exportAsFinalCutProXML !== "function") {
-      throw new Error("Final Cut Pro XML export requires Premiere 26.2+.");
-    }
+
     accepted = Boolean(await converter.exportAsFinalCutProXML(sequence, output, suppressUI));
   } else if (format === "otio") {
-    if (typeof converter?.exportAsOpenTimelineIO !== "function") {
-      throw new Error("OpenTimelineIO export requires Premiere 26.2+.");
-    }
+
     accepted = Boolean(await converter.exportAsOpenTimelineIO(sequence, output, suppressUI));
   } else {
-    if (typeof converter?.exportAAF !== "function" || typeof premiere.AAFExportOptions !== "function") {
-      throw new Error("AAF export requires Premiere 26.3+.");
-    }
+
     if (!optionsValue) throw new Error("AAF export requires explicit options.");
 
     let options = new premiere.AAFExportOptions();
@@ -1085,9 +1098,7 @@ async function exportSequenceFrame(argumentsValue) {
   if (Number.isFinite(end?.seconds) && seconds > end.seconds + 0.001) {
     throw new Error("Frame export time is beyond the inspected sequence end.");
   }
-  if (typeof premiere.Exporter?.exportSequenceFrame !== "function") {
-    throw new Error("Native sequence frame export requires Premiere 25.6+.");
-  }
+  requireDeliveryCapability("frame");
 
   const accepted = Boolean(await premiere.Exporter.exportSequenceFrame(
     sequence,
@@ -1114,6 +1125,7 @@ async function exportSequenceFrame(argumentsValue) {
 }
 
 async function exportSequence(argumentsValue) {
+  requireDeliveryCapability("sequence");
   const output =
     typeof argumentsValue?.output === "string"
       ? argumentsValue.output.trim()
@@ -1470,6 +1482,14 @@ async function effectIndexSignature(target, kind, track, clipIndex) {
   return signature;
 }
 
+async function effectIndexEvidence(target, kind, track, clipIndex) {
+  try {
+    return {targetSignature: await effectIndexSignature(target, kind, track, clipIndex), indexMutationSupported: true};
+  } catch (error) {
+    return {targetSignature: null, indexMutationSupported: false, signatureUnavailableReason: String(error).slice(0, 240)};
+  }
+}
+
 async function inspectClipEffects(argumentsValue) {
   const trackIndex = Number(argumentsValue?.track ?? 0);
   const clipIndex = Number(argumentsValue?.clipIndex ?? 0);
@@ -1548,8 +1568,7 @@ async function inspectClipEffects(argumentsValue) {
     clipIndex,
     componentCount,
     components,
-    targetSignature: componentCount <= 128 && components.every(c => !c.paramsTruncated)
-      ? await effectIndexSignature(target, "video", trackIndex, clipIndex) : null,
+    ...await effectIndexEvidence(target, "video", trackIndex, clipIndex),
     componentsTruncated: componentCount > 128
   };
 }
@@ -1824,8 +1843,7 @@ async function inspectAudioClipEffects(argumentsValue) {
     clipIndex,
     componentCount,
     components,
-    targetSignature: componentCount <= 128 && components.every(c => !c.paramsTruncated)
-      ? await effectIndexSignature(target, "audio", trackIndex, clipIndex) : null,
+    ...await effectIndexEvidence(target, "audio", trackIndex, clipIndex),
     componentsTruncated: componentCount > 128
   };
 }

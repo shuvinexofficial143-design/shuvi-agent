@@ -79,3 +79,54 @@ completion. Collision preflight is not an atomic reservation across the native
 encoder dispatch boundary: a third-party writer can still race a queued export.
 Eliminating this requires host-supported exclusive output or verified completion
 followed by atomic publication. This sprint does not claim that guarantee.
+
+Export job read/modify/write operations share a desktop mutex. The native await
+does not hold that lock; completion reloads the store under the lock before
+updating its own job, preserving concurrent job records. Checkpoint creation
+also requires a saved .prproj, nonempty project identity and unchanged active
+sequence across the save. This does not prove a successful recovery.
+
+## Capability and readiness evidence
+
+Delivery capability inspection centralizes native API availability for sequence,
+frame, FCPXML, OTIO and AAF exports. Availability includes an unsupported reason
+and never claims runtime acceptance. Other feature-specific capability checks
+remain distributed. Ambiguous effect chains remain readable, but return no
+signature authorizing an index-based mutation.
+
+Readiness schema 2 removes the hardcoded source completion percentage. Declared
+mock coverage is distinct from an executed test attestation. Historical host,
+recovery and export records cannot verify the current source revision. Separate
+current-build gates remain unverified until corresponding evidence is collected;
+production_ready remains false. Verified evidence must use a supported exact
+capability/action pair. Expanded acceptance plans name real desktop tools and
+adversarial cases; planning itself neither executes nor promotes acceptance.
+
+## Validation and unfinished scope
+
+The continuation preserved the existing edits and four local commits and compared
+the final work with an untouched archive of the base above. Repository validation
+passes. All 306 Premiere-focused Node tests pass. The full Node suite has 510
+passes and 35 failures; all 35 also fail in the untouched base (492 passes,
+36 failures). A stale receipt assertion was corrected; there are no newly failing
+test names. The unrelated baseline failures are not presented as passing.
+The frontend build fails at src/main.ts:1042 (actionId on type never) in both the
+base and modified source. Cargo/rustc are unavailable locally, so added Rust tests
+and Rust compilation have not run. No current-build Windows app, live UXP pairing,
+Premiere mutation, checkpoint recovery, cancellation race or encoder completion
+acceptance was performed.
+
+The earlier usage limit interrupted the broader sprint. This continuation commits
+the completed hardening, but does not claim the following unfinished work:
+
+- An exhaustive per-tool checkpoint and stale-index audit matrix.
+- A full audit of every persisted workflow race, crash and cancellation edge.
+- Execution adapters and real host acceptance for all expanded plan groups.
+- Central capability negotiation for every native tool family.
+- Atomic export collision protection and verified output publication.
+- Repair of unrelated baseline test/build failures and current-build Rust/host
+  validation, including recovery and encoder completion evidence.
+
+Source completion has no audited denominator, so no precise percentage is claimed.
+Current-build production acceptance remains unverified; mocks and source presence
+must not be converted into a production-readiness percentage.
