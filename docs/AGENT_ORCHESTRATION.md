@@ -94,7 +94,7 @@ The local audit records bounded orchestration events:
 - `orchestration_replan`
 - `orchestration_stopped`
 
-These events are best-effort diagnostics only and cannot change a safety decision. Existing diagnostics exports already include recent audit entries.
+These events are best-effort diagnostics only and cannot change a safety decision. Existing diagnostics exports already include recent audit entries. Audit reads are streaming and retain only the requested bounded tail (maximum 200 entries) in memory; Shuvi no longer loads an entire long-lived `audit.jsonl` before truncating it.
 
 ## Non-goals
 

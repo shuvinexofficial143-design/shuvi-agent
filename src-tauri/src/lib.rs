@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     fs::{self, OpenOptions},
     io::{BufRead, BufReader, Write},
     path::Path,
@@ -5273,15 +5273,19 @@ fn read_audit(app: &AppHandle, limit: usize) -> Result<Vec<AuditEntry>, String> 
         .open(path)
         .map_err(|error| format!("Could not open audit log: {error}"))?;
 
-    let mut entries = BufReader::new(file)
-        .lines()
-        .filter_map(Result::ok)
-        .filter_map(|line| serde_json::from_str::<AuditEntry>(&line).ok())
-        .collect::<Vec<_>>();
+    let limit = limit.clamp(1, 200);
+    let mut entries = VecDeque::with_capacity(limit);
+    for line in BufReader::new(file).lines().filter_map(Result::ok) {
+        let Ok(entry) = serde_json::from_str::<AuditEntry>(&line) else {
+            continue;
+        };
+        if entries.len() == limit {
+            entries.pop_front();
+        }
+        entries.push_back(entry);
+    }
 
-    entries.reverse();
-    entries.truncate(limit.clamp(1, 200));
-    Ok(entries)
+    Ok(entries.into_iter().rev().collect())
 }
 
 fn capture_screen_png() -> Result<std::path::PathBuf, String> {
