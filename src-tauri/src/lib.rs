@@ -79,7 +79,7 @@ const MAX_CHAT_MESSAGES: usize = 120;
 const MAX_CHAT_MESSAGE_BYTES: usize = 256 * 1024;
 const MAX_CHAT_CONTEXT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_PROVIDER_RESPONSE_BYTES: u64 = 8 * 1024 * 1024;
-const MAX_ASSISTANT_RESPONSE_BYTES: usize = 512 * 1024;
+const MAX_ASSISTANT_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_PROVIDER_MODEL_BYTES: usize = 256;
 const MAX_PROVIDER_BASE_URL_BYTES: usize = 4 * 1024;
 const MAX_API_KEY_BYTES: usize = 16 * 1024;
@@ -895,7 +895,7 @@ fn collect_provider_text<'a>(
     let mut output = String::new();
     for part in parts {
         if output.len().saturating_add(part.len()) > MAX_ASSISTANT_RESPONSE_BYTES {
-            return Err(format!("{label} text exceeds Shuvi's 512 KB safety limit."));
+            return Err(format!("{label} text exceeds Shuvi's 256 KB safety limit."));
         }
         output.push_str(part);
     }
@@ -904,7 +904,7 @@ fn collect_provider_text<'a>(
 
 fn bounded_provider_text(value: &str, label: &str) -> Result<String, String> {
     if value.len() > MAX_ASSISTANT_RESPONSE_BYTES {
-        return Err(format!("{label} text exceeds Shuvi's 512 KB safety limit."));
+        return Err(format!("{label} text exceeds Shuvi's 256 KB safety limit."));
     }
     Ok(value.to_string())
 }

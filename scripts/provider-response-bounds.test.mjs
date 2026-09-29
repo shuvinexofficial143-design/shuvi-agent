@@ -14,7 +14,7 @@ test("provider responses reject declared oversized bodies before JSON decoding",
 });
 
 test("assistant and vision text is capped before persistent cloning or joining",()=>{
-  assert.match(rust,/const MAX_ASSISTANT_RESPONSE_BYTES: usize = 512 \* 1024/);
+  assert.match(rust,/const MAX_ASSISTANT_RESPONSE_BYTES: usize = 256 \* 1024/);
   assert.match(rust,/fn collect_provider_text<'a>/);
   assert.match(rust,/output\.len\(\)\.saturating_add\(part\.len\(\)\) > MAX_ASSISTANT_RESPONSE_BYTES/);
   assert.match(rust,/fn bounded_provider_text\(value: &str, label: &str\)/);
