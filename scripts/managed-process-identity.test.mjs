@@ -50,3 +50,27 @@ test("all long-lived and validation launches register managed process identity",
     assert.match(rust.slice(start,start+7000),/register_managed_process\(state, child_pid\)/);
   }
 });
+
+
+test("RAM watchdogs stop only the exact registered process instance",()=>{
+  assert.match(rust,/fn terminate_registered_process_tree\(state: &ActionState, pid: u32\)/);
+  const helper=rust.slice(
+    rust.indexOf("fn terminate_registered_process_tree"),
+    rust.indexOf("fn classify_powershell")
+  );
+  assert.match(helper,/managed_process_identity_matches\(state, pid\)\?/);
+  assert.match(helper,/unregister_managed_process\(state, pid\)/);
+  assert.match(helper,/terminate_managed_process_tree\(pid\)/);
+
+  for(const arm of [
+    "ToolAction::RunProjectTask { path, task } =>",
+    "ToolAction::PowerShell { command } =>"
+  ]){
+    const start=rust.indexOf(arm);
+    const next=rust.indexOf("\n        ToolAction::",start+arm.length);
+    const block=rust.slice(start,next<0?rust.length:next);
+    assert.match(block,/while managed_process_identity_matches\(state, child_pid\)\.unwrap_or\(false\)/);
+    assert.match(block,/terminate_registered_process_tree\(state, child_pid\)/);
+    assert.doesNotMatch(block,/while process_is_alive\(child_pid\)/);
+  }
+});

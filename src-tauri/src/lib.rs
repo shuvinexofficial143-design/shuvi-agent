@@ -1594,10 +1594,6 @@ fn managed_process_identity_matches(state: &ActionState, pid: u32) -> Result<boo
     Ok(observed_process_start_time(pid).is_some_and(|actual| actual == expected))
 }
 
-fn process_is_alive(pid: u32) -> bool {
-    observed_process_start_time(pid).is_some()
-}
-
 fn terminate_managed_process_tree(pid: u32) -> Result<bool, String> {
     let pid_string = pid.to_string();
 
@@ -1615,6 +1611,15 @@ fn terminate_managed_process_tree(pid: u32) -> Result<bool, String> {
 
     Ok(output.status.success())
 }
+
+fn terminate_registered_process_tree(state: &ActionState, pid: u32) -> Result<bool, String> {
+    if !managed_process_identity_matches(state, pid)? {
+        unregister_managed_process(state, pid);
+        return Ok(false);
+    }
+    terminate_managed_process_tree(pid)
+}
+
 
 fn classify_powershell(command: &str) -> RiskLevel {
     let lower = command.to_ascii_lowercase();
@@ -11638,11 +11643,11 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let hard_limit_terminated = AtomicBool::new(false);
             let output_result = std::thread::scope(|scope| {
                 let monitor = scope.spawn(|| {
-                    while process_is_alive(child_pid) {
+                    while managed_process_identity_matches(state, child_pid).unwrap_or(false) {
                         match current_runtime_status(state) {
                             Ok(status) if status.over_hard_limit => {
                                 hard_limit_triggered.store(true, Ordering::Release);
-                                let stopped = terminate_managed_process_tree(child_pid).unwrap_or(false);
+                                let stopped = terminate_registered_process_tree(state, child_pid).unwrap_or(false);
                                 hard_limit_terminated.store(stopped, Ordering::Release);
                                 break;
                             }
@@ -11867,11 +11872,11 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let hard_limit_terminated = AtomicBool::new(false);
             let output_result = std::thread::scope(|scope| {
                 let monitor = scope.spawn(|| {
-                    while process_is_alive(child_pid) {
+                    while managed_process_identity_matches(state, child_pid).unwrap_or(false) {
                         match current_runtime_status(state) {
                             Ok(status) if status.over_hard_limit => {
                                 hard_limit_triggered.store(true, Ordering::Release);
-                                let stopped = terminate_managed_process_tree(child_pid).unwrap_or(false);
+                                let stopped = terminate_registered_process_tree(state, child_pid).unwrap_or(false);
                                 hard_limit_terminated.store(stopped, Ordering::Release);
                                 break;
                             }
