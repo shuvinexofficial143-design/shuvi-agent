@@ -89,3 +89,29 @@ test("UI exposes the current bounded coding phase without bypassing permissions"
   assert.match(main,/renderChatPermission\(proposal, step\)/);
   assert.match(main,/execute_action/);
 });
+
+
+test("future mutation receipt cannot make legacy file inspection look fresh",()=>{
+  const state={
+    version:5,
+    next_step:3,
+    coding:{
+      active:true,
+      inspected_paths:["/repo/a.ts"],
+      last_mutation_step:8,
+      last_validation_step:0,
+      last_git_status_step:0,
+      last_git_status_path:null,
+      last_git_diff_step:0,
+      last_git_diff_path:null,
+      last_commit_step:0,
+      last_commit_path:null,
+      last_push_step:0,
+      last_push_path:null
+    }
+  };
+  const restored=agent.normalizeAgentOrchestrationState(state);
+  assert.deepEqual(restored.coding.inspected_paths,[]);
+  assert.deepEqual(restored.coding.inspection_steps,{});
+  assert.equal(restored.coding.last_mutation_step,0);
+});

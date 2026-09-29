@@ -152,7 +152,8 @@ function normalizeCodingWorkflowState(value: unknown, nextStep: number): CodingW
     const step = boundedStep(raw);
     return step > 0 && step < nextStep ? step : 0;
   };
-  const lastMutationStep = pastStep(input.last_mutation_step);
+  const rawMutationStep = boundedStep(input.last_mutation_step);
+  const lastMutationStep = rawMutationStep > 0 && rawMutationStep < nextStep ? rawMutationStep : 0;
   const rawInspectionSteps = input.inspection_steps
     && typeof input.inspection_steps === "object"
     && !Array.isArray(input.inspection_steps)
@@ -178,7 +179,7 @@ function normalizeCodingWorkflowState(value: unknown, nextStep: number): CodingW
     const savedStep = savedInspectionSteps[path] ?? 0;
     // Older checkpoints had no per-path read step. Once a mutation exists, that
     // legacy path evidence is ambiguous and must be re-read after resume.
-    const legacySafe = rawInspectionSteps === null && lastMutationStep === 0 && nextStep > 1;
+    const legacySafe = rawInspectionSteps === null && rawMutationStep === 0 && nextStep > 1;
     if (savedStep > 0 || legacySafe) {
       safeInspected.push(path);
       inspectionSteps[path] = savedStep || 1;
