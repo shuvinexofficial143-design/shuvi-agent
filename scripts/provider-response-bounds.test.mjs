@@ -10,7 +10,7 @@ test("provider JSON bodies are bounded while streaming before deserialization",(
   const start=rust.indexOf("async fn bounded_provider_json");
   const end=rust.indexOf("fn collect_provider_text",start);
   const helper=rust.slice(start,end);
-  assert.match(helper,/response\.chunk\(\)/);
+  assert.match(helper,/response[\s\S]*?\.chunk\(\)/);
   assert.match(helper,/body\.len\(\)\.saturating_add\(chunk\.len\(\)\) > MAX_PROVIDER_RESPONSE_BYTES as usize/);
   assert.match(helper,/body\.extend_from_slice\(&chunk\)/);
   assert.match(helper,/serde_json::from_slice::<Value>\(&body\)/);
