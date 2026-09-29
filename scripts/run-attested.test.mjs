@@ -18,13 +18,13 @@ test("attestation filename and shape are commit bound",()=>{
     schema_version:SCHEMA_VERSION,scope:"full",repository_commit:sha,
     repository_commit_after:sha,head_unchanged:true,
     clean_worktree_before:true,clean_worktree_after:true,clean_worktree:true,
-    commands:[{name:"x",exit_code:0}],passed:true,assurance:ASSURANCE
+    commands:[{name:"x",command:"x",exit_code:0,launch_error:null}],passed:true,assurance:ASSURANCE
   }),true);
   assert.equal(validateAttestation({
     schema_version:SCHEMA_VERSION,scope:"full",repository_commit:"main",
     repository_commit_after:sha,head_unchanged:false,
     clean_worktree_before:true,clean_worktree_after:true,clean_worktree:true,
-    commands:[{name:"x",exit_code:0}],passed:true,assurance:ASSURANCE
+    commands:[{name:"x",command:"x",exit_code:0,launch_error:null}],passed:true,assurance:ASSURANCE
   }),false);
 });
 
@@ -34,7 +34,7 @@ test("attestation rejects dirty or internally inconsistent worktree receipts",()
   const base={
     schema_version:SCHEMA_VERSION,scope:"frontend",repository_commit:sha,
     repository_commit_after:sha,head_unchanged:true,
-    commands:[{name:"validate",exit_code:0}],passed:false,assurance:ASSURANCE
+    commands:[{name:"validate",command:"npm run validate",exit_code:0,launch_error:null}],passed:false,assurance:ASSURANCE
   };
   assert.equal(validateAttestation({
     ...base,clean_worktree_before:false,clean_worktree_after:true,clean_worktree:false
@@ -64,7 +64,7 @@ test("attestation rejects HEAD changes during verification",()=>{
   const common={
     schema_version:SCHEMA_VERSION,scope:"frontend",repository_commit:before,
     clean_worktree_before:true,clean_worktree_after:true,clean_worktree:true,
-    commands:[{name:"validate",exit_code:0}],assurance:ASSURANCE
+    commands:[{name:"validate",command:"npm run validate",exit_code:0,launch_error:null}],assurance:ASSURANCE
   };
   assert.equal(validateAttestation({
     ...common,repository_commit_after:after,head_unchanged:false,passed:false
@@ -86,4 +86,43 @@ test("attestation source binds process results to unchanged HEAD",()=>{
   assert.match(source,/const passed=headUnchanged && cleanWorktree/);
   assert.match(source,/repository_commit_after:shaAfter/);
   assert.match(source,/head_unchanged:headUnchanged/);
+});
+
+
+test("attestation passed flag must match observed command outcomes",()=>{
+  const sha="e".repeat(40);
+  const base={
+    schema_version:SCHEMA_VERSION,scope:"frontend",
+    repository_commit:sha,repository_commit_after:sha,head_unchanged:true,
+    clean_worktree_before:true,clean_worktree_after:true,clean_worktree:true,
+    assurance:ASSURANCE
+  };
+  assert.equal(validateAttestation({
+    ...base,
+    commands:[{name:"validate",command:"npm run validate",exit_code:1,launch_error:null}],
+    passed:true
+  }),false);
+  assert.equal(validateAttestation({
+    ...base,
+    commands:[{name:"validate",command:"npm run validate",exit_code:1,launch_error:null}],
+    passed:false
+  }),true);
+  assert.equal(validateAttestation({
+    ...base,
+    commands:[{name:"validate",command:"npm run validate",exit_code:0,launch_error:"spawn failed"}],
+    passed:true
+  }),false);
+});
+
+test("attestation rejects malformed command execution records",()=>{
+  const sha="f".repeat(40);
+  const base={
+    schema_version:SCHEMA_VERSION,scope:"frontend",
+    repository_commit:sha,repository_commit_after:sha,head_unchanged:true,
+    clean_worktree_before:true,clean_worktree_after:true,clean_worktree:true,
+    passed:true,assurance:ASSURANCE
+  };
+  assert.equal(validateAttestation({...base,commands:[{name:"x",command:"x",exit_code:"0",launch_error:null}]}),false);
+  assert.equal(validateAttestation({...base,commands:[{name:"",command:"x",exit_code:0,launch_error:null}]}),false);
+  assert.equal(validateAttestation({...base,commands:[{name:"x",command:"",exit_code:0,launch_error:null}]}),false);
 });

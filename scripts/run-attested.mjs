@@ -54,6 +54,20 @@ export function outputName(scope,sha){
 }
 
 export function validateAttestation(a){
+  const commandsValid=Array.isArray(a?.commands) && a.commands.length>0
+    && a.commands.every(command=>
+      command && typeof command==="object"
+      && typeof command.name==="string" && command.name.length>0
+      && typeof command.command==="string" && command.command.length>0
+      && (command.exit_code===null || Number.isInteger(command.exit_code))
+      && (command.launch_error===null || typeof command.launch_error==="string")
+    );
+  const observedPass=Boolean(
+    a?.head_unchanged===true
+    && a?.clean_worktree===true
+    && commandsValid
+    && a.commands.every(command=>command.exit_code===0 && command.launch_error===null)
+  );
   return a?.schema_version===SCHEMA_VERSION
     && ["frontend","rust","full"].includes(a.scope)
     && typeof a.repository_commit==="string" && /^[a-f0-9]{40}$/i.test(a.repository_commit)
@@ -64,8 +78,9 @@ export function validateAttestation(a){
     && typeof a.clean_worktree_after==="boolean"
     && typeof a.clean_worktree==="boolean"
     && a.clean_worktree===(a.clean_worktree_before && a.clean_worktree_after)
-    && Array.isArray(a.commands) && a.commands.length>0
+    && commandsValid
     && typeof a.passed==="boolean"
+    && a.passed===observedPass
     && a.assurance===ASSURANCE;
 }
 
