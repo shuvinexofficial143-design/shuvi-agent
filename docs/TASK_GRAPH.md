@@ -158,9 +158,13 @@ Neither case is declared successful. It must be inspected and explicitly recover
 stopped task stays stopped, including when it contains an interrupted receipt.
 
 Text-only provider replies with unfinished graph work pause and retain the checkpoint and
-show the saved-task resume control. Safety stops and user cancellation also retain graph
-progress. A new user instruction or explicit discard/reset starts fresh state.
-Checkpoints are local receipts, not cryptographically authenticated attestations.
+show the saved-task resume control. If the user presses Stop while an approval is pending,
+Shuvi first attempts to deny the exact bound Rust action and finalizes that graph step as
+denied; if denial cannot be confirmed, it is finalized conservatively as failed. The bound
+action ID remains in the evidence, the checkpoint is saved, and resume does not reinterpret
+that known cancellation as a successful or silently pending step. Safety stops and user
+cancellation retain graph progress. A new user instruction or explicit discard/reset starts
+fresh state. Checkpoints are local receipts, not cryptographically authenticated attestations.
 
 ## UI and audit
 
