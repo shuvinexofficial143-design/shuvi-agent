@@ -173,23 +173,34 @@ export function blockTaskStep(graph, stepId, reason) {
 }
 
 // Only the local execute_action caller passes a typed result. No provider metadata is read here.
-export function finishTaskStep(graph, proposal, fingerprint, stepNumber, outcome, result, preparedActionId = null) {
+export function finishTaskStep(
+  graph, proposal, fingerprint, stepNumber, outcome, result,
+  preparedActionId = null, auditReceipt = null
+) {
   if (!graph || proposal.task_step_id == null) return graph;
   const target = graph.steps.find(s => s.step_id === proposal.task_step_id);
   if (!target || target.status !== "running" || target.running?.fingerprint !== fingerprint
       || target.running.orchestration_step !== stepNumber) return graph;
   const boundAction = actionId(target.running.action_id) && target.running.action_id === preparedActionId;
-  const typed = boundAction && object(result) && result.tool === proposal.tool && typeof result.success === "boolean"
+  const auditBound = boundAction && object(auditReceipt)
+    && auditReceipt.action_id === preparedActionId
+    && auditReceipt.tool === proposal.tool
+    && ["executed","failed","denied"].includes(auditReceipt.event)
+    && typeof auditReceipt.success === "boolean";
+  const typed = auditBound && auditReceipt.event === "executed"
+    && object(result) && result.tool === proposal.tool && typeof result.success === "boolean"
+    && auditReceipt.success === result.success
     && typeof result.stdout === "string" && typeof result.stderr === "string"
     && (result.exit_code === null || Number.isInteger(result.exit_code));
   const success = outcome === "success" && typed && result.success === true
     && (proposal.tool !== "run_project_task" || result.exit_code === 0);
   const evidence = { step_id: target.step_id, tool: proposal.tool, fingerprint,
     action_id: actionId(preparedActionId) ? preparedActionId : null,
+    audit_event: auditBound ? auditReceipt.event : null,
     success, outcome: success ? "success" : outcome === "success" ? "failure" : outcome,
     source: typed ? "typed_result" : "local_failure", orchestration_step: stepNumber,
-    summary: success ? "Typed tool succeeded for the exact prepared action." :
-      "Action did not produce successful typed evidence for the bound prepared action." };
+    summary: success ? "Typed tool and Rust audit receipt matched the exact prepared action." :
+      "Action lacked matching typed result and Rust audit evidence for the bound prepared action." };
   return refreshTaskGraph({ ...graph, steps: graph.steps.map(s => s !== target ? s :
     { ...s, status: success ? "completed" : "failed", running: null, blocked_reason: null,
       evidence: [...s.evidence, evidence].slice(-GRAPH_LIMIT) }) });
@@ -228,8 +239,9 @@ export function restoreTaskGraph(value, nextStep) {
           || !["typed_result", "local_failure", "interrupted"].includes(e.source)
           || typeof e.success !== "boolean" || !bounded(e.summary, 300)
           || (e.action_id !== null && !actionId(e.action_id))
-          || (e.success && (!actionId(e.action_id) || e.source !== "typed_result"
-              || e.outcome !== "success" || e.tool !== s.expected_tool))
+          || (e.audit_event !== null && !["executed","failed","denied"].includes(e.audit_event))
+          || (e.success && (!actionId(e.action_id) || e.audit_event !== "executed"
+              || e.source !== "typed_result" || e.outcome !== "success" || e.tool !== s.expected_tool))
           || (!e.success && e.outcome === "success")) return fail("Invalid saved completion evidence.");
       seenNumbers.add(e.orchestration_step);
       count++;
@@ -248,7 +260,7 @@ export function restoreTaskGraph(value, nextStep) {
       interrupted.push(s.running.fingerprint);
       restored = { ...restored, status: "failed", evidence: [...restored.evidence, {
         step_id: s.step_id, tool: s.expected_tool, fingerprint: s.running.fingerprint,
-        action_id: s.running.action_id ?? null,
+        action_id: s.running.action_id ?? null, audit_event: null,
         success: false, outcome: "failure", source: "interrupted", orchestration_step: nextStep,
         summary: s.running.action_id
           ? "Interrupted prepared action: outcome unknown; inspect before replanning."
