@@ -77,9 +77,9 @@ export function refreshTaskGraph(graph) {
   if (!graph) return null;
   const done = new Set(graph.steps.filter(completed).map(s => s.step_id));
   return { ...graph, steps: graph.steps.map(s => {
-    if (["completed", "failed", "running", "skipped"].includes(s.status)) return s;
+    if (["completed", "failed", "running", "skipped", "blocked"].includes(s.status)) return s;
     const missing = s.depends_on.filter(d => !done.has(d));
-    return { ...s, status: missing.length ? (s.status === "blocked" ? "blocked" : "pending") : "ready",
+    return { ...s, status: missing.length ? "pending" : "ready",
       blocked_reason: missing.length ? "Waiting for: " + missing.join(", ") : null };
   }) };
 }
@@ -230,7 +230,8 @@ export function restoreTaskGraph(value, nextStep) {
   const steps = [];
   for (const s of value.steps) {
     if (!["pending", "ready", "running", "completed", "failed", "blocked", "skipped"].includes(s.status)
-        || !Array.isArray(s.evidence) || s.evidence.length > GRAPH_LIMIT) return fail("Invalid saved step state.");
+        || !Array.isArray(s.evidence) || s.evidence.length > GRAPH_LIMIT
+        || (s.status === "blocked" && !bounded(s.blocked_reason, 500))) return fail("Invalid saved step state.");
     for (const e of s.evidence) {
       if (!object(e) || e.step_id !== s.step_id || !bounded(e.tool, 160)
           || !bounded(e.fingerprint, 16384) || !integer(e.orchestration_step, 1, GRAPH_LIMIT)
