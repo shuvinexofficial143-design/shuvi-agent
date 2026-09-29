@@ -10,6 +10,9 @@ test("Premiere recipe reads use the bounded open-handle helper",()=>{
   const block=rust.slice(start,end);
   assert.match(block,/read_utf8_file_bounded\([\s\S]*2 \* 1024 \* 1024[\s\S]*"Premiere recipe library"/);
   assert.match(block,/serde_json::from_str\(&content\)/);
+  assert.match(block,/let backup = path\.with_extension\("json\.bak"\)/);
+  assert.match(block,/decode\(&path\)\.or_else/);
+  assert.match(block,/decode\(&backup\)/);
   assert.doesNotMatch(block,/fs::metadata\(&path\)/);
   assert.doesNotMatch(block,/fs::read\(&path\)/);
 });
