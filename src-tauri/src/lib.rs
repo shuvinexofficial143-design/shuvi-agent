@@ -5605,17 +5605,28 @@ fn workspace_scan_recursive(
             break;
         }
 
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(_) => continue,
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
         let path = entry.path();
+        let canonical = match path.canonicalize() {
+            Ok(canonical) if canonical.starts_with(root) => canonical,
+            _ => continue,
+        };
         let file_name = entry.file_name().to_string_lossy().to_string();
-        let relative = path.strip_prefix(root).unwrap_or(&path).display().to_string();
+        let relative = canonical.strip_prefix(root).unwrap_or(&canonical).display().to_string();
 
-        if path.is_dir() {
+        if canonical.is_dir() {
             if is_ignored_workspace_dir(&file_name) {
                 continue;
             }
             output.push(format!("[dir] {relative}"));
-            workspace_scan_recursive(root, &path, depth + 1, output)?;
-        } else if path.is_file() {
+            workspace_scan_recursive(root, &canonical, depth + 1, output)?;
+        } else if canonical.is_file() {
             let size = entry.metadata().map(|metadata| metadata.len()).unwrap_or_default();
             output.push(format!("[file] {relative} | {size} bytes"));
         }
@@ -5644,18 +5655,29 @@ fn search_text_recursive(
             break;
         }
 
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(_) => continue,
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
         let path = entry.path();
+        let canonical = match path.canonicalize() {
+            Ok(canonical) if canonical.starts_with(root) => canonical,
+            _ => continue,
+        };
         let file_name = entry.file_name().to_string_lossy().to_string();
 
-        if path.is_dir() {
+        if canonical.is_dir() {
             if is_ignored_workspace_dir(&file_name) {
                 continue;
             }
-            search_text_recursive(root, &path, query, depth + 1, matches, visited_files)?;
+            search_text_recursive(root, &canonical, query, depth + 1, matches, visited_files)?;
             continue;
         }
 
-        if !path.is_file() {
+        if !canonical.is_file() {
             continue;
         }
 
@@ -5673,14 +5695,14 @@ fn search_text_recursive(
             continue;
         }
 
-        let content = match fs::read_to_string(&path) {
+        let content = match fs::read_to_string(&canonical) {
             Ok(content) => content,
             Err(_) => continue,
         };
 
         for (index, line) in content.lines().enumerate() {
             if line.contains(query) {
-                let relative = path.strip_prefix(root).unwrap_or(&path).display();
+                let relative = canonical.strip_prefix(root).unwrap_or(&canonical).display();
                 matches.push(format!(
                     "{}:{}: {}",
                     relative,
@@ -11040,9 +11062,11 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             if !root.is_dir() {
                 return Err("Workspace path is not a directory.".into());
             }
+            let canonical_root = root.canonicalize()
+                .map_err(|error| format!("Could not canonicalize workspace path: {error}"))?;
 
             let mut output = Vec::new();
-            workspace_scan_recursive(root, root, 0, &mut output)?;
+            workspace_scan_recursive(&canonical_root, &canonical_root, 0, &mut output)?;
 
             Ok(ActionResult {
                 success: true,
@@ -11057,10 +11081,12 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             if !root.is_dir() {
                 return Err("Search path is not a directory.".into());
             }
+            let canonical_root = root.canonicalize()
+                .map_err(|error| format!("Could not canonicalize search path: {error}"))?;
 
             let mut matches = Vec::new();
             let mut visited_files = 0_usize;
-            search_text_recursive(root, root, &query, 0, &mut matches, &mut visited_files)?;
+            search_text_recursive(&canonical_root, &canonical_root, &query, 0, &mut matches, &mut visited_files)?;
 
             let stdout = if matches.is_empty() {
                 format!("No matches found for '{query}'.")

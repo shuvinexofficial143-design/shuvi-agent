@@ -107,7 +107,7 @@ This system does not:
 - increase the 8-step safety limit;
 - turn plan metadata into a new unrestricted command language.
 
-Runtime correctness still requires current-head frontend/Rust execution and, for Premiere behavior, paired-host acceptance evidence. Provider requests are memory-bounded as well: the frontend sends only the most recent bounded context window, and Rust independently rejects more than 120 messages, any message over 256 KB, or aggregate chat content over 2 MB before inserting Shuvi's system/orchestration context. Coding discovery is bounded too: workspace scans cap both total emitted entries and the number loaded from any one directory before sorting, while text search stops after 150 matches or 5,000 visited files (in addition to existing depth/file-size limits).
+Runtime correctness still requires current-head frontend/Rust execution and, for Premiere behavior, paired-host acceptance evidence. Provider requests are memory-bounded as well: the frontend sends only the most recent bounded context window, and Rust independently rejects more than 120 messages, any message over 256 KB, or aggregate chat content over 2 MB before inserting Shuvi's system/orchestration context. Coding discovery is bounded too: workspace scans cap both total emitted entries and the number loaded from any one directory before sorting, while text search stops after 150 matches or 5,000 visited files (in addition to existing depth/file-size limits). Discovery also canonicalizes the selected root and refuses symlink entries or canonical paths that escape that root, so a workspace link cannot silently turn a scoped scan/search into an external filesystem read.
 
 
 ## Coding workflow dependencies
