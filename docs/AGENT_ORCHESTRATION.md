@@ -64,7 +64,7 @@ The exact same unsuccessful tool+arguments proposal is blocked locally before pe
 
 Changed arguments or a different typed inspection tool are allowed so the model can recover from an observed error.
 
-A user denial is also treated as a replan signal; the identical denied action cannot simply be proposed again unchanged. Orchestration v3 retains unsuccessful action fingerprints across intervening successes and graph revisions.
+A user denial is also treated as a replan signal; the identical denied action cannot simply be proposed again unchanged. Orchestration v4 retains unsuccessful action fingerprints across intervening successes and graph revisions, and graph completion evidence is additionally bound to the exact Rust-prepared action UUID.
 
 ## Permission boundary
 
@@ -132,11 +132,13 @@ See [TASK_GRAPH.md](TASK_GRAPH.md) for the complete protocol, bounds and recover
 Optional graphs now cover the full proposal → dependency → permission → result → evidence →
 checkpoint → resume → progress flow. Graph restrictions supplement the coding checks above.
 
-The outer session schema remains v2; the orchestration payload is v3. Older payloads load
-without invented progress. A graph action's running receipt must be saved before staging.
+The outer session schema remains v2; the orchestration payload is v4. Older non-graph payloads
+load without invented progress. Legacy v3 graph evidence fails closed because it predates
+prepared-action UUID binding. A graph running receipt is saved before staging, then the exact
+Rust pending-action UUID is checkpointed after `prepare_tool` and before approval/execution.
 Interrupted running steps resume as uncertain failures requiring inspection/replan, while
-completed evidence and the next turn are preserved. Text-only provider replies, cancellation
-and safety stops cannot erase unfinished graph work.
+action-bound completed evidence and the next turn are preserved. Text-only provider replies,
+cancellation and safety stops cannot erase unfinished graph work.
 
 Graph statuses and completed counts come from local evidence only. Completed specifications
 cannot be changed in a replan, failed history cannot be deleted, and a stable objective cannot
