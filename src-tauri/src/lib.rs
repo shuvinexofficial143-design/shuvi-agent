@@ -6553,37 +6553,57 @@ fn write_session_checkpoint(
 
     let path = session_checkpoint_path(app)?;
     let temp = path.with_extension("json.tmp");
+    let backup = path.with_extension("json.bak");
 
     fs::write(&temp, &content)
         .map_err(|error| format!("Could not write temporary session checkpoint: {error}"))?;
 
-    if path.exists() {
-        let _ = fs::remove_file(&path);
+    if backup.exists() {
+        let _ = fs::remove_file(&backup);
     }
-
-    fs::rename(&temp, &path)
-        .map_err(|error| format!("Could not finalize session checkpoint: {error}"))
+    if path.exists() {
+        fs::rename(&path, &backup)
+            .map_err(|error| format!("Could not preserve the previous session checkpoint: {error}"))?;
+    }
+    if let Err(error) = fs::rename(&temp, &path) {
+        if backup.exists() {
+            let _ = fs::rename(&backup, &path);
+        }
+        return Err(format!("Could not finalize session checkpoint: {error}"));
+    }
+    if backup.exists() {
+        let _ = fs::remove_file(&backup);
+    }
+    Ok(())
 }
 
 fn read_session_checkpoint(app: &AppHandle) -> Result<Option<SessionCheckpoint>, String> {
     let path = session_checkpoint_path(app)?;
+    let backup = path.with_extension("json.bak");
 
-    if !path.exists() {
+    if !path.exists() && !backup.exists() {
         return Ok(None);
     }
 
-    let metadata = fs::metadata(&path)
-        .map_err(|error| format!("Could not inspect session checkpoint: {error}"))?;
+    let decode = |candidate: &Path| -> Result<SessionCheckpoint, String> {
+        let metadata = fs::metadata(candidate)
+            .map_err(|error| format!("Could not inspect session checkpoint: {error}"))?;
+        if metadata.len() > 2 * 1024 * 1024 {
+            return Err("Saved session checkpoint is unexpectedly large.".into());
+        }
+        let content = fs::read(candidate)
+            .map_err(|error| format!("Could not read session checkpoint: {error}"))?;
+        serde_json::from_slice(&content)
+            .map_err(|error| format!("Saved session checkpoint is invalid: {error}"))
+    };
 
-    if metadata.len() > 2 * 1024 * 1024 {
-        return Err("Saved session checkpoint is unexpectedly large.".into());
-    }
-
-    let content = fs::read(&path)
-        .map_err(|error| format!("Could not read session checkpoint: {error}"))?;
-
-    let mut checkpoint: SessionCheckpoint = serde_json::from_slice(&content)
-        .map_err(|error| format!("Saved session checkpoint is invalid: {error}"))?;
+    let mut checkpoint = if path.exists() {
+        decode(&path).or_else(|primary_error| {
+            if backup.exists() { decode(&backup) } else { Err(primary_error) }
+        })?
+    } else {
+        decode(&backup)?
+    };
 
     if !matches!(checkpoint.version,1|2) {
         return Err("Saved session checkpoint uses an unsupported version.".into());
@@ -6593,21 +6613,22 @@ fn read_session_checkpoint(app: &AppHandle) -> Result<Option<SessionCheckpoint>,
         checkpoint.orchestration=None;
     }
     validate_session_checkpoint_payload(&checkpoint)?;
-
     Ok(Some(checkpoint))
 }
-
 fn remove_session_checkpoint(app: &AppHandle) -> Result<(), String> {
     let path = session_checkpoint_path(app)?;
-
-    if path.exists() {
-        fs::remove_file(path)
-            .map_err(|error| format!("Could not clear session checkpoint: {error}"))?;
+    for candidate in [
+        path.clone(),
+        path.with_extension("json.tmp"),
+        path.with_extension("json.bak"),
+    ] {
+        if candidate.exists() {
+            fs::remove_file(&candidate)
+                .map_err(|error| format!("Could not clear session checkpoint state: {error}"))?;
+        }
     }
-
     Ok(())
 }
-
 fn workspace_config_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     let dir = app
         .path()
