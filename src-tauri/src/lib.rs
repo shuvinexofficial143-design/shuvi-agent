@@ -6860,15 +6860,12 @@ fn read_workspace(app: &AppHandle) -> Result<Option<String>, String> {
     if !path.exists() {
         return Ok(None);
     }
-    if fs::metadata(&path)
-        .map_err(|error| format!("Could not inspect workspace setting: {error}"))?
-        .len() > MAX_WORKSPACE_PATH_BYTES
-    {
-        return Err("Saved workspace path is unexpectedly large.".into());
-    }
 
-    let value = fs::read_to_string(path)
-        .map_err(|error| format!("Could not read workspace setting: {error}"))?
+    let value = read_utf8_file_bounded(
+        &path,
+        MAX_WORKSPACE_PATH_BYTES as usize,
+        "workspace setting",
+    )?
         .trim()
         .to_string();
 
