@@ -680,19 +680,10 @@ function sessionPermissionKey(proposal: ToolProposal): string {
       : "";
 
   if (pathValue) {
-    const normalizedPath = normalizeScopePath(pathValue);
-    const workspace = workspaceInput.value.trim();
-    const normalizedWorkspace = workspace ? normalizeScopePath(workspace) : "";
-
-    if (
-      normalizedWorkspace &&
-      (normalizedPath === normalizedWorkspace ||
-        normalizedPath.startsWith(normalizedWorkspace + "\\"))
-    ) {
-      return proposal.tool + "|workspace:" + normalizedWorkspace;
-    }
-
-    return proposal.tool + "|exact:" + normalizedPath;
+    // Session auto-approval for filesystem/Git reads is deliberately exact-path only.
+    // A frontend string prefix cannot prove canonical containment because dot-dot segments,
+    // Windows junctions and symlinks can resolve outside the selected workspace.
+    return proposal.tool + "|exact:" + normalizeScopePath(pathValue);
   }
 
   const pid =
@@ -713,8 +704,7 @@ function sessionPermissionKey(proposal: ToolProposal): string {
 function sessionPermissionLabel(proposal: ToolProposal): string {
   const key = sessionPermissionKey(proposal);
 
-  if (key.includes("|workspace:")) return "Allow in this workspace for session";
-  if (key.includes("|exact:")) return "Allow this path for session";
+  if (key.includes("|exact:")) return "Allow this exact path for session";
   if (key.includes("|pid:")) return "Allow for this managed browser session";
   if (key.includes("|window:")) return "Allow for this window session";
   return "Allow this read tool for session";
