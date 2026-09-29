@@ -513,3 +513,27 @@ test("task graph declarations expose prepared-action and audit-bound evidence", 
   assert.match(declarations,/preparedActionId\?: string \| null/);
   assert.match(declarations,/auditReceipt\?: TaskAuditReceipt \| null/);
 });
+
+
+test("coding-only block preserves graph reason until explicit replan", () => {
+  const s=initial(plan([step("inspect"),step("edit",[],"replace_text")]));
+  const p=proposal("edit","replace_text");
+  const d=agent.evaluateProposal(s,p);
+  assert.equal(d.allowed,false);
+  assert.match(d.reason,/Coding dependency/);
+  const blocked=agent.recordProposalBlock(s,p,d);
+  const current=blocked.task_graph.steps.find(x=>x.step_id==="edit");
+  assert.equal(current.status,"blocked");
+  assert.match(current.blocked_reason,/read the exact target file/);
+  const restored=agent.normalizeAgentOrchestrationState(json(blocked));
+  const resumed=restored.task_graph.steps.find(x=>x.step_id==="edit");
+  assert.equal(resumed.status,"blocked");
+  assert.equal(resumed.blocked_reason,current.blocked_reason);
+});
+
+test("blocked checkpoint without a bounded reason fails closed", () => {
+  const s=initial();
+  s.task_graph.steps[1].status="blocked";
+  s.task_graph.steps[1].blocked_reason=null;
+  assert.equal(agent.normalizeAgentOrchestrationState(json(s)).recovery_mode,"stopped");
+});
