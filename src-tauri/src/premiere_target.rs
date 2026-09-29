@@ -53,6 +53,20 @@ pub struct PremiereClient<'a> {
 
 impl PremiereClient<'_> {
     pub async fn request(&self, action: &str, mut arguments: Value, timeout: Duration) -> Result<Value, String> {
+        if mutation_requires_expectation(action) {
+            let expected = self.expected.ok_or("Native Premiere mutation requires an inspected project expectation; inspect again before approval.")?;
+            expected.validate()?;
+            if expected.project_path.is_none() {
+                return Err("Native Premiere mutation requires the inspected saved project path.".into());
+            }
+            if !matches!(action, "save_project" | "create_bin" | "rename_project_item" | "move_project_item"
+                | "relink_media" | "prepare_media_item" | "attach_proxy" | "import_media"
+                | "set_source_inout" | "clear_source_inout" | "create_subclip" | "transcribe_item"
+                | "import_transcript" | "create_sequence_from_media" | "create_sequence_from_preset")
+                && expected.sequence_guid.is_none() {
+                return Err("Timeline mutation requires an inspected sequence GUID.".into());
+            }
+        }
         if let Some(expected) = self.expected {
             expected.validate()?;
             let context = self.bridge.request("inspect_context", json!({}), Duration::from_secs(8)).await?;
@@ -64,6 +78,21 @@ impl PremiereClient<'_> {
         }
         self.bridge.request(action, arguments, timeout).await
     }
+}
+
+/// Unknown actions are never implicitly read-only. Keep this list in sync with
+/// the native dispatch allowlist; capability presence is not host acceptance.
+pub fn mutation_requires_expectation(action: &str) -> bool {
+    !matches!(action, "inspect_context" | "inspect_timeline" | "list_root_items" | "project_tree"
+        | "inspect_media_interpretation" | "get_work_area" | "scene_detection_capabilities"
+        | "list_transcription_languages" | "export_transcript" | "plan_transcript_rebuild"
+        | "release_transcript_rebuild" | "inspect_assembly_items" | "timeline_capabilities"
+        | "plan_video_recipe" | "plan_audio_automation" | "inspect_mogrt_properties"
+        | "plan_mogrt_recipe" | "project_diagnostics" | "caption_tracks"
+        | "list_video_transitions" | "list_video_effects" | "inspect_clip_effects"
+        | "list_audio_effects" | "inspect_audio_clip_effects" | "list_markers"
+        | "inspect_export" | "inspect_keyframes" | "inspect_effect_lifecycle"
+        | "inspect_clip_speed" | "plan_clip_speed" | "set_playhead")
 }
 
 #[cfg(test)]

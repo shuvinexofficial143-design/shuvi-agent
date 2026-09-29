@@ -39,3 +39,24 @@ Completed edit sessions remain completed after a late cancel.
 
 Rust execution lifecycle tests are included. Node tests check all seven call-site
 bindings; these are structural checks, not a substitute for Rust or host race tests.
+
+## Mutations and stale targets
+
+The desktop native client now requires inspected project GUID/path for mutations
+and a sequence GUID for timeline edits. Legacy callers must supply `expected`;
+missing identity is rejected, without index-only compatibility fallback. Guarded
+clip mutations require signatures for every edited target, including both roll
+targets. An empty clip array cannot authorize one of these edits.
+
+Numeric video/audio component and parameter setters/keyframe additions require
+`expected_signature` copied from effect inspection's `targetSignature`. It binds
+clip identity and the complete ordered component/parameter names. Truncated or
+ambiguous chains cannot authorize numeric mutations. Marker removal likewise
+requires `expected_signature` from marker inspection; changed ticks/attributes,
+indistinguishable markers and oversized marker lists reject removal.
+
+Track mute, caption mute, marker creation, bin creation, transcription and media
+import now checkpoint before dispatch. Existing caption rename checkpoint was
+retained. Saved recipe, relink and proxy batches stop after any dispatch error,
+use existing family cancellation, and report processed/unattempted counts.
+Neither a rejected late response nor a retained checkpoint proves rollback.

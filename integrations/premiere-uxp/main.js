@@ -180,14 +180,22 @@ function commandClipTargets(command) {
 
 async function assertExpectedTargets(command) {
   const expected = command.arguments?._expected;
-  if (expected == null) return;
+  const clipMutation = new Set(["trim_clip", "roll_edit", "move_clip", "clone_clip", "clone_clip_to_track", "delete_clip",
+    "set_clip_enabled", "add_video_transition", "remove_video_transition", "add_video_effect", "add_audio_effect",
+    "set_effect_param", "add_effect_keyframe", "set_audio_effect_param", "add_audio_effect_keyframe",
+    "set_video_param_named", "add_video_keyframe_named", "set_audio_param_named", "add_audio_keyframe_named",
+    "apply_video_recipe", "apply_audio_recipe", "create_subsequence", "scene_edit_detection"]);
+  if (expected == null) {
+    if (clipMutation.has(command.action)) throw new Error("Clip mutation requires inspected project/sequence/clip expectations.");
+    return;
+  }
   const project = await requireProject();
   const sequence = await assertExpectedProject(project, expected);
   const clips = expected.clips || [];
   if (!Array.isArray(clips) || clips.length > 64 || (clips.length && !expected.sequence_guid)) {
     throw new Error("Invalid clip expectations.");
   }
-  if (clips.length) for (const target of commandClipTargets(command)) {
+  if (clips.length || clipMutation.has(command.action)) for (const target of commandClipTargets(command)) {
     if (!clips.some(clip => clip.kind === target.kind && clip.track === target.track && clip.clip_index === target.clipIndex)) {
       throw new Error("Clip expectations do not cover the command target.");
     }
@@ -1435,10 +1443,38 @@ async function listVideoEffects() {
   };
 }
 
+async function effectIndexSignature(target, kind, track, clipIndex) {
+  const chain = await target.item.getComponentChain();
+  const count = await chain.getComponentCount();
+  if (!Number.isInteger(count) || count < 0 || count > 128) throw new Error("Effect chain exceeds complete inspection bound.");
+  const identities = [];
+  for (let i = 0; i < count; i++) {
+    const component = await chain.getComponentAtIndex(i);
+    const params = await component.getParamCount();
+    if (!Number.isInteger(params) || params < 0 || params > 128) throw new Error("Effect parameter list exceeds complete inspection bound.");
+    const names = [];
+    for (let j = 0; j < params; j++) {
+      const name = (await component.getParam(j)).displayName;
+      if (typeof name !== "string" || !name || name.length > 240) throw new Error("Effect parameter identity unavailable.");
+      names.push(name);
+    }
+    if (new Set(names).size !== names.length) throw new Error("Ambiguous parameter identities; numeric mutation unsupported.");
+    identities.push([await component.getMatchName(), await component.getDisplayName(), names]);
+    const componentKey = JSON.stringify(identities[identities.length - 1].slice(0, 2));
+    if (identities.slice(0, -1).some(identity => JSON.stringify(identity.slice(0, 2)) === componentKey)) {
+      throw new Error("Ambiguous component identities; numeric mutation unsupported.");
+    }
+  }
+  const signature = boundedResultJson([await clipTargetSignature(target.project, target.sequence, target.item, kind, track, clipIndex), identities]);
+  if (signature.length > 16384) throw new Error("Effect identity exceeds bound.");
+  return signature;
+}
+
 async function inspectClipEffects(argumentsValue) {
   const trackIndex = Number(argumentsValue?.track ?? 0);
   const clipIndex = Number(argumentsValue?.clipIndex ?? 0);
-  const { item } = await getVideoClipTarget(trackIndex, clipIndex);
+  const target = await getVideoClipTarget(trackIndex, clipIndex);
+  const { item } = target;
   const chain = await item.getComponentChain();
   const componentCount = await chain.getComponentCount();
   const components = [];
@@ -1512,6 +1548,8 @@ async function inspectClipEffects(argumentsValue) {
     clipIndex,
     componentCount,
     components,
+    targetSignature: componentCount <= 128 && components.every(c => !c.paramsTruncated)
+      ? await effectIndexSignature(target, "video", trackIndex, clipIndex) : null,
     componentsTruncated: componentCount > 128
   };
 }
@@ -1555,7 +1593,7 @@ async function addVideoEffect(argumentsValue) {
   };
 }
 
-async function resolveEffectParam(trackIndex, clipIndex, componentIndex, paramIndex) {
+async function resolveEffectParam(trackIndex, clipIndex, componentIndex, paramIndex, expectedSignature) {
   if (!Number.isInteger(componentIndex) || componentIndex < 0) {
     throw new Error("Component index must be a non-negative integer.");
   }
@@ -1564,6 +1602,9 @@ async function resolveEffectParam(trackIndex, clipIndex, componentIndex, paramIn
   }
 
   const target = await getVideoClipTarget(trackIndex, clipIndex);
+  if (!expectedSignature || expectedSignature !== await effectIndexSignature(target, "video", trackIndex, clipIndex)) {
+    throw new Error("Effect chain or clip changed; inspect effects and supply the exact targetSignature.");
+  }
   const chain = await target.item.getComponentChain();
   const componentCount = await chain.getComponentCount();
   if (componentIndex >= componentCount) {
@@ -1587,12 +1628,7 @@ async function setEffectParam(argumentsValue) {
   const paramIndex = Number(argumentsValue?.paramIndex ?? 0);
   const value = argumentsValue?.value;
 
-  const { project, component, param } = await resolveEffectParam(
-    trackIndex,
-    clipIndex,
-    componentIndex,
-    paramIndex
-  );
+  const { project, component, param } = await resolveEffectParam(trackIndex, clipIndex, componentIndex, paramIndex, argumentsValue.expectedSignature);
 
   if (await param.isTimeVarying()) {
     throw new Error("This parameter is time-varying. Use the keyframe command instead.");
@@ -1636,12 +1672,7 @@ async function addEffectKeyframe(argumentsValue) {
     throw new Error("Keyframe seconds must be between 0 and 86400.");
   }
 
-  const { project, component, param } = await resolveEffectParam(
-    trackIndex,
-    clipIndex,
-    componentIndex,
-    paramIndex
-  );
+  const { project, component, param } = await resolveEffectParam(trackIndex, clipIndex, componentIndex, paramIndex, argumentsValue.expectedSignature);
 
   if (!(await param.areKeyframesSupported())) {
     throw new Error("This Premiere effect parameter does not support keyframes.");
@@ -1718,7 +1749,8 @@ async function listAudioEffects() {
 async function inspectAudioClipEffects(argumentsValue) {
   const trackIndex = Number(argumentsValue?.track ?? 0);
   const clipIndex = Number(argumentsValue?.clipIndex ?? 0);
-  const { item } = await getAudioClipTarget(trackIndex, clipIndex);
+  const target = await getAudioClipTarget(trackIndex, clipIndex);
+  const { item } = target;
   const chain = await item.getComponentChain();
   const componentCount = await chain.getComponentCount();
   const components = [];
@@ -1792,6 +1824,8 @@ async function inspectAudioClipEffects(argumentsValue) {
     clipIndex,
     componentCount,
     components,
+    targetSignature: componentCount <= 128 && components.every(c => !c.paramsTruncated)
+      ? await effectIndexSignature(target, "audio", trackIndex, clipIndex) : null,
     componentsTruncated: componentCount > 128
   };
 }
@@ -1838,7 +1872,7 @@ async function addAudioEffect(argumentsValue) {
   };
 }
 
-async function resolveAudioEffectParam(trackIndex, clipIndex, componentIndex, paramIndex) {
+async function resolveAudioEffectParam(trackIndex, clipIndex, componentIndex, paramIndex, expectedSignature) {
   if (!Number.isInteger(componentIndex) || componentIndex < 0) {
     throw new Error("Component index must be a non-negative integer.");
   }
@@ -1847,6 +1881,9 @@ async function resolveAudioEffectParam(trackIndex, clipIndex, componentIndex, pa
   }
 
   const target = await getAudioClipTarget(trackIndex, clipIndex);
+  if (!expectedSignature || expectedSignature !== await effectIndexSignature(target, "audio", trackIndex, clipIndex)) {
+    throw new Error("Effect chain or clip changed; inspect effects and supply the exact targetSignature.");
+  }
   const chain = await target.item.getComponentChain();
   const componentCount = await chain.getComponentCount();
   if (componentIndex >= componentCount) {
@@ -1870,12 +1907,7 @@ async function setAudioEffectParam(argumentsValue) {
   const paramIndex = Number(argumentsValue?.paramIndex ?? 0);
   const value = argumentsValue?.value;
 
-  const { project, component, param } = await resolveAudioEffectParam(
-    trackIndex,
-    clipIndex,
-    componentIndex,
-    paramIndex
-  );
+  const { project, component, param } = await resolveAudioEffectParam(trackIndex, clipIndex, componentIndex, paramIndex, argumentsValue.expectedSignature);
 
   if (await param.isTimeVarying()) {
     throw new Error("This audio parameter is time-varying. Use the audio keyframe command instead.");
@@ -1919,12 +1951,7 @@ async function addAudioEffectKeyframe(argumentsValue) {
     throw new Error("Audio keyframe seconds must be between 0 and 86400.");
   }
 
-  const { project, component, param } = await resolveAudioEffectParam(
-    trackIndex,
-    clipIndex,
-    componentIndex,
-    paramIndex
-  );
+  const { project, component, param } = await resolveAudioEffectParam(trackIndex, clipIndex, componentIndex, paramIndex, argumentsValue.expectedSignature);
 
   if (!(await param.areKeyframesSupported())) {
     throw new Error("This Premiere audio parameter does not support keyframes.");
@@ -2295,12 +2322,22 @@ async function sceneEditDetection(argumentsValue) {
   };
 }
 
+async function markerSignature(project, sequence, marker) {
+  const [name, type, start, duration, comments, color] = await Promise.all([
+    marker.getName(), marker.getType(), marker.getStart(), marker.getDuration(), marker.getComments(), marker.getColorIndex()
+  ]);
+  if (typeof start?.ticks !== "string" || typeof duration?.ticks !== "string") throw new Error("Exact marker ticks unavailable.");
+  const signature = boundedResultJson([plainGuid(project.guid), project.path || null, plainGuid(sequence.guid), name, type, start.ticks, duration.ticks, comments, color]);
+  if (signature.length > 16384) throw new Error("Marker signature exceeds bound.");
+  return signature;
+}
+
 async function listMarkers() {
-  const { markers } = await getSequenceMarkers();
+  const { project, sequence, markers } = await getSequenceMarkers();
   const values = await markers.getMarkers([]);
   const rows = [];
 
-  for (const marker of values) {
+  for (const marker of values.slice(0, 1000)) {
     const [name, type, start, duration, comments, colorIndex] = await Promise.all([
       marker.getName(),
       marker.getType(),
@@ -2312,6 +2349,7 @@ async function listMarkers() {
 
     rows.push({
       marker,
+      targetSignature: values.length <= 1000 ? await markerSignature(project, sequence, marker) : null,
       name: name || null,
       type: type || null,
       startSeconds: start?.seconds ?? 0,
@@ -2324,9 +2362,10 @@ async function listMarkers() {
   rows.sort((a, b) => a.startSeconds - b.startSeconds);
 
   return {
-    count: rows.length,
+    count: values.length,
     markers: rows.slice(0, 1000).map((entry, markerIndex) => ({
       markerIndex,
+      targetSignature: entry.targetSignature,
       name: entry.name,
       type: entry.type,
       startSeconds: entry.startSeconds,
@@ -2334,7 +2373,7 @@ async function listMarkers() {
       comments: entry.comments,
       colorIndex: entry.colorIndex
     })),
-    truncated: rows.length > 1000
+    truncated: values.length > 1000
   };
 }
 
@@ -2403,14 +2442,16 @@ async function removeMarker(argumentsValue) {
     throw new Error("markerIndex must be a non-negative integer.");
   }
 
-  const { project, markers } = await getSequenceMarkers();
+  const { project, sequence, markers } = await getSequenceMarkers();
   const values = await markers.getMarkers([]);
+  if (values.length > 1000) throw new Error("Marker list exceeds complete inspection bound.");
   const timed = [];
 
   for (const marker of values) {
     const start = await marker.getStart();
     timed.push({
       marker,
+      signature: await markerSignature(project, sequence, marker),
       startSeconds: start?.seconds ?? Number.POSITIVE_INFINITY
     });
   }
@@ -2421,6 +2462,11 @@ async function removeMarker(argumentsValue) {
     throw new Error("Requested marker index was not found.");
   }
 
+  const signature = timed[markerIndex].signature;
+  if (!argumentsValue.expectedSignature || argumentsValue.expectedSignature !== signature
+      || timed.filter(row => row.signature === signature).length !== 1) {
+    throw new Error("Marker changed or is ambiguous; inspect markers and supply the exact targetSignature.");
+  }
   let transactionSucceeded = false;
   project.lockedAccess(() => {
     const action = markers.createRemoveMarkerAction(target);

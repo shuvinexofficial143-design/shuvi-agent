@@ -509,17 +509,17 @@ enum ToolAction {
     PremiereListVideoEffects,
     PremiereInspectClipEffects { track: u32, clip_index: u32 },
     PremiereAddVideoEffect { track: u32, clip_index: u32, match_name: String },
-    PremiereSetEffectParam { track: u32, clip_index: u32, component_index: u32, param_index: u32, value: Value },
+    PremiereSetEffectParam { expected_signature: String, track: u32, clip_index: u32, component_index: u32, param_index: u32, value: Value },
     PremiereSetVideoParamNamed { track: u32, clip_index: u32, component_match_name: Option<String>, component_display_name: Option<String>, param_display_name: String, value: Value },
-    PremiereAddEffectKeyframe { track: u32, clip_index: u32, component_index: u32, param_index: u32, seconds: f64, value: Value },
+    PremiereAddEffectKeyframe { expected_signature: String, track: u32, clip_index: u32, component_index: u32, param_index: u32, seconds: f64, value: Value },
     PremiereAddVideoKeyframeNamed { track: u32, clip_index: u32, component_match_name: Option<String>, component_display_name: Option<String>, param_display_name: String, seconds: f64, value: Value },
     PremiereApplyVideoRecipe { track: u32, clip_index: u32, settings: Vec<Value> },
     PremiereListAudioEffects,
     PremiereInspectAudioClipEffects { track: u32, clip_index: u32 },
     PremiereAddAudioEffect { track: u32, clip_index: u32, display_name: String },
-    PremiereSetAudioEffectParam { track: u32, clip_index: u32, component_index: u32, param_index: u32, value: Value },
+    PremiereSetAudioEffectParam { expected_signature: String, track: u32, clip_index: u32, component_index: u32, param_index: u32, value: Value },
     PremiereSetAudioParamNamed { track: u32, clip_index: u32, component_match_name: Option<String>, component_display_name: Option<String>, param_display_name: String, value: Value },
-    PremiereAddAudioEffectKeyframe { track: u32, clip_index: u32, component_index: u32, param_index: u32, seconds: f64, value: Value },
+    PremiereAddAudioEffectKeyframe { expected_signature: String, track: u32, clip_index: u32, component_index: u32, param_index: u32, seconds: f64, value: Value },
     PremiereAddAudioKeyframeNamed { track: u32, clip_index: u32, component_match_name: Option<String>, component_display_name: Option<String>, param_display_name: String, seconds: f64, value: Value },
     PremiereApplyAudioRecipe { track: u32, clip_index: u32, settings: Vec<Value> },
     PremiereListSavedRecipes,
@@ -529,7 +529,7 @@ enum ToolAction {
     PremiereDeleteRecipe { name: String },
     PremiereListMarkers,
     PremiereAddMarker { name: String, marker_type: String, seconds: f64, duration_seconds: f64, comments: String },
-    PremiereRemoveMarker { marker_index: u32 },
+    PremiereRemoveMarker { marker_index: u32, expected_signature: String },
     PremiereListItems,
     PremiereProjectTree,
     PremiereCreateBin { name: String },
@@ -1680,6 +1680,12 @@ fn classify_powershell(command: &str) -> RiskLevel {
     } else {
         RiskLevel::Low
     }
+}
+
+fn arg_premiere_signature(arguments: &Value) -> Result<String, String> {
+    let signature = arg_string(arguments, "expected_signature")?;
+    if signature.len() > 16384 { return Err("Premiere inspected signature exceeds 16 KiB.".into()); }
+    Ok(signature)
 }
 
 fn arg_string(arguments: &Value, name: &str) -> Result<String, String> {
@@ -3517,6 +3523,7 @@ fn stage_tool(
             }
             (
                 ToolAction::PremiereSetEffectParam {
+                    expected_signature: arg_premiere_signature(&proposal.arguments)?,
                     track: track as u32,
                     clip_index: clip_index as u32,
                     component_index: component_index as u32,
@@ -3557,6 +3564,7 @@ fn stage_tool(
             }
             (
                 ToolAction::PremiereAddEffectKeyframe {
+                    expected_signature: arg_premiere_signature(&proposal.arguments)?,
                     track: track as u32,
                     clip_index: clip_index as u32,
                     component_index: component_index as u32,
@@ -3800,6 +3808,7 @@ fn stage_tool(
             }
             (
                 ToolAction::PremiereSetAudioEffectParam {
+                    expected_signature: arg_premiere_signature(&proposal.arguments)?,
                     track: track as u32,
                     clip_index: clip_index as u32,
                     component_index: component_index as u32,
@@ -3840,6 +3849,7 @@ fn stage_tool(
             }
             (
                 ToolAction::PremiereAddAudioEffectKeyframe {
+                    expected_signature: arg_premiere_signature(&proposal.arguments)?,
                     track: track as u32,
                     clip_index: clip_index as u32,
                     component_index: component_index as u32,
@@ -4187,7 +4197,7 @@ fn stage_tool(
             }
 
             (
-                ToolAction::PremiereRemoveMarker { marker_index: marker_index as u32 },
+                ToolAction::PremiereRemoveMarker { marker_index: marker_index as u32, expected_signature: arg_premiere_signature(&proposal.arguments)? },
                 "Remove Premiere sequence marker".to_string(),
                 format!("Remove active-sequence marker #{marker_index}."),
                 RiskLevel::High,
@@ -9036,6 +9046,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereSetCaptionTrackMute { track, muted } => {
+            let checkpoint = backup_premiere_project(&premiere_bridge).await?;
             let value = premiere_bridge.request(
                 "set_caption_track_mute",
                 json!({ "track": track, "muted": muted }),
@@ -9045,7 +9056,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             Ok(ActionResult {
                 success: true,
                 tool,
-                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stdout: serde_json::to_string_pretty(&json!({"checkpoint":checkpoint,"result":value})).unwrap_or_else(|_| value.to_string()),
                 stderr: String::new(),
                 exit_code: Some(0),
             })
@@ -9567,6 +9578,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             Ok(ActionResult {success:true,tool,stdout:json!({"result":result,"review":session.reviews.last(),"proposals":proposals,"note":"Use inspected typed tools through normal approval and checkpoint; vision never executes edits."}).to_string(),stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::PremiereSetTrackMute { kind, track, muted } => {
+            let checkpoint = backup_premiere_project(&premiere_bridge).await?;
             let value = premiere_bridge.request(
                 "set_track_mute",
                 json!({ "kind": kind, "track": track, "muted": muted }),
@@ -9575,7 +9587,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             Ok(ActionResult {
                 success: true,
                 tool,
-                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stdout: serde_json::to_string_pretty(&json!({"checkpoint":checkpoint,"result":value})).unwrap_or_else(|_| value.to_string()),
                 stderr: String::new(),
                 exit_code: Some(0),
             })
@@ -9698,7 +9710,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 exit_code: Some(0),
             })
         }
-        ToolAction::PremiereSetEffectParam { track, clip_index, component_index, param_index, value } => {
+        ToolAction::PremiereSetEffectParam { expected_signature, track, clip_index, component_index, param_index, value } => {
             let backup = backup_premiere_project(&premiere_bridge).await?;
             let result = premiere_bridge.request(
                 "set_effect_param",
@@ -9706,6 +9718,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "track": track,
                     "clipIndex": clip_index,
                     "componentIndex": component_index,
+                        "expectedSignature": expected_signature,
                     "paramIndex": param_index,
                     "value": value
                 }),
@@ -9722,7 +9735,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 exit_code: Some(0),
             })
         }
-        ToolAction::PremiereAddEffectKeyframe { track, clip_index, component_index, param_index, seconds, value } => {
+        ToolAction::PremiereAddEffectKeyframe { expected_signature, track, clip_index, component_index, param_index, seconds, value } => {
             let backup = backup_premiere_project(&premiere_bridge).await?;
             let result = premiere_bridge.request(
                 "add_effect_keyframe",
@@ -9730,6 +9743,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "track": track,
                     "clipIndex": clip_index,
                     "componentIndex": component_index,
+                        "expectedSignature": expected_signature,
                     "paramIndex": param_index,
                     "seconds": seconds,
                     "value": value
@@ -9868,7 +9882,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 exit_code: Some(0),
             })
         }
-        ToolAction::PremiereSetAudioEffectParam { track, clip_index, component_index, param_index, value } => {
+        ToolAction::PremiereSetAudioEffectParam { expected_signature, track, clip_index, component_index, param_index, value } => {
             let backup = backup_premiere_project(&premiere_bridge).await?;
             let result = premiere_bridge.request(
                 "set_audio_effect_param",
@@ -9876,6 +9890,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "track": track,
                     "clipIndex": clip_index,
                     "componentIndex": component_index,
+                        "expectedSignature": expected_signature,
                     "paramIndex": param_index,
                     "value": value
                 }),
@@ -9892,7 +9907,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 exit_code: Some(0),
             })
         }
-        ToolAction::PremiereAddAudioEffectKeyframe { track, clip_index, component_index, param_index, seconds, value } => {
+        ToolAction::PremiereAddAudioEffectKeyframe { expected_signature, track, clip_index, component_index, param_index, seconds, value } => {
             let backup = backup_premiere_project(&premiere_bridge).await?;
             let result = premiere_bridge.request(
                 "add_audio_effect_keyframe",
@@ -9900,6 +9915,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "track": track,
                     "clipIndex": clip_index,
                     "componentIndex": component_index,
+                        "expectedSignature": expected_signature,
                     "paramIndex": param_index,
                     "seconds": seconds,
                     "value": value
@@ -10061,6 +10077,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereApplySavedRecipeBatch { name, targets } => {
+            let _guard = state.finishing_running.begin(&state.finishing_cancelled)?;
             let recipes = read_premiere_recipes(app)?;
             let recipe = recipes
                 .into_iter()
@@ -10082,6 +10099,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let mut failures = 0_usize;
 
             for target in targets {
+                if state.finishing_cancelled.load(Ordering::Acquire) { break; }
                 let track = target.get("track").and_then(Value::as_u64).unwrap_or(0);
                 let clip_index = target.get("clipIndex").and_then(Value::as_u64).unwrap_or(0);
                 match premiere_bridge.request(
@@ -10107,28 +10125,32 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                             "success": false,
                             "error": error
                         }));
+                        break;
                     }
                 }
             }
 
             Ok(ActionResult {
-                success: failures == 0,
+                success: failures == 0 && results.len() == total,
                 tool,
                 stdout: serde_json::to_string_pretty(&json!({
                     "recipe": recipe.name,
                     "kind": recipe.kind,
                     "backup": backup,
                     "total": total,
-                    "succeeded": total.saturating_sub(failures),
+                    "succeeded": results.len().saturating_sub(failures),
+                    "processed": results.len(),
+                    "unattempted": total.saturating_sub(results.len()),
+                    "uncertain": failures > 0,
                     "failed": failures,
                     "targets": results
                 })).unwrap_or_default(),
-                stderr: if failures == 0 {
+                stderr: if failures == 0 && results.len() == total {
                     String::new()
                 } else {
                     format!("{failures} of {total} Premiere recipe applications failed; successful earlier targets were not rolled back.")
                 },
-                exit_code: Some(if failures == 0 { 0 } else { 1 }),
+                exit_code: Some(if failures == 0 && results.len() == total { 0 } else { 1 }),
             })
         }
         ToolAction::PremiereDeleteRecipe { name } => {
@@ -10165,6 +10187,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereAddMarker { name, marker_type, seconds, duration_seconds, comments } => {
+            let checkpoint = backup_premiere_project(&premiere_bridge).await?;
             let value = premiere_bridge.request(
                 "add_marker",
                 json!({
@@ -10179,16 +10202,16 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             Ok(ActionResult {
                 success: true,
                 tool,
-                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stdout: serde_json::to_string_pretty(&json!({"checkpoint":checkpoint,"result":value})).unwrap_or_else(|_| value.to_string()),
                 stderr: String::new(),
                 exit_code: Some(0),
             })
         }
-        ToolAction::PremiereRemoveMarker { marker_index } => {
+        ToolAction::PremiereRemoveMarker { marker_index, expected_signature } => {
             let backup = backup_premiere_project(&premiere_bridge).await?;
             let value = premiere_bridge.request(
                 "remove_marker",
-                json!({ "markerIndex": marker_index }),
+                json!({ "markerIndex": marker_index, "expectedSignature": expected_signature }),
                 Duration::from_secs(20),
             ).await?;
             Ok(ActionResult {
@@ -10231,6 +10254,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereCreateBin { name } => {
+            let checkpoint = backup_premiere_project(&premiere_bridge).await?;
             let value = premiere_bridge
                 .request(
                     "create_bin",
@@ -10242,7 +10266,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             Ok(ActionResult {
                 success: true,
                 tool,
-                stdout: serde_json::to_string_pretty(&value)
+                stdout: serde_json::to_string_pretty(&json!({"checkpoint":checkpoint,"result":value}))
                     .unwrap_or_else(|_| value.to_string()),
                 stderr: String::new(),
                 exit_code: Some(0),
@@ -10495,6 +10519,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereTranscribeItem { item_id, language } => {
+            let checkpoint = backup_premiere_project(&premiere_bridge).await?;
             let value = premiere_bridge.request(
                 "transcribe_item",
                 json!({
@@ -10507,7 +10532,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             Ok(ActionResult {
                 success: true,
                 tool,
-                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stdout: serde_json::to_string_pretty(&json!({"checkpoint":checkpoint,"result":value})).unwrap_or_else(|_| value.to_string()),
                 stderr: String::new(),
                 exit_code: Some(0),
             })
@@ -10642,12 +10667,14 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereBatchRelink { items } => {
+            let _guard = state.media_prep_running.begin(&state.media_prep_cancelled)?;
             let backup = backup_premiere_project(&premiere_bridge).await?;
             let total = items.len();
             let mut results = Vec::with_capacity(total);
             let mut failures = 0_usize;
 
             for item in items {
+                if state.media_prep_cancelled.load(Ordering::Acquire) { break; }
                 let item_id = item.get("itemId").and_then(Value::as_str).unwrap_or_default().to_string();
                 match premiere_bridge.request(
                     "relink_media",
@@ -10666,35 +10693,41 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                             "success": false,
                             "error": error
                         }));
+                        break;
                     }
                 }
             }
 
             Ok(ActionResult {
-                success: failures == 0,
+                success: failures == 0 && results.len() == total,
                 tool,
                 stdout: serde_json::to_string_pretty(&json!({
                     "backup": backup,
                     "total": total,
-                    "succeeded": total.saturating_sub(failures),
+                    "succeeded": results.len().saturating_sub(failures),
+                    "processed": results.len(),
+                    "unattempted": total.saturating_sub(results.len()),
+                    "uncertain": failures > 0,
                     "failed": failures,
                     "items": results
                 })).unwrap_or_default(),
-                stderr: if failures == 0 {
+                stderr: if failures == 0 && results.len() == total {
                     String::new()
                 } else {
                     format!("{failures} of {total} Premiere relink operations failed; successful earlier items were not rolled back.")
                 },
-                exit_code: Some(if failures == 0 { 0 } else { 1 }),
+                exit_code: Some(if failures == 0 && results.len() == total { 0 } else { 1 }),
             })
         }
         ToolAction::PremiereBatchAttachProxy { items } => {
+            let _guard = state.media_prep_running.begin(&state.media_prep_cancelled)?;
             let backup = backup_premiere_project(&premiere_bridge).await?;
             let total = items.len();
             let mut results = Vec::with_capacity(total);
             let mut failures = 0_usize;
 
             for item in items {
+                if state.media_prep_cancelled.load(Ordering::Acquire) { break; }
                 let item_id = item.get("itemId").and_then(Value::as_str).unwrap_or_default().to_string();
                 match premiere_bridge.request(
                     "attach_proxy",
@@ -10713,29 +10746,34 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                             "success": false,
                             "error": error
                         }));
+                        break;
                     }
                 }
             }
 
             Ok(ActionResult {
-                success: failures == 0,
+                success: failures == 0 && results.len() == total,
                 tool,
                 stdout: serde_json::to_string_pretty(&json!({
                     "backup": backup,
                     "total": total,
-                    "succeeded": total.saturating_sub(failures),
+                    "succeeded": results.len().saturating_sub(failures),
+                    "processed": results.len(),
+                    "unattempted": total.saturating_sub(results.len()),
+                    "uncertain": failures > 0,
                     "failed": failures,
                     "items": results
                 })).unwrap_or_default(),
-                stderr: if failures == 0 {
+                stderr: if failures == 0 && results.len() == total {
                     String::new()
                 } else {
                     format!("{failures} of {total} Premiere proxy operations failed; successful earlier items were not rolled back.")
                 },
-                exit_code: Some(if failures == 0 { 0 } else { 1 }),
+                exit_code: Some(if failures == 0 && results.len() == total { 0 } else { 1 }),
             })
         }
         ToolAction::PremiereImportMedia { paths } => {
+            let checkpoint = backup_premiere_project(&premiere_bridge).await?;
             let value = premiere_bridge
                 .request(
                     "import_media",
@@ -10747,7 +10785,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             Ok(ActionResult {
                 success: true,
                 tool,
-                stdout: serde_json::to_string_pretty(&value)
+                stdout: serde_json::to_string_pretty(&json!({"checkpoint":checkpoint,"result":value}))
                     .unwrap_or_else(|_| value.to_string()),
                 stderr: String::new(),
                 exit_code: Some(0),

@@ -123,7 +123,7 @@ test("unreadable or oversized keyframe values are explicitly unavailable", async
 
 for (const [position, native] of [["start", 0], ["end", 1]]) test(`transition removal targets only ${position}`, async () => {
   const f = fixture();
-  const result = await f.panel.executeCommand({ action: "remove_video_transition", arguments: { track: 0, clipIndex: 0, position } });
+  const result = await f.panel.executeCommand({ action: "remove_video_transition", arguments: { track: 0, clipIndex: 0, position, _expected: await expectedTarget(f) } });
   assert.equal(result.transactionSucceeded, true);
   assert.equal(f.actions.length, 1);
   assert.equal(f.actions[0].transitionPosition, native);
@@ -146,7 +146,7 @@ async function expectedTarget(f) {
     signature: await f.panel.clipTargetSignature(f.project, sequence, f.item, "video", 0, 0)}]};
 }
 
-test("matching optional expectations permit a native edit", async () => {
+test("matching inspected expectations permit a native edit", async () => {
   const f = fixture();
   await f.panel.executeCommand({action: "remove_video_transition", arguments: {track: 0, clipIndex: 0, position: "start", _expected: await expectedTarget(f)}});
   assert.equal(f.actions.length, 1);
@@ -163,8 +163,27 @@ for (const change of ["project", "sequence", "path", "clip"]) test(change + " ch
   await assert.rejects(f.panel.executeCommand(command), /changed/);
   assert.equal(f.actions.length, 0);
   delete command.arguments._expected;
+  await assert.rejects(f.panel.executeCommand(command), /requires inspected/);
+  command.arguments._expected = await expectedTarget(f);
   await f.panel.executeCommand(command);
   assert.equal(f.actions.length, 1);
+});
+
+test("empty clip evidence cannot authorize a clip mutation", async () => {
+  const f = fixture(); const expected = await expectedTarget(f); expected.clips = [];
+  await assert.rejects(f.panel.executeCommand({action:"remove_video_transition", arguments:{track:0,clipIndex:0,position:"start",_expected:expected}}), /cover/);
+  assert.equal(f.actions.length, 0);
+});
+
+for (const kind of ['video','audio']) test(`${kind}: numeric effect indexes reject missing or changed chain evidence`, async () => {
+  const f=fixture(kind); const sequence=await f.project.getActiveSequence();
+  const signature=await f.panel.effectIndexSignature({project:f.project,sequence,item:f.item},kind,0,0);
+  const resolve=kind==='video' ? f.panel.resolveEffectParam : f.panel.resolveAudioEffectParam;
+  await assert.rejects(resolve(0,0,0,0), /inspect effects/);
+  await resolve(0,0,0,0,signature);
+  f.param.displayName='Changed';
+  await assert.rejects(resolve(0,0,0,0,signature), /chain or clip changed/);
+  assert.equal(f.actions.length,0);
 });
 
 test("clip expectations must cover the edited target and both roll targets", async () => {
