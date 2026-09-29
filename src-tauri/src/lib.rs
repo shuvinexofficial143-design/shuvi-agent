@@ -914,6 +914,30 @@ fn ensure_provider_response_size(
     Ok(())
 }
 
+async fn bounded_provider_json(
+    mut response: reqwest::Response,
+    label: &str,
+) -> Result<(reqwest::StatusCode, Value), String> {
+    ensure_provider_response_size(&response, label)?;
+    let status = response.status();
+    let mut body = Vec::new();
+
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("{label} response body failed while streaming: {error}"))?
+    {
+        if body.len().saturating_add(chunk.len()) > MAX_PROVIDER_RESPONSE_BYTES as usize {
+            return Err(format!("{label} response exceeds Shuvi's 8 MB streamed-body safety limit."));
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    let value = serde_json::from_slice::<Value>(&body)
+        .map_err(|error| format!("Invalid {label} JSON response: {error}"))?;
+    Ok((status, value))
+}
+
 fn collect_provider_text<'a>(
     parts: impl Iterator<Item = &'a str>,
     label: &str,
@@ -1297,12 +1321,7 @@ async fn openai_compatible_chat(
 
     let response = send_with_retry(request, "Provider request").await?;
 
-    let status = response.status();
-    ensure_provider_response_size(&response, "Provider")?;
-    let body: Value = response
-        .json()
-        .await
-        .map_err(|error| format!("Invalid provider response: {error}"))?;
+    let (status, body) = bounded_provider_json(response, "Provider").await?;
 
     if !status.is_success() {
         return Err(format!("Provider returned {status}: {}", compact_error(&body)));
@@ -1356,12 +1375,7 @@ async fn gemini_chat(input: ChatInput, api_key: Option<String>) -> Result<ChatRe
 
     let response = send_with_retry(request, "Gemini request").await?;
 
-    let status = response.status();
-    ensure_provider_response_size(&response, "Gemini")?;
-    let body: Value = response
-        .json()
-        .await
-        .map_err(|error| format!("Invalid Gemini response: {error}"))?;
+    let (status, body) = bounded_provider_json(response, "Gemini").await?;
 
     if !status.is_success() {
         return Err(format!("Gemini returned {status}: {}", compact_error(&body)));
@@ -1428,12 +1442,7 @@ async fn anthropic_chat(
 
     let response = send_with_retry(request, "Anthropic request").await?;
 
-    let status = response.status();
-    ensure_provider_response_size(&response, "Anthropic")?;
-    let body: Value = response
-        .json()
-        .await
-        .map_err(|error| format!("Invalid Anthropic response: {error}"))?;
+    let (status, body) = bounded_provider_json(response, "Anthropic").await?;
 
     if !status.is_success() {
         return Err(format!("Anthropic returned {status}: {}", compact_error(&body)));
@@ -5798,12 +5807,7 @@ async fn analyze_png_with_provider(
                 .await
                 .map_err(|error| format!("Gemini vision request failed: {error}"))?;
 
-            let status = response.status();
-            ensure_provider_response_size(&response, "Gemini vision")?;
-            let body: Value = response
-                .json()
-                .await
-                .map_err(|error| format!("Invalid Gemini vision response: {error}"))?;
+            let (status, body) = bounded_provider_json(response, "Gemini vision").await?;
 
             if !status.is_success() {
                 return Err(format!("Gemini vision returned {status}: {}", compact_error(&body)));
@@ -5856,12 +5860,7 @@ async fn analyze_png_with_provider(
                 .await
                 .map_err(|error| format!("Anthropic vision request failed: {error}"))?;
 
-            let status = response.status();
-            ensure_provider_response_size(&response, "Anthropic vision")?;
-            let body: Value = response
-                .json()
-                .await
-                .map_err(|error| format!("Invalid Anthropic vision response: {error}"))?;
+            let (status, body) = bounded_provider_json(response, "Anthropic vision").await?;
 
             if !status.is_success() {
                 return Err(format!("Anthropic vision returned {status}: {}", compact_error(&body)));
@@ -5935,12 +5934,7 @@ async fn analyze_png_with_provider(
                 .await
                 .map_err(|error| format!("Vision request failed: {error}"))?;
 
-            let status = response.status();
-            ensure_provider_response_size(&response, "Vision provider")?;
-            let body: Value = response
-                .json()
-                .await
-                .map_err(|error| format!("Invalid vision response: {error}"))?;
+            let (status, body) = bounded_provider_json(response, "Vision provider").await?;
 
             if !status.is_success() {
                 return Err(format!("Vision provider returned {status}: {}", compact_error(&body)));
