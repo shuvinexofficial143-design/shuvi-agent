@@ -11301,3 +11301,42 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running Shuvi");
 }
+
+#[cfg(test)]
+mod task_graph_transport_tests {
+    use super::*;
+
+    #[test]
+    fn graph_metadata_survives_provider_parsing_without_granting_tool_access() {
+        let graph = json!({"objective":"Inspect","revision":1,"steps":[]});
+        let text = json!({"tool":"read_file","arguments":{"path":"C:/a.txt"},
+            "task_graph":graph,"task_step_id":"inspect"}).to_string();
+        let proposal = parse_tool_proposal(&text).expect("known typed tool");
+        assert_eq!(proposal.task_graph, Some(graph.clone()));
+        assert_eq!(proposal.task_step_id, Some(json!("inspect")));
+        let unknown = json!({"tool":"arbitrary_graph_runner","arguments":{},
+            "task_graph":graph}).to_string();
+        assert!(parse_tool_proposal(&unknown).is_none());
+    }
+
+    #[test]
+    fn oversized_graph_and_invalid_association_keep_fail_closed_markers() {
+        let text = json!({"tool":"read_file","arguments":{"path":"C:/a.txt"},
+            "task_graph":{"objective":"x".repeat(24_001)},
+            "task_step_id":["not","an","id"],"task_recovery":"yes"}).to_string();
+        let proposal = parse_tool_proposal(&text).expect("metadata routed for local refusal");
+        assert_eq!(proposal.task_graph, Some(json!(false)));
+        assert_eq!(proposal.task_step_id, Some(json!(false)));
+        assert_eq!(proposal.task_recovery, Some(json!("invalid")));
+    }
+
+    #[test]
+    fn discarded_legacy_description_does_not_erase_graph_restrictions() {
+        let text = json!({"tool":"read_file","arguments":{"path":"C:/a.txt"},
+            "plan":{"objective":"x".repeat(501),"step":"read","success_criteria":"read succeeds"},
+            "task_graph":{"objective":"stable goal","revision":1,"steps":[]}}).to_string();
+        let proposal = parse_tool_proposal(&text).expect("known typed tool");
+        assert!(proposal.plan.is_none());
+        assert!(proposal.task_graph.is_some());
+    }
+}
