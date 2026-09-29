@@ -502,3 +502,14 @@ test("recovery revision stages and completes through the full coordinator flow",
   assert.equal(s.task_graph.steps[0].evidence[0].success,false);
   assert.equal(s.task_graph.steps[0].evidence[1].success,true);
 });
+
+
+test("task graph declarations expose prepared-action and audit-bound evidence", () => {
+  const declarations=readFileSync(new URL("../src/task-graph.d.mts",import.meta.url),"utf8");
+  assert.match(declarations,/export function bindTaskStepAction\(/);
+  assert.match(declarations,/action_id: string \| null/);
+  assert.match(declarations,/audit_event: "executed" \| "failed" \| "denied" \| null/);
+  assert.match(declarations,/running: \{ fingerprint: string; orchestration_step: number; action_id: string \| null \}/);
+  assert.match(declarations,/preparedActionId\?: string \| null/);
+  assert.match(declarations,/auditReceipt\?: TaskAuditReceipt \| null/);
+});
