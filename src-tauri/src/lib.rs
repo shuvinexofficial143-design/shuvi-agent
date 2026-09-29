@@ -12095,8 +12095,10 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             }
 
             require_expected_git_head(&path, &expected_head, "git_commit after staging")?;
+            require_expected_git_worktree(&path, &expected_worktree_fingerprint, "git_commit after staging")?;
             let remote_receipt = git_remote_freshness(&path, false)?;
             require_expected_git_head(&path, &expected_head, "git_commit after final remote freshness check")?;
+            require_expected_git_worktree(&path, &expected_worktree_fingerprint, "git_commit after final remote freshness check")?;
             let output = run_git(&path, &["commit", "-m", &message])?;
             let body = format!(
                 "Remote freshness: {remote_receipt}\n{}",
