@@ -53,13 +53,14 @@ test("coding phases progress from edit through review commit and push",()=>{
   assert.match(orchestrator,/last_push_step > coding\.last_commit_step[\s\S]*return "complete"/);
 });
 
-test("coding dependency state persists across orchestration v4 and legacy non-graph states",()=>{
+test("coding dependency state persists across orchestration v5 and legacy non-graph states",()=>{
   assert.match(types,/export type CodingWorkflowCheckpoint/);
-  assert.match(types,/version: 1 \| 2 \| 3 \| 4/);
-  assert.match(orchestrator,/input\.version !== 1 && input\.version !== 2 && input\.version !== 3 && input\.version !== 4/);
-  assert.match(orchestrator,/input\.version === 2 \|\| input\.version === 3 \|\| input\.version === 4/);
+  assert.match(types,/version: 1 \| 2 \| 3 \| 4 \| 5/);
+  assert.match(orchestrator,/input\.version !== 1 && input\.version !== 2 && input\.version !== 3 && input\.version !== 4 && input\.version !== 5/);
+  assert.match(orchestrator,/input\.version === 2 \|\| input\.version === 3 \|\| input\.version === 4 \|\| input\.version === 5/);
   assert.match(orchestrator,/createCodingWorkflowState\(\)/);
   assert.match(orchestrator,/legacyUnboundGraph = input\.version === 3 && input\.task_graph != null/);
+  assert.match(orchestrator,/legacyUnauditedGraph = input\.version === 4 && input\.task_graph != null/);
 });
 
 test("UI exposes the current bounded coding phase without bypassing permissions",()=>{
