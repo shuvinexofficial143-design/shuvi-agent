@@ -12272,15 +12272,29 @@ async fn execute_action(
 ) -> Result<ActionResult, String> {
     ensure_memory_budget(state.inner())?;
 
-    let expired_action = {
+    let (action, expired_action) = {
         let mut pending = state
             .pending
             .lock()
             .map_err(|_| "Permission state is unavailable.".to_string())?;
-        let expired = pending
+        let prepared = pending
             .get(&action_id)
-            .is_some_and(|action| now_ms().saturating_sub(action.created_at_ms) > PENDING_ACTION_TTL_MS);
-        if expired { pending.remove(&action_id) } else { None }
+            .ok_or_else(|| "Action expired, was denied, or does not exist.".to_string())?;
+
+        if now_ms().saturating_sub(prepared.created_at_ms) > PENDING_ACTION_TTL_MS {
+            (None, pending.remove(&action_id))
+        } else {
+            let active_tool = prepared.tool.clone();
+            state
+                .running_action_tools
+                .lock()
+                .map_err(|_| "Running-action state is unavailable.".to_string())?
+                .insert(action_id.clone(), active_tool);
+            let action = pending
+                .remove(&action_id)
+                .ok_or_else(|| "Action disappeared before execution could start.".to_string())?;
+            (Some(action), None)
+        }
     };
     if let Some(action) = expired_action {
         let safe_detail = audit_safe_action_detail(&action.tool, &action.detail);
@@ -12297,24 +12311,7 @@ async fn execute_action(
         )?;
         return Err("Prepared action expired before execution and must be prepared again.".into());
     }
-    let action = {
-        let mut pending = state
-            .pending
-            .lock()
-            .map_err(|_| "Permission state is unavailable.".to_string())?;
-        let active_tool = pending
-            .get(&action_id)
-            .map(|action| action.tool.clone())
-            .ok_or_else(|| "Action expired, was denied, or does not exist.".to_string())?;
-        state
-            .running_action_tools
-            .lock()
-            .map_err(|_| "Running-action state is unavailable.".to_string())?
-            .insert(action_id.clone(), active_tool);
-        pending
-            .remove(&action_id)
-            .ok_or_else(|| "Action disappeared before execution could start.".to_string())?
-    };
+    let action = action.ok_or_else(|| "Prepared action could not be claimed for execution.".to_string())?;
 
     let tool = action.tool.clone();
     let detail = action.detail.clone();

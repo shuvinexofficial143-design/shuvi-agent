@@ -98,6 +98,10 @@ Saved API keys for the custom OpenAI-compatible provider are never sent to a rem
 
 A managed browser session is bound to one exact DevTools page target when it starts. DOM reads, clicks, value changes and navigation continue to address that same target ID. If the tab closes, Shuvi fails the action instead of silently switching to another popup or tab returned first by `/json/list`. This keeps browser approvals attached to the page instance Shuvi originally created.
 
+### Prepared-action expiry
+
+The 10-minute prepared-action TTL is checked atomically while the pending-action lock is held. Expiry and claiming the action for execution are one decision: an action cannot pass an earlier expiry check and then execute after crossing the TTL during a second lookup. Expired actions are removed and audited as denied, never executed.
+
 ## Permission boundary
 
 Planning never executes a tool.
