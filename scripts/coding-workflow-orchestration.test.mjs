@@ -169,7 +169,7 @@ test("pre-commit validation can require exact post-commit validation before push
   assert.match(orchestrator,/hadPreCommitValidation/);
   assert.match(orchestrator,/coding\.post_commit_validation_required = Boolean\(exactGit && hadPreCommitValidation\)/);
   assert.match(orchestrator,/if \(coding\.post_commit_validation_required\)/);
-  assert.match(orchestrator,/re-run project validation on the exact committed HEAD before git_push/);
+  assert.match(orchestrator,/re-run project validation on the exact committed HEAD with a clean resulting worktree before git_push/);
   assert.match(orchestrator,/pre-commit validation existed; git_push is blocked/);
 });
 
