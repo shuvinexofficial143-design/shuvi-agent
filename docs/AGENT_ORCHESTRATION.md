@@ -73,6 +73,10 @@ PowerShell remains available only from the local **Permission Lab** command path
 ### Session path approvals
 
 Low-risk session approvals for path-bearing tools are **exact-path only**. Shuvi does not expand one approved path to an entire workspace by frontend string prefix because `..` segments, Windows junctions and symlinks can resolve outside the visible workspace path. Broader workspace discovery remains available through typed canonicalized tools, but auto-execution for a path-bearing read requires the exact previously approved normalized path.
+### Managed-process registration
+
+A Shuvi-launched application/browser is not allowed to survive a failed tracking registration. If managed-process state cannot be recorded after spawn, Shuvi terminates that exact launched process tree before returning an error. Managed browsers also roll back the managed-root entry and remove their temporary profile if browser-session registration fails, preventing partially registered automation sessions.
+
 ## Permission boundary
 
 Planning never executes a tool.

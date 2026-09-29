@@ -6507,17 +6507,22 @@ async fn execute_tool_with_action_id(
             })
         }
         ToolAction::LaunchApp { program, args } => {
-            let child = Command::new(&program)
+            let mut child = Command::new(&program)
                 .args(&args)
                 .spawn()
                 .map_err(|error| format!("Could not launch application: {error}"))?;
 
             let child_pid = child.id();
-            state
-                .managed_children
-                .lock()
-                .map_err(|_| "Managed-process state is unavailable.".to_string())?
-                .insert(child_pid);
+            match state.managed_children.lock() {
+                Ok(mut managed) => {
+                    managed.insert(child_pid);
+                }
+                Err(_) => {
+                    let _ = terminate_managed_process_tree(child_pid);
+                    let _ = child.wait();
+                    return Err("Managed-process state is unavailable; launched application was stopped before it could remain untracked.".into());
+                }
+            }
 
             Ok(ActionResult {
                 success: true,
@@ -6609,23 +6614,38 @@ async fn execute_tool_with_action_id(
                 return Err("Managed browser started, but its local DevTools endpoint did not become ready within 5 seconds.".into());
             };
 
-            state
-                .managed_children
-                .lock()
-                .map_err(|_| "Managed-process state is unavailable.".to_string())?
-                .insert(child_pid);
+            match state.managed_children.lock() {
+                Ok(mut managed) => {
+                    managed.insert(child_pid);
+                }
+                Err(_) => {
+                    let _ = terminate_managed_process_tree(child_pid);
+                    let _ = child.wait();
+                    let _ = fs::remove_dir_all(&profile_dir);
+                    return Err("Managed-process state is unavailable; browser was stopped before it could remain untracked.".into());
+                }
+            }
 
-            state
-                .browser_sessions
-                .lock()
-                .map_err(|_| "Browser-session state is unavailable.".to_string())?
-                .insert(
-                    child_pid,
-                    BrowserSession {
-                        port,
-                        profile_dir: profile_dir.clone(),
-                    },
-                );
+            match state.browser_sessions.lock() {
+                Ok(mut sessions) => {
+                    sessions.insert(
+                        child_pid,
+                        BrowserSession {
+                            port,
+                            profile_dir: profile_dir.clone(),
+                        },
+                    );
+                }
+                Err(_) => {
+                    if let Ok(mut managed) = state.managed_children.lock() {
+                        managed.remove(&child_pid);
+                    }
+                    let _ = terminate_managed_process_tree(child_pid);
+                    let _ = child.wait();
+                    let _ = fs::remove_dir_all(&profile_dir);
+                    return Err("Browser-session state is unavailable; browser was stopped before partial registration could remain active.".into());
+                }
+            }
 
             Ok(ActionResult {
                 success: true,
