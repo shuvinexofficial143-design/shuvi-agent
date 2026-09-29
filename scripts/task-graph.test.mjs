@@ -215,6 +215,17 @@ test("legacy v3 graph checkpoints fail closed because prepared action IDs were n
   assert.match(restored.stop_reason,/predates prepared-action binding/);
 });
 
+test("legacy v4 graph checkpoints fail closed because Rust audit receipts were not correlated", () => {
+  const legacy=json(done(initial(),proposal()));
+  legacy.version=4;
+  for(const step of legacy.task_graph.steps) {
+    for(const e of step.evidence) delete e.audit_event;
+  }
+  const restored=agent.normalizeAgentOrchestrationState(legacy);
+  assert.equal(restored.recovery_mode,"stopped");
+  assert.match(restored.stop_reason,/predates Rust audit-receipt correlation/);
+});
+
 test("validation step requires run_project_task with a successful exit code", () => {
   const p = proposal("test","run_project_task");
   for (const code of [null,1]) {
@@ -291,19 +302,19 @@ test("completed step and same completed action under another ID cannot rerun", (
   const next = plan([step("inspect"),step("again")],2);
   assert.equal(agent.evaluateProposal(s,proposal("again","read_file",{task_graph:next})).allowed,false);
 });
-test("checkpoint v4 round trip preserves action-bound evidence and next step", () => {
+test("checkpoint v5 round trip preserves action-and-audit-bound evidence and next step", () => {
   const s = done(initial(),proposal());
   const restored = agent.normalizeAgentOrchestrationState(json(s));
   assert.deepEqual(restored,s);
   assert.equal(restored.next_step,2);
   assert.equal(graph.taskGraphProgress(restored.task_graph).completed,1);
 });
-test("legacy v1/v2/v3 non-graph migration starts with no invented graph", () => {
-  for (const version of [1,2,3]) {
+test("legacy v1/v2/v3/v4 non-graph migration starts with no invented graph", () => {
+  for (const version of [1,2,3,4]) {
     const s = agent.normalizeAgentOrchestrationState({version,next_step:4});
     assert.equal(s.task_graph,null);
     assert.equal(s.next_step,4);
-    assert.equal(s.version,4);
+    assert.equal(s.version,5);
   }
 });
 test("interrupted in-flight actions become uncertain failures, never automatic retries", () => {
