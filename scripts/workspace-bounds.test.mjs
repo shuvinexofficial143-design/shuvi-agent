@@ -18,15 +18,20 @@ test("workspace scan bounds per-directory allocation before sorting",()=>{
 test("text search has a hard visited-file budget as well as a match budget",()=>{
   assert.match(rust,/const MAX_SEARCH_MATCHES: usize = 150/);
   assert.match(rust,/const MAX_SEARCH_FILES: usize = 5_000/);
+  assert.match(rust,/const MAX_SEARCH_ENTRIES: usize = 10_000/);
   const start=rust.indexOf("fn search_text_recursive");
   const end=rust.indexOf("fn run_git(",start);
   const block=rust.slice(start,end);
   assert.match(block,/visited_files: &mut usize/);
+  assert.match(block,/visited_entries: &mut usize/);
   assert.match(block,/\*visited_files >= MAX_SEARCH_FILES/);
+  assert.match(block,/\*visited_entries >= MAX_SEARCH_ENTRIES/);
+  assert.match(block,/\*visited_entries = visited_entries\.saturating_add\(1\)/);
   assert.match(block,/\*visited_files = visited_files\.saturating_add\(1\)/);
   assert.match(block,/matches\.len\(\) >= MAX_SEARCH_MATCHES/);
   const startExec=rust.indexOf("ToolAction::SearchText { path, query }");
   const exec=rust.slice(startExec,rust.indexOf("ToolAction::ReplaceText",startExec));
   assert.match(exec,/let mut visited_files = 0_usize/);
-  assert.match(exec,/search_text_recursive\(&canonical_root, &canonical_root, &query, 0, &mut matches, &mut visited_files\)/);
+  assert.match(exec,/let mut visited_entries = 0_usize/);
+  assert.match(exec,/search_text_recursive\([\s\S]*&mut visited_files,[\s\S]*&mut visited_entries/);
 });

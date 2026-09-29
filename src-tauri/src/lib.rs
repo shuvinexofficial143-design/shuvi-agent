@@ -76,6 +76,7 @@ const MAX_WORKSPACE_SCAN_ENTRIES: usize = 1_200;
 const MAX_WORKSPACE_DIRECTORY_ENTRIES: usize = 2_000;
 const MAX_SEARCH_MATCHES: usize = 150;
 const MAX_SEARCH_FILES: usize = 5_000;
+const MAX_SEARCH_ENTRIES: usize = 10_000;
 
 const TOOL_PROTOCOL: &str = r#"You are Shuvi, a permission-first Windows desktop AI agent.
 If the user's request requires a computer action, choose ONE tool and respond ONLY with a JSON object:
@@ -5642,8 +5643,13 @@ fn search_text_recursive(
     depth: usize,
     matches: &mut Vec<String>,
     visited_files: &mut usize,
+    visited_entries: &mut usize,
 ) -> Result<(), String> {
-    if depth > 7 || matches.len() >= MAX_SEARCH_MATCHES || *visited_files >= MAX_SEARCH_FILES {
+    if depth > 7
+        || matches.len() >= MAX_SEARCH_MATCHES
+        || *visited_files >= MAX_SEARCH_FILES
+        || *visited_entries >= MAX_SEARCH_ENTRIES
+    {
         return Ok(());
     }
 
@@ -5651,7 +5657,11 @@ fn search_text_recursive(
         .map_err(|error| format!("Could not search workspace: {error}"))?
         .filter_map(Result::ok)
     {
-        if matches.len() >= MAX_SEARCH_MATCHES || *visited_files >= MAX_SEARCH_FILES {
+        *visited_entries = visited_entries.saturating_add(1);
+        if matches.len() >= MAX_SEARCH_MATCHES
+            || *visited_files >= MAX_SEARCH_FILES
+            || *visited_entries > MAX_SEARCH_ENTRIES
+        {
             break;
         }
 
@@ -5673,7 +5683,7 @@ fn search_text_recursive(
             if is_ignored_workspace_dir(&file_name) {
                 continue;
             }
-            search_text_recursive(root, &canonical, query, depth + 1, matches, visited_files)?;
+            search_text_recursive(root, &canonical, query, depth + 1, matches, visited_files, visited_entries)?;
             continue;
         }
 
@@ -11086,7 +11096,16 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
 
             let mut matches = Vec::new();
             let mut visited_files = 0_usize;
-            search_text_recursive(&canonical_root, &canonical_root, &query, 0, &mut matches, &mut visited_files)?;
+            let mut visited_entries = 0_usize;
+            search_text_recursive(
+                &canonical_root,
+                &canonical_root,
+                &query,
+                0,
+                &mut matches,
+                &mut visited_files,
+                &mut visited_entries,
+            )?;
 
             let stdout = if matches.is_empty() {
                 format!("No matches found for '{query}'.")
