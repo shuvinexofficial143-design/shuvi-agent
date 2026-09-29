@@ -680,6 +680,7 @@ struct BrowserSession {
 struct ActionState {
     pending: Mutex<HashMap<String, PendingAction>>,
     managed_children: Mutex<HashSet<u32>>,
+    managed_process_started_at: Mutex<HashMap<u32, u64>>,
     running_action_children: Mutex<HashMap<String, u32>>,
     running_action_tools: Mutex<HashMap<String, String>>,
     browser_sessions: Mutex<HashMap<u32, BrowserSession>>,
@@ -1459,18 +1460,32 @@ fn current_runtime_status(state: &ActionState) -> Result<RuntimeStatus, String> 
 
     let native_bytes = process.memory();
 
+    let identities = state
+        .managed_process_started_at
+        .lock()
+        .map_err(|_| "Managed-process identity state is unavailable.".to_string())?
+        .clone();
+
     let mut managed = state
         .managed_children
         .lock()
         .map_err(|_| "Managed-process state is unavailable.".to_string())?;
 
-    managed.retain(|child_pid| system.process(Pid::from_u32(*child_pid)).is_some());
+    managed.retain(|child_pid| {
+        let pid = Pid::from_u32(*child_pid);
+        let actual = system.process(pid).map(|process| process.start_time());
+        actual.is_some() && identities.get(child_pid).copied() == actual
+    });
+    let live_roots = managed.clone();
 
+    if let Ok(mut stored) = state.managed_process_started_at.lock() {
+        stored.retain(|root_pid, _| live_roots.contains(root_pid));
+    }
     if let Ok(mut sessions) = state.browser_sessions.lock() {
-        sessions.retain(|root_pid, _| system.process(Pid::from_u32(*root_pid)).is_some());
+        sessions.retain(|root_pid, _| live_roots.contains(root_pid));
     }
 
-    let managed_tree = managed_tree_pids(&system, &managed);
+    let managed_tree = managed_tree_pids(&system, &live_roots);
     let managed_children_bytes = managed_tree
         .iter()
         .filter_map(|pid| system.process(*pid))
@@ -1507,10 +1522,70 @@ fn ensure_memory_budget(state: &ActionState) -> Result<(), String> {
     }
 }
 
-fn process_is_alive(pid: u32) -> bool {
+fn observed_process_start_time(pid: u32) -> Option<u64> {
     let mut system = System::new_all();
     system.refresh_all();
-    system.process(Pid::from_u32(pid)).is_some()
+    system.process(Pid::from_u32(pid)).map(|process| process.start_time())
+}
+
+fn capture_process_start_time(pid: u32) -> Option<u64> {
+    for _ in 0..25 {
+        if let Some(started_at) = observed_process_start_time(pid) {
+            return Some(started_at);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    None
+}
+
+fn register_managed_process(state: &ActionState, pid: u32) -> Result<(), String> {
+    let started_at = capture_process_start_time(pid)
+        .ok_or_else(|| "Could not bind the launched process to an OS process identity.".to_string())?;
+
+    state
+        .managed_process_started_at
+        .lock()
+        .map_err(|_| "Managed-process identity state is unavailable.".to_string())?
+        .insert(pid, started_at);
+
+    match state.managed_children.lock() {
+        Ok(mut managed) => {
+            managed.insert(pid);
+            Ok(())
+        }
+        Err(_) => {
+            if let Ok(mut identities) = state.managed_process_started_at.lock() {
+                identities.remove(&pid);
+            }
+            Err("Managed-process state is unavailable.".into())
+        }
+    }
+}
+
+fn unregister_managed_process(state: &ActionState, pid: u32) {
+    if let Ok(mut managed) = state.managed_children.lock() {
+        managed.remove(&pid);
+    }
+    if let Ok(mut identities) = state.managed_process_started_at.lock() {
+        identities.remove(&pid);
+    }
+}
+
+fn managed_process_identity_matches(state: &ActionState, pid: u32) -> Result<bool, String> {
+    let expected = state
+        .managed_process_started_at
+        .lock()
+        .map_err(|_| "Managed-process identity state is unavailable.".to_string())?
+        .get(&pid)
+        .copied();
+    let Some(expected) = expected else {
+        return Ok(false);
+    };
+    Ok(observed_process_start_time(pid).is_some_and(|actual| actual == expected))
+}
+
+fn process_is_alive(pid: u32) -> bool {
+    observed_process_start_time(pid).is_some()
 }
 
 fn terminate_managed_process_tree(pid: u32) -> Result<bool, String> {
@@ -6652,15 +6727,12 @@ async fn execute_tool_with_action_id(
                 .map_err(|error| format!("Could not launch application: {error}"))?;
 
             let child_pid = child.id();
-            match state.managed_children.lock() {
-                Ok(mut managed) => {
-                    managed.insert(child_pid);
-                }
-                Err(_) => {
-                    let _ = terminate_managed_process_tree(child_pid);
-                    let _ = child.wait();
-                    return Err("Managed-process state is unavailable; launched application was stopped before it could remain untracked.".into());
-                }
+            if let Err(error) = register_managed_process(state, child_pid) {
+                let _ = terminate_managed_process_tree(child_pid);
+                let _ = child.wait();
+                return Err(format!(
+                    "Launched application was stopped before it could remain untracked: {error}"
+                ));
             }
 
             Ok(ActionResult {
@@ -6753,16 +6825,13 @@ async fn execute_tool_with_action_id(
                 return Err("Managed browser started, but its local DevTools endpoint did not become ready within 5 seconds.".into());
             };
 
-            match state.managed_children.lock() {
-                Ok(mut managed) => {
-                    managed.insert(child_pid);
-                }
-                Err(_) => {
-                    let _ = terminate_managed_process_tree(child_pid);
-                    let _ = child.wait();
-                    let _ = fs::remove_dir_all(&profile_dir);
-                    return Err("Managed-process state is unavailable; browser was stopped before it could remain untracked.".into());
-                }
+            if let Err(error) = register_managed_process(state, child_pid) {
+                let _ = terminate_managed_process_tree(child_pid);
+                let _ = child.wait();
+                let _ = fs::remove_dir_all(&profile_dir);
+                return Err(format!(
+                    "Browser was stopped before it could remain untracked: {error}"
+                ));
             }
 
             match state.browser_sessions.lock() {
@@ -6776,9 +6845,7 @@ async fn execute_tool_with_action_id(
                     );
                 }
                 Err(_) => {
-                    if let Ok(mut managed) = state.managed_children.lock() {
-                        managed.remove(&child_pid);
-                    }
+                    unregister_managed_process(state, child_pid);
                     let _ = terminate_managed_process_tree(child_pid);
                     let _ = child.wait();
                     let _ = fs::remove_dir_all(&profile_dir);
@@ -6944,8 +7011,9 @@ async fn execute_tool_with_action_id(
                 .map_err(|_| "Managed-process state is unavailable.".to_string())?
                 .contains(&pid);
 
-            if !is_managed_root {
-                return Err("Shuvi can only stop process roots that it launched and is tracking.".into());
+            if !is_managed_root || !managed_process_identity_matches(state, pid)? {
+                unregister_managed_process(state, pid);
+                return Err("Shuvi can only stop the exact live process instance that it launched and is tracking.".into());
             }
 
             let pid_string = pid.to_string();
@@ -6963,11 +7031,7 @@ async fn execute_tool_with_action_id(
                 .map_err(|error| format!("Could not stop managed process: {error}"))?;
 
             if output.status.success() {
-                state
-                    .managed_children
-                    .lock()
-                    .map_err(|_| "Managed-process state is unavailable.".to_string())?
-                    .remove(&pid);
+                unregister_managed_process(state, pid);
 
                 if let Some(session) = state
                     .browser_sessions
@@ -7458,11 +7522,12 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 .map_err(|error| format!("Could not launch Adobe Premiere Pro: {error}"))?;
 
             let child_pid = child.id();
-            state
-                .managed_children
-                .lock()
-                .map_err(|_| "Managed-process state is unavailable.".to_string())?
-                .insert(child_pid);
+            if let Err(error) = register_managed_process(state, child_pid) {
+                let _ = terminate_managed_process_tree(child_pid);
+                return Err(format!(
+                    "Premiere was stopped before it could remain untracked: {error}"
+                ));
+            }
 
             Ok(ActionResult {
                 success: true,
@@ -11462,15 +11527,12 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 .spawn()
                 .map_err(|error| format!("Could not run project task: {error}"))?;
             let child_pid = child.id();
-            match state.managed_children.lock() {
-                Ok(mut managed) => {
-                    managed.insert(child_pid);
-                }
-                Err(_) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err("Managed-process state is unavailable; project task was stopped before execution could continue safely.".into());
-                }
+            if let Err(error) = register_managed_process(state, child_pid) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "Project task was stopped before execution could continue safely: {error}"
+                ));
             }
             if let Some(action_id) = execution_action_id {
                 match state.running_action_children.lock() {
@@ -11514,9 +11576,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     running.remove(action_id);
                 }
             }
-            if let Ok(mut managed) = state.managed_children.lock() {
-                managed.remove(&child_pid);
-            }
+            unregister_managed_process(state, child_pid);
             let output = output_result
                 .map_err(|error| format!("Could not wait for project task: {error}"))?;
 
@@ -11710,15 +11770,12 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 .map_err(|error| format!("Failed to start shell: {error}"))?;
 
             let child_pid = child.id();
-            match state.managed_children.lock() {
-                Ok(mut managed) => {
-                    managed.insert(child_pid);
-                }
-                Err(_) => {
-                    let _ = terminate_managed_process_tree(child_pid);
-                    let _ = child.wait();
-                    return Err("Managed-process state is unavailable; manual shell was stopped before it could remain untracked.".into());
-                }
+            if let Err(error) = register_managed_process(state, child_pid) {
+                let _ = terminate_managed_process_tree(child_pid);
+                let _ = child.wait();
+                return Err(format!(
+                    "Manual shell was stopped before it could remain untracked: {error}"
+                ));
             }
 
             let hard_limit_triggered = AtomicBool::new(false);
@@ -11743,9 +11800,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 let _ = monitor.join();
                 output
             });
-            if let Ok(mut managed) = state.managed_children.lock() {
-                managed.remove(&child_pid);
-            }
+            unregister_managed_process(state, child_pid);
             let output = output_result
                 .map_err(|error| format!("Could not wait for manual shell: {error}"))?;
 
@@ -11996,7 +12051,8 @@ fn cancel_running_action(
                 .lock()
                 .map_err(|_| "Managed-process state is unavailable.".to_string())?
                 .contains(&pid);
-            if !is_managed {
+            if !is_managed || !managed_process_identity_matches(state.inner(), pid)? {
+                unregister_managed_process(state.inner(), pid);
                 return Ok(false);
             }
 
@@ -12014,9 +12070,7 @@ fn cancel_running_action(
                 .map_err(|error| format!("Could not cancel running action: {error}"))?;
 
             if output.status.success() {
-                if let Ok(mut managed) = state.managed_children.lock() {
-                    managed.remove(&pid);
-                }
+                unregister_managed_process(state.inner(), pid);
                 if let Ok(mut running) = state.running_action_children.lock() {
                     running.remove(&action_id);
                 }
