@@ -5742,7 +5742,7 @@ fn git_context_stdout(path: &str, body: String) -> Result<String, String> {
     Ok(format!("[SHUVI_GIT_CONTEXT_V1]{}\n{}", receipt, body))
 }
 
-fn git_remote_freshness(path: &str) -> Result<String, String> {
+fn git_remote_freshness(path: &str, require_upstream: bool) -> Result<String, String> {
     let branch = git_command_text(
         path,
         &["symbolic-ref", "--quiet", "--short", "HEAD"],
@@ -5753,10 +5753,16 @@ fn git_remote_freshness(path: &str) -> Result<String, String> {
         &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
     )?;
     if !upstream_probe.status.success() {
+        if require_upstream {
+            return Err("git_push requires a configured upstream branch so remote freshness can be verified before the write.".into());
+        }
         return Ok(format!("branch={branch}; upstream=none; remote_check=not_configured"));
     }
     let upstream = String::from_utf8_lossy(&upstream_probe.stdout).trim().to_string();
     if upstream.is_empty() {
+        if require_upstream {
+            return Err("git_push requires a configured upstream branch so remote freshness can be verified before the write.".into());
+        }
         return Ok(format!("branch={branch}; upstream=none; remote_check=not_configured"));
     }
 
@@ -11079,7 +11085,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "Local HEAD changed after review; refusing git_commit. expected_head={expected_head}; current_head={current_head}"
                 ));
             }
-            let remote_receipt = git_remote_freshness(&path)?;
+            let remote_receipt = git_remote_freshness(&path, false)?;
             let requested: HashSet<&str> = files.iter().map(String::as_str).collect();
             let staged_before = git_staged_files(&path)?;
             let unrelated_before: Vec<String> = staged_before
@@ -11149,7 +11155,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "Local HEAD changed after commit; refusing git_push. expected_head={expected_head}; current_head={current_head}"
                 ));
             }
-            let remote_receipt = git_remote_freshness(&path)?;
+            let remote_receipt = git_remote_freshness(&path, true)?;
             let output = run_git(&path, &["push"])?;
             let body = format!(
                 "Remote freshness: {remote_receipt}\n{}",

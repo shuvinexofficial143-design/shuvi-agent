@@ -22,8 +22,8 @@ test("git writes recheck refreshed upstream ancestry immediately inside typed to
   assert.match(helper,/Remote branch advanced or diverged; refusing Git write/);
   const commit=rust.slice(rust.indexOf("ToolAction::GitCommit { path, message, files, expected_head }"),rust.indexOf("ToolAction::GitPush { path, expected_head }"));
   const push=rust.slice(rust.indexOf("ToolAction::GitPush { path, expected_head }"),rust.indexOf("ToolAction::PowerShell"));
-  assert.ok(commit.indexOf("git_remote_freshness(&path)") < commit.indexOf("git_staged_files(&path)"));
-  assert.ok(push.indexOf("git_remote_freshness(&path)") < push.indexOf('run_git(&path, &["push"])'));
+  assert.ok(commit.indexOf("git_remote_freshness(&path, false)") < commit.indexOf("git_staged_files(&path)"));
+  assert.ok(push.indexOf("git_remote_freshness(&path, true)") < push.indexOf('run_git(&path, &["push"])'));
   assert.match(commit,/Remote freshness: \{remote_receipt\}/);
   assert.match(push,/Remote freshness: \{remote_receipt\}/);
 });
@@ -72,11 +72,11 @@ test("git writes require the exact reviewed local HEAD",()=>{
   const commit=rust.slice(rust.indexOf("ToolAction::GitCommit { path, message, files, expected_head }"),rust.indexOf("ToolAction::GitPush { path, expected_head }"));
   assert.match(commit,/current_head\.to_ascii_lowercase\(\) != expected_head/);
   assert.match(commit,/Local HEAD changed after review; refusing git_commit/);
-  assert.ok(commit.indexOf("current_head.to_ascii_lowercase() != expected_head") < commit.indexOf("git_remote_freshness(&path)"));
+  assert.ok(commit.indexOf("current_head.to_ascii_lowercase() != expected_head") < commit.indexOf("git_remote_freshness(&path, false)"));
   const push=rust.slice(rust.indexOf("ToolAction::GitPush { path, expected_head }"),rust.indexOf("ToolAction::PowerShell"));
   assert.match(push,/current_head\.to_ascii_lowercase\(\) != expected_head/);
   assert.match(push,/Local HEAD changed after commit; refusing git_push/);
-  assert.ok(push.indexOf("current_head.to_ascii_lowercase() != expected_head") < push.indexOf("git_remote_freshness(&path)"));
+  assert.ok(push.indexOf("current_head.to_ascii_lowercase() != expected_head") < push.indexOf("git_remote_freshness(&path, false)"));
 });
 
 
@@ -86,4 +86,15 @@ test("git_diff reviews the combined tracked delta against HEAD",()=>{
   const block=rust.slice(start,end);
   assert.match(block,/\["diff", "HEAD", "--no-ext-diff", "--unified=3", "--"\]/);
   assert.doesNotMatch(block,/\["diff", "--no-ext-diff", "--unified=3"\]/);
+});
+
+
+test("git_push refuses to write without a configured upstream",()=>{
+  const helper=rust.slice(rust.indexOf("fn git_remote_freshness"),rust.indexOf("fn project_task_command"));
+  assert.match(helper,/require_upstream: bool/);
+  assert.match(helper,/git_push requires a configured upstream branch so remote freshness can be verified/);
+  const commit=rust.slice(rust.indexOf("ToolAction::GitCommit"),rust.indexOf("ToolAction::GitPush"));
+  const push=rust.slice(rust.indexOf("ToolAction::GitPush"),rust.indexOf("ToolAction::PowerShell"));
+  assert.match(commit,/git_remote_freshness\(&path, false\)/);
+  assert.match(push,/git_remote_freshness\(&path, true\)/);
 });
