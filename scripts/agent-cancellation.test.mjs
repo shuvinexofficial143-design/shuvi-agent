@@ -7,6 +7,7 @@ const main=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
 
 test("running project task is correlated to the exact prepared action ID",()=>{
   assert.match(rust,/running_action_children: Mutex<HashMap<String, u32>>/);
+  assert.match(rust,/running_action_tools: Mutex<HashMap<String, String>>/);
   assert.match(rust,/async fn execute_tool_with_action_id\(/);
   assert.match(rust,/execution_action_id: Option<&str>/);
   const run=rust.slice(rust.indexOf("ToolAction::RunProjectTask { path, task }"),rust.indexOf("ToolAction::GitStatus { path }"));
@@ -16,13 +17,18 @@ test("running project task is correlated to the exact prepared action ID",()=>{
   assert.match(execute,/execute_tool_with_action_id\(action, state\.inner\(\), &app, Some\(action_id\.as_str\(\)\)\)/);
 });
 
-test("cancel_running_action only targets the child registered for that action UUID",()=>{
+test("cancel_running_action only denies or stops the exact run_project_task action UUID",()=>{
   const cancel=rust.slice(rust.indexOf("fn cancel_running_action("),rust.indexOf("async fn execute_action("));
   assert.match(cancel,/Uuid::parse_str\(&action_id\)/);
-  assert.match(cancel,/running\.get\(&action_id\)\.copied\(\)/);
+  assert.match(cancel,/action\.tool == "run_project_task"/);
+  assert.match(cancel,/event: "denied"/);
+  assert.match(cancel,/running_action_tools/);
+  assert.match(cancel,/Some\("run_project_task"\)/);
+  assert.match(cancel,/for _ in 0\.\.50/);
+  assert.match(cancel,/Duration::from_millis\(20\)/);
+  assert.match(cancel,/running_action_children/);
   assert.match(cancel,/managed_children[\s\S]*contains\(&pid\)/);
   assert.match(cancel,/taskkill/);
-  assert.match(cancel,/running\.remove\(&action_id\)/);
   assert.doesNotMatch(cancel,/arg_u32/);
   assert.match(rust,/cancel_running_action,[\s\S]*execute_action/);
 });
@@ -63,4 +69,17 @@ test("cancellation classification awaits the exact in-flight cancellation promis
   const execute=main.slice(main.indexOf("async function executePendingProposal"),main.indexOf("function renderChatPermission"));
   assert.match(execute,/const cancelledByUser = await actionCancellationConfirmed\(actionId\)/);
   assert.match(execute,/executingCancellation\?\.actionId === actionId/);
+});
+
+
+test("execute_action has no pending-to-active cancellation gap",()=>{
+  const execute=rust.slice(rust.indexOf("async fn execute_action("),rust.indexOf("async fn execute_powershell"));
+  const getPending=execute.indexOf(".get(&action_id)");
+  const register=execute.indexOf("running_action_tools");
+  const removePending=execute.indexOf(".remove(&action_id)",register);
+  assert.ok(getPending>=0);
+  assert.ok(register>getPending);
+  assert.ok(removePending>register);
+  assert.match(execute,/running\.remove\(&action_id\)/);
+  assert.match(execute,/children\.remove\(&action_id\)/);
 });

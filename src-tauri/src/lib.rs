@@ -655,6 +655,7 @@ struct ActionState {
     pending: Mutex<HashMap<String, PendingAction>>,
     managed_children: Mutex<HashSet<u32>>,
     running_action_children: Mutex<HashMap<String, u32>>,
+    running_action_tools: Mutex<HashMap<String, String>>,
     browser_sessions: Mutex<HashMap<u32, BrowserSession>>,
     premiere_bridge: Arc<PremiereBridgeShared>,
     acceptance_probe_running: AtomicBool,
@@ -11386,55 +11387,93 @@ fn deny_action(
 fn cancel_running_action(
     action_id: String,
     state: State<'_, ActionState>,
+    app: AppHandle,
 ) -> Result<bool, String> {
     Uuid::parse_str(&action_id).map_err(|_| "Invalid running action ID.")?;
-    let pid = {
-        let running = state
+
+    {
+        let mut pending = state
+            .pending
+            .lock()
+            .map_err(|_| "Permission state is unavailable.".to_string())?;
+        let cancellable = pending
+            .get(&action_id)
+            .is_some_and(|action| action.tool == "run_project_task");
+        if cancellable {
+            let action = pending.remove(&action_id)
+                .ok_or_else(|| "Prepared action disappeared during cancellation.".to_string())?;
+            drop(pending);
+            append_audit(
+                &app,
+                &AuditEntry {
+                    timestamp_ms: now_ms(),
+                    event: "denied".into(),
+                    tool: action.tool,
+                    detail: action.detail,
+                    success: false,
+                    action_id: Some(action_id),
+                },
+            )?;
+            return Ok(true);
+        }
+    }
+
+    for _ in 0..50 {
+        let active_tool = state
+            .running_action_tools
+            .lock()
+            .map_err(|_| "Running-action state is unavailable.".to_string())?
+            .get(&action_id)
+            .cloned();
+        match active_tool.as_deref() {
+            Some("run_project_task") => {}
+            Some(_) | None => return Ok(false),
+        }
+
+        let pid = state
             .running_action_children
             .lock()
-            .map_err(|_| "Running-action state is unavailable.".to_string())?;
-        running.get(&action_id).copied()
-    };
-    let Some(pid) = pid else {
-        return Ok(false);
-    };
+            .map_err(|_| "Running-action state is unavailable.".to_string())?
+            .get(&action_id)
+            .copied();
+        if let Some(pid) = pid {
+            let is_managed = state
+                .managed_children
+                .lock()
+                .map_err(|_| "Managed-process state is unavailable.".to_string())?
+                .contains(&pid);
+            if !is_managed {
+                return Ok(false);
+            }
 
-    let is_managed = state
-        .managed_children
-        .lock()
-        .map_err(|_| "Managed-process state is unavailable.".to_string())?
-        .contains(&pid);
-    if !is_managed {
-        if let Ok(mut running) = state.running_action_children.lock() {
-            running.remove(&action_id);
+            let pid_string = pid.to_string();
+            #[cfg(target_os = "windows")]
+            let output = Command::new("taskkill")
+                .args(["/PID", pid_string.as_str(), "/T", "/F"])
+                .output()
+                .map_err(|error| format!("Could not cancel running action: {error}"))?;
+
+            #[cfg(not(target_os = "windows"))]
+            let output = Command::new("kill")
+                .args(["-TERM", pid_string.as_str()])
+                .output()
+                .map_err(|error| format!("Could not cancel running action: {error}"))?;
+
+            if output.status.success() {
+                if let Ok(mut managed) = state.managed_children.lock() {
+                    managed.remove(&pid);
+                }
+                if let Ok(mut running) = state.running_action_children.lock() {
+                    running.remove(&action_id);
+                }
+                return Ok(true);
+            }
+            return Ok(false);
         }
-        return Ok(false);
+        std::thread::sleep(Duration::from_millis(20));
     }
 
-    let pid_string = pid.to_string();
-    #[cfg(target_os = "windows")]
-    let output = Command::new("taskkill")
-        .args(["/PID", pid_string.as_str(), "/T", "/F"])
-        .output()
-        .map_err(|error| format!("Could not cancel running action: {error}"))?;
-
-    #[cfg(not(target_os = "windows"))]
-    let output = Command::new("kill")
-        .args(["-TERM", pid_string.as_str()])
-        .output()
-        .map_err(|error| format!("Could not cancel running action: {error}"))?;
-
-    if output.status.success() {
-        if let Ok(mut managed) = state.managed_children.lock() {
-            managed.remove(&pid);
-        }
-        if let Ok(mut running) = state.running_action_children.lock() {
-            running.remove(&action_id);
-        }
-        Ok(true)
-    } else {
-        Ok(false)
-    }
+    Ok(false)
 }
 
 #[tauri::command]
@@ -11445,17 +11484,42 @@ async fn execute_action(
 ) -> Result<ActionResult, String> {
     ensure_memory_budget(state.inner())?;
 
-    let action = state
-        .pending
-        .lock()
-        .map_err(|_| "Permission state is unavailable.".to_string())?
-        .remove(&action_id)
-        .ok_or_else(|| "Action expired, was denied, or does not exist.".to_string())?;
+    let action = {
+        let mut pending = state
+            .pending
+            .lock()
+            .map_err(|_| "Permission state is unavailable.".to_string())?;
+        let active_tool = pending
+            .get(&action_id)
+            .map(|action| action.tool.clone())
+            .ok_or_else(|| "Action expired, was denied, or does not exist.".to_string())?;
+        state
+            .running_action_tools
+            .lock()
+            .map_err(|_| "Running-action state is unavailable.".to_string())?
+            .insert(action_id.clone(), active_tool);
+        pending
+            .remove(&action_id)
+            .ok_or_else(|| "Action disappeared before execution could start.".to_string())?
+    };
 
     let tool = action.tool.clone();
     let detail = action.detail.clone();
+    let execution = execute_tool_with_action_id(
+        action,
+        state.inner(),
+        &app,
+        Some(action_id.as_str()),
+    ).await;
 
-    match execute_tool_with_action_id(action, state.inner(), &app, Some(action_id.as_str())).await {
+    if let Ok(mut running) = state.running_action_tools.lock() {
+        running.remove(&action_id);
+    }
+    if let Ok(mut children) = state.running_action_children.lock() {
+        children.remove(&action_id);
+    }
+
+    match execution {
         Ok(result) => {
             append_audit(
                 &app,
