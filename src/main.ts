@@ -1371,12 +1371,32 @@ el<HTMLButtonElement>("#prepareAction").addEventListener("click", async () => {
   const command = el<HTMLTextAreaElement>("#shellCommand").value.trim();
   if (!command) return;
 
+  const output = el<HTMLElement>("#actionOutput");
+  if (pendingAction && pendingChatProposal) {
+    output.classList.remove("hidden");
+    output.textContent = "Resolve the current chat permission before preparing a manual PowerShell action.";
+    return;
+  }
+
+  if (pendingAction) {
+    const previousActionId = pendingAction.id;
+    try {
+      await invoke("deny_action", { actionId: previousActionId });
+      pendingAction = null;
+      renderManualPending();
+      void refreshAudit();
+    } catch (error) {
+      output.classList.remove("hidden");
+      output.textContent = "Could not retire the previous manual action: " + String(error);
+      return;
+    }
+  }
+
   try {
     pendingChatProposal = null;
     pendingAction = await invoke<PendingAction>("prepare_powershell", { command });
     renderManualPending();
   } catch (error) {
-    const output = el<HTMLElement>("#actionOutput");
     output.classList.remove("hidden");
     output.textContent = String(error);
   }

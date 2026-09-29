@@ -77,6 +77,8 @@ Low-risk session approvals for path-bearing tools are **exact-path only**. Shuvi
 
 A Shuvi-launched application/browser is not allowed to survive a failed tracking registration. If managed-process state cannot be recorded after spawn, Shuvi terminates that exact launched process tree before returning an error. Managed browsers also roll back the managed-root entry and remove their temporary profile if browser-session registration fails, preventing partially registered automation sessions.
 
+A new manual PowerShell preparation cannot replace an unresolved chat permission. If an earlier manual action is still pending, Shuvi first records a real denial for that exact action UUID; only after that succeeds may the replacement action be prepared. This prevents orphaned prepared permissions from accumulating in backend state.
+
 ## Permission boundary
 
 Planning never executes a tool.
