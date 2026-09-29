@@ -4,7 +4,7 @@ import {pathToFileURL} from "node:url";
 import path from "node:path";
 import process from "node:process";
 
-export const SCHEMA_VERSION=2;
+export const SCHEMA_VERSION=3;
 export const ASSURANCE="process_execution_record_not_cryptographically_signed";
 
 export function parseScope(argv=process.argv.slice(2)){
@@ -57,6 +57,9 @@ export function validateAttestation(a){
   return a?.schema_version===SCHEMA_VERSION
     && ["frontend","rust","full"].includes(a.scope)
     && typeof a.repository_commit==="string" && /^[a-f0-9]{40}$/i.test(a.repository_commit)
+    && typeof a.repository_commit_after==="string" && /^[a-f0-9]{40}$/i.test(a.repository_commit_after)
+    && typeof a.head_unchanged==="boolean"
+    && a.head_unchanged===(a.repository_commit===a.repository_commit_after)
     && typeof a.clean_worktree_before==="boolean"
     && typeof a.clean_worktree_after==="boolean"
     && typeof a.clean_worktree==="boolean"
@@ -79,15 +82,19 @@ export function execute(scope=parseScope()){
       ...result,
     });
   }
+  const shaAfter=gitText(["rev-parse","HEAD"]);
+  const headUnchanged=sha===shaAfter;
   const dirtyAfter=gitText(["status","--porcelain","--untracked-files=all"]);
   const cleanWorktreeAfter=dirtyAfter.length===0;
   const cleanWorktree=cleanWorktreeBefore && cleanWorktreeAfter;
-  const passed=cleanWorktree && commands.every(c=>c.exit_code===0 && !c.launch_error);
+  const passed=headUnchanged && cleanWorktree && commands.every(c=>c.exit_code===0 && !c.launch_error);
   const attestation={
     schema_version:SCHEMA_VERSION,
     generated_at:new Date().toISOString(),
     scope,
     repository_commit:sha,
+    repository_commit_after:shaAfter,
+    head_unchanged:headUnchanged,
     clean_worktree_before:cleanWorktreeBefore,
     clean_worktree_after:cleanWorktreeAfter,
     clean_worktree:cleanWorktree,
@@ -95,7 +102,7 @@ export function execute(scope=parseScope()){
     commands,
     passed,
     assurance:ASSURANCE,
-    note:"This records observed process execution for one exact Git commit. It is not a signature and does not prove Premiere runtime behavior.",
+    note:"This records observed process execution only when Git HEAD stayed on one exact commit and the worktree was clean before/after. It is not a signature and does not prove Premiere runtime behavior.",
   };
   if(!validateAttestation(attestation)) throw new Error("internal attestation validation failed");
   const dir=path.join(process.cwd(),".shuvi-attest");
@@ -103,7 +110,7 @@ export function execute(scope=parseScope()){
   const file=path.join(dir,outputName(scope,sha));
   writeFileSync(file,JSON.stringify(attestation,null,2)+"\n","utf8");
   console.log(JSON.stringify({
-    attestation:file,scope,commit:sha,passed,
+    attestation:file,scope,commit:sha,commit_after:shaAfter,head_unchanged:headUnchanged,passed,
     clean_worktree_before:cleanWorktreeBefore,
     clean_worktree_after:cleanWorktreeAfter,
     clean_worktree:cleanWorktree
