@@ -18,9 +18,9 @@ function proposal(tool,args={}) {
 function result(tool,stdout="",success=true) {
   return {tool,success,stdout,stderr:"",exit_code:success?0:1};
 }
-function gitResult(tool,head,branch="main") {
+function gitResult(tool,head,branch="main",body="observed") {
   const receipt={schema:1,repo_root:"/repo",branch,head,upstream:"origin/main",upstream_head:HEAD_A};
-  return result(tool,"[SHUVI_GIT_CONTEXT_V1]"+JSON.stringify(receipt)+"\nobserved");
+  return result(tool,"[SHUVI_GIT_CONTEXT_V1]"+JSON.stringify(receipt)+"\n"+body);
 }
 function done(state,p,r) {
   return agent.recordToolOutcome(state,p,r.success?"success":"failure",r,true);
@@ -100,4 +100,21 @@ test("push remains allowed when no pre-commit validation evidence was claimed",(
   s=done(s,commit,gitResult("git_commit",HEAD_C));
   assert.equal(s.coding.post_commit_validation_required,false);
   assert.equal(agent.evaluateProposal(s,proposal("git_push",{expected_head:HEAD_C})).allowed,true);
+});
+
+
+test("untracked commit files require exact post-mutation read evidence",()=>{
+  let s=agent.createAgentOrchestrationState();
+  s=done(s,{tool:"write_file",arguments:{path:"/repo/new.ts"}},result("write_file","written"));
+  s=done(s,proposal("git_status"),gitResult("git_status",HEAD_A,"main","## main\n?? new.ts"));
+  s=done(s,proposal("git_diff"),gitResult("git_diff",HEAD_A));
+  const commit=proposal("git_commit",{message:"new",files:["new.ts"],expected_head:HEAD_A});
+  let decision=agent.evaluateProposal(s,commit);
+  assert.equal(decision.allowed,false);
+  assert.match(decision.reason,/read each untracked commit file/);
+
+  s=done(s,{tool:"read_file",arguments:{path:"/repo/new.ts"}},result("read_file","contents"));
+  s=done(s,proposal("git_status"),gitResult("git_status",HEAD_A,"main","## main\n?? new.ts"));
+  s=done(s,proposal("git_diff"),gitResult("git_diff",HEAD_A));
+  assert.equal(agent.evaluateProposal(s,commit).allowed,true);
 });

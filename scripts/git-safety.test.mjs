@@ -104,3 +104,11 @@ test("git_push refuses to write without a configured upstream",()=>{
   assert.match(commit,/git_remote_freshness\(&path, false\)/);
   assert.match(push,/git_remote_freshness\(&path, true\)/);
 });
+
+
+test("git_status expands untracked files for exact commit review",()=>{
+  const start=rust.indexOf("ToolAction::GitStatus { path }");
+  const end=rust.indexOf("ToolAction::GitDiff { path }",start);
+  const block=rust.slice(start,end);
+  assert.match(block,/\["status", "--short", "--branch", "--untracked-files=all"\]/);
+});

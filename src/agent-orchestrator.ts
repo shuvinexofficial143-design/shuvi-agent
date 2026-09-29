@@ -47,6 +47,8 @@ export type CodingWorkflowState = {
   last_git_status_step: number;
   last_git_status_path: string | null;
   last_git_status_git: GitIdentity | null;
+  last_git_status_untracked: string[];
+  last_git_status_untracked_ambiguous: boolean;
   last_git_diff_step: number;
   last_git_diff_path: string | null;
   last_git_diff_git: GitIdentity | null;
@@ -167,6 +169,40 @@ function resultGitIdentity(result: ActionResult | undefined): GitIdentity | null
   }
 }
 
+function normalizeRelativeGitPath(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().replaceAll("\\", "/");
+  if (!normalized || normalized.length > 2_048 || normalized.startsWith("/")
+      || /^[a-zA-Z]:\//.test(normalized)
+      || normalized.startsWith("\"")
+      || normalized.split("/").some(part => !part || part === "." || part === "..")
+      || /[\0\r\n]/.test(normalized)) return null;
+  return normalized.toLowerCase();
+}
+
+function resultGitStatusUntracked(result: ActionResult | undefined):
+  { files: string[]; ambiguous: boolean } {
+  if (!result || typeof result.stdout !== "string") return { files: [], ambiguous: true };
+  const lines = result.stdout.split(/\r?\n/).slice(1);
+  const files: string[] = [];
+  let ambiguous = false;
+  for (const line of lines) {
+    if (!line.startsWith("?? ")) continue;
+    const file = normalizeRelativeGitPath(line.slice(3));
+    if (!file) {
+      ambiguous = true;
+      continue;
+    }
+    if (!files.includes(file)) files.push(file);
+    if (files.length > 64) {
+      files.length = 64;
+      ambiguous = true;
+      break;
+    }
+  }
+  return { files, ambiguous };
+}
+
 function canonical(value: unknown): string {
   if (value === undefined) return "null";
   if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
@@ -188,6 +224,8 @@ function createCodingWorkflowState(): CodingWorkflowState {
     last_git_status_step: 0,
     last_git_status_path: null,
     last_git_status_git: null,
+    last_git_status_untracked: [],
+    last_git_status_untracked_ambiguous: false,
     last_git_diff_step: 0,
     last_git_diff_path: null,
     last_git_diff_git: null,
@@ -275,6 +313,15 @@ function normalizeCodingWorkflowState(value: unknown, nextStep: number): CodingW
     last_git_status_step: lastGitStatusStep,
     last_git_status_path: lastGitStatusStep ? savedStatusPath : null,
     last_git_status_git: lastGitStatusStep ? savedStatusGit : null,
+    last_git_status_untracked: lastGitStatusStep && Array.isArray(input.last_git_status_untracked)
+      ? input.last_git_status_untracked
+          .map(normalizeRelativeGitPath)
+          .filter((item): item is string => Boolean(item))
+          .slice(0, 64)
+      : [],
+    last_git_status_untracked_ambiguous: lastGitStatusStep
+      ? input.last_git_status_untracked_ambiguous === true
+      : false,
     last_git_diff_step: lastGitDiffStep,
     last_git_diff_path: lastGitDiffStep ? savedDiffPath : null,
     last_git_diff_git: lastGitDiffStep ? savedDiffGit : null,
@@ -444,6 +491,23 @@ function dependencyFailure(
     if (!expectedHead || expectedHead !== statusGit?.head) {
       return "Coding dependency missing: git_commit expected_head must exactly match the reviewed git_status/git_diff HEAD.";
     }
+    const commitFiles = Array.isArray(proposal.arguments.files)
+      ? proposal.arguments.files.map(normalizeRelativeGitPath)
+      : [];
+    if (!commitFiles.length || commitFiles.some(file => !file)) {
+      return "Coding dependency missing: git_commit requires exact safe reviewed relative file paths.";
+    }
+    if (coding.last_git_status_untracked_ambiguous) {
+      return "Coding dependency missing: git_status contains ambiguous or unbounded untracked paths; resolve them before git_commit.";
+    }
+    for (const file of commitFiles as string[]) {
+      if (!coding.last_git_status_untracked.includes(file)) continue;
+      const absoluteFile = normalizePath(path + "/" + file);
+      if (!absoluteFile || !coding.inspected_paths.includes(absoluteFile)
+          || (coding.inspection_steps[absoluteFile] ?? 0) <= coding.last_mutation_step) {
+        return "Coding dependency missing: read each untracked commit file after the latest mutation before git_commit.";
+      }
+    }
   }
 
   if (proposal.tool === "git_push") {
@@ -612,6 +676,8 @@ function withSuccessfulCodingEvidence(
     coding.last_git_status_step = 0;
     coding.last_git_status_path = null;
     coding.last_git_status_git = null;
+    coding.last_git_status_untracked = [];
+    coding.last_git_status_untracked_ambiguous = false;
     coding.last_git_diff_step = 0;
     coding.last_git_diff_path = null;
     coding.last_git_diff_git = null;
@@ -630,9 +696,12 @@ function withSuccessfulCodingEvidence(
     coding.last_validation_git = exactGit;
   }
   if (proposal.tool === "git_status") {
+    const untracked = resultGitStatusUntracked(result);
     coding.last_git_status_step = exactGit ? step : 0;
     coding.last_git_status_path = exactGit ? path : null;
     coding.last_git_status_git = exactGit;
+    coding.last_git_status_untracked = exactGit ? untracked.files : [];
+    coding.last_git_status_untracked_ambiguous = exactGit ? untracked.ambiguous : true;
   }
   if (proposal.tool === "git_diff") {
     coding.last_git_diff_step = exactGit ? step : 0;
@@ -655,6 +724,8 @@ function withSuccessfulCodingEvidence(
     coding.last_git_status_step = 0;
     coding.last_git_status_path = null;
     coding.last_git_status_git = null;
+    coding.last_git_status_untracked = [];
+    coding.last_git_status_untracked_ambiguous = false;
     coding.last_git_diff_step = 0;
     coding.last_git_diff_path = null;
     coding.last_git_diff_git = null;

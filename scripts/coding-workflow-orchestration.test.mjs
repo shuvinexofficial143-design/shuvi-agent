@@ -180,3 +180,13 @@ test("resume next_step cannot be lower than persisted coding receipts",()=>{
   assert.match(orchestrator,/boundedStep\(codingInput\?\.last_commit_step\)/);
   assert.match(orchestrator,/const nextStep = Math\.max\(requestedNextStep, persistedStepFloor \+ 1\)/);
 });
+
+
+test("untracked commit files require post-mutation inspection evidence",()=>{
+  assert.match(types,/last_git_status_untracked\?: string\[\]/);
+  assert.match(orchestrator,/function resultGitStatusUntracked/);
+  assert.match(orchestrator,/line\.startsWith\("\?\? "\)/);
+  assert.match(orchestrator,/last_git_status_untracked_ambiguous/);
+  assert.match(orchestrator,/read each untracked commit file after the latest mutation before git_commit/);
+  assert.match(orchestrator,/coding\.inspection_steps\[absoluteFile\]/);
+});

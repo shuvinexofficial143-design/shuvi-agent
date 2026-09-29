@@ -39,6 +39,8 @@ export type CodingWorkflowCheckpoint = {
   last_git_status_step: number;
   last_git_status_path: string | null;
   last_git_status_git?: GitIdentityCheckpoint | null;
+  last_git_status_untracked?: string[];
+  last_git_status_untracked_ambiguous?: boolean;
   last_git_diff_step: number;
   last_git_diff_path: string | null;
   last_git_diff_git?: GitIdentityCheckpoint | null;

@@ -11098,7 +11098,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::GitStatus { path } => {
-            let output = run_git(&path, &["status", "--short", "--branch"])?;
+            let output = run_git(&path, &["status", "--short", "--branch", "--untracked-files=all"])?;
             let stdout = if output.status.success() {
                 git_context_stdout(&path, String::from_utf8_lossy(&output.stdout).to_string())?
             } else {
