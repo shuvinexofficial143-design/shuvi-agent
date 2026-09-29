@@ -144,3 +144,20 @@ test("checkpoint normalization never enumerates unbounded inspection receipt key
   assert.match(normalize,/rawInspectionSteps\[path\]/);
   assert.match(normalize,/never enumerate an unbounded/);
 });
+
+
+test("project validation child process is included in managed RAM accounting",()=>{
+  const start=rust.indexOf("ToolAction::RunProjectTask { path, task }");
+  const end=rust.indexOf("ToolAction::GitStatus { path }",start);
+  const block=rust.slice(start,end);
+  assert.match(block,/\.stdout\(Stdio::piped\(\)\)/);
+  assert.match(block,/\.stderr\(Stdio::piped\(\)\)/);
+  assert.match(block,/\.spawn\(\)/);
+  assert.match(block,/let child_pid = child\.id\(\)/);
+  assert.match(block,/state\.managed_children\.lock\(\)/);
+  assert.match(block,/managed\.insert\(child_pid\)/);
+  assert.match(block,/child\.wait_with_output\(\)/);
+  assert.match(block,/managed\.remove\(&child_pid\)/);
+  assert.doesNotMatch(block,/\.output\(\)/);
+  assert.match(block,/project task was stopped before execution could continue safely/);
+});

@@ -11016,12 +11016,31 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 None
             };
 
-            let output = Command::new(&program)
+            let mut child = Command::new(&program)
                 .args(&args)
                 .current_dir(&path)
                 .env("CI", "1")
-                .output()
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
                 .map_err(|error| format!("Could not run project task: {error}"))?;
+            let child_pid = child.id();
+            match state.managed_children.lock() {
+                Ok(mut managed) => {
+                    managed.insert(child_pid);
+                }
+                Err(_) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("Managed-process state is unavailable; project task was stopped before execution could continue safely.".into());
+                }
+            }
+            let output_result = child.wait_with_output();
+            if let Ok(mut managed) = state.managed_children.lock() {
+                managed.remove(&child_pid);
+            }
+            let output = output_result
+                .map_err(|error| format!("Could not wait for project task: {error}"))?;
 
             let mut success = output.status.success();
             let mut stdout = String::from_utf8_lossy(&output.stdout).to_string();
