@@ -112,3 +112,40 @@ test("git_status expands untracked files for exact commit review",()=>{
   const block=rust.slice(start,end);
   assert.match(block,/\["status", "--short", "--branch", "--untracked-files=all"\]/);
 });
+
+
+test("Git inspection receipts require a stable local HEAD and branch",()=>{
+  assert.match(rust,/fn git_same_local_snapshot\(before: &Value, after: &Value\) -> bool/);
+  const status=rust.slice(
+    rust.indexOf("ToolAction::GitStatus { path }"),
+    rust.indexOf("ToolAction::GitDiff { path }")
+  );
+  const diff=rust.slice(
+    rust.indexOf("ToolAction::GitDiff { path }"),
+    rust.indexOf("ToolAction::GitCommit { path, message, files, expected_head }")
+  );
+  for(const block of [status,diff]){
+    assert.match(block,/let before = git_local_context\(&path\)\?/);
+    assert.match(block,/let after = git_local_context\(&path\)\?/);
+    assert.match(block,/!git_same_local_snapshot\(&before, &after\)/);
+    assert.match(block,/HEAD or branch changed/);
+    assert.match(block,/\[SHUVI_GIT_CONTEXT_V1\]/);
+  }
+});
+
+test("Git writes recheck reviewed HEAD after freshness and staging boundaries",()=>{
+  assert.match(rust,/fn require_expected_git_head\(path: &str, expected_head: &str, action: &str\)/);
+  const commit=rust.slice(
+    rust.indexOf("ToolAction::GitCommit { path, message, files, expected_head }"),
+    rust.indexOf("ToolAction::GitPush { path, expected_head }")
+  );
+  assert.match(commit,/require_expected_git_head\(&path, &expected_head, "git_commit"\)/);
+  assert.match(commit,/git_remote_freshness\(&path, false\)/);
+  assert.match(commit,/git_commit after remote freshness check/);
+  assert.match(commit,/git_commit after staging/);
+  const pushStart=rust.indexOf("ToolAction::GitPush { path, expected_head }");
+  const push=rust.slice(pushStart,rust.indexOf("ToolAction::PowerShell",pushStart));
+  assert.match(push,/require_expected_git_head\(&path, &expected_head, "git_push"\)/);
+  assert.match(push,/git_remote_freshness\(&path, true\)/);
+  assert.match(push,/git_push after remote freshness check/);
+});

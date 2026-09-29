@@ -5744,6 +5744,22 @@ fn git_context_stdout(path: &str, body: String) -> Result<String, String> {
     Ok(format!("[SHUVI_GIT_CONTEXT_V1]{}\n{}", receipt, body))
 }
 
+fn git_same_local_snapshot(before: &Value, after: &Value) -> bool {
+    before.get("repo_root") == after.get("repo_root")
+        && before.get("branch") == after.get("branch")
+        && before.get("head") == after.get("head")
+}
+
+fn require_expected_git_head(path: &str, expected_head: &str, action: &str) -> Result<(), String> {
+    let current_head = git_command_text(path, &["rev-parse", "HEAD"], "Could not read local Git HEAD")?;
+    if current_head.to_ascii_lowercase() != expected_head {
+        return Err(format!(
+            "Local HEAD changed before {action}; refusing Git write. expected_head={expected_head}; current_head={current_head}"
+        ));
+    }
+    Ok(())
+}
+
 fn git_remote_freshness(path: &str, require_upstream: bool) -> Result<String, String> {
     let branch = git_command_text(
         path,
@@ -11099,9 +11115,14 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::GitStatus { path } => {
+            let before = git_local_context(&path)?;
             let output = run_git(&path, &["status", "--short", "--branch", "--untracked-files=all"])?;
+            let after = git_local_context(&path)?;
+            if !git_same_local_snapshot(&before, &after) {
+                return Err("Git repository HEAD or branch changed while git_status was running; inspect again before any write.".into());
+            }
             let stdout = if output.status.success() {
-                git_context_stdout(&path, String::from_utf8_lossy(&output.stdout).to_string())?
+                format!("[SHUVI_GIT_CONTEXT_V1]{}\n{}", after, String::from_utf8_lossy(&output.stdout))
             } else {
                 String::from_utf8_lossy(&output.stdout).to_string()
             };
@@ -11114,9 +11135,14 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::GitDiff { path } => {
+            let before = git_local_context(&path)?;
             let output = run_git(&path, &["diff", "HEAD", "--no-ext-diff", "--unified=3", "--"])?;
+            let after = git_local_context(&path)?;
+            if !git_same_local_snapshot(&before, &after) {
+                return Err("Git repository HEAD or branch changed while git_diff was running; inspect again before any write.".into());
+            }
             let stdout = if output.status.success() {
-                git_context_stdout(&path, String::from_utf8_lossy(&output.stdout).to_string())?
+                format!("[SHUVI_GIT_CONTEXT_V1]{}\n{}", after, String::from_utf8_lossy(&output.stdout))
             } else {
                 String::from_utf8_lossy(&output.stdout).to_string()
             };
@@ -11129,13 +11155,9 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::GitCommit { path, message, files, expected_head } => {
-            let current_head = git_command_text(&path, &["rev-parse", "HEAD"], "Could not read local HEAD before commit")?;
-            if current_head.to_ascii_lowercase() != expected_head {
-                return Err(format!(
-                    "Local HEAD changed after review; refusing git_commit. expected_head={expected_head}; current_head={current_head}"
-                ));
-            }
+            require_expected_git_head(&path, &expected_head, "git_commit")?;
             let remote_receipt = git_remote_freshness(&path, false)?;
+            require_expected_git_head(&path, &expected_head, "git_commit after remote freshness check")?;
             let requested: HashSet<&str> = files.iter().map(String::as_str).collect();
             let staged_before = git_staged_files(&path)?;
             let unrelated_before: Vec<String> = staged_before
@@ -11179,6 +11201,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 ));
             }
 
+            require_expected_git_head(&path, &expected_head, "git_commit after staging")?;
             let output = run_git(&path, &["commit", "-m", &message])?;
             let body = format!(
                 "Remote freshness: {remote_receipt}\n{}",
@@ -11199,13 +11222,9 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::GitPush { path, expected_head } => {
-            let current_head = git_command_text(&path, &["rev-parse", "HEAD"], "Could not read local HEAD before push")?;
-            if current_head.to_ascii_lowercase() != expected_head {
-                return Err(format!(
-                    "Local HEAD changed after commit; refusing git_push. expected_head={expected_head}; current_head={current_head}"
-                ));
-            }
+            require_expected_git_head(&path, &expected_head, "git_push")?;
             let remote_receipt = git_remote_freshness(&path, true)?;
+            require_expected_git_head(&path, &expected_head, "git_push after remote freshness check")?;
             let output = run_git(&path, &["push"])?;
             let body = format!(
                 "Remote freshness: {remote_receipt}\n{}",
