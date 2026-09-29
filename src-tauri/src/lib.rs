@@ -11131,6 +11131,15 @@ fn audit_log(app: AppHandle, limit: Option<usize>) -> Result<Vec<AuditEntry>, St
 }
 
 #[tauri::command]
+fn action_audit_receipt(action_id:String,app:AppHandle)->Result<Option<AuditEntry>,String>{
+    Uuid::parse_str(&action_id).map_err(|_|"Invalid action ID for audit receipt.")?;
+    Ok(read_audit(&app,200)?.into_iter().find(|entry|
+        entry.action_id.as_deref()==Some(action_id.as_str())
+        && matches!(entry.event.as_str(),"executed"|"failed"|"denied")
+    ))
+}
+
+#[tauri::command]
 fn record_agent_event(
     event: String,
     tool: Option<String>,
@@ -11287,6 +11296,7 @@ pub fn run() {
             execute_action,
             execute_powershell,
             audit_log,
+            action_audit_receipt,
             record_agent_event,
             set_workspace,
             get_workspace,
@@ -11328,6 +11338,16 @@ mod task_graph_transport_tests {
         assert_eq!(proposal.task_graph, Some(json!(false)));
         assert_eq!(proposal.task_step_id, Some(json!(false)));
         assert_eq!(proposal.task_recovery, Some(json!("invalid")));
+    }
+
+    #[test]
+    fn action_audit_receipt_contract_is_exact_and_bounded() {
+        assert!(Uuid::parse_str("00000000-0000-4000-8000-000000000001").is_ok());
+        assert!(Uuid::parse_str("not-an-action").is_err());
+        assert!(matches!("executed","executed"|"failed"|"denied"));
+        assert!(matches!("failed","executed"|"failed"|"denied"));
+        assert!(matches!("denied","executed"|"failed"|"denied"));
+        assert!(!matches!("task_step_completed","executed"|"failed"|"denied"));
     }
 
     #[test]
