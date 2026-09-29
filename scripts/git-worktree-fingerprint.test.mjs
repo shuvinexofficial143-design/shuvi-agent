@@ -33,6 +33,8 @@ test("git_commit is bound to the exact reviewed worktree snapshot",()=>{
   assert.match(execute,/require_expected_git_worktree\(&path, &expected_worktree_fingerprint, "git_commit"\)\?/);
   assert.match(execute,/git_commit after remote freshness check/);
   assert.match(execute,/git_commit before staging/);
+  assert.match(execute,/git_commit after staging/);
+  assert.match(execute,/git_commit after final remote freshness check/);
 
   assert.match(orchestration,/worktree_fingerprint: string/);
   assert.match(orchestration,/statusGit\.worktree_fingerprint === diffGit\.worktree_fingerprint/);
