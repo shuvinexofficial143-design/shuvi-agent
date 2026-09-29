@@ -47,7 +47,7 @@ Full local/server verification:
 `npm ci`
 `npm run verify:full`
 
-Each attested command writes a commit-bound JSON receipt under `.shuvi-attest/`. The receipt records the exact Git SHA, clean-worktree state, platform, command exit codes and output tails. It is an execution record, not a cryptographic signature and not Premiere runtime evidence.
+Each attested command writes a schema-v3 commit-bound JSON receipt under `.shuvi-attest/`. The receipt records Git HEAD before and after the command set, requires those SHAs to remain identical for `passed=true`, records clean tracked+untracked worktree state before and after, plus platform, command exit codes and output tails. It is an execution record, not a cryptographic signature and not Premiere runtime evidence.
 
 ## Truthfulness rule
 
