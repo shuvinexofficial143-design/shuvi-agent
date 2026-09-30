@@ -159,6 +159,15 @@ pub fn capability_report()->Value {
             "mask_create":"source_supported_with_shape_readback",
             "scene_edit_detection_read":"source_supported",
             "scene_edit_markers":"source_supported_with_marker_delta_readback",
+            "shape_layer_create":"source_supported_with_creation_identity",
+            "solid_layer_create":"source_supported_with_source_dimension_readback",
+            "camera_layer_create":"source_supported_with_creation_identity",
+            "light_layer_create":"source_supported_with_creation_identity",
+            "layer_state_write":"source_supported_with_readback",
+            "layer_reorder":"source_supported_with_relative_index_readback",
+            "track_matte":"source_supported_with_native_relationship_readback",
+            "time_remap_toggle":"source_supported_with_readback",
+            "source_replacement":"source_supported_with_source_item_id_readback",
             "runtime_verified":"not_verified"
         },
         "safety":[
