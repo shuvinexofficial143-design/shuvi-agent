@@ -19,6 +19,12 @@ pub struct Request {
     pub args:Value,
 }
 impl Request {
+    pub fn is_mutating(&self)->bool{
+        matches!(self.action.as_str(),"set_property"|"set_values_at_times"|"add_effect"|"add_null"|"add_render_queue_item"|"save_project")
+    }
+    pub fn is_read_only(&self)->bool{
+        matches!(self.action.as_str(),"inspect_context"|"inspect_comp"|"inspect_property"|"inspect_render_queue")
+    }
     pub fn validate(&self)->Result<(),String>{
         if self.schema_version!=1
             || self.request_id.is_empty() || self.request_id.len()>80
@@ -27,6 +33,12 @@ impl Request {
             || !self.action.bytes().all(|b|b.is_ascii_lowercase()||b==b'_')
         {
             return Err("Invalid bounded After Effects request envelope.".into());
+        }
+        if !self.is_read_only() && !self.is_mutating() {
+            return Err("Unsupported typed After Effects action.".into());
+        }
+        if self.is_mutating() && self.expected_project_file.is_none() {
+            return Err("Mutating After Effects action requires expected_project_file.".into());
         }
         if let Some(path)=&self.expected_project_file {
             crate::after_effects::validate_project_path(path)?;
@@ -179,9 +191,21 @@ mod tests{
 
     #[test]fn request_rejects_unbounded_or_injectable_identity(){
         request().validate().unwrap();
+        assert!(request().is_read_only());
+        assert!(!request().is_mutating());
         let mut bad=request();bad.request_id="a b".into();assert!(bad.validate().is_err());
         let mut bad=request();bad.action="inspect-context".into();assert!(bad.validate().is_err());
         let mut bad=request();bad.args=serde_json::json!({"x":"z".repeat(MAX_REQUEST_BYTES)});assert!(bad.validate().is_err());
+    }
+
+    #[test]fn mutations_require_saved_project_expectation_and_unknown_actions_fail_closed(){
+        let mut mutation=request();mutation.action="set_values_at_times".into();
+        assert!(mutation.validate().unwrap_err().contains("expected_project_file"));
+        mutation.expected_project_file=Some(if cfg!(windows){r"C:\Work\edit.aep".into()}else{"/tmp/edit.aep".into()});
+        assert!(mutation.validate().is_ok());
+        assert!(mutation.is_mutating());
+        let mut unknown=request();unknown.action="do_anything".into();
+        assert!(unknown.validate().unwrap_err().contains("Unsupported typed"));
     }
 
     #[test]fn runner_uses_exact_request_identity_and_afterfx_r(){
