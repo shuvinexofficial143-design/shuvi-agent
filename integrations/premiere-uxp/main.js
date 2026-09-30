@@ -1232,7 +1232,7 @@ function nativeCapabilityRegistry() {
       vertical_move:target("Verified cross-track move uses clone correlation followed by exact source deletion; partial completion is surfaced."),
       replacement_nesting:target("Single exact video nesting requires selected-only subsequence inspection and atomic remove/overwrite replacement."),
       linked_clip_editing:unsupported("Linked-group identity is not available; do not infer links."),
-      multicam:unsupported("No reviewed native multicam creation/switching route."),
+      multicam:target("Existing ClipProjectItem multicam identity can be read with isMulticamClip() and inserted through the typed project-item timeline path; creation/switching remain unsupported."),
       caption_write:unsupported("Caption text creation/editing is unsupported; SRT delivery is separate."),
       effect_remove:target("Inspect the exact component chain and removal action."),
       keyframe_write:target("Inspect exact parameter identity, native ticks and supported keyframe actions."),
@@ -5987,6 +5987,45 @@ function insertionVerification(before, after, itemId, seconds, mode) {
   };
 }
 
+async function inspectMulticamItem(argumentsValue) {
+  const itemId=typeof argumentsValue?.itemId==="string"?argumentsValue.itemId.trim():"";
+  if (!itemId || itemId.length>512) throw new Error("Exact bounded multicam project item id is required.");
+  const project=await requireProject(), root=await project.getRootItem();
+  const item=await findProjectItemById(root,itemId);
+  if (!item) throw new Error("Premiere project item id was not found.");
+  const clip=asClipProjectItem(item);
+  if (!clip || typeof clip.isMulticamClip!=="function") {
+    return {itemId,itemName:item?.name||null,isMulticamClip:null,inspectionVerified:false,
+      insertSupported:false,creationSupported:false,switchingSupported:false,
+      reason:"Project item does not expose ClipProjectItem.isMulticamClip()."};
+  }
+  let isMulticamClip=null,isMergedClip=null,isSequence=null,mediaPath=null;
+  try {isMulticamClip=Boolean(await clip.isMulticamClip());} catch {}
+  try {isMergedClip=Boolean(await clip.isMergedClip());} catch {}
+  try {isSequence=Boolean(await clip.isSequence());} catch {}
+  try {mediaPath=await clip.getMediaFilePath();} catch {}
+  const verified=typeof isMulticamClip==="boolean";
+  return {itemId,itemName:item?.name||null,isMulticamClip,isMergedClip,isSequence,mediaPath,
+    inspectionVerified:verified,insertSupported:isMulticamClip===true,
+    creationSupported:false,switchingSupported:false,
+    projectGuid:plainGuid(project.guid),projectPath:project.path||null,
+    reason:isMulticamClip===true
+      ?"Native multicam identity verified. Existing multicam insertion is supported; creation/switching are not."
+      :"Project item is not a native multicam clip."};
+}
+
+async function insertMulticamItem(argumentsValue) {
+  const inspection=await inspectMulticamItem(argumentsValue);
+  if (!inspection.inspectionVerified || inspection.isMulticamClip!==true) {
+    throw new Error("Multicam insertion requires an existing project item verified by ClipProjectItem.isMulticamClip().");
+  }
+  const result=await insertProjectItem(argumentsValue);
+  const verified=result.verificationStatus==="verified_insert_delta";
+  return {...result,multicamIdentityVerified:true,multicamCreationPerformed:false,
+    angleSwitchingPerformed:false,verificationStatus:verified?"verified_multicam_insert":"accepted_unverified",
+    uncertain:!verified,retrySafe:false};
+}
+
 async function insertProjectItem(argumentsValue, explicitSequence = null) {
   const itemId =
     typeof argumentsValue?.itemId === "string"
@@ -6686,6 +6725,10 @@ async function dispatchNativeCommand(command) {
       return await inspectAssemblyItems(command.arguments || {});
     case "insert_project_item":
       return await insertProjectItem(command.arguments || {});
+    case "inspect_multicam_item":
+      return await inspectMulticamItem(command.arguments || {});
+    case "insert_multicam_item":
+      return await insertMulticamItem(command.arguments || {});
     case "save_project":
       return await saveProject();
     case "project_diagnostics":

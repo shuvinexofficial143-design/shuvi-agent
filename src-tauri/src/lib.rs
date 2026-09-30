@@ -227,6 +227,8 @@ Transcript rebuild handles explicit interior text removal by creating and insert
 - premiere_create_subsequence: {"targets":[{"kind":"video|audio","track":0,"clip_index":0}]}
 - premiere_replace_with_subsequence: {"source":{"kind":"video","track":0,"clip_index":0,"signature":"exact inspected targetSignature"},"expected":"exact one-source expectation"}
 - premiere_insert_project_item: {"item_id":"project item id","seconds":0,"video_track":0,"audio_track":0,"mode":"insert|overwrite"}
+- premiere_inspect_multicam_item: {"item_id":"exact project item id"}
+- premiere_insert_multicam_item: {"item_id":"verified multicam project item id","seconds":0,"video_track":0,"audio_track":0,"mode":"insert|overwrite","expected":{"project_guid":"...","sequence_guid":"...","clips":[]}}
 - premiere_insert_media: {"path":"absolute media path","seconds":0,"video_track":0,"audio_track":0,"mode":"insert|overwrite"}
 - premiere_trim_clip: {"kind":"video|audio","track":0,"clip_index":0,"start_seconds":0.0,"end_seconds":5.0}
 - premiere_roll_edit: {"kind":"video|audio","track":0,"left_clip_index":0,"right_clip_index":1,"boundary_seconds":5.0}
@@ -585,6 +587,8 @@ enum ToolAction {
     PremiereCreateSubsequence { targets: Vec<Value> },
     PremiereReplaceWithSubsequence { source: premiere_layering::SourceTarget },
     PremiereInsertProjectItem { item_id: String, seconds: f64, video_track: u32, audio_track: u32, mode: String },
+    PremiereInspectMulticamItem { item_id: String },
+    PremiereInsertMulticamItem { item_id: String, seconds: f64, video_track: u32, audio_track: u32, mode: String },
     PremiereInsertMedia { path: String, seconds: f64, video_track: u32, audio_track: u32, mode: String },
     PremiereTrimClip { kind: String, track: u32, clip_index: u32, start_seconds: Option<f64>, end_seconds: Option<f64> },
     PremiereRollEdit { kind: String, track: u32, left_clip_index: u32, right_clip_index: u32, boundary_seconds: f64 },
@@ -1169,6 +1173,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_create_subsequence"
         | "premiere_replace_with_subsequence"
         | "premiere_insert_project_item"
+        | "premiere_inspect_multicam_item"
+        | "premiere_insert_multicam_item"
         | "premiere_insert_media"
         | "premiere_trim_clip"
         | "premiere_roll_edit"
@@ -4898,6 +4904,38 @@ fn stage_tool(
                 },
                 "Insert Premiere project item".to_string(),
                 format!("Insert project item {item_id} at {seconds:.3}s on V{video_track}/A{audio_track} using {mode}."),
+                RiskLevel::High,
+            )
+        }
+        "premiere_inspect_multicam_item" => {
+            let item_id=arg_string(&proposal.arguments,"item_id")?;
+            if item_id.len()>512 {return Err("Multicam item id exceeds the supported bound.".into());}
+            (
+                ToolAction::PremiereInspectMulticamItem{item_id},
+                "Inspect Premiere multicam item".into(),
+                "Verify whether an existing project item is a native multicam clip. Read-only; does not create or switch angles.".into(),
+                RiskLevel::Low,
+            )
+        }
+        "premiere_insert_multicam_item" => {
+            let item_id=arg_string(&proposal.arguments,"item_id")?;
+            if item_id.len()>512 {return Err("Multicam item id exceeds the supported bound.".into());}
+            let seconds=proposal.arguments.get("seconds").and_then(Value::as_f64).unwrap_or(0.0);
+            let video_track=proposal.arguments.get("video_track").and_then(Value::as_u64).unwrap_or(0);
+            let audio_track=proposal.arguments.get("audio_track").and_then(Value::as_u64).unwrap_or(0);
+            let mode=arg_string(&proposal.arguments,"mode")?.to_ascii_lowercase();
+            if !seconds.is_finite() || !(0.0..=86_400.0).contains(&seconds) || video_track>128 || audio_track>128
+                || !matches!(mode.as_str(),"insert"|"overwrite") {
+                return Err("Invalid bounded multicam insertion destination.".into());
+            }
+            let expected=premiere_expectation.as_ref().ok_or("Multicam insertion requires project/sequence expectation.")?;
+            if expected.sequence_guid.is_none() || !expected.clips.is_empty() {
+                return Err("Multicam insertion requires active sequence identity and no stale clip targets.".into());
+            }
+            (
+                ToolAction::PremiereInsertMulticamItem{item_id,seconds,video_track:video_track as u32,audio_track:audio_track as u32,mode},
+                "Insert existing Premiere multicam clip".into(),
+                "Verify isMulticamClip() first, checkpoint the project, insert through native SequenceEditor, then require exact insertion delta.".into(),
                 RiskLevel::High,
             )
         }
@@ -11027,6 +11065,25 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 stderr: String::new(),
                 exit_code: Some(if verified {0}else{1}),
             })
+        }
+        ToolAction::PremiereInspectMulticamItem {item_id} => {
+            let value=premiere_bridge.request("inspect_multicam_item",json!({"itemId":item_id}),Duration::from_secs(12)).await?;
+            let verified=value.get("inspectionVerified").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{success:verified,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(if verified{0}else{1})})
+        }
+        ToolAction::PremiereInsertMulticamItem {item_id,seconds,video_track,audio_track,mode} => {
+            let expected=premiere_bridge.expected.ok_or("Multicam insertion requires project/sequence expectation.")?;
+            let checkpoint=backup_premiere_project(&premiere_bridge).await?;
+            let client=PremiereClient{bridge:&state.premiere_bridge,expected:Some(expected)};
+            let value=client.request("insert_multicam_item",json!({"itemId":item_id,"seconds":seconds,
+                "videoTrack":video_track,"audioTrack":audio_track,"mode":mode}),Duration::from_secs(45)).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_multicam_insert")
+                && value.get("multicamIdentityVerified").and_then(Value::as_bool)==Some(true)
+                && value.get("uncertain").and_then(Value::as_bool)==Some(false);
+            Ok(ActionResult{success:verified,tool,stdout:json!({"checkpoint":checkpoint,"result":value,
+                "verified":verified,"multicam_creation_performed":false,"angle_switching_performed":false,
+                "retry_safe":false}).to_string(),stderr:String::new(),exit_code:Some(if verified{0}else{1})})
         }
         ToolAction::PremiereInsertProjectItem { item_id, seconds, video_track, audio_track, mode } => {
             let backup = backup_premiere_project(&premiere_bridge).await?;
