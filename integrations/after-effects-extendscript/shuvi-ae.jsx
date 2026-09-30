@@ -883,12 +883,12 @@
     function setLayerTiming(args) {
         var comp=resolveComp(args.comp_id),layer=resolveLayer(comp,args.layer_id);
         if(layer.locked)fail("Layer is locked; timing mutation refused.");
-        var requested={};
-        if(args.start_time!==undefined){if(!finiteNumber(args.start_time)||args.start_time<-10800||args.start_time>10800)fail("start_time outside AE bounds.");requested.startTime=args.start_time;}
-        if(args.stretch!==undefined){if(!finiteNumber(args.stretch)||args.stretch===0||args.stretch<-9900||args.stretch>9900||Math.abs(args.stretch)<1)fail("stretch must be -9900..-1 or 1..9900.");requested.stretch=args.stretch;}
-        if(args.in_point!==undefined){if(!finiteNumber(args.in_point)||args.in_point<-10800||args.in_point>10800)fail("in_point outside AE bounds.");requested.inPoint=args.in_point;}
-        if(args.out_point!==undefined){if(!finiteNumber(args.out_point)||args.out_point<-10800||args.out_point>10800)fail("out_point outside AE bounds.");requested.outPoint=args.out_point;}
-        if(Object.keys(requested).length===0)fail("set_layer_timing requires at least one requested field.");
+        var requested={},requestedCount=0;
+        if(args.start_time!==undefined){if(!finiteNumber(args.start_time)||args.start_time<-10800||args.start_time>10800)fail("start_time outside AE bounds.");requested.startTime=args.start_time;requestedCount++;}
+        if(args.stretch!==undefined){if(!finiteNumber(args.stretch)||args.stretch===0||args.stretch<-9900||args.stretch>9900||Math.abs(args.stretch)<1)fail("stretch must be -9900..-1 or 1..9900.");requested.stretch=args.stretch;requestedCount++;}
+        if(args.in_point!==undefined){if(!finiteNumber(args.in_point)||args.in_point<-10800||args.in_point>10800)fail("in_point outside AE bounds.");requested.inPoint=args.in_point;requestedCount++;}
+        if(args.out_point!==undefined){if(!finiteNumber(args.out_point)||args.out_point<-10800||args.out_point>10800)fail("out_point outside AE bounds.");requested.outPoint=args.out_point;requestedCount++;}
+        if(requestedCount===0)fail("set_layer_timing requires at least one requested field.");
         var desiredIn=requested.inPoint!==undefined?requested.inPoint:layer.inPoint;
         var desiredOut=requested.outPoint!==undefined?requested.outPoint:layer.outPoint;
         if(desiredOut<=desiredIn)fail("Layer out_point must remain greater than in_point.");
