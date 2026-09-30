@@ -5760,16 +5760,32 @@ async function createSubsequence(argumentsValue) {
   }
 
   const uniqueItems = [];
+  const uniqueEntries = [];
   const seen = new Set();
   for (const entry of resolved) {
     const key = entry.kind + ":" + entry.trackIndex + ":" + entry.clipIndex;
     if (seen.has(key)) continue;
     seen.add(key);
     uniqueItems.push(entry.item);
+    uniqueEntries.push(entry);
   }
 
   if (!uniqueItems.length) {
     throw new Error("No unique Premiere clips were resolved for the subsequence.");
+  }
+
+  const requestedContent=[];
+  for (const entry of uniqueEntries) {
+    const [start,end,inPoint,outPoint,projectItem]=await Promise.all([
+      entry.item.getStartTime(),entry.item.getEndTime(),entry.item.getInPoint(),entry.item.getOutPoint(),entry.item.getProjectItem()
+    ]);
+    const mediaId=await projectItemId(projectItem);
+    if (!mediaId||!Number.isFinite(start?.seconds)||!Number.isFinite(end?.seconds)
+        ||!Number.isFinite(inPoint?.seconds)||!Number.isFinite(outPoint?.seconds)||end.seconds<=start.seconds) {
+      throw new Error("Selected subsequence content could not be completely fingerprinted.");
+    }
+    requestedContent.push({kind:entry.kind,mediaId,startSeconds:start.seconds,endSeconds:end.seconds,
+      durationSeconds:end.seconds-start.seconds,sourceInSeconds:inPoint.seconds,sourceOutSeconds:outPoint.seconds});
   }
 
   let newSequence;
@@ -5811,15 +5827,44 @@ async function createSubsequence(argumentsValue) {
   const sequenceIdentityVerified = Boolean(sequenceGuid)
     && !beforeSequenceGuids.has(sequenceGuid)
     && sequenceMatches.length === 1;
-  const verified = sequenceIdentityVerified && projectItemResolved && selectionRestored;
+  let observedContent=null,selectionSemanticsVerified=false,contentReason=null;
+  try {
+    observedContent=await sequenceClipContent(newSequence);
+    const flatten=value=>[...(value.video||[]),...(value.audio||[])];
+    const normalize=rows=>{
+      if (!rows.length) return [];
+      const zero=Math.min(...rows.map(row=>row.startSeconds));
+      return rows.map(row=>({
+        kind:row.kind,mediaId:row.mediaId,
+        relativeStartMs:Math.round((row.startSeconds-zero)*1000),
+        durationMs:Math.round(row.durationSeconds*1000),
+        sourceInMs:Math.round(row.sourceInSeconds*1000),
+        sourceOutMs:Math.round(row.sourceOutSeconds*1000)
+      })).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)));
+    };
+    const requestedNormalized=normalize(requestedContent);
+    const observedNormalized=normalize(flatten(observedContent));
+    selectionSemanticsVerified=requestedNormalized.length===observedNormalized.length
+      &&JSON.stringify(requestedNormalized)===JSON.stringify(observedNormalized);
+    contentReason=selectionSemanticsVerified?null:"Nested clip inventory/source ranges/relative timing did not exactly match the selected source clips.";
+  } catch (error) {
+    contentReason="Nested content verification failed: "+String(error?.message||error).slice(0,180);
+  }
+  const verified = sequenceIdentityVerified && projectItemResolved && selectionRestored && selectionSemanticsVerified;
 
   return {
     created: true,
-    selectedClipCount: uniqueItems.length, // Requested selection count; content semantics remain unverified.
+    selectedClipCount: uniqueItems.length,
     requestedClipCount: uniqueItems.length,
     selectionRestored,
-    selectionSemanticsVerified: false,
-    warning: "Subsequence created; exact selected-only content and replacement nesting are not verified.",
+    selectionSemanticsVerified,
+    contentSemantics:{
+      verified:selectionSemanticsVerified,
+      requestedClipCount:requestedContent.length,
+      observedClipCount:observedContent?[...observedContent.video,...observedContent.audio].length:null,
+      reason:contentReason
+    },
+    warning: verified?null:"Subsequence identity may exist, but exact selected-only clip content semantics were not fully verified.",
     sequenceGuid,
     sequenceName: newSequence.name || null,
     projectItemId,
@@ -5843,12 +5888,16 @@ async function sequenceClipContent(sequence) {
       if (!Array.isArray(items) || items.length > budget) throw new Error("Nested sequence content exceeds the 64-clip verification bound.");
       for (let clipIndex=0; clipIndex<items.length; clipIndex++) {
         const item=items[clipIndex];
-        const [start,end,projectItem]=await Promise.all([item.getStartTime(),item.getEndTime(),item.getProjectItem()]);
+        const [start,end,inPoint,outPoint,projectItem]=await Promise.all([
+          item.getStartTime(),item.getEndTime(),item.getInPoint(),item.getOutPoint(),item.getProjectItem()
+        ]);
         const mediaId=await projectItemId(projectItem);
-        if (!mediaId || !Number.isFinite(start?.seconds) || !Number.isFinite(end?.seconds) || end.seconds<=start.seconds) {
-          throw new Error("Nested sequence contains an unidentifiable clip.");
+        if (!mediaId || !Number.isFinite(start?.seconds) || !Number.isFinite(end?.seconds)
+            || !Number.isFinite(inPoint?.seconds) || !Number.isFinite(outPoint?.seconds) || end.seconds<=start.seconds) {
+          throw new Error("Nested sequence contains an unidentifiable clip or source range.");
         }
-        out.push({kind,trackIndex,clipIndex,mediaId,startSeconds:start.seconds,endSeconds:end.seconds,durationSeconds:end.seconds-start.seconds});
+        out.push({kind,trackIndex,clipIndex,mediaId,startSeconds:start.seconds,endSeconds:end.seconds,
+          durationSeconds:end.seconds-start.seconds,sourceInSeconds:inPoint.seconds,sourceOutSeconds:outPoint.seconds});
         budget--;
       }
     }
