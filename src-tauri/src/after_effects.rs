@@ -150,6 +150,15 @@ pub fn capability_report()->Value {
             "native_motion_tracker_control":"unsupported_documented_surface",
             "native_hand_detection":"not_provided_by_ae_scripting",
             "external_hand_tracking_apply":"source_supported_when_grounded_samples_are_supplied",
+            "text_layer_create":"source_supported_with_readback",
+            "expression_write":"source_supported_with_error_and_readback",
+            "layer_parenting":"source_supported_with_parent_id_readback",
+            "layer_duplicate":"source_supported_creation_identity_only",
+            "layer_remove":"source_supported_with_absence_readback",
+            "precompose_move_all_attributes":"source_supported_with_content_identity_readback",
+            "mask_create":"source_supported_with_shape_readback",
+            "scene_edit_detection_read":"source_supported",
+            "scene_edit_markers":"source_supported_with_marker_delta_readback",
             "runtime_verified":"not_verified"
         },
         "safety":[
