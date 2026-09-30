@@ -35,3 +35,16 @@ test('delivery validates format and normalized output identity without promoting
   const desktop=readFileSync('src-tauri/src/lib.rs','utf8');
   assert.doesNotMatch(desktop,/error.contains\("Premiere rejected the export request"\)/);
 });
+
+test('saved Premiere recipes use durable validated snapshots',()=>{
+  const desktop=readFileSync('src-tauri/src/lib.rs','utf8');
+  const decode=desktop.slice(desktop.indexOf('fn decode_premiere_recipes'),desktop.indexOf('fn read_premiere_recipes'));
+  assert.match(decode,/recipes\.len\(\) > 250/);
+  assert.match(decode,/duplicate recipe names/);
+  assert.match(decode,/matches!\(recipe\.kind\.as_str\(\), "video" \| "audio"\)/);
+  assert.match(decode,/validate_premiere_saved_recipe_settings/);
+  const write=desktop.slice(desktop.indexOf('fn write_premiere_recipes'),desktop.indexOf('fn session_checkpoint_path'));
+  assert.match(write,/premiere_store::replace/);
+  assert.doesNotMatch(write,/fs::write\(/);
+  assert.doesNotMatch(write,/fs::rename\(/);
+});

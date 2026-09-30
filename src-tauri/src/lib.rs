@@ -6720,23 +6720,40 @@ fn stage_graphics_batch(value: &Value, expected: Option<&PremiereExpectation>) -
     Ok(batch)
 }
 
+fn decode_premiere_recipes(data: &[u8]) -> Result<Vec<PremiereSavedRecipe>, String> {
+    let recipes: Vec<PremiereSavedRecipe> = serde_json::from_slice(data)
+        .map_err(|error| format!("Premiere recipe library is invalid: {error}"))?;
+    if recipes.len() > 250 {
+        return Err("Premiere recipe library exceeds 250 recipes.".into());
+    }
+    let mut names = std::collections::HashSet::new();
+    for recipe in &recipes {
+        let trimmed = recipe.name.trim();
+        if trimmed.is_empty() || recipe.name.chars().count() > 120 || recipe.name.chars().any(char::is_control) {
+            return Err("Premiere recipe library contains an invalid recipe name.".into());
+        }
+        let key = trimmed.to_ascii_lowercase();
+        if !names.insert(key) {
+            return Err("Premiere recipe library contains duplicate recipe names.".into());
+        }
+        if !matches!(recipe.kind.as_str(), "video" | "audio") {
+            return Err("Premiere recipe library contains an invalid recipe kind.".into());
+        }
+        validate_premiere_saved_recipe_settings(&recipe.settings)?;
+    }
+    Ok(recipes)
+}
+
 fn read_premiere_recipes(app: &AppHandle) -> Result<Vec<PremiereSavedRecipe>, String> {
     let path = premiere_recipes_path(app)?;
     let backup = path.with_extension("json.bak");
     if !path.exists() && !backup.exists() {
         return Ok(Vec::new());
     }
-
     let decode = |candidate: &Path| -> Result<Vec<PremiereSavedRecipe>, String> {
-        let content = read_utf8_file_bounded(
-            candidate,
-            2 * 1024 * 1024,
-            "Premiere recipe library",
-        )?;
-        serde_json::from_str(&content)
-            .map_err(|error| format!("Premiere recipe library is invalid: {error}"))
+        let bytes = read_file_bytes_bounded(candidate, 2 * 1024 * 1024, "Premiere recipe library")?;
+        decode_premiere_recipes(&bytes)
     };
-
     if path.exists() {
         decode(&path).or_else(|primary_error| {
             if backup.exists() { decode(&backup) } else { Err(primary_error) }
@@ -6753,37 +6770,16 @@ fn write_premiere_recipes(
     if recipes.len() > 250 {
         return Err("Premiere recipe library is limited to 250 recipes.".into());
     }
-
     let path = premiere_recipes_path(app)?;
-    let temp = path.with_extension("json.tmp");
-    let backup = path.with_extension("json.bak");
     let content = serde_json::to_vec_pretty(recipes)
         .map_err(|error| format!("Could not encode Premiere recipes: {error}"))?;
-
     if content.len() > 2 * 1024 * 1024 {
         return Err("Premiere recipe library would exceed Shuvi's 2 MB limit.".into());
     }
-
-    fs::write(&temp, &content)
-        .map_err(|error| format!("Could not write temporary Premiere recipe library: {error}"))?;
-
-    if backup.exists() {
-        let _ = fs::remove_file(&backup);
-    }
-    if path.exists() {
-        fs::rename(&path, &backup)
-            .map_err(|error| format!("Could not preserve the previous Premiere recipe library: {error}"))?;
-    }
-    if let Err(error) = fs::rename(&temp, &path) {
-        if backup.exists() {
-            let _ = fs::rename(&backup, &path);
-        }
-        return Err(format!("Could not finalize Premiere recipe library: {error}"));
-    }
-    if backup.exists() {
-        let _ = fs::remove_file(&backup);
-    }
-    Ok(())
+    decode_premiere_recipes(&content)?;
+    premiere_store::replace(&path, &content, 2 * 1024 * 1024, |bytes| {
+        decode_premiere_recipes(bytes).map(|_| ())
+    })
 }
 
 fn session_checkpoint_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
