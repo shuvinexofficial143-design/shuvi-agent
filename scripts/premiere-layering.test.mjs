@@ -70,6 +70,19 @@ test("track rename supports documented existing video audio caption tracks",()=>
   assert.match(uxp,/Native track rename requires Premiere 26\.3\+/);
 });
 
+test("track rename and organization recheck index-bound targets before mutation",()=>{
+  const rename=uxp.slice(uxp.indexOf("async function renameTrack"),uxp.indexOf("async function organizeTracks"));
+  assert.match(rename,/const inspectedName = track\.name \?\? null/);
+  assert.match(rename,/const freshTrack = await resolveTrackByKind/);
+  assert.match(rename,/freshTrack\.name !== inspectedName/);
+  assert.match(rename,/stableTrackIdentityAvailable:false/);
+  const organize=uxp.slice(uxp.indexOf("async function organizeTracks"),uxp.indexOf("async function resolveNamedVideoParam"));
+  assert.match(organize,/const freshResolved = \[\]/);
+  assert.match(organize,/freshTrack\.name !== entry\.inspectedName/);
+  assert.match(organize,/for \(const entry of freshResolved\) compoundAction\.addAction/);
+  assert.match(organize,/stableTrackIdentityAvailable:false/);
+});
+
 test("track organization is one bounded compound transaction with readback",()=>{
   assert.match(layering,/MAX_TRACK_RENAMES: usize = 32/);
   assert.match(uxp,/Shuvi: Organize Tracks/);

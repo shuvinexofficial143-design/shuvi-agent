@@ -3254,9 +3254,14 @@ async function renameTrack(argumentsValue) {
   if (typeof track.createSetNameAction !== "function") {
     throw new Error("Native track rename requires Premiere 26.3+.");
   }
+  const inspectedName = track.name ?? null;
+  const freshTrack = await resolveTrackByKind(sequence,kind,trackIndex);
+  if (!freshTrack || freshTrack.name !== inspectedName || typeof freshTrack.createSetNameAction !== "function") {
+    throw new Error("Premiere track changed during rename preflight; inspect again.");
+  }
   let transactionSucceeded = false;
   project.lockedAccess(() => {
-    const action = track.createSetNameAction(name);
+    const action = freshTrack.createSetNameAction(name);
     transactionSucceeded = project.executeTransaction(compoundAction => {
       compoundAction.addAction(action);
     }, "Shuvi: Rename Track");
@@ -3270,6 +3275,8 @@ async function renameTrack(argumentsValue) {
     track:trackIndex,
     requestedName:name,
     observedName:after?.name ?? null,
+    inspectedName,
+    stableTrackIdentityAvailable:false,
     verificationStatus:verified ? "verified_readback" : "accepted_unverified",
     retrySafe:false
   };
@@ -3298,25 +3305,36 @@ async function organizeTracks(argumentsValue) {
     const track = await resolveTrackByKind(sequence,kind,trackIndex);
     if (!track) throw new Error("Track organization references a missing existing track.");
     if (typeof track.createSetNameAction !== "function") throw new Error("Native track rename requires Premiere 26.3+.");
-    resolved.push({kind,trackIndex,name,track});
+    resolved.push({kind,trackIndex,name,track,inspectedName:track.name ?? null});
+  }
+
+  const freshResolved = [];
+  for (const entry of resolved) {
+    const freshTrack = await resolveTrackByKind(sequence,entry.kind,entry.trackIndex);
+    if (!freshTrack || freshTrack.name !== entry.inspectedName || typeof freshTrack.createSetNameAction !== "function") {
+      throw new Error("Premiere track organization changed during preflight; inspect again.");
+    }
+    freshResolved.push({...entry,track:freshTrack});
   }
 
   let transactionSucceeded = false;
   project.lockedAccess(() => {
     transactionSucceeded = project.executeTransaction(compoundAction => {
-      for (const entry of resolved) compoundAction.addAction(entry.track.createSetNameAction(entry.name));
+      for (const entry of freshResolved) compoundAction.addAction(entry.track.createSetNameAction(entry.name));
     }, "Shuvi: Organize Tracks");
   });
   if (!transactionSucceeded) throw new Error("Premiere rejected the track organization transaction.");
 
   const results = [];
-  for (const entry of resolved) {
+  for (const entry of freshResolved) {
     const current = await resolveTrackByKind(sequence,entry.kind,entry.trackIndex);
     results.push({
       kind:entry.kind,
       track:entry.trackIndex,
       requestedName:entry.name,
+      inspectedName:entry.inspectedName,
       observedName:current?.name ?? null,
+      stableTrackIdentityAvailable:false,
       verified:current?.name === entry.name
     });
   }
