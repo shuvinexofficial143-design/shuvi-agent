@@ -14,6 +14,8 @@ pub struct Request {
     pub request_id:String,
     pub action:String,
     #[serde(default)]
+    pub expected_project_file:Option<String>,
+    #[serde(default)]
     pub args:Value,
 }
 impl Request {
@@ -25,6 +27,9 @@ impl Request {
             || !self.action.bytes().all(|b|b.is_ascii_lowercase()||b==b'_')
         {
             return Err("Invalid bounded After Effects request envelope.".into());
+        }
+        if let Some(path)=&self.expected_project_file {
+            crate::after_effects::validate_project_path(path)?;
         }
         let bytes=serde_json::to_vec(self).map_err(|e|e.to_string())?;
         if bytes.len()>MAX_REQUEST_BYTES{return Err("After Effects request exceeds 512 KiB.".into());}
@@ -170,7 +175,7 @@ pub fn parse_receipt(bytes:&[u8],request:&Request)->Result<Receipt,String>{
 #[cfg(test)]
 mod tests{
     use super::*;
-    fn request()->Request{Request{schema_version:1,request_id:"abc-123".into(),action:"inspect_context".into(),args:Value::Object(Default::default())}}
+    fn request()->Request{Request{schema_version:1,request_id:"abc-123".into(),action:"inspect_context".into(),expected_project_file:None,args:Value::Object(Default::default())}}
 
     #[test]fn request_rejects_unbounded_or_injectable_identity(){
         request().validate().unwrap();
