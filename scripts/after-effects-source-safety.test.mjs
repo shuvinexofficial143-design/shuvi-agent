@@ -330,3 +330,19 @@ test("AE MOGRT export requires host and desktop exact file agreement",()=>{
   assert.match(jsx,/MOGRT output_file must be absolute/);
   assert.match(jsx,/MOGRT output already exists; explicit overwrite=true required/);
 });
+
+
+test("AE hand-track rig only applies grounded samples and never claims native detection",()=>{
+  assert.match(transport,/"apply_hand_track_rig"/);
+  assert.match(rust,/"hand_track_rig":"source_supported_grounded_samples_to_null_position_keyframes_with_optional_parent_readback"/);
+  assert.match(jsx,/validateGroundedTrackSamples/);
+  assert.match(jsx,/coordinate_space=comp_pixels/);
+  assert.match(jsx,/position\.setValuesAtTimes\(track\.times,track\.values\)/);
+  assert.match(jsx,/target\.parent=nullLayer/);
+  assert.match(jsx,/target\.setParentWithJump\(nullLayer\)/);
+  assert.match(jsx,/verified_hand_track_rig_readback/);
+  assert.match(jsx,/native_hand_detection_claimed:false/);
+  const start=jsx.indexOf("function applyHandTrackRig("),next=jsx.indexOf("\n    function ",start+10);
+  assert.notEqual(start,-1);
+  assert.match(jsx.slice(start,next<0?jsx.length:next),/retry_safe:false/);
+});
