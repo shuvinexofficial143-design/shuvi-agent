@@ -73,6 +73,21 @@ impl PremiereClient<'_> {
             if context.pointer("/capabilities/targetExpectations").and_then(Value::as_u64) != Some(1) {
                 return Err("Paired Premiere panel cannot enforce target expectations. Reload the updated panel before editing.".into());
             }
+            if mutation_requires_expectation(action)
+                && context.pointer("/capabilities/registry/schemaVersion").and_then(Value::as_u64)!=Some(1) {
+                return Err("Paired Premiere capability registry is unavailable or incompatible. Reload the updated panel before editing.".into());
+            }
+            let delivery=match action {
+                "export_sequence"=>Some("sequence"),"export_sequence_frame"=>Some("frame"),
+                "export_interchange"=>Some(arguments.get("format").and_then(Value::as_str).ok_or("Delivery format missing.")?),
+                _=>None,
+            };
+            if let Some(name)=delivery {
+                if !matches!(name,"sequence"|"frame"|"aaf"|"fcpxml"|"otio")
+                    || context.pointer(&format!("/capabilities/registry/capabilities/{name}/apiObserved")).and_then(Value::as_bool)!=Some(true) {
+                    return Err("Native delivery API was not observed by the paired capability registry; no UI fallback is permitted.".into());
+                }
+            }
             let object = arguments.as_object_mut().ok_or("Premiere command arguments must be an object.")?;
             object.insert("_expected".into(), serde_json::to_value(expected).map_err(|e| e.to_string())?);
         }

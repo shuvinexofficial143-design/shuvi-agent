@@ -225,7 +225,7 @@ async function inspectActiveContext() {
 
   if (!project) {
     return {
-      capabilities: { targetExpectations: 1, responseCorrelation: 2, effectIndexSignatures: 1, markerSignatures: 1, delivery: nativeDeliveryCapabilities() },
+      capabilities: { targetExpectations: 1, responseCorrelation: 2, effectIndexSignatures: 1, markerSignatures: 1, delivery: nativeDeliveryCapabilities(), registry: nativeCapabilityRegistry() },
     premiereVersion: host?.version || null,
       uxpVersion: versions?.uxp || null,
       projectDetected: false,
@@ -267,7 +267,7 @@ async function inspectActiveContext() {
   }
 
   return {
-    capabilities: { targetExpectations: 1, responseCorrelation: 2, effectIndexSignatures: 1, markerSignatures: 1, delivery: nativeDeliveryCapabilities() },
+    capabilities: { targetExpectations: 1, responseCorrelation: 2, effectIndexSignatures: 1, markerSignatures: 1, delivery: nativeDeliveryCapabilities(), registry: nativeCapabilityRegistry() },
     premiereVersion: host?.version || null,
     uxpVersion: versions?.uxp || null,
     projectDetected: true,
@@ -552,7 +552,7 @@ async function timelineCapabilities() {
   const sequence = await project.getActiveSequence();
   if (!sequence) throw new Error("No active Premiere sequence.");
   const editor = premiere.SequenceEditor?.getEditor?.(sequence);
-  const unavailable = reason => ({supported: false, reason, fallback: "semantic_ui_optional", fallbackImplemented: false});
+  const unavailable = reason => ({supported: false, reason, fallback: "none", fallbackImplemented: false});
   return {
     sequenceGuid: plainGuid(sequence.guid), runtimeVerified: false,
     verticalClone: {supported: typeof editor?.createCloneTrackItemAction === "function", operation: "clone", preservesOriginal: true},
@@ -966,8 +966,44 @@ async function deleteClip(argumentsValue) {
   };
 }
 
+function capabilityEvidence(sourceRouteExists, apiObserved, apiSince, reason = null) {
+  return {sourceRouteExists, apiObserved, apiSince,
+    safeExecutionSupported: sourceRouteExists && apiObserved !== false ? null : false,
+    requiresTargetInspection: sourceRouteExists, runtimeAccepted:false, recoveryVerified:false,
+    exportCompletionVerified:false, uiFallback:false, reason};
+}
+
+function observedSceneApis() {
+  return typeof premiere.SequenceUtils?.performSceneEditDetectionOnSelection === "function" &&
+    typeof premiere.TrackItemSelection?.createEmptySelection === "function";
+}
+
+function nativeCapabilityRegistry() {
+  const target = (reason) => capabilityEvidence(true, null, null, reason);
+  const unsupported = reason => capabilityEvidence(false, false, null, reason);
+  return {schemaVersion:1, hostVersion:typeof host?.version === "string" ? host.version.slice(0,80) : null,
+    currentBuildRuntimeVerified:false, capabilities:{
+      ...nativeDeliveryCapabilities(),
+      ame:target("Manager presence does not establish AME installation or correlated completion."),
+      speed_write:unsupported("No reviewed native speed write route; planning only."),
+      masks:unsupported("No reviewed safe mask write route."),
+      vertical_move:unsupported("Vertical clone preserves the original and is not a move."),
+      linked_clip_editing:unsupported("Linked-group identity is not available; do not infer links."),
+      multicam:unsupported("No reviewed native multicam creation/switching route."),
+      caption_write:unsupported("Caption text creation/editing is unsupported; SRT delivery is separate."),
+      effect_remove:target("Inspect the exact component chain and removal action."),
+      keyframe_write:target("Inspect exact parameter identity, native ticks and supported keyframe actions."),
+      mogrt_property_write:target("Only inspected primitive native properties with exact bindings."),
+      scene_detection:capabilityEvidence(true,observedSceneApis(),"25.6","Selection and mode constants require target inspection."),
+      proxy:target("Inspect exact media item and canProxy before attachment."),
+      transcript_write:target("Inspect the exact native media item and transcription API."),
+      vertical_clone:target("Inspect the destination track and createCloneTrackItemAction.")
+    }};
+}
+
 function nativeDeliveryCapabilities() {
-  const make = (supported, apiSince, reason) => ({supported, apiSince, reason:supported ? null : reason, runtimeAccepted:false});
+  const make = (supported, apiSince, reason) => ({...capabilityEvidence(true,supported,apiSince,supported ? null : reason),
+    supported, collisionProtection:{atomic:false,nativeExclusiveCreate:false,externalWriterRacePossible:true}});
   return {
     sequence: make(typeof premiere.EncoderManager?.getManager === "function", null, "Native EncoderManager is unavailable."),
     frame: make(typeof premiere.Exporter?.exportSequenceFrame === "function", "25.6", "Native sequence frame export requires Premiere 25.6+."),
@@ -2016,9 +2052,7 @@ async function getSequenceMarkers() {
 
 async function sceneDetectionCapabilities() {
   const operation = premiere.Constants?.SequenceOperation;
-  const supported =
-    typeof premiere.SequenceUtils?.performSceneEditDetectionOnSelection === "function" &&
-    typeof premiere.TrackItemSelection?.createEmptySelection === "function";
+  const supported = observedSceneApis();
   return {
     supported,
     apiSince: "25.6",

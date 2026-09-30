@@ -37,6 +37,25 @@ test("central delivery capability detection distinguishes unavailable APIs from 
   }
   assert.throws(()=>f.panel.requireDeliveryCapability('unknown'),/Unknown native/);
 });
+
+test("bounded capability registry separates routes, API observation and runtime evidence",()=>{
+  const f=fixture();const registry=f.panel.nativeCapabilityRegistry();
+  assert.equal(registry.schemaVersion,1);
+  assert.ok(JSON.stringify(registry).length<16000);
+  assert.equal(registry.capabilities.sequence.apiObserved,true);
+  assert.equal(registry.capabilities.sequence.safeExecutionSupported,null);
+  assert.equal(registry.capabilities.effect_remove.apiObserved,null);
+  assert.equal(registry.capabilities.speed_write.sourceRouteExists,false);
+  assert.equal(registry.capabilities.speed_write.safeExecutionSupported,false);
+  for(const cap of Object.values(registry.capabilities)) {
+    assert.equal(cap.runtimeAccepted,false);assert.equal(cap.recoveryVerified,false);
+    assert.equal(cap.exportCompletionVerified,false);assert.equal(cap.uiFallback,false);
+  }
+  const desktop=readFileSync('src-tauri/src/premiere_target.rs','utf8');
+  assert.match(desktop,/capabilities\/registry\/schemaVersion/);
+  assert.match(desktop,/apiObserved/);
+  assert.match(desktop,/no UI fallback is permitted/);
+});
 test("immediate boolean acceptance never claims encoding completion",async()=>{
   const f=fixture();const result=await f.panel.executeCommand({action:"export_sequence",arguments:f.args});
   assert.equal(result.state,"accepted");assert.equal(result.completionVerified,false);assert.equal(result.accepted,true);
