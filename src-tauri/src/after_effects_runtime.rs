@@ -5,6 +5,8 @@ use tokio::time::sleep;
 
 const MAX_TIMEOUT_MS:u64=120_000;
 const POLL_MS:u64=100;
+const MAX_PENDING_JOBS:usize=64;
+static DISPATCH_IO:std::sync::Mutex<()>=std::sync::Mutex::new(());
 
 fn regular_file(path:&Path,label:&str)->Result<(),String>{
     if !path.is_absolute(){return Err(format!("{label} must be an absolute path."));}
@@ -28,6 +30,75 @@ fn cleanup_job_files(request_path:&Path,runner_path:&Path){
     let _=fs::remove_file(runner_path);
 }
 
+fn job_path(workspace:&Path,request_id:&str,suffix:&str)->std::path::PathBuf{
+    workspace.join(format!("shuvi-ae-{request_id}.{suffix}"))
+}
+
+pub fn pending_jobs(workspace:&Path,reconcile_receipts:bool)->Result<Value,String>{
+    if !workspace.is_absolute(){return Err("After Effects workspace must be absolute.".into());}
+    if !workspace.exists(){return Ok(json!({"jobs":[],"blocking_count":0,"reconciled_count":0}));}
+    if !workspace.is_dir(){return Err("After Effects workspace is not a directory.".into());}
+    let mut request_paths=Vec::new();
+    for entry in fs::read_dir(workspace).map_err(|e|format!("Could not inspect After Effects job workspace: {e}"))?{
+        let entry=entry.map_err(|e|e.to_string())?;
+        if !entry.file_type().map_err(|e|e.to_string())?.is_file(){continue;}
+        let name=entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with("shuvi-ae-")&&name.ends_with(".request.json"){
+            request_paths.push(entry.path());
+            if request_paths.len()>MAX_PENDING_JOBS{return Err("After Effects unresolved job count exceeds safety bound; inspect workspace manually.".into());}
+        }
+    }
+    let mut jobs=Vec::new();let mut blocking=0usize;let mut reconciled=0usize;
+    for request_path in request_paths{
+        let raw=crate::read_file_bytes_bounded(&request_path,512*1024,"After Effects pending request")?;
+        let request:Request=match serde_json::from_slice(&raw){
+            Ok(v)=>v,
+            Err(_)=>{
+                blocking+=1;jobs.push(json!({"request_path":request_path,"state":"corrupt_request","reconciled":false}));continue;
+            }
+        };
+        if let Err(error)=request.validate(){
+            blocking+=1;jobs.push(json!({"request_id":request.request_id,"state":"invalid_request","error":error,"reconciled":false}));continue;
+        }
+        let expected_request=job_path(workspace,&request.request_id,"request.json");
+        if expected_request!=request_path{
+            blocking+=1;jobs.push(json!({"request_id":request.request_id,"state":"request_path_identity_mismatch","reconciled":false}));continue;
+        }
+        let receipt_path=job_path(workspace,&request.request_id,"receipt.json");
+        let runner_path=job_path(workspace,&request.request_id,"runner.jsx");
+        if !receipt_path.is_file(){
+            blocking+=1;jobs.push(json!({"request_id":request.request_id,"action":request.action,
+                "mutation":request.is_mutating(),"state":"receipt_missing","retry_safe":false,"reconciled":false}));continue;
+        }
+        let receipt_bytes=crate::read_file_bytes_bounded(&receipt_path,512*1024,"After Effects late receipt")?;
+        match after_effects_transport::parse_receipt(&receipt_bytes,&request){
+            Ok(receipt)=>{
+                let verification=receipt.result.as_ref().and_then(|v|v.get("verification_status")).and_then(Value::as_str)
+                    .unwrap_or(if receipt.ok{"accepted_unverified"}else{"host_error"});
+                let post_verified=verification.starts_with("verified_");
+                let host_retry_safe=receipt.result.as_ref().and_then(|v|v.get("retry_safe")).and_then(Value::as_bool)
+                    .unwrap_or(!request.is_mutating());
+                if reconcile_receipts{
+                    cleanup_job_files(&request_path,&runner_path);reconciled+=1;
+                }else{blocking+=1;}
+                jobs.push(json!({"request_id":request.request_id,"action":request.action,"mutation":request.is_mutating(),
+                    "state":"receipt_available","host_receipt_ok":receipt.ok,"host_version":receipt.host_version,
+                    "verification_status":verification,"post_state_verified":post_verified,"host_retry_safe":host_retry_safe,
+                    "result":receipt.result,"host_error":receipt.error,"retry_safe":false,
+                    "reconciled":reconcile_receipts,
+                    "note":"Late receipt resolves dispatch completion, but retry remains disabled until the caller inspects current host state."}));
+            }
+            Err(error)=>{
+                blocking+=1;jobs.push(json!({"request_id":request.request_id,"action":request.action,
+                    "state":"invalid_receipt","error":error,"retry_safe":false,"reconciled":false}));
+            }
+        }
+    }
+    Ok(json!({"jobs":jobs,"blocking_count":blocking,"reconciled_count":reconciled,
+        "new_dispatch_allowed":blocking==0,
+        "note":"Any unresolved request blocks new After Effects dispatch. Valid late receipts may be explicitly reconciled; missing/corrupt receipts remain blocking."}))
+}
+
 pub async fn execute(
     afterfx_exe:&Path,
     core_script:&Path,
@@ -43,6 +114,11 @@ pub async fn execute(
     if !workspace.is_dir(){return Err("After Effects workspace is not a directory.".into());}
 
     let timeout_ms=timeout_ms.clamp(1_000,MAX_TIMEOUT_MS);
+    let dispatch_guard=DISPATCH_IO.lock().map_err(|_|"After Effects dispatch lock unavailable.")?;
+    let pending=pending_jobs(workspace,false)?;
+    if pending.get("blocking_count").and_then(Value::as_u64).unwrap_or(0)>0{
+        return Err("An earlier After Effects request is unresolved or has an unacknowledged late receipt; run after_effects_pending_jobs before dispatching another action.".into());
+    }
     let checkpoint=if request.is_mutating(){
         let path=request.expected_project_file.as_deref().ok_or("Mutating AE request missing project expectation.")?;
         Some(crate::after_effects_checkpoint::create(Path::new(path),crate::now_ms())?)
@@ -72,6 +148,7 @@ pub async fn execute(
     };
     let pid=child.id();
     drop(child);
+    drop(dispatch_guard);
 
     let started=Instant::now();
     let mut last_parse_error:Option<String>=None;
