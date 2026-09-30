@@ -179,6 +179,30 @@ pub fn save(path:&Path,session:&Session)->Result<(),String>{
         s.record("inspect","receipt","premiere_timeline",true).unwrap();assert_ne!(s.next().unwrap()["status"],"completed");
         assert!(s.identity(&json!({"projectGuid":"p","activeSequence":{"guid":"other"}})).is_err());
         s.cancel();assert!(s.next().is_err());s.validate().unwrap();}
+    #[test]fn cancellation_distinguishes_predispatch_applied_and_inflight(){
+        let request=||Request{preset:"social_reel".into(),targets:Default::default(),inputs:Default::default(),options:Default::default()};
+
+        let mut before=Session::new("before".into(),request(),"p","s",None).unwrap();
+        before.stages[0].state="awaiting_approval".into();
+        before.cancel();
+        assert_eq!(before.stages[0].state,"cancelled");
+        assert!(before.stages[0].reason.as_deref().unwrap_or("").contains("before any typed action"));
+
+        let mut applied=Session::new("applied".into(),request(),"p","s",None).unwrap();
+        applied.stages[0].state="applied".into();
+        applied.stages[0].action_id=Some("receipt".into());
+        applied.cancel();
+        assert_eq!(applied.stages[0].state,"cancelled_after_apply");
+        assert!(applied.stages[0].reason.as_deref().unwrap_or("").contains("does not roll it back"));
+        applied.validate().unwrap();
+
+        let mut inflight=Session::new("inflight".into(),request(),"p","s",None).unwrap();
+        inflight.stages[0].state="executing".into();
+        inflight.cancel();
+        assert_eq!(inflight.stages[0].state,"uncertain");
+        assert!(inflight.stages[0].reason.as_deref().unwrap_or("").contains("cannot prove"));
+        inflight.validate().unwrap();
+    }
     #[test]fn no_duplicate_receipts_or_automatic_review(){let r=Request{preset:"clean_corporate".into(),targets:Default::default(),inputs:Default::default(),options:Default::default()};
         let mut s=Session::new("id".into(),r,"p","s",None).unwrap();s.next().unwrap();
         s.record("inspect","a","premiere_timeline",true).unwrap();assert!(s.record("inspect","a","premiere_timeline",true).is_err());
