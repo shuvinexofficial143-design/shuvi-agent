@@ -300,6 +300,7 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - premiere_save_project: {}
 - after_effects_capability_report: {}
 - after_effects_detect: {}
+- after_effects_pending_jobs: {}
 - after_effects_run: {"afterfx_exe":"absolute path to AfterFX.exe","timeout_ms":30000,"request":{"schema_version":1,"request_id":"fresh-id","action":"inspect_context","expected_project_file":null,"args":{}}}
 - after_effects_plan_hand_track: {"plan":{"property":{"target":{"comp_id":1,"layer_id":2},"path":[{"match_name":"ADBE Transform Group","property_index":1},{"match_name":"ADBE Position","property_index":2}]},"samples":[{"time_seconds":0.0,"point":[100,200],"confidence":0.9}],"coordinate_space":"comp_pixels"}}
 - workspace_scan: {"path":"absolute workspace path"}
@@ -640,6 +641,7 @@ enum ToolAction {
     PremiereSaveProject,
     AfterEffectsCapabilityReport,
     AfterEffectsDetect,
+    AfterEffectsPendingJobs,
     AfterEffectsRun { afterfx_exe:String, timeout_ms:u64, request:after_effects_transport::Request },
     AfterEffectsPlanHandTrack { plan: after_effects::HandTrackPlan },
     WorkspaceScan { path: String },
@@ -5547,6 +5549,12 @@ fn stage_tool(
             ToolAction::AfterEffectsDetect,
             "Detect installed After Effects".into(),
             "Read-only bounded Program Files inspection; does not launch After Effects.".into(),
+            RiskLevel::Low,
+        ),
+        "after_effects_pending_jobs" => (
+            ToolAction::AfterEffectsPendingJobs,
+            "Inspect After Effects unresolved jobs".into(),
+            "Read-only receipt reconciliation. Valid late receipts release their durable request lock; missing or invalid receipts remain blocking and retry_safe=false.".into(),
             RiskLevel::Low,
         ),
         "after_effects_run" => {
@@ -12332,6 +12340,15 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let value=after_effects_runtime::detect_installs()?;
             Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AfterEffectsPendingJobs => {
+            let workspace=app.path().app_local_data_dir()
+                .map_err(|e|format!("Could not resolve Shuvi local data directory: {e}"))?
+                .join("after-effects-jobs");
+            let value=after_effects_runtime::pending_jobs(&workspace,true)?;
+            let clear=value.get("blocking_count").and_then(Value::as_u64)==Some(0);
+            Ok(ActionResult {success:clear,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(if clear{0}else{1})})
         }
         ToolAction::AfterEffectsRun {afterfx_exe,timeout_ms,request} => {
             let workspace=app.path().app_local_data_dir()
