@@ -365,9 +365,32 @@
             persistence_verification_required_desktop_side: true
         };
     }
+    function sameProjectPath(expected, actual) {
+        if (!expected || !actual) return false;
+        var a = new File(expected).fsName;
+        var b = new File(actual).fsName;
+        var windows = String($.os).toLowerCase().indexOf("windows") >= 0;
+        return windows ? a.toLowerCase() === b.toLowerCase() : a === b;
+    }
+    function mutationAction(action) {
+        return action === "set_property" || action === "set_values_at_times" || action === "add_effect"
+            || action === "add_null" || action === "add_render_queue_item" || action === "save_project";
+    }
+    function assertProjectExpectation(request, action) {
+        if (!mutationAction(action)) return;
+        var expected = request.expected_project_file;
+        if (typeof expected !== "string" || expected.length === 0 || expected.length > 4096) {
+            fail("Mutating After Effects action requires exact expected_project_file.");
+        }
+        var project = requireProject();
+        if (!project.file || !sameProjectPath(expected, project.file.fsName)) {
+            fail("Active After Effects project file changed; mutation refused.");
+        }
+    }
     function dispatch(request) {
         if (!request || request.schema_version !== 1) fail("Unsupported Shuvi After Effects request schema.");
         var action = boundedString(request.action, 80, "action");
+        assertProjectExpectation(request, action);
         var args = request.args || {};
         if (action === "inspect_context") return inspectContext();
         if (action === "inspect_comp") return inspectComp(args);
