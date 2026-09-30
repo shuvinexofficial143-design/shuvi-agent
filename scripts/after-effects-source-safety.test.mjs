@@ -319,3 +319,14 @@ test("AE MOGRT authoring uses capability checks controller deltas and exact file
   assert.match(jsx,/exportAsMotionGraphicsTemplate\(overwrite,file\.parent\.fsName\)/);
   assert.match(jsx,/desktop_file_verification_required:true/);
 });
+
+
+test("AE MOGRT export requires host and desktop exact file agreement",()=>{
+  assert.match(runtime,/fn mogrt_output_evidence/);
+  assert.match(runtime,/desktop_mogrt_verified/);
+  assert.match(runtime,/verification=="verified_mogrt_file_readback"&&mogrt_verified/);
+  assert.match(runtime,/"mogrt_output_evidence":mogrt_evidence/);
+  assert.match(jsx,/decodeURI\(String\(file\.name\)\)/);
+  assert.match(jsx,/MOGRT output_file must be absolute/);
+  assert.match(jsx,/MOGRT output already exists; explicit overwrite=true required/);
+});
