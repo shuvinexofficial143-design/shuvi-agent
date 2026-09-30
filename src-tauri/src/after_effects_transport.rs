@@ -26,7 +26,7 @@ impl Request {
             |"set_time_remap"|"replace_source"|"relink_footage"|"set_proxy"|"remove_proxy"|"set_av_layer_flags"
             |"set_text_style"|"set_layer_timing"|"add_shape_primitive"|"add_text_animator"
             |"set_keyframe_interpolation"|"set_keyframe_temporal_ease"|"remove_keyframe"
-            |"duplicate_layer"|"remove_layer"|"precompose_layers"|"add_mask"|"add_scene_edit_markers"
+            |"duplicate_layer"|"remove_layer"|"precompose_layers"|"add_mask"|"edit_mask"|"remove_mask"|"add_scene_edit_markers"
             |"add_marker"|"remove_marker"|"add_render_queue_item"|"render_queue"|"save_project")
     }
     pub fn is_read_only(&self)->bool{
