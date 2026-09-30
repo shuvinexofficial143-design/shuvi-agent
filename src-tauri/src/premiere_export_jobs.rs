@@ -82,7 +82,7 @@ impl Job {
     pub fn media_validation_challenge(&self)->Result<Value,String>{
         self.validate()?;
         let item=self.observations.last().ok_or("Observe the export output before media validation.")?;
-        if !item.exists||item.size_bytes.is_none_or(|v|v==0){
+        if !item.exists||item.size_bytes.map_or(true,|v|v==0){
             return Err("Media validation requires a non-empty observed output file.".into());
         }
         Ok(json!({"schema_version":1,"job_id":self.job_id,"output":self.output,
