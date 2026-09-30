@@ -33,3 +33,15 @@ test("cancellation and third-party graphics boundaries are machine-readable",()=
   assert.match(acceptance,/"third_party_mogrt_semantics":\{"state":"inspected_only"/);
   assert.doesNotMatch(acceptance,/native_inflight_abort_verified":true/);
 });
+
+
+test("final semantic gaps remain explicit and untrusted validator ingestion stays private",()=>{
+  assert.match(acceptance,/"project_item_overwrite_semantics":\{"state":"accepted_unverified"/);
+  assert.match(acceptance,/"subclip_hard_boundary_mode":\{"state":"accepted_unverified"/);
+  assert.match(acceptance,/receipt ingestion remains internal-only/);
+  const jobs=readFileSync(new URL("../src-tauri/src/premiere_export_jobs.rs",import.meta.url),"utf8");
+  assert.match(jobs,/struct MediaValidationReceipt/);
+  assert.doesNotMatch(jobs,/pub struct MediaValidationReceipt/);
+  assert.match(jobs,/fn record_media_validation/);
+  assert.doesNotMatch(jobs,/pub fn record_media_validation/);
+});
