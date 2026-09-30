@@ -29,6 +29,7 @@ mod premiere_acceptance_harness;
 mod premiere_acceptance_execution;
 mod premiere_calibration;
 mod premiere_export_jobs;
+mod premiere_project_persistence;
 mod premiere_review_binding;
 mod premiere_edit_session;
 mod premiere_edit_job;
@@ -12209,22 +12210,44 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             }
         }
         ToolAction::PremiereSaveProject => {
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(12)).await?;
+            let expected_path=context.get("projectPath").and_then(Value::as_str).unwrap_or("").to_string();
+            let expected_project=context.get("projectGuid").and_then(Value::as_str).unwrap_or("").to_string();
+            let before=if expected_path.is_empty(){Err("Active project path unavailable before save.".to_string())}
+                else{premiere_project_persistence::fingerprint(&expected_path)};
             let value = premiere_bridge
                 .request("save_project", json!({}), Duration::from_secs(15)).await?;
             let accepted = value.get("saved").and_then(Value::as_bool) == Some(true);
-            let verification = value.get("verificationStatus").and_then(Value::as_str)
-                .unwrap_or("accepted_unverified").to_string();
-            let verified = verification == "verified_persistence"
-                && value.get("persistenceVerified").and_then(Value::as_bool) == Some(true);
+            let reported_path=value.get("projectPath").and_then(Value::as_str).unwrap_or("");
+            let after=if expected_path.is_empty(){Err("Active project path unavailable after save.".to_string())}
+                else{premiere_project_persistence::fingerprint(&expected_path)};
+            let evidence=match(&before,&after){
+                (Ok(before),Ok(after))=>premiere_project_persistence::assess(before,after,accepted,reported_path),
+                _=>json!({
+                    "native_accepted":accepted,
+                    "same_exact_project_path":!expected_path.is_empty()&&reported_path==expected_path,
+                    "persistence_verified":false,
+                    "edit_semantics_verified":false,
+                    "verification_status":"accepted_unverified",
+                    "before_error":before.as_ref().err(),
+                    "after_error":after.as_ref().err(),
+                    "retry_safe":false
+                })
+            };
+            let verified=evidence.get("persistence_verified").and_then(Value::as_bool)==Some(true);
             Ok(ActionResult {
                 success: verified,
                 tool,
                 stdout: serde_json::to_string_pretty(&json!({
-                    "save": value,
-                    "native_accepted": accepted,
-                    "verification_status": verification,
-                    "post_state_verified": verified,
-                    "retry_safe": false
+                    "save":value,
+                    "project_guid":expected_project,
+                    "expected_project_path":expected_path,
+                    "native_accepted":accepted,
+                    "persistence_evidence":evidence,
+                    "verification_status":if verified{"verified_file_persistence"}else{"accepted_unverified"},
+                    "post_state_verified":verified,
+                    "edit_semantics_verified":false,
+                    "retry_safe":false
                 })).unwrap_or_default(),
                 stderr: String::new(),
                 exit_code: Some(if verified {0} else {1}),
