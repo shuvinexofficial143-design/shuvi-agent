@@ -216,3 +216,20 @@ test("AE render requires exact queue identity host DONE and desktop output evide
   assert.match(runtime,/media_parse_verified":false/);
   assert.match(runtime,/verification=="verified_render_completion"&&render_verified/);
 });
+
+
+test("AE relink proxy and AV layer controls require stale guards and readback",()=>{
+  for(const action of ["relink_footage","set_proxy","remove_proxy","set_av_layer_flags"]){
+    assert.match(transport,new RegExp('"' + action + '"'));
+    assert.match(jsx,new RegExp('action === "' + action + '"'));
+  }
+  assert.match(rust,/"footage_relink":"source_supported_with_exact_old_new_file_readback"/);
+  assert.match(rust,/"proxy_set_remove":"source_supported_with_proxy_state_file_readback"/);
+  assert.match(rust,/"av_layer_flags":"source_supported_with_boolean_readback"/);
+  assert.match(jsx,/Footage source stale guard changed/);
+  assert.match(jsx,/Proxy enabled-state stale guard changed/);
+  assert.match(jsx,/Proxy source stale guard changed/);
+  assert.match(jsx,/Layer is locked; AV flag mutation refused/);
+  assert.match(jsx,/verified_proxy_readback/);
+  assert.match(jsx,/verified_layer_flag_readback/);
+});
