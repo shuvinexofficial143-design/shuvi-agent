@@ -58,3 +58,11 @@ test("uncertain delivery stops later finishing work",()=>{
 test("unsupported professional features stay explicit",()=>{
   assert.match(rust,/"speed_ramp","masks","multicam","inferred_linked_media"/);
 });
+
+test("mixed finishing stops video or audio work when recipe readback is unverified",()=>{
+  const arm=rust.slice(rust.indexOf("ToolAction::PremiereFinishMediaBatch"),rust.indexOf("ToolAction::PremiereFinishMediaBatchCancel"));
+  assert.match(arm,/verified_recipe/);
+  assert.match(arm,/post_state_verified/);
+  assert.match(arm,/if !verified \{ uncertain=true; break; \}/);
+  assert.match(arm,/"status":if verified\{"applied"\}else\{"uncertain"\}/);
+});

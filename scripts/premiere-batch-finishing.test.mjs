@@ -14,3 +14,11 @@ test('bounded batch requires every exact clip guard, checkpoints once, retains p
  for(const name of ['premiere_batch_finish','premiere_batch_finish_cancel'])assert.match(rust,new RegExp(`"${name}" =>`));
  for(const pattern of [/targets\.len\(\)>32/,/expected\.clips\.len\(\)!=targets\.len\(\)/,/Duplicate or uninspected video batch target/,/backup_premiere_project\(&client\)\.await\?/,/finishing_cancelled\.load/,/"status":"applied"/,/"status":if uncertain\{"uncertain"\}else\{"failed"\}/])assert.match(rust,pattern);
 });
+
+test('batch finishing stops on accepted but unverified recipe state',()=>{
+ const arm=rust.slice(rust.indexOf('ToolAction::PremiereBatchFinish{targets}'),rust.indexOf('ToolAction::PremierePlanVideoRecipe'));
+ assert.match(arm,/verificationStatus/);
+ assert.match(arm,/verified_recipe/);
+ assert.match(arm,/if !verified \{ uncertain=true; break; \}/);
+ assert.match(arm,/"status":if verified\{"applied"\}else\{"uncertain"\}/);
+});

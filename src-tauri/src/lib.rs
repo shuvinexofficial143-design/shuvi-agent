@@ -8572,7 +8572,12 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     json!({"track":track,"clipIndex":clip_index,"settings":settings}),
                     Duration::from_secs(45),
                 ).await {
-                    Ok(value) => video_results.push(json!({"track":track,"clip_index":clip_index,"status":"applied","native_result":value})),
+                    Ok(value) => {
+                        let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_recipe");
+                        video_results.push(json!({"track":track,"clip_index":clip_index,
+                            "status":if verified{"applied"}else{"uncertain"},"post_state_verified":verified,"native_result":value}));
+                        if !verified { uncertain=true; break; }
+                    },
                     Err(error) => {
                         uncertain = error.contains("unknown")||error.contains("timed out")||error.contains("timeout");
                         video_results.push(json!({
@@ -8595,9 +8600,15 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                         json!({"track":target.track,"clipIndex":target.clip_index,"settings":settings}),
                         Duration::from_secs(45),
                     ).await {
-                        Ok(value) => audio_results.push(json!({
-                            "track":target.track,"clip_index":target.clip_index,"status":"applied","native_result":value
-                        })),
+                        Ok(value) => {
+                            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_recipe");
+                            audio_results.push(json!({
+                                "track":target.track,"clip_index":target.clip_index,
+                                "status":if verified{"applied"}else{"uncertain"},
+                                "post_state_verified":verified,"native_result":value
+                            }));
+                            if !verified { uncertain=true; break; }
+                        },
                         Err(error) => {
                             uncertain = error.contains("unknown")||error.contains("timed out")||error.contains("timeout");
                             audio_results.push(json!({
@@ -8794,7 +8805,13 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     },Err(error)=>Err(error)
                 };
                 match outcome {
-                    Ok(result)=>results.push(json!({"track":track,"clip_index":index,"status":"applied","result":result})),
+                    Ok(result)=>{
+                        let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_recipe");
+                        results.push(json!({"track":track,"clip_index":index,
+                            "status":if verified{"applied"}else{"uncertain"},
+                            "post_state_verified":verified,"result":result}));
+                        if !verified { uncertain=true; break; }
+                    },
                     Err(error)=>{
                         uncertain = dispatched;
                         results.push(json!({"track":track,"clip_index":index,"status":if uncertain{"uncertain"}else{"failed"},"reason":error.chars().take(240).collect::<String>()}));
