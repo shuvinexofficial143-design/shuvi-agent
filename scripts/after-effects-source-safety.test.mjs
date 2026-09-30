@@ -49,3 +49,28 @@ test("transport binds request identity and rejects blind runtime trust",()=>{
   assert.match(transport,/runtime_verified:false/);
   assert.match(transport,/afterfx_arguments:vec!\["-r"/);
 });
+
+
+test("AE media and animation actions stay typed and source-verified",()=>{
+  for(const action of ["create_comp","import_footage","add_item_layer","set_text_style","set_keyframe_interpolation","remove_keyframe"]){
+    assert.match(transport,new RegExp('"' + action + '"'));
+    assert.match(jsx,new RegExp('action === "' + action + '"'));
+  }
+  assert.match(rust,/"composition_create":"source_supported_with_creation_settings_readback"/);
+  assert.match(rust,/"footage_import":"source_supported_footage_only_with_file_identity_readback"/);
+  assert.match(rust,/"text_document_style":"source_supported_with_requested_field_readback"/);
+  assert.match(rust,/"keyframe_interpolation":"source_supported_with_in_out_type_readback"/);
+  assert.match(rust,/"keyframe_remove":"source_supported_with_time_stale_guard_and_delta_readback"/);
+  assert.match(jsx,/setInterpolationTypeAtKey/);
+  assert.match(jsx,/Keyframe time stale guard changed/);
+});
+
+test("non-idempotent AE creation workflows do not advertise automatic retry safety",()=>{
+  for(const fn of ["addEffect","addNull","addText","addShape","addSolid","addCamera","addLight","createComp","importFootage","addItemLayer","duplicateLayer","precomposeLayers","addMask","addRenderQueueItem"]){
+    const start=jsx.indexOf("function " + fn + "(");
+    assert.notEqual(start,-1,fn + " missing");
+    const next=jsx.indexOf("\n    function ",start+10);
+    const body=jsx.slice(start,next<0?jsx.length:next);
+    assert.match(body,/retry_safe:\s*false/,fn + " must remain non-retryable automatically");
+  }
+});
