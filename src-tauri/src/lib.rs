@@ -10788,13 +10788,17 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }),
                 Duration::from_secs(30),
             ).await?;
-            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_creation_identity");
+            let bounds_verified=result.get("boundarySemanticsVerified").and_then(Value::as_bool)==Some(true);
+            let media_verified=result.get("mediaSelectionVerified").and_then(Value::as_bool)==Some(true);
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_creation_identity")
+                &&bounds_verified&&media_verified;
 
             Ok(ActionResult {
                 success: verified,
                 tool,
                 stdout: json!({"backup":backup,"result":result,"creation_identity_verified":verified,
-                    "boundary_semantics_verified":false,"retry_safe":false}).to_string(),
+                    "boundary_semantics_verified":bounds_verified,"media_selection_verified":media_verified,
+                    "hard_boundary_mode_verified":false,"retry_safe":false}).to_string(),
                 stderr: String::new(),
                 exit_code: Some(if verified {0}else{1}),
             })
