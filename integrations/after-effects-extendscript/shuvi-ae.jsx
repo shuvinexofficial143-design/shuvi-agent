@@ -2119,6 +2119,60 @@
             preserve_visual:args.preserve_visual!==false,sample_count:track.times.length,dimensions:track.dimension,
             coordinate_space:"comp_pixels",native_hand_detection_claimed:false,before_layer_count:beforeLayers,after_layer_count:comp.numLayers};
     }
+    function audioLevelsProperty(comp,layerId) {
+        var layer=resolveLayer(comp,layerId);
+        if(!(layer instanceof AVLayer)||!layer.hasAudio)fail("Target layer has no audio component.");
+        var group=layer.property("ADBE Audio Group"),p=group?group.property("ADBE Audio Levels"):null;
+        if(!p||!p.canVaryOverTime)fail("Audio Levels property is unavailable or non-animatable.");
+        return {layer:layer,property:p};
+    }
+    function validateAudioDb(p,value,label) {
+        if(!finiteNumber(value)||Math.abs(value)>1000)fail(label+" must be a finite bounded dB value.");
+        try{if(p.hasMin&&value<p.minValue-EPSILON)fail(label+" is below the host Audio Levels minimum.");}catch(ignoreMin){}
+        try{if(p.hasMax&&value>p.maxValue+EPSILON)fail(label+" is above the host Audio Levels maximum.");}catch(ignoreMax){}
+        return value;
+    }
+    function inspectAudioLevels(args) {
+        var comp=resolveComp(args.comp_id),resolved=audioLevelsProperty(comp,args.layer_id),p=resolved.property;
+        var keys=[],limit=Math.min(p.numKeys,512),i;
+        for(i=1;i<=limit;i++)keys.push({key_index:i,time_seconds:p.keyTime(i),value_db:cloneValue(p.keyValue(i))});
+        return {verification_status:"verified_readback",comp_id:comp.id,layer_id:resolved.layer.id,
+            audio_enabled:!!resolved.layer.audioEnabled,current_value_db:cloneValue(p.value),num_keys:p.numKeys,
+            scan_truncated:p.numKeys>512,keyframes:keys};
+    }
+    function setAudioGain(args) {
+        var comp=resolveComp(args.comp_id),resolved=audioLevelsProperty(comp,args.layer_id),p=resolved.property;
+        if(p.numKeys!==0)fail("Static audio gain refused because Audio Levels already has keyframes.");
+        var left=validateAudioDb(p,args.left_db,"left_db"),right=args.right_db===undefined?left:validateAudioDb(p,args.right_db,"right_db");
+        var requested=[left,right],before=cloneValue(p.value);
+        app.beginUndoGroup("Shuvi: Set audio gain");
+        try{p.setValue(requested);}finally{app.endUndoGroup();}
+        resolved=audioLevelsProperty(comp,args.layer_id);p=resolved.property;
+        var after=cloneValue(p.value),verified=sameValue(after,requested);
+        return {native_accepted:true,verification_status:verified?"verified_audio_gain_readback":"accepted_unverified",retry_safe:verified,
+            comp_id:comp.id,layer_id:resolved.layer.id,before_db:before,after_db:after};
+    }
+    function applyAudioEnvelope(args) {
+        var comp=resolveComp(args.comp_id),resolved=audioLevelsProperty(comp,args.layer_id),p=resolved.property,points=args.points;
+        if(p.numKeys!==0)fail("Audio envelope requires zero existing Audio Levels keyframes.");
+        if(!(points instanceof Array)||points.length<2||points.length>512)fail("Audio envelope requires 2..512 points.");
+        var times=[],values=[],previous=-1,i;
+        for(i=0;i<points.length;i++){
+            var point=points[i],time=point.time_seconds;
+            if(!finiteNumber(time)||time<0||time>10800||time<=previous)fail("Audio envelope times must be finite and strictly increasing.");
+            var left=validateAudioDb(p,point.left_db,"left_db"),right=point.right_db===undefined?left:validateAudioDb(p,point.right_db,"right_db");
+            times.push(time);values.push([left,right]);previous=time;
+        }
+        app.beginUndoGroup("Shuvi: Apply audio envelope");
+        try{p.setValuesAtTimes(times,values);}finally{app.endUndoGroup();}
+        resolved=audioLevelsProperty(comp,args.layer_id);p=resolved.property;
+        var verified=p.numKeys===times.length;
+        for(i=0;i<times.length&&verified;i++){
+            if(!sameValue(cloneValue(p.valueAtTime(times[i],true)),values[i]))verified=false;
+        }
+        return {native_accepted:true,verification_status:verified?"verified_audio_envelope_readback":"accepted_unverified",retry_safe:false,
+            comp_id:comp.id,layer_id:resolved.layer.id,point_count:times.length,start_seconds:times[0],end_seconds:times[times.length-1]};
+    }
     function inspectRenderQueue() {
         var queue = requireProject().renderQueue;
         var items = [], i, limit = Math.min(queue.numItems, 256);
@@ -2263,7 +2317,8 @@
             || action === "set_layer_state" || action === "set_layer_parent"
             || action === "move_layer" || action === "set_track_matte" || action === "remove_track_matte"
             || action === "set_time_remap" || action === "replace_source" || action === "relink_footage" || action === "set_proxy" || action === "remove_proxy"
-            || action === "set_av_layer_flags" || action === "set_av_layer_rendering" || action === "set_text_style" || action === "set_layer_timing"
+            || action === "set_av_layer_flags" || action === "set_av_layer_rendering" || action === "set_audio_gain" || action === "apply_audio_envelope"
+            || action === "set_text_style" || action === "set_layer_timing"
             || action === "add_shape_primitive" || action === "add_text_animator"
             || action === "add_mogrt_property" || action === "add_mogrt_media_layer" || action === "export_mogrt"
             || action === "set_essential_property" || action === "set_essential_media_source" || action === "apply_essential_bindings"
@@ -2304,6 +2359,7 @@
         if (action === "inspect_keyframes") return inspectKeyframes(args);
         if (action === "inspect_layer_properties") return inspectLayerProperties(args);
         if (action === "inspect_av_layer_rendering") return inspectAVLayerRendering(args);
+        if (action === "inspect_audio_levels") return inspectAudioLevels(args);
         if (action === "inspect_mogrt") return inspectMogrt(args);
         if (action === "inspect_essential_properties") return inspectEssentialProperties(args);
         if (action === "set_property") return setProperty(args);
@@ -2336,6 +2392,8 @@
         if (action === "remove_proxy") return removeProxy(args);
         if (action === "set_av_layer_flags") return setAVLayerFlags(args);
         if (action === "set_av_layer_rendering") return setAVLayerRendering(args);
+        if (action === "set_audio_gain") return setAudioGain(args);
+        if (action === "apply_audio_envelope") return applyAudioEnvelope(args);
         if (action === "set_text_style") return setTextStyle(args);
         if (action === "set_layer_timing") return setLayerTiming(args);
         if (action === "add_shape_primitive") return addShapePrimitive(args);
