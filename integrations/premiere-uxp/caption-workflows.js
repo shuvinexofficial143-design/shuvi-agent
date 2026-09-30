@@ -17,12 +17,13 @@ const CAPTION_CAPABILITY = Object.freeze({
   srt_generation: true,
   transcript_timing_adapter: true,
   import_adapter: {
-    supported: false,
-    mode: "external_srt_boundary",
-    reason: "The reviewed public Premiere UXP API exposes caption track discovery/name/mute and transcript APIs, but no documented native caption creation, caption text editing, or SRT import action.",
-    fallback: "Generate a validated SRT for explicit user import or connect a future documented native adapter; do not use blind GUI clicks."
+    supported: true,
+    mode: "native_project_item_source_import",
+    timeline_caption_creation: false,
+    reason: "Shuvi can import a validated .srt/.vtt as a Premiere project item and verify its exact media path. The reviewed API still exposes no caption-track text creation/edit action.",
+    fallback: "Use the imported caption source in Premiere manually until a documented native caption-track write adapter exists; do not use blind GUI clicks."
   },
-  reviewed: "2026-09-23"
+  reviewed: "2026-09-30"
 });
 
 function captionCapability() {

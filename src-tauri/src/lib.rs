@@ -223,6 +223,7 @@ Transcript rebuild handles explicit interior text removal by creating and insert
 - premiere_insert_mogrt_path: {"path":"absolute .mogrt path","seconds":0,"video_track":0,"audio_track":0}
 - premiere_insert_mogrt_library: {"library_name":"library","element_name":"template","seconds":0,"video_track":0,"audio_track":0}
 - premiere_import_media: {"paths":["absolute media path 1","absolute media path 2"]}
+- premiere_import_caption_source: {"path":"absolute .srt or .vtt path"}
 - premiere_create_sequence_from_media: {"name":"sequence name","paths":["absolute media path 1","absolute media path 2"]}
 - premiere_create_subsequence: {"targets":[{"kind":"video|audio","track":0,"clip_index":0}]}
 - premiere_replace_with_subsequence: {"source":{"kind":"video","track":0,"clip_index":0,"signature":"exact inspected targetSignature"},"expected":"exact one-source expectation"}
@@ -583,6 +584,7 @@ enum ToolAction {
     PremiereInsertMogrtPath { path: String, seconds: f64, video_track: u32, audio_track: u32 },
     PremiereInsertMogrtLibrary { library_name: String, element_name: String, seconds: f64, video_track: u32, audio_track: u32 },
     PremiereImportMedia { paths: Vec<String> },
+    PremiereImportCaptionSource { path: String },
     PremiereCreateSequenceFromMedia { name: String, paths: Vec<String> },
     PremiereCreateSubsequence { targets: Vec<Value> },
     PremiereReplaceWithSubsequence { source: premiere_layering::SourceTarget },
@@ -1169,6 +1171,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_insert_mogrt_path"
         | "premiere_insert_mogrt_library"
         | "premiere_import_media"
+        | "premiere_import_caption_source"
         | "premiere_create_sequence_from_media"
         | "premiere_create_subsequence"
         | "premiere_replace_with_subsequence"
@@ -4936,6 +4939,18 @@ fn stage_tool(
                 ToolAction::PremiereInsertMulticamItem{item_id,seconds,video_track:video_track as u32,audio_track:audio_track as u32,mode},
                 "Insert existing Premiere multicam clip".into(),
                 "Verify isMulticamClip() first, checkpoint the project, insert through native SequenceEditor, then require exact insertion delta.".into(),
+                RiskLevel::High,
+            )
+        }
+        "premiere_import_caption_source" => {
+            let path=absolute_path(arg_string(&proposal.arguments,"path")?)?;
+            if !Path::new(&path).is_file() || !matches!(Path::new(&path).extension().and_then(|v|v.to_str()).map(|v|v.to_ascii_lowercase()).as_deref(),Some("srt")|Some("vtt")) {
+                return Err("Caption source must be an existing absolute .srt or .vtt file.".into());
+            }
+            (
+                ToolAction::PremiereImportCaptionSource{path:path.clone()},
+                "Import Premiere caption source".into(),
+                format!("Import caption source as a native Premiere project item and verify its path: {path}"),
                 RiskLevel::High,
             )
         }
@@ -11004,6 +11019,16 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 },
                 exit_code: Some(if failures == 0 && results.len() == total { 0 } else { 1 }),
             })
+        }
+        ToolAction::PremiereImportCaptionSource {path} => {
+            let checkpoint=backup_premiere_project(&premiere_bridge).await?;
+            let value=premiere_bridge.request("import_caption_source",json!({"path":path}),Duration::from_secs(30)).await?;
+            let status=value.get("verificationStatus").and_then(Value::as_str);
+            let verified=matches!(status,Some("verified_caption_source_import")|Some("verified_existing_source"))
+                && value.get("projectItemObserved").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{success:verified,tool,stdout:json!({"checkpoint":checkpoint,"result":value,
+                "source_import_verified":verified,"caption_track_created":false,"caption_text_write_supported":false,
+                "retry_safe":false}).to_string(),stderr:String::new(),exit_code:Some(if verified{0}else{1})})
         }
         ToolAction::PremiereImportMedia { paths } => {
             let checkpoint = backup_premiere_project(&premiere_bridge).await?;

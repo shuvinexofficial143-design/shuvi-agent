@@ -394,6 +394,41 @@ async function importMedia(argumentsValue) {
   };
 }
 
+async function importCaptionSource(argumentsValue) {
+  const path=typeof argumentsValue?.path==="string"?argumentsValue.path.trim():"";
+  if (!path || path.length>2048 || !/\.(?:srt|vtt)$/i.test(path)) {
+    throw new Error("Caption source must be one absolute .srt or .vtt path.");
+  }
+  const project=await requireProject(), root=await project.getRootItem();
+  const before=await findClipItemsForPaths(project,root,[path]);
+  if (!before.scanComplete) throw new Error("Project media scan is incomplete; caption import would be ambiguous.");
+  if (before.clips.length) {
+    const clip=before.clips[0].clip;
+    let contentType=null;
+    try {contentType=await clip.getContentType();} catch {}
+    return {imported:false,alreadyPresent:true,path,itemName:clip.name||null,contentType,
+      projectItemObserved:true,captionTrackCreated:false,captionTextWriteSupported:false,
+      verificationStatus:"verified_existing_source",uncertain:false,retrySafe:true};
+  }
+
+  const success=await project.importFiles([path],true,root,false);
+  if (!success) throw new Error("Premiere reported that caption source import did not complete.");
+  const after=await findClipItemsForPaths(project,root,[path]);
+  const matches=after.clips.filter(row=>normalizeMediaPath(row.mediaPath)===normalizeMediaPath(path));
+  let contentType=null,itemId=null,itemName=null;
+  if (matches.length===1) {
+    const clip=matches[0].clip;
+    try {contentType=await clip.getContentType();} catch {}
+    try {itemId=await projectItemId(clip);} catch {}
+    itemName=clip.name||null;
+  }
+  const verified=after.scanComplete && matches.length===1 && Boolean(itemId);
+  return {imported:true,alreadyPresent:false,path,itemId,itemName,contentType,
+    projectItemObserved:verified,captionTrackCreated:false,captionTextWriteSupported:false,
+    verificationStatus:verified?"verified_caption_source_import":"accepted_unverified",
+    uncertain:!verified,retrySafe:false};
+}
+
 function normalizeMediaPath(value) {
   return String(value || "")
     .replaceAll("/", "\\")
@@ -6713,6 +6748,8 @@ async function dispatchNativeCommand(command) {
       return await insertMogrtFromLibrary(command.arguments || {});
     case "import_media":
       return await importMedia(command.arguments || {});
+    case "import_caption_source":
+      return await importCaptionSource(command.arguments || {});
     case "create_sequence_from_media":
       return await createSequenceFromMedia(command.arguments || {});
     case "create_subsequence":
