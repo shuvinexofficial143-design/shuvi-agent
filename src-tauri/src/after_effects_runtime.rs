@@ -66,6 +66,21 @@ fn render_output_evidence(result:&Value)->Value{
         "note":"Desktop metadata confirms exact non-empty files matching host-reported sizes; it does not prove media decodability."})
 }
 
+fn mogrt_output_evidence(result:&Value)->Value{
+    let path=result.get("output_file").and_then(Value::as_str).unwrap_or("");
+    let expected_size=result.get("size_bytes").and_then(Value::as_u64);
+    let host_exists=result.get("output_exists").and_then(Value::as_bool)==Some(true);
+    let p=Path::new(path);
+    let extension_ok=p.extension().and_then(|v|v.to_str()).is_some_and(|v|v.eq_ignore_ascii_case("mogrt"));
+    let meta=if p.is_absolute()&&extension_ok{fs::symlink_metadata(p).ok()}else{None};
+    let regular=meta.as_ref().is_some_and(|m|m.is_file()&&!m.file_type().is_symlink());
+    let size=meta.as_ref().map(|m|m.len());
+    let verified=host_exists&&regular&&size.is_some_and(|v|v>0)&&size==expected_size;
+    json!({"desktop_mogrt_verified":verified,"output_file":path,"expected_size_bytes":expected_size,
+        "desktop_size_bytes":size,"regular_non_symlink":regular,"extension_ok":extension_ok,
+        "note":"Desktop metadata verifies the exact non-empty .mogrt file and host-reported size; semantic template behavior still requires Premiere/AE runtime review."})
+}
+
 fn write_new(path:&Path,bytes:&[u8],label:&str)->Result<(),String>{
     let mut file=OpenOptions::new().write(true).create_new(true).open(path)
         .map_err(|e|format!("Could not reserve {label}: {e}"))?;
@@ -130,8 +145,14 @@ pub fn pending_jobs(workspace:&Path,reconcile_receipts:bool)->Result<Value,Strin
                     receipt.result.as_ref().map(render_output_evidence)
                 }else{None};
                 let render_verified=render_evidence.as_ref().and_then(|v|v.get("desktop_outputs_verified")).and_then(Value::as_bool)==Some(true);
+                let mogrt_evidence=if request.action=="export_mogrt" {
+                    receipt.result.as_ref().map(mogrt_output_evidence)
+                }else{None};
+                let mogrt_verified=mogrt_evidence.as_ref().and_then(|v|v.get("desktop_mogrt_verified")).and_then(Value::as_bool)==Some(true);
                 let post_verified=if request.action=="render_queue" {
                     verification=="verified_render_completion"&&render_verified
+                }else if request.action=="export_mogrt" {
+                    verification=="verified_mogrt_file_readback"&&mogrt_verified
                 }else{verification.starts_with("verified_")};
                 let host_retry_safe=receipt.result.as_ref().and_then(|v|v.get("retry_safe")).and_then(Value::as_bool)
                     .unwrap_or(!request.is_mutating());
@@ -142,6 +163,7 @@ pub fn pending_jobs(workspace:&Path,reconcile_receipts:bool)->Result<Value,Strin
                     "state":"receipt_available","host_receipt_ok":receipt.ok,"host_version":receipt.host_version,
                     "verification_status":verification,"post_state_verified":post_verified,"host_retry_safe":host_retry_safe,
                     "render_output_evidence":render_evidence,
+                    "mogrt_output_evidence":mogrt_evidence,
                     "result":receipt.result,"host_error":receipt.error,"retry_safe":false,
                     "reconciled":reconcile_receipts,
                     "note":"Late receipt resolves dispatch completion, but retry remains disabled until the caller inspects current host state."}));
@@ -241,8 +263,13 @@ pub async fn execute(
                         receipt.result.as_ref().map(render_output_evidence)
                     }else{None};
                     let render_verified=render_evidence.as_ref().and_then(|v|v.get("desktop_outputs_verified")).and_then(Value::as_bool)==Some(true);
+                    let mogrt_evidence=if request.action=="export_mogrt" {
+                        receipt.result.as_ref().map(mogrt_output_evidence)
+                    }else{None};
+                    let mogrt_verified=mogrt_evidence.as_ref().and_then(|v|v.get("desktop_mogrt_verified")).and_then(Value::as_bool)==Some(true);
                     let post_verified=if request.action=="save_project"{save_persistence_verified}
                         else if request.action=="render_queue"{verification=="verified_render_completion"&&render_verified}
+                        else if request.action=="export_mogrt"{verification=="verified_mogrt_file_readback"&&mogrt_verified}
                         else{verification.starts_with("verified_")};
                     let host_retry_safe=receipt.result.as_ref()
                         .and_then(|v|v.get("retry_safe")).and_then(Value::as_bool)
@@ -262,6 +289,7 @@ pub async fn execute(
                         "post_state_verified":post_verified,
                         "project_persistence_evidence":persistence_evidence,
                         "render_output_evidence":render_evidence,
+                        "mogrt_output_evidence":mogrt_evidence,
                         "host_retry_safe":host_retry_safe,
                         "checkpoint":checkpoint,
                         "checkpoint_recovery_verified":false,
