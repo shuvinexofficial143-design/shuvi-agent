@@ -20,13 +20,21 @@ const SPECS: &[(&str, u8, bool, bool)] = &[
     ("export_ame",8,true,false),
     ("speed_write",2,false,true),("masks",3,true,false),
     ("vertical_track_move",2,true,false),("replacement_nesting",2,true,false),
-    ("reliable_multicam",2,true,false),("linked_clip_membership",2,true,false),
+    ("reliable_multicam",2,true,false),("linked_clip_membership",2,true,true),
     ("native_caption_write_import",6,true,false),("complex_mogrt_properties",5,true,false),
     ("scene_edit_detection",2,false,false),
 ];
 
 fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis().min(u64::MAX as u128) as u64
+}
+
+fn unsupported_reason(name:&str)->&'static str {
+    match name {
+        "speed_write" => "Reviewed public Premiere APIs expose speed/reverse reads and planning inputs, but no reviewed native speed/time-remapping write action.",
+        "linked_clip_membership" => "Reviewed public track-item APIs expose no native linked-group membership getter; Shuvi supports bounded linked-candidate audit only.",
+        _ => "No verified safe typed adapter in the reviewed UXP surface."
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -70,7 +78,7 @@ impl Default for Report {
                 name:(*name).into(),group:*group,
                 state:if *unsupported {"unsupported_documented"} else {"implemented_unverified"}.into(),
                 code_tested:*tested,premiere_runtime_verified:false,
-                reason:unsupported.then(||"No verified safe typed adapter in the reviewed UXP surface.".into())
+                reason:unsupported.then(||unsupported_reason(name).into())
             }).collect(),evidence:vec![]}
     }
 }
@@ -327,6 +335,16 @@ pub fn host_probe_identity(context:&Value,timeline:&Value,diagnostics:&Value) ->
 fn current_report(mut report:Report)->Result<Report,String>{
     if report.schema_version!=1 {return Err("Unsupported Premiere acceptance report version.".into());}
     if report.capabilities.len()==SPECS.len() {
+        for (cap,spec) in report.capabilities.iter_mut().zip(SPECS.iter()) {
+            if spec.3 {
+                if cap.state=="runtime_verified" || cap.premiere_runtime_verified {
+                    return Err("Persisted Premiere report claims runtime verification for a documented-unsupported capability.".into());
+                }
+                cap.state="unsupported_documented".into();
+                cap.premiere_runtime_verified=false;
+                cap.reason=Some(unsupported_reason(spec.0).into());
+            }
+        }
         report.validate()?;
         return Ok(report);
     }
