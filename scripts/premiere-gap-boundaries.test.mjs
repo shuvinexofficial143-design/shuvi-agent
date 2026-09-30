@@ -20,7 +20,7 @@ test("public-API gaps remain explicit instead of silently promoted",()=>{
 
 test("delivery evidence never equates file stability with completion",()=>{
   assert.match(acceptance,/"ame_event_correlation":\{"state":"documented_event_uncorrelated"/);
-  assert.match(acceptance,/"encoded_media_validation":\{"state":"hook_required"/);
+  assert.match(acceptance,/"encoded_media_validation":\{"state":"hook_implemented_unverified"/);
   assert.match(acceptance,/encoder_event_correlation_verified":false/);
   assert.match(acceptance,/encoded_media_validation_verified":false/);
   assert.match(acceptance,/"export_completion":\{"state":"not_verified"/);
