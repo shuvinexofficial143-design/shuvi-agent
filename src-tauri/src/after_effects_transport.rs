@@ -20,10 +20,12 @@ pub struct Request {
 }
 impl Request {
     pub fn is_mutating(&self)->bool{
-        matches!(self.action.as_str(),"set_property"|"set_values_at_times"|"add_effect"|"add_null"|"add_render_queue_item"|"save_project")
+        matches!(self.action.as_str(),"set_property"|"set_values_at_times"|"set_expression"|"add_effect"|"add_null"|"add_text"
+            |"set_layer_parent"|"duplicate_layer"|"remove_layer"|"precompose_layers"|"add_mask"|"add_scene_edit_markers"
+            |"add_render_queue_item"|"save_project")
     }
     pub fn is_read_only(&self)->bool{
-        matches!(self.action.as_str(),"inspect_context"|"inspect_comp"|"inspect_property"|"inspect_render_queue")
+        matches!(self.action.as_str(),"inspect_context"|"inspect_comp"|"inspect_property"|"inspect_scene_edits"|"inspect_render_queue")
     }
     pub fn validate(&self)->Result<(),String>{
         if self.schema_version!=1
