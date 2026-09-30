@@ -65,7 +65,13 @@ test("delivery reports host acceptance and observed output separately",()=>{
   assert.match(rust,/"accepted":accepted/);
   assert.match(rust,/"file_observed":observed/);
   assert.match(rust,/"file_after":after/);
-  assert.match(rust,/"completion_verified":accepted&&observed/);
+  const routes=rust.slice(rust.indexOf('ToolAction::PremiereExportInterchange {request} =>'),rust.indexOf('ToolAction::PremierePlanExport {output,preset,queue_to_ame,overwrite} =>'));
+  assert.doesNotMatch(routes,/"completion_verified":accepted&&observed/);
+  assert.doesNotMatch(routes,/"status":if accepted&&observed\{"exported"\}/);
+  assert.equal((routes.match(/"completion_verified":false/g)||[]).length,4);
+  assert.match(routes,/"requests_accepted":requests_accepted,"complete":false/);
+  assert.match(routes,/"exported":0/);
+  assert.match(routes,/if !observed\{uncertain=true;break;\}/);
 });
 
 test("AE never promises external NLE compatibility or safe retry",()=>{

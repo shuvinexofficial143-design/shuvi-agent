@@ -11628,7 +11628,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 stdout:json!({
                     "native_result":value,"file_before":before,"file_after":after,
                     "accepted":accepted,"file_observed":observed,
-                    "completion_verified":accepted&&observed,
+                    "completion_verified":false,"media_parse_verified":false,
+                    "state":if accepted{"accepted_unverified"}else{"rejected"},
                     "compatibility_with_other_nles_guaranteed":false,
                     "retry_safe":false
                 }).to_string(),
@@ -11656,6 +11657,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 stdout:json!({
                     "native_result":value,"file_before":before,"file_after":after,
                     "accepted":accepted,"file_observed":observed,
+                    "completion_verified":false,"media_parse_verified":false,
+                    "state":if accepted{"accepted_unverified"}else{"rejected"},
                     "native_frame_export":true,"screenshot_fallback":false,"retry_safe":false
                 }).to_string(),
                 stderr:String::new(),exit_code:Some(if accepted&&observed{0}else{1})
@@ -11692,10 +11695,12 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                         let observed=observation.get("observed").and_then(Value::as_bool)==Some(true);
                         results.push(json!({
                             "index":index,"seconds":frame.seconds,"output":frame.output.clone(),
-                            "status":if accepted&&observed{"exported"}else{"failed"},
+                            "status":if accepted{"accepted_unverified"}else{"rejected"},
+                            "accepted":accepted,"file_observed":observed,"completion_verified":false,
                             "native_result":value,"file":observation
                         }));
                         if !accepted{break;}
+                        if !observed{uncertain=true;break;}
                     }
                     Err(error)=>{
                         let delivery_uncertain=error.contains("unknown")||error.contains("timed out")||error.contains("timeout")||error.contains("delivery");
@@ -11709,16 +11714,17 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }
             }
             let cancelled=state.delivery_cancelled.load(Ordering::Acquire);
-            let exported=results.iter().filter(|row|row["status"]=="exported").count();
-            let complete=!uncertain&&!cancelled&&exported==batch.frames.len();
+            let accepted=results.iter().filter(|row|row["accepted"]==true).count();
+            let requests_accepted=!uncertain&&!cancelled&&accepted==batch.frames.len();
             Ok(ActionResult{
-                success:complete,tool,
+                success:requests_accepted,tool,
                 stdout:json!({
-                    "requested":batch.frames.len(),"exported":exported,"results":results,
-                    "complete":complete,"cancelled":cancelled,"uncertain":uncertain,
+                    "requested":batch.frames.len(),"accepted":accepted,"exported":0,"results":results,
+                    "requests_accepted":requests_accepted,"complete":false,"completion_verified":false,
+                    "cancelled":cancelled,"uncertain":uncertain,
                     "native_frame_export":true,"screenshot_fallback":false,"retry_safe":false
                 }).to_string(),
-                stderr:String::new(),exit_code:Some(if complete{0}else{1})
+                stderr:String::new(),exit_code:Some(if requests_accepted{0}else{1})
             })
         }
         ToolAction::PremierePlanExport {output,preset,queue_to_ame,overwrite} => {
