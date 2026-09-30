@@ -191,3 +191,14 @@ test("AE readiness never promotes unexecuted source to production",()=>{
   assert.match(rust,/"current_source_revision_bound":false/);
   assert.match(lib,/- after_effects_readiness_report: \{\}/);
 });
+
+
+test("AE executable path is restricted to the canonical Adobe install tree",()=>{
+  assert.match(runtime,/fn trusted_afterfx_exe/);
+  assert.match(runtime,/ProgramFiles/);
+  assert.match(runtime,/join\("Adobe"\)/);
+  assert.match(runtime,/exe\.starts_with\(&root\)/);
+  assert.match(runtime,/Support Files/);
+  assert.match(runtime,/Adobe After Effects/);
+  assert.match(runtime,/trusted_afterfx_exe\(afterfx_exe\)\?/);
+});
