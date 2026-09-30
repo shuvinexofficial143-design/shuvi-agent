@@ -959,6 +959,12 @@ async function actionCancellationConfirmed(actionId: string): Promise<boolean> {
   }
 }
 
+function clearExecutingAction(actionId: string): void {
+  // Read live state after awaits: Stop or a nested action may have changed it.
+  if (executingActionId === actionId) executingActionId = null;
+  if (executingCancellation?.actionId === actionId) executingCancellation = null;
+}
+
 async function executePendingProposal(proposal: ToolProposal): Promise<void> {
   if (!pendingAction || cancelRequested) return;
 
@@ -1038,8 +1044,7 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
     }));
     await continueAfterOutcome();
   } finally {
-    if (executingActionId === actionId) executingActionId = null;
-    if (executingCancellation?.actionId === actionId) executingCancellation = null;
+    clearExecutingAction(actionId);
   }
 }
 function renderChatPermission(proposal: ToolProposal, step: number): void {

@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
+import vm from "node:vm";
+import ts from "typescript";
 
 const rust=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
 const main=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
@@ -68,7 +70,21 @@ test("cancellation classification awaits the exact in-flight cancellation promis
   assert.ok(stop.indexOf("executingCancellation = { actionId, promise }") < stop.indexOf("await promise"));
   const execute=main.slice(main.indexOf("async function executePendingProposal"),main.indexOf("function renderChatPermission"));
   assert.match(execute,/const cancelledByUser = await actionCancellationConfirmed\(actionId\)/);
-  assert.match(execute,/executingCancellation\?\.actionId === actionId/);
+  assert.match(execute,/clearExecutingAction\(actionId\)/);
+});
+
+test("late action cleanup preserves a newer action and its cancellation",()=>{
+  const cleanup=main.slice(main.indexOf("function clearExecutingAction("),main.indexOf("async function executePendingProposal"));
+  const context=vm.createContext({executingActionId:"new",executingCancellation:{actionId:"new",promise:Promise.resolve(true)}});
+  vm.runInContext(ts.transpileModule(cleanup,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText,context);
+  context.clearExecutingAction("old");
+  assert.equal(context.executingActionId,"new");
+  assert.equal(context.executingCancellation.actionId,"new");
+  context.clearExecutingAction("new");
+  assert.equal(context.executingActionId,null);
+  assert.equal(context.executingCancellation,null);
+  context.clearExecutingAction("new");
+  assert.equal(context.executingCancellation,null);
 });
 
 
