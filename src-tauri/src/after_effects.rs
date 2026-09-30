@@ -180,6 +180,7 @@ pub fn capability_report()->Value {
             "marker_inspection":"source_supported_bounded_readback",
             "marker_add":"source_supported_with_time_value_delta_readback",
             "marker_remove":"source_supported_with_time_comment_stale_guard",
+            "project_save_persistence":"source_supported_with_independent_file_fingerprint",
             "runtime_verified":"not_verified"
         },
         "safety":[
