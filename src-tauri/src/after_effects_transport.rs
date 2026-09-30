@@ -27,14 +27,14 @@ impl Request {
             |"set_layer_state"|"set_layer_parent"|"move_layer"|"set_track_matte"|"remove_track_matte"
             |"set_time_remap"|"replace_source"|"relink_footage"|"set_proxy"|"remove_proxy"|"set_av_layer_flags"|"set_av_layer_rendering"
             |"set_text_style"|"set_layer_timing"|"add_shape_primitive"|"add_text_animator"
-            |"add_mogrt_property"|"add_mogrt_media_layer"|"export_mogrt"|"apply_hand_track_rig"
+            |"add_mogrt_property"|"add_mogrt_media_layer"|"export_mogrt"|"set_essential_property"|"set_essential_media_source"|"apply_hand_track_rig"
             |"set_keyframe_interpolation"|"set_keyframe_temporal_ease"|"set_keyframe_temporal_flags"|"set_keyframe_spatial"|"remove_keyframe"
             |"duplicate_layer"|"remove_layer"|"precompose_layers"|"add_mask"|"edit_mask"|"remove_mask"|"add_scene_edit_markers"
             |"add_marker"|"remove_marker"|"add_render_queue_item"|"render_queue"|"save_project")
     }
     pub fn is_read_only(&self)->bool{
         matches!(self.action.as_str(),"inspect_context"|"inspect_project_items"|"inspect_comp"|"inspect_effects"
-            |"inspect_property"|"inspect_keyframes"|"inspect_layer_properties"|"inspect_av_layer_rendering"|"inspect_mogrt"|"inspect_scene_edits"|"inspect_markers"|"inspect_render_queue")
+            |"inspect_property"|"inspect_keyframes"|"inspect_layer_properties"|"inspect_av_layer_rendering"|"inspect_mogrt"|"inspect_essential_properties"|"inspect_scene_edits"|"inspect_markers"|"inspect_render_queue")
     }
     pub fn validate(&self)->Result<(),String>{
         if self.schema_version!=1
