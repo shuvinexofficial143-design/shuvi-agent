@@ -312,6 +312,7 @@ pub fn capability_report()->Value {
             "audio_levels_inspection":"source_supported_bounded_512_keyframes",
             "audio_gain_static":"source_supported_zero_existing_keys_with_host_range_checks_and_readback",
             "audio_envelope":"source_supported_fresh_stereo_db_envelope_2_to_512_points_with_readback",
+            "layer_input_stage_26_5":"source_supported_same_source_stage_change_with_layer_id_stale_guard_cycle_safe_limit_and_readback",
             "mogrt_controller_inspection":"source_supported_bounded_256_controllers",
             "mogrt_property_controller_add":"source_supported_with_controller_inventory_delta",
             "mogrt_media_controller_add":"source_supported_with_controller_inventory_delta",
