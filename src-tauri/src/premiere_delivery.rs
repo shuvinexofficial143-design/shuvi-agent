@@ -7,6 +7,23 @@ const MAX_FRAMES: usize = 16;
 const MAX_DIMENSION: u32 = 16_384;
 const MAX_HANDLE_FRAMES: u32 = 100_000;
 
+pub fn collision_protection() -> serde_json::Value {
+    serde_json::json!({"mode":"desktop_predispatch_recheck","atomic":false,
+        "external_writer_race_possible":true,"native_exclusive_create_supported":false,
+        "post_dispatch_file_observation_only":true,
+        "note":"Adobe receives a pathname, not an exclusively reserved file handle. AME may write later; rechecks and unique names do not guarantee no clobber."})
+}
+
+pub fn unique_output_candidate(output:&str)->Result<String,String>{
+    let path=crate::premiere_export::bounded_absolute(output)?;
+    crate::premiere_export::valid_filename(path)?;
+    let stem=path.file_stem().and_then(|s|s.to_str()).ok_or("Output stem missing.")?;
+    let extension=path.extension().and_then(|s|s.to_str()).ok_or("Output extension missing.")?;
+    let candidate=path.with_file_name(format!("{stem}-{}.{}",uuid::Uuid::new_v4(),extension));
+    let candidate=candidate.to_str().ok_or("Output candidate is not UTF-8.")?;
+    validate_output_file(candidate,false)
+}
+
 fn clean_absolute(value:&str,label:&str)->Result<String,String>{
     if value.trim().is_empty() || value.len()>MAX_PATH || value.chars().any(|ch|matches!(ch,'\r'|'\n'|'\0')){
         return Err(format!("{label} is empty, oversized, or contains invalid control characters."));
@@ -168,6 +185,20 @@ pub fn observed_file(path:&str)->serde_json::Value{
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]fn collision_recheck_rejects_a_late_writer_and_unique_option_is_not_reserved(){
+        let dir=std::env::temp_dir().join(format!("shuvi-collision-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out=dir.join("frame.png");let output=out.to_str().unwrap();
+        assert!(validate_output_file(output,false).is_ok());
+        std::fs::write(&out,b"other writer").unwrap();
+        assert!(validate_output_file(output,false).is_err());
+        assert!(validate_output_file(output,true).is_ok());
+        let unique=unique_output_candidate(output).unwrap();
+        assert_ne!(unique,output);assert!(!Path::new(&unique).exists());
+        assert_eq!(collision_protection()["atomic"],false);
+        assert_eq!(std::fs::read(&out).unwrap(),b"other writer");
+        std::fs::remove_file(out).unwrap();std::fs::remove_dir(dir).unwrap();
+    }
     #[test]fn interchange_extensions_and_frame_aliases_fail_closed(){
         let dir=std::env::temp_dir().join(format!("shuvi-delivery-{}",uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();

@@ -11587,6 +11587,9 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "request":request,
                     "expected":expected,
                     "api_since":if format=="aaf"{"26.3"}else{"26.2"},
+                    "collision_protection":premiere_delivery::collision_protection(),
+                    "unique_output_candidate":premiere_delivery::unique_output_candidate(&output)?,
+                    "unique_output_reserved":false,
                     "output_exists":Path::new(&output).exists(),
                     "completion_verified":false
                 }).to_string(),
@@ -11615,9 +11618,10 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 "trimSources":value.trim_sources,
                 "videoMixdownPresetPath":value.video_mixdown_preset_path.clone()
             }));
+            premiere_delivery::validate_output_file(&output,request.overwrite)?;
             let value=client.request(
                 "export_interchange",
-                json!({"format":format,"output":output,"suppressUI":suppress_ui,"aafOptions":aaf_options}),
+                json!({"format":format,"output":output,"overwrite":request.overwrite,"suppressUI":suppress_ui,"aafOptions":aaf_options}),
                 Duration::from_secs(180),
             ).await?;
             let after=premiere_delivery::observed_file(&request.output);
@@ -11631,6 +11635,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "completion_verified":false,"media_parse_verified":false,
                     "state":if accepted{"accepted_unverified"}else{"rejected"},
                     "compatibility_with_other_nles_guaranteed":false,
+                    "collision_protection":premiere_delivery::collision_protection(),
                     "retry_safe":false
                 }).to_string(),
                 stderr:String::new(),exit_code:Some(if accepted&&observed{0}else{1})
@@ -11644,9 +11649,10 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let directory=path.parent().ok_or("Frame export output has no parent directory.")?.to_string_lossy().to_string();
             let before=premiere_delivery::observed_file(&output);
             let client=PremiereClient{bridge:&state.premiere_bridge,expected:Some(expected)};
+            premiere_delivery::validate_output_file(&output,request.overwrite)?;
             let value=client.request(
                 "export_sequence_frame",
-                json!({"seconds":request.seconds,"output":output,"directory":directory,"width":request.width,"height":request.height}),
+                json!({"seconds":request.seconds,"output":output,"overwrite":request.overwrite,"directory":directory,"width":request.width,"height":request.height}),
                 Duration::from_secs(60),
             ).await?;
             let after=premiere_delivery::observed_file(&request.output);
@@ -11659,7 +11665,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "accepted":accepted,"file_observed":observed,
                     "completion_verified":false,"media_parse_verified":false,
                     "state":if accepted{"accepted_unverified"}else{"rejected"},
-                    "native_frame_export":true,"screenshot_fallback":false,"retry_safe":false
+                    "native_frame_export":true,"screenshot_fallback":false,"retry_safe":false,
+                    "collision_protection":premiere_delivery::collision_protection()
                 }).to_string(),
                 stderr:String::new(),exit_code:Some(if accepted&&observed{0}else{1})
             })
@@ -11684,9 +11691,15 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 let output=frame.output.clone();
                 let path=Path::new(&output);
                 let directory=path.parent().ok_or("Review frame output has no parent directory.")?.to_string_lossy().to_string();
+                // Earlier frames may take minutes. Recheck this destination at its own dispatch.
+                if let Err(error)=frame.validate(){
+                    results.push(json!({"index":index,"output":output,"status":"blocked_before_dispatch",
+                        "reason":error,"completion_verified":false}));
+                    break;
+                }
                 match client.request(
                     "export_sequence_frame",
-                    json!({"seconds":frame.seconds,"output":output,"directory":directory,"width":frame.width,"height":frame.height}),
+                    json!({"seconds":frame.seconds,"output":output,"overwrite":frame.overwrite,"directory":directory,"width":frame.width,"height":frame.height}),
                     Duration::from_secs(60),
                 ).await {
                     Ok(value)=>{
@@ -11721,6 +11734,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 stdout:json!({
                     "requested":batch.frames.len(),"accepted":accepted,"exported":0,"results":results,
                     "requests_accepted":requests_accepted,"complete":false,"completion_verified":false,
+                    "collision_protection":premiere_delivery::collision_protection(),
                     "cancelled":cancelled,"uncertain":uncertain,
                     "native_frame_export":true,"screenshot_fallback":false,"retry_safe":false
                 }).to_string(),
@@ -11744,6 +11758,9 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 "sequence":{"guid":sequence,"name":context.get("sequenceName")},
                 "expected":{"project_guid":project,"project_path":context.get("projectPath"),"sequence_guid":sequence,"clips":[]},
                 "default_preset_details_inspectable":false,
+                "collision_protection":premiere_delivery::collision_protection(),
+                "unique_output_candidate":premiere_delivery::unique_output_candidate(&output)?,
+                "unique_output_reserved":false,
                 "note":"Adobe's boolean export result does not prove finished media encoding."});
             Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)})
@@ -11773,6 +11790,20 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             job.bridge_state="execution_status_unknown".into();
             jobs.insert(job)?;premiere_export_jobs::save(&jobs_path,&jobs)?;
             }
+            // Persisting the job can block on another writer; repeat preflight after it.
+            let recheck=premiere_export::inspect(&output,preset.as_deref(),overwrite,context.get("projectPath").and_then(Value::as_str));
+            let blocked=match recheck {
+                Ok(check) if check.executable=>None,
+                Ok(check)=>Some(check.warnings.join("; ")),
+                Err(error)=>Some(error),
+            };
+            if let Some(reason)=blocked {
+                let _io=state.premiere_export_jobs_io.lock().map_err(|_|"Export job store unavailable.")?;
+                let mut jobs=premiere_export_jobs::load(&jobs_path)?;
+                let record=jobs.jobs.iter_mut().find(|j|j.job_id==job_id).ok_or("Export job record unavailable.")?;
+                record.bridge_state="rejected".into();premiere_export_jobs::save(&jobs_path,&jobs)?;
+                return Err(format!("Export blocked before dispatch after output recheck: {reason}"));
+            }
             let result=premiere_bridge.request("export_sequence",
                 json!({"output":output,"preset":preset,"queueToAme":queue_to_ame,"overwrite":overwrite}),
                 Duration::from_secs(if queue_to_ame {45} else {120})).await;
@@ -11790,7 +11821,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     premiere_export_jobs::save(&jobs_path,&jobs)?;
                     Ok(ActionResult {success:accepted,tool,
                         stdout:serde_json::to_string_pretty(&json!({"job_id":job_id,"encoder":value,
-                            "output_observation":observed,"encoder_completion_verified":false,"retry_automatically":false})).unwrap_or_default(),
+                            "output_observation":observed,"encoder_completion_verified":false,"retry_automatically":false,
+                            "collision_protection":premiere_delivery::collision_protection()})).unwrap_or_default(),
                         stderr:String::new(),exit_code:Some(if accepted {0}else{1})})
                 },
                 Err(error) => {

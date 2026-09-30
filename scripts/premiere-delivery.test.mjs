@@ -68,10 +68,27 @@ test("delivery reports host acceptance and observed output separately",()=>{
   const routes=rust.slice(rust.indexOf('ToolAction::PremiereExportInterchange {request} =>'),rust.indexOf('ToolAction::PremierePlanExport {output,preset,queue_to_ame,overwrite} =>'));
   assert.doesNotMatch(routes,/"completion_verified":accepted&&observed/);
   assert.doesNotMatch(routes,/"status":if accepted&&observed\{"exported"\}/);
-  assert.equal((routes.match(/"completion_verified":false/g)||[]).length,4);
+  assert.equal((routes.match(/"completion_verified":false/g)||[]).length,5);
   assert.match(routes,/"requests_accepted":requests_accepted,"complete":false/);
   assert.match(routes,/"exported":0/);
   assert.match(routes,/if !observed\{uncertain=true;break;\}/);
+});
+
+test("native delivery exposes residual collision risk and rechecks each frame at dispatch",()=>{
+  const target=readFileSync(new URL("../src-tauri/src/premiere_target.rs",import.meta.url),"utf8");
+  const recheck=target.indexOf('crate::premiere_delivery::validate_output_file(output,overwrite)?');
+  assert.ok(recheck>target.indexOf('self.bridge.request("inspect_context"'));
+  assert.ok(recheck<target.indexOf('self.bridge.request(action, arguments, timeout).await'));
+  assert.match(delivery,/"atomic":false/);
+  assert.match(delivery,/"external_writer_race_possible":true/);
+  assert.match(rust,/"unique_output_reserved":false/);
+  const batch=rust.slice(rust.indexOf('ToolAction::PremiereExportReviewFrames {batch} =>'),rust.indexOf('ToolAction::PremierePlanExport {output,preset,queue_to_ame,overwrite} =>'));
+  assert.ok(batch.indexOf('frame.validate()')>batch.indexOf('for (index,frame)'));
+  assert.ok(batch.indexOf('frame.validate()')<batch.indexOf('match client.request('));
+  assert.match(batch,/"status":"blocked_before_dispatch"/);
+  const sequence=rust.slice(rust.indexOf('ToolAction::PremiereExportSequence { output,'),rust.indexOf('ToolAction::PremiereSaveProject =>'));
+  assert.ok(sequence.indexOf('let recheck=')>sequence.indexOf('jobs.insert(job)?'));
+  assert.ok(sequence.indexOf('let recheck=')<sequence.indexOf('let result=premiere_bridge.request'));
 });
 
 test("AE never promises external NLE compatibility or safe retry",()=>{

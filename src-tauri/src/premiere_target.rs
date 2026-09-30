@@ -76,6 +76,13 @@ impl PremiereClient<'_> {
             let object = arguments.as_object_mut().ok_or("Premiere command arguments must be an object.")?;
             object.insert("_expected".into(), serde_json::to_value(expected).map_err(|e| e.to_string())?);
         }
+        // Recheck after the capability/identity await, immediately before enqueueing.
+        // This narrows the race; Adobe still receives a path and offers no exclusive handle.
+        if matches!(action,"export_sequence"|"export_sequence_frame"|"export_interchange") {
+            let output=arguments.get("output").and_then(Value::as_str).ok_or("Export output missing.")?;
+            let overwrite=arguments.get("overwrite").and_then(Value::as_bool).ok_or("Export overwrite policy missing.")?;
+            crate::premiere_delivery::validate_output_file(output,overwrite)?;
+        }
         self.bridge.request(action, arguments, timeout).await
     }
 }
