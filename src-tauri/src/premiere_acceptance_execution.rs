@@ -34,6 +34,23 @@ pub fn save_progress(path:&Path,record:&mut Action)->Result<(),String>{
     save(path,record)
 }
 
+pub fn save_recovery_result(path:&Path,inspected:&Action,record:&Action)->Result<(),String>{
+    let _io=ACTION_IO.lock().map_err(|_|"Acceptance state lock unavailable.")?;
+    inspected.validate()?;record.validate()?;
+    let latest=load(path)?;
+    let encode=|value:&Action|serde_json::to_vec(value).map_err(|e|e.to_string());
+    if latest.action_id!=inspected.action_id || encode(&latest)?!=encode(inspected)? {
+        return Err("Acceptance state changed during recovery verification; stale recovery result was not persisted.".into());
+    }
+    let mut unchanged=record.clone();
+    unchanged.recovery=inspected.recovery.clone();
+    unchanged.recovery_verified=inspected.recovery_verified;
+    if encode(&unchanged)?!=encode(inspected)? {
+        return Err("Recovery verification attempted to change unrelated acceptance state.".into());
+    }
+    save(path,record)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Fixture {
@@ -338,6 +355,19 @@ pub fn save(path:&Path,action:&Action)->Result<(),String>{
         save(&path,&a).unwrap();let mut running=begin(&path,&a).unwrap();cancel(&path).unwrap();
         running.status="uncertain".into();save_progress(&path,&mut running).unwrap();
         assert!(running.cancellation_requested);assert!(save_progress(&path,&mut running).is_err());
+        fs::remove_file(&path).unwrap();fs::remove_file(path.with_extension("json.bak")).unwrap();
+    }
+    #[test]fn stale_recovery_result_cannot_overwrite_newer_acceptance_state(){
+        let (f,c,t)=fixture();let mut inspected=Action::new("recovery-race".into(),"trim".into(),f,&c,&t).unwrap();
+        inspected.status="verified".into();inspected.checkpoint=Some("C:/Shuvi Backups/checkpoint.prproj".into());
+        let path=std::env::temp_dir().join(format!("shuvi-acceptance-recovery-race-{}.json",uuid::Uuid::new_v4()));
+        save(&path,&inspected).unwrap();
+        let mut candidate=inspected.clone();candidate.recovery_verified=true;
+        candidate.recovery=Some("Verified recovery result.".into());
+        let mut newer=inspected.clone();newer.recovery=Some("Newer persisted observation.".into());
+        save(&path,&newer).unwrap();
+        assert!(save_recovery_result(&path,&inspected,&candidate).is_err());
+        assert_eq!(load(&path).unwrap().recovery.as_deref(),Some("Newer persisted observation."));
         fs::remove_file(&path).unwrap();fs::remove_file(path.with_extension("json.bak")).unwrap();
     }
     #[test]fn persisted_fixture_cannot_drop_or_retarget_clip_or_enlarge_mutation(){

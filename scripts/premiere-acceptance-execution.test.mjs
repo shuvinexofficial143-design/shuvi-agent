@@ -18,6 +18,17 @@ test("acceptance executor is one preplanned typed action under existing approval
   assert.doesNotMatch(source,/eval\(|executeTransaction|std::process::Command/);
 });
 
+test("recovery verification cannot publish over a changed acceptance snapshot",()=>{
+  const helper=source.slice(source.indexOf('pub fn save_recovery_result('),source.indexOf('#[derive'));
+  assert.match(helper,/ACTION_IO.lock\(\)/);
+  assert.match(helper,/encode\(&latest\)\?!=encode\(inspected\)\?/);
+  assert.match(helper,/Recovery verification attempted to change unrelated acceptance state/);
+  const recovery=desktop.slice(desktop.indexOf('ToolAction::PremiereAcceptanceVerifyRecovery {action_id} =>'),desktop.indexOf('ToolAction::PremiereAcceptanceExecute {action_id} =>'));
+  assert.match(recovery,/let inspected_record=record.clone\(\)/);
+  assert.match(recovery,/save_recovery_result\(&path,&inspected_record,&record\)/);
+  assert.doesNotMatch(recovery,/premiere_acceptance_execution::save\(&path,&record\)/);
+});
+
 test("acceptance start and finish merge fresh cancellation under a store lock",()=>{
   const begin=source.slice(source.indexOf('pub fn begin('),source.indexOf('pub fn cancel('));
   assert.match(begin,/ACTION_IO.lock\(\)/);

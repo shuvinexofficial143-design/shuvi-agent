@@ -11328,6 +11328,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             if !state.premiere_bridge.status()?.paired {return Err("Paired Premiere UXP host unavailable.".into());}
             let path=premiere_acceptance_action_path(app,&action_id)?;
             let mut record=premiere_acceptance_execution::load(&path)?;
+            let inspected_record=record.clone();
             let checkpoint=record.checkpoint.clone().ok_or("Acceptance action has no checkpoint to verify.")?;
             if record.step=="scene_markers" {
                 return Err("Scene-marker recovery cannot be verified from timeline state alone; generated markers require explicit marker inspection/cleanup.".into());
@@ -11336,7 +11337,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(10)).await?;
             let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
             let recovered=record.verify_recovery(&context,&timeline)?;
-            premiere_acceptance_execution::save(&path,&record)?;
+            premiere_acceptance_execution::save_recovery_result(&path,&inspected_record,&record)?;
             Ok(ActionResult {success:recovered,tool,stdout:json!({
                 "action_id":action_id,
                 "recovery_verified":recovered,
