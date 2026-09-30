@@ -24,6 +24,7 @@ impl Request {
     pub fn is_mutating(&self)->bool{
         matches!(self.action.as_str(),"set_property"|"set_values_at_times"|"set_expression"|"add_effect"|"remove_effect"|"add_null"|"add_text"
             |"add_shape"|"add_solid"|"add_camera"|"add_light"|"create_comp"|"set_comp_settings"|"import_footage"|"add_item_layer"
+            |"create_project_folder"|"set_project_item_state"|"remove_project_item"
             |"set_layer_state"|"set_layer_parent"|"move_layer"|"set_track_matte"|"remove_track_matte"
             |"set_time_remap"|"replace_source"|"relink_footage"|"set_proxy"|"remove_proxy"|"set_av_layer_flags"|"set_av_layer_rendering"
             |"set_text_style"|"set_layer_timing"|"add_shape_primitive"|"add_text_animator"
