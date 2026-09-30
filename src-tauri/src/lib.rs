@@ -8101,8 +8101,9 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             ).await?;
             let accepted = result.get("nativeAccepted").and_then(Value::as_bool)==Some(true);
             let verification = result.get("verificationStatus").and_then(Value::as_str).unwrap_or("unknown");
+            let verified = verification == "verified_delta";
             Ok(ActionResult {
-                success:accepted,
+                success:verified,
                 tool,
                 stdout:json!({
                     "checkpoint":checkpoint,
@@ -8110,11 +8111,13 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "result":result,
                     "native_accepted":accepted,
                     "verification_status":verification,
+                    "post_state_verified":verified,
+                    "uncertain":accepted&&!verified,
                     "runtime_verified":false,
                     "retry_safe":false
                 }).to_string(),
                 stderr:String::new(),
-                exit_code:Some(if accepted {0}else{1}),
+                exit_code:Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereCancelTranscriptRebuild { generation } => {

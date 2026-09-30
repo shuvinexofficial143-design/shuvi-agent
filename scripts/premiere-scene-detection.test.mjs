@@ -59,10 +59,14 @@ test("cut verification correlates same media on original track/range",()=>{
   assert.match(uxp,/Scene detection produced more than 256 bounded segments/);
 });
 
-test("native true without observable delta is not called verified",()=>{
+test("native true without observable delta is not called verified or successful",()=>{
   assert.match(uxp,/"accepted_unverified"/);
   assert.match(uxp,/"verified_delta"/);
-  assert.match(rust,/"runtime_verified":false/);
+  const arm=rust.slice(rust.lastIndexOf("ToolAction::PremiereSceneDetection"),rust.indexOf("\n        ToolAction::PremiereCancelTranscriptRebuild",rust.lastIndexOf("ToolAction::PremiereSceneDetection")));
+  assert.match(arm,/verification == "verified_delta"/);
+  assert.match(arm,/success:verified/);
+  assert.match(arm,/"uncertain":accepted&&!verified/);
+  assert.match(arm,/"runtime_verified":false/);
 });
 
 test("AB checkpoints mutation and never marks retry safe",()=>{
