@@ -80,3 +80,31 @@ test("desktop clone and delete refuse unverified native deltas",()=>{
     assert.match(arm,/retry_safe/);
   }
 });
+
+
+test("project-item and media insertion verify exact insert deltas and keep overwrite unverified",()=>{
+  const project=uxp.slice(uxp.indexOf("async function insertProjectItem"),uxp.indexOf("async function insertMedia"));
+  const media=uxp.slice(uxp.indexOf("async function insertMedia"),uxp.indexOf("function closeTimelineSeconds"));
+  for(const body of [project,media]){
+    assert.match(body,/snapshotInsertionTracks/);
+    assert.match(body,/insertionVerification/);
+    assert.match(body,/verified_insert_delta/);
+    assert.match(body,/overwriteSemanticsVerified:false/);
+    assert.match(body,/retrySafe:false/);
+  }
+  const helper=uxp.slice(uxp.indexOf("async function snapshotInsertionTracks"),uxp.indexOf("async function insertProjectItem"));
+  assert.match(helper,/mode === "insert"/);
+  assert.match(helper,/mode === "overwrite"/);
+  assert.match(helper,/overwritten-range semantics are not fully verified/);
+});
+
+test("desktop insertion tools refuse overwrite or otherwise unverified semantics",()=>{
+  for(const [name,next] of [["PremiereInsertProjectItem","PremiereInsertMedia"],["PremiereInsertMedia","PremiereTrimClip"]]){
+    const start=rust.indexOf("ToolAction::"+name+" {",500000);
+    const end=rust.indexOf("\n        ToolAction::"+next,start+10);
+    const arm=rust.slice(start,end);
+    assert.match(arm,/verified_insert_delta/);
+    assert.match(arm,/success: verified/);
+    assert.match(arm,/overwrite_semantics_verified/);
+  }
+});

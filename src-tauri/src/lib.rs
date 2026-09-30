@@ -8300,10 +8300,15 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     }),
                     Duration::from_secs(35),
                 ).await {
-                    Ok(value)=>shot_results.push(json!({
-                        "index":i,"source_item_id":shot.item_id,"insert_item_id":insert_item_id,
-                        "role":shot.role,"requested_seconds":seconds,"status":"accepted","native_result":value
-                    })),
+                    Ok(value)=>{
+                        let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_insert_delta");
+                        shot_results.push(json!({
+                            "index":i,"source_item_id":shot.item_id,"insert_item_id":insert_item_id,
+                            "role":shot.role,"requested_seconds":seconds,
+                            "status":if verified{"verified"}else{"uncertain"},"native_result":value
+                        }));
+                        if !verified {uncertain=true;break;}
+                    },
                     Err(error)=>{
                         uncertain=true;
                         shot_results.push(json!({"index":i,"item_id":insert_item_id,"status":"uncertain","reason":error.chars().take(240).collect::<String>()}));
@@ -8326,7 +8331,12 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                         }),
                         Duration::from_secs(35),
                     ).await {
-                        Ok(value)=>music_results.push(json!({"index":i,"item_id":music.item_id,"seconds":music.timeline_seconds,"status":"accepted","native_result":value})),
+                        Ok(value)=>{
+                            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_insert_delta");
+                            music_results.push(json!({"index":i,"item_id":music.item_id,"seconds":music.timeline_seconds,
+                                "status":if verified{"verified"}else{"uncertain"},"native_result":value}));
+                            if !verified {uncertain=true;break;}
+                        },
                         Err(error)=>{
                             uncertain=true;
                             music_results.push(json!({"index":i,"item_id":music.item_id,"status":"uncertain","reason":error.chars().take(240).collect::<String>()}));
@@ -8403,13 +8413,13 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             }
 
             let cancelled=state.assembly_cancelled.load(Ordering::Acquire);
-            let final_timeline=if shot_results.iter().any(|row|row["status"]=="accepted") {
+            let final_timeline=if shot_results.iter().any(|row|row["status"]=="verified") {
                 premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(25)).await.ok()
             }else{None};
             let graphics_complete=assembly.graphics.is_none()||graphics_result.get("complete").and_then(Value::as_bool)==Some(true);
             let complete=!uncertain&&!cancelled
-                &&shot_results.len()==assembly.shots.len()&&shot_results.iter().all(|row|row["status"]=="accepted")
-                &&music_results.len()==assembly.music.len()&&music_results.iter().all(|row|row["status"]=="accepted")
+                &&shot_results.len()==assembly.shots.len()&&shot_results.iter().all(|row|row["status"]=="verified")
+                &&music_results.len()==assembly.music.len()&&music_results.iter().all(|row|row["status"]=="verified")
                 &&transition_results.len()==assembly.transitions.len()&&transition_results.iter().all(|row|row["status"]=="accepted")
                 &&marker_results.len()==assembly.chapters.len()&&marker_results.iter().all(|row|row["status"]=="accepted")
                 &&graphics_complete;
@@ -10907,16 +10917,16 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }),
                 Duration::from_secs(30),
             ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_insert_delta");
+
 
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
-                stdout: serde_json::to_string_pretty(&json!({
-                    "backup": backup,
-                    "result": value
-                })).unwrap_or_else(|_| value.to_string()),
+                stdout: json!({"backup":backup,"result":value,"post_state_verified":verified,
+                    "overwrite_semantics_verified":false,"retry_safe":false}).to_string(),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereInsertMedia { path, seconds, video_track, audio_track, mode } => {
@@ -10932,15 +10942,15 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }),
                 Duration::from_secs(30),
             ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_insert_delta");
+
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
-                stdout: serde_json::to_string_pretty(&json!({
-                    "backup": backup,
-                    "result": value
-                })).unwrap_or_else(|_| value.to_string()),
+                stdout: json!({"backup":backup,"result":value,"post_state_verified":verified,
+                    "overwrite_semantics_verified":false,"retry_safe":false}).to_string(),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereTrimClip { kind, track, clip_index, start_seconds, end_seconds } => {

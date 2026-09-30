@@ -733,7 +733,19 @@ async function insertMedia(argumentsValue) {
 
   const root = await project.getRootItem();
   const clip = await resolveOneClip(project, root, path);
-  const projectItem = premiere.ProjectItem.cast(clip);
+  const itemId = await projectItemId(clip);
+  if (!itemId) throw new Error("Resolved media has no stable project-item identity.");
+  const before = await snapshotInsertionTracks(project,sequence,videoTrack,audioTrack);
+  if (insertionCandidates(before.video,itemId,seconds).length || insertionCandidates(before.audio,itemId,seconds).length) {
+    throw new Error("Exact media item already occupies the requested insertion time; correlation would be ambiguous.");
+  }
+
+  const freshItem = await findProjectItemById(root,itemId);
+  const freshClip = freshItem ? asClipProjectItem(freshItem) : null;
+  if (!freshClip || normalizeMediaPath(await freshClip.getMediaFilePath()) !== normalizeMediaPath(path)) {
+    throw new Error("Media project item changed during insertion preflight; inspect again.");
+  }
+  const projectItem = premiere.ProjectItem.cast(freshClip);
   const editor = premiere.SequenceEditor.getEditor(sequence);
   const time = premiere.TickTime.createWithSeconds(seconds);
 
@@ -764,14 +776,34 @@ async function insertMedia(argumentsValue) {
     throw new Error("Premiere rejected the timeline edit transaction.");
   }
 
+  let after = null;
+  try {
+    after = await snapshotInsertionTracks(project,sequence,videoTrack,audioTrack);
+  } catch {
+    after = null;
+  }
+  const evidence = after
+    ? insertionVerification(before,after,itemId,seconds,mode)
+    : {verified:false,targetPresenceObserved:false,candidateCount:0,videoDelta:null,audioDelta:null,reason:"post-insertion track inspection unavailable"};
+
   return {
     edited: true,
     mode,
     path,
+    itemId,
     sequenceName: sequence.name || null,
     seconds,
     videoTrack,
-    audioTrack
+    audioTrack,
+    targetPresenceObserved:evidence.targetPresenceObserved,
+    candidateCount:evidence.candidateCount ?? 0,
+    videoItemDelta:evidence.videoDelta ?? null,
+    audioItemDelta:evidence.audioDelta ?? null,
+    overwriteSemanticsVerified:false,
+    verificationStatus:evidence.verified ? "verified_insert_delta" : "accepted_unverified",
+    uncertaintyReason:evidence.reason,
+    uncertain:!evidence.verified,
+    retrySafe:false
   };
 }
 
@@ -5549,6 +5581,53 @@ async function inspectAssemblyItems(argumentsValue) {
     video_tracks:await sequence.getVideoTrackCount(),audio_tracks:await sequence.getAudioTrackCount(),items};
 }
 
+async function snapshotInsertionTracks(project, sequence, videoTrack, audioTrack) {
+  const [videoCount,audioCount] = await Promise.all([
+    sequence.getVideoTrackCount(), sequence.getAudioTrackCount()
+  ]);
+  if (videoTrack >= videoCount || audioTrack >= audioCount) {
+    throw new Error("Insertion destination tracks must already exist.");
+  }
+  const [video,audio] = await Promise.all([
+    snapshotTrackItems(project,sequence,"video",videoTrack),
+    snapshotTrackItems(project,sequence,"audio",audioTrack)
+  ]);
+  return {video,audio};
+}
+
+function insertionCandidates(snapshot, itemId, seconds) {
+  return snapshot.filter(row => row.mediaId === itemId && closeTimelineSeconds(row.startSeconds,seconds));
+}
+
+function insertionVerification(before, after, itemId, seconds, mode) {
+  const beforeVideo = insertionCandidates(before.video,itemId,seconds);
+  const beforeAudio = insertionCandidates(before.audio,itemId,seconds);
+  if (beforeVideo.length || beforeAudio.length) {
+    return {verified:false,targetPresenceObserved:false,reason:"same item already occupied the requested destination time"};
+  }
+  const videoCandidates = insertionCandidates(after.video,itemId,seconds);
+  const audioCandidates = insertionCandidates(after.audio,itemId,seconds);
+  const candidateCount = videoCandidates.length+audioCandidates.length;
+  const targetPresenceObserved = candidateCount >= 1 && candidateCount <= 2;
+  const videoDelta = after.video.length-before.video.length;
+  const audioDelta = after.audio.length-before.audio.length;
+  const insertDeltaVerified = mode === "insert" && targetPresenceObserved
+    && videoDelta >= 0 && videoDelta <= 1
+    && audioDelta >= 0 && audioDelta <= 1
+    && videoDelta+audioDelta === candidateCount;
+  return {
+    verified:insertDeltaVerified,
+    targetPresenceObserved,
+    candidateCount,
+    videoDelta,
+    audioDelta,
+    reason:insertDeltaVerified ? null
+      : mode === "overwrite" && targetPresenceObserved
+        ? "overwrite target presence observed, but overwritten-range semantics are not fully verified"
+        : "exact insertion delta was not proven"
+  };
+}
+
 async function insertProjectItem(argumentsValue, explicitSequence = null) {
   const itemId =
     typeof argumentsValue?.itemId === "string"
@@ -5584,6 +5663,14 @@ async function insertProjectItem(argumentsValue, explicitSequence = null) {
 
   const projectItem = asProjectItem(item);
   if (!projectItem) throw new Error("Requested item cannot be inserted as a ProjectItem.");
+  const before = await snapshotInsertionTracks(project,sequence,videoTrack,audioTrack);
+  if (insertionCandidates(before.video,itemId,seconds).length || insertionCandidates(before.audio,itemId,seconds).length) {
+    throw new Error("Exact project item already occupies the requested insertion time; correlation would be ambiguous.");
+  }
+
+  const freshItem = await findProjectItemById(root,itemId);
+  const freshProjectItem = freshItem ? asProjectItem(freshItem) : null;
+  if (!freshProjectItem) throw new Error("Project item changed during insertion preflight; inspect again.");
 
   const editor = premiere.SequenceEditor.getEditor(sequence);
   const time = premiere.TickTime.createWithSeconds(seconds);
@@ -5593,14 +5680,14 @@ async function insertProjectItem(argumentsValue, explicitSequence = null) {
     const action =
       mode === "insert"
         ? editor.createInsertProjectItemAction(
-            projectItem,
+            freshProjectItem,
             time,
             videoTrack,
             audioTrack,
             true
           )
         : editor.createOverwriteItemAction(
-            projectItem,
+            freshProjectItem,
             time,
             videoTrack,
             audioTrack
@@ -5625,6 +5712,16 @@ async function insertProjectItem(argumentsValue, explicitSequence = null) {
     }
   }
 
+  let after = null;
+  try {
+    after = await snapshotInsertionTracks(project,sequence,videoTrack,audioTrack);
+  } catch {
+    after = null;
+  }
+  const evidence = after
+    ? insertionVerification(before,after,itemId,seconds,mode)
+    : {verified:false,targetPresenceObserved:false,candidateCount:0,videoDelta:null,audioDelta:null,reason:"post-insertion track inspection unavailable"};
+
   return {
     edited: true,
     itemId,
@@ -5633,7 +5730,16 @@ async function insertProjectItem(argumentsValue, explicitSequence = null) {
     mode,
     seconds,
     videoTrack,
-    audioTrack
+    audioTrack,
+    targetPresenceObserved:evidence.targetPresenceObserved,
+    candidateCount:evidence.candidateCount ?? 0,
+    videoItemDelta:evidence.videoDelta ?? null,
+    audioItemDelta:evidence.audioDelta ?? null,
+    overwriteSemanticsVerified:false,
+    verificationStatus:evidence.verified ? "verified_insert_delta" : "accepted_unverified",
+    uncertaintyReason:evidence.reason,
+    uncertain:!evidence.verified,
+    retrySafe:false
   };
 }
 
