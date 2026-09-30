@@ -169,3 +169,15 @@ test("AE discovery stays read-only and bounded",()=>{
   assert.match(jsx,/depth>=6/);
   assert.match(jsx,/Math\.min\(count,512\)/);
 });
+
+
+test("AE unresolved dispatch survives timeout and blocks blind next run",()=>{
+  assert.match(runtime,/static DISPATCH_IO:std::sync::Mutex/);
+  assert.match(runtime,/pending_jobs\(workspace,false\)/);
+  assert.match(runtime,/earlier After Effects request is unresolved or has an unacknowledged late receipt/);
+  assert.match(runtime,/receipt_missing/);
+  assert.match(runtime,/receipt_available/);
+  assert.match(runtime,/retry_safe":false/);
+  assert.match(lib,/- after_effects_pending_jobs: \{\}/);
+  assert.match(lib,/AfterEffectsPendingJobs/);
+});
