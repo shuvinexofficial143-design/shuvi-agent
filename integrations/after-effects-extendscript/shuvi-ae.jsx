@@ -51,6 +51,12 @@
         if (!item || !(item instanceof CompItem) || item.id !== compId) fail("Target composition ID is stale or unavailable.");
         return item;
     }
+    function resolveItem(itemId) {
+        if (!finiteNumber(itemId) || itemId <= 0 || Math.floor(itemId) !== itemId) fail("Exact positive item_id required.");
+        var item = requireProject().itemByID(itemId);
+        if (!item || item.id !== itemId) fail("Target project item ID is stale or unavailable.");
+        return item;
+    }
     function findLayerById(comp, layerId) {
         if (!finiteNumber(layerId) || layerId <= 0 || Math.floor(layerId) !== layerId) return null;
         var limit = Math.min(comp.numLayers, MAX_LAYERS);
@@ -561,6 +567,160 @@
             after_marker_count: marker.numKeys
         };
     }
+    function addShape(args) {
+        var comp = resolveComp(args.comp_id), before = comp.numLayers;
+        var name = args.name === undefined ? "Shuvi Shape" : boundedString(args.name, 120, "shape name");
+        app.beginUndoGroup("Shuvi: Add shape layer");
+        var layer;
+        try { layer = comp.layers.addShape(); layer.name = name; } finally { app.endUndoGroup(); }
+        var verified = comp.numLayers === before + 1 && layer && layer.id > 0 && resolveLayer(comp, layer.id).id === layer.id;
+        return {native_accepted:true,verification_status:verified?"verified_creation_identity":"accepted_unverified",retry_safe:false,
+            comp_id:comp.id,layer_id:layer?layer.id:null,before_count:before,after_count:comp.numLayers};
+    }
+    function addSolid(args) {
+        var comp = resolveComp(args.comp_id), color=args.color;
+        if (!(color instanceof Array) || color.length!==3) fail("Solid color must be [r,g,b].");
+        var i; for(i=0;i<3;i++) if(!finiteNumber(color[i])||color[i]<0||color[i]>1) fail("Solid color values must be 0..1.");
+        var width=args.width, height=args.height, pixel=args.pixel_aspect===undefined?1:args.pixel_aspect;
+        if(!finiteNumber(width)||Math.floor(width)!==width||width<4||width>30000
+            ||!finiteNumber(height)||Math.floor(height)!==height||height<4||height>30000
+            ||!finiteNumber(pixel)||pixel<0.01||pixel>100) fail("Invalid solid dimensions or pixel aspect.");
+        var duration=args.duration_seconds===undefined?comp.duration:args.duration_seconds;
+        if(!finiteNumber(duration)||duration<=0||duration>10800) fail("Invalid solid duration.");
+        var name=args.name===undefined?"Shuvi Solid":boundedString(args.name,120,"solid name");
+        var before=comp.numLayers;
+        app.beginUndoGroup("Shuvi: Add solid");
+        var layer;
+        try { layer=comp.layers.addSolid(color,name,width,height,pixel,duration); } finally { app.endUndoGroup(); }
+        var read=layer?resolveLayer(comp,layer.id):null;
+        var verified=comp.numLayers===before+1&&read&&read.source&&read.source.width===width&&read.source.height===height;
+        return {native_accepted:true,verification_status:verified?"verified_creation_readback":"accepted_unverified",retry_safe:false,
+            comp_id:comp.id,layer_id:layer?layer.id:null,source_item_id:read&&read.source?read.source.id:null,before_count:before,after_count:comp.numLayers};
+    }
+    function addCamera(args) {
+        var comp=resolveComp(args.comp_id), center=args.center_point;
+        if(!(center instanceof Array)||center.length!==2||!finiteNumber(center[0])||!finiteNumber(center[1])) fail("Camera center_point must be finite [x,y].");
+        var name=args.name===undefined?"Shuvi Camera":boundedString(args.name,120,"camera name");
+        var before=comp.numLayers;
+        app.beginUndoGroup("Shuvi: Add camera");
+        var layer; try{layer=comp.layers.addCamera(name,center);}finally{app.endUndoGroup();}
+        var read=layer?resolveLayer(comp,layer.id):null;
+        var verified=comp.numLayers===before+1&&read&&read.id===layer.id;
+        return {native_accepted:true,verification_status:verified?"verified_creation_identity":"accepted_unverified",retry_safe:false,
+            comp_id:comp.id,layer_id:layer?layer.id:null,before_count:before,after_count:comp.numLayers};
+    }
+    function addLight(args) {
+        var comp=resolveComp(args.comp_id), center=args.center_point;
+        if(!(center instanceof Array)||center.length!==2||!finiteNumber(center[0])||!finiteNumber(center[1])) fail("Light center_point must be finite [x,y].");
+        var name=args.name===undefined?"Shuvi Light":boundedString(args.name,120,"light name");
+        var before=comp.numLayers;
+        app.beginUndoGroup("Shuvi: Add light");
+        var layer; try{layer=comp.layers.addLight(name,center);}finally{app.endUndoGroup();}
+        var read=layer?resolveLayer(comp,layer.id):null;
+        var verified=comp.numLayers===before+1&&read&&read.id===layer.id;
+        return {native_accepted:true,verification_status:verified?"verified_creation_identity":"accepted_unverified",retry_safe:false,
+            comp_id:comp.id,layer_id:layer?layer.id:null,before_count:before,after_count:comp.numLayers};
+    }
+    function setLayerState(args) {
+        var comp=resolveComp(args.comp_id), layer=resolveLayer(comp,args.layer_id);
+        var requested={};
+        if(args.name!==undefined) requested.name=boundedString(args.name,240,"layer name");
+        if(args.enabled!==undefined){if(typeof args.enabled!=="boolean")fail("enabled must be boolean.");requested.enabled=args.enabled;}
+        if(args.shy!==undefined){if(typeof args.shy!=="boolean")fail("shy must be boolean.");requested.shy=args.shy;}
+        if(args.solo!==undefined){if(typeof args.solo!=="boolean")fail("solo must be boolean.");requested.solo=args.solo;}
+        if(args.label!==undefined){if(!finiteNumber(args.label)||Math.floor(args.label)!==args.label||args.label<0||args.label>16)fail("label must be 0..16.");requested.label=args.label;}
+        if(args.locked!==undefined){if(typeof args.locked!=="boolean")fail("locked must be boolean.");requested.locked=args.locked;}
+        var before={name:String(layer.name),enabled:!!layer.enabled,shy:!!layer.shy,solo:!!layer.solo,label:layer.label,locked:!!layer.locked};
+        if(before.locked && requested.locked!==false) fail("Layer is locked; unlock explicitly before changing state.");
+        app.beginUndoGroup("Shuvi: Set layer state");
+        try{
+            if(requested.locked===false) layer.locked=false;
+            if(requested.name!==undefined) layer.name=requested.name;
+            if(requested.enabled!==undefined) layer.enabled=requested.enabled;
+            if(requested.shy!==undefined) layer.shy=requested.shy;
+            if(requested.solo!==undefined) layer.solo=requested.solo;
+            if(requested.label!==undefined) layer.label=requested.label;
+            if(requested.locked===true) layer.locked=true;
+        }finally{app.endUndoGroup();}
+        layer=resolveLayer(comp,args.layer_id);
+        var after={name:String(layer.name),enabled:!!layer.enabled,shy:!!layer.shy,solo:!!layer.solo,label:layer.label,locked:!!layer.locked};
+        var verified=true,k;for(k in requested)if(requested.hasOwnProperty(k)&&after[k]!==requested[k])verified=false;
+        return {native_accepted:true,verification_status:verified?"verified_readback":"accepted_unverified",retry_safe:verified,
+            comp_id:comp.id,layer_id:layer.id,before:before,after:after};
+    }
+    function moveLayer(args) {
+        var comp=resolveComp(args.comp_id), layer=resolveLayer(comp,args.layer_id), relation=boundedString(args.relation,24,"layer move relation");
+        var target=null;
+        if(relation==="before"||relation==="after"){
+            target=resolveLayer(comp,args.target_layer_id);
+            if(target.id===layer.id)fail("Layer move target cannot be itself.");
+        } else if(relation!=="beginning"&&relation!=="end") fail("Layer move relation must be before, after, beginning or end.");
+        app.beginUndoGroup("Shuvi: Move layer");
+        try{
+            if(relation==="before")layer.moveBefore(target);
+            else if(relation==="after")layer.moveAfter(target);
+            else if(relation==="beginning")layer.moveToBeginning();
+            else layer.moveToEnd();
+        }finally{app.endUndoGroup();}
+        layer=resolveLayer(comp,args.layer_id);
+        if(target)target=resolveLayer(comp,args.target_layer_id);
+        var verified=relation==="before"?layer.index<target.index:relation==="after"?layer.index>target.index:
+            relation==="beginning"?layer.index===1:layer.index===comp.numLayers;
+        return {native_accepted:true,verification_status:verified?"verified_readback":"accepted_unverified",retry_safe:verified,
+            comp_id:comp.id,layer_id:layer.id,relation:relation,layer_index:layer.index,target_layer_id:target?target.id:null,target_index:target?target.index:null};
+    }
+    function trackMatteEnum(name) {
+        if(name==="alpha")return TrackMatteType.ALPHA;
+        if(name==="alpha_inverted")return TrackMatteType.ALPHA_INVERTED;
+        if(name==="luma")return TrackMatteType.LUMA;
+        if(name==="luma_inverted")return TrackMatteType.LUMA_INVERTED;
+        fail("Unsupported track matte type.");
+    }
+    function setTrackMatte(args) {
+        var comp=resolveComp(args.comp_id), layer=resolveLayer(comp,args.layer_id), matte=resolveLayer(comp,args.matte_layer_id);
+        if(layer.id===matte.id)fail("Track matte layer cannot equal target layer.");
+        if(typeof layer.setTrackMatte!=="function")fail("Current After Effects host does not expose setTrackMatte.");
+        var type=trackMatteEnum(boundedString(args.matte_type,32,"track matte type"));
+        app.beginUndoGroup("Shuvi: Set track matte");
+        try{layer.setTrackMatte(matte,type);}finally{app.endUndoGroup();}
+        layer=resolveLayer(comp,args.layer_id);
+        var verified=layer.trackMatteLayer&&layer.trackMatteLayer.id===matte.id&&layer.trackMatteType===type;
+        return {native_accepted:true,verification_status:verified?"verified_readback":"accepted_unverified",retry_safe:verified,
+            comp_id:comp.id,layer_id:layer.id,matte_layer_id:matte.id,matte_type:args.matte_type};
+    }
+    function removeTrackMatte(args) {
+        var comp=resolveComp(args.comp_id), layer=resolveLayer(comp,args.layer_id);
+        if(typeof layer.removeTrackMatte!=="function")fail("Current After Effects host does not expose removeTrackMatte.");
+        app.beginUndoGroup("Shuvi: Remove track matte");
+        try{layer.removeTrackMatte();}finally{app.endUndoGroup();}
+        layer=resolveLayer(comp,args.layer_id);
+        var verified=layer.trackMatteLayer===null;
+        return {native_accepted:true,verification_status:verified?"verified_readback":"accepted_unverified",retry_safe:verified,
+            comp_id:comp.id,layer_id:layer.id,track_matte_removed:verified};
+    }
+    function setTimeRemap(args) {
+        var comp=resolveComp(args.comp_id), layer=resolveLayer(comp,args.layer_id);
+        if(typeof args.enabled!=="boolean")fail("time remap enabled must be boolean.");
+        if(!layer.canSetTimeRemapEnabled)fail("Layer cannot change time-remap state.");
+        var before=!!layer.timeRemapEnabled;
+        app.beginUndoGroup("Shuvi: Set time remap");
+        try{layer.timeRemapEnabled=args.enabled;}finally{app.endUndoGroup();}
+        layer=resolveLayer(comp,args.layer_id);
+        var after=!!layer.timeRemapEnabled, verified=after===args.enabled;
+        return {native_accepted:true,verification_status:verified?"verified_readback":"accepted_unverified",retry_safe:verified,
+            comp_id:comp.id,layer_id:layer.id,before:before,after:after};
+    }
+    function replaceSource(args) {
+        var comp=resolveComp(args.comp_id), layer=resolveLayer(comp,args.layer_id), source=resolveItem(args.source_item_id);
+        if(typeof layer.replaceSource!=="function")fail("Target layer does not support source replacement.");
+        var before=layer.source?layer.source.id:null;
+        app.beginUndoGroup("Shuvi: Replace source");
+        try{layer.replaceSource(source,args.fix_expressions===true);}finally{app.endUndoGroup();}
+        layer=resolveLayer(comp,args.layer_id);
+        var after=layer.source?layer.source.id:null, verified=after===source.id;
+        return {native_accepted:true,verification_status:verified?"verified_readback":"accepted_unverified",retry_safe:verified,
+            comp_id:comp.id,layer_id:layer.id,before_source_item_id:before,after_source_item_id:after,fix_expressions:args.fix_expressions===true};
+    }
     function inspectRenderQueue() {
         var queue = requireProject().renderQueue;
         var items = [], i, limit = Math.min(queue.numItems, 256);
@@ -651,7 +811,10 @@
     }
     function mutationAction(action) {
         return action === "set_property" || action === "set_values_at_times" || action === "set_expression"
-            || action === "add_effect" || action === "add_null" || action === "add_text" || action === "set_layer_parent"
+            || action === "add_effect" || action === "add_null" || action === "add_text" || action === "add_shape" || action === "add_solid"
+            || action === "add_camera" || action === "add_light" || action === "set_layer_state" || action === "set_layer_parent"
+            || action === "move_layer" || action === "set_track_matte" || action === "remove_track_matte"
+            || action === "set_time_remap" || action === "replace_source"
             || action === "duplicate_layer" || action === "remove_layer" || action === "precompose_layers"
             || action === "add_mask" || action === "add_scene_edit_markers"
             || action === "add_render_queue_item" || action === "save_project";
@@ -681,7 +844,17 @@
         if (action === "add_effect") return addEffect(args);
         if (action === "add_null") return addNull(args);
         if (action === "add_text") return addText(args);
+        if (action === "add_shape") return addShape(args);
+        if (action === "add_solid") return addSolid(args);
+        if (action === "add_camera") return addCamera(args);
+        if (action === "add_light") return addLight(args);
+        if (action === "set_layer_state") return setLayerState(args);
         if (action === "set_layer_parent") return setLayerParent(args);
+        if (action === "move_layer") return moveLayer(args);
+        if (action === "set_track_matte") return setTrackMatte(args);
+        if (action === "remove_track_matte") return removeTrackMatte(args);
+        if (action === "set_time_remap") return setTimeRemap(args);
+        if (action === "replace_source") return replaceSource(args);
         if (action === "duplicate_layer") return duplicateLayer(args);
         if (action === "remove_layer") return removeLayer(args);
         if (action === "precompose_layers") return precomposeLayers(args);
