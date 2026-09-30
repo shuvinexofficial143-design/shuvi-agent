@@ -82,8 +82,11 @@ pub async fn execute(
                         .and_then(|v|v.get("verification_status")).and_then(Value::as_str)
                         .unwrap_or(if receipt.ok{"accepted_unverified"}else{"host_error"});
                     let post_verified=verification.starts_with("verified_");
+                    let host_retry_safe=receipt.result.as_ref()
+                        .and_then(|v|v.get("retry_safe")).and_then(Value::as_bool)
+                        .unwrap_or(!request.is_mutating());
                     let success=receipt.ok && (!request.is_mutating() || post_verified);
-                    let retry_safe=if request.is_mutating(){receipt.ok&&post_verified}else{!receipt.ok||post_verified};
+                    let retry_safe=if request.is_mutating(){receipt.ok&&post_verified&&host_retry_safe}else{true};
                     return Ok(json!({
                         "state":if success{"verified"}else if receipt.ok{"accepted_unverified"}else if request.is_mutating(){"uncertain"}else{"failed_read_only"},
                         "request_id":request.request_id,
@@ -95,6 +98,7 @@ pub async fn execute(
                         "host_error":receipt.error,
                         "verification_status":verification,
                         "post_state_verified":post_verified,
+                        "host_retry_safe":host_retry_safe,
                         "checkpoint":checkpoint,
                         "checkpoint_recovery_verified":false,
                         "retry_safe":retry_safe,
