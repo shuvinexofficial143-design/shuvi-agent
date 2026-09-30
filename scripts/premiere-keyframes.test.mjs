@@ -299,3 +299,14 @@ test("audio automation route resolves named audio parameter without edits", asyn
  assert.equal(result.applied, false); assert.equal(result.expected.clips[0].kind, "audio"); assert.equal(f.actions.length, 0);
  assert.equal(result.settings[0].param_display_name, "Amount");
 });
+
+test("shared clip resolvers revalidate active inspected signatures after async target lookup",()=>{
+  assert.match(uxp,/async function assertResolvedClipMatchesActiveExpectation/);
+  assert.match(uxp,/activeExpectation\?\.clips/);
+  assert.match(uxp,/await clipTargetSignature\(project,sequence,item,kind,trackIndex,clipIndex\)/);
+  assert.match(uxp,/Resolved Premiere clip changed after command preflight/);
+  const video=uxp.slice(uxp.indexOf("async function getVideoClipTarget"),uxp.indexOf("async function listVideoEffects"));
+  assert.match(video,/assertResolvedClipMatchesActiveExpectation\(project,sequence,item,"video",trackIndex,clipIndex\)/);
+  const audio=uxp.slice(uxp.indexOf("async function getAudioClipTarget"),uxp.indexOf("async function listAudioEffects"));
+  assert.match(audio,/assertResolvedClipMatchesActiveExpectation\(project,sequence,item,"audio",trackIndex,clipIndex\)/);
+});

@@ -1446,6 +1446,19 @@ function plainEffectValue(value) {
   return String(value);
 }
 
+async function assertResolvedClipMatchesActiveExpectation(project, sequence, item, kind, trackIndex, clipIndex) {
+  const clips = activeExpectation?.clips;
+  if (!Array.isArray(clips) || clips.length === 0) return;
+  const expected = clips.find(clip =>
+    clip.kind === kind && clip.track === trackIndex && clip.clip_index === clipIndex
+  );
+  if (!expected) throw new Error("Active Premiere expectation does not cover the resolved clip target.");
+  const signature = await clipTargetSignature(project,sequence,item,kind,trackIndex,clipIndex);
+  if (signature !== expected.signature) {
+    throw new Error("Resolved Premiere clip changed after command preflight; inspect again before editing.");
+  }
+}
+
 async function getVideoClipTarget(trackIndex, clipIndex) {
   if (!Number.isInteger(trackIndex) || trackIndex < 0) {
     throw new Error("Video track index must be a non-negative integer.");
@@ -1469,6 +1482,7 @@ async function getVideoClipTarget(trackIndex, clipIndex) {
     );
   }
 
+  await assertResolvedClipMatchesActiveExpectation(project,sequence,item,"video",trackIndex,clipIndex);
   return { project, sequence, track, item };
 }
 
@@ -1787,6 +1801,7 @@ async function getAudioClipTarget(trackIndex, clipIndex) {
     );
   }
 
+  await assertResolvedClipMatchesActiveExpectation(project,sequence,item,"audio",trackIndex,clipIndex);
   return { project, sequence, track, item };
 }
 
