@@ -248,3 +248,19 @@ test("AE mask edit and removal stay stale-guarded and readback verified",()=>{
   assert.match(jsx,/sameMaskInventory\(after,expectedAfter\)/);
   assert.match(jsx,/verified_mask_delta/);
 });
+
+
+test("AE spatial keyframe controls stay spatial-only stale-guarded and readback verified",()=>{
+  assert.match(transport,/"set_keyframe_spatial"/);
+  assert.match(rust,/"keyframe_spatial_controls":"source_supported_two_three_d_spatial_tangents_continuity_auto_bezier_roving_with_time_stale_guard"/);
+  assert.match(jsx,/PropertyValueType\.TwoD_SPATIAL/);
+  assert.match(jsx,/PropertyValueType\.ThreeD_SPATIAL/);
+  assert.match(jsx,/Spatial keyframe time stale guard changed/);
+  assert.match(jsx,/setSpatialTangentsAtKey\(index,requestedIn,requestedOut\)/);
+  assert.match(jsx,/setSpatialContinuousAtKey\(index,args\.continuous\)/);
+  assert.match(jsx,/setSpatialAutoBezierAtKey\(index,args\.auto_bezier\)/);
+  assert.match(jsx,/setRovingAtKey\(index,args\.roving\)/);
+  assert.match(jsx,/First and last spatial keyframes cannot rove/);
+  assert.match(jsx,/verified_spatial_keyframe_readback/);
+  assert.match(jsx,/in_spatial_tangent=cloneValue\(p\.keyInSpatialTangent\(i\)\)/);
+});
