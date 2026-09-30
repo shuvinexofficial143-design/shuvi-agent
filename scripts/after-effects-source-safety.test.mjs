@@ -202,3 +202,17 @@ test("AE executable path is restricted to the canonical Adobe install tree",()=>
   assert.match(runtime,/Adobe After Effects/);
   assert.match(runtime,/trusted_afterfx_exe\(afterfx_exe\)\?/);
 });
+
+
+test("AE render requires exact queue identity host DONE and desktop output evidence",()=>{
+  assert.match(transport,/"render_queue"/);
+  assert.match(rust,/"render_queue_execute":"source_supported_exact_queued_set_with_host_done_and_desktop_file_evidence"/);
+  assert.match(rust,/"render_media_parse_validation":"not_implemented"/);
+  assert.match(jsx,/unlisted render-enabled queue item would also render/);
+  assert.match(jsx,/item\.status===RQItemStatus\.DONE/);
+  assert.match(jsx,/verified_render_completion/);
+  assert.match(runtime,/fn render_output_evidence/);
+  assert.match(runtime,/desktop_outputs_verified/);
+  assert.match(runtime,/media_parse_verified":false/);
+  assert.match(runtime,/verification=="verified_render_completion"&&render_verified/);
+});
