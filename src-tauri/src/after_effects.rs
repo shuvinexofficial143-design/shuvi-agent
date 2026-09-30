@@ -204,6 +204,9 @@ pub fn capability_report()->Value {
             "mogrt_property_controller_add":"source_supported_with_controller_inventory_delta",
             "mogrt_media_controller_add":"source_supported_with_controller_inventory_delta",
             "mogrt_export":"source_supported_host_export_plus_desktop_exact_file_evidence",
+            "essential_property_inspection":"source_supported_bounded_256_with_source_and_alternate_media_identity",
+            "essential_property_static_write":"source_supported_non_media_unkeyed_with_name_stale_guard_and_readback",
+            "essential_media_replacement":"source_supported_compatible_item_with_current_alternate_stale_guard_and_readback",
             "runtime_verified":"not_verified"
         },
         "safety":[
