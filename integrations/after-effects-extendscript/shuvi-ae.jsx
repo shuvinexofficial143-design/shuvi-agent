@@ -1820,6 +1820,74 @@
             comp_id:comp.id,template_name:base,output_file:after.fsName,output_exists:after.exists,size_bytes:after.exists?after.length:null,
             output_existed_before:beforeExists,before_size_bytes:beforeLength,project_save_requested:true,desktop_file_verification_required:true};
     }
+    function validateGroundedTrackSamples(samples) {
+        if(!(samples instanceof Array)||samples.length<1||samples.length>10000)fail("Hand-track rig requires 1..10000 grounded samples.");
+        var times=[],values=[],dimension=null,previous=-1,i,j;
+        for(i=0;i<samples.length;i++){
+            var sample=samples[i];
+            if(!sample||!finiteNumber(sample.time_seconds)||sample.time_seconds<0||sample.time_seconds>10800||sample.time_seconds<=previous)
+                fail("Hand-track sample times must be finite and strictly increasing.");
+            if(!(sample.point instanceof Array)||(sample.point.length!==2&&sample.point.length!==3))
+                fail("Hand-track points must be 2D or 3D arrays.");
+            if(dimension===null)dimension=sample.point.length;
+            if(sample.point.length!==dimension)fail("Hand-track point dimensions must remain consistent.");
+            var point=[];
+            for(j=0;j<sample.point.length;j++){
+                if(!finiteNumber(sample.point[j])||Math.abs(sample.point[j])>1000000)fail("Hand-track point contains invalid or unbounded coordinate.");
+                point.push(sample.point[j]);
+            }
+            if(sample.confidence!==undefined&&(!finiteNumber(sample.confidence)||sample.confidence<0||sample.confidence>1))
+                fail("Hand-track confidence must be 0..1 when provided.");
+            times.push(sample.time_seconds);values.push(point);previous=sample.time_seconds;
+        }
+        return {times:times,values:values,dimension:dimension};
+    }
+    function applyHandTrackRig(args) {
+        var comp=resolveComp(args.comp_id);
+        if(args.coordinate_space!==undefined&&args.coordinate_space!=="comp_pixels")
+            fail("apply_hand_track_rig currently requires coordinate_space=comp_pixels.");
+        var track=validateGroundedTrackSamples(args.samples);
+        var target=null;
+        if(args.target_layer_id!==undefined&&args.target_layer_id!==null){
+            target=resolveLayer(comp,args.target_layer_id);
+            if(target.locked)fail("Target layer is locked; hand-track parenting refused.");
+        }
+        var name=args.name===undefined?"Shuvi Hand Track":boundedString(args.name,120,"tracking null name");
+        var beforeLayers=comp.numLayers;
+        app.beginUndoGroup("Shuvi: Apply hand track rig");
+        var nullLayer=null,parentAssigned=false;
+        try{
+            nullLayer=comp.layers.addNull();
+            nullLayer.name=name;
+            if(track.dimension===3)nullLayer.threeDLayer=true;
+            var position=nullLayer.property("ADBE Transform Group").property("ADBE Position");
+            if(!position||!position.canVaryOverTime||typeof position.setValuesAtTimes!=="function")fail("Tracking null position cannot accept keyframes.");
+            position.setValuesAtTimes(track.times,track.values);
+            if(target){
+                if(args.preserve_visual===false)target.setParentWithJump(nullLayer);
+                else target.parent=nullLayer;
+                parentAssigned=true;
+            }
+        }finally{app.endUndoGroup();}
+
+        var created=resolveLayer(comp,nullLayer.id);
+        var readPosition=created.property("ADBE Transform Group").property("ADBE Position");
+        var verified=comp.numLayers===beforeLayers+1&&readPosition.numKeys===track.times.length;
+        var i;
+        for(i=0;i<track.times.length&&verified;i++){
+            if(!sameValue(cloneValue(readPosition.valueAtTime(track.times[i],true)),track.values[i]))verified=false;
+        }
+        var parentVerified=true;
+        if(target){
+            target=resolveLayer(comp,args.target_layer_id);
+            parentVerified=!!target.parent&&target.parent.id===created.id;
+            if(!parentVerified)verified=false;
+        }
+        return {native_accepted:true,verification_status:verified?"verified_hand_track_rig_readback":"accepted_unverified",retry_safe:false,
+            comp_id:comp.id,tracking_layer_id:created.id,target_layer_id:target?target.id:null,target_parented:parentAssigned&&parentVerified,
+            preserve_visual:args.preserve_visual!==false,sample_count:track.times.length,dimensions:track.dimension,
+            coordinate_space:"comp_pixels",native_hand_detection_claimed:false,before_layer_count:beforeLayers,after_layer_count:comp.numLayers};
+    }
     function inspectRenderQueue() {
         var queue = requireProject().renderQueue;
         var items = [], i, limit = Math.min(queue.numItems, 256);
@@ -1966,6 +2034,7 @@
             || action === "set_av_layer_flags" || action === "set_av_layer_rendering" || action === "set_text_style" || action === "set_layer_timing"
             || action === "add_shape_primitive" || action === "add_text_animator"
             || action === "add_mogrt_property" || action === "add_mogrt_media_layer" || action === "export_mogrt"
+            || action === "apply_hand_track_rig"
             || action === "set_keyframe_interpolation" || action === "set_keyframe_temporal_ease" || action === "set_keyframe_temporal_flags" || action === "set_keyframe_spatial" || action === "remove_keyframe"
             || action === "duplicate_layer" || action === "remove_layer" || action === "precompose_layers"
             || action === "add_mask" || action === "edit_mask" || action === "remove_mask" || action === "add_scene_edit_markers" || action === "add_marker" || action === "remove_marker"
@@ -2037,6 +2106,7 @@
         if (action === "add_mogrt_property") return addMogrtProperty(args);
         if (action === "add_mogrt_media_layer") return addMogrtMediaLayer(args);
         if (action === "export_mogrt") return exportMogrt(args);
+        if (action === "apply_hand_track_rig") return applyHandTrackRig(args);
         if (action === "set_keyframe_interpolation") return setKeyframeInterpolation(args);
         if (action === "set_keyframe_temporal_ease") return setKeyframeTemporalEase(args);
         if (action === "set_keyframe_temporal_flags") return setKeyframeTemporalFlags(args);
