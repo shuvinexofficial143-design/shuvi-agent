@@ -2,14 +2,34 @@
 const LIMITS = Object.freeze({components: 128, paramsPerComponent: 128, totalParams: 256, valueChars: 2048, resultChars: 48000, fields: 16});
 function capability() {
   return {native_mogrt_identity: false, semantic_field_roles: false, component_inspection: true,
-    primitive_static_editing: true, runtimeVerified: false,
-    reason: "Reviewed public clip/component APIs expose generic parameters, not reliable MOGRT identity or semantic field roles. Static editing is conditional on inspected type and native methods."};
+    primitive_static_editing: true, structured_static_editing: true,
+    supported_value_types: ["string","number","boolean","point","color"], runtimeVerified: false,
+    reason: "Reviewed ComponentParam APIs support native string/number/boolean plus PointF and Color values. MOGRT identity and semantic field roles still require explicit caller mappings."};
 }
-function primitive(value) {
+const finite = value => typeof value === "number" && Number.isFinite(value);
+const exactKeys = (value, allowed) => {
+  const keys = Object.keys(value);
+  return keys.length === allowed.length && keys.every(key => allowed.includes(key));
+};
+function primitive(value, allowNativeStructured = false) {
   const type = typeof value;
   if (type === "string" && value.length <= LIMITS.valueChars || type === "boolean" || type === "number" && Number.isFinite(value)) return {supported: true, type, value};
+  if (value && type === "object" && !Array.isArray(value)) {
+    const taggedPoint = value.type === "point" && exactKeys(value,["type","x","y"]) && finite(value.x) && finite(value.y)
+      && Math.abs(value.x) <= 1000000 && Math.abs(value.y) <= 1000000;
+    if (taggedPoint) return {supported:true,type:"point",value:{type:"point",x:value.x,y:value.y}};
+    const taggedColor = value.type === "color" && exactKeys(value,["type","red","green","blue","alpha"])
+      && [value.red,value.green,value.blue,value.alpha].every(v => finite(v) && v >= 0 && v <= 1);
+    if (taggedColor) return {supported:true,type:"color",value:{type:"color",red:value.red,green:value.green,blue:value.blue,alpha:value.alpha}};
+    if (allowNativeStructured && finite(value.x) && finite(value.y)) {
+      return {supported:true,type:"point",value:{type:"point",x:value.x,y:value.y}};
+    }
+    if (allowNativeStructured && [value.red,value.green,value.blue,value.alpha].every(v => finite(v) && v >= 0 && v <= 1)) {
+      return {supported:true,type:"color",value:{type:"color",red:value.red,green:value.green,blue:value.blue,alpha:value.alpha}};
+    }
+  }
   return {supported: false, type: value === null ? "null" : Array.isArray(value) ? "array" : type,
-    value: null, reason: type === "string" ? "String exceeds 2048 characters." : "Only native string, finite number and boolean values are supported."};
+    value: null, reason: type === "string" ? "String exceeds 2048 characters." : "Only bounded string, finite number, boolean, PointF and Color values are supported."};
 }
 const nameValue = value => typeof value === "string" && value.length > 0 && value.length <= 240 ? value : null;
 async function inspectProperties(item) {
@@ -40,7 +60,7 @@ async function inspectProperties(item) {
           const displayName = nameValue(param.displayName);
           let inspected = {supported: false, type: "unavailable", value: null, reason: "Start value unavailable."};
           let keyframesSupported = null, timeVarying = null;
-          try { const start = await param.getStartValue(); inspected = primitive(start?.value); } catch {}
+          try { const start = await param.getStartValue(); inspected = primitive(start?.value, true); } catch {}
           try { const v = await param.areKeyframesSupported(); if (typeof v === "boolean") keyframesSupported = v; } catch {}
           try { const v = await param.isTimeVarying(); if (typeof v === "boolean") timeVarying = v; } catch {}
           const staticSetCapability = typeof param.createKeyframe === "function" && typeof param.createSetValueAction === "function";
@@ -63,7 +83,7 @@ function planRecipe(request, inspected) {
     const match = field.component_match_name, display = field.component_display_name;
     if (!(match || display) || match != null && !nameValue(match) || display != null && !nameValue(display) || !nameValue(field.param_display_name)) throw new Error("Exact bounded component and parameter selectors are required.");
     const requested = primitive(field.value);
-    if (!requested.supported) throw new Error("Requested value must be a bounded native primitive.");
+    if (!requested.supported) throw new Error("Requested value must be a bounded native value.");
     const selector = JSON.stringify([match || null, display || null, field.param_display_name]);
     if (selectors.has(selector)) throw new Error("Duplicate field selector."); selectors.add(selector);
     const skip = reason => skipped.push({index, role: field.role, reason});
@@ -78,7 +98,7 @@ function planRecipe(request, inspected) {
     if (field.role !== "property" && param.type !== "string") { skip("Text/title/subtitle roles require an inspected string parameter."); continue; }
     if (param.type !== requested.type) { skip("Requested type does not match inspected native type; no coercion is allowed."); continue; }
     settings.push({component_match_name: component.matchName, component_display_name: component.displayName,
-      param_display_name: param.displayName, value: field.value});
+      param_display_name: param.displayName, value: requested.value});
   }
   const result = {schemaVersion: 1, preset: request.preset, applied: false, settings, skipped,
     warnings: ["Roles were supplied by the caller. This does not prove the clip is a MOGRT or a parameter is an Essential Graphics text field.", "Review the plan, apply through the checkpointed video recipe tool, then inspect and visually verify; unchanged clip identity does not lock parameter values."],

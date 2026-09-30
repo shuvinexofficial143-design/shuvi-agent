@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 const source = readFileSync(new URL("../integrations/premiere-uxp/mogrt-workflows.js", import.meta.url), "utf8");
 const moduleContext = {module: {exports: {}}}; vm.createContext(moduleContext); vm.runInContext(source, moduleContext);
-const {inspectProperties, planRecipe, capability, LIMITS} = moduleContext.module.exports;
+const {inspectProperties, planRecipe, capability, LIMITS, primitive} = moduleContext.module.exports;
 function fixture(value = "Original") {
  const param = {displayName: "Native Field", getStartValue: async () => ({value}), areKeyframesSupported: async () => true, isTimeVarying: () => false, createKeyframe() {}, createSetValueAction() {}};
  const params = [param];
@@ -41,9 +41,9 @@ test("time-varying and unknown state are not static-editable", async () => {
  const f = fixture();
  for (const value of [true, null]) { f.param.isTimeVarying = () => value; const result = planRecipe(f.request, await inspectProperties(f.item)); assert.equal(result.settings.length, 0); }
 });
-test("complex and cyclic native values are not serialized or coerced", async () => {
+test("unsupported complex and cyclic native values are not serialized or coerced", async () => {
  const cyclic = {}; cyclic.self = cyclic;
- for (const value of [{x: 1, y: 2}, [1,2], cyclic, Infinity, null]) {
+ for (const value of [{text:"Complex"}, [1,2], cyclic, Infinity, null]) {
   const f = fixture(value); const inspected = await inspectProperties(f.item); assert.equal(inspected.components[0].params[0].supported, false);
   assert.doesNotThrow(() => JSON.stringify(inspected)); assert.equal(planRecipe(f.request, inspected).settings.length, 0);
  }
@@ -87,4 +87,21 @@ test("native route returns exact expectation and never edits", async () => {
  const result = await panel.executeCommand({action:"plan_mogrt_recipe",arguments:args});
  assert.equal(result.expected.project_guid,"project"); assert.equal(result.expected.sequence_guid,"sequence");
  assert.equal(result.expected.clips[0].signature,inspected.expected.clips[0].signature);assert.equal(result.expected.clips[0].kind,"video"); assert.equal(writes,0);
+});
+
+
+test("PointF and Color values are inspected and planned without coercion", async () => {
+  for (const [native,next,type] of [
+    [{x:0.25,y:0.75},{type:"point",x:0.5,y:0.4},"point"],
+    [{red:0.1,green:0.2,blue:0.3,alpha:1},{type:"color",red:0.4,green:0.5,blue:0.6,alpha:1},"color"]
+  ]) {
+    const f=fixture(native);f.field.role="property";f.field.value=next;
+    const inspected=await inspectProperties(f.item);
+    assert.equal(inspected.components[0].params[0].type,type);
+    assert.equal(inspected.components[0].params[0].editable,true);
+    const plan=planRecipe(f.request,inspected);
+    assert.equal(plan.settings.length,1);assert.deepEqual(JSON.parse(JSON.stringify(plan.settings[0].value)),next);
+  }
+  assert.equal(primitive({type:"color",red:2,green:0,blue:0,alpha:1}).supported,false);
+  assert.equal(capability().structured_static_editing,true);
 });

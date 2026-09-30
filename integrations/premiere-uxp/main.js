@@ -1718,8 +1718,16 @@ async function addVideoTransition(argumentsValue) {
 
 function plainEffectValue(value) {
   if (value == null) return null;
-  if (typeof value === "number" || typeof value === "string" || typeof value === "boolean") {
-    return value;
+  if (typeof value === "number" || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "object" && !Array.isArray(value)) {
+    if (value.type === "point" && Number.isFinite(value.x) && Number.isFinite(value.y)
+        || Number.isFinite(value.x) && Number.isFinite(value.y) && value.red == null && value.green == null) {
+      return {type:"point",x:Number(value.x),y:Number(value.y)};
+    }
+    if (value.type === "color" && [value.red,value.green,value.blue,value.alpha].every(Number.isFinite)
+        || [value.red,value.green,value.blue,value.alpha].every(Number.isFinite)) {
+      return {type:"color",red:Number(value.red),green:Number(value.green),blue:Number(value.blue),alpha:Number(value.alpha)};
+    }
   }
   if (Array.isArray(value)) return value.slice(0, 32).map(plainEffectValue);
   if (typeof value === "object") {
@@ -1733,12 +1741,28 @@ function plainEffectValue(value) {
   return String(value);
 }
 
-function equivalentStaticEffectValue(expected, observed) {
-  if (typeof expected === "number" && typeof observed === "number") {
-    return Number.isFinite(expected) && Number.isFinite(observed)
-      && Math.abs(expected-observed) <= Math.max(0.000001,Math.abs(expected)*0.000001);
+function nativeEffectValue(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  if (value.type === "point" && Number.isFinite(value.x) && Number.isFinite(value.y)) {
+    return new premiere.PointF(value.x,value.y);
   }
-  return expected === observed;
+  if (value.type === "color" && [value.red,value.green,value.blue,value.alpha].every(Number.isFinite)) {
+    return new premiere.Color(value.red,value.green,value.blue,value.alpha);
+  }
+  return value;
+}
+
+function equivalentStaticEffectValue(expected, observed) {
+  const a=plainEffectValue(expected), b=plainEffectValue(observed);
+  if (typeof a === "number" && typeof b === "number") {
+    return Number.isFinite(a) && Number.isFinite(b)
+      && Math.abs(a-b) <= Math.max(0.000001,Math.abs(a)*0.000001);
+  }
+  if (a && b && typeof a === "object" && typeof b === "object" && a.type === b.type) {
+    const fields=a.type==="point"?["x","y"]:a.type==="color"?["red","green","blue","alpha"]:[];
+    return fields.length>0 && fields.every(key => equivalentStaticEffectValue(a[key],b[key]));
+  }
+  return a === b;
 }
 
 async function readStaticEffectValue(param, requested) {
@@ -4342,7 +4366,8 @@ async function applyVideoRecipe(argumentsValue) {
 
     project = project || target.project;
 
-    const value = setting.value;
+    const requestedValue = setting.value;
+    const value = nativeEffectValue(requestedValue);
     const hasSeconds = setting.seconds != null;
     const seconds = hasSeconds ? Number(setting.seconds) : null;
 
@@ -4374,7 +4399,7 @@ async function applyVideoRecipe(argumentsValue) {
         action: target.param.createAddKeyframeAction(keyframe),
         param: target.param,
         keyframe,
-        requestedValue: value,
+        requestedValue,
         readbackKind: "keyframe",
         summary: {
           componentIndex: target.componentIndex,
@@ -4383,7 +4408,7 @@ async function applyVideoRecipe(argumentsValue) {
           paramIndex: target.paramIndex,
           paramDisplayName: target.paramDisplayName,
           seconds,
-          value: plainEffectValue(value)
+          value: plainEffectValue(requestedValue)
         }
       });
     } else {
@@ -4399,7 +4424,7 @@ async function applyVideoRecipe(argumentsValue) {
         action: target.param.createSetValueAction(keyframe, true),
         param: target.param,
         keyframe: null,
-        requestedValue: value,
+        requestedValue,
         readbackKind: "static",
         summary: {
           componentIndex: target.componentIndex,
@@ -4408,7 +4433,7 @@ async function applyVideoRecipe(argumentsValue) {
           paramIndex: target.paramIndex,
           paramDisplayName: target.paramDisplayName,
           seconds: null,
-          value: plainEffectValue(value)
+          value: plainEffectValue(requestedValue)
         }
       });
     }
@@ -4517,7 +4542,7 @@ async function applyAudioRecipe(argumentsValue) {
         action: target.param.createAddKeyframeAction(keyframe),
         param: target.param,
         keyframe,
-        requestedValue: value,
+        requestedValue,
         readbackKind: "keyframe",
         summary: {
           componentIndex: target.componentIndex,
@@ -4526,7 +4551,7 @@ async function applyAudioRecipe(argumentsValue) {
           paramIndex: target.paramIndex,
           paramDisplayName: target.paramDisplayName,
           seconds,
-          value: plainEffectValue(value)
+          value: plainEffectValue(requestedValue)
         }
       });
     } else {
@@ -4542,7 +4567,7 @@ async function applyAudioRecipe(argumentsValue) {
         action: target.param.createSetValueAction(keyframe, true),
         param: target.param,
         keyframe: null,
-        requestedValue: value,
+        requestedValue,
         readbackKind: "static",
         summary: {
           componentIndex: target.componentIndex,
@@ -4551,7 +4576,7 @@ async function applyAudioRecipe(argumentsValue) {
           paramIndex: target.paramIndex,
           paramDisplayName: target.paramDisplayName,
           seconds: null,
-          value: plainEffectValue(value)
+          value: plainEffectValue(requestedValue)
         }
       });
     }

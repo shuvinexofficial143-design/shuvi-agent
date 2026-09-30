@@ -54,6 +54,8 @@ function fixture(options = {}) {
     return [clip];
   }
   const premiere = {Project:{getActiveProject:async () => project},ProjectItem:{cast:i=>i},
+    PointF:class {constructor(x,y){this.x=x;this.y=y;}},
+    Color:class {constructor(red,green,blue,alpha){this.red=red;this.green=green;this.blue=blue;this.alpha=alpha;}},
     Constants:{TrackItemType:{CLIP:1}},TickTime:{createWithSeconds:tick},
     SequenceEditor:{getEditor:() => ({insertMogrtFromPath:insert,insertMogrtFromLibrary:insert})}};
   const panel = {require:n => n==='premierepro'?premiere:n==='uxp'?{entrypoints:{setup(){}}}:n==='./mogrt-workflows.js'?mogrt:n==='./graphics-batch.js'?graphics:{}};
@@ -152,4 +154,14 @@ test('no inferred roles, arbitrary fields, executable payloads or primitive coer
   assert.throws(()=>graphics.validateItem(m,{seconds:1,fields:{name:{text:'x'}}}),/type/);
   assert.throws(()=>graphics.validateMapping({...m,fields:Array(17).fill(m.fields[0])}),/1–16/);
   assert.throws(()=>graphics.validateMapping({...m,template:{source:'path',path:'relative.mogrt'}}),/Absolute/);
+});
+
+
+for (const [kind,original,next] of [
+  ['point',{x:0.1,y:0.2},{type:'point',x:0.4,y:0.6}],
+  ['color',{red:0.1,green:0.2,blue:0.3,alpha:1},{type:'color',red:0.7,green:0.6,blue:0.5,alpha:1}]
+]) test('real native insertion, structured MOGRT readback: '+kind,async () => {
+  const f=fixture({nativeValue:original});f.args.mapping.fields[0].primitive_type=kind;f.args.item.fields.name=next;
+  const result=await f.run();assert.equal(result.status,'applied',result.reason);assert.equal(result.populated,true);
+  assert.deepEqual(JSON.parse(JSON.stringify(f.inserted[0].read())),kind==='point'?{x:next.x,y:next.y}:{red:next.red,green:next.green,blue:next.blue,alpha:next.alpha});
 });

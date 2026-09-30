@@ -18,9 +18,9 @@ function validateMapping(mapping) {
   const roles = new Set(), selectors = new Set();
   for (const f of mapping.fields) {
     keys(f, ["role", "component_match_name", "component_display_name", "param_display_name", "primitive_type"]);
-    if (!nameOK(f.role) || roles.has(f.role) || !nameOK(f.param_display_name) || !["string", "number", "boolean"].includes(f.primitive_type)
+    if (!nameOK(f.role) || roles.has(f.role) || !nameOK(f.param_display_name) || !["string", "number", "boolean", "point", "color"].includes(f.primitive_type)
       || !(f.component_match_name || f.component_display_name)
-      || [f.component_match_name, f.component_display_name].some(s => s != null && !nameOK(s))) throw Error("Unique explicit roles, primitive types and exact selectors required.");
+      || [f.component_match_name, f.component_display_name].some(s => s != null && !nameOK(s))) throw Error("Unique explicit roles, supported value types and exact selectors required.");
     roles.add(f.role);
     const selector = JSON.stringify([f.component_match_name ?? null, f.component_display_name ?? null, f.param_display_name]);
     if (selectors.has(selector)) throw Error("Duplicate mapped parameter.");
@@ -38,7 +38,7 @@ function validateItem(mapping, item) {
   for (const f of mapping.fields) {
     if (!Object.prototype.hasOwnProperty.call(item.fields, f.role)) throw Error("Missing explicit role.");
     const p = primitive(item.fields[f.role]);
-    if (!p.supported || p.type !== f.primitive_type) throw Error("Mapped primitive type mismatch; no coercion.");
+    if (!p.supported || p.type !== f.primitive_type) throw Error("Mapped value type mismatch; no coercion.");
   }
 }
 function mappedPlan(mapping, item, inspected) {
