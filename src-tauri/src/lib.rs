@@ -10309,14 +10309,14 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     Duration::from_secs(8),
                 )
                 .await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
 
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
-                stdout: serde_json::to_string_pretty(&json!({"checkpoint":checkpoint,"result":value}))
-                    .unwrap_or_else(|_| value.to_string()),
+                stdout: json!({"checkpoint":checkpoint,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereRenameProjectItem { item_id, name } => {
@@ -10326,13 +10326,13 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 json!({ "itemId": item_id, "name": name }),
                 Duration::from_secs(20),
             ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
-                stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value}))
-                    .unwrap_or_else(|_| value.to_string()),
+                stdout: json!({"backup":backup,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereMoveProjectItem { item_id, target_bin_id } => {
@@ -10342,13 +10342,13 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 json!({ "itemId": item_id, "targetBinId": target_bin_id }),
                 Duration::from_secs(20),
             ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
-                stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value}))
-                    .unwrap_or_else(|_| value.to_string()),
+                stdout: json!({"backup":backup,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereRelinkMedia { item_id, new_path, override_compatibility } => {

@@ -320,6 +320,14 @@ async function createBin(argumentsValue) {
 
   const project = await requireProject();
   const root = await project.getRootItem();
+  const beforeItems = await root.getItems();
+  if (beforeItems.length > 5000) throw new Error("Root-bin inspection exceeds the 5,000-item safety bound.");
+  for (const item of beforeItems) {
+    if (asFolderItem(item) && typeof item?.name === "string" && item.name.toLowerCase() === name.toLowerCase()) {
+      throw new Error("A root Premiere bin with this exact name already exists.");
+    }
+  }
+  const beforeIds = new Set((await Promise.all(beforeItems.map(projectItemId))).filter(Boolean));
 
   let transactionSucceeded = false;
   project.lockedAccess(() => {
@@ -334,17 +342,23 @@ async function createBin(argumentsValue) {
   }
 
   const items = await root.getItems();
-  const bins = items
-    .filter((item) => typeof item?.name === "string" && item.name.toLowerCase().startsWith(name.toLowerCase()))
-    .map((item) => ({
-      name: item.name,
-      type: item.type ?? null
-    }));
+  if (items.length > 5000) throw new Error("Root-bin post-inspection exceeds the 5,000-item safety bound.");
+  const candidates = [];
+  for (const item of items) {
+    const id = await projectItemId(item);
+    if (!id || beforeIds.has(id) || !asFolderItem(item)) continue;
+    if (item?.name === name) candidates.push({id,name:item.name,type:item.type ?? null});
+  }
+  const verified = candidates.length === 1;
 
   return {
     created: true,
     requestedName: name,
-    matchingRootItems: bins.slice(-10)
+    createdBinId: verified ? candidates[0].id : null,
+    candidates: candidates.slice(0,8),
+    verificationStatus: verified ? "verified_readback" : "accepted_unverified",
+    uncertain: !verified,
+    retrySafe: false
   };
 }
 
@@ -3023,10 +3037,18 @@ async function renameProjectItem(argumentsValue) {
 
   const projectItem = asProjectItem(item);
   if (!projectItem) throw new Error("Requested item cannot be renamed through ProjectItem.");
+  const previousName = item?.name ?? null;
+  if (previousName === name) throw new Error("Requested project-item rename is a no-op.");
+
+  const freshItem = await findProjectItemById(root,itemId);
+  const freshProjectItem = freshItem ? asProjectItem(freshItem) : null;
+  if (!freshProjectItem || freshItem?.name !== previousName) {
+    throw new Error("Premiere project item changed during rename preflight; inspect again.");
+  }
 
   let transactionSucceeded = false;
   project.lockedAccess(() => {
-    const action = projectItem.createSetNameAction(name);
+    const action = freshProjectItem.createSetNameAction(name);
     transactionSucceeded = project.executeTransaction((compoundAction) => {
       compoundAction.addAction(action);
     }, "Shuvi: Rename Project Item");
@@ -3036,10 +3058,19 @@ async function renameProjectItem(argumentsValue) {
     throw new Error("Premiere rejected the project item rename transaction.");
   }
 
+  const after = await findProjectItemById(root,itemId);
+  const observedName = after?.name ?? null;
+  const verified = Boolean(after) && observedName === name;
+
   return {
     renamed: true,
     itemId,
-    name
+    previousName,
+    name,
+    observedName,
+    verificationStatus: verified ? "verified_readback" : "accepted_unverified",
+    uncertain: !verified,
+    retrySafe: false
   };
 }
 
@@ -3077,10 +3108,27 @@ async function moveProjectItem(argumentsValue) {
 
   const sourceParent = await projectItem.getParentBin();
   if (!sourceParent) throw new Error("Premiere source item has no movable parent bin.");
+  const sourceParentId = await projectItemId(sourceParent);
+  if (!sourceParentId) throw new Error("Premiere source parent identity is unavailable.");
+  if (sourceParentId === targetBinId) throw new Error("Requested project-item move is a no-op.");
+
+  const [freshItem,freshTargetCandidate] = await Promise.all([
+    findProjectItemById(root,itemId),
+    findProjectItemById(root,targetBinId)
+  ]);
+  const freshProjectItem = freshItem ? asProjectItem(freshItem) : null;
+  const freshTargetBin = freshTargetCandidate ? asFolderItem(freshTargetCandidate) : null;
+  if (!freshProjectItem || !freshTargetBin) {
+    throw new Error("Project-item move target changed during preflight; inspect again.");
+  }
+  const freshSourceParent = await freshProjectItem.getParentBin();
+  if (!freshSourceParent || await projectItemId(freshSourceParent) !== sourceParentId) {
+    throw new Error("Project-item source parent changed during preflight; inspect again.");
+  }
 
   let transactionSucceeded = false;
   project.lockedAccess(() => {
-    const action = sourceParent.createMoveItemAction(projectItem, targetBin);
+    const action = freshSourceParent.createMoveItemAction(freshProjectItem, freshTargetBin);
     transactionSucceeded = project.executeTransaction((compoundAction) => {
       compoundAction.addAction(action);
     }, "Shuvi: Move Project Item");
@@ -3090,10 +3138,26 @@ async function moveProjectItem(argumentsValue) {
     throw new Error("Premiere rejected the project item move transaction.");
   }
 
+  let observedParentId = null;
+  try {
+    const afterItem = await findProjectItemById(root,itemId);
+    const afterProjectItem = afterItem ? asProjectItem(afterItem) : null;
+    const afterParent = afterProjectItem ? await afterProjectItem.getParentBin() : null;
+    observedParentId = afterParent ? await projectItemId(afterParent) : null;
+  } catch {
+    observedParentId = null;
+  }
+  const verified = observedParentId === targetBinId;
+
   return {
     moved: true,
     itemId,
-    targetBinId
+    sourceParentId,
+    targetBinId,
+    observedParentId,
+    verificationStatus: verified ? "verified_readback" : "accepted_unverified",
+    uncertain: !verified,
+    retrySafe: false
   };
 }
 
