@@ -8,6 +8,8 @@ vm.createContext(moduleContext);
 vm.runInContext(readFileSync(new URL("../integrations/premiere-uxp/caption-workflows.js", import.meta.url), "utf8"), moduleContext);
 const {parseSrt, serializeSrt, adaptTranscriptTiming, captionCapability} = moduleContext.module.exports;
 const plain = value => JSON.parse(JSON.stringify(value));
+const panelSource = readFileSync(new URL("../integrations/premiere-uxp/main.js", import.meta.url), "utf8");
+const rustSource = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
 
 test("parses normal SRT into sorted structured segments", () => {
   const parsed = parseSrt("1\n00:00:00,000 --> 00:00:02,500\nHello world\n\n2\n00:00:03,000 --> 00:00:04,000\nNext\n");
@@ -106,4 +108,20 @@ test("capability reports SRT support without pretending native caption creation"
   assert.equal(capability.native_caption_text_editing, false);
   assert.equal(capability.srt_generation, true);
   assert.equal(capability.import_adapter.supported, false);
+});
+
+test("transcript import requires canonical post-import export readback before success",()=>{
+  const section=panelSource.slice(panelSource.indexOf("async function importTranscript"),panelSource.indexOf("async function resolveSubsequenceTarget"));
+  assert.match(section,/requestedTranscript = adaptTranscriptTiming\(transcriptJson\)/);
+  assert.match(section,/premiere\.Transcript\.exportToJSON/);
+  assert.match(section,/requestedTranscript\.srt === observedTranscript\.srt/);
+  assert.match(section,/verificationStatus: verified \? "verified_readback" : "accepted_unverified"/);
+  assert.match(section,/retrySafe: false/);
+
+  const start=rustSource.lastIndexOf("ToolAction::PremiereImportTranscript");
+  const end=rustSource.indexOf("\n        ToolAction::PremiereAttachProxy",start);
+  const arm=rustSource.slice(start,end);
+  assert.match(arm,/verified_readback/);
+  assert.match(arm,/success: verified/);
+  assert.match(arm,/post_state_verified/);
 });

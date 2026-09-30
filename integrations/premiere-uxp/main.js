@@ -5258,6 +5258,7 @@ async function importTranscript(argumentsValue) {
     throw new Error("This Premiere version does not expose transcript import APIs.");
   }
 
+  const requestedTranscript = adaptTranscriptTiming(transcriptJson);
   const textSegments = premiere.Transcript.importFromJSON(transcriptJson);
   let transactionSucceeded = false;
 
@@ -5275,10 +5276,33 @@ async function importTranscript(argumentsValue) {
     throw new Error("Premiere rejected the transcript import transaction.");
   }
 
+  let observedTranscript = null;
+  let observedJson = null;
+  try {
+    if (typeof premiere.Transcript.exportToJSON === "function") {
+      observedJson = await premiere.Transcript.exportToJSON(clip);
+      if (typeof observedJson === "string" && observedJson.trim()) {
+        observedTranscript = adaptTranscriptTiming(observedJson);
+      }
+    }
+  } catch {
+    observedTranscript = null;
+    observedJson = null;
+  }
+  const verified = requestedTranscript.supported === true
+    && observedTranscript?.supported === true
+    && requestedTranscript.srt === observedTranscript.srt;
+
   return {
     imported: true,
     itemId,
-    chars: transcriptJson.length
+    chars: transcriptJson.length,
+    requestedSegmentCount: requestedTranscript.supported ? requestedTranscript.segments.length : null,
+    observedSegmentCount: observedTranscript?.supported ? observedTranscript.segments.length : null,
+    exportReadbackAvailable: typeof observedJson === "string" && observedJson.trim().length > 0,
+    verificationStatus: verified ? "verified_readback" : "accepted_unverified",
+    uncertain: !verified,
+    retrySafe: false
   };
 }
 
