@@ -19,7 +19,7 @@ const SPECS: &[(&str, u8, bool, bool)] = &[
     ("export_preflight",8,false,false),("export_immediate",8,true,false),
     ("export_ame",8,true,false),
     ("speed_write",2,false,true),("masks",3,false,true),
-    ("vertical_track_move",2,false,true),("replacement_nesting",2,false,true),
+    ("vertical_track_move",2,true,false),("replacement_nesting",2,false,true),
     ("reliable_multicam",2,false,true),("linked_clip_membership",2,false,true),
     ("native_caption_write_import",6,false,true),("complex_mogrt_properties",5,true,false),
     ("scene_edit_detection",2,false,false),

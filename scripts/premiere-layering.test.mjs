@@ -8,7 +8,7 @@ const uxp=readFileSync(new URL("../integrations/premiere-uxp/main.js",import.met
 
 test("AC exposes cross-track clone, batch layering and track organization tools",()=>{
   for(const name of [
-    "premiere_clone_clip_to_track","premiere_layer_clips","premiere_cancel_layer_clips",
+    "premiere_clone_clip_to_track","premiere_move_clip_to_track","premiere_layer_clips","premiere_cancel_layer_clips",
     "premiere_rename_track","premiere_organize_tracks"
   ]) assert.match(rust,new RegExp(name));
 });
@@ -93,4 +93,18 @@ test("track organization is one bounded compound transaction with readback",()=>
 test("AC never claims retry safety after native mutation",()=>{
   assert.match(uxp,/retrySafe:false/);
   assert.match(rust,/"retry_safe":false/);
+});
+
+
+test("vertical track move is clone-verify then non-ripple source delete with partial-state safety",()=>{
+  const move=uxp.slice(uxp.indexOf("async function moveClipToTrack"),uxp.indexOf("async function resolveTrackByKind"));
+  assert.match(move,/await cloneClipToTrack/);
+  assert.match(move,/verificationStatus !== "verified_delta"/);
+  assert.match(move,/await deleteClip\(\{kind,track:sourceTrack,clipIndex:sourceClipIndex,ripple:false\}\)/);
+  assert.match(move,/verificationStatus:verified \? "verified_move" : "partial_move"/);
+  assert.match(move,/cleanupNeeded:!verified/);
+  const arm=rust.slice(rust.indexOf("ToolAction::PremiereMoveClipToTrack"));
+  assert.match(arm,/verified_move/);
+  assert.match(arm,/sourceDeleted/);
+  assert.match(arm,/"retry_safe":false/);
 });

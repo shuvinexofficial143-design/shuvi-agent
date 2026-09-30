@@ -231,6 +231,7 @@ Transcript rebuild handles explicit interior text removal by creating and insert
 - premiere_move_clip: {"kind":"video|audio","track":0,"clip_index":0,"delta_seconds":1.5}
 - premiere_clone_clip: {"kind":"video|audio","track":0,"clip_index":0,"time_offset_seconds":0.0,"video_track_offset":1,"audio_track_offset":0,"align_to_video":true,"insert":false}
 - premiere_clone_clip_to_track: {"request":{"source":{"kind":"video|audio","track":0,"clip_index":2,"signature":"exact inspected targetSignature"},"destination_track":2,"destination_seconds":12,"mode":"overwrite|insert","align_to_video":true},"expected":"exact one-source expectation"}
+- premiere_move_clip_to_track: {"request":{"source":{"kind":"video|audio","track":0,"clip_index":2,"signature":"exact inspected targetSignature"},"destination_track":2,"destination_seconds":12,"mode":"overwrite|insert","align_to_video":true},"expected":"exact one-source expectation"}
 - premiere_layer_clips: {"batch":{"schema_version":1,"operations":[{"source":{"kind":"video","track":0,"clip_index":2,"signature":"exact inspected targetSignature"},"destination_track":2,"destination_seconds":12,"mode":"overwrite","align_to_video":true}]},"expected":"one exact expectation per unique source"}
 - premiere_cancel_layer_clips: {}
 - premiere_rename_track: {"request":{"kind":"video|audio|caption","track":0,"name":"A-Roll"},"expected":{"project_guid":"...","sequence_guid":"...","clips":[]}}
@@ -586,6 +587,7 @@ enum ToolAction {
     PremiereMoveClip { kind: String, track: u32, clip_index: u32, delta_seconds: f64 },
     PremiereCloneClip { kind: String, track: u32, clip_index: u32, time_offset_seconds: f64, video_track_offset: i32, audio_track_offset: i32, align_to_video: bool, insert: bool },
     PremiereCloneClipToTrack { request: premiere_layering::CloneToTrack },
+    PremiereMoveClipToTrack { request: premiere_layering::CloneToTrack },
     PremiereLayerClips { batch: premiere_layering::LayerBatch },
     PremiereCancelLayerClips { generation: u64 },
     PremiereRenameTrack { request: premiere_layering::TrackRename },
@@ -1167,6 +1169,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_move_clip"
         | "premiere_clone_clip"
         | "premiere_clone_clip_to_track"
+        | "premiere_move_clip_to_track"
         | "premiere_layer_clips"
         | "premiere_cancel_layer_clips"
         | "premiere_rename_track"
@@ -5055,6 +5058,24 @@ fn stage_tool(
                 ToolAction::PremiereCloneClipToTrack { request },
                 "Clone Premiere clip to another track".into(),
                 "Use native createCloneTrackItemAction with destination track/time converted to exact offsets, require a clear range, checkpoint, and verify one correlated new clip.".into(),
+                RiskLevel::High,
+            )
+        }
+        "premiere_move_clip_to_track" => {
+            let request: premiere_layering::CloneToTrack = serde_json::from_value(
+                proposal.arguments.get("request").cloned().unwrap_or(Value::Null)
+            ).map_err(|e| format!("Invalid cross-track move request: {e}"))?;
+            request.validate()?;
+            let expected = premiere_expectation.as_ref().ok_or("Cross-track move requires the exact source clip expectation.")?;
+            if expected.sequence_guid.is_none() || expected.clips.len()!=1
+                || !expected.clips.iter().any(|clip| clip.kind==request.source.kind && clip.track==request.source.track
+                    && clip.clip_index==request.source.clip_index && clip.signature==request.source.signature) {
+                return Err("Cross-track move expectation must exactly match the source clip.".into());
+            }
+            (
+                ToolAction::PremiereMoveClipToTrack { request },
+                "Move Premiere clip to another track".into(),
+                "Clone to a clear destination, verify the exact correlated clone, then non-ripple delete the exact source. Partial completion is uncertain and never retried automatically.".into(),
                 RiskLevel::High,
             )
         }
@@ -11127,6 +11148,37 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }).to_string(),
                 stderr:String::new(),
                 exit_code:Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereMoveClipToTrack { request } => {
+            request.validate()?;
+            let expected = premiere_bridge.expected.ok_or("Cross-track move requires exact source expectation.")?;
+            let checkpoint = backup_premiere_project(&premiere_bridge).await?;
+            let client = PremiereClient { bridge:&state.premiere_bridge, expected:Some(expected) };
+            let result = client.request(
+                "move_clip_to_track",
+                json!({
+                    "kind":request.source.kind,
+                    "track":request.source.track,
+                    "clipIndex":request.source.clip_index,
+                    "destinationTrack":request.destination_track,
+                    "destinationSeconds":request.destination_seconds,
+                    "mode":request.mode,
+                    "alignToVideo":request.align_to_video
+                }),
+                Duration::from_secs(60),
+            ).await?;
+            let verified = result.get("verificationStatus").and_then(Value::as_str)==Some("verified_move")
+                && result.get("moved").and_then(Value::as_bool)==Some(true)
+                && result.get("sourceDeleted").and_then(Value::as_bool)==Some(true)
+                && result.get("uncertain").and_then(Value::as_bool)==Some(false);
+            Ok(ActionResult {
+                success:verified,
+                tool,
+                stdout:json!({"checkpoint":checkpoint,"result":result,"verified":verified,
+                    "partial_completion_possible":!verified,"linked_media_inferred":false,"retry_safe":false}).to_string(),
+                stderr:String::new(),
+                exit_code:Some(if verified{0}else{1}),
             })
         }
         ToolAction::PremiereLayerClips { batch } => {

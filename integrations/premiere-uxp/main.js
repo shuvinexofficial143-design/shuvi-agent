@@ -180,7 +180,7 @@ function commandClipTargets(command) {
 
 async function assertExpectedTargets(command) {
   const expected = command.arguments?._expected;
-  const clipMutation = new Set(["trim_clip", "roll_edit", "move_clip", "clone_clip", "clone_clip_to_track", "delete_clip",
+  const clipMutation = new Set(["trim_clip", "roll_edit", "move_clip", "clone_clip", "clone_clip_to_track", "move_clip_to_track", "delete_clip",
     "set_clip_enabled", "add_video_transition", "remove_video_transition", "add_video_effect", "add_audio_effect",
     "set_effect_param", "add_effect_keyframe", "set_audio_effect_param", "add_audio_effect_keyframe",
     "set_video_param_named", "add_video_keyframe_named", "set_audio_param_named", "add_audio_keyframe_named",
@@ -3881,6 +3881,46 @@ async function cloneClipToTrack(argumentsValue) {
   };
 }
 
+async function moveClipToTrack(argumentsValue) {
+  const clone = await cloneClipToTrack(argumentsValue);
+  if (clone.verificationStatus !== "verified_delta" || clone.uncertain || !clone.newTarget) {
+    return {...clone,moved:false,sourceDeleted:false,verificationStatus:"accepted_unverified",
+      uncertain:true,cleanupNeeded:Boolean(clone.cloned),retrySafe:false};
+  }
+
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+
+  const kind = clone.kind;
+  const sourceTrack = clone.sourceTrack;
+  const sourceClipIndex = clone.sourceClipIndex;
+  let deletion = null;
+  try {
+    deletion = await deleteClip({kind,track:sourceTrack,clipIndex:sourceClipIndex,ripple:false});
+  } catch (error) {
+    return {...clone,moved:false,sourceDeleted:false,cloneVerified:true,
+      deleteError:String(error?.message || error).slice(0,240),verificationStatus:"partial_move",
+      uncertain:true,cleanupNeeded:true,retrySafe:false};
+  }
+
+  if (deletion.verificationStatus !== "verified_delta") {
+    return {...clone,moved:false,sourceDeleted:false,cloneVerified:true,deleteResult:deletion,
+      verificationStatus:"partial_move",uncertain:true,cleanupNeeded:true,retrySafe:false};
+  }
+
+  const destination = await snapshotTrackItems(project,sequence,kind,clone.destinationTrack);
+  const candidate = destination.filter(row =>
+    row.mediaId === clone.newTarget.mediaId
+    && Math.abs(row.startSeconds-clone.destinationSeconds) <= 0.001
+    && Math.abs(row.durationSeconds-clone.durationSeconds) <= 0.001
+  );
+  const verified = candidate.length === 1;
+  return {...clone,moved:verified,sourceDeleted:true,cloneVerified:true,deleteVerified:true,
+    destinationCandidateCount:candidate.length,verificationStatus:verified ? "verified_move" : "partial_move",
+    uncertain:!verified,cleanupNeeded:!verified,retrySafe:false};
+}
+
 async function resolveTrackByKind(sequence, kind, trackIndex) {
   if (kind === "video") return await sequence.getVideoTrack(trackIndex);
   if (kind === "audio") return await sequence.getAudioTrack(trackIndex);
@@ -6566,6 +6606,8 @@ async function dispatchNativeCommand(command) {
       return await cloneClip(command.arguments || {});
     case "clone_clip_to_track":
       return await cloneClipToTrack(command.arguments || {});
+    case "move_clip_to_track":
+      return await moveClipToTrack(command.arguments || {});
     case "rename_track":
       return await renameTrack(command.arguments || {});
     case "organize_tracks":
