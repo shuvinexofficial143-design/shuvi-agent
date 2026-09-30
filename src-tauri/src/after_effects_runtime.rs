@@ -39,6 +39,33 @@ fn trusted_afterfx_exe(_path:&Path)->Result<(),String>{
     Err("After Effects execution is currently restricted to trusted Windows Adobe installs.".into())
 }
 
+fn render_output_evidence(result:&Value)->Value{
+    let Some(outputs)=result.get("outputs").and_then(Value::as_array) else {
+        return json!({"desktop_outputs_verified":false,"reason":"Host render result has no output inventory.","media_parse_verified":false});
+    };
+    if outputs.is_empty()||outputs.len()>64{
+        return json!({"desktop_outputs_verified":false,"reason":"Host render output inventory is empty or oversized.","media_parse_verified":false});
+    }
+    let mut observed=Vec::new();let mut verified=true;
+    for output in outputs{
+        let path=output.get("output_file").and_then(Value::as_str).unwrap_or("");
+        let expected_size=output.get("size_bytes").and_then(Value::as_u64);
+        let host_done=output.get("done").and_then(Value::as_bool)==Some(true);
+        let host_changed=output.get("output_changed").and_then(Value::as_bool)==Some(true);
+        let p=Path::new(path);
+        let meta=if p.is_absolute(){fs::symlink_metadata(p).ok()}else{None};
+        let regular=meta.as_ref().is_some_and(|m|m.is_file()&&!m.file_type().is_symlink());
+        let size=meta.as_ref().map(|m|m.len());
+        let item_verified=host_done&&host_changed&&regular&&size.is_some_and(|v|v>0)&&size==expected_size;
+        if !item_verified{verified=false;}
+        observed.push(json!({"output_file":path,"host_done":host_done,"host_changed":host_changed,
+            "expected_size_bytes":expected_size,"desktop_size_bytes":size,"regular_non_symlink":regular,
+            "verified":item_verified}));
+    }
+    json!({"desktop_outputs_verified":verified,"outputs":observed,"media_parse_verified":false,
+        "note":"Desktop metadata confirms exact non-empty files matching host-reported sizes; it does not prove media decodability."})
+}
+
 fn write_new(path:&Path,bytes:&[u8],label:&str)->Result<(),String>{
     let mut file=OpenOptions::new().write(true).create_new(true).open(path)
         .map_err(|e|format!("Could not reserve {label}: {e}"))?;
@@ -99,7 +126,13 @@ pub fn pending_jobs(workspace:&Path,reconcile_receipts:bool)->Result<Value,Strin
             Ok(receipt)=>{
                 let verification=receipt.result.as_ref().and_then(|v|v.get("verification_status")).and_then(Value::as_str)
                     .unwrap_or(if receipt.ok{"accepted_unverified"}else{"host_error"});
-                let post_verified=verification.starts_with("verified_");
+                let render_evidence=if request.action=="render_queue" {
+                    receipt.result.as_ref().map(render_output_evidence)
+                }else{None};
+                let render_verified=render_evidence.as_ref().and_then(|v|v.get("desktop_outputs_verified")).and_then(Value::as_bool)==Some(true);
+                let post_verified=if request.action=="render_queue" {
+                    verification=="verified_render_completion"&&render_verified
+                }else{verification.starts_with("verified_")};
                 let host_retry_safe=receipt.result.as_ref().and_then(|v|v.get("retry_safe")).and_then(Value::as_bool)
                     .unwrap_or(!request.is_mutating());
                 if reconcile_receipts{
@@ -108,6 +141,7 @@ pub fn pending_jobs(workspace:&Path,reconcile_receipts:bool)->Result<Value,Strin
                 jobs.push(json!({"request_id":request.request_id,"action":request.action,"mutation":request.is_mutating(),
                     "state":"receipt_available","host_receipt_ok":receipt.ok,"host_version":receipt.host_version,
                     "verification_status":verification,"post_state_verified":post_verified,"host_retry_safe":host_retry_safe,
+                    "render_output_evidence":render_evidence,
                     "result":receipt.result,"host_error":receipt.error,"retry_safe":false,
                     "reconciled":reconcile_receipts,
                     "note":"Late receipt resolves dispatch completion, but retry remains disabled until the caller inspects current host state."}));
@@ -203,7 +237,13 @@ pub async fn execute(
                         persistence_evidence=Some(evidence);
                         verified
                     }else{false};
-                    let post_verified=if request.action=="save_project"{save_persistence_verified}else{verification.starts_with("verified_")};
+                    let render_evidence=if request.action=="render_queue" {
+                        receipt.result.as_ref().map(render_output_evidence)
+                    }else{None};
+                    let render_verified=render_evidence.as_ref().and_then(|v|v.get("desktop_outputs_verified")).and_then(Value::as_bool)==Some(true);
+                    let post_verified=if request.action=="save_project"{save_persistence_verified}
+                        else if request.action=="render_queue"{verification=="verified_render_completion"&&render_verified}
+                        else{verification.starts_with("verified_")};
                     let host_retry_safe=receipt.result.as_ref()
                         .and_then(|v|v.get("retry_safe")).and_then(Value::as_bool)
                         .unwrap_or(!request.is_mutating());
@@ -221,6 +261,7 @@ pub async fn execute(
                         "verification_status":verification,
                         "post_state_verified":post_verified,
                         "project_persistence_evidence":persistence_evidence,
+                        "render_output_evidence":render_evidence,
                         "host_retry_safe":host_retry_safe,
                         "checkpoint":checkpoint,
                         "checkpoint_recovery_verified":false,
