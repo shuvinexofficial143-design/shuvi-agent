@@ -312,18 +312,10 @@ pub fn load(path:&Path) -> Result<Report,String> {
 pub fn save(path:&Path,report:&Report) -> Result<(),String> {
     report.validate()?;
     let bytes=serde_json::to_vec(report).map_err(|e|e.to_string())?;
-    let temp=path.with_extension("json.tmp");let backup=path.with_extension("json.bak");
-    fs::write(&temp,bytes).map_err(|e|e.to_string())?;
-    if path.exists() {
-        if backup.exists(){fs::remove_file(&backup).map_err(|e|e.to_string())?;}
-        fs::rename(path,&backup).map_err(|e|e.to_string())?;
-    }
-    if let Err(e)=fs::rename(&temp,path) {
-        if backup.exists(){let _=fs::rename(&backup,path);}
-        return Err(e.to_string());
-    }
-    if backup.exists(){let _=fs::remove_file(backup);}
-    Ok(())
+    crate::premiere_store::replace(path,&bytes,MAX_REPORT_BYTES,|data|{
+        let report:Report=serde_json::from_slice(data).map_err(|e|e.to_string())?;
+        current_report(report).map(|_|())
+    })
 }
 
 #[cfg(test)]

@@ -10,7 +10,11 @@ test('durable snapshots flush exclusive temporary files and retain a validated b
   assert.match(store,/let primary_valid=primary_present && read_valid\(path\).is_ok\(\)/);
   const publication=store.slice(store.indexOf('fs::rename(&tmp,path)'));
   assert.doesNotMatch(publication,/remove_file/);
-  assert.match(readFileSync('src-tauri/src/premiere_export_jobs.rs','utf8'),/premiere_store::replace/);
+  for(const name of ['export_jobs','acceptance','acceptance_execution','calibration']) {
+    const source=readFileSync(`src-tauri/src/premiere_${name}.rs`,'utf8').split('#[cfg(test)]')[0];
+    assert.match(source,/premiere_store::replace/,name);
+    assert.doesNotMatch(source,/fs::write\(/,name);
+  }
 });
 test('persisted Premiere stores bound bytes on the opened handle before JSON decode',()=>{
   for(const name of ['acceptance','acceptance_harness','acceptance_execution','calibration','edit_session','export_jobs','review','checkpoint']) {
