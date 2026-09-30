@@ -5367,6 +5367,12 @@ async function inspectEffectLifecycle(args) {
 }
 
 async function removeEffect(args) {
+  const before = args.kind === "video"
+    ? await inspectClipEffects({track:args.track,clipIndex:args.clipIndex})
+    : await inspectAudioClipEffects({track:args.track,clipIndex:args.clipIndex});
+  if (before.componentsTruncated || before.componentCount !== before.components.length) {
+    throw new Error("Effect chain must be completely inspectable before removal.");
+  }
   const target = await resolveLifecycleComponent(args);
   if (!args.expectedSignature || args.expectedSignature !== target.targetSignature) throw new Error("Effect target or chain changed; inspect lifecycle again.");
   if (typeof target.chain.createRemoveComponentAction !== "function") throw new Error("Native component removal is unsupported.");
@@ -5376,8 +5382,25 @@ async function removeEffect(args) {
     transactionSucceeded = target.project.executeTransaction(compound => compound.addAction(action), "Shuvi: Remove Effect");
   });
   if (!transactionSucceeded) throw new Error("Premiere rejected component removal.");
+  const after = args.kind === "video"
+    ? await inspectClipEffects({track:args.track,clipIndex:args.clipIndex})
+    : await inspectAudioClipEffects({track:args.track,clipIndex:args.clipIndex});
+  const beforePrefix=before.components.slice(0,target.componentIndex);
+  const beforeSuffix=before.components.slice(target.componentIndex+1);
+  const afterPrefix=after.components.slice(0,target.componentIndex);
+  const afterSuffix=after.components.slice(target.componentIndex);
+  const removed = !after.componentsTruncated
+    && after.componentCount === before.componentCount - 1
+    && after.components.length === after.componentCount
+    && beforePrefix.length === afterPrefix.length
+    && beforeSuffix.length === afterSuffix.length
+    && unchangedComponentPrefix(beforePrefix,afterPrefix)
+    && unchangedComponentPrefix(beforeSuffix,afterSuffix);
   return {transactionSucceeded: true, componentIndex: target.componentIndex, matchName: target.matchName,
-    warning: "Native removal transaction accepted; inspect the effect chain to verify the result."};
+    componentCountBefore:before.componentCount, componentCountAfter:after.componentCount,
+    verificationStatus:removed ? "verified_delta" : "accepted_unverified",
+    uncertain:!removed, retrySafe:false,
+    warning: removed ? null : "Native removal transaction accepted, but the exact component-chain delta was not proven."};
 }
 
 // Rebuild writes only the explicit empty destination. The source stays active.

@@ -325,3 +325,13 @@ test("video and audio effect append require an exact bounded post-state delta",(
   assert.match(audio,/after\.componentCount === before\.componentCount \+ 1/);
   assert.match(audio,/retrySafe:false/);
 });
+
+test("effect removal requires an exact bounded post-chain delta",()=>{
+  const remove=uxp.slice(uxp.indexOf("async function removeEffect"),uxp.indexOf("// Rebuild writes only"));
+  assert.match(remove,/before = args\.kind === "video"/);
+  assert.match(remove,/after = args\.kind === "video"/);
+  assert.match(remove,/after\.componentCount === before\.componentCount - 1/);
+  assert.match(remove,/beforeSuffix\.length === afterSuffix\.length/);
+  assert.match(remove,/verificationStatus:removed \? "verified_delta" : "accepted_unverified"/);
+  assert.match(remove,/retrySafe:false/);
+});

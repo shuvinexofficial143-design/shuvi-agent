@@ -8042,7 +8042,11 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let backup = backup_premiere_project(&premiere_bridge).await?;
             let mut arguments = target.bridge_arguments(); arguments["expectedSignature"] = json!(expected_signature);
             let value = premiere_bridge.request("remove_effect", arguments, Duration::from_secs(20)).await?;
-            Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&json!({"backup":backup,"result":value})).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_delta");
+            Ok(ActionResult { success: verified, tool,
+                stdout: serde_json::to_string_pretty(&json!({"backup":backup,"result":value,
+                    "post_state_verified":verified,"runtime_acceptance_promoted":false,"retry_safe":false})).unwrap_or_default(),
+                stderr: String::new(), exit_code: Some(if verified {0}else{1}) })
         }
         ToolAction::PremierePlanSceneDetection {request} => {
             request.validate()?;
