@@ -12,6 +12,25 @@ fn now()->u64{SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().a
 #[serde(deny_unknown_fields)]
 pub struct FileObservation {pub at_ms:u64,pub exists:bool,pub size_bytes:Option<u64>,pub modified_ms:Option<u64>}
 
+#[derive(Clone,Debug,Serialize,Deserialize,PartialEq,Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MediaValidationReceipt {
+    pub schema_version:u8,pub job_id:String,pub output:String,pub observed_size_bytes:u64,
+    pub observed_modified_ms:Option<u64>,pub validator:String,pub playable:bool,
+    pub container:Option<String>,pub video_streams:Option<u32>,pub audio_streams:Option<u32>
+}
+impl MediaValidationReceipt {
+    fn validate(&self)->Result<(),String>{
+        if self.schema_version!=1||self.job_id.is_empty()||self.job_id.len()>80
+            || self.output.is_empty()||self.output.len()>4096||!Path::new(&self.output).is_absolute()
+            || self.observed_size_bytes==0||self.validator.is_empty()||self.validator.len()>120
+            || self.container.as_ref().is_some_and(|v|v.is_empty()||v.len()>80)
+            || self.video_streams.is_some_and(|v|v>128)||self.audio_streams.is_some_and(|v|v>128){
+            return Err("Invalid bounded media-validation receipt.".into());
+        }Ok(())
+    }
+}
+
 pub fn observe(path:&str)->FileObservation{
     let metadata=fs::metadata(path).ok().filter(|m|m.is_file());
     FileObservation{at_ms:now(),exists:metadata.is_some(),size_bytes:metadata.as_ref().map(|m|m.len()),
@@ -24,7 +43,10 @@ pub fn observe(path:&str)->FileObservation{
 pub struct Job {pub schema_version:u8,pub job_id:String,pub project_guid:String,pub sequence_guid:String,
     pub output:String,pub preset:Option<String>,pub queue_to_ame:bool,pub request_at_ms:u64,
     pub output_existed_before:bool,pub before:FileObservation,pub bridge_state:String,
-    pub encoder_completion_verified:bool,pub observations:Vec<FileObservation>}
+    pub encoder_completion_verified:bool,
+    #[serde(default)]
+    pub media_validation:Option<MediaValidationReceipt>,
+    pub observations:Vec<FileObservation>}
 
 impl Job {
     pub fn new(id:String,project:&str,sequence:&str,output:&str,preset:Option<&str>,queue:bool)->Result<Self,String>{
@@ -35,7 +57,7 @@ impl Job {
         Ok(Self{schema_version:1,job_id:id,project_guid:project.into(),sequence_guid:sequence.into(),
             output:output.into(),preset:preset.map(str::to_owned),queue_to_ame:queue,request_at_ms:now(),
             output_existed_before:before.exists,before,bridge_state:"pending".into(),
-            encoder_completion_verified:false,observations:vec![]})
+            encoder_completion_verified:false,media_validation:None,observations:vec![]})
     }
     pub fn observe_once(&mut self)->Result<Value,String>{
         self.validate()?;
@@ -46,11 +68,37 @@ impl Job {
             && p.modified_ms==item.modified_ms && item.at_ms.saturating_sub(p.at_ms)>=1500);
         if self.observations.len()>=MAX_OBSERVATIONS{self.observations.remove(0);}
         self.observations.push(item.clone());self.validate()?;
+        let media_parse_verified=self.media_validation.as_ref().is_some_and(|receipt|
+            receipt.playable&&receipt.job_id==self.job_id&&receipt.output==self.output
+            && item.exists&&item.size_bytes==Some(receipt.observed_size_bytes)
+            && item.modified_ms==receipt.observed_modified_ms);
         Ok(json!({"job_id":self.job_id,"bridge_state":self.bridge_state,"mode":if self.queue_to_ame{"ame_queue"}else{"immediate"},
             "file_observed":item.exists,"file_stable":stable,"encoder_completion_verified":self.encoder_completion_verified,
             "preexisting_output":self.output_existed_before,"before":self.before,"latest":item,
-            "media_parse_verified":false,"retry_automatically":false,
-            "note":"Stable metadata alone cannot confirm a complete playable media file or an AME job."}))
+            "media_parse_verified":media_parse_verified,"completion_verified":false,
+            "validator_receipt_present":self.media_validation.is_some(),"retry_automatically":false,
+            "note":"Playable-media validation and encoder completion are separate; neither file stability nor a parser receipt proves AME completion."}))
+    }
+    pub fn media_validation_challenge(&self)->Result<Value,String>{
+        self.validate()?;
+        let item=self.observations.last().ok_or("Observe the export output before media validation.")?;
+        if !item.exists||item.size_bytes.is_none_or(|v|v==0){
+            return Err("Media validation requires a non-empty observed output file.".into());
+        }
+        Ok(json!({"schema_version":1,"job_id":self.job_id,"output":self.output,
+            "observed_size_bytes":item.size_bytes,"observed_modified_ms":item.modified_ms,
+            "purpose":"Bind an external bounded media parser/decoder receipt to this exact observed file state."}))
+    }
+    pub fn record_media_validation(&mut self,receipt:MediaValidationReceipt)->Result<(),String>{
+        receipt.validate()?;
+        if receipt.job_id!=self.job_id||receipt.output!=self.output{
+            return Err("Media-validation receipt does not match the exact export job/output.".into());
+        }
+        let item=self.observations.last().ok_or("Observe the export output before recording media validation.")?;
+        if !item.exists||item.size_bytes!=Some(receipt.observed_size_bytes)||item.modified_ms!=receipt.observed_modified_ms{
+            return Err("Media-validation receipt is stale for the current observed output metadata.".into());
+        }
+        self.media_validation=Some(receipt);self.validate()
     }
     pub fn validate(&self)->Result<(),String>{
         if self.schema_version!=1||self.job_id.is_empty()||self.job_id.len()>80
@@ -60,6 +108,11 @@ impl Job {
             || !matches!(self.bridge_state.as_str(),"pending"|"accepted"|"queued"|"execution_status_unknown"|"rejected")
             || self.encoder_completion_verified || self.observations.len()>MAX_OBSERVATIONS {
             return Err("Invalid or falsely completed Premiere export job.".into());
+        }
+        if let Some(receipt)=&self.media_validation {receipt.validate()?;
+            if receipt.job_id!=self.job_id||receipt.output!=self.output{
+                return Err("Media-validation receipt identity does not match export job.".into());
+            }
         }Ok(())
     }
 }
@@ -113,6 +166,17 @@ pub fn save(path:&Path,jobs:&Jobs)->Result<(),String>{
         job.observations[0].at_ms=job.observations[0].at_ms.saturating_sub(2000);
         let second=job.observe_once().unwrap();assert_eq!(second["file_stable"],true);
         assert_eq!(second["encoder_completion_verified"],false);assert_eq!(second["preexisting_output"],true);
+        assert_eq!(second["media_parse_verified"],false);assert_eq!(second["completion_verified"],false);
+        let challenge=job.media_validation_challenge().unwrap();
+        let receipt=MediaValidationReceipt{schema_version:1,job_id:"id".into(),output:file.to_str().unwrap().into(),
+            observed_size_bytes:challenge["observed_size_bytes"].as_u64().unwrap(),
+            observed_modified_ms:challenge["observed_modified_ms"].as_u64(),
+            validator:"test-parser/1".into(),playable:true,container:Some("test".into()),video_streams:Some(1),audio_streams:Some(1)};
+        job.record_media_validation(receipt).unwrap();
+        let parsed=job.observe_once().unwrap();assert_eq!(parsed["media_parse_verified"],true);
+        assert_eq!(parsed["encoder_completion_verified"],false);assert_eq!(parsed["completion_verified"],false);
+        let mut stale=job.media_validation.clone().unwrap();stale.observed_size_bytes+=1;
+        assert!(job.record_media_validation(stale).unwrap_err().contains("stale"));
         job.encoder_completion_verified=true;assert!(job.validate().is_err());
         fs::remove_file(file).unwrap();fs::remove_dir(dir).unwrap();
     }
