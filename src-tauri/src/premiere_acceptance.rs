@@ -496,6 +496,19 @@ mod tests {
         fs::remove_file(path).unwrap();fs::remove_file(backup).unwrap();
     }
 
+    #[test] fn partial_capability_names_do_not_overclaim_native_scope() {
+        let report=Report::default();
+        for (name,needle) in [
+            ("masks","presence inspection"),
+            ("reliable_multicam","creation and angle switching"),
+            ("native_caption_write_import","cue/text track creation")
+        ] {
+            let cap=report.capabilities.iter().find(|c|c.name==name).unwrap();
+            assert_eq!(cap.state,"implemented_unverified");
+            assert!(!cap.premiere_runtime_verified);
+            assert!(cap.reason.as_deref().unwrap_or("").contains(needle));
+        }
+    }
     #[test] fn linked_membership_defaults_to_documented_unsupported() {
         let report=Report::default();
         let cap=report.capabilities.iter().find(|c|c.name=="linked_clip_membership").unwrap();
