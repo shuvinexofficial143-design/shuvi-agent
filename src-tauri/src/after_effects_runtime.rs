@@ -15,6 +15,30 @@ fn regular_file(path:&Path,label:&str)->Result<(),String>{
     Ok(())
 }
 
+#[cfg(target_os="windows")]
+fn trusted_afterfx_exe(path:&Path)->Result<(),String>{
+    regular_file(path,"After Effects executable")?;
+    if !path.file_name().and_then(|v|v.to_str()).is_some_and(|v|v.eq_ignore_ascii_case("afterfx.exe")){
+        return Err("After Effects executable must be AfterFX.exe.".into());
+    }
+    let program_files=std::env::var_os("ProgramFiles").ok_or("ProgramFiles environment variable unavailable.")?;
+    let adobe_root=Path::new(&program_files).join("Adobe");
+    let root=fs::canonicalize(&adobe_root).map_err(|e|format!("Adobe Program Files root unavailable: {e}"))?;
+    let exe=fs::canonicalize(path).map_err(|e|format!("After Effects executable cannot be canonicalized: {e}"))?;
+    if !exe.starts_with(&root){return Err("After Effects executable is outside the trusted Program Files/Adobe root.".into());}
+    let support=exe.parent().and_then(|v|v.file_name()).and_then(|v|v.to_str()).unwrap_or("");
+    let product=exe.parent().and_then(Path::parent).and_then(|v|v.file_name()).and_then(|v|v.to_str()).unwrap_or("");
+    if !support.eq_ignore_ascii_case("Support Files")||!product.starts_with("Adobe After Effects"){
+        return Err("After Effects executable does not match the expected Adobe After Effects install layout.".into());
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os="windows"))]
+fn trusted_afterfx_exe(_path:&Path)->Result<(),String>{
+    Err("After Effects execution is currently restricted to trusted Windows Adobe installs.".into())
+}
+
 fn write_new(path:&Path,bytes:&[u8],label:&str)->Result<(),String>{
     let mut file=OpenOptions::new().write(true).create_new(true).open(path)
         .map_err(|e|format!("Could not reserve {label}: {e}"))?;
@@ -107,7 +131,7 @@ pub async fn execute(
     timeout_ms:u64,
 )->Result<Value,String>{
     request.validate()?;
-    regular_file(afterfx_exe,"After Effects executable")?;
+    trusted_afterfx_exe(afterfx_exe)?;
     regular_file(core_script,"After Effects core adapter")?;
     if !workspace.is_absolute(){return Err("After Effects workspace must be absolute.".into());}
     fs::create_dir_all(workspace).map_err(|e|format!("Could not create After Effects workspace: {e}"))?;
