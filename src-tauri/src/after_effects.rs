@@ -189,6 +189,9 @@ pub fn capability_report()->Value {
             "layer_property_tree":"source_supported_depth_6_nodes_1024",
             "render_queue_execute":"source_supported_exact_queued_set_with_host_done_and_desktop_file_evidence",
             "render_media_parse_validation":"not_implemented",
+            "footage_relink":"source_supported_with_exact_old_new_file_readback",
+            "proxy_set_remove":"source_supported_with_proxy_state_file_readback",
+            "av_layer_flags":"source_supported_with_boolean_readback",
             "runtime_verified":"not_verified"
         },
         "safety":[
