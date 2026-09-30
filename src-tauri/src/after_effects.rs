@@ -108,6 +108,109 @@ impl HandTrackPlan {
     }
 }
 
+#[derive(Clone,Debug,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HandTrackRigPlan {
+    pub comp_id:u32,
+    #[serde(default)]
+    pub target_layer_id:Option<u32>,
+    pub samples:Vec<TrackSample>,
+    #[serde(default)]
+    pub coordinate_space:Option<String>,
+    #[serde(default)]
+    pub name:Option<String>,
+    #[serde(default)]
+    pub preserve_visual:Option<bool>,
+    #[serde(default)]
+    pub min_confidence:Option<f64>,
+    #[serde(default)]
+    pub smoothing_alpha:Option<f64>,
+    #[serde(default)]
+    pub max_gap_seconds:Option<f64>,
+}
+impl HandTrackRigPlan {
+    pub fn validate(&self)->Result<(),String>{
+        if self.comp_id==0 || self.target_layer_id==Some(0) {
+            return Err("Hand-track rig requires non-zero comp/layer IDs.".into());
+        }
+        if self.samples.is_empty() || self.samples.len()>MAX_TRACK_SAMPLES {
+            return Err("Hand-track rig requires 1..=10000 grounded samples.".into());
+        }
+        if self.coordinate_space.as_deref().is_some_and(|v|v!="comp_pixels") {
+            return Err("Hand-track rig currently requires coordinate_space=comp_pixels.".into());
+        }
+        if self.name.as_ref().is_some_and(|v|v.is_empty()||v.len()>120||v.chars().any(char::is_control)) {
+            return Err("Hand-track rig name must be a bounded printable string.".into());
+        }
+        if self.min_confidence.is_some_and(|v|!v.is_finite()||!(0.0..=1.0).contains(&v)) {
+            return Err("min_confidence must be 0..1.".into());
+        }
+        if self.smoothing_alpha.is_some_and(|v|!v.is_finite()||v<=0.0||v>1.0) {
+            return Err("smoothing_alpha must be >0 and <=1.".into());
+        }
+        if self.max_gap_seconds.is_some_and(|v|!v.is_finite()||v<=0.0||v>60.0) {
+            return Err("max_gap_seconds must be >0 and <=60.".into());
+        }
+        let mut previous=-1.0_f64;let mut dimension=None;
+        for sample in &self.samples {
+            if !sample.time_seconds.is_finite() || !(0.0..=MAX_SECONDS).contains(&sample.time_seconds) || sample.time_seconds<=previous
+                || !(sample.point.len()==2||sample.point.len()==3)
+                || sample.point.iter().any(|v|!v.is_finite()||v.abs()>1_000_000.0)
+                || sample.confidence.is_some_and(|v|!v.is_finite()||!(0.0..=1.0).contains(&v)) {
+                return Err("Invalid, non-monotonic or unbounded hand-track rig sample.".into());
+            }
+            if let Some(d)=dimension {
+                if d!=sample.point.len(){return Err("Hand-track rig point dimensions must stay consistent.".into());}
+            } else {dimension=Some(sample.point.len());}
+            previous=sample.time_seconds;
+        }
+        Ok(())
+    }
+    pub fn prepare(&self)->Result<Value,String>{
+        self.validate()?;
+        let threshold=self.min_confidence.unwrap_or(0.0);
+        let alpha=self.smoothing_alpha.unwrap_or(1.0);
+        let mut kept:Vec<&TrackSample>=self.samples.iter().filter(|s|s.confidence.unwrap_or(1.0)>=threshold).collect();
+        if kept.is_empty(){return Err("Confidence filtering removed every hand-track sample.".into());}
+        if let Some(max_gap)=self.max_gap_seconds {
+            for pair in kept.windows(2) {
+                if pair[1].time_seconds-pair[0].time_seconds>max_gap {
+                    return Err("Filtered hand-track samples contain a gap larger than max_gap_seconds.".into());
+                }
+            }
+        }
+        let mut prepared=Vec::with_capacity(kept.len());
+        let mut previous_point:Option<Vec<f64>>=None;
+        for sample in kept.drain(..) {
+            let point=if let Some(prev)=previous_point.as_ref() {
+                sample.point.iter().zip(prev.iter()).map(|(cur,old)|alpha*cur+(1.0-alpha)*old).collect::<Vec<_>>()
+            }else{sample.point.clone()};
+            previous_point=Some(point.clone());
+            prepared.push(json!({"time_seconds":sample.time_seconds,"point":point,"confidence":sample.confidence}));
+        }
+        Ok(json!({
+            "host_action":"apply_hand_track_rig",
+            "args":{
+                "comp_id":self.comp_id,
+                "target_layer_id":self.target_layer_id,
+                "samples":prepared,
+                "coordinate_space":"comp_pixels",
+                "name":self.name.as_deref().unwrap_or("Shuvi Hand Track"),
+                "preserve_visual":self.preserve_visual.unwrap_or(true)
+            },
+            "source_sample_count":self.samples.len(),
+            "prepared_sample_count":previous_point.as_ref().map(|_|prepared.len()).unwrap_or(0),
+            "filtered_sample_count":self.samples.len()-prepared.len(),
+            "min_confidence":threshold,
+            "smoothing_alpha":alpha,
+            "max_gap_seconds":self.max_gap_seconds,
+            "detector_output_grounded_by_caller":true,
+            "native_hand_detection_claimed":false,
+            "runtime_verified":false
+        }))
+    }
+}
+
 pub fn validate_project_path(path:&str)->Result<(),String>{
     if path.is_empty() || path.len()>4096 || path.chars().any(|c|c.is_control()) {
         return Err("After Effects project path is invalid or oversized.".into());
@@ -277,6 +380,28 @@ mod tests {
         let mut bad=ok.clone();bad.samples[1].time_seconds=0.0;assert!(bad.validate().is_err());
         let mut bad=ok.clone();bad.samples[0].confidence=Some(2.0);assert!(bad.validate().is_err());
         let mut bad=ok.clone();bad.samples[0].point=vec![1.0];assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn hand_track_rig_planner_filters_smooths_and_rejects_large_gaps(){
+        let plan=HandTrackRigPlan{
+            comp_id:7,target_layer_id:Some(8),coordinate_space:Some("comp_pixels".into()),name:Some("Hand".into()),
+            preserve_visual:Some(true),min_confidence:Some(0.5),smoothing_alpha:Some(0.5),max_gap_seconds:Some(0.2),
+            samples:vec![
+                TrackSample{time_seconds:0.0,point:vec![0.0,0.0],confidence:Some(0.9)},
+                TrackSample{time_seconds:0.04,point:vec![100.0,20.0],confidence:Some(0.2)},
+                TrackSample{time_seconds:0.08,point:vec![20.0,10.0],confidence:Some(0.9)}
+            ]
+        };
+        let value=plan.prepare().unwrap();
+        assert_eq!(value["prepared_sample_count"],2);
+        assert_eq!(value["filtered_sample_count"],1);
+        assert_eq!(value["args"]["samples"][1]["point"][0],10.0);
+        assert_eq!(value["args"]["samples"][1]["point"][1],5.0);
+        assert_eq!(value["native_hand_detection_claimed"],false);
+
+        let mut gap=plan.clone();gap.max_gap_seconds=Some(0.05);
+        assert!(gap.prepare().unwrap_err().contains("gap larger"));
     }
 
     #[test]
