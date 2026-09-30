@@ -1268,6 +1268,54 @@
             render_completion_verified: false
         };
     }
+    function singleFileRenderPath(path) {
+        boundedString(path,4096,"render output file");
+        if(path.indexOf("[")>=0||path.indexOf("]")>=0)fail("Image-sequence output patterns are not supported by verified render_queue.");
+        var lower=path.toLowerCase();
+        var allowed=[".mov",".mp4",".m4v",".avi",".wav",".aif",".aiff",".mxf"],i;
+        for(i=0;i<allowed.length;i++)if(lower.length>allowed[i].length&&lower.slice(-allowed[i].length)===allowed[i])return new File(path);
+        fail("Verified render_queue currently requires a supported single-file media extension.");
+    }
+    function renderQueue(args) {
+        var queue=requireProject().renderQueue;
+        if(queue.rendering)fail("After Effects render queue is already rendering.");
+        if(!(args.items instanceof Array)||args.items.length<1||args.items.length>64)fail("render_queue requires 1..64 exact expected items.");
+        var overwrite=args.overwrite===true,expected={},before=[],i;
+        for(i=0;i<args.items.length;i++){
+            var spec=args.items[i],index=spec.queue_index;
+            if(!finiteNumber(index)||Math.floor(index)!==index||index<1||index>queue.numItems||expected[index])fail("Invalid or duplicate render queue index.");
+            var item=queue.item(index);
+            if(!item||!item.comp||item.comp.id!==spec.comp_id)fail("Render queue comp identity stale guard changed.");
+            if(!item.render||item.status!==RQItemStatus.QUEUED)fail("Expected render item is not currently queued.");
+            if(item.numOutputModules!==1)fail("Verified render_queue currently requires exactly one output module per item.");
+            var om=item.outputModule(1),file=singleFileRenderPath(spec.output_file);
+            if(!om.file||om.file.fsName!==file.fsName)fail("Render output path stale guard changed.");
+            if(file.exists&&!overwrite)fail("Render output already exists; explicit overwrite=true required.");
+            var modified=file.exists&&file.modified?file.modified.getTime():null;
+            before.push({queue_index:index,comp_id:item.comp.id,output_file:file.fsName,existed:file.exists,
+                size_bytes:file.exists?file.length:null,modified_ms:modified});
+            expected[index]=true;
+        }
+        var queuedCount=0;
+        for(i=1;i<=queue.numItems;i++)if(queue.item(i).render){
+            queuedCount++;if(!expected[i])fail("An unlisted render-enabled queue item would also render; mutation refused.");
+        }
+        if(queuedCount!==args.items.length)fail("Exact render-enabled queue set does not match expectation.");
+        queue.render();
+        var outputs=[],verified=!queue.rendering;
+        for(i=0;i<before.length;i++){
+            var b=before[i],item=queue.item(b.queue_index),om=item.outputModule(1),file=om.file;
+            var exists=!!file&&file.exists,size=exists?file.length:null,modified=exists&&file.modified?file.modified.getTime():null;
+            var changed=!b.existed||(size!==b.size_bytes)||(modified!==null&&b.modified_ms!==null&&modified>b.modified_ms);
+            var done=item.status===RQItemStatus.DONE;
+            if(!done||!exists||!(size>0)||!changed)verified=false;
+            outputs.push({queue_index:b.queue_index,comp_id:item.comp?item.comp.id:null,status:String(item.status),
+                done:done,output_file:file?file.fsName:null,size_bytes:size,modified_ms:modified,
+                preexisting_output:b.existed,output_changed:changed});
+        }
+        return {native_accepted:true,verification_status:verified?"verified_render_completion":"accepted_unverified",retry_safe:false,
+            render_completion_verified:verified,media_parse_verified:false,queue_rendering_after:!!queue.rendering,outputs:outputs};
+    }
     function saveProject() {
         var project = requireProject();
         if (!project.file) fail("Project must already have an exact file path; Save As is not automated here.");
@@ -1300,7 +1348,7 @@
             || action === "set_keyframe_interpolation" || action === "set_keyframe_temporal_ease" || action === "remove_keyframe"
             || action === "duplicate_layer" || action === "remove_layer" || action === "precompose_layers"
             || action === "add_mask" || action === "add_scene_edit_markers" || action === "add_marker" || action === "remove_marker"
-            || action === "add_render_queue_item" || action === "save_project";
+            || action === "add_render_queue_item" || action === "render_queue" || action === "save_project";
     }
     function assertProjectExpectation(request, action) {
         if (!mutationAction(action)) return;
@@ -1364,6 +1412,7 @@
         if (action === "remove_marker") return removeMarker(args);
         if (action === "inspect_render_queue") return inspectRenderQueue();
         if (action === "add_render_queue_item") return addRenderQueueItem(args);
+        if (action === "render_queue") return renderQueue(args);
         if (action === "save_project") return saveProject();
         fail("Unsupported Shuvi After Effects action.");
     }
