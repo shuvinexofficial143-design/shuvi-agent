@@ -97,6 +97,65 @@
         }
         return { comp: comp, layer: layer, property: current };
     }
+    function inspectEffects(args) {
+        var comp=resolveComp(args.comp_id),layer=resolveLayer(comp,args.layer_id),parade=layer.property("ADBE Effect Parade");
+        var effects=[],i,count=parade?parade.numProperties:0,limit=Math.min(count,256);
+        for(i=1;i<=limit;i++){
+            var effect=parade.property(i);
+            effects.push({property_index:i,match_name:String(effect.matchName),name:String(effect.name),enabled:effect.enabled===undefined?null:!!effect.enabled,
+                num_properties:effect.numProperties===undefined?null:effect.numProperties});
+        }
+        return {verification_status:"verified_readback",comp_id:comp.id,layer_id:layer.id,num_effects:count,scan_truncated:count>256,effects:effects};
+    }
+    function inspectKeyframes(args) {
+        var resolved=resolveProperty(args.property),p=resolved.property,count=p.numKeys===undefined?0:p.numKeys;
+        if(count>10000)fail("Keyframe count exceeds safety bound.");
+        var limit=Math.min(count,512),keys=[],i;
+        for(i=1;i<=limit;i++){
+            var entry={key_index:i,time_seconds:p.keyTime(i),value:cloneValue(p.keyValue(i)),
+                in_interpolation:String(p.keyInInterpolationType(i)),out_interpolation:String(p.keyOutInterpolationType(i))};
+            try{entry.in_ease=easeSnapshot(p.keyInTemporalEase(i));entry.out_ease=easeSnapshot(p.keyOutTemporalEase(i));}catch(ignore){}
+            keys.push(entry);
+        }
+        return {verification_status:"verified_readback",comp_id:resolved.comp.id,layer_id:resolved.layer.id,
+            property_match_name:String(p.matchName),property_index:p.propertyIndex,num_keys:count,scan_truncated:count>512,keyframes:keys};
+    }
+    function inspectPropertyNode(prop,depth,state) {
+        if(!prop||state.count>=1024){state.truncated=true;return null;}
+        state.count++;
+        var node={name:String(prop.name).slice(0,240),match_name:String(prop.matchName),property_index:prop.propertyIndex,
+            property_type:String(prop.propertyType),depth:depth};
+        if(prop.propertyType===PropertyType.PROPERTY){
+            node.value_type=String(prop.propertyValueType);
+            node.num_keys=prop.numKeys;
+            node.can_vary_over_time=!!prop.canVaryOverTime;
+            if(prop.numKeys===0){try{node.value=cloneValue(prop.value);}catch(ignore){}}
+            return node;
+        }
+        node.num_properties=prop.numProperties;
+        if(depth>=6){node.children_truncated=prop.numProperties>0;return node;}
+        var children=[],limit=Math.min(prop.numProperties,256),i;
+        for(i=1;i<=limit;i++){
+            if(state.count>=1024){state.truncated=true;break;}
+            var child=inspectPropertyNode(prop.property(i),depth+1,state);if(child)children.push(child);
+        }
+        if(prop.numProperties>limit)state.truncated=true;
+        node.children=children;
+        return node;
+    }
+    function inspectLayerProperties(args) {
+        var comp=resolveComp(args.comp_id),layer=resolveLayer(comp,args.layer_id),state={count:0,truncated:false},roots=[];
+        var names=["ADBE Transform Group","ADBE Effect Parade","ADBE Mask Parade","ADBE Text Properties","ADBE Root Vectors Group",
+            "ADBE Material Options Group","ADBE Audio Group","ADBE Marker"];
+        var i;
+        for(i=0;i<names.length;i++){
+            if(state.count>=1024){state.truncated=true;break;}
+            var prop=null;try{prop=layer.property(names[i]);}catch(ignore){}
+            if(prop){var node=inspectPropertyNode(prop,0,state);if(node)roots.push(node);}
+        }
+        return {verification_status:"verified_readback",comp_id:comp.id,layer_id:layer.id,node_count:state.count,
+            scan_truncated:state.truncated,roots:roots};
+    }
     function propertySnapshot(target) {
         var resolved = resolveProperty(target);
         var p = resolved.property;
@@ -143,6 +202,18 @@
             active_comp_id: active && active instanceof CompItem ? active.id : null,
             compositions: comps
         };
+    }
+    function inspectProjectItems() {
+        var project=requireProject(),items=[],limit=Math.min(project.numItems,MAX_ITEMS),i;
+        for(i=1;i<=limit;i++){
+            var item=project.item(i),kind="other",filePath=null;
+            if(item instanceof CompItem)kind="comp";
+            else if(item instanceof FootageItem){kind="footage";try{filePath=item.file?item.file.fsName:null;}catch(ignore){}}
+            else if(item instanceof FolderItem)kind="folder";
+            items.push({id:item.id,index:i,name:String(item.name).slice(0,240),kind:kind,parent_folder_id:item.parentFolder?item.parentFolder.id:null,
+                file_path:filePath});
+        }
+        return {verification_status:"verified_readback",num_items:project.numItems,scan_truncated:project.numItems>MAX_ITEMS,items:items};
     }
     function inspectComp(args) {
         var comp = resolveComp(args.comp_id);
@@ -1248,8 +1319,12 @@
         assertProjectExpectation(request, action);
         var args = request.args || {};
         if (action === "inspect_context") return inspectContext();
+        if (action === "inspect_project_items") return inspectProjectItems();
         if (action === "inspect_comp") return inspectComp(args);
+        if (action === "inspect_effects") return inspectEffects(args);
         if (action === "inspect_property") return inspectProperty(args);
+        if (action === "inspect_keyframes") return inspectKeyframes(args);
+        if (action === "inspect_layer_properties") return inspectLayerProperties(args);
         if (action === "set_property") return setProperty(args);
         if (action === "set_values_at_times") return setValuesAtTimes(args);
         if (action === "set_expression") return setExpression(args);
