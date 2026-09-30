@@ -1008,6 +1008,128 @@
             scope:target.scope,comp_id:target.comp.id,layer_id:target.layer?target.layer.id:null,
             removed_time_seconds:time,removed_comment:comment,before_count:before,after_count:p.numKeys};
     }
+    function validateColor4(value,label) {
+        if(!(value instanceof Array)||value.length!==4)fail(label+" must be [r,g,b,a].");
+        var i;for(i=0;i<4;i++)if(!finiteNumber(value[i])||value[i]<0||value[i]>1)fail(label+" values must be 0..1.");
+        return [value[0],value[1],value[2],value[3]];
+    }
+    function validatePoint2(value,label,positive) {
+        if(!(value instanceof Array)||value.length!==2||!finiteNumber(value[0])||!finiteNumber(value[1]))fail(label+" must be a finite [x,y] pair.");
+        if(positive&&(value[0]<=0||value[1]<=0))fail(label+" values must be positive.");
+        if(Math.abs(value[0])>1000000||Math.abs(value[1])>1000000)fail(label+" exceeds bounded coordinate range.");
+        return [value[0],value[1]];
+    }
+    function addShapePrimitive(args) {
+        var comp=resolveComp(args.comp_id),layer=resolveLayer(comp,args.layer_id);
+        var root=layer.property("ADBE Root Vectors Group");
+        if(!root||!root.canAddProperty("ADBE Vector Group"))fail("Target layer is not a writable shape layer.");
+        if(root.numProperties>256)fail("Shape root exceeds 256 groups.");
+        var kind=boundedString(args.kind,16,"shape primitive kind");
+        var shapeMatch=kind==="rectangle"?"ADBE Vector Shape - Rect":kind==="ellipse"?"ADBE Vector Shape - Ellipse":null;
+        if(!shapeMatch)fail("Shape primitive kind must be rectangle or ellipse.");
+        var size=validatePoint2(args.size,"shape size",true);
+        var position=args.position===undefined?[0,0]:validatePoint2(args.position,"shape position",false);
+        var roundness=args.roundness===undefined?0:args.roundness;
+        if(!finiteNumber(roundness)||roundness<0||roundness>100000)fail("Shape roundness outside bounds.");
+        var fill=args.fill_color===undefined?null:validateColor4(args.fill_color,"fill_color");
+        var stroke=args.stroke_color===undefined?null:validateColor4(args.stroke_color,"stroke_color");
+        var strokeWidth=args.stroke_width===undefined?1:args.stroke_width;
+        if(!finiteNumber(strokeWidth)||strokeWidth<0||strokeWidth>10000)fail("stroke_width outside bounds.");
+        if(!fill&&!stroke)fail("Shape primitive requires fill_color and/or stroke_color.");
+        var before=root.numProperties,groupIndex,shapeIndex,fillIndex=null,strokeIndex=null;
+        app.beginUndoGroup("Shuvi: Add shape primitive");
+        try{
+            var group=root.addProperty("ADBE Vector Group");groupIndex=group.propertyIndex;
+            root=resolveLayer(comp,args.layer_id).property("ADBE Root Vectors Group");
+            group=root.property(groupIndex);
+            var vectors=group.property("ADBE Vectors Group");
+            if(!vectors||!vectors.canAddProperty(shapeMatch))fail("Shape contents cannot add requested primitive.");
+            var shape=vectors.addProperty(shapeMatch);shapeIndex=shape.propertyIndex;
+            root=resolveLayer(comp,args.layer_id).property("ADBE Root Vectors Group");group=root.property(groupIndex);vectors=group.property("ADBE Vectors Group");shape=vectors.property(shapeIndex);
+            var sizeProp=shape.property(kind==="rectangle"?"ADBE Vector Rect Size":"ADBE Vector Ellipse Size");
+            var posProp=shape.property(kind==="rectangle"?"ADBE Vector Rect Position":"ADBE Vector Ellipse Position");
+            sizeProp.setValue(size);posProp.setValue(position);
+            if(kind==="rectangle")shape.property("ADBE Vector Rect Roundness").setValue(roundness);
+            if(fill){
+                var fillProp=vectors.addProperty("ADBE Vector Graphic - Fill");fillIndex=fillProp.propertyIndex;
+                root=resolveLayer(comp,args.layer_id).property("ADBE Root Vectors Group");group=root.property(groupIndex);vectors=group.property("ADBE Vectors Group");
+                fillProp=vectors.property(fillIndex);fillProp.property("ADBE Vector Fill Color").setValue(fill);
+            }
+            if(stroke){
+                root=resolveLayer(comp,args.layer_id).property("ADBE Root Vectors Group");group=root.property(groupIndex);vectors=group.property("ADBE Vectors Group");
+                var strokeProp=vectors.addProperty("ADBE Vector Graphic - Stroke");strokeIndex=strokeProp.propertyIndex;
+                root=resolveLayer(comp,args.layer_id).property("ADBE Root Vectors Group");group=root.property(groupIndex);vectors=group.property("ADBE Vectors Group");
+                strokeProp=vectors.property(strokeIndex);strokeProp.property("ADBE Vector Stroke Color").setValue(stroke);
+                strokeProp.property("ADBE Vector Stroke Width").setValue(strokeWidth);
+            }
+        }finally{app.endUndoGroup();}
+        layer=resolveLayer(comp,args.layer_id);root=layer.property("ADBE Root Vectors Group");
+        var readGroup=root.property(groupIndex),readVectors=readGroup?readGroup.property("ADBE Vectors Group"):null;
+        var readShape=readVectors?readVectors.property(shapeIndex):null;
+        var verified=root.numProperties===before+1&&readShape&&readShape.matchName===shapeMatch;
+        if(verified){
+            var readSize=readShape.property(kind==="rectangle"?"ADBE Vector Rect Size":"ADBE Vector Ellipse Size").value;
+            var readPos=readShape.property(kind==="rectangle"?"ADBE Vector Rect Position":"ADBE Vector Ellipse Position").value;
+            verified=sameValue(readSize,size)&&sameValue(readPos,position);
+            if(kind==="rectangle"&&Math.abs(readShape.property("ADBE Vector Rect Roundness").value-roundness)>EPSILON)verified=false;
+            if(fill){
+                var rf=readVectors.property(fillIndex);if(!rf||rf.matchName!=="ADBE Vector Graphic - Fill"||!sameValue(rf.property("ADBE Vector Fill Color").value,fill))verified=false;
+            }
+            if(stroke){
+                var rs=readVectors.property(strokeIndex);if(!rs||rs.matchName!=="ADBE Vector Graphic - Stroke"
+                    ||!sameValue(rs.property("ADBE Vector Stroke Color").value,stroke)||Math.abs(rs.property("ADBE Vector Stroke Width").value-strokeWidth)>EPSILON)verified=false;
+            }
+        }
+        return {native_accepted:true,verification_status:verified?"verified_shape_readback":"accepted_unverified",retry_safe:false,
+            comp_id:comp.id,layer_id:layer.id,group_property_index:groupIndex,shape_property_index:shapeIndex,
+            fill_property_index:fillIndex,stroke_property_index:strokeIndex,kind:kind};
+    }
+    function textAnimatorPropertyAllowed(matchName) {
+        return matchName==="ADBE Text Opacity"||matchName==="ADBE Text Position 3D"||matchName==="ADBE Text Scale 3D"
+            ||matchName==="ADBE Text Rotation"||matchName==="ADBE Text Fill Color"||matchName==="ADBE Text Stroke Color";
+    }
+    function addTextAnimator(args) {
+        var comp=resolveComp(args.comp_id),layer=resolveLayer(comp,args.layer_id);
+        var text=layer.property("ADBE Text Properties"),animators=text?text.property("ADBE Text Animators"):null;
+        if(!animators||!animators.canAddProperty("ADBE Text Animator"))fail("Target layer cannot add text animators.");
+        if(animators.numProperties>64)fail("Text animator count exceeds 64-item bound.");
+        var propertyMatch=boundedString(args.property_match_name,160,"text animator property matchName");
+        if(!textAnimatorPropertyAllowed(propertyMatch))fail("Text animator property is outside Shuvi allowlist.");
+        var value=cloneValue(args.value);
+        var start=args.start_percent===undefined?0:args.start_percent,end=args.end_percent===undefined?100:args.end_percent,offset=args.offset_percent===undefined?0:args.offset_percent;
+        if(!finiteNumber(start)||!finiteNumber(end)||!finiteNumber(offset)||start<-10000||start>10000||end<-10000||end>10000||offset<-10000||offset>10000)
+            fail("Text animator range values exceed bounds.");
+        var before=animators.numProperties,animatorIndex,propertyIndex,selectorIndex;
+        app.beginUndoGroup("Shuvi: Add text animator");
+        try{
+            var animator=animators.addProperty("ADBE Text Animator");animatorIndex=animator.propertyIndex;
+            text=resolveLayer(comp,args.layer_id).property("ADBE Text Properties");animators=text.property("ADBE Text Animators");animator=animators.property(animatorIndex);
+            var props=animator.property("ADBE Text Animator Properties");
+            if(!props||!props.canAddProperty(propertyMatch))fail("Animator cannot add requested property.");
+            var property=props.addProperty(propertyMatch);propertyIndex=property.propertyIndex;
+            text=resolveLayer(comp,args.layer_id).property("ADBE Text Properties");animators=text.property("ADBE Text Animators");animator=animators.property(animatorIndex);
+            props=animator.property("ADBE Text Animator Properties");property=props.property(propertyIndex);property.setValue(value);
+            var selectors=animator.property("ADBE Text Selectors");
+            if(!selectors||!selectors.canAddProperty("ADBE Text Selector"))fail("Animator cannot add range selector.");
+            var selector=selectors.addProperty("ADBE Text Selector");selectorIndex=selector.propertyIndex;
+            text=resolveLayer(comp,args.layer_id).property("ADBE Text Properties");animators=text.property("ADBE Text Animators");animator=animators.property(animatorIndex);
+            selectors=animator.property("ADBE Text Selectors");selector=selectors.property(selectorIndex);
+            selector.property("ADBE Text Percent Start").setValue(start);
+            selector.property("ADBE Text Percent End").setValue(end);
+            selector.property("ADBE Text Percent Offset").setValue(offset);
+        }finally{app.endUndoGroup();}
+        layer=resolveLayer(comp,args.layer_id);text=layer.property("ADBE Text Properties");animators=text.property("ADBE Text Animators");
+        var readAnimator=animators.property(animatorIndex),readProps=readAnimator?readAnimator.property("ADBE Text Animator Properties"):null;
+        var readProperty=readProps?readProps.property(propertyIndex):null,readSelectors=readAnimator?readAnimator.property("ADBE Text Selectors"):null;
+        var readSelector=readSelectors?readSelectors.property(selectorIndex):null;
+        var verified=animators.numProperties===before+1&&readProperty&&readProperty.matchName===propertyMatch&&sameValue(readProperty.value,value)
+            &&readSelector&&Math.abs(readSelector.property("ADBE Text Percent Start").value-start)<=EPSILON
+            &&Math.abs(readSelector.property("ADBE Text Percent End").value-end)<=EPSILON
+            &&Math.abs(readSelector.property("ADBE Text Percent Offset").value-offset)<=EPSILON;
+        return {native_accepted:true,verification_status:verified?"verified_text_animator_readback":"accepted_unverified",retry_safe:false,
+            comp_id:comp.id,layer_id:layer.id,animator_property_index:animatorIndex,property_index:propertyIndex,
+            selector_property_index:selectorIndex,property_match_name:propertyMatch};
+    }
     function inspectRenderQueue() {
         var queue = requireProject().renderQueue;
         var items = [], i, limit = Math.min(queue.numItems, 256);
@@ -1103,6 +1225,7 @@
             || action === "set_layer_state" || action === "set_layer_parent"
             || action === "move_layer" || action === "set_track_matte" || action === "remove_track_matte"
             || action === "set_time_remap" || action === "replace_source" || action === "set_text_style" || action === "set_layer_timing"
+            || action === "add_shape_primitive" || action === "add_text_animator"
             || action === "set_keyframe_interpolation" || action === "set_keyframe_temporal_ease" || action === "remove_keyframe"
             || action === "duplicate_layer" || action === "remove_layer" || action === "precompose_layers"
             || action === "add_mask" || action === "add_scene_edit_markers" || action === "add_marker" || action === "remove_marker"
@@ -1150,6 +1273,8 @@
         if (action === "replace_source") return replaceSource(args);
         if (action === "set_text_style") return setTextStyle(args);
         if (action === "set_layer_timing") return setLayerTiming(args);
+        if (action === "add_shape_primitive") return addShapePrimitive(args);
+        if (action === "add_text_animator") return addTextAnimator(args);
         if (action === "set_keyframe_interpolation") return setKeyframeInterpolation(args);
         if (action === "set_keyframe_temporal_ease") return setKeyframeTemporalEase(args);
         if (action === "remove_keyframe") return removeKeyframe(args);
