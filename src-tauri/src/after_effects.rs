@@ -137,6 +137,7 @@ pub fn capability_report()->Value {
         "identity":{
             "project_item_id":"persistent_item_id",
             "layer_id":"persistent_layer_id_ae_22_plus",
+            "project_revision":"documented_read_only_revision_stale_guard",
             "property_identity":"match_name_plus_optional_property_index"
         },
         "features":{
@@ -230,7 +231,7 @@ pub fn readiness_report()->Value {
         "known_boundaries":{
             "native_motion_tracker_control":{"state":"unsupported_documented_surface","fallback":"external grounded tracking samples -> verified property keyframes"},
             "native_hand_detection":{"state":"not_provided_by_after_effects_scripting","fallback":"external detector required"},
-            "project_revision_counter":{"state":"not_available","guard":"exact saved project path plus persistent item/layer IDs and property matchName/index"},
+            "project_revision_counter":{"state":"documented_and_required_for_mutation","guard":"latest inspect_context project_revision must exactly match app.project.revision before dispatch; exact saved project path and persistent item/layer/property identity remain additional guards"},
             "long_running_render_execution":{"state":"source_implemented_timeout_becomes_execution_status_unknown","late_receipt_reconciliation":true},
             "uxp_transport":{"state":"reserved_not_current_transport"},
             "uncertain_dispatch":{"state":"durably_blocks_new_dispatch_until_valid_late_receipt_reconciliation"}
