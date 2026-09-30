@@ -381,3 +381,16 @@ test("AE project panel organization stays exact stale-guarded and blocks recursi
   assert.match(jsx,/Non-empty project folders cannot be removed automatically/);
   assert.match(jsx,/project\.itemByID\(id\)===null/);
 });
+
+
+test("AE hand-track rig planner filters smooths and emits only grounded host args",()=>{
+  assert.match(rust,/pub struct HandTrackRigPlan/);
+  assert.match(rust,/"hand_track_rig_planner":"source_supported_confidence_filter_ema_smoothing_gap_guard_to_ready_host_args"/);
+  assert.match(rust,/Confidence filtering removed every hand-track sample/);
+  assert.match(rust,/gap larger than max_gap_seconds/);
+  assert.match(rust,/alpha\*cur\+\(1\.0-alpha\)\*old/);
+  assert.match(rust,/"host_action":"apply_hand_track_rig"/);
+  assert.match(rust,/"native_hand_detection_claimed":false/);
+  assert.match(lib,/- after_effects_plan_hand_track_rig:/);
+  assert.match(lib,/AfterEffectsPlanHandTrackRig/);
+});
