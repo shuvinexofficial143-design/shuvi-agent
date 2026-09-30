@@ -10731,13 +10731,14 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }),
                 Duration::from_secs(45),
             ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_creation_identity");
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
-                stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value}))
+                stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value, "post_state_verified": verified, "retry_safe": false}))
                     .unwrap_or_else(|_| value.to_string()),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereInsertMogrtLibrary { library_name, element_name, seconds, video_track, audio_track } => {
@@ -10753,13 +10754,14 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }),
                 Duration::from_secs(45),
             ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_creation_identity");
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
-                stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value}))
+                stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value, "post_state_verified": verified, "retry_safe": false}))
                     .unwrap_or_else(|_| value.to_string()),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereBatchRelink { items } => {

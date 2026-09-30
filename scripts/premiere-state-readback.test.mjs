@@ -79,3 +79,23 @@ test("Premiere transitions stay accepted-unverified without independent presence
     assert.match(arm,/"retry_safe": false/);
   }
 });
+
+
+test("direct MOGRT insertion is success only after bounded before/after creation correlation",()=>{
+  const helper=uxp.slice(uxp.indexOf("async function verifyDirectMogrtInsertion"),uxp.indexOf("async function insertMogrtFromPath"));
+  assert.match(helper,/graphicsTrackSnapshot/);
+  assert.match(helper,/graphicsAdditions/);
+  assert.match(helper,/videoAdditions\.length === 1/);
+  assert.match(helper,/observedStart\?\.ticks === requestedTime\.ticks/);
+  assert.match(helper,/verificationStatus: verified \? "verified_creation_identity" : "accepted_unverified"/);
+  assert.match(helper,/retrySafe: false/);
+
+  for(const [name,next] of [["PremiereInsertMogrtPath","PremiereInsertMogrtLibrary"],["PremiereInsertMogrtLibrary","PremiereBatchRelink"]]){
+    const start=rust.lastIndexOf("ToolAction::"+name);
+    const end=rust.indexOf("\n        ToolAction::"+next,start);
+    const arm=rust.slice(start,end);
+    assert.match(arm,/verified_creation_identity/);
+    assert.match(arm,/success: verified/);
+    assert.match(arm,/"retry_safe": false/);
+  }
+});

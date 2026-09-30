@@ -3391,6 +3391,39 @@ function summarizeInsertedTrackItems(items) {
   }));
 }
 
+async function verifyDirectMogrtInsertion(project, sequence, videoTrack, audioTrack, requestedTime, beforeVideo, beforeAudio, items) {
+  const receipt = summarizeInsertedTrackItems(items);
+  let videoAdditions = [];
+  let audioAdditions = [];
+  let verificationError = null;
+  try {
+    const afterVideo = await graphicsTrackSnapshot(project, sequence, videoTrack, "video");
+    const afterAudio = await graphicsTrackSnapshot(project, sequence, audioTrack, "audio");
+    videoAdditions = graphicsAdditions(beforeVideo, afterVideo);
+    audioAdditions = graphicsAdditions(beforeAudio, afterAudio);
+  } catch (error) {
+    verificationError = String(error?.message || error).slice(0, 240);
+  }
+  const observedStart = videoAdditions.length === 1 ? videoAdditions[0].start : null;
+  const verified = verificationError == null
+    && receipt.length > 0
+    && receipt.length <= 8
+    && videoAdditions.length === 1
+    && audioAdditions.length <= 7
+    && observedStart?.ticks === requestedTime.ticks;
+  return {
+    receipt,
+    videoAddedCount: videoAdditions.length,
+    audioAddedCount: audioAdditions.length,
+    observedStartSeconds: observedStart?.seconds ?? null,
+    observedStartTicks: observedStart?.ticks ?? null,
+    verificationError,
+    verificationStatus: verified ? "verified_creation_identity" : "accepted_unverified",
+    uncertain: !verified,
+    retrySafe: false
+  };
+}
+
 async function insertMogrtFromPath(argumentsValue) {
   const path =
     typeof argumentsValue?.path === "string"
@@ -3414,26 +3447,35 @@ async function insertMogrtFromPath(argumentsValue) {
   if (!sequence) throw new Error("No active Premiere sequence.");
 
   const editor = premiere.SequenceEditor.getEditor(sequence);
+  const beforeVideo = await graphicsTrackSnapshot(project, sequence, videoTrack, "video");
+  const beforeAudio = await graphicsTrackSnapshot(project, sequence, audioTrack, "audio");
+  const requestedTime = premiere.TickTime.createWithSeconds(seconds);
   const items = await editor.insertMogrtFromPath(
     path,
-    premiere.TickTime.createWithSeconds(seconds),
+    requestedTime,
     videoTrack,
     audioTrack
   );
-
-  const inserted = summarizeInsertedTrackItems(items);
-  if (!inserted.length) {
-    throw new Error("Premiere did not insert the requested MOGRT.");
-  }
+  const verification = await verifyDirectMogrtInsertion(
+    project, sequence, videoTrack, audioTrack, requestedTime, beforeVideo, beforeAudio, items
+  );
 
   return {
-    inserted: true,
+    inserted: verification.verificationStatus === "verified_creation_identity" ? true : null,
     source: "path",
     path,
     seconds,
     videoTrack,
     audioTrack,
-    items: inserted
+    items: verification.receipt,
+    videoAddedCount: verification.videoAddedCount,
+    audioAddedCount: verification.audioAddedCount,
+    observedStartSeconds: verification.observedStartSeconds,
+    observedStartTicks: verification.observedStartTicks,
+    verificationError: verification.verificationError,
+    verificationStatus: verification.verificationStatus,
+    uncertain: verification.uncertain,
+    retrySafe: false
   };
 }
 
@@ -3466,28 +3508,37 @@ async function insertMogrtFromLibrary(argumentsValue) {
   if (!sequence) throw new Error("No active Premiere sequence.");
 
   const editor = premiere.SequenceEditor.getEditor(sequence);
+  const beforeVideo = await graphicsTrackSnapshot(project, sequence, videoTrack, "video");
+  const beforeAudio = await graphicsTrackSnapshot(project, sequence, audioTrack, "audio");
+  const requestedTime = premiere.TickTime.createWithSeconds(seconds);
   const items = await editor.insertMogrtFromLibrary(
     libraryName,
     elementName,
-    premiere.TickTime.createWithSeconds(seconds),
+    requestedTime,
     videoTrack,
     audioTrack
   );
-
-  const inserted = summarizeInsertedTrackItems(items);
-  if (!inserted.length) {
-    throw new Error("Premiere did not insert the requested library MOGRT.");
-  }
+  const verification = await verifyDirectMogrtInsertion(
+    project, sequence, videoTrack, audioTrack, requestedTime, beforeVideo, beforeAudio, items
+  );
 
   return {
-    inserted: true,
+    inserted: verification.verificationStatus === "verified_creation_identity" ? true : null,
     source: "library",
     libraryName,
     elementName,
     seconds,
     videoTrack,
     audioTrack,
-    items: inserted
+    items: verification.receipt,
+    videoAddedCount: verification.videoAddedCount,
+    audioAddedCount: verification.audioAddedCount,
+    observedStartSeconds: verification.observedStartSeconds,
+    observedStartTicks: verification.observedStartTicks,
+    verificationError: verification.verificationError,
+    verificationStatus: verification.verificationStatus,
+    uncertain: verification.uncertain,
+    retrySafe: false
   };
 }
 
