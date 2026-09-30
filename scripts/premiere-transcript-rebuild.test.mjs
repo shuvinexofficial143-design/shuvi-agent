@@ -67,7 +67,11 @@ test('snapshot is exact, bounded for Unicode, and changes with source or transcr
 
 function fakeApi(options={}) {
   const o=observed(),calls=[];let serial=0;
-  const api={inspect:async()=>plain(o),subclip:async args=>{calls.push(['subclip',args]);return options.correlation===false?{correlationVerified:false}:{correlationVerified:true,createdItemId:'sub-'+(++serial)};},
+  const api={inspect:async()=>plain(o),subclip:async args=>{calls.push(['subclip',args]);
+      if(options.correlation===false)return {correlationVerified:false};
+      return {correlationVerified:true,boundarySemanticsVerified:options.bounds!==false,
+        sourceBoundsVerified:options.bounds!==false,mediaSelectionVerified:options.media!==false,
+        createdItemId:'sub-'+(++serial)};},
     insert:async(args,guid)=>{calls.push(['insert',args,guid]);if(options.fail)throw Error('lost native reply');
       const r=options.request||request(),p=plan(r),piece=p.keep_ranges[serial-1];
       for(const kind of ['video',...(r.take_audio?['audio']:[])]) o.destination.rows.push({kind,track:0,item_id:args.itemId,start:piece.destination_range[0],end:piece.destination_range[1]});
@@ -93,7 +97,7 @@ test('changed destination after subclip stops before insertion without retry',as
   const result=await f.workflow.step(b.id,1);assert.equal(result.status,'failed');assert.equal(result.uncertain,false);assert.equal(f.calls.length,1);
   await assert.rejects(()=>f.workflow.step(b.id,1),/already attempted/);
 });
-for(const option of [{correlation:false},{fail:true},{ambiguous:true}])test(`partial/uncertain stop ${JSON.stringify(option)}`,async()=>{
+for(const option of [{correlation:false},{bounds:false},{media:false},{fail:true},{ambiguous:true}])test(`partial/uncertain stop ${JSON.stringify(option)}`,async()=>{
   const f=fakeApi(option),r=request(),p=await f.workflow.plan(r),b=await f.workflow.begin(r,p.plan_snapshot);
   let result=await f.workflow.step(b.id,0);if(result.status==='applied')result=await f.workflow.step(b.id,1);
   assert.equal(result.status,'failed');assert.equal(result.uncertain,true);await assert.rejects(()=>f.workflow.step(b.id,2));
