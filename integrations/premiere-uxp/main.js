@@ -4510,7 +4510,8 @@ async function applyAudioRecipe(argumentsValue) {
 
     project = project || target.project;
 
-    const value = setting.value;
+    const requestedValue = setting.value;
+    const value = nativeEffectValue(requestedValue);
     const hasSeconds = setting.seconds != null;
     const seconds = hasSeconds ? Number(setting.seconds) : null;
 
