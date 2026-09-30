@@ -176,6 +176,10 @@ pub fn capability_report()->Value {
             "keyframe_remove":"source_supported_with_time_stale_guard_and_delta_readback",
             "keyframe_temporal_ease":"source_supported_with_dimension_bound_speed_influence_readback",
             "layer_timing":"source_supported_with_start_in_out_stretch_readback",
+            "effect_remove":"source_supported_with_ordered_inventory_delta",
+            "marker_inspection":"source_supported_bounded_readback",
+            "marker_add":"source_supported_with_time_value_delta_readback",
+            "marker_remove":"source_supported_with_time_comment_stale_guard",
             "runtime_verified":"not_verified"
         },
         "safety":[
