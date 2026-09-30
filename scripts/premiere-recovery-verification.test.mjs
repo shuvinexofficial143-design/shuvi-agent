@@ -31,3 +31,11 @@ test("recovery reobserves the exact pre-edit timeline state",()=>{
   assert.match(execution,/exact pre-edit clip\/timeline state/);
   assert.match(execution,/recovery_requires_checkpoint_project_and_exact_pre_edit_state/);
 });
+
+test("checkpoint retention scan and reservation are serialized",()=>{
+  const create=checkpoint.slice(checkpoint.indexOf("pub fn create_checkpoint("),checkpoint.indexOf("pub fn verify_checkpoint("));
+  assert.match(checkpoint,/static CHECKPOINT_IO: std::sync::Mutex<\(\)>/);
+  assert.match(create,/CHECKPOINT_IO\.lock\(\)/);
+  assert.ok(create.indexOf("CHECKPOINT_IO.lock()") < create.indexOf("fs::read_dir(&directory)"));
+  assert.ok(create.indexOf("CHECKPOINT_IO.lock()") < create.indexOf("create_new(true).open(&backup)"));
+});

@@ -7,6 +7,7 @@ const MAX_BACKUP_FILES: usize = 1000;
 const MAX_BACKUP_BYTES: u64 = 20 * 1024 * 1024 * 1024;
 const FNV_OFFSET: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x100000001b3;
+static CHECKPOINT_IO: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn fingerprint_reader<R: Read>(reader: &mut R, limit: u64) -> Result<(u64,u64),String> {
     let mut total=0_u64;
@@ -30,6 +31,7 @@ fn fingerprint_reader<R: Read>(reader: &mut R, limit: u64) -> Result<(u64,u64),S
 /// Fail closed. Never overwrite a checkpoint, remove an old backup, or load a
 /// large project into RAM. The returned path remains compatible with callers.
 pub fn create_checkpoint(source: &Path, timestamp_ms: u64) -> Result<String, String> {
+    let _io = CHECKPOINT_IO.lock().map_err(|_| "Premiere checkpoint lock unavailable.")?;
     if !source.is_absolute() || !source.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("prproj")) {
         return Err("Save the active Premiere project to an absolute .prproj path before editing.".into());
     }
