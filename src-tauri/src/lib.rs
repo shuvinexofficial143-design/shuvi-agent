@@ -8466,7 +8466,10 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 for seconds in &sample_times {
                     if state.finishing_cancelled.load(Ordering::Acquire) { break; }
                     let observation = async {
-                        premiere_bridge.request("set_playhead", json!({"seconds":seconds}), Duration::from_secs(8)).await?;
+                        let positioned=premiere_bridge.request("set_playhead", json!({"seconds":seconds}), Duration::from_secs(8)).await?;
+                        if positioned.get("verificationStatus").and_then(Value::as_str)!=Some("verified_readback") {
+                            return Err("Premiere playhead readback did not confirm the finishing review frame.".into());
+                        }
                         tokio::time::sleep(Duration::from_millis(350)).await;
                         let path = capture_screen_png()?;
                         let analysis = analyze_png_with_provider(
@@ -8673,7 +8676,10 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 if let Some(provider) = &provider {
                     for seconds in &sample_times {
                         let observation = async {
-                            post_client.request("set_playhead",json!({"seconds":seconds}),Duration::from_secs(8)).await?;
+                            let positioned=post_client.request("set_playhead",json!({"seconds":seconds}),Duration::from_secs(8)).await?;
+                            if positioned.get("verificationStatus").and_then(Value::as_str)!=Some("verified_readback") {
+                                return Err("Premiere playhead readback did not confirm the post-finishing review frame.".into());
+                            }
                             tokio::time::sleep(Duration::from_millis(350)).await;
                             let path = capture_screen_png()?;
                             let analysis = analyze_png_with_provider(
@@ -9105,20 +9111,24 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 json!({ "seconds": seconds }),
                 Duration::from_secs(8),
             ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
-                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stdout: json!({"result":value,"position_verified":verified,"retry_safe":true}).to_string(),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereInspectFrame { seconds, prompt, provider } => {
-            premiere_bridge.request(
+            let positioned=premiere_bridge.request(
                 "set_playhead",
                 json!({ "seconds": seconds }),
                 Duration::from_secs(8),
             ).await?;
+            if positioned.get("verificationStatus").and_then(Value::as_str)!=Some("verified_readback") {
+                return Err("Premiere playhead readback did not confirm the requested inspection frame.".into());
+            }
 
             tokio::time::sleep(Duration::from_millis(450)).await;
 
@@ -9146,11 +9156,14 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
 
             for seconds in seconds {
                 let review = async {
-                    premiere_bridge.request(
+                    let positioned=premiere_bridge.request(
                         "set_playhead",
                         json!({ "seconds": seconds }),
                         Duration::from_secs(8),
                     ).await?;
+                    if positioned.get("verificationStatus").and_then(Value::as_str)!=Some("verified_readback") {
+                        return Err("Premiere playhead readback did not confirm the requested review frame.".into());
+                    }
 
                     tokio::time::sleep(Duration::from_millis(450)).await;
 
@@ -9593,7 +9606,10 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }
                 session.model_calls += 1;
                 premiere_review::save(&path,&session)?;
-                premiere_bridge.request("set_playhead",json!({"seconds":seconds}),Duration::from_secs(8)).await?;
+                let positioned=premiere_bridge.request("set_playhead",json!({"seconds":seconds}),Duration::from_secs(8)).await?;
+                if positioned.get("verificationStatus").and_then(Value::as_str)!=Some("verified_readback") {
+                    return Err("Premiere playhead readback did not confirm the review-session frame.".into());
+                }
                 tokio::time::sleep(Duration::from_millis(450)).await;
                 let screenshot=capture_screen_png()?;
                 let prompt=format!("Review the Premiere frame at {:.3}s for objective: {}. Context: {}. Return ONLY JSON {{\"iteration\":{},\"issues\":[{{\"id\":\"unique short id\",\"category\":\"exposure|color|framing|continuity|motion|transition|graphics|caption|audio_visual|other\",\"severity\":\"low|medium|high\",\"confidence\":0.8,\"frame_seconds\":[{}],\"observation\":\"visible evidence\",\"suggested_action_type\":\"typed suggestion\"}}],\"overall_confidence\":0.8,\"stop_recommended\":false}}. Max 4 issues, no unsupported claims.",seconds,session.objective,session.reference,session.iteration,seconds);

@@ -1465,10 +1465,23 @@ async function setPlayhead(argumentsValue) {
 
   if (!success) throw new Error("Premiere could not move the playhead.");
 
+  let observedSeconds = null;
+  try {
+    const observed = await sequence.getPlayerPosition();
+    observedSeconds = Number.isFinite(observed?.seconds) ? observed.seconds : null;
+  } catch {
+    observedSeconds = null;
+  }
+  const verified = observedSeconds != null && Math.abs(observedSeconds-seconds) <= 0.001;
+
   return {
     moved: true,
     sequenceName: sequence.name || null,
-    seconds
+    seconds,
+    observedSeconds,
+    verificationStatus: verified ? "verified_readback" : "accepted_unverified",
+    uncertain: !verified,
+    retrySafe: true
   };
 }
 

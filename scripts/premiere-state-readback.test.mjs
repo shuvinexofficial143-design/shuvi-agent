@@ -41,3 +41,20 @@ test("desktop refuses success when simple Premiere state readback is unverified"
     assert.match(arm,/retry_safe/);
   }
 });
+
+test("playhead movement and vision review require exact native position readback",()=>{
+  const playhead=uxp.slice(uxp.indexOf("async function setPlayhead"),uxp.indexOf("async function setTrackMute"));
+  assert.match(playhead,/getPlayerPosition\(\)/);
+  assert.match(playhead,/Math\.abs\(observedSeconds-seconds\) <= 0\.001/);
+  assert.match(playhead,/verificationStatus: verified \? "verified_readback" : "accepted_unverified"/);
+  const directStart=rust.lastIndexOf("ToolAction::PremiereSetPlayhead");
+  const directEnd=rust.indexOf("\n        ToolAction::PremiereInspectFrame",directStart);
+  const direct=rust.slice(directStart,directEnd);
+  assert.match(direct,/verified_readback/);
+  assert.match(direct,/success: verified/);
+  assert.match(rust,/playhead readback did not confirm the requested inspection frame/);
+  assert.match(rust,/playhead readback did not confirm the requested review frame/);
+  assert.match(rust,/playhead readback did not confirm the finishing review frame/);
+  assert.match(rust,/playhead readback did not confirm the post-finishing review frame/);
+  assert.match(rust,/playhead readback did not confirm the review-session frame/);
+});
