@@ -428,3 +428,18 @@ test("AE audio gain and envelope workflows preserve existing automation",()=>{
   assert.notEqual(start,-1);
   assert.match(jsx.slice(start,next<0?jsx.length:next),/retry_safe:false/);
 });
+
+
+test("AE 26.5 layer-input render-stage control uses source identity and cycle-safe limits",()=>{
+  assert.match(transport,/"inspect_layer_input_stage"/);
+  assert.match(transport,/"set_layer_input_stage"/);
+  assert.match(rust,/"layer_input_stage_26_5":"source_supported_same_source_stage_change_with_layer_id_stale_guard_cycle_safe_limit_and_readback"/);
+  assert.match(jsx,/PropertyValueType\.LAYER_INDEX/);
+  assert.match(jsx,/LayerInputStageType/);
+  assert.match(jsx,/getInputStageCycleSafeLimit/);
+  assert.match(jsx,/Layer input source stale guard changed/);
+  assert.match(jsx,/Layer input stage stale guard changed/);
+  assert.match(jsx,/Requested layer input stage exceeds current cycle-safe limit/);
+  assert.match(jsx,/setLayerInputStage\(requested\)/);
+  assert.match(jsx,/verified_layer_input_stage_readback/);
+});
