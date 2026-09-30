@@ -115,6 +115,13 @@
             var entry={key_index:i,time_seconds:p.keyTime(i),value:cloneValue(p.keyValue(i)),
                 in_interpolation:String(p.keyInInterpolationType(i)),out_interpolation:String(p.keyOutInterpolationType(i))};
             try{entry.in_ease=easeSnapshot(p.keyInTemporalEase(i));entry.out_ease=easeSnapshot(p.keyOutTemporalEase(i));}catch(ignore){}
+            try{
+                entry.in_spatial_tangent=cloneValue(p.keyInSpatialTangent(i));
+                entry.out_spatial_tangent=cloneValue(p.keyOutSpatialTangent(i));
+                entry.spatial_auto_bezier=!!p.keySpatialAutoBezier(i);
+                entry.spatial_continuous=!!p.keySpatialContinuous(i);
+                entry.roving=!!p.keyRoving(i);
+            }catch(ignoreSpatial){}
             keys.push(entry);
         }
         return {verification_status:"verified_readback",comp_id:resolved.comp.id,layer_id:resolved.layer.id,
@@ -1224,6 +1231,80 @@
         return {native_accepted:true,verification_status:verified?"verified_temporal_ease_readback":"accepted_unverified",retry_safe:verified,
             comp_id:resolved.comp.id,layer_id:resolved.layer.id,key_index:index,key_time:time,in_ease:afterIn,out_ease:afterOut};
     }
+    function spatialVector(value,label,dimensions) {
+        if(!(value instanceof Array)||value.length!==dimensions)fail(label+" must contain exactly "+dimensions+" finite values.");
+        var out=[],i;
+        for(i=0;i<value.length;i++){
+            if(!finiteNumber(value[i])||Math.abs(value[i])>1000000)fail(label+" contains invalid or unbounded values.");
+            out.push(value[i]);
+        }
+        return out;
+    }
+    function sameVector(a,b) {
+        if(!(a instanceof Array)||!(b instanceof Array)||a.length!==b.length)return false;
+        var i;for(i=0;i<a.length;i++)if(Math.abs(a[i]-b[i])>EPSILON)return false;
+        return true;
+    }
+    function setKeyframeSpatial(args) {
+        var resolved=resolveProperty(args.property),p=resolved.property,index=args.key_index,expected=args.expected_time_seconds;
+        if(!finiteNumber(index)||Math.floor(index)!==index||index<1||index>p.numKeys
+            ||!finiteNumber(expected)||expected<0||expected>10800) {
+            fail("set_keyframe_spatial requires valid key_index and expected_time_seconds.");
+        }
+        var keyTime=p.keyTime(index);
+        if(Math.abs(keyTime-expected)>EPSILON)fail("Spatial keyframe time stale guard changed.");
+        var type=p.propertyValueType;
+        var dimensions=type===PropertyValueType.TwoD_SPATIAL?2:type===PropertyValueType.ThreeD_SPATIAL?3:0;
+        if(dimensions===0)fail("Target property is not a TwoD_SPATIAL or ThreeD_SPATIAL property.");
+
+        var hasTangents=args.in_tangent!==undefined||args.out_tangent!==undefined;
+        var hasAuto=args.auto_bezier!==undefined,hasContinuous=args.continuous!==undefined,hasRoving=args.roving!==undefined;
+        if(!hasTangents&&!hasAuto&&!hasContinuous&&!hasRoving)fail("set_keyframe_spatial requires at least one spatial field.");
+        if(hasAuto&&typeof args.auto_bezier!=="boolean")fail("auto_bezier must be boolean.");
+        if(hasContinuous&&typeof args.continuous!=="boolean")fail("continuous must be boolean.");
+        if(hasRoving&&typeof args.roving!=="boolean")fail("roving must be boolean.");
+        if(hasTangents&&args.auto_bezier===true)fail("Explicit spatial tangents cannot be combined with auto_bezier=true in one guarded mutation.");
+        if(args.roving===true&&(index===1||index===p.numKeys))fail("First and last spatial keyframes cannot rove.");
+
+        var requestedIn=null,requestedOut=null;
+        if(hasTangents){
+            var currentIn=cloneValue(p.keyInSpatialTangent(index)),currentOut=cloneValue(p.keyOutSpatialTangent(index));
+            requestedIn=args.in_tangent===undefined?currentIn:spatialVector(args.in_tangent,"in_tangent",dimensions);
+            requestedOut=args.out_tangent===undefined?currentOut:spatialVector(args.out_tangent,"out_tangent",dimensions);
+        }
+        var before={
+            in_tangent:cloneValue(p.keyInSpatialTangent(index)),
+            out_tangent:cloneValue(p.keyOutSpatialTangent(index)),
+            auto_bezier:!!p.keySpatialAutoBezier(index),
+            continuous:!!p.keySpatialContinuous(index),
+            roving:!!p.keyRoving(index)
+        };
+
+        app.beginUndoGroup("Shuvi: Set spatial keyframe");
+        try{
+            if(hasTangents)p.setSpatialTangentsAtKey(index,requestedIn,requestedOut);
+            if(hasContinuous)p.setSpatialContinuousAtKey(index,args.continuous);
+            if(hasAuto)p.setSpatialAutoBezierAtKey(index,args.auto_bezier);
+            if(hasRoving)p.setRovingAtKey(index,args.roving);
+        }finally{app.endUndoGroup();}
+
+        resolved=resolveProperty(args.property);p=resolved.property;
+        if(index>p.numKeys||Math.abs(p.keyTime(index)-expected)>EPSILON)fail("Spatial keyframe identity changed during mutation.");
+        var after={
+            in_tangent:cloneValue(p.keyInSpatialTangent(index)),
+            out_tangent:cloneValue(p.keyOutSpatialTangent(index)),
+            auto_bezier:!!p.keySpatialAutoBezier(index),
+            continuous:!!p.keySpatialContinuous(index),
+            roving:!!p.keyRoving(index)
+        };
+        var verified=true;
+        if(hasTangents&&(!sameVector(after.in_tangent,requestedIn)||!sameVector(after.out_tangent,requestedOut)))verified=false;
+        if(hasAuto&&after.auto_bezier!==args.auto_bezier)verified=false;
+        if(hasContinuous&&after.continuous!==args.continuous)verified=false;
+        if(hasRoving&&after.roving!==args.roving)verified=false;
+        return {native_accepted:true,verification_status:verified?"verified_spatial_keyframe_readback":"accepted_unverified",retry_safe:verified,
+            comp_id:resolved.comp.id,layer_id:resolved.layer.id,key_index:index,key_time:expected,dimensions:dimensions,before:before,after:after};
+    }
     function setLayerTiming(args) {
         var comp=resolveComp(args.comp_id),layer=resolveLayer(comp,args.layer_id);
         if(layer.locked)fail("Layer is locked; timing mutation refused.");
@@ -1667,7 +1748,7 @@
             || action === "set_time_remap" || action === "replace_source" || action === "relink_footage" || action === "set_proxy" || action === "remove_proxy"
             || action === "set_av_layer_flags" || action === "set_text_style" || action === "set_layer_timing"
             || action === "add_shape_primitive" || action === "add_text_animator"
-            || action === "set_keyframe_interpolation" || action === "set_keyframe_temporal_ease" || action === "remove_keyframe"
+            || action === "set_keyframe_interpolation" || action === "set_keyframe_temporal_ease" || action === "set_keyframe_spatial" || action === "remove_keyframe"
             || action === "duplicate_layer" || action === "remove_layer" || action === "precompose_layers"
             || action === "add_mask" || action === "edit_mask" || action === "remove_mask" || action === "add_scene_edit_markers" || action === "add_marker" || action === "remove_marker"
             || action === "add_render_queue_item" || action === "render_queue" || action === "save_project";
@@ -1727,6 +1808,7 @@
         if (action === "add_text_animator") return addTextAnimator(args);
         if (action === "set_keyframe_interpolation") return setKeyframeInterpolation(args);
         if (action === "set_keyframe_temporal_ease") return setKeyframeTemporalEase(args);
+        if (action === "set_keyframe_spatial") return setKeyframeSpatial(args);
         if (action === "remove_keyframe") return removeKeyframe(args);
         if (action === "duplicate_layer") return duplicateLayer(args);
         if (action === "remove_layer") return removeLayer(args);
