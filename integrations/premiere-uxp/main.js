@@ -3888,6 +3888,10 @@ async function applyVideoRecipe(argumentsValue) {
 
       prepared.push({
         action: target.param.createAddKeyframeAction(keyframe),
+        param: target.param,
+        keyframe,
+        requestedValue: value,
+        readbackKind: "keyframe",
         summary: {
           componentIndex: target.componentIndex,
           componentMatchName: target.componentMatchName,
@@ -3909,6 +3913,10 @@ async function applyVideoRecipe(argumentsValue) {
       const keyframe = await target.param.createKeyframe(value);
       prepared.push({
         action: target.param.createSetValueAction(keyframe, true),
+        param: target.param,
+        keyframe: null,
+        requestedValue: value,
+        readbackKind: "static",
         summary: {
           componentIndex: target.componentIndex,
           componentMatchName: target.componentMatchName,
@@ -3937,6 +3945,20 @@ async function applyVideoRecipe(argumentsValue) {
     throw new Error("Premiere rejected the video parameter recipe transaction.");
   }
 
+  const settingReadbacks = [];
+  for (const entry of prepared) {
+    if (entry.summary == null) continue;
+    const readback = entry.readbackKind === "keyframe"
+      ? await readAddedKeyframe(entry.param, entry.keyframe, entry.requestedValue)
+      : await readStaticEffectValue(entry.param, entry.requestedValue);
+    settingReadbacks.push({...entry.summary, ...readback});
+  }
+  const verified = settingReadbacks.length === settings.length
+    && settingReadbacks.every(entry =>
+      entry.verificationStatus === "verified_readback"
+      || entry.verificationStatus === "verified_keyframe"
+    );
+
   return {
     applied: true,
     track: trackIndex,
@@ -3944,7 +3966,11 @@ async function applyVideoRecipe(argumentsValue) {
     settingCount: settings.length,
     settings: prepared
       .map((entry) => entry.summary)
-      .filter((entry) => entry != null)
+      .filter((entry) => entry != null),
+    settingReadbacks,
+    verificationStatus: verified ? "verified_recipe" : "accepted_unverified",
+    uncertain: !verified,
+    retrySafe: false
   };
 }
 
@@ -4005,6 +4031,10 @@ async function applyAudioRecipe(argumentsValue) {
 
       prepared.push({
         action: target.param.createAddKeyframeAction(keyframe),
+        param: target.param,
+        keyframe,
+        requestedValue: value,
+        readbackKind: "keyframe",
         summary: {
           componentIndex: target.componentIndex,
           componentMatchName: target.componentMatchName,
@@ -4026,6 +4056,10 @@ async function applyAudioRecipe(argumentsValue) {
       const keyframe = await target.param.createKeyframe(value);
       prepared.push({
         action: target.param.createSetValueAction(keyframe, true),
+        param: target.param,
+        keyframe: null,
+        requestedValue: value,
+        readbackKind: "static",
         summary: {
           componentIndex: target.componentIndex,
           componentMatchName: target.componentMatchName,
@@ -4054,6 +4088,20 @@ async function applyAudioRecipe(argumentsValue) {
     throw new Error("Premiere rejected the audio parameter recipe transaction.");
   }
 
+  const settingReadbacks = [];
+  for (const entry of prepared) {
+    if (entry.summary == null) continue;
+    const readback = entry.readbackKind === "keyframe"
+      ? await readAddedKeyframe(entry.param, entry.keyframe, entry.requestedValue)
+      : await readStaticEffectValue(entry.param, entry.requestedValue);
+    settingReadbacks.push({...entry.summary, ...readback});
+  }
+  const verified = settingReadbacks.length === settings.length
+    && settingReadbacks.every(entry =>
+      entry.verificationStatus === "verified_readback"
+      || entry.verificationStatus === "verified_keyframe"
+    );
+
   return {
     applied: true,
     track: trackIndex,
@@ -4061,7 +4109,11 @@ async function applyAudioRecipe(argumentsValue) {
     settingCount: settings.length,
     settings: prepared
       .map((entry) => entry.summary)
-      .filter((entry) => entry != null)
+      .filter((entry) => entry != null),
+    settingReadbacks,
+    verificationStatus: verified ? "verified_recipe" : "accepted_unverified",
+    uncertain: !verified,
+    retrySafe: false
   };
 }
 

@@ -5,6 +5,8 @@ import assert from "node:assert/strict";
 const context = {module: {exports: {}}}; vm.createContext(context);
 vm.runInContext(readFileSync(new URL("../integrations/premiere-uxp/recipe-plans.js", import.meta.url), "utf8"), context);
 const {buildRecipePlan, COLOR} = context.module.exports;
+const uxpSource=readFileSync(new URL("../integrations/premiere-uxp/main.js", import.meta.url), "utf8");
+const rustSource=readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
 const binding = (role, extra = {}) => ({role, component_match_name: "exact", param_display_name: role, start_value: 100, end_value: 110, keyframesSupported: true, timeVarying: false, ...extra});
 
 test("zoom uses discovered selectors and native values without applying anything", () => {
@@ -43,4 +45,31 @@ test("invalid direction, times, strength, selectors and units fail", () => {
  assert.throws(() => buildRecipePlan({preset: "natural_correction"}, [binding("contrast", {current: 0})]), /unit/);
  assert.throws(() => buildRecipePlan({preset: "natural_correction"}, [binding("contrast"), binding("contrast")]), /Duplicate/);
  assert.throws(() => buildRecipePlan({preset: "unknown"}, []), /Unknown/);
+});
+
+
+test("recipe application verifies every native setting readback",()=>{
+ const video=uxpSource.slice(uxpSource.indexOf("async function applyVideoRecipe"),uxpSource.indexOf("async function applyAudioRecipe"));
+ const audio=uxpSource.slice(uxpSource.indexOf("async function applyAudioRecipe"),uxpSource.indexOf("async function rollEdit"));
+ for(const body of [video,audio]){
+  assert.match(body,/settingReadbacks/);
+  assert.match(body,/readAddedKeyframe/);
+  assert.match(body,/readStaticEffectValue/);
+  assert.match(body,/settingReadbacks\.length === settings\.length/);
+  assert.match(body,/verificationStatus: verified \? "verified_recipe" : "accepted_unverified"/);
+  assert.match(body,/retrySafe: false/);
+ }
+});
+
+test("desktop recipe callers do not promote accepted-unverified mutations",()=>{
+ for(const name of ["PremiereApplyVideoRecipe","PremiereApplyAudioRecipe","PremierePopulateMogrt","PremiereTranscriptDucking","PremiereApplySavedRecipe"]){
+  const start=rustSource.lastIndexOf("ToolAction::"+name);
+  const end=rustSource.indexOf("\n        ToolAction::Premiere",start+10);
+  const arm=rustSource.slice(start,end);
+  assert.match(arm,/verified_recipe/);
+  assert.match(arm,/success:\s*verified/);
+ }
+ const batch=rustSource.slice(rustSource.lastIndexOf("ToolAction::PremiereApplySavedRecipeBatch"),rustSource.indexOf("\n        ToolAction::PremiereDeleteRecipe",rustSource.lastIndexOf("ToolAction::PremiereApplySavedRecipeBatch")));
+ assert.match(batch,/uncertain":!verified/);
+ assert.match(batch,/if !verified/);
 });

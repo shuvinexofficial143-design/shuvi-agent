@@ -8829,7 +8829,10 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let settings=plan.get("settings").and_then(Value::as_array).filter(|v|!v.is_empty()&&v.len()<=64).ok_or("Ducking plan has no bounded executable keyframes.")?;
             let backup=backup_premiere_project(&premiere_bridge).await?;
             let value=premiere_bridge.request("apply_audio_recipe",json!({"track":target.track,"clipIndex":target.clip_index,"settings":settings}),Duration::from_secs(45)).await?;
-            Ok(ActionResult{success:true,tool,stdout:json!({"backup":backup,"result":value,"transcript_item_id":item_id,"dialogue_regions":request.regions.len(),"native_reinspection_recommended":true}).to_string(),stderr:String::new(),exit_code:Some(0)})
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_recipe");
+            Ok(ActionResult{success:verified,tool,stdout:json!({"backup":backup,"result":value,"transcript_item_id":item_id,
+                "dialogue_regions":request.regions.len(),"post_state_verified":verified,"retry_safe":false}).to_string(),
+                stderr:String::new(),exit_code:Some(if verified{0}else{1})})
         }
         ToolAction::PremiereTranscriptCuts { request, apply, transcript_snapshot } => {
             let transcript = premiere_bridge.request(
@@ -8992,7 +8995,9 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             }
             let backup=backup_premiere_project(&premiere_bridge).await?;
             let result=premiere_bridge.request("apply_video_recipe",json!({"track":track,"clipIndex":clip_index,"settings":settings}),Duration::from_secs(45)).await?;
-            Ok(ActionResult{success:true,tool,stdout:json!({"backup":backup,"result":result,"field_count":settings.len(),"native_reinspection_recommended":true}).to_string(),stderr:String::new(),exit_code:Some(0)})
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_recipe");
+            Ok(ActionResult{success:verified,tool,stdout:json!({"backup":backup,"result":result,"field_count":settings.len(),
+                "post_state_verified":verified,"retry_safe":false}).to_string(),stderr:String::new(),exit_code:Some(if verified{0}else{1})})
         }
         ToolAction::PremierePlanMogrtRecipe { track, clip_index, request } => {
             let mut value = premiere_bridge.request("plan_mogrt_recipe", json!({"track":track,"clipIndex":clip_index,"request":request}), Duration::from_secs(30)).await?;
@@ -9832,14 +9837,14 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }),
                 Duration::from_secs(45),
             ).await?;
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_recipe");
 
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
-                stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": result}))
-                    .unwrap_or_else(|_| result.to_string()),
+                stdout: json!({"backup":backup,"result":result,"post_state_verified":verified,"retry_safe":false}).to_string(),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereListAudioEffects => {
@@ -10012,14 +10017,14 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }),
                 Duration::from_secs(45),
             ).await?;
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_recipe");
 
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
-                stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": result}))
-                    .unwrap_or_else(|_| result.to_string()),
+                stdout: json!({"backup":backup,"result":result,"post_state_verified":verified,"retry_safe":false}).to_string(),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereListSavedRecipes => {
@@ -10083,18 +10088,17 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }),
                 Duration::from_secs(45),
             ).await?;
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_recipe");
 
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
-                stdout: serde_json::to_string_pretty(&json!({
-                    "recipe": recipe.name,
-                    "kind": recipe.kind,
-                    "backup": backup,
-                    "result": result
-                })).unwrap_or_else(|_| result.to_string()),
+                stdout: json!({
+                    "recipe":recipe.name,"kind":recipe.kind,"backup":backup,"result":result,
+                    "post_state_verified":verified,"retry_safe":false
+                }).to_string(),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereApplySavedRecipeBatch { name, targets } => {
@@ -10132,12 +10136,17 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     }),
                     Duration::from_secs(45),
                 ).await {
-                    Ok(result) => results.push(json!({
-                        "track": track,
-                        "clipIndex": clip_index,
-                        "success": true,
-                        "result": result
-                    })),
+                    Ok(result) => {
+                        let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_recipe");
+                        results.push(json!({
+                            "track":track,"clipIndex":clip_index,"success":verified,
+                            "uncertain":!verified,"result":result
+                        }));
+                        if !verified {
+                            failures += 1;
+                            break;
+                        }
+                    },
                     Err(error) => {
                         failures += 1;
                         results.push(json!({
@@ -10169,7 +10178,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 stderr: if failures == 0 && results.len() == total {
                     String::new()
                 } else {
-                    format!("{failures} of {total} Premiere recipe applications failed; successful earlier targets were not rolled back.")
+                    format!("{failures} of {total} Premiere recipe applications failed or remained unverified; successful earlier targets were not rolled back.")
                 },
                 exit_code: Some(if failures == 0 && results.len() == total { 0 } else { 1 }),
             })
