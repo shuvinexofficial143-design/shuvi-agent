@@ -47,6 +47,10 @@ pub async fn execute(
         let path=request.expected_project_file.as_deref().ok_or("Mutating AE request missing project expectation.")?;
         Some(crate::after_effects_checkpoint::create(Path::new(path),crate::now_ms())?)
     }else{None};
+    let save_before=if request.action=="save_project" {
+        let path=request.expected_project_file.as_deref().ok_or("After Effects save requires expected project file.")?;
+        Some(crate::after_effects_project_persistence::fingerprint(path)?)
+    }else{None};
 
     let plan=after_effects_transport::runner_plan(afterfx_exe,core_script,workspace,request)?;
     if plan.request_path.exists()||plan.runner_path.exists()||plan.receipt_path.exists(){
@@ -78,10 +82,27 @@ pub async fn execute(
             {
                 Ok(receipt)=>{
                     cleanup_job_files(&plan.request_path,&plan.runner_path);
-                    let verification=receipt.result.as_ref()
+                    let mut verification=receipt.result.as_ref()
                         .and_then(|v|v.get("verification_status")).and_then(Value::as_str)
-                        .unwrap_or(if receipt.ok{"accepted_unverified"}else{"host_error"});
-                    let post_verified=verification.starts_with("verified_");
+                        .unwrap_or(if receipt.ok{"accepted_unverified"}else{"host_error"}).to_string();
+                    let mut persistence_evidence:Option<Value>=None;
+                    let save_persistence_verified=if request.action=="save_project" {
+                        let path=request.expected_project_file.as_deref().ok_or("After Effects save lost expected project identity.")?;
+                        let native_accepted=receipt.result.as_ref().and_then(|v|v.get("native_accepted")).and_then(Value::as_bool)==Some(true);
+                        let reported_path=receipt.result.as_ref().and_then(|v|v.get("project_file")).and_then(Value::as_str).unwrap_or("");
+                        let evidence=match(save_before.as_ref(),crate::after_effects_project_persistence::fingerprint(path)){
+                            (Some(before),Ok(after))=>crate::after_effects_project_persistence::assess(before,&after,native_accepted,reported_path),
+                            (_,Err(error))=>json!({"persistence_verified":false,"verification_status":"accepted_unverified",
+                                "retry_safe":false,"after_error":error}),
+                            (None,_)=>json!({"persistence_verified":false,"verification_status":"accepted_unverified",
+                                "retry_safe":false,"before_error":"Missing pre-save fingerprint."})
+                        };
+                        let verified=evidence.get("persistence_verified").and_then(Value::as_bool)==Some(true);
+                        if verified {verification="verified_file_persistence".into();}
+                        persistence_evidence=Some(evidence);
+                        verified
+                    }else{false};
+                    let post_verified=if request.action=="save_project"{save_persistence_verified}else{verification.starts_with("verified_")};
                     let host_retry_safe=receipt.result.as_ref()
                         .and_then(|v|v.get("retry_safe")).and_then(Value::as_bool)
                         .unwrap_or(!request.is_mutating());
@@ -98,12 +119,13 @@ pub async fn execute(
                         "host_error":receipt.error,
                         "verification_status":verification,
                         "post_state_verified":post_verified,
+                        "project_persistence_evidence":persistence_evidence,
                         "host_retry_safe":host_retry_safe,
                         "checkpoint":checkpoint,
                         "checkpoint_recovery_verified":false,
                         "retry_safe":retry_safe,
                         "runtime_verified":false,
-                        "note":"This is an execution receipt, not a current-source runtime acceptance attestation. Mutations are successful only with independent host readback."
+                        "note":"This is an execution receipt, not a current-source runtime acceptance attestation. Mutations require host readback; save_project additionally requires independent on-disk project change evidence."
                     }));
                 }
                 Err(error)=>last_parse_error=Some(error),
