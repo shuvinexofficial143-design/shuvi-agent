@@ -1201,6 +1201,89 @@
             comp_id:comp.id,layer_id:layer.id,animator_property_index:animatorIndex,property_index:propertyIndex,
             selector_property_index:selectorIndex,property_match_name:propertyMatch};
     }
+    function resolveAVItem(itemId) {
+        var item=resolveItem(itemId);
+        if(!(item instanceof FootageItem)&&!(item instanceof CompItem))fail("Target project item is not an AV item supported by this action.");
+        return item;
+    }
+    function currentProxyFile(item) {
+        if(!item.useProxy||!item.proxySource)return null;
+        try{return item.proxySource.file?item.proxySource.file.fsName:null;}catch(ignore){return null;}
+    }
+    function relinkFootage(args) {
+        var item=resolveItem(args.item_id);
+        if(!(item instanceof FootageItem)||!item.file)fail("Relink requires file-backed FootageItem.");
+        var expected=boundedString(args.expected_current_file,4096,"expected current footage file"),current=item.file.fsName;
+        if(new File(expected).fsName!==current)fail("Footage source stale guard changed.");
+        var nextPath=boundedString(args.new_file,4096,"new footage file"),next=new File(nextPath);
+        if(!next.exists)fail("New footage source file does not exist.");
+        app.beginUndoGroup("Shuvi: Relink footage");
+        try{item.replace(next);}finally{app.endUndoGroup();}
+        item=resolveItem(args.item_id);
+        var actual=item instanceof FootageItem&&item.file?item.file.fsName:null,verified=actual===next.fsName;
+        return {native_accepted:true,verification_status:verified?"verified_source_readback":"accepted_unverified",retry_safe:verified,
+            item_id:item.id,before_file:current,after_file:actual};
+    }
+    function setProxy(args) {
+        var item=resolveAVItem(args.item_id);
+        if(typeof args.expected_use_proxy!=="boolean")fail("set_proxy requires expected_use_proxy stale guard.");
+        if(!!item.useProxy!==args.expected_use_proxy)fail("Proxy enabled-state stale guard changed.");
+        var before=currentProxyFile(item);
+        if(args.expected_use_proxy){
+            var expected=boundedString(args.expected_proxy_file,4096,"expected proxy file");
+            if(!before||before!==new File(expected).fsName)fail("Proxy source stale guard changed.");
+        }else if(args.expected_proxy_file!==undefined&&args.expected_proxy_file!==null){
+            fail("expected_proxy_file must be null/omitted when expected_use_proxy=false.");
+        }
+        var nextPath=boundedString(args.proxy_file,4096,"proxy file"),next=new File(nextPath);
+        if(!next.exists)fail("Proxy file does not exist.");
+        app.beginUndoGroup("Shuvi: Set proxy");
+        try{item.setProxy(next);}finally{app.endUndoGroup();}
+        item=resolveAVItem(args.item_id);
+        var after=currentProxyFile(item),verified=!!item.useProxy&&after===next.fsName;
+        return {native_accepted:true,verification_status:verified?"verified_proxy_readback":"accepted_unverified",retry_safe:verified,
+            item_id:item.id,before_use_proxy:args.expected_use_proxy,before_proxy_file:before,after_use_proxy:!!item.useProxy,after_proxy_file:after};
+    }
+    function removeProxy(args) {
+        var item=resolveAVItem(args.item_id);
+        if(!item.useProxy)fail("remove_proxy expected an active proxy.");
+        var expected=boundedString(args.expected_proxy_file,4096,"expected proxy file"),before=currentProxyFile(item);
+        if(!before||before!==new File(expected).fsName)fail("Proxy source stale guard changed.");
+        app.beginUndoGroup("Shuvi: Remove proxy");
+        try{item.setProxyToNone();}finally{app.endUndoGroup();}
+        item=resolveAVItem(args.item_id);
+        var verified=!item.useProxy&&item.proxySource===null;
+        return {native_accepted:true,verification_status:verified?"verified_proxy_readback":"accepted_unverified",retry_safe:verified,
+            item_id:item.id,before_proxy_file:before,after_use_proxy:!!item.useProxy};
+    }
+    function setAVLayerFlags(args) {
+        var comp=resolveComp(args.comp_id),layer=resolveLayer(comp,args.layer_id);
+        if(!(layer instanceof AVLayer))fail("Target layer is not an AVLayer.");
+        if(layer.locked)fail("Layer is locked; AV flag mutation refused.");
+        var requested={},count=0;
+        function add(name,key){
+            if(args[key]!==undefined){if(typeof args[key]!=="boolean")fail(key+" must be boolean.");requested[name]=args[key];count++;}
+        }
+        add("threeDLayer","three_d_layer");add("adjustmentLayer","adjustment_layer");add("collapseTransformation","collapse_transformation");
+        add("motionBlur","motion_blur");add("preserveTransparency","preserve_transparency");
+        if(count===0)fail("set_av_layer_flags requires at least one requested switch.");
+        var before={three_d_layer:!!layer.threeDLayer,adjustment_layer:!!layer.adjustmentLayer,collapse_transformation:!!layer.collapseTransformation,
+            motion_blur:!!layer.motionBlur,preserve_transparency:!!layer.preserveTransparency};
+        app.beginUndoGroup("Shuvi: Set AV layer flags");
+        try{
+            if(requested.threeDLayer!==undefined)layer.threeDLayer=requested.threeDLayer;
+            if(requested.adjustmentLayer!==undefined)layer.adjustmentLayer=requested.adjustmentLayer;
+            if(requested.collapseTransformation!==undefined)layer.collapseTransformation=requested.collapseTransformation;
+            if(requested.motionBlur!==undefined)layer.motionBlur=requested.motionBlur;
+            if(requested.preserveTransparency!==undefined)layer.preserveTransparency=requested.preserveTransparency;
+        }finally{app.endUndoGroup();}
+        layer=resolveLayer(comp,args.layer_id);
+        var verified=true,k;for(k in requested)if(requested.hasOwnProperty(k)&&!!layer[k]!==requested[k])verified=false;
+        return {native_accepted:true,verification_status:verified?"verified_layer_flag_readback":"accepted_unverified",retry_safe:verified,
+            comp_id:comp.id,layer_id:layer.id,before:before,
+            after:{three_d_layer:!!layer.threeDLayer,adjustment_layer:!!layer.adjustmentLayer,collapse_transformation:!!layer.collapseTransformation,
+                motion_blur:!!layer.motionBlur,preserve_transparency:!!layer.preserveTransparency}};
+    }
     function inspectRenderQueue() {
         var queue = requireProject().renderQueue;
         var items = [], i, limit = Math.min(queue.numItems, 256);
@@ -1343,7 +1426,8 @@
             || action === "add_camera" || action === "add_light" || action === "create_comp" || action === "import_footage" || action === "add_item_layer"
             || action === "set_layer_state" || action === "set_layer_parent"
             || action === "move_layer" || action === "set_track_matte" || action === "remove_track_matte"
-            || action === "set_time_remap" || action === "replace_source" || action === "set_text_style" || action === "set_layer_timing"
+            || action === "set_time_remap" || action === "replace_source" || action === "relink_footage" || action === "set_proxy" || action === "remove_proxy"
+            || action === "set_av_layer_flags" || action === "set_text_style" || action === "set_layer_timing"
             || action === "add_shape_primitive" || action === "add_text_animator"
             || action === "set_keyframe_interpolation" || action === "set_keyframe_temporal_ease" || action === "remove_keyframe"
             || action === "duplicate_layer" || action === "remove_layer" || action === "precompose_layers"
@@ -1394,6 +1478,10 @@
         if (action === "remove_track_matte") return removeTrackMatte(args);
         if (action === "set_time_remap") return setTimeRemap(args);
         if (action === "replace_source") return replaceSource(args);
+        if (action === "relink_footage") return relinkFootage(args);
+        if (action === "set_proxy") return setProxy(args);
+        if (action === "remove_proxy") return removeProxy(args);
+        if (action === "set_av_layer_flags") return setAVLayerFlags(args);
         if (action === "set_text_style") return setTextStyle(args);
         if (action === "set_layer_timing") return setLayerTiming(args);
         if (action === "add_shape_primitive") return addShapePrimitive(args);
