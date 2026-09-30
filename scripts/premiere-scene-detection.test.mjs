@@ -34,10 +34,12 @@ test("AB extends target expectation coverage to every selected clip",()=>{
   assert.match(rust,/one exact video expectation for every explicit target/);
 });
 
-test("AB temporarily sets exact selection and attempts restoration",()=>{
+test("AB temporarily sets exact selection and requires restoration for overall success",()=>{
   assert.match(uxp,/replaceSequenceSelection\(sequence, resolved\.map\(entry => entry\.item\)\)/);
   assert.match(uxp,/previousSelection = await sequence\.getSelection\(\)/);
   assert.match(uxp,/selectionRestored = \(await replaceSequenceSelection\(sequence, previousItems\)\) !== false/);
+  const arm=rust.slice(rust.lastIndexOf("ToolAction::PremiereSceneDetection"),rust.indexOf("\n        ToolAction::PremiereCancelTranscriptRebuild",rust.lastIndexOf("ToolAction::PremiereSceneDetection")));
+  assert.match(arm,/verified = delta_verified && selection_restored/);
 });
 
 test("AB observes both sequence and source marker deltas",()=>{
@@ -63,8 +65,12 @@ test("native true without observable delta is not called verified or successful"
   assert.match(uxp,/"accepted_unverified"/);
   assert.match(uxp,/"verified_delta"/);
   const arm=rust.slice(rust.lastIndexOf("ToolAction::PremiereSceneDetection"),rust.indexOf("\n        ToolAction::PremiereCancelTranscriptRebuild",rust.lastIndexOf("ToolAction::PremiereSceneDetection")));
-  assert.match(arm,/verification == "verified_delta"/);
+  assert.match(arm,/delta_verified = verification == "verified_delta"/);
+  assert.match(arm,/selection_restored = result\.get\("selectionRestored"\)/);
+  assert.match(arm,/verified = delta_verified && selection_restored/);
   assert.match(arm,/success:verified/);
+  assert.match(arm,/"post_state_verified":delta_verified/);
+  assert.match(arm,/"selection_restored":selection_restored/);
   assert.match(arm,/"uncertain":accepted&&!verified/);
   assert.match(arm,/"runtime_verified":false/);
 });

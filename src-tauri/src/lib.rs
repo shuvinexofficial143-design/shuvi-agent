@@ -8101,7 +8101,9 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             ).await?;
             let accepted = result.get("nativeAccepted").and_then(Value::as_bool)==Some(true);
             let verification = result.get("verificationStatus").and_then(Value::as_str).unwrap_or("unknown");
-            let verified = verification == "verified_delta";
+            let delta_verified = verification == "verified_delta";
+            let selection_restored = result.get("selectionRestored").and_then(Value::as_bool)==Some(true);
+            let verified = delta_verified && selection_restored;
             Ok(ActionResult {
                 success:verified,
                 tool,
@@ -8111,7 +8113,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "result":result,
                     "native_accepted":accepted,
                     "verification_status":verification,
-                    "post_state_verified":verified,
+                    "post_state_verified":delta_verified,
+                    "selection_restored":selection_restored,
                     "uncertain":accepted&&!verified,
                     "runtime_verified":false,
                     "retry_safe":false
