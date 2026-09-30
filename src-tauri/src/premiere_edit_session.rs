@@ -210,6 +210,29 @@ pub fn save(path:&Path,session:&Session)->Result<(),String>{
         assert!(inflight.stages[0].reason.as_deref().unwrap_or("").contains("cannot prove"));
         inflight.validate().unwrap();
     }
+    #[test]fn persisted_cancelled_session_normalizes_old_executing_state(){
+        let r=Request{preset:"social_reel".into(),targets:Default::default(),inputs:Default::default(),options:Default::default()};
+        let mut s=Session::new("legacy-cancel".into(),r,"p","s",None).unwrap();
+        s.status="cancelled".into();s.current_stage=Some(s.stages[0].id.clone());
+        s.stages[0].state="executing".into();
+        let path=std::env::temp_dir().join(format!("shuvi-session-cancel-normalize-{}.json",uuid::Uuid::new_v4()));
+        fs::write(&path,serde_json::to_vec(&s).unwrap()).unwrap();
+        let loaded=load(&path).unwrap();
+        assert_eq!(loaded.current_stage,None);
+        assert_eq!(loaded.stages[0].state,"uncertain");
+        assert!(loaded.stages[0].reason.as_deref().unwrap_or("").contains("cannot prove"));
+        fs::remove_file(path).unwrap();
+    }
+    #[test]fn cancelled_after_apply_requires_receipt_and_reason(){
+        let r=Request{preset:"social_reel".into(),targets:Default::default(),inputs:Default::default(),options:Default::default()};
+        let mut s=Session::new("bad-cancel".into(),r,"p","s",None).unwrap();
+        s.status="cancelled".into();
+        s.stages[0].state="cancelled_after_apply".into();
+        assert!(s.validate().is_err());
+        s.stages[0].action_id=Some("receipt".into());
+        s.stages[0].reason=Some("Applied before cancellation.".into());
+        s.validate().unwrap();
+    }
     #[test]fn no_duplicate_receipts_or_automatic_review(){let r=Request{preset:"clean_corporate".into(),targets:Default::default(),inputs:Default::default(),options:Default::default()};
         let mut s=Session::new("id".into(),r,"p","s",None).unwrap();s.next().unwrap();
         s.record("inspect","a","premiere_timeline",true).unwrap();assert!(s.record("inspect","a","premiere_timeline",true).is_err());
