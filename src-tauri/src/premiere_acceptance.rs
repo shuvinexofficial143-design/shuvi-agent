@@ -37,6 +37,15 @@ fn unsupported_reason(name:&str)->&'static str {
     }
 }
 
+fn implementation_scope_reason(name:&str)->Option<&'static str> {
+    match name {
+        "masks" => Some("Object-mask presence inspection is implemented; native mask creation/editing remains documented-unsupported in the reviewed surface."),
+        "reliable_multicam" => Some("Existing native multicam items can be inspected and inserted; multicam creation and angle switching remain documented-unsupported."),
+        "native_caption_write_import" => Some("Verified .srt/.vtt project-item import is implemented; native caption cue/text track creation and editing remain documented-unsupported."),
+        _ => None
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Capability {
@@ -78,7 +87,8 @@ impl Default for Report {
                 name:(*name).into(),group:*group,
                 state:if *unsupported {"unsupported_documented"} else {"implemented_unverified"}.into(),
                 code_tested:*tested,premiere_runtime_verified:false,
-                reason:unsupported.then(||unsupported_reason(name).into())
+                reason:if *unsupported {Some(unsupported_reason(name).into())}
+                    else {implementation_scope_reason(name).map(str::to_owned)}
             }).collect(),evidence:vec![]}
     }
 }
