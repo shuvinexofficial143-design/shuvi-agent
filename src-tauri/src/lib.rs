@@ -304,6 +304,7 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - after_effects_pending_jobs: {}
 - after_effects_run: {"afterfx_exe":"absolute path to AfterFX.exe","timeout_ms":30000,"request":{"schema_version":1,"request_id":"fresh-id","action":"inspect_context","expected_project_file":null,"expected_project_revision":null,"args":{}}} — for every mutating action copy exact expected_project_file + expected_project_revision from the latest inspect_context receipt
 - after_effects_plan_hand_track: {"plan":{"property":{"target":{"comp_id":1,"layer_id":2},"path":[{"match_name":"ADBE Transform Group","property_index":1},{"match_name":"ADBE Position","property_index":2}]},"samples":[{"time_seconds":0.0,"point":[100,200],"confidence":0.9}],"coordinate_space":"comp_pixels"}}
+- after_effects_plan_hand_track_rig: {"plan":{"comp_id":1,"target_layer_id":2,"samples":[{"time_seconds":0.0,"point":[100,200],"confidence":0.95}],"coordinate_space":"comp_pixels","name":"Shuvi Hand Track","preserve_visual":true,"min_confidence":0.5,"smoothing_alpha":0.35,"max_gap_seconds":0.25}}
 - workspace_scan: {"path":"absolute workspace path"}
 - search_text: {"path":"absolute workspace path","query":"text to find"}
 - replace_text: {"path":"absolute file path","old":"exact old text","new":"replacement text"}
@@ -646,6 +647,7 @@ enum ToolAction {
     AfterEffectsPendingJobs,
     AfterEffectsRun { afterfx_exe:String, timeout_ms:u64, request:after_effects_transport::Request },
     AfterEffectsPlanHandTrack { plan: after_effects::HandTrackPlan },
+    AfterEffectsPlanHandTrackRig { plan: after_effects::HandTrackRigPlan },
     WorkspaceScan { path: String },
     SearchText { path: String, query: String },
     ReplaceText { path: String, old: String, new_value: String },
@@ -5585,6 +5587,16 @@ fn stage_tool(
             (ToolAction::AfterEffectsPlanHandTrack {plan},
                 "Plan After Effects hand tracking keyframes".into(),
                 "Validate exact comp/layer/property identity plus bounded external tracking samples; no After Effects mutation.".into(),
+                RiskLevel::Low)
+        }
+        "after_effects_plan_hand_track_rig" => {
+            let value=proposal.arguments.get("plan").cloned().ok_or("after_effects_plan_hand_track_rig requires plan.")?;
+            let plan:after_effects::HandTrackRigPlan=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid After Effects hand-track rig plan: {e}"))?;
+            plan.validate()?;
+            (ToolAction::AfterEffectsPlanHandTrackRig {plan},
+                "Prepare After Effects hand-track rig".into(),
+                "Filter grounded detector samples by confidence, apply deterministic EMA smoothing, reject oversized gaps, and return apply_hand_track_rig args without mutating After Effects.".into(),
                 RiskLevel::Low)
         }
         "workspace_scan" => {
@@ -12393,6 +12405,16 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "runtime_verified":false,
                     "automatic_execution":false
                 })).unwrap_or_default(),
+                stderr:String::new(),
+                exit_code:Some(0),
+            })
+        }
+        ToolAction::AfterEffectsPlanHandTrackRig { plan } => {
+            let prepared=plan.prepare()?;
+            Ok(ActionResult {
+                success:true,
+                tool,
+                stdout:serde_json::to_string_pretty(&prepared).unwrap_or_default(),
                 stderr:String::new(),
                 exit_code:Some(0),
             })
