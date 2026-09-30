@@ -632,6 +632,7 @@ async function timelineCapabilities() {
     subsequenceCreation: {supported: typeof sequence.createSubsequence === "function", selectionSemanticsVerified: false},
     replacementNesting: {supported: typeof sequence.createSubsequence === "function" && typeof editor?.createOverwriteItemAction === "function",
       mode:"single_exact_video_clip", atomicReplacement:true, linkedAudio:false, selectedOnlyContentRequiresPostInspection:true},
+    objectMaskInspection: {supported: typeof premiere.ObjectMaskUtils?.hasObjectMask === "function", apiSince:"26.3", writeSupported:false},
     multicam: unavailable("Documented native multicam creation/switching API unavailable in reviewed references.")
   };
 }
@@ -1227,7 +1228,7 @@ function nativeCapabilityRegistry() {
       ...nativeDeliveryCapabilities(),
       ame:target("Manager presence does not establish AME installation or correlated completion."),
       speed_write:unsupported("No reviewed native speed write route; planning only."),
-      masks:unsupported("No reviewed safe mask write route."),
+      masks:target("ObjectMaskUtils.hasObjectMask supports bounded project/sequence presence inspection; mask creation/editing remains unsupported."),
       vertical_move:target("Verified cross-track move uses clone correlation followed by exact source deletion; partial completion is surfaced."),
       replacement_nesting:target("Single exact video nesting requires selected-only subsequence inspection and atomic remove/overwrite replacement."),
       linked_clip_editing:unsupported("Linked-group identity is not available; do not infer links."),
@@ -5755,6 +5756,29 @@ async function replaceWithSubsequence(argumentsValue) {
     uncertain:!verified,cleanupNeeded:!verified,retrySafe:false};
 }
 
+async function inspectObjectMasks() {
+  const project=await requireProject();
+  const sequence=await project.getActiveSequence();
+  const available=typeof premiere.ObjectMaskUtils?.hasObjectMask === "function";
+  if (!available) {
+    return {supported:false,apiSince:"26.3",projectHasObjectMask:null,sequenceHasObjectMask:null,
+      writeSupported:false,runtimeVerified:false,reason:"ObjectMaskUtils.hasObjectMask is unavailable in this Premiere host."};
+  }
+  let projectHasObjectMask=null, sequenceHasObjectMask=null;
+  try { projectHasObjectMask=Boolean(premiere.ObjectMaskUtils.hasObjectMask(project)); }
+  catch (error) { return {supported:true,apiSince:"26.3",projectHasObjectMask:null,sequenceHasObjectMask:null,
+    writeSupported:false,runtimeVerified:false,reason:String(error?.message||error).slice(0,240)}; }
+  if (sequence) {
+    try { sequenceHasObjectMask=Boolean(premiere.ObjectMaskUtils.hasObjectMask(sequence)); }
+    catch { sequenceHasObjectMask=null; }
+  }
+  return {supported:true,apiSince:"26.3",projectGuid:plainGuid(project.guid),
+    sequenceGuid:plainGuid(sequence?.guid),projectHasObjectMask,sequenceHasObjectMask,
+    inspectionVerified:typeof projectHasObjectMask==="boolean" && (sequence==null || typeof sequenceHasObjectMask==="boolean"),
+    writeSupported:false,runtimeVerified:false,
+    reason:"Native API exposes object-mask presence only; Shuvi does not fabricate mask creation/editing."};
+}
+
 async function captionTracks() {
   const project = await requireProject();
   const sequence = await project.getActiveSequence();
@@ -6656,6 +6680,8 @@ async function dispatchNativeCommand(command) {
       return await createSubsequence(command.arguments || {});
     case "replace_with_subsequence":
       return await replaceWithSubsequence(command.arguments || {});
+    case "inspect_object_masks":
+      return await inspectObjectMasks();
     case "inspect_assembly_items":
       return await inspectAssemblyItems(command.arguments || {});
     case "insert_project_item":

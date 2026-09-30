@@ -168,6 +168,7 @@ Available tools:
 - premiere_timeline_capabilities: {}
 - premiere_timeline: {}
 - premiere_caption_tracks: {}
+- premiere_inspect_object_masks: {}
 - premiere_set_caption_track_name: {"track":0,"name":"Captions"}
 - premiere_set_caption_track_mute: {"track":0,"muted":true}
 - premiere_set_playhead: {"seconds":12.5}
@@ -481,6 +482,7 @@ enum ToolAction {
     PremiereTimelineCapabilities,
     PremiereTimeline,
     PremiereCaptionTracks,
+    PremiereInspectObjectMasks,
     PremiereSetCaptionTrackName { track: u32, name: String },
     PremiereSetCaptionTrackMute { track: u32, muted: bool },
     PremiereSetPlayhead { seconds: f64 },
@@ -1075,6 +1077,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_timeline_capabilities"
         | "premiere_timeline"
         | "premiere_caption_tracks"
+        | "premiere_inspect_object_masks"
         | "premiere_set_caption_track_name"
         | "premiere_set_caption_track_mute"
         | "premiere_set_playhead"
@@ -3104,6 +3107,12 @@ fn stage_tool(
             ToolAction::PremiereTimeline,
             "Inspect Premiere timeline".to_string(),
             "Read active sequence tracks and clip metadata through the paired Premiere UXP bridge.".to_string(),
+            RiskLevel::Low,
+        ),
+        "premiere_inspect_object_masks" => (
+            ToolAction::PremiereInspectObjectMasks,
+            "Inspect Premiere object-mask presence".into(),
+            "Read ObjectMaskUtils.hasObjectMask for the active project and sequence. This does not create or edit masks.".into(),
             RiskLevel::Low,
         ),
         "premiere_caption_tracks" => (
@@ -9127,6 +9136,12 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 stderr: String::new(),
                 exit_code: Some(0),
             })
+        }
+        ToolAction::PremiereInspectObjectMasks => {
+            let value=premiere_bridge.request("inspect_object_masks",json!({}),Duration::from_secs(10)).await?;
+            let verified=value.get("inspectionVerified").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{success:verified,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(if verified{0}else{1})})
         }
         ToolAction::PremiereCaptionTracks => {
             let value = premiere_bridge.request(
