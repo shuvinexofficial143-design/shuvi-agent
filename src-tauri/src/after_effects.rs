@@ -178,6 +178,7 @@ pub fn capability_report()->Value {
             "keyframe_interpolation":"source_supported_with_in_out_type_readback",
             "keyframe_remove":"source_supported_with_time_stale_guard_and_delta_readback",
             "keyframe_temporal_ease":"source_supported_with_dimension_bound_speed_influence_readback",
+            "keyframe_spatial_controls":"source_supported_two_three_d_spatial_tangents_continuity_auto_bezier_roving_with_time_stale_guard",
             "layer_timing":"source_supported_with_start_in_out_stretch_readback",
             "effect_remove":"source_supported_with_ordered_inventory_delta",
             "marker_inspection":"source_supported_bounded_readback",
