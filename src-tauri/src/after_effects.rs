@@ -187,6 +187,8 @@ pub fn capability_report()->Value {
             "effect_inspection":"source_supported_bounded_256_effects",
             "keyframe_inspection":"source_supported_bounded_512_keys",
             "layer_property_tree":"source_supported_depth_6_nodes_1024",
+            "render_queue_execute":"source_supported_exact_queued_set_with_host_done_and_desktop_file_evidence",
+            "render_media_parse_validation":"not_implemented",
             "runtime_verified":"not_verified"
         },
         "safety":[
@@ -212,7 +214,7 @@ pub fn readiness_report()->Value {
             "checkpoint_creation":{"state":"source_implemented_runtime_unverified"},
             "checkpoint_recovery":{"state":"not_verified","automatic_rollback":false},
             "project_save_persistence":{"state":"source_implemented_runtime_unverified"},
-            "render_completion":{"state":"not_verified"},
+            "render_completion":{"state":"source_implemented_runtime_unverified","media_parse_verified":false},
             "native_inflight_cancellation":{"state":"not_verified"},
             "production_ready":false
         },
@@ -220,7 +222,7 @@ pub fn readiness_report()->Value {
             "native_motion_tracker_control":{"state":"unsupported_documented_surface","fallback":"external grounded tracking samples -> verified property keyframes"},
             "native_hand_detection":{"state":"not_provided_by_after_effects_scripting","fallback":"external detector required"},
             "project_revision_counter":{"state":"not_available","guard":"exact saved project path plus persistent item/layer IDs and property matchName/index"},
-            "long_running_render_execution":{"state":"not_implemented"},
+            "long_running_render_execution":{"state":"source_implemented_timeout_becomes_execution_status_unknown","late_receipt_reconciliation":true},
             "uxp_transport":{"state":"reserved_not_current_transport"},
             "uncertain_dispatch":{"state":"durably_blocks_new_dispatch_until_valid_late_receipt_reconciliation"}
         },
