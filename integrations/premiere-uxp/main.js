@@ -3632,6 +3632,9 @@ async function verifyDirectMogrtInsertion(project, sequence, videoTrack, audioTr
     observedStartSeconds: observedStart?.seconds ?? null,
     observedStartTicks: observedStart?.ticks ?? null,
     verificationError,
+    insertedClipIdentityVerified:verified,
+    templateSourceIdentityVerified:false,
+    thirdPartySemanticIdentityVerified:false,
     verificationStatus: verified ? "verified_creation_identity" : "accepted_unverified",
     uncertain: !verified,
     retrySafe: false
@@ -3687,6 +3690,9 @@ async function insertMogrtFromPath(argumentsValue) {
     observedStartSeconds: verification.observedStartSeconds,
     observedStartTicks: verification.observedStartTicks,
     verificationError: verification.verificationError,
+    insertedClipIdentityVerified:verification.insertedClipIdentityVerified,
+    templateSourceIdentityVerified:false,
+    thirdPartySemanticIdentityVerified:false,
     verificationStatus: verification.verificationStatus,
     uncertain: verification.uncertain,
     retrySafe: false
@@ -3750,6 +3756,9 @@ async function insertMogrtFromLibrary(argumentsValue) {
     observedStartSeconds: verification.observedStartSeconds,
     observedStartTicks: verification.observedStartTicks,
     verificationError: verification.verificationError,
+    insertedClipIdentityVerified:verification.insertedClipIdentityVerified,
+    templateSourceIdentityVerified:false,
+    thirdPartySemanticIdentityVerified:false,
     verificationStatus: verification.verificationStatus,
     uncertain: verification.uncertain,
     retrySafe: false
