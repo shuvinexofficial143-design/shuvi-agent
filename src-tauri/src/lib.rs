@@ -11908,8 +11908,10 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 context.get("projectGuid").and_then(Value::as_str)!=Some(job.project_guid.as_str())
                 || context.pointer("/activeSequence/guid").and_then(Value::as_str)!=Some(job.sequence_guid.as_str()));
             let mut result=job.observe_once()?;
+            let media_validation_challenge=job.media_validation_challenge().ok();
             if let Some(map)=result.as_object_mut(){map.insert("identity_checked".into(),json!(identity.is_some()));
-                map.insert("stale_project_or_sequence".into(),json!(stale));}
+                map.insert("stale_project_or_sequence".into(),json!(stale));
+                map.insert("media_validation_challenge".into(),json!(media_validation_challenge));}
             premiere_export_jobs::save(&path,&jobs)?;
             Ok(ActionResult {success:true,tool,stdout:result.to_string(),stderr:String::new(),exit_code:Some(0)})
         }
