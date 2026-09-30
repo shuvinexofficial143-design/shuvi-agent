@@ -241,6 +241,17 @@
             height: comp.height,
             duration: comp.duration,
             frame_rate: comp.frameRate,
+            work_area_start: comp.workAreaStart,
+            work_area_duration: comp.workAreaDuration,
+            bg_color: cloneValue(comp.bgColor),
+            motion_blur: !!comp.motionBlur,
+            shutter_angle: comp.shutterAngle,
+            shutter_phase: comp.shutterPhase,
+            motion_blur_samples_per_frame: comp.motionBlurSamplesPerFrame,
+            motion_blur_adaptive_sample_limit: comp.motionBlurAdaptiveSampleLimit,
+            preserve_nested_frame_rate: !!comp.preserveNestedFrameRate,
+            preserve_nested_resolution: !!comp.preserveNestedResolution,
+            resolution_factor: cloneValue(comp.resolutionFactor),
             num_layers: comp.numLayers,
             layer_scan_truncated: comp.numLayers > MAX_LAYERS,
             layers: layers
@@ -808,6 +819,97 @@
             before_marker_count: before,
             after_marker_count: marker.numKeys
         };
+    }
+    function setCompSettings(args) {
+        var comp=resolveComp(args.comp_id),requested={},count=0;
+        function boolField(argKey,propKey){
+            if(args[argKey]!==undefined){if(typeof args[argKey]!=="boolean")fail(argKey+" must be boolean.");requested[propKey]=args[argKey];count++;}
+        }
+        if(args.frame_rate!==undefined){
+            if(!finiteNumber(args.expected_frame_rate)||Math.abs(comp.frameRate-args.expected_frame_rate)>EPSILON)fail("Composition frame-rate stale guard changed.");
+            if(!finiteNumber(args.frame_rate)||args.frame_rate<1||args.frame_rate>99)fail("frame_rate must be 1..99.");
+            requested.frameRate=args.frame_rate;count++;
+        }
+        if(args.work_area_start!==undefined||args.work_area_duration!==undefined){
+            var start=args.work_area_start===undefined?comp.workAreaStart:args.work_area_start;
+            var duration=args.work_area_duration===undefined?comp.workAreaDuration:args.work_area_duration;
+            if(!finiteNumber(start)||!finiteNumber(duration)||start<0||duration<=0||start+duration>comp.duration+EPSILON)
+                fail("Work area must be positive and remain inside composition duration.");
+            requested.workAreaStart=start;requested.workAreaDuration=duration;count+=2;
+        }
+        if(args.bg_color!==undefined){
+            var bg=args.bg_color;if(!(bg instanceof Array)||bg.length!==3)fail("bg_color must be [r,g,b].");
+            var i;for(i=0;i<3;i++)if(!finiteNumber(bg[i])||bg[i]<0||bg[i]>1)fail("bg_color values must be 0..1.");
+            requested.bgColor=[bg[0],bg[1],bg[2]];count++;
+        }
+        boolField("motion_blur","motionBlur");
+        boolField("preserve_nested_frame_rate","preserveNestedFrameRate");
+        boolField("preserve_nested_resolution","preserveNestedResolution");
+        if(args.shutter_angle!==undefined){
+            if(!finiteNumber(args.shutter_angle)||Math.floor(args.shutter_angle)!==args.shutter_angle||args.shutter_angle<0||args.shutter_angle>720)fail("shutter_angle must be 0..720.");
+            requested.shutterAngle=args.shutter_angle;count++;
+        }
+        if(args.shutter_phase!==undefined){
+            if(!finiteNumber(args.shutter_phase)||Math.floor(args.shutter_phase)!==args.shutter_phase||args.shutter_phase<-360||args.shutter_phase>360)fail("shutter_phase must be -360..360.");
+            requested.shutterPhase=args.shutter_phase;count++;
+        }
+        if(args.motion_blur_samples_per_frame!==undefined){
+            var samples=args.motion_blur_samples_per_frame;
+            if(!finiteNumber(samples)||Math.floor(samples)!==samples||samples<2||samples>64)fail("motion_blur_samples_per_frame must be 2..64.");
+            requested.motionBlurSamplesPerFrame=samples;count++;
+        }
+        if(args.motion_blur_adaptive_sample_limit!==undefined){
+            var adaptive=args.motion_blur_adaptive_sample_limit;
+            if(!finiteNumber(adaptive)||Math.floor(adaptive)!==adaptive||adaptive<16||adaptive>256)fail("motion_blur_adaptive_sample_limit must be 16..256.");
+            requested.motionBlurAdaptiveSampleLimit=adaptive;count++;
+        }
+        if(args.resolution_factor!==undefined){
+            var factor=args.resolution_factor;
+            if(!(factor instanceof Array)||factor.length!==2||!finiteNumber(factor[0])||!finiteNumber(factor[1])
+                ||Math.floor(factor[0])!==factor[0]||Math.floor(factor[1])!==factor[1]||factor[0]<1||factor[0]>99||factor[1]<1||factor[1]>99)
+                fail("resolution_factor must be two integers in 1..99.");
+            requested.resolutionFactor=[factor[0],factor[1]];count++;
+        }
+        if(count===0)fail("set_comp_settings requires at least one requested field.");
+        var before={frame_rate:comp.frameRate,work_area_start:comp.workAreaStart,work_area_duration:comp.workAreaDuration,
+            bg_color:cloneValue(comp.bgColor),motion_blur:!!comp.motionBlur,shutter_angle:comp.shutterAngle,shutter_phase:comp.shutterPhase,
+            motion_blur_samples_per_frame:comp.motionBlurSamplesPerFrame,motion_blur_adaptive_sample_limit:comp.motionBlurAdaptiveSampleLimit,
+            preserve_nested_frame_rate:!!comp.preserveNestedFrameRate,preserve_nested_resolution:!!comp.preserveNestedResolution,
+            resolution_factor:cloneValue(comp.resolutionFactor)};
+        app.beginUndoGroup("Shuvi: Set composition settings");
+        try{
+            if(requested.frameRate!==undefined)comp.frameRate=requested.frameRate;
+            if(requested.workAreaStart!==undefined){comp.workAreaStart=requested.workAreaStart;comp.workAreaDuration=requested.workAreaDuration;}
+            if(requested.bgColor!==undefined)comp.bgColor=requested.bgColor;
+            if(requested.motionBlur!==undefined)comp.motionBlur=requested.motionBlur;
+            if(requested.shutterAngle!==undefined)comp.shutterAngle=requested.shutterAngle;
+            if(requested.shutterPhase!==undefined)comp.shutterPhase=requested.shutterPhase;
+            if(requested.motionBlurSamplesPerFrame!==undefined)comp.motionBlurSamplesPerFrame=requested.motionBlurSamplesPerFrame;
+            if(requested.motionBlurAdaptiveSampleLimit!==undefined)comp.motionBlurAdaptiveSampleLimit=requested.motionBlurAdaptiveSampleLimit;
+            if(requested.preserveNestedFrameRate!==undefined)comp.preserveNestedFrameRate=requested.preserveNestedFrameRate;
+            if(requested.preserveNestedResolution!==undefined)comp.preserveNestedResolution=requested.preserveNestedResolution;
+            if(requested.resolutionFactor!==undefined)comp.resolutionFactor=requested.resolutionFactor;
+        }finally{app.endUndoGroup();}
+        comp=resolveComp(args.comp_id);
+        var after={frame_rate:comp.frameRate,work_area_start:comp.workAreaStart,work_area_duration:comp.workAreaDuration,
+            bg_color:cloneValue(comp.bgColor),motion_blur:!!comp.motionBlur,shutter_angle:comp.shutterAngle,shutter_phase:comp.shutterPhase,
+            motion_blur_samples_per_frame:comp.motionBlurSamplesPerFrame,motion_blur_adaptive_sample_limit:comp.motionBlurAdaptiveSampleLimit,
+            preserve_nested_frame_rate:!!comp.preserveNestedFrameRate,preserve_nested_resolution:!!comp.preserveNestedResolution,
+            resolution_factor:cloneValue(comp.resolutionFactor)};
+        var verified=true;
+        if(requested.frameRate!==undefined&&Math.abs(after.frame_rate-requested.frameRate)>EPSILON)verified=false;
+        if(requested.workAreaStart!==undefined&&(Math.abs(after.work_area_start-requested.workAreaStart)>EPSILON||Math.abs(after.work_area_duration-requested.workAreaDuration)>EPSILON))verified=false;
+        if(requested.bgColor!==undefined&&!sameValue(after.bg_color,requested.bgColor))verified=false;
+        if(requested.motionBlur!==undefined&&after.motion_blur!==requested.motionBlur)verified=false;
+        if(requested.shutterAngle!==undefined&&after.shutter_angle!==requested.shutterAngle)verified=false;
+        if(requested.shutterPhase!==undefined&&after.shutter_phase!==requested.shutterPhase)verified=false;
+        if(requested.motionBlurSamplesPerFrame!==undefined&&after.motion_blur_samples_per_frame!==requested.motionBlurSamplesPerFrame)verified=false;
+        if(requested.motionBlurAdaptiveSampleLimit!==undefined&&after.motion_blur_adaptive_sample_limit!==requested.motionBlurAdaptiveSampleLimit)verified=false;
+        if(requested.preserveNestedFrameRate!==undefined&&after.preserve_nested_frame_rate!==requested.preserveNestedFrameRate)verified=false;
+        if(requested.preserveNestedResolution!==undefined&&after.preserve_nested_resolution!==requested.preserveNestedResolution)verified=false;
+        if(requested.resolutionFactor!==undefined&&!sameValue(after.resolution_factor,requested.resolutionFactor))verified=false;
+        return {native_accepted:true,verification_status:verified?"verified_comp_settings_readback":"accepted_unverified",retry_safe:verified,
+            comp_id:comp.id,before:before,after:after};
     }
     function addShape(args) {
         var comp = resolveComp(args.comp_id), before = comp.numLayers;
@@ -1559,7 +1661,7 @@
     function mutationAction(action) {
         return action === "set_property" || action === "set_values_at_times" || action === "set_expression"
             || action === "add_effect" || action === "remove_effect" || action === "add_null" || action === "add_text" || action === "add_shape" || action === "add_solid"
-            || action === "add_camera" || action === "add_light" || action === "create_comp" || action === "import_footage" || action === "add_item_layer"
+            || action === "add_camera" || action === "add_light" || action === "create_comp" || action === "set_comp_settings" || action === "import_footage" || action === "add_item_layer"
             || action === "set_layer_state" || action === "set_layer_parent"
             || action === "move_layer" || action === "set_track_matte" || action === "remove_track_matte"
             || action === "set_time_remap" || action === "replace_source" || action === "relink_footage" || action === "set_proxy" || action === "remove_proxy"
@@ -1605,6 +1707,7 @@
         if (action === "add_camera") return addCamera(args);
         if (action === "add_light") return addLight(args);
         if (action === "create_comp") return createComp(args);
+        if (action === "set_comp_settings") return setCompSettings(args);
         if (action === "import_footage") return importFootage(args);
         if (action === "add_item_layer") return addItemLayer(args);
         if (action === "set_layer_state") return setLayerState(args);
