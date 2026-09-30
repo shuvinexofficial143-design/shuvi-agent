@@ -1727,6 +1727,63 @@ async function listVideoTransitions() {
   };
 }
 
+function transitionReadbackSignature(row) {
+  return JSON.stringify([row.startSeconds,row.endSeconds,row.name,row.matchName]);
+}
+
+function transitionMultisetDelta(before, after) {
+  const counts=new Map();
+  for (const row of before) {
+    const key=transitionReadbackSignature(row);
+    counts.set(key,(counts.get(key)||0)+1);
+  }
+  const added=[];
+  for (const row of after) {
+    const key=transitionReadbackSignature(row);
+    const count=counts.get(key)||0;
+    if (count>0) counts.set(key,count-1);
+    else added.push(row);
+  }
+  return added;
+}
+
+function transitionCoversBoundary(row, seconds) {
+  return Number.isFinite(seconds)&&Number.isFinite(row?.startSeconds)&&Number.isFinite(row?.endSeconds)
+    && row.startSeconds-1e-6<=seconds&&row.endSeconds+1e-6>=seconds;
+}
+
+async function snapshotVideoTransitions(track) {
+  const transitionType=premiere.Constants.TrackItemType?.TRANSITION;
+  if (typeof transitionType!=="number"||typeof track?.getTrackItems!=="function") {
+    return {scanComplete:false,items:[],reason:"Native transition track-item enumeration is unavailable."};
+  }
+  try {
+    const native=await track.getTrackItems(transitionType,false);
+    if (!Array.isArray(native)) return {scanComplete:false,items:[],reason:"Transition enumeration returned an unexpected shape."};
+    if (native.length>1024) return {scanComplete:false,items:[],reason:"Transition enumeration exceeded Shuvi's 1024-item readback bound."};
+    const items=[];
+    for (const item of native) {
+      let start=null,end=null,name=null,matchName=null;
+      try {start=await item.getStartTime();} catch {}
+      try {end=await item.getEndTime();} catch {}
+      try {name=typeof item.getName==="function"?await item.getName():item.name??null;} catch {}
+      try {matchName=typeof item.getMatchName==="function"?await item.getMatchName():null;} catch {}
+      items.push({
+        startSeconds:Number.isFinite(start?.seconds)?start.seconds:null,
+        endSeconds:Number.isFinite(end?.seconds)?end.seconds:null,
+        name:typeof name==="string"?name:null,
+        matchName:typeof matchName==="string"&&matchName?matchName:null
+      });
+    }
+    items.sort((a,b)=>(a.startSeconds??Infinity)-(b.startSeconds??Infinity)
+      ||(a.endSeconds??Infinity)-(b.endSeconds??Infinity)
+      ||String(a.matchName??a.name??"").localeCompare(String(b.matchName??b.name??"")));
+    return {scanComplete:true,items,reason:null};
+  } catch (error) {
+    return {scanComplete:false,items:[],reason:"Transition readback failed: "+String(error?.message||error).slice(0,180)};
+  }
+}
+
 async function addVideoTransition(argumentsValue) {
   const trackIndex = Number(argumentsValue?.track ?? 0);
   const clipIndex = Number(argumentsValue?.clipIndex ?? 0);
@@ -1775,6 +1832,10 @@ async function addVideoTransition(argumentsValue) {
     throw new Error("Installed Premiere transition was not found: " + matchName);
   }
 
+  const boundaryTime=position==="start"?await item.getStartTime():await item.getEndTime();
+  const boundarySeconds=Number.isFinite(boundaryTime?.seconds)?boundaryTime.seconds:null;
+  const beforeTransitions=await snapshotVideoTransitions(track);
+
   let transactionSucceeded = false;
   project.lockedAccess(() => {
     const transition = premiere.TransitionFactory.createVideoTransition(matchName);
@@ -1797,6 +1858,17 @@ async function addVideoTransition(argumentsValue) {
     throw new Error("Premiere rejected the video transition transaction.");
   }
 
+  const afterTransitions=await snapshotVideoTransitions(track);
+  const addedRows=beforeTransitions.scanComplete&&afterTransitions.scanComplete
+    ? transitionMultisetDelta(beforeTransitions.items,afterTransitions.items):[];
+  const boundaryMatches=addedRows.filter(row=>transitionCoversBoundary(row,boundarySeconds));
+  const exactMatch=boundaryMatches.length===1&&boundaryMatches[0].matchName===matchName;
+  const observed=exactMatch?boundaryMatches[0]:boundaryMatches.length===1?boundaryMatches[0]:null;
+  const observedDuration=observed&&Number.isFinite(observed.startSeconds)&&Number.isFinite(observed.endSeconds)
+    ? observed.endSeconds-observed.startSeconds:null;
+  const durationReadbackVerified=Number.isFinite(observedDuration)
+    &&Math.abs(observedDuration-durationSeconds)<=0.05;
+  const verified=exactMatch;
   return {
     added: true,
     transactionSucceeded: true,
@@ -1806,10 +1878,21 @@ async function addVideoTransition(argumentsValue) {
     durationSeconds,
     position,
     forceSingleSided,
-    verificationStatus: "accepted_unverified",
-    uncertain: true,
+    boundarySeconds,
+    readback:{
+      beforeCount:beforeTransitions.items.length,
+      afterCount:afterTransitions.items.length,
+      addedCount:addedRows.length,
+      boundaryMatchCount:boundaryMatches.length,
+      observed,
+      durationReadbackVerified,
+      scanComplete:beforeTransitions.scanComplete&&afterTransitions.scanComplete,
+      reason:beforeTransitions.reason||afterTransitions.reason||null
+    },
+    verificationStatus: verified ? "verified_transition" : "accepted_unverified",
+    uncertain: !verified,
     retrySafe: false,
-    warning: "Native transaction accepted; transition presence/details were not independently inspected."
+    warning: verified?null:"Native transaction accepted, but an exact independently enumerated transition delta was not proven."
   };
 }
 
@@ -6343,21 +6426,46 @@ async function removeVideoTransition(argumentsValue) {
   const target = await getVideoClipTarget(track, clipIndex);
   const nativePosition = premiere.Constants.TransitionPosition?.[position === "start" ? "START" : "END"];
   if (typeof nativePosition !== "number" || typeof target.item.createRemoveVideoTransitionAction !== "function") throw new Error("Native transition removal is unsupported by this Premiere installation.");
+  const videoTrack=await target.sequence.getVideoTrack(Number(track));
+  if (!videoTrack) throw new Error("Requested Premiere video track was not found during transition removal.");
+  const boundaryTime=position==="start"?await target.item.getStartTime():await target.item.getEndTime();
+  const boundarySeconds=Number.isFinite(boundaryTime?.seconds)?boundaryTime.seconds:null;
+  const beforeTransitions=await snapshotVideoTransitions(videoTrack);
+  const beforeBoundary=beforeTransitions.items.filter(row=>transitionCoversBoundary(row,boundarySeconds));
   let succeeded = false;
   target.project.lockedAccess(() => {
     const action = target.item.createRemoveVideoTransitionAction(nativePosition);
     succeeded = target.project.executeTransaction(compound => compound.addAction(action), "Shuvi: Remove Video Transition");
   });
   if (!succeeded) throw new Error("Premiere rejected the transition removal transaction.");
+  const afterTransitions=await snapshotVideoTransitions(videoTrack);
+  const removedRows=beforeTransitions.scanComplete&&afterTransitions.scanComplete
+    ? transitionMultisetDelta(afterTransitions.items,beforeTransitions.items):[];
+  const removedBoundary=removedRows.filter(row=>transitionCoversBoundary(row,boundarySeconds));
+  const afterBoundary=afterTransitions.items.filter(row=>transitionCoversBoundary(row,boundarySeconds));
+  const verified=beforeTransitions.scanComplete&&afterTransitions.scanComplete
+    &&beforeBoundary.length===1&&removedBoundary.length===1&&afterBoundary.length===0;
   return {
     transactionSucceeded: true,
     track,
     clipIndex,
     position,
-    verificationStatus: "accepted_unverified",
-    uncertain: true,
+    boundarySeconds,
+    readback:{
+      beforeCount:beforeTransitions.items.length,
+      afterCount:afterTransitions.items.length,
+      beforeBoundaryCount:beforeBoundary.length,
+      removedCount:removedRows.length,
+      removedBoundaryCount:removedBoundary.length,
+      afterBoundaryCount:afterBoundary.length,
+      removed:removedBoundary.length===1?removedBoundary[0]:null,
+      scanComplete:beforeTransitions.scanComplete&&afterTransitions.scanComplete,
+      reason:beforeTransitions.reason||afterTransitions.reason||null
+    },
+    verificationStatus: verified ? "verified_transition" : "accepted_unverified",
+    uncertain: !verified,
     retrySafe: false,
-    warning: "Native transaction accepted; transition presence/details were not independently inspected."
+    warning: verified?null:"Native transaction accepted, but an exact independently enumerated transition removal delta was not proven."
   };
 }
 
