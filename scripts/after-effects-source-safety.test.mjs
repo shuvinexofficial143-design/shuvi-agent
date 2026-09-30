@@ -291,3 +291,15 @@ test("AE AV rendering controls are typed allowlisted and independently readable"
   assert.match(jsx,/verified_av_rendering_readback/);
   assert.match(jsx,/function inspectAVLayerRendering/);
 });
+
+
+test("AE mutations bind to documented project revision as a stale-state guard",()=>{
+  assert.match(transport,/expected_project_revision:Option<u64>/);
+  assert.match(transport,/requires expected_project_revision/);
+  assert.match(jsx,/project_revision: project\.revision/);
+  assert.match(jsx,/expected_project_revision/);
+  assert.match(jsx,/After Effects project revision changed; stale mutation refused/);
+  assert.match(rust,/"project_revision":"documented_read_only_revision_stale_guard"/);
+  assert.match(rust,/"project_revision_counter":\{"state":"documented_and_required_for_mutation"/);
+  assert.match(lib,/expected_project_revision/);
+});
