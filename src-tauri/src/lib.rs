@@ -10553,15 +10553,18 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 Duration::from_secs(20),
             ).await?;
 
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_source_inout");
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
                 stdout: serde_json::to_string_pretty(&json!({
                     "backup": backup,
-                    "result": result
+                    "result": result,
+                    "uncertain": !verified,
+                    "retry_safe": false
                 })).unwrap_or_else(|_| result.to_string()),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereClearSourceInOut { item_id } => {
@@ -10572,15 +10575,18 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 Duration::from_secs(20),
             ).await?;
 
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_source_inout");
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
                 stdout: serde_json::to_string_pretty(&json!({
                     "backup": backup,
-                    "result": result
+                    "result": result,
+                    "uncertain": !verified,
+                    "retry_safe": false
                 })).unwrap_or_else(|_| result.to_string()),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereCreateSubclip { item_id, name, start_seconds, end_seconds, hard_boundaries, take_video, take_audio } => {

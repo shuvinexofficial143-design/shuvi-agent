@@ -99,3 +99,24 @@ test("direct MOGRT insertion is success only after bounded before/after creation
     assert.match(arm,/"retry_safe": false/);
   }
 });
+
+
+test("source in/out mutations never claim success without independent source-bound readback",()=>{
+  const set=uxp.slice(uxp.indexOf("async function setSourceInOut"),uxp.indexOf("async function clearSourceInOut"));
+  assert.match(set,/verificationStatus: "accepted_unverified"/);
+  assert.match(set,/uncertain: true/);
+  assert.match(set,/retrySafe: false/);
+  const clear=uxp.slice(uxp.indexOf("async function clearSourceInOut"),uxp.indexOf("async function collectProjectItemsForCorrelation"));
+  assert.match(clear,/verificationStatus: "accepted_unverified"/);
+  assert.match(clear,/uncertain: true/);
+  assert.match(clear,/retrySafe: false/);
+
+  for(const [name,next] of [["PremiereSetSourceInOut","PremiereClearSourceInOut"],["PremiereClearSourceInOut","PremiereCreateSubclip"]]){
+    const start=rust.lastIndexOf("ToolAction::"+name);
+    const end=rust.indexOf("\n        ToolAction::"+next,start);
+    const arm=rust.slice(start,end);
+    assert.match(arm,/verified_source_inout/);
+    assert.match(arm,/success: verified/);
+    assert.match(arm,/"retry_safe": false/);
+  }
+});

@@ -5039,7 +5039,11 @@ async function setSourceInOut(argumentsValue) {
     changed: true,
     itemId,
     inSeconds,
-    outSeconds
+    outSeconds,
+    verificationStatus: "accepted_unverified",
+    uncertain: true,
+    retrySafe: false,
+    warning: "Native transaction accepted; source in/out points were not independently read back."
   };
 }
 
@@ -5067,7 +5071,11 @@ async function clearSourceInOut(argumentsValue) {
 
   return {
     changed: true,
-    itemId
+    itemId,
+    verificationStatus: "accepted_unverified",
+    uncertain: true,
+    retrySafe: false,
+    warning: "Native transaction accepted; cleared source in/out state was not independently read back."
   };
 }
 
