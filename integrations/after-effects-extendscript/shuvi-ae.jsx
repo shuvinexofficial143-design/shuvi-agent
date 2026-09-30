@@ -1842,6 +1842,81 @@
         }
         return {times:times,values:values,dimension:dimension};
     }
+    function essentialGroup(comp,layerId) {
+        var layer=resolveLayer(comp,layerId);
+        var group=layer.property("ADBE Layer Overrides");
+        if(!group)fail("Target layer has no Essential Properties group.");
+        if(group.numProperties>256)fail("Essential Properties group exceeds 256-property safety bound.");
+        return {layer:layer,group:group};
+    }
+    function essentialEntry(prop,index) {
+        var alternate=null,source=null,value=null;
+        try{alternate=prop.alternateSource;}catch(ignoreAlternate){}
+        try{source=prop.essentialPropertySource;}catch(ignoreSource){}
+        try{value=cloneValue(prop.value);}catch(ignoreValue){}
+        var sourceInfo=null;
+        if(source){
+            if(source instanceof AVLayer)sourceInfo={kind:"media_layer",layer_id:source.id,name:String(source.name).slice(0,240)};
+            else sourceInfo={kind:"property",match_name:String(source.matchName||""),property_index:source.propertyIndex===undefined?null:source.propertyIndex,
+                name:String(source.name||"").slice(0,240)};
+        }
+        return {essential_index:index,name:String(prop.name).slice(0,240),match_name:String(prop.matchName||""),
+            property_index:prop.propertyIndex===undefined?null:prop.propertyIndex,property_value_type:prop.propertyValueType===undefined?null:String(prop.propertyValueType),
+            num_keys:prop.numKeys===undefined?null:prop.numKeys,can_set_alternate_source:!!prop.canSetAlternateSource,
+            alternate_source_item_id:alternate&&alternate.id?alternate.id:null,alternate_source_name:alternate?String(alternate.name).slice(0,240):null,
+            essential_source:sourceInfo,value:value};
+    }
+    function inspectEssentialProperties(args) {
+        var comp=resolveComp(args.comp_id),resolved=essentialGroup(comp,args.layer_id),items=[],i;
+        for(i=1;i<=resolved.group.numProperties;i++)items.push(essentialEntry(resolved.group.property(i),i));
+        return {verification_status:"verified_readback",comp_id:comp.id,layer_id:resolved.layer.id,
+            essential_property_count:resolved.group.numProperties,scan_truncated:false,properties:items};
+    }
+    function resolveEssential(args) {
+        var comp=resolveComp(args.comp_id),resolved=essentialGroup(comp,args.layer_id),index=args.essential_index;
+        if(!finiteNumber(index)||Math.floor(index)!==index||index<1||index>resolved.group.numProperties)
+            fail("Invalid essential_index.");
+        var prop=resolved.group.property(index);
+        if(!prop)fail("Essential Property is unavailable.");
+        var expected=boundedString(args.expected_name,240,"expected Essential Property name");
+        if(String(prop.name)!==expected)fail("Essential Property name stale guard changed.");
+        return {comp:comp,layer:resolved.layer,group:resolved.group,property:prop,index:index};
+    }
+    function setEssentialProperty(args) {
+        var resolved=resolveEssential(args),p=resolved.property;
+        if(p.canSetAlternateSource)fail("Media Replacement Essential Properties must use set_essential_media_source.");
+        if(p.numKeys!==undefined&&p.numKeys>0)fail("Static Essential Property write refused because keyframes already exist.");
+        if(typeof p.setValue!=="function")fail("Essential Property is not directly writable.");
+        var requested=cloneValue(args.value),before=essentialEntry(p,resolved.index);
+        app.beginUndoGroup("Shuvi: Set Essential Property");
+        try{p.setValue(requested);}finally{app.endUndoGroup();}
+        resolved=resolveEssential(args);p=resolved.property;
+        var after=essentialEntry(p,resolved.index),verified=sameValue(after.value,requested);
+        return {native_accepted:true,verification_status:verified?"verified_essential_property_readback":"accepted_unverified",retry_safe:verified,
+            comp_id:resolved.comp.id,layer_id:resolved.layer.id,essential_index:resolved.index,essential_name:String(p.name),before:before,after:after};
+    }
+    function setEssentialMediaSource(args) {
+        var resolved=resolveEssential(args),p=resolved.property;
+        if(!p.canSetAlternateSource||typeof p.setAlternateSource!=="function")
+            fail("Essential Property does not support Media Replacement.");
+        if(!args.hasOwnProperty("expected_alternate_source_item_id"))
+            fail("Media Replacement requires expected_alternate_source_item_id stale guard, using null when unset.");
+        var beforeSource=null;try{beforeSource=p.alternateSource;}catch(ignore){}
+        var beforeId=beforeSource&&beforeSource.id?beforeSource.id:null;
+        var expected=args.expected_alternate_source_item_id;
+        if(expected!==null&&(!finiteNumber(expected)||Math.floor(expected)!==expected||expected<1))
+            fail("expected_alternate_source_item_id must be null or a positive item ID.");
+        if(beforeId!==expected)fail("Essential media alternate-source stale guard changed.");
+        var source=resolveItem(args.source_item_id);
+        if(source.isMediaReplacementCompatible!==true)fail("Requested source item is not Media Replacement compatible.");
+        app.beginUndoGroup("Shuvi: Set Essential Media Source");
+        try{p.setAlternateSource(source);}finally{app.endUndoGroup();}
+        resolved=resolveEssential(args);p=resolved.property;
+        var afterSource=p.alternateSource,afterId=afterSource&&afterSource.id?afterSource.id:null,verified=afterId===source.id;
+        return {native_accepted:true,verification_status:verified?"verified_essential_media_readback":"accepted_unverified",retry_safe:verified,
+            comp_id:resolved.comp.id,layer_id:resolved.layer.id,essential_index:resolved.index,essential_name:String(p.name),
+            before_source_item_id:beforeId,after_source_item_id:afterId,requested_source_item_id:source.id};
+    }
     function applyHandTrackRig(args) {
         var comp=resolveComp(args.comp_id);
         if(args.coordinate_space!==undefined&&args.coordinate_space!=="comp_pixels")
@@ -2034,6 +2109,7 @@
             || action === "set_av_layer_flags" || action === "set_av_layer_rendering" || action === "set_text_style" || action === "set_layer_timing"
             || action === "add_shape_primitive" || action === "add_text_animator"
             || action === "add_mogrt_property" || action === "add_mogrt_media_layer" || action === "export_mogrt"
+            || action === "set_essential_property" || action === "set_essential_media_source"
             || action === "apply_hand_track_rig"
             || action === "set_keyframe_interpolation" || action === "set_keyframe_temporal_ease" || action === "set_keyframe_temporal_flags" || action === "set_keyframe_spatial" || action === "remove_keyframe"
             || action === "duplicate_layer" || action === "remove_layer" || action === "precompose_layers"
@@ -2072,6 +2148,7 @@
         if (action === "inspect_layer_properties") return inspectLayerProperties(args);
         if (action === "inspect_av_layer_rendering") return inspectAVLayerRendering(args);
         if (action === "inspect_mogrt") return inspectMogrt(args);
+        if (action === "inspect_essential_properties") return inspectEssentialProperties(args);
         if (action === "set_property") return setProperty(args);
         if (action === "set_values_at_times") return setValuesAtTimes(args);
         if (action === "set_expression") return setExpression(args);
@@ -2106,6 +2183,8 @@
         if (action === "add_mogrt_property") return addMogrtProperty(args);
         if (action === "add_mogrt_media_layer") return addMogrtMediaLayer(args);
         if (action === "export_mogrt") return exportMogrt(args);
+        if (action === "set_essential_property") return setEssentialProperty(args);
+        if (action === "set_essential_media_source") return setEssentialMediaSource(args);
         if (action === "apply_hand_track_rig") return applyHandTrackRig(args);
         if (action === "set_keyframe_interpolation") return setKeyframeInterpolation(args);
         if (action === "set_keyframe_temporal_ease") return setKeyframeTemporalEase(args);
