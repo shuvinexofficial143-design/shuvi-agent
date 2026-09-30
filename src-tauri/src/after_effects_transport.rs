@@ -27,7 +27,7 @@ impl Request {
             |"set_layer_state"|"set_layer_parent"|"move_layer"|"set_track_matte"|"remove_track_matte"
             |"set_time_remap"|"replace_source"|"relink_footage"|"set_proxy"|"remove_proxy"|"set_av_layer_flags"|"set_av_layer_rendering"
             |"set_text_style"|"set_layer_timing"|"add_shape_primitive"|"add_text_animator"
-            |"add_mogrt_property"|"add_mogrt_media_layer"|"export_mogrt"
+            |"add_mogrt_property"|"add_mogrt_media_layer"|"export_mogrt"|"apply_hand_track_rig"
             |"set_keyframe_interpolation"|"set_keyframe_temporal_ease"|"set_keyframe_temporal_flags"|"set_keyframe_spatial"|"remove_keyframe"
             |"duplicate_layer"|"remove_layer"|"precompose_layers"|"add_mask"|"edit_mask"|"remove_mask"|"add_scene_edit_markers"
             |"add_marker"|"remove_marker"|"add_render_queue_item"|"render_queue"|"save_project")
