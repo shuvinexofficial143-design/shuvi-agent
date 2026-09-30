@@ -993,6 +993,36 @@ async function moveClip(argumentsValue) {
   };
 }
 
+function expectedRowsAfterDelete(beforeRows, target, ripple) {
+  const duration = target.endSeconds-target.startSeconds;
+  return beforeRows.filter(row => row.clipIndex !== target.clipIndex).map(row => {
+    if (!ripple || row.startSeconds < target.endSeconds-0.001) return row;
+    return {...row,startSeconds:row.startSeconds-duration,endSeconds:row.endSeconds-duration};
+  });
+}
+
+function timelineRowsMatchExpected(expectedRows, actualRows) {
+  if (!Array.isArray(expectedRows) || !Array.isArray(actualRows) || expectedRows.length !== actualRows.length) return false;
+  const used = new Set();
+  for (const expected of expectedRows) {
+    let match = -1;
+    for (let index = 0; index < actualRows.length; index += 1) {
+      if (used.has(index)) continue;
+      const actual = actualRows[index];
+      if (actual.mediaId === expected.mediaId
+          && closeTimelineSeconds(actual.startSeconds,expected.startSeconds)
+          && closeTimelineSeconds(actual.endSeconds,expected.endSeconds)
+          && closeTimelineSeconds(actual.durationSeconds,expected.durationSeconds)) {
+        match = index;
+        break;
+      }
+    }
+    if (match < 0) return false;
+    used.add(match);
+  }
+  return true;
+}
+
 async function deleteClip(argumentsValue) {
   const kind =
     typeof argumentsValue?.kind === "string"
@@ -1030,6 +1060,18 @@ async function deleteClip(argumentsValue) {
     );
   }
 
+  const beforeRows = await snapshotTrackItems(project,sequence,kind,trackIndex);
+  const targetBefore = beforeRows.find(row => row.clipIndex === clipIndex);
+  if (!targetBefore) throw new Error("Delete target disappeared during preflight.");
+  const overlapping = beforeRows.filter(row => row.clipIndex !== clipIndex
+    && row.startSeconds < targetBefore.endSeconds-0.001
+    && row.endSeconds > targetBefore.startSeconds+0.001);
+  if (overlapping.length) {
+    throw new Error("Delete verification requires a non-overlapping target on its track.");
+  }
+  await assertResolvedClipMatchesActiveExpectation(project,sequence,item,kind,trackIndex,clipIndex);
+  const expectedAfter = expectedRowsAfterDelete(beforeRows,targetBefore,ripple);
+
   const editor = premiere.SequenceEditor.getEditor(sequence);
   const mediaType =
     kind === "video"
@@ -1064,12 +1106,28 @@ async function deleteClip(argumentsValue) {
     throw new Error("Premiere rejected the delete transaction.");
   }
 
+  let afterRows = null;
+  try {
+    afterRows = await snapshotTrackItems(project,sequence,kind,trackIndex);
+  } catch {
+    afterRows = null;
+  }
+  const verified = Array.isArray(afterRows)
+    && afterRows.length + 1 === beforeRows.length
+    && timelineRowsMatchExpected(expectedAfter,afterRows);
+
   return {
     deleted: true,
     ripple,
     kind,
     track: trackIndex,
-    clipIndex
+    clipIndex,
+    deletedMediaId: targetBefore.mediaId,
+    deletedStartSeconds: targetBefore.startSeconds,
+    deletedEndSeconds: targetBefore.endSeconds,
+    verificationStatus: verified ? "verified_delta" : "accepted_unverified",
+    uncertain: !verified,
+    retrySafe: false
   };
 }
 
@@ -3294,15 +3352,29 @@ async function cloneClip(argumentsValue) {
     );
   }
 
-  const start = await item.getStartTime();
-  const destinationSeconds = (start?.seconds ?? 0) + timeOffsetSeconds;
-  if (destinationSeconds < 0) {
-    throw new Error("Clone would place the copied clip before sequence time zero.");
+  const [start,end,sourceMediaId] = await Promise.all([
+    item.getStartTime(), item.getEndTime(), timelineItemMediaId(item)
+  ]);
+  const sourceStartSeconds = start?.seconds;
+  const sourceEndSeconds = end?.seconds;
+  if (!Number.isFinite(sourceStartSeconds) || !Number.isFinite(sourceEndSeconds)
+      || sourceEndSeconds <= sourceStartSeconds || !sourceMediaId) {
+    throw new Error("Clone source timing or media identity is unavailable.");
+  }
+  const durationSeconds = sourceEndSeconds-sourceStartSeconds;
+  const destinationSeconds = sourceStartSeconds + timeOffsetSeconds;
+  if (destinationSeconds < 0 || destinationSeconds + durationSeconds > 86400) {
+    throw new Error("Clone would place the copied clip outside the bounded sequence time.");
   }
 
   const destinationTrack = trackIndex + (kind === "video" ? videoTrackOffset : audioTrackOffset);
   const trackCount = kind === "video" ? await sequence.getVideoTrackCount() : await sequence.getAudioTrackCount();
   if (destinationTrack < 0 || destinationTrack >= trackCount) throw new Error("Clone destination must be an existing track of the same media kind.");
+  if (destinationTrack === trackIndex && closeTimelineSeconds(destinationSeconds,sourceStartSeconds)) {
+    throw new Error("Clone must change time or destination track; zero-displacement clone is ambiguous.");
+  }
+  const beforeDestination = await snapshotTrackItems(project,sequence,kind,destinationTrack);
+  await assertResolvedClipMatchesActiveExpectation(project,sequence,item,kind,trackIndex,clipIndex);
   const editor = premiere.SequenceEditor.getEditor(sequence);
   if (typeof editor?.createCloneTrackItemAction !== "function") throw new Error("Native track-item clone is unsupported.");
   let transactionSucceeded = false;
@@ -3326,6 +3398,21 @@ async function cloneClip(argumentsValue) {
     throw new Error("Premiere rejected the clip clone transaction.");
   }
 
+  let afterDestination = null;
+  try {
+    afterDestination = await snapshotTrackItems(project,sequence,kind,destinationTrack);
+  } catch {
+    afterDestination = null;
+  }
+  const candidates = Array.isArray(afterDestination) ? afterDestination.filter(row =>
+    row.mediaId === sourceMediaId
+      && closeTimelineSeconds(row.startSeconds,destinationSeconds)
+      && closeTimelineSeconds(row.durationSeconds,durationSeconds)
+  ) : [];
+  const verified = Array.isArray(afterDestination)
+    && afterDestination.length === beforeDestination.length + 1
+    && candidates.length === 1;
+
   return {
     cloned: true,
     destinationTrack,
@@ -3333,13 +3420,19 @@ async function cloneClip(argumentsValue) {
     kind,
     track: trackIndex,
     clipIndex,
-    sourceStartSeconds: start?.seconds ?? null,
+    sourceStartSeconds,
+    sourceEndSeconds,
+    durationSeconds,
     destinationSeconds,
     timeOffsetSeconds,
     videoTrackOffset,
     audioTrackOffset,
     alignToVideo,
-    insert
+    insert,
+    candidateCount: candidates.length,
+    verificationStatus: verified ? "verified_delta" : "accepted_unverified",
+    uncertain: !verified,
+    retrySafe: false
   };
 }
 
@@ -3349,6 +3442,7 @@ async function snapshotTrackItems(project, sequence, kind, trackIndex) {
     : await sequence.getAudioTrack(trackIndex);
   if (!track) throw new Error("Requested Premiere destination track was not found.");
   const items = await sortedClipItems(track);
+  if (items.length > 1000) throw new Error("Track snapshot exceeds the 1,000-clip correlation bound.");
   const rows = [];
   for (let clipIndex = 0; clipIndex < items.length; clipIndex += 1) {
     const item = items[clipIndex];

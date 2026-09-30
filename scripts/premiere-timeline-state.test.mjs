@@ -48,3 +48,35 @@ test("desktop core timeline tools refuse accepted-unverified results",()=>{
     assert.match(arm,/retry_safe/);
   }
 });
+
+
+test("clone requires an exact +1 media/time delta before success",()=>{
+  const clone=uxp.slice(uxp.indexOf("async function cloneClip"),uxp.indexOf("async function snapshotTrackItems"));
+  assert.match(clone,/beforeDestination = await snapshotTrackItems/);
+  assert.match(clone,/assertResolvedClipMatchesActiveExpectation/);
+  assert.match(clone,/zero-displacement clone is ambiguous/);
+  assert.match(clone,/afterDestination\.length === beforeDestination\.length \+ 1/);
+  assert.match(clone,/candidates\.length === 1/);
+  assert.match(clone,/verificationStatus: verified \? "verified_delta" : "accepted_unverified"/);
+});
+
+test("delete verifies the exact expected track row set including ripple shift",()=>{
+  const del=uxp.slice(uxp.indexOf("async function deleteClip"),uxp.indexOf("function capabilityEvidence"));
+  assert.match(del,/beforeRows = await snapshotTrackItems/);
+  assert.match(del,/Delete verification requires a non-overlapping target/);
+  assert.match(del,/expectedRowsAfterDelete/);
+  assert.match(del,/timelineRowsMatchExpected/);
+  assert.match(del,/verificationStatus: verified \? "verified_delta" : "accepted_unverified"/);
+  assert.match(uxp,/Track snapshot exceeds the 1,000-clip correlation bound/);
+});
+
+test("desktop clone and delete refuse unverified native deltas",()=>{
+  for(const [name,next] of [["PremiereCloneClip","PremiereDeleteClip"],["PremiereDeleteClip","PremiereSetTrackMute"]]){
+    const start=rust.indexOf("ToolAction::"+name+" {",500000);
+    const end=rust.indexOf("\n        ToolAction::"+next,start+10);
+    const arm=rust.slice(start,end);
+    assert.match(arm,/verified_delta/);
+    assert.match(arm,/success: verified/);
+    assert.match(arm,/retry_safe/);
+  }
+});

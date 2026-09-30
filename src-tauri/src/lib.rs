@@ -11172,14 +11172,14 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }),
                 Duration::from_secs(30),
             ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_delta");
 
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
-                stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value}))
-                    .unwrap_or_else(|_| value.to_string()),
+                stdout: json!({"backup":backup,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereDeleteClip { kind, track, clip_index, ripple } => {
@@ -11194,15 +11194,13 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }),
                 Duration::from_secs(30),
             ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_delta");
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
-                stdout: serde_json::to_string_pretty(&json!({
-                    "backup": backup,
-                    "result": value
-                })).unwrap_or_else(|_| value.to_string()),
+                stdout: json!({"backup":backup,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereAcceptanceReport => {
