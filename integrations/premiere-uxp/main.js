@@ -741,6 +741,18 @@ async function insertMedia(argumentsValue) {
   };
 }
 
+function closeTimelineSeconds(actual, expected, epsilon = 0.001) {
+  return Number.isFinite(actual) && Number.isFinite(expected) && Math.abs(actual-expected) <= epsilon;
+}
+
+async function timelineItemMediaId(item) {
+  try {
+    return await projectItemId(await item.getProjectItem());
+  } catch {
+    return null;
+  }
+}
+
 async function trimClip(argumentsValue) {
   const kind =
     typeof argumentsValue?.kind === "string"
@@ -797,18 +809,28 @@ async function trimClip(argumentsValue) {
     );
   }
 
-  const currentStart = await item.getStartTime();
-  const currentEnd = await item.getEndTime();
-  const nextStart = startSeconds == null ? currentStart?.seconds : startSeconds;
-  const nextEnd = endSeconds == null ? currentEnd?.seconds : endSeconds;
+  const [currentStart,currentEnd,beforeMediaId] = await Promise.all([
+    item.getStartTime(), item.getEndTime(), timelineItemMediaId(item)
+  ]);
+  const currentStartSeconds = currentStart?.seconds;
+  const currentEndSeconds = currentEnd?.seconds;
+  const nextStart = startSeconds == null ? currentStartSeconds : startSeconds;
+  const nextEnd = endSeconds == null ? currentEndSeconds : endSeconds;
 
   if (
-    typeof nextStart !== "number" ||
-    typeof nextEnd !== "number" ||
+    !Number.isFinite(nextStart) ||
+    !Number.isFinite(nextEnd) ||
+    !Number.isFinite(currentStartSeconds) ||
+    !Number.isFinite(currentEndSeconds) ||
+    !beforeMediaId ||
     nextStart >= nextEnd
   ) {
-    throw new Error("Requested trim would create an invalid clip duration.");
+    throw new Error("Requested trim would create an invalid clip duration or target identity is unavailable.");
   }
+  if (closeTimelineSeconds(nextStart,currentStartSeconds) && closeTimelineSeconds(nextEnd,currentEndSeconds)) {
+    throw new Error("Requested trim is a no-op; no mutation was dispatched.");
+  }
+  await assertResolvedClipMatchesActiveExpectation(project,sequence,item,kind,trackIndex,clipIndex);
 
   let transactionSucceeded = false;
   project.lockedAccess(() => {
@@ -839,13 +861,33 @@ async function trimClip(argumentsValue) {
     throw new Error("Premiere rejected the trim transaction.");
   }
 
+  let observedStart = null;
+  let observedEnd = null;
+  let observedMediaId = null;
+  try {
+    const [afterStart,afterEnd,afterMediaId] = await Promise.all([
+      item.getStartTime(), item.getEndTime(), timelineItemMediaId(item)
+    ]);
+    observedStart = afterStart?.seconds ?? null;
+    observedEnd = afterEnd?.seconds ?? null;
+    observedMediaId = afterMediaId;
+  } catch {}
+  const verified = observedMediaId === beforeMediaId
+    && closeTimelineSeconds(observedStart,nextStart)
+    && closeTimelineSeconds(observedEnd,nextEnd);
+
   return {
     trimmed: true,
     kind,
     track: trackIndex,
     clipIndex,
     startSeconds: nextStart,
-    endSeconds: nextEnd
+    endSeconds: nextEnd,
+    observedStartSeconds: observedStart,
+    observedEndSeconds: observedEnd,
+    verificationStatus: verified ? "verified_readback" : "accepted_unverified",
+    uncertain: !verified,
+    retrySafe: false
   };
 }
 
@@ -889,11 +931,20 @@ async function moveClip(argumentsValue) {
     );
   }
 
-  const before = await item.getStartTime();
-  const nextStart = (before?.seconds ?? 0) + deltaSeconds;
-  if (nextStart < 0) {
-    throw new Error("Move would place the clip before sequence time zero.");
+  const [beforeStart,beforeEnd,beforeMediaId] = await Promise.all([
+    item.getStartTime(), item.getEndTime(), timelineItemMediaId(item)
+  ]);
+  const beforeStartSeconds = beforeStart?.seconds;
+  const beforeEndSeconds = beforeEnd?.seconds;
+  if (!Number.isFinite(beforeStartSeconds) || !Number.isFinite(beforeEndSeconds) || !beforeMediaId) {
+    throw new Error("Move target timing or media identity is unavailable.");
   }
+  const nextStart = beforeStartSeconds + deltaSeconds;
+  const nextEnd = beforeEndSeconds + deltaSeconds;
+  if (nextStart < 0 || nextEnd > 86400) {
+    throw new Error("Move would place the clip outside the bounded sequence time.");
+  }
+  await assertResolvedClipMatchesActiveExpectation(project,sequence,item,kind,trackIndex,clipIndex);
 
   let transactionSucceeded = false;
   project.lockedAccess(() => {
@@ -909,14 +960,36 @@ async function moveClip(argumentsValue) {
     throw new Error("Premiere rejected the clip move transaction.");
   }
 
+  let observedStart = null;
+  let observedEnd = null;
+  let observedMediaId = null;
+  try {
+    const [afterStart,afterEnd,afterMediaId] = await Promise.all([
+      item.getStartTime(), item.getEndTime(), timelineItemMediaId(item)
+    ]);
+    observedStart = afterStart?.seconds ?? null;
+    observedEnd = afterEnd?.seconds ?? null;
+    observedMediaId = afterMediaId;
+  } catch {}
+  const verified = observedMediaId === beforeMediaId
+    && closeTimelineSeconds(observedStart,nextStart)
+    && closeTimelineSeconds(observedEnd,nextEnd);
+
   return {
     moved: true,
     kind,
     track: trackIndex,
     clipIndex,
     deltaSeconds,
-    previousStartSeconds: before?.seconds ?? null,
-    newStartSeconds: nextStart
+    previousStartSeconds: beforeStartSeconds,
+    previousEndSeconds: beforeEndSeconds,
+    newStartSeconds: nextStart,
+    newEndSeconds: nextEnd,
+    observedStartSeconds: observedStart,
+    observedEndSeconds: observedEnd,
+    verificationStatus: verified ? "verified_readback" : "accepted_unverified",
+    uncertain: !verified,
+    retrySafe: false
   };
 }
 
@@ -4233,23 +4306,37 @@ async function rollEdit(argumentsValue) {
     throw new Error("One or both roll-edit clips were not found.");
   }
 
-  const [leftStart, leftEnd, rightStart, rightEnd] = await Promise.all([
+  const [leftStart,leftEnd,rightStart,rightEnd,leftMediaId,rightMediaId] = await Promise.all([
     left.getStartTime(),
     left.getEndTime(),
     right.getStartTime(),
-    right.getEndTime()
+    right.getEndTime(),
+    timelineItemMediaId(left),
+    timelineItemMediaId(right)
   ]);
 
-  const leftStartSeconds = leftStart?.seconds ?? 0;
-  const leftEndSeconds = leftEnd?.seconds ?? 0;
-  const rightStartSeconds = rightStart?.seconds ?? 0;
-  const rightEndSeconds = rightEnd?.seconds ?? 0;
+  const leftStartSeconds = leftStart?.seconds;
+  const leftEndSeconds = leftEnd?.seconds;
+  const rightStartSeconds = rightStart?.seconds;
+  const rightEndSeconds = rightEnd?.seconds;
 
+  if (![leftStartSeconds,leftEndSeconds,rightStartSeconds,rightEndSeconds].every(Number.isFinite)
+      || !leftMediaId || !rightMediaId) {
+    throw new Error("Roll-edit target timing or media identity is unavailable.");
+  }
+  if (!closeTimelineSeconds(leftEndSeconds,rightStartSeconds)) {
+    throw new Error("Roll edit requires clips that share one inspected boundary.");
+  }
   if (boundarySeconds <= leftStartSeconds || boundarySeconds >= rightEndSeconds) {
     throw new Error(
       "Roll-edit boundary must stay after the left clip start and before the right clip end."
     );
   }
+  if (closeTimelineSeconds(boundarySeconds,leftEndSeconds)) {
+    throw new Error("Requested roll edit is a no-op; no mutation was dispatched.");
+  }
+  await assertResolvedClipMatchesActiveExpectation(project,sequence,left,kind,trackIndex,leftClipIndex);
+  await assertResolvedClipMatchesActiveExpectation(project,sequence,right,kind,trackIndex,rightClipIndex);
 
   let transactionSucceeded = false;
   project.lockedAccess(() => {
@@ -4270,6 +4357,31 @@ async function rollEdit(argumentsValue) {
     throw new Error("Premiere rejected the rolling edit transaction.");
   }
 
+  let observedLeftStart = null;
+  let observedLeftEnd = null;
+  let observedRightStart = null;
+  let observedRightEnd = null;
+  let observedLeftMediaId = null;
+  let observedRightMediaId = null;
+  try {
+    const values = await Promise.all([
+      left.getStartTime(), left.getEndTime(), right.getStartTime(), right.getEndTime(),
+      timelineItemMediaId(left), timelineItemMediaId(right)
+    ]);
+    observedLeftStart = values[0]?.seconds ?? null;
+    observedLeftEnd = values[1]?.seconds ?? null;
+    observedRightStart = values[2]?.seconds ?? null;
+    observedRightEnd = values[3]?.seconds ?? null;
+    observedLeftMediaId = values[4];
+    observedRightMediaId = values[5];
+  } catch {}
+  const verified = observedLeftMediaId === leftMediaId
+    && observedRightMediaId === rightMediaId
+    && closeTimelineSeconds(observedLeftStart,leftStartSeconds)
+    && closeTimelineSeconds(observedLeftEnd,boundarySeconds)
+    && closeTimelineSeconds(observedRightStart,boundarySeconds)
+    && closeTimelineSeconds(observedRightEnd,rightEndSeconds);
+
   return {
     rolled: true,
     kind,
@@ -4280,7 +4392,14 @@ async function rollEdit(argumentsValue) {
       leftEndSeconds,
       rightStartSeconds
     },
-    boundarySeconds
+    boundarySeconds,
+    observedBoundary: {
+      leftEndSeconds: observedLeftEnd,
+      rightStartSeconds: observedRightStart
+    },
+    verificationStatus: verified ? "verified_readback" : "accepted_unverified",
+    uncertain: !verified,
+    retrySafe: false
   };
 }
 
