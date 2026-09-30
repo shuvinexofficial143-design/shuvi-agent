@@ -183,6 +183,10 @@ pub fn capability_report()->Value {
             "project_save_persistence":"source_supported_with_independent_file_fingerprint",
             "shape_primitive":"source_supported_rectangle_ellipse_with_fill_stroke_readback",
             "text_animator":"source_supported_allowlisted_property_with_range_selector_readback",
+            "project_item_inspection":"source_supported_bounded_512_items",
+            "effect_inspection":"source_supported_bounded_256_effects",
+            "keyframe_inspection":"source_supported_bounded_512_keys",
+            "layer_property_tree":"source_supported_depth_6_nodes_1024",
             "runtime_verified":"not_verified"
         },
         "safety":[
