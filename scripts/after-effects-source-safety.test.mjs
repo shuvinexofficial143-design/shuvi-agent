@@ -346,3 +346,22 @@ test("AE hand-track rig only applies grounded samples and never claims native de
   assert.notEqual(start,-1);
   assert.match(jsx.slice(start,next<0?jsx.length:next),/retry_safe:false/);
 });
+
+
+test("AE Essential Properties are bounded stale-guarded and media-compatible",()=>{
+  for(const action of ["inspect_essential_properties","set_essential_property","set_essential_media_source"]){
+    assert.match(transport,new RegExp('"' + action + '"'));
+    assert.match(jsx,new RegExp('action === "' + action + '"'));
+  }
+  assert.match(rust,/"essential_property_inspection":"source_supported_bounded_256_with_source_and_alternate_media_identity"/);
+  assert.match(rust,/"essential_property_static_write":"source_supported_non_media_unkeyed_with_name_stale_guard_and_readback"/);
+  assert.match(rust,/"essential_media_replacement":"source_supported_compatible_item_with_current_alternate_stale_guard_and_readback"/);
+  assert.match(jsx,/ADBE Layer Overrides/);
+  assert.match(jsx,/group\.numProperties>256/);
+  assert.match(jsx,/Essential Property name stale guard changed/);
+  assert.match(jsx,/Static Essential Property write refused because keyframes already exist/);
+  assert.match(jsx,/expected_alternate_source_item_id stale guard/);
+  assert.match(jsx,/isMediaReplacementCompatible!==true/);
+  assert.match(jsx,/setAlternateSource\(source\)/);
+  assert.match(jsx,/verified_essential_media_readback/);
+});
