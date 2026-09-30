@@ -209,6 +209,7 @@
             verification_status: "verified_readback",
             ae_version: String(app.version),
             project_file: project.file ? project.file.fsName : null,
+            project_revision: project.revision,
             item_count: project.numItems,
             item_scan_truncated: project.numItems > MAX_ITEMS,
             active_comp_id: active && active instanceof CompItem ? active.id : null,
@@ -1893,9 +1894,16 @@
         if (typeof expected !== "string" || expected.length === 0 || expected.length > 4096) {
             fail("Mutating After Effects action requires exact expected_project_file.");
         }
+        var expectedRevision=request.expected_project_revision;
+        if(!finiteNumber(expectedRevision)||Math.floor(expectedRevision)!==expectedRevision||expectedRevision<1) {
+            fail("Mutating After Effects action requires exact expected_project_revision.");
+        }
         var project = requireProject();
         if (!project.file || !sameProjectPath(expected, project.file.fsName)) {
             fail("Active After Effects project file changed; mutation refused.");
+        }
+        if(project.revision!==expectedRevision) {
+            fail("After Effects project revision changed; stale mutation refused.");
         }
     }
     function dispatch(request) {
