@@ -174,6 +174,8 @@ pub fn capability_report()->Value {
             "text_document_style":"source_supported_with_requested_field_readback",
             "keyframe_interpolation":"source_supported_with_in_out_type_readback",
             "keyframe_remove":"source_supported_with_time_stale_guard_and_delta_readback",
+            "keyframe_temporal_ease":"source_supported_with_dimension_bound_speed_influence_readback",
+            "layer_timing":"source_supported_with_start_in_out_stretch_readback",
             "runtime_verified":"not_verified"
         },
         "safety":[
