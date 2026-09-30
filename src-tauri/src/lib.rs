@@ -8399,7 +8399,11 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                         json!({"name":chapter.name,"markerType":"Chapter","seconds":chapter.seconds,"durationSeconds":0,"comments":""}),
                         Duration::from_secs(20),
                     ).await {
-                        Ok(value)=>marker_results.push(json!({"name":chapter.name,"seconds":chapter.seconds,"status":"accepted","native_result":value})),
+                        Ok(value)=>{
+                            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_delta");
+                            marker_results.push(json!({"name":chapter.name,"seconds":chapter.seconds,"status":if verified {"verified"}else{"accepted_unverified"},"post_state_verified":verified,"native_result":value}));
+                            if !verified {uncertain=true;break;}
+                        },
                         Err(error)=>{
                             uncertain=true;
                             marker_results.push(json!({"name":chapter.name,"status":"uncertain","reason":error.chars().take(240).collect::<String>()}));
@@ -8435,7 +8439,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 &&shot_results.len()==assembly.shots.len()&&shot_results.iter().all(|row|row["status"]=="verified")
                 &&music_results.len()==assembly.music.len()&&music_results.iter().all(|row|row["status"]=="verified")
                 &&transition_results.len()==assembly.transitions.len()&&transition_results.iter().all(|row|row["status"]=="verified")
-                &&marker_results.len()==assembly.chapters.len()&&marker_results.iter().all(|row|row["status"]=="accepted")
+                &&marker_results.len()==assembly.chapters.len()&&marker_results.iter().all(|row|row["status"]=="verified")
                 &&graphics_complete;
 
             Ok(ActionResult{

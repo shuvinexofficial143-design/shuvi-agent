@@ -78,3 +78,16 @@ test("advanced assembly stops after an accepted but unverified transition",()=>{
   assert.match(arm,/if !verified \{uncertain=true;break;\}/);
   assert.match(arm,/transition_results\.iter\(\)\.all\(\|row\|row\["status"\]=="verified"\)/);
 });
+
+
+test("advanced assembly requires verified chapter marker deltas",()=>{
+  const start=rust.indexOf("ToolAction::PremiereAssembly{assembly,apply}");
+  const end=rust.indexOf("ToolAction::PremiereFinishMediaBatch",start);
+  const arm=rust.slice(start,end);
+  assert.match(arm,/"add_marker"/);
+  assert.match(arm,/Some\("verified_delta"\)/);
+  assert.match(arm,/"status":if verified \{"verified"\}else\{"accepted_unverified"\}/);
+  assert.match(arm,/"post_state_verified":verified/);
+  assert.match(arm,/if !verified \{uncertain=true;break;\}/);
+  assert.match(arm,/marker_results\.iter\(\)\.all\(\|row\|row\["status"\]=="verified"\)/);
+});
