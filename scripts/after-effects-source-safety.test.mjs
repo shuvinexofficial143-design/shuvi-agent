@@ -409,3 +409,22 @@ test("AE batch Essential bindings preflight every control before one undo-group 
   assert.notEqual(start,-1);
   assert.match(jsx.slice(start,next<0?jsx.length:next),/retry_safe:false/);
 });
+
+
+test("AE audio gain and envelope workflows preserve existing automation",()=>{
+  for(const action of ["inspect_audio_levels","set_audio_gain","apply_audio_envelope"]){
+    assert.match(transport,new RegExp('"' + action + '"'));
+    assert.match(jsx,new RegExp('action === "' + action + '"'));
+  }
+  assert.match(rust,/"audio_levels_inspection":"source_supported_bounded_512_keyframes"/);
+  assert.match(rust,/"audio_gain_static":"source_supported_zero_existing_keys_with_host_range_checks_and_readback"/);
+  assert.match(rust,/"audio_envelope":"source_supported_fresh_stereo_db_envelope_2_to_512_points_with_readback"/);
+  assert.match(jsx,/ADBE Audio Levels/);
+  assert.match(jsx,/Static audio gain refused because Audio Levels already has keyframes/);
+  assert.match(jsx,/Audio envelope requires zero existing Audio Levels keyframes/);
+  assert.match(jsx,/p\.setValuesAtTimes\(times,values\)/);
+  assert.match(jsx,/verified_audio_envelope_readback/);
+  const start=jsx.indexOf("function applyAudioEnvelope("),next=jsx.indexOf("\n    function ",start+10);
+  assert.notEqual(start,-1);
+  assert.match(jsx.slice(start,next<0?jsx.length:next),/retry_safe:false/);
+});
