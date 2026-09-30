@@ -47,7 +47,9 @@ impl Session {
                 || run.action_id.as_ref().is_some_and(|s|s.len()>80) || run.review_session_id.as_ref().is_some_and(|s|s.len()>80)
                 || run.state=="skipped" || matches!(run.state.as_str(),"completed"|"applied"|"review_required"|"reviewing")
                     && spec.stage_type!="review" && run.action_id.is_none()
-                || run.state=="completed" && spec.review_required && run.review_session_id.is_none() {return Err("Invalid stage evidence or transition state.".into());}
+                || run.state=="completed" && spec.review_required && run.review_session_id.is_none()
+                || run.state=="cancelled_after_apply" && (run.action_id.is_none() || run.reason.is_none())
+                || run.state=="uncertain" && run.reason.is_none() {return Err("Invalid stage evidence or transition state.".into());}
         }
         for e in &self.history {if !self.stages.iter().any(|s|s.id==e.stage_id) || !STATES.contains(&e.state.as_str())
             || e.action_id.as_ref().is_some_and(|s|s.len()>80){return Err("Invalid stage history.".into());}}
@@ -117,7 +119,7 @@ impl Session {
         self.event(i,"reviewing",None)?;
         if acceptable {self.event(i,"completed",None)}else{self.event(i,"failed",None)}
     }
-    pub fn cancel(&mut self){if self.status!="running" {return;} self.status="cancelled".into();self.current_stage=None;
+    fn normalize_cancelled_stages(&mut self){
         for run in &mut self.stages {
             match run.state.as_str() {
                 "pending"|"ready"|"awaiting_approval" => {
@@ -144,12 +146,17 @@ impl Session {
             }
         }
     }
+    pub fn cancel(&mut self){if self.status!="running" {return;} self.status="cancelled".into();self.current_stage=None;
+        self.normalize_cancelled_stages();
+    }
 }
 
 pub fn load(path:&Path)->Result<Session,String>{
     let read=|p:&Path| -> Result<Session,String>{let bytes=crate::read_file_bytes_bounded(p, MAX_BYTES, "Premiere persisted state")?;
         if bytes.len()>MAX_BYTES{return Err("Oversized edit session.".into());}
-        let session:Session=serde_json::from_slice(&bytes).map_err(|_|"Corrupt edit session.")?;session.validate()?;Ok(session)};
+        let mut session:Session=serde_json::from_slice(&bytes).map_err(|_|"Corrupt edit session.")?;
+        if session.status=="cancelled" {session.current_stage=None;session.normalize_cancelled_stages();}
+        session.validate()?;Ok(session)};
     read(path).or_else(|e|if path.with_extension("json.bak").exists(){
         let mut recovered=read(&path.with_extension("json.bak"))?;
         recovered.cancel();recovered.status="cancelled".into();recovered.current_stage=None;
