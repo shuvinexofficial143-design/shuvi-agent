@@ -365,3 +365,19 @@ test("AE Essential Properties are bounded stale-guarded and media-compatible",()
   assert.match(jsx,/setAlternateSource\(source\)/);
   assert.match(jsx,/verified_essential_media_readback/);
 });
+
+
+test("AE project panel organization stays exact stale-guarded and blocks recursive deletion",()=>{
+  for(const action of ["create_project_folder","set_project_item_state","remove_project_item"]){
+    assert.match(transport,new RegExp('"' + action + '"'));
+    assert.match(jsx,new RegExp('action === "' + action + '"'));
+  }
+  assert.match(rust,/"project_folder_create":"source_supported_with_parent_and_count_readback"/);
+  assert.match(rust,/"project_item_state":"source_supported_name_label_parent_with_stale_guards_and_readback"/);
+  assert.match(rust,/"project_item_remove":"source_supported_nonempty_folder_blocked_with_identity_and_count_delta"/);
+  assert.match(jsx,/Project item name stale guard changed/);
+  assert.match(jsx,/Project item parent folder stale guard changed/);
+  assert.match(jsx,/Project folder move would create a parent cycle/);
+  assert.match(jsx,/Non-empty project folders cannot be removed automatically/);
+  assert.match(jsx,/project\.itemByID\(id\)===null/);
+});
