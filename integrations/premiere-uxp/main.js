@@ -2943,12 +2943,27 @@ async function relinkMedia(argumentsValue) {
   const success = await clip.changeMediaFilePath(newPath, overrideCompatibility);
   if (!success) throw new Error("Premiere could not relink the requested media.");
 
+  let observedPath = null;
+  try {
+    const freshItem = await findProjectItemById(root,itemId);
+    const freshClip = freshItem ? asClipProjectItem(freshItem) : null;
+    if (freshClip) observedPath = await freshClip.getMediaFilePath();
+  } catch {
+    observedPath = null;
+  }
+  const verified = typeof observedPath === "string"
+    && normalizeMediaPath(observedPath) === normalizeMediaPath(newPath);
+
   return {
     relinked: true,
     itemId,
     previousPath,
     newPath,
-    overrideCompatibility
+    observedPath,
+    overrideCompatibility,
+    verificationStatus: verified ? "verified_readback" : "accepted_unverified",
+    uncertain: !verified,
+    retrySafe: false
   };
 }
 
@@ -2985,11 +3000,33 @@ async function attachProxy(argumentsValue) {
   const success = await clip.attachProxy(proxyPath, false, false);
   if (!success) throw new Error("Premiere could not attach the requested proxy.");
 
+  let observedHasProxy = null;
+  let observedProxyPath = null;
+  try {
+    const freshItem = await findProjectItemById(root,itemId);
+    const freshClip = freshItem ? asClipProjectItem(freshItem) : null;
+    if (freshClip) {
+      observedHasProxy = Boolean(await freshClip.hasProxy());
+      if (observedHasProxy) observedProxyPath = await freshClip.getProxyPath();
+    }
+  } catch {
+    observedHasProxy = null;
+    observedProxyPath = null;
+  }
+  const verified = observedHasProxy === true
+    && typeof observedProxyPath === "string"
+    && normalizeMediaPath(observedProxyPath) === normalizeMediaPath(proxyPath);
+
   return {
     attached: true,
     itemId,
     previousProxyPath,
-    proxyPath
+    proxyPath,
+    observedHasProxy,
+    observedProxyPath,
+    verificationStatus: verified ? "verified_readback" : "accepted_unverified",
+    uncertain: !verified,
+    retrySafe: false
   };
 }
 

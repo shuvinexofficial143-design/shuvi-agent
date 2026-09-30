@@ -74,3 +74,33 @@ test("AD mutation never advertises retry safety",()=>{
   assert.match(uxp,/retrySafe:false/);
   assert.match(rust,/"retry_safe":false/);
 });
+
+test("relink and proxy attachment require exact native path readback",()=>{
+  const relink=uxp.slice(uxp.indexOf("async function relinkMedia"),uxp.indexOf("async function attachProxy"));
+  assert.match(relink,/observedPath/);
+  assert.match(relink,/normalizeMediaPath\(observedPath\) === normalizeMediaPath\(newPath\)/);
+  assert.match(relink,/verificationStatus: verified \? "verified_readback" : "accepted_unverified"/);
+
+  const proxy=uxp.slice(uxp.indexOf("async function attachProxy"),uxp.indexOf("function summarizeInsertedTrackItems"));
+  assert.match(proxy,/observedHasProxy === true/);
+  assert.match(proxy,/normalizeMediaPath\(observedProxyPath\) === normalizeMediaPath\(proxyPath\)/);
+  assert.match(proxy,/retrySafe: false/);
+});
+
+test("single and batch media relink/proxy callers stop on unverified readback",()=>{
+  for(const name of ["PremiereRelinkMedia","PremiereAttachProxy"]){
+    const start=rust.lastIndexOf("ToolAction::"+name);
+    const end=rust.indexOf("\n        ToolAction::Premiere",start+10);
+    const arm=rust.slice(start,end);
+    assert.match(arm,/verified_readback/);
+    assert.match(arm,/success: verified/);
+  }
+  for(const [name,next] of [["PremiereBatchRelink","PremiereBatchAttachProxy"],["PremiereBatchAttachProxy","PremiereImportMedia"]]){
+    const start=rust.lastIndexOf("ToolAction::"+name);
+    const end=rust.indexOf("\n        ToolAction::"+next,start+10);
+    const arm=rust.slice(start,end);
+    assert.match(arm,/verified_readback/);
+    assert.match(arm,/if !verified/);
+    assert.match(arm,/uncertain":!verified/);
+  }
+});

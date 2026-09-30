@@ -10362,13 +10362,13 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }),
                 Duration::from_secs(30),
             ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
-                stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value}))
-                    .unwrap_or_else(|_| value.to_string()),
+                stdout: json!({"backup":backup,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereInspectMediaInterpretation {item_id} => {
@@ -10661,13 +10661,13 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 json!({ "itemId": item_id, "proxyPath": proxy_path }),
                 Duration::from_secs(30),
             ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
-                stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value}))
-                    .unwrap_or_else(|_| value.to_string()),
+                stdout: json!({"backup":backup,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereInsertMogrtPath { path, seconds, video_track, audio_track } => {
@@ -10728,11 +10728,16 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     item.clone(),
                     Duration::from_secs(30),
                 ).await {
-                    Ok(result) => results.push(json!({
-                        "itemId": item_id,
-                        "success": true,
-                        "result": result
-                    })),
+                    Ok(result) => {
+                        let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+                        results.push(json!({
+                            "itemId":item_id,"success":verified,"uncertain":!verified,"result":result
+                        }));
+                        if !verified {
+                            failures += 1;
+                            break;
+                        }
+                    },
                     Err(error) => {
                         failures += 1;
                         results.push(json!({
@@ -10761,7 +10766,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 stderr: if failures == 0 && results.len() == total {
                     String::new()
                 } else {
-                    format!("{failures} of {total} Premiere relink operations failed; successful earlier items were not rolled back.")
+                    format!("{failures} of {total} Premiere relink operations failed or remained unverified; successful earlier items were not rolled back.")
                 },
                 exit_code: Some(if failures == 0 && results.len() == total { 0 } else { 1 }),
             })
@@ -10781,11 +10786,16 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     item.clone(),
                     Duration::from_secs(30),
                 ).await {
-                    Ok(result) => results.push(json!({
-                        "itemId": item_id,
-                        "success": true,
-                        "result": result
-                    })),
+                    Ok(result) => {
+                        let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+                        results.push(json!({
+                            "itemId":item_id,"success":verified,"uncertain":!verified,"result":result
+                        }));
+                        if !verified {
+                            failures += 1;
+                            break;
+                        }
+                    },
                     Err(error) => {
                         failures += 1;
                         results.push(json!({
@@ -10814,7 +10824,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 stderr: if failures == 0 && results.len() == total {
                     String::new()
                 } else {
-                    format!("{failures} of {total} Premiere proxy operations failed; successful earlier items were not rolled back.")
+                    format!("{failures} of {total} Premiere proxy operations failed or remained unverified; successful earlier items were not rolled back.")
                 },
                 exit_code: Some(if failures == 0 && results.len() == total { 0 } else { 1 }),
             })
