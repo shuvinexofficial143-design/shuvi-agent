@@ -303,3 +303,19 @@ test("AE mutations bind to documented project revision as a stale-state guard",(
   assert.match(rust,/"project_revision_counter":\{"state":"documented_and_required_for_mutation"/);
   assert.match(lib,/expected_project_revision/);
 });
+
+
+test("AE MOGRT authoring uses capability checks controller deltas and exact file evidence",()=>{
+  for(const action of ["inspect_mogrt","add_mogrt_property","add_mogrt_media_layer","export_mogrt"]){
+    assert.match(transport,new RegExp('"' + action + '"'));
+    assert.match(jsx,new RegExp('action === "' + action + '"'));
+  }
+  assert.match(rust,/"mogrt_property_controller_add":"source_supported_with_controller_inventory_delta"/);
+  assert.match(rust,/"mogrt_media_controller_add":"source_supported_with_controller_inventory_delta"/);
+  assert.match(rust,/"mogrt_export":"source_supported_host_export_plus_desktop_exact_file_evidence"/);
+  assert.match(jsx,/canAddToMotionGraphicsTemplate\(comp\)/);
+  assert.match(jsx,/addToMotionGraphicsTemplateAs\(comp,name\)/);
+  assert.match(jsx,/stringInventoryAddedOnce\(before,after,name\)/);
+  assert.match(jsx,/exportAsMotionGraphicsTemplate\(overwrite,file\.parent\.fsName\)/);
+  assert.match(jsx,/desktop_file_verification_required:true/);
+});
