@@ -126,19 +126,29 @@ pub fn load(path:&Path)->Result<Session,String>{
     let read=|p:&Path| -> Result<Session,String>{let bytes=crate::read_file_bytes_bounded(p, MAX_BYTES, "Premiere persisted state")?;
         if bytes.len()>MAX_BYTES{return Err("Oversized edit session.".into());}
         let session:Session=serde_json::from_slice(&bytes).map_err(|_|"Corrupt edit session.")?;session.validate()?;Ok(session)};
-    read(path).or_else(|e|if path.with_extension("json.bak").exists(){read(&path.with_extension("json.bak"))}else{Err(e)})
+    read(path).or_else(|e|if path.with_extension("json.bak").exists(){
+        let mut recovered=read(&path.with_extension("json.bak"))?;
+        recovered.cancel();recovered.status="cancelled".into();recovered.current_stage=None;
+        Ok(recovered)
+    }else{Err(e)})
 }
 pub fn save(path:&Path,session:&Session)->Result<(),String>{
     session.validate()?;let bytes=serde_json::to_vec(session).map_err(|e|e.to_string())?;
-    let tmp=path.with_extension("json.tmp");let bak=path.with_extension("json.bak");
-    fs::write(&tmp,bytes).map_err(|e|e.to_string())?;
-    if path.exists(){if bak.exists(){fs::remove_file(&bak).map_err(|e|e.to_string())?;}fs::rename(path,&bak).map_err(|e|e.to_string())?;}
-    if let Err(e)=fs::rename(&tmp,path){if bak.exists(){let _=fs::rename(&bak,path);}return Err(e.to_string());}
-    if bak.exists(){let _=fs::remove_file(bak);}Ok(())
+    crate::premiere_store::replace(path,&bytes,MAX_BYTES,|data|{
+        let session:Session=serde_json::from_slice(data).map_err(|e|e.to_string())?;session.validate()
+    })
 }
 
 #[cfg(test)] mod tests {
     use super::*;
+    #[test]fn backup_recovery_never_resumes_an_older_running_session(){
+        let r=Request{preset:"social_reel".into(),targets:Default::default(),inputs:Default::default(),options:Default::default()};
+        let s=Session::new("id".into(),r,"p","s",None).unwrap();
+        let path=std::env::temp_dir().join(format!("shuvi-session-recover-{}.json",uuid::Uuid::new_v4()));
+        save(&path,&s).unwrap();save(&path,&s).unwrap();fs::write(&path,b"broken").unwrap();
+        let mut recovered=load(&path).unwrap();assert_eq!(recovered.status,"cancelled");assert!(recovered.next().is_err());
+        fs::remove_file(&path).unwrap();fs::remove_file(path.with_extension("json.bak")).unwrap();
+    }
     #[test]fn missing_inputs_block_and_never_complete(){let r=Request{preset:"social_reel".into(),targets:Default::default(),inputs:Default::default(),options:Default::default()};
         let mut s=Session::new("id".into(),r,"p","s",None).unwrap();assert_eq!(s.next().unwrap()["stage_id"],"inspect");
         assert!(s.record("pace","receipt","premiere_trim_clip",true).is_err());

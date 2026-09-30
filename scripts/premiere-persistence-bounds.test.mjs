@@ -10,7 +10,7 @@ test('durable snapshots flush exclusive temporary files and retain a validated b
   assert.match(store,/let primary_valid=primary_present && read_valid\(path\).is_ok\(\)/);
   const publication=store.slice(store.indexOf('fs::rename(&tmp,path)'));
   assert.doesNotMatch(publication,/remove_file/);
-  for(const name of ['export_jobs','acceptance','acceptance_execution','calibration']) {
+  for(const name of ['export_jobs','acceptance','acceptance_execution','calibration','edit_session','review','acceptance_harness']) {
     const source=readFileSync(`src-tauri/src/premiere_${name}.rs`,'utf8').split('#[cfg(test)]')[0];
     assert.match(source,/premiere_store::replace/,name);
     assert.doesNotMatch(source,/fs::write\(/,name);

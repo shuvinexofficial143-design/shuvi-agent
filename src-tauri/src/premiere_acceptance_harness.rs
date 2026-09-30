@@ -19,6 +19,14 @@ pub struct Registration {
 fn bounded(s: &str, limit: usize) -> bool { !s.trim().is_empty() && s.len() <= limit && !s.contains('\0') }
 
 impl Registration {
+    pub fn validate(&self)->Result<(),String>{
+        if self.schema_version!=1 || !self.explicitly_authorized || !bounded(&self.project_guid,240)
+            || !bounded(&self.project_path,1024) || !Path::new(&self.project_path).is_absolute()
+            || !self.project_path.to_ascii_lowercase().ends_with(".prproj")
+            || self.sequence_guid.as_ref().is_some_and(|s|!bounded(s,240)) || self.registered_at_ms==0 {
+            return Err("Invalid disposable project registration.".into());
+        }Ok(())
+    }
     pub fn new(project: &str, path: &str, sequence: Option<&str>, authorized: bool) -> Result<Self,String> {
         if !authorized || !bounded(project,240) || !bounded(path,1024)
             || sequence.is_some_and(|s| !bounded(s,240))
@@ -31,6 +39,7 @@ impl Registration {
                 .unwrap_or_default().as_millis() as u64, explicitly_authorized:true })
     }
     pub fn check(&self, context: &Value) -> Result<(),String> {
+        self.validate()?;
         if self.schema_version!=1 || !self.explicitly_authorized || !bounded(&self.project_guid,240)
             || !bounded(&self.project_path,1024) || !Path::new(&self.project_path).is_absolute()
             || !Path::new(&self.project_path).is_file()
@@ -52,7 +61,7 @@ pub fn load(path: &Path) -> Result<Option<Registration>,String> {
         let bytes=crate::read_file_bytes_bounded(p, MAX_BYTES, "Premiere persisted state")?;
         if bytes.len()>MAX_BYTES { return Err("Disposable registration exceeds limit.".into()); }
         let r:Registration=serde_json::from_slice(&bytes).map_err(|_|"Corrupt disposable registration.")?;
-        if r.schema_version!=1 || !r.explicitly_authorized {return Err("Invalid disposable registration.".into());}
+        r.validate()?;
         Ok(r)
     };
     if !path.exists() && !path.with_extension("json.bak").exists(){return Ok(None);}
@@ -60,15 +69,12 @@ pub fn load(path: &Path) -> Result<Option<Registration>,String> {
 }
 
 pub fn save(path:&Path, registration:&Registration) -> Result<(),String> {
+    registration.validate()?;
     let bytes=serde_json::to_vec(registration).map_err(|e|e.to_string())?;
     if bytes.len()>MAX_BYTES {return Err("Disposable registration exceeds limit.".into());}
-    let tmp=path.with_extension("json.tmp");let bak=path.with_extension("json.bak");
-    fs::write(&tmp,bytes).map_err(|e|e.to_string())?;
-    if path.exists(){if bak.exists(){fs::remove_file(&bak).map_err(|e|e.to_string())?;}
-        fs::rename(path,&bak).map_err(|e|e.to_string())?;}
-    if let Err(e)=fs::rename(&tmp,path){if bak.exists(){let _=fs::rename(&bak,path);}return Err(e.to_string());}
-    if bak.exists(){let _=fs::remove_file(bak);}
-    Ok(())
+    crate::premiere_store::replace(path,&bytes,MAX_BYTES,|data|{
+        let registration:Registration=serde_json::from_slice(data).map_err(|e|e.to_string())?;registration.validate()
+    })
 }
 
 pub fn plan(group:u8, registration:Option<&Registration>, context:Option<&Value>) -> Result<Value,String> {
