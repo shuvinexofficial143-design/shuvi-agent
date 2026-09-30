@@ -99,7 +99,13 @@ function createWorkflow(api) {
       if (index % 2 === 0) {
         dispatched = true;
         receipt = await api.subclip({itemId: s.request.item_id, name: `${id}-${Math.floor(index / 2) + 1}`, startSeconds: piece.source_range[0], endSeconds: piece.source_range[1], hardBoundaries: true, takeVideo: true, takeAudio: s.request.take_audio});
-        if (receipt.correlationVerified !== true || typeof receipt.createdItemId !== "string" || !receipt.createdItemId) throw new Error("Created subclip correlation is uncertain.");
+        if (receipt.correlationVerified !== true
+            || receipt.boundarySemanticsVerified !== true
+            || receipt.sourceBoundsVerified !== true
+            || receipt.mediaSelectionVerified !== true
+            || typeof receipt.createdItemId !== "string" || !receipt.createdItemId) {
+          throw new Error("Created subclip identity/bounds/media semantics are uncertain.");
+        }
         s.created = receipt.createdItemId;
       } else {
         dispatched = true;
