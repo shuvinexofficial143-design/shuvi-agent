@@ -137,3 +137,9 @@ test("Premiere project save does not promote host acceptance to verified persist
   assert.match(arm,/"retry_safe": false/);
   assert.doesNotMatch(arm,/success: true/);
 });
+
+test("timeline inspection exposes media identity needed for independent ripple-delete verification",()=>{
+  const summarize=uxp.slice(uxp.indexOf("async function summarizeTrackItem"),uxp.indexOf("async function timelineCapabilities"));
+  assert.match(summarize,/mediaId = await projectItemId\(await item\.getProjectItem\(\)\)/);
+  assert.match(summarize,/mediaId,/);
+});

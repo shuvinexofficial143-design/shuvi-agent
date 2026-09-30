@@ -595,11 +595,14 @@ async function summarizeTrackItem(item, clipIndex, context = null) {
   let selected = null;
   try { selected = await item.getIsSelected(); } catch {}
   let targetSignature = null;
+  let mediaId = null;
   if (context) {
     try { targetSignature = await clipTargetSignature(context.project, context.sequence, item, context.kind, trackIndex, clipIndex); } catch {}
+    try { mediaId = await projectItemId(await item.getProjectItem()); } catch {}
   }
   return {
     targetSignature,
+    mediaId,
     selected,
     linkedGroup: {supported: false, reason: "Native link inspection unavailable; no inferred links."},
     clipIndex,
