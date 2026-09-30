@@ -89,6 +89,32 @@ impl Action {
     }
     pub fn validate(&self)->Result<(),String>{
         self.fixture.expected.validate()?;
+        let fixture=&self.fixture;
+        let clip=fixture.expected.clips.first().ok_or("Acceptance clip expectation missing.")?;
+        if fixture.expected.clips.len()!=1 || fixture.kind!=clip.kind || fixture.track!=clip.track
+            || fixture.clip_index!=clip.clip_index || fixture.expected.sequence_guid.is_none()
+            || fixture.expected.project_path.as_deref()!=Some(self.project_path.as_str())
+            || self.before.get("targetSignature").and_then(Value::as_str)!=Some(clip.signature.as_str())
+            || !self.before.get("clip_count").and_then(Value::as_u64).is_some_and(|n|n>0 && n<=240) {
+            return Err("Persisted acceptance target does not match its exact fixture.".into());
+        }
+        let start=self.before.get("startSeconds").and_then(Value::as_f64).ok_or("Acceptance start missing.")?;
+        let end=self.before.get("endSeconds").and_then(Value::as_f64).ok_or("Acceptance end missing.")?;
+        if !start.is_finite() || !end.is_finite() || start<0.0 || end>86400.0 || start>=end {
+            return Err("Invalid persisted acceptance timing.".into());
+        }
+        match self.step.as_str() {
+            "trim" if fixture.delta_seconds.is_some()
+                || fixture.start_seconds.is_none() && fixture.end_seconds.is_none()
+                || fixture.start_seconds.unwrap_or(start)>=fixture.end_seconds.unwrap_or(end)
+                || fixture.start_seconds.is_some_and(|n|!n.is_finite() || n<0.0 || n>=end || (n-start).abs()>3.0)
+                || fixture.end_seconds.is_some_and(|n|!n.is_finite() || n<=start || n>86400.0 || (n-end).abs()>3.0)
+                => return Err("Invalid persisted acceptance trim.".into()),
+            "move"|"clone" if fixture.start_seconds.is_some() || fixture.end_seconds.is_some()
+                || !fixture.delta_seconds.is_some_and(|n|n.is_finite() && n!=0.0 && n.abs()<=3.0 && start+n>=0.0 && end+n<=86400.0)
+                => return Err("Invalid persisted acceptance offset.".into()),
+            _=>{}
+        }
         if self.schema_version!=1 || self.group!=2 || !matches!(self.step.as_str(),"trim"|"move"|"clone"|"scene_markers")
             || (self.step=="scene_markers" && (self.fixture.kind!="video" || self.fixture.start_seconds.is_some()
                 || self.fixture.end_seconds.is_some() || self.fixture.delta_seconds.is_some()))
@@ -211,9 +237,11 @@ fn track<'a>(timeline:&'a Value,fixture:&Fixture)->Result<&'a Value,String>{
         .and_then(|v|v.iter().find(|t|t["index"]==fixture.track)).ok_or("Acceptance track missing.".into())
 }
 pub fn exact_clip(timeline:&Value,fixture:&Fixture)->Result<Value,String>{
+    let expected=fixture.expected.clips.first().filter(|_|fixture.expected.clips.len()==1)
+        .ok_or("Acceptance requires one exact clip expectation.")?;
     let items=track(timeline,fixture)?.get("items").and_then(Value::as_array).ok_or("Track items missing.")?;
     let clip=items.iter().find(|c|c["clipIndex"]==fixture.clip_index).ok_or("Exact clip missing.")?;
-    if clip.get("targetSignature").and_then(Value::as_str)!=Some(fixture.expected.clips[0].signature.as_str()) {
+    if clip.get("targetSignature").and_then(Value::as_str)!=Some(expected.signature.as_str()) {
         return Err("Clip target signature changed before acceptance.".into());
     }
     Ok(json!({"name":clip.get("name"),"startSeconds":clip.get("startSeconds"),"endSeconds":clip.get("endSeconds"),
@@ -255,7 +283,13 @@ pub fn load(path:&Path)->Result<Action,String>{
     let read=|p:&Path|->Result<Action,String>{let bytes=crate::read_file_bytes_bounded(p, MAX_BYTES, "Premiere persisted state")?;
         if bytes.len()>MAX_BYTES {return Err("Oversized acceptance action.".into());}
         let action:Action=serde_json::from_slice(&bytes).map_err(|_|"Corrupt acceptance action.")?;action.validate()?;Ok(action)};
-    read(path).or_else(|e|if path.with_extension("json.bak").exists(){read(&path.with_extension("json.bak"))}else{Err(e)})
+    read(path).or_else(|e|if path.with_extension("json.bak").exists(){
+        let mut recovered=read(&path.with_extension("json.bak"))?;
+        // A backup can precede dispatch or cancellation. Never revive its prepared action.
+        recovered.status="uncertain".into();recovered.recovery_verified=false;
+        recovered.recovery=Some("Recovered an older acceptance snapshot; execution/cancellation may have occurred. Inspect the host; do not replay.".into());
+        Ok(recovered)
+    }else{Err(e)})
 }
 pub fn save(path:&Path,action:&Action)->Result<(),String>{
     action.validate()?;let bytes=serde_json::to_vec(action).map_err(|e|e.to_string())?;
@@ -268,6 +302,24 @@ pub fn save(path:&Path,action:&Action)->Result<(),String>{
 
 #[cfg(test)] mod tests {
     use super::*;
+    #[test]fn persisted_fixture_cannot_drop_or_retarget_clip_or_enlarge_mutation(){
+        let (f,c,t)=fixture();let a=Action::new("a".into(),"trim".into(),f,&c,&t).unwrap();
+        let mut bad=a.clone();bad.fixture.expected.clips.clear();assert!(bad.validate().is_err());
+        assert!(exact_clip(&t,&bad.fixture).is_err());
+        let mut bad=a.clone();bad.fixture.clip_index=1;assert!(bad.validate().is_err());
+        let mut bad=a.clone();bad.fixture.expected.sequence_guid=None;assert!(bad.validate().is_err());
+        let mut bad=a.clone();bad.fixture.start_seconds=Some(99.0);assert!(bad.validate().is_err());
+        let mut bad=a.clone();bad.before["targetSignature"]=json!("different");assert!(bad.validate().is_err());
+    }
+    #[test]fn recovered_pre_dispatch_backup_cannot_authorize_replay(){
+        let (f,c,t)=fixture();let a=Action::new("a".into(),"trim".into(),f,&c,&t).unwrap();
+        let path=std::env::temp_dir().join(format!("shuvi-acceptance-recovery-{}.json",uuid::Uuid::new_v4()));
+        fs::write(path.with_extension("json.bak"),serde_json::to_vec(&a).unwrap()).unwrap();
+        fs::write(&path,b"corrupt").unwrap();
+        let recovered=load(&path).unwrap();assert_eq!(recovered.status,"uncertain");
+        assert!(!recovered.recovery_verified);
+        fs::remove_file(&path).unwrap();fs::remove_file(path.with_extension("json.bak")).unwrap();
+    }
     fn fixture()->(Fixture,Value,Value){
         let expected:PremiereExpectation=serde_json::from_value(json!({"project_guid":"p","project_path":"C:/disposable.prproj",
             "sequence_guid":"s","clips":[{"kind":"video","track":0,"clip_index":0,"signature":"sig"}]})).unwrap();

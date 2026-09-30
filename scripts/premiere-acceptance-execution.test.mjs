@@ -17,3 +17,14 @@ test("acceptance executor is one preplanned typed action under existing approval
   assert.match(source,/native_accepted && verify/);
   assert.doesNotMatch(source,/eval\(|executeTransaction|std::process::Command/);
 });
+
+test("persisted acceptance revalidates exact fixtures and backup recovery cannot replay prepared work",()=>{
+  const validation=source.slice(source.indexOf('pub fn validate(&self)'),source.indexOf('pub fn identity('));
+  assert.match(validation,/fixture.expected.clips.len\(\)!=1/);
+  assert.match(validation,/fixture.clip_index!=clip.clip_index/);
+  assert.match(validation,/self.before.get\("targetSignature"\)/);
+  assert.match(validation,/n.abs\(\)<=3.0/);
+  const load=source.slice(source.indexOf('pub fn load('),source.indexOf('pub fn save('));
+  assert.match(load,/recovered.status="uncertain"/);
+  assert.match(load,/recovered.recovery_verified=false/);
+});
