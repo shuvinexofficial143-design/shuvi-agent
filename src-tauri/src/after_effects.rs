@@ -12,7 +12,6 @@ const MAX_SECONDS:f64=10_800.0;
 pub struct Target {
     pub comp_id:u32,
     pub layer_id:Option<u32>,
-    pub expected_project_revision:Option<u64>,
 }
 impl Target {
     pub fn validate(&self)->Result<(),String>{
@@ -127,7 +126,7 @@ pub fn capability_report()->Value {
         "current_transport":{
             "kind":"extendscript_afterfx_r",
             "state":"source_planned_unverified",
-            "requires_running_after_effects":true,
+            "requires_afterfx_executable":true,
             "requires_script_file_access_for_bidirectional_receipts":true
         },
         "future_transport":{
@@ -169,7 +168,7 @@ mod tests {
 
     fn property()->PropertyTarget {
         PropertyTarget{
-            target:Target{comp_id:12,layer_id:Some(34),expected_project_revision:Some(5)},
+            target:Target{comp_id:12,layer_id:Some(34)},
             path:vec![
                 PropertySegment{match_name:"ADBE Transform Group".into(),property_index:Some(1)},
                 PropertySegment{match_name:"ADBE Position".into(),property_index:Some(2)}
