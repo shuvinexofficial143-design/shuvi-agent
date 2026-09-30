@@ -51,8 +51,8 @@
         if (!item || !(item instanceof CompItem) || item.id !== compId) fail("Target composition ID is stale or unavailable.");
         return item;
     }
-    function resolveLayer(comp, layerId) {
-        if (!finiteNumber(layerId) || layerId <= 0 || Math.floor(layerId) !== layerId) fail("Exact positive layer_id required.");
+    function findLayerById(comp, layerId) {
+        if (!finiteNumber(layerId) || layerId <= 0 || Math.floor(layerId) !== layerId) return null;
         var limit = Math.min(comp.numLayers, MAX_LAYERS);
         var found = null, i;
         for (i = 1; i <= limit; i++) {
@@ -62,6 +62,10 @@
                 found = layer;
             }
         }
+        return found;
+    }
+    function resolveLayer(comp, layerId) {
+        var found = findLayerById(comp, layerId);
         if (!found) fail("Target layer ID is stale or outside the target composition.");
         return found;
     }
@@ -253,7 +257,7 @@
         return {
             native_accepted: true,
             verification_status: verified ? "verified_delta" : "accepted_unverified",
-            retry_safe: verified,
+            retry_safe: false,
             comp_id: comp.id,
             layer_id: layer.id,
             effect_match_name: matchName,
@@ -276,12 +280,285 @@
         return {
             native_accepted: true,
             verification_status: verified ? "verified_delta" : "accepted_unverified",
-            retry_safe: verified,
+            retry_safe: false,
             comp_id: comp.id,
             layer_id: layer ? layer.id : null,
             layer_index: layer ? layer.index : null,
             before_count: before,
             after_count: comp.numLayers
+        };
+    }
+    function addText(args) {
+        var comp = resolveComp(args.comp_id);
+        var text = args.text === undefined ? "" : String(args.text);
+        if (text.length > 16384) fail("Text layer content exceeds 16 KiB.");
+        var name = args.name === undefined ? null : boundedString(args.name, 120, "text layer name");
+        var before = comp.numLayers;
+        app.beginUndoGroup("Shuvi: Add text layer");
+        var layer;
+        try {
+            layer = comp.layers.addText(text);
+            if (name) layer.name = name;
+        } finally { app.endUndoGroup(); }
+        var source = layer ? layer.property("ADBE Text Properties").property("ADBE Text Document") : null;
+        var readText = source && source.value ? String(source.value.text) : null;
+        var verified = comp.numLayers === before + 1 && layer && layer.id > 0
+            && resolveLayer(comp, layer.id).id === layer.id && readText === text;
+        return {
+            native_accepted: true,
+            verification_status: verified ? "verified_creation_readback" : "accepted_unverified",
+            retry_safe: false,
+            comp_id: comp.id,
+            layer_id: layer ? layer.id : null,
+            layer_index: layer ? layer.index : null,
+            source_text: readText,
+            before_count: before,
+            after_count: comp.numLayers
+        };
+    }
+    function setExpression(args) {
+        var expression = args.expression;
+        if (typeof expression !== "string" || expression.length > 65535) fail("Expression must be a bounded string.");
+        var before = propertySnapshot(args.property);
+        var resolved = resolveProperty(args.property);
+        var p = resolved.property;
+        if (!p.canSetExpression) fail("Target property cannot accept expressions.");
+        app.beginUndoGroup("Shuvi: Set expression");
+        try { p.expression = expression; } finally { app.endUndoGroup(); }
+        var afterResolved = resolveProperty(args.property);
+        var afterP = afterResolved.property;
+        var errorText = String(afterP.expressionError || "");
+        var verified = String(afterP.expression) === expression && errorText === ""
+            && (expression.length > 0 ? !!afterP.expressionEnabled : !afterP.expressionEnabled);
+        return {
+            native_accepted: true,
+            verification_status: verified ? "verified_expression_readback" : "accepted_unverified",
+            retry_safe: verified,
+            before: before,
+            after: propertySnapshot(args.property),
+            expression_error: errorText
+        };
+    }
+    function setLayerParent(args) {
+        var comp = resolveComp(args.comp_id);
+        var layer = resolveLayer(comp, args.layer_id);
+        var parent = args.parent_layer_id === null || args.parent_layer_id === undefined ? null : resolveLayer(comp, args.parent_layer_id);
+        if (parent && parent.id === layer.id) fail("Layer cannot parent itself.");
+        var preserveVisual = args.preserve_visual !== false;
+        var beforeParent = layer.parent ? layer.parent.id : null;
+        app.beginUndoGroup("Shuvi: Set layer parent");
+        try {
+            if (preserveVisual) layer.parent = parent;
+            else if (parent) layer.setParentWithJump(parent);
+            else layer.setParentWithJump();
+        } finally { app.endUndoGroup(); }
+        layer = resolveLayer(comp, args.layer_id);
+        var afterParent = layer.parent ? layer.parent.id : null;
+        var requestedParent = parent ? parent.id : null;
+        var verified = afterParent === requestedParent;
+        return {
+            native_accepted: true,
+            verification_status: verified ? "verified_readback" : "accepted_unverified",
+            retry_safe: verified,
+            comp_id: comp.id,
+            layer_id: layer.id,
+            before_parent_layer_id: beforeParent,
+            after_parent_layer_id: afterParent,
+            preserve_visual: preserveVisual
+        };
+    }
+    function duplicateLayer(args) {
+        var comp = resolveComp(args.comp_id);
+        var source = resolveLayer(comp, args.layer_id);
+        var before = comp.numLayers;
+        var sourceName = String(source.name);
+        app.beginUndoGroup("Shuvi: Duplicate layer");
+        var copy;
+        try { copy = source.duplicate(); } finally { app.endUndoGroup(); }
+        var verified = comp.numLayers === before + 1 && copy && copy.id > 0 && copy.id !== source.id
+            && String(resolveLayer(comp, copy.id).name) === sourceName;
+        return {
+            native_accepted: true,
+            verification_status: verified ? "verified_creation_identity" : "accepted_unverified",
+            retry_safe: false,
+            comp_id: comp.id,
+            source_layer_id: source.id,
+            created_layer_id: copy ? copy.id : null,
+            semantic_copy_verified: false,
+            before_count: before,
+            after_count: comp.numLayers
+        };
+    }
+    function removeLayer(args) {
+        var comp = resolveComp(args.comp_id);
+        var layer = resolveLayer(comp, args.layer_id);
+        var before = comp.numLayers;
+        var id = layer.id;
+        app.beginUndoGroup("Shuvi: Remove layer");
+        try { layer.remove(); } finally { app.endUndoGroup(); }
+        var verified = comp.numLayers === before - 1 && findLayerById(comp, id) === null;
+        return {
+            native_accepted: true,
+            verification_status: verified ? "verified_delta" : "accepted_unverified",
+            retry_safe: verified,
+            comp_id: comp.id,
+            removed_layer_id: id,
+            before_count: before,
+            after_count: comp.numLayers
+        };
+    }
+    function precomposeLayers(args) {
+        var comp = resolveComp(args.comp_id);
+        if (!(args.layer_ids instanceof Array) || args.layer_ids.length < 1 || args.layer_ids.length > 64) fail("Precompose requires 1..64 exact layer IDs.");
+        if (args.move_all_attributes !== true) fail("Shuvi currently supports only move_all_attributes=true for verifiable precompose.");
+        var seen = {}, indices = [], ids = [], i;
+        for (i = 0; i < args.layer_ids.length; i++) {
+            var layer = resolveLayer(comp, args.layer_ids[i]);
+            if (seen[layer.id]) fail("Duplicate layer ID in precompose request.");
+            seen[layer.id] = true; ids.push(layer.id); indices.push(layer.index);
+        }
+        var name = boundedString(args.name, 120, "precompose name");
+        var beforeLayers = comp.numLayers;
+        var beforeItems = requireProject().numItems;
+        app.beginUndoGroup("Shuvi: Precompose layers");
+        var created;
+        try { created = comp.layers.precompose(indices, name, true); } finally { app.endUndoGroup(); }
+        if (!created || !(created instanceof CompItem)) fail("After Effects returned no precomposition.");
+        var allInside = true, allGone = true;
+        for (i = 0; i < ids.length; i++) {
+            if (!findLayerById(created, ids[i])) allInside = false;
+            if (findLayerById(comp, ids[i])) allGone = false;
+        }
+        var sourceLayer = null;
+        for (i = 1; i <= Math.min(comp.numLayers, MAX_LAYERS); i++) {
+            var candidate = comp.layer(i);
+            if (candidate.source && candidate.source.id === created.id) { sourceLayer = candidate; break; }
+        }
+        var verified = requireProject().numItems === beforeItems + 1 && allInside && allGone && !!sourceLayer;
+        return {
+            native_accepted: true,
+            verification_status: verified ? "verified_precompose_semantics" : "accepted_unverified",
+            retry_safe: false,
+            source_comp_id: comp.id,
+            created_comp_id: created.id,
+            created_layer_id: sourceLayer ? sourceLayer.id : null,
+            moved_layer_ids: ids,
+            source_before_layers: beforeLayers,
+            source_after_layers: comp.numLayers
+        };
+    }
+    function samePointList(a, b) {
+        if (!(a instanceof Array) || !(b instanceof Array) || a.length !== b.length) return false;
+        var i;
+        for (i = 0; i < a.length; i++) if (!sameValue(a[i], b[i])) return false;
+        return true;
+    }
+    function addMask(args) {
+        var comp = resolveComp(args.comp_id);
+        var layer = resolveLayer(comp, args.layer_id);
+        if (!(args.vertices instanceof Array) || args.vertices.length < 3 || args.vertices.length > 512) fail("Mask requires 3..512 vertices.");
+        var vertices = [], inTangents = [], outTangents = [], i;
+        for (i = 0; i < args.vertices.length; i++) {
+            var v = args.vertices[i];
+            if (!(v instanceof Array) || v.length !== 2 || !finiteNumber(v[0]) || !finiteNumber(v[1])) fail("Mask vertices must be finite [x,y] pairs.");
+            vertices.push([v[0], v[1]]);
+            inTangents.push([0,0]); outTangents.push([0,0]);
+        }
+        if (args.in_tangents !== undefined) {
+            if (!(args.in_tangents instanceof Array) || args.in_tangents.length !== vertices.length) fail("Mask in_tangents length mismatch.");
+            inTangents = args.in_tangents;
+        }
+        if (args.out_tangents !== undefined) {
+            if (!(args.out_tangents instanceof Array) || args.out_tangents.length !== vertices.length) fail("Mask out_tangents length mismatch.");
+            outTangents = args.out_tangents;
+        }
+        for (i = 0; i < vertices.length; i++) {
+            if (!(inTangents[i] instanceof Array) || inTangents[i].length !== 2 || !(outTangents[i] instanceof Array) || outTangents[i].length !== 2
+                || !finiteNumber(inTangents[i][0]) || !finiteNumber(inTangents[i][1]) || !finiteNumber(outTangents[i][0]) || !finiteNumber(outTangents[i][1])) {
+                fail("Mask tangents must be finite [x,y] pairs.");
+            }
+        }
+        var masks = layer.property("ADBE Mask Parade");
+        if (!masks || !masks.canAddProperty("ADBE Mask Atom")) fail("Target layer cannot accept masks.");
+        var before = masks.numProperties;
+        app.beginUndoGroup("Shuvi: Add mask");
+        var maskIndex;
+        try {
+            var mask = masks.addProperty("ADBE Mask Atom");
+            maskIndex = mask.propertyIndex;
+            var shape = new Shape();
+            shape.vertices = vertices;
+            shape.inTangents = inTangents;
+            shape.outTangents = outTangents;
+            shape.closed = args.closed !== false;
+            mask.property("ADBE Mask Shape").setValue(shape);
+        } finally { app.endUndoGroup(); }
+        masks = resolveLayer(comp, args.layer_id).property("ADBE Mask Parade");
+        var readMask = masks.property(maskIndex);
+        var readShape = readMask ? readMask.property("ADBE Mask Shape").value : null;
+        var verified = masks.numProperties === before + 1 && readShape && samePointList(readShape.vertices, vertices)
+            && !!readShape.closed === (args.closed !== false);
+        return {
+            native_accepted: true,
+            verification_status: verified ? "verified_mask_readback" : "accepted_unverified",
+            retry_safe: false,
+            comp_id: comp.id,
+            layer_id: args.layer_id,
+            mask_property_index: maskIndex,
+            before_count: before,
+            after_count: masks.numProperties,
+            vertex_count: vertices.length
+        };
+    }
+    function inspectSceneEdits(args) {
+        var comp = resolveComp(args.comp_id);
+        var layer = resolveLayer(comp, args.layer_id);
+        var times = layer.doSceneEditDetection(SceneEditDetectionMode.NONE);
+        if (!(times instanceof Array) || times.length > 10000) fail("Scene detection returned an invalid or oversized result.");
+        return {
+            verification_status: "verified_host_detection_result",
+            comp_id: comp.id,
+            layer_id: layer.id,
+            edit_count: times.length,
+            edit_times: cloneValue(times),
+            mutation_applied: false
+        };
+    }
+    function addSceneEditMarkers(args) {
+        var comp = resolveComp(args.comp_id);
+        var layer = resolveLayer(comp, args.layer_id);
+        var detected = layer.doSceneEditDetection(SceneEditDetectionMode.NONE);
+        if (!(detected instanceof Array) || detected.length > 10000) fail("Scene detection returned an invalid or oversized result.");
+        var marker = layer.marker;
+        var beforeTimes = [], i, j;
+        for (i = 1; i <= marker.numKeys; i++) beforeTimes.push(marker.keyTime(i));
+        for (i = 0; i < detected.length; i++) {
+            for (j = 0; j < beforeTimes.length; j++) if (Math.abs(detected[i] - beforeTimes[j]) <= EPSILON) {
+                fail("Scene marker write would overlap an existing marker; mutation refused as ambiguous.");
+            }
+        }
+        var before = marker.numKeys;
+        app.beginUndoGroup("Shuvi: Scene edit markers");
+        var applied;
+        try { applied = layer.doSceneEditDetection(SceneEditDetectionMode.MARKERS); } finally { app.endUndoGroup(); }
+        layer = resolveLayer(comp, args.layer_id); marker = layer.marker;
+        var verified = applied instanceof Array && applied.length === detected.length && marker.numKeys === before + detected.length;
+        if (verified) {
+            for (i = 0; i < detected.length; i++) {
+                var found = false;
+                for (j = 1; j <= marker.numKeys; j++) if (Math.abs(marker.keyTime(j) - detected[i]) <= EPSILON) { found = true; break; }
+                if (!found) { verified = false; break; }
+            }
+        }
+        return {
+            native_accepted: true,
+            verification_status: verified ? "verified_marker_delta" : "accepted_unverified",
+            retry_safe: false,
+            comp_id: comp.id,
+            layer_id: layer.id,
+            detected_count: detected.length,
+            before_marker_count: before,
+            after_marker_count: marker.numKeys
         };
     }
     function inspectRenderQueue() {
@@ -342,7 +619,7 @@
         return {
             native_accepted: true,
             verification_status: verified ? "verified_delta" : "accepted_unverified",
-            retry_safe: verified,
+            retry_safe: false,
             queue_index: after,
             comp_id: comp.id,
             before_count: before,
@@ -373,8 +650,11 @@
         return windows ? a.toLowerCase() === b.toLowerCase() : a === b;
     }
     function mutationAction(action) {
-        return action === "set_property" || action === "set_values_at_times" || action === "add_effect"
-            || action === "add_null" || action === "add_render_queue_item" || action === "save_project";
+        return action === "set_property" || action === "set_values_at_times" || action === "set_expression"
+            || action === "add_effect" || action === "add_null" || action === "add_text" || action === "set_layer_parent"
+            || action === "duplicate_layer" || action === "remove_layer" || action === "precompose_layers"
+            || action === "add_mask" || action === "add_scene_edit_markers"
+            || action === "add_render_queue_item" || action === "save_project";
     }
     function assertProjectExpectation(request, action) {
         if (!mutationAction(action)) return;
@@ -397,8 +677,17 @@
         if (action === "inspect_property") return inspectProperty(args);
         if (action === "set_property") return setProperty(args);
         if (action === "set_values_at_times") return setValuesAtTimes(args);
+        if (action === "set_expression") return setExpression(args);
         if (action === "add_effect") return addEffect(args);
         if (action === "add_null") return addNull(args);
+        if (action === "add_text") return addText(args);
+        if (action === "set_layer_parent") return setLayerParent(args);
+        if (action === "duplicate_layer") return duplicateLayer(args);
+        if (action === "remove_layer") return removeLayer(args);
+        if (action === "precompose_layers") return precomposeLayers(args);
+        if (action === "add_mask") return addMask(args);
+        if (action === "inspect_scene_edits") return inspectSceneEdits(args);
+        if (action === "add_scene_edit_markers") return addSceneEditMarkers(args);
         if (action === "inspect_render_queue") return inspectRenderQueue();
         if (action === "add_render_queue_item") return addRenderQueueItem(args);
         if (action === "save_project") return saveProject();
