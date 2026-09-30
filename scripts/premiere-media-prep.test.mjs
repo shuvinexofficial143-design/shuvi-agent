@@ -104,3 +104,30 @@ test("single and batch media relink/proxy callers stop on unverified readback",(
     assert.match(arm,/uncertain":!verified/);
   }
 });
+
+test("media import uses bounded complete path correlation and refuses duplicate-prone fallback",()=>{
+  const importMedia=uxp.slice(uxp.indexOf("async function importMedia"),uxp.indexOf("function normalizeMediaPath"));
+  assert.match(importMedia,/findClipItemsForPaths/);
+  assert.match(importMedia,/observed\.scanComplete/);
+  assert.match(importMedia,/verificationStatus: verified \? "verified_readback" : "accepted_unverified"/);
+
+  const finder=uxp.slice(uxp.indexOf("async function collectClipMedia"),uxp.indexOf("async function createSequenceFromMedia"));
+  assert.match(finder,/budget = \{remaining: 1000, complete: true\}/);
+  assert.match(finder,/budget\.complete = false/);
+  assert.match(finder,/scanComplete: budget\.complete/);
+
+  const resolve=uxp.slice(uxp.indexOf("async function resolveOneClip"),uxp.indexOf("async function insertMedia"));
+  assert.match(resolve,/refusing a duplicate-prone import/);
+
+  const sequence=uxp.slice(uxp.indexOf("async function createSequenceFromMedia"),uxp.indexOf("async function saveProject"));
+  assert.match(sequence,/cannot safely import missing media/);
+});
+
+test("desktop import succeeds only after exact media path readback",()=>{
+  const start=rust.lastIndexOf("ToolAction::PremiereImportMedia");
+  const end=rust.indexOf("\n        ToolAction::PremiereCreateSequenceFromMedia",start);
+  const arm=rust.slice(start,end);
+  assert.match(arm,/verified_readback/);
+  assert.match(arm,/success: verified/);
+  assert.match(arm,/retry_safe/);
+});

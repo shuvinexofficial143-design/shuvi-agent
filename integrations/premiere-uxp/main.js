@@ -362,9 +362,21 @@ async function importMedia(argumentsValue) {
 
   if (!success) throw new Error("Premiere reported that media import did not complete.");
 
+  const observed = await findClipItemsForPaths(project, root, paths);
+  const verified = observed.scanComplete
+    && observed.missing.length === 0
+    && observed.clips.length === paths.length;
+
   return {
     imported: paths.length,
-    projectName: project.name || null
+    projectName: project.name || null,
+    observedCount: observed.clips.length,
+    missing: observed.missing,
+    scanComplete: observed.scanComplete,
+    scannedItems: observed.scannedItems,
+    verificationStatus: verified ? "verified_readback" : "accepted_unverified",
+    uncertain: !verified,
+    retrySafe: false
   };
 }
 
@@ -375,13 +387,20 @@ function normalizeMediaPath(value) {
     .toLowerCase();
 }
 
-async function collectClipMedia(folder, output, depth = 0) {
-  if (depth > 8 || output.length >= 1000) return;
+async function collectClipMedia(folder, output, budget, depth = 0) {
+  if (depth > 8) {
+    budget.complete = false;
+    return;
+  }
 
   const items = await folder.getItems();
 
   for (const item of items) {
-    if (output.length >= 1000) break;
+    if (budget.remaining <= 0) {
+      budget.complete = false;
+      break;
+    }
+    budget.remaining -= 1;
 
     try {
       const clip = premiere.ClipProjectItem.cast(item);
@@ -402,7 +421,7 @@ async function collectClipMedia(folder, output, depth = 0) {
 
     try {
       const childFolder = premiere.FolderItem.cast(item);
-      await collectClipMedia(childFolder, output, depth + 1);
+      await collectClipMedia(childFolder, output, budget, depth + 1);
     } catch {
       // Not a folder.
     }
@@ -412,7 +431,8 @@ async function collectClipMedia(folder, output, depth = 0) {
 async function findClipItemsForPaths(project, root, paths) {
   const wanted = new Map(paths.map((path) => [normalizeMediaPath(path), path]));
   const media = [];
-  await collectClipMedia(root, media);
+  const budget = {remaining: 1000, complete: true};
+  await collectClipMedia(root, media, budget);
 
   const matches = new Map();
   for (const item of media) {
@@ -425,7 +445,9 @@ async function findClipItemsForPaths(project, root, paths) {
     clips: paths
       .map((path) => matches.get(normalizeMediaPath(path)))
       .filter(Boolean),
-    missing: paths.filter((path) => !matches.has(normalizeMediaPath(path)))
+    missing: paths.filter((path) => !matches.has(normalizeMediaPath(path))),
+    scanComplete: budget.complete,
+    scannedItems: 1000 - budget.remaining
   };
 }
 
@@ -447,15 +469,20 @@ async function createSequenceFromMedia(argumentsValue) {
 
   let resolved = await findClipItemsForPaths(project, root, paths);
 
+  if (resolved.missing.length && !resolved.scanComplete) {
+    throw new Error("Project media scan exceeded the bounded inspection budget; cannot safely import missing media.");
+  }
   if (resolved.missing.length) {
     const imported = await project.importFiles(resolved.missing, true, root, false);
     if (!imported) throw new Error("Premiere could not import all missing media.");
     resolved = await findClipItemsForPaths(project, root, paths);
   }
 
-  if (resolved.missing.length) {
+  if (resolved.missing.length || !resolved.scanComplete) {
     throw new Error(
-      "Premiere could not resolve imported media: " + resolved.missing.join(", ")
+      !resolved.scanComplete
+        ? "Project media scan exceeded the bounded inspection budget after import; sequence creation was not attempted."
+        : "Premiere could not resolve imported media: " + resolved.missing.join(", ")
     );
   }
 
@@ -627,14 +654,21 @@ async function inspectTimeline() {
 async function resolveOneClip(project, root, path) {
   let resolved = await findClipItemsForPaths(project, root, [path]);
 
+  if (resolved.missing.length && !resolved.scanComplete) {
+    throw new Error("Project media scan exceeded the bounded inspection budget; refusing a duplicate-prone import.");
+  }
   if (resolved.missing.length) {
     const imported = await project.importFiles([path], true, root, false);
     if (!imported) throw new Error("Premiere could not import the media file.");
     resolved = await findClipItemsForPaths(project, root, [path]);
   }
 
-  if (resolved.missing.length || !resolved.clips[0]) {
-    throw new Error("Premiere could not resolve media after import: " + path);
+  if (resolved.missing.length || !resolved.clips[0] || !resolved.scanComplete) {
+    throw new Error(
+      !resolved.scanComplete
+        ? "Project media scan exceeded the bounded inspection budget after import."
+        : "Premiere could not resolve media after import: " + path
+    );
   }
 
   return resolved.clips[0];
