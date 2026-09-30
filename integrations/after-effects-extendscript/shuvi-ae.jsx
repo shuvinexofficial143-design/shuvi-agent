@@ -721,6 +721,51 @@
         return {native_accepted:true,verification_status:verified?"verified_readback":"accepted_unverified",retry_safe:verified,
             comp_id:comp.id,layer_id:layer.id,before_source_item_id:before,after_source_item_id:after,fix_expressions:args.fix_expressions===true};
     }
+    function createComp(args) {
+        var name=boundedString(args.name,120,"composition name");
+        var width=args.width,height=args.height,pixel=args.pixel_aspect===undefined?1:args.pixel_aspect;
+        var duration=args.duration_seconds,rate=args.frame_rate;
+        if(!finiteNumber(width)||Math.floor(width)!==width||width<4||width>30000
+            ||!finiteNumber(height)||Math.floor(height)!==height||height<4||height>30000
+            ||!finiteNumber(pixel)||pixel<0.01||pixel>100
+            ||!finiteNumber(duration)||duration<=0||duration>10800
+            ||!finiteNumber(rate)||rate<1||rate>99) fail("Invalid composition dimensions, duration or frame rate.");
+        var project=requireProject(),before=project.numItems;
+        app.beginUndoGroup("Shuvi: Create composition");
+        var comp;try{comp=project.items.addComp(name,width,height,pixel,duration,rate);}finally{app.endUndoGroup();}
+        var read=comp?project.itemByID(comp.id):null;
+        var verified=project.numItems===before+1&&read&&read instanceof CompItem&&read.id===comp.id
+            &&read.width===width&&read.height===height&&Math.abs(read.duration-duration)<=EPSILON&&Math.abs(read.frameRate-rate)<=EPSILON;
+        return {native_accepted:true,verification_status:verified?"verified_creation_readback":"accepted_unverified",retry_safe:false,
+            comp_id:comp?comp.id:null,before_item_count:before,after_item_count:project.numItems};
+    }
+    function importFootage(args) {
+        var path=boundedString(args.file_path,4096,"footage file path"), file=new File(path);
+        if(!file.exists)fail("Footage file does not exist.");
+        var options=new ImportOptions(file);
+        if(!options.canImportAs(ImportAsType.FOOTAGE))fail("File cannot be imported as ordinary footage.");
+        options.importAs=ImportAsType.FOOTAGE;
+        options.sequence=args.sequence===true;
+        var project=requireProject(),before=project.numItems;
+        app.beginUndoGroup("Shuvi: Import footage");
+        var item;try{item=project.importFile(options);}finally{app.endUndoGroup();}
+        var read=item?project.itemByID(item.id):null;
+        var actual=read&&read instanceof FootageItem&&read.file?read.file.fsName:null;
+        var verified=project.numItems===before+1&&read&&read instanceof FootageItem&&actual===file.fsName;
+        return {native_accepted:true,verification_status:verified?"verified_import_identity":"accepted_unverified",retry_safe:false,
+            item_id:item?item.id:null,source_file:actual,before_item_count:before,after_item_count:project.numItems};
+    }
+    function addItemLayer(args) {
+        var comp=resolveComp(args.comp_id),item=resolveItem(args.item_id);
+        if(!(item instanceof CompItem)&&!(item instanceof FootageItem))fail("Only composition or footage items can be added as AV layers.");
+        var before=comp.numLayers;
+        app.beginUndoGroup("Shuvi: Add item layer");
+        var layer;try{layer=comp.layers.add(item);}finally{app.endUndoGroup();}
+        var read=layer?resolveLayer(comp,layer.id):null;
+        var verified=comp.numLayers===before+1&&read&&read.source&&read.source.id===item.id;
+        return {native_accepted:true,verification_status:verified?"verified_creation_readback":"accepted_unverified",retry_safe:false,
+            comp_id:comp.id,item_id:item.id,layer_id:layer?layer.id:null,before_count:before,after_count:comp.numLayers};
+    }
     function inspectRenderQueue() {
         var queue = requireProject().renderQueue;
         var items = [], i, limit = Math.min(queue.numItems, 256);
@@ -812,7 +857,8 @@
     function mutationAction(action) {
         return action === "set_property" || action === "set_values_at_times" || action === "set_expression"
             || action === "add_effect" || action === "add_null" || action === "add_text" || action === "add_shape" || action === "add_solid"
-            || action === "add_camera" || action === "add_light" || action === "set_layer_state" || action === "set_layer_parent"
+            || action === "add_camera" || action === "add_light" || action === "create_comp" || action === "import_footage" || action === "add_item_layer"
+            || action === "set_layer_state" || action === "set_layer_parent"
             || action === "move_layer" || action === "set_track_matte" || action === "remove_track_matte"
             || action === "set_time_remap" || action === "replace_source"
             || action === "duplicate_layer" || action === "remove_layer" || action === "precompose_layers"
@@ -848,6 +894,9 @@
         if (action === "add_solid") return addSolid(args);
         if (action === "add_camera") return addCamera(args);
         if (action === "add_light") return addLight(args);
+        if (action === "create_comp") return createComp(args);
+        if (action === "import_footage") return importFootage(args);
+        if (action === "add_item_layer") return addItemLayer(args);
         if (action === "set_layer_state") return setLayerState(args);
         if (action === "set_layer_parent") return setLayerParent(args);
         if (action === "move_layer") return moveLayer(args);
