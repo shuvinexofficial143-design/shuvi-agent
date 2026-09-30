@@ -197,6 +197,7 @@ pub fn capability_report()->Value {
             "footage_relink":"source_supported_with_exact_old_new_file_readback",
             "proxy_set_remove":"source_supported_with_proxy_state_file_readback",
             "av_layer_flags":"source_supported_with_boolean_readback",
+            "av_layer_rendering":"source_supported_blending_quality_sampling_audio_guide_frame_blending_with_readback",
             "runtime_verified":"not_verified"
         },
         "safety":[
