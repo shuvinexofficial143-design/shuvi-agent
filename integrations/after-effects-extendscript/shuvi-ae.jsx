@@ -2173,6 +2173,65 @@
         return {native_accepted:true,verification_status:verified?"verified_audio_envelope_readback":"accepted_unverified",retry_safe:false,
             comp_id:comp.id,layer_id:resolved.layer.id,point_count:times.length,start_seconds:times[0],end_seconds:times[times.length-1]};
     }
+    function layerInputStageName(p,value) {
+        var t=p.LayerInputStageType;
+        if(!t)fail("Current After Effects host does not expose LayerInputStageType.");
+        if(value===t.SOURCE)return "source";
+        if(value===t.ONLY_MASKS)return "only_masks";
+        if(value===t.ALL_EFFECTS)return "all_effects";
+        return "unknown";
+    }
+    function layerInputStageValue(p,name) {
+        var t=p.LayerInputStageType;
+        if(!t)fail("Current After Effects host does not expose LayerInputStageType.");
+        if(name==="source")return t.SOURCE;
+        if(name==="only_masks")return t.ONLY_MASKS;
+        if(name==="all_effects")return t.ALL_EFFECTS;
+        fail("Layer input stage must be source, only_masks or all_effects.");
+    }
+    function layerInputStageRank(name) {
+        if(name==="source")return 0;
+        if(name==="only_masks")return 1;
+        if(name==="all_effects")return 2;
+        return -1;
+    }
+    function layerInputSnapshot(args) {
+        var resolved=resolveProperty(args.property),p=resolved.property;
+        if(p.propertyValueType!==PropertyValueType.LAYER_INDEX)fail("Target property is not a layer-input parameter.");
+        if(typeof p.getInputStageCycleSafeLimit!=="function"||typeof p.setLayerInputStage!=="function")
+            fail("Current After Effects host does not expose 26.5 layer-input stage scripting.");
+        var pair=p.inputLayerAndStage;
+        if(!(pair instanceof Array)||pair.length!==2)fail("Layer input/stage readback is unavailable.");
+        var index=pair[0],source=null;
+        if(index!==0){
+            if(index<1||index>resolved.comp.numLayers)fail("Layer input index is outside target composition.");
+            source=resolved.comp.layer(index);
+        }
+        var stage=layerInputStageName(p,pair[1]),limit=layerInputStageName(p,p.getInputStageCycleSafeLimit());
+        return {resolved:resolved,property:p,source_layer_id:source?source.id:null,source_layer_index:index,
+            stage:stage,cycle_safe_limit:limit};
+    }
+    function inspectLayerInputStage(args) {
+        var snap=layerInputSnapshot(args);
+        return {verification_status:"verified_readback",comp_id:snap.resolved.comp.id,layer_id:snap.resolved.layer.id,
+            source_layer_id:snap.source_layer_id,source_layer_index:snap.source_layer_index,stage:snap.stage,cycle_safe_limit:snap.cycle_safe_limit};
+    }
+    function setLayerInputStage(args) {
+        var snap=layerInputSnapshot(args);
+        if(!args.hasOwnProperty("expected_source_layer_id"))fail("Layer input stage mutation requires expected_source_layer_id stale guard.");
+        if(snap.source_layer_id!==args.expected_source_layer_id)fail("Layer input source stale guard changed.");
+        var expectedStage=boundedString(args.expected_stage,24,"expected layer input stage");
+        if(snap.stage!==expectedStage)fail("Layer input stage stale guard changed.");
+        var requestedName=boundedString(args.stage,24,"layer input stage"),requested=layerInputStageValue(snap.property,requestedName);
+        if(requestedName!=="source"&&layerInputStageRank(requestedName)>layerInputStageRank(snap.cycle_safe_limit))
+            fail("Requested layer input stage exceeds current cycle-safe limit.");
+        app.beginUndoGroup("Shuvi: Set layer input stage");
+        try{snap.property.setLayerInputStage(requested);}finally{app.endUndoGroup();}
+        var after=layerInputSnapshot(args),verified=after.source_layer_id===snap.source_layer_id&&after.stage===requestedName;
+        return {native_accepted:true,verification_status:verified?"verified_layer_input_stage_readback":"accepted_unverified",retry_safe:verified,
+            comp_id:after.resolved.comp.id,layer_id:after.resolved.layer.id,source_layer_id:after.source_layer_id,
+            before_stage:snap.stage,after_stage:after.stage,cycle_safe_limit_after:after.cycle_safe_limit};
+    }
     function inspectRenderQueue() {
         var queue = requireProject().renderQueue;
         var items = [], i, limit = Math.min(queue.numItems, 256);
@@ -2318,7 +2377,7 @@
             || action === "move_layer" || action === "set_track_matte" || action === "remove_track_matte"
             || action === "set_time_remap" || action === "replace_source" || action === "relink_footage" || action === "set_proxy" || action === "remove_proxy"
             || action === "set_av_layer_flags" || action === "set_av_layer_rendering" || action === "set_audio_gain" || action === "apply_audio_envelope"
-            || action === "set_text_style" || action === "set_layer_timing"
+            || action === "set_layer_input_stage" || action === "set_text_style" || action === "set_layer_timing"
             || action === "add_shape_primitive" || action === "add_text_animator"
             || action === "add_mogrt_property" || action === "add_mogrt_media_layer" || action === "export_mogrt"
             || action === "set_essential_property" || action === "set_essential_media_source" || action === "apply_essential_bindings"
@@ -2360,6 +2419,7 @@
         if (action === "inspect_layer_properties") return inspectLayerProperties(args);
         if (action === "inspect_av_layer_rendering") return inspectAVLayerRendering(args);
         if (action === "inspect_audio_levels") return inspectAudioLevels(args);
+        if (action === "inspect_layer_input_stage") return inspectLayerInputStage(args);
         if (action === "inspect_mogrt") return inspectMogrt(args);
         if (action === "inspect_essential_properties") return inspectEssentialProperties(args);
         if (action === "set_property") return setProperty(args);
@@ -2394,6 +2454,7 @@
         if (action === "set_av_layer_rendering") return setAVLayerRendering(args);
         if (action === "set_audio_gain") return setAudioGain(args);
         if (action === "apply_audio_envelope") return applyAudioEnvelope(args);
+        if (action === "set_layer_input_stage") return setLayerInputStage(args);
         if (action === "set_text_style") return setTextStyle(args);
         if (action === "set_layer_timing") return setLayerTiming(args);
         if (action === "add_shape_primitive") return addShapePrimitive(args);
