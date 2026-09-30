@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 const context = { module: { exports: {} } };
 vm.runInNewContext(readFileSync(new URL("../integrations/premiere-uxp/speed-workflows.js", import.meta.url), "utf8"), context);
 const { planSpeed } = context.module.exports;
-const snapshot = { sourceInSeconds: 2, sourceOutSeconds: 12, reversed: false };
+const snapshot = { sourceInSeconds: 2, sourceOutSeconds: 12, startSeconds: 5, endSeconds: 15, nativeSpeed: 100, nativeReadbackVerified: true, reversed: false, targetSignature: "sig" };
 test("speed presets and duration calculate source-relative multipliers", () => {
   assert.equal(planSpeed(snapshot, { mode: "preset", preset: "slow_motion" }).plan.duration_seconds, 20);
   assert.equal(planSpeed(snapshot, { mode: "preset", preset: "fast_motion" }).plan.duration_seconds, 5);
@@ -20,6 +20,31 @@ test("all plans explicitly refuse execution and preserve pitch/reverse intent", 
   assert.equal(result.capability.readback_supported, true);
   assert.equal(result.plan.reverse, true);
   assert.equal(result.plan.preserve_audio_pitch, true);
+});
+test("planner keeps native speed semantics unverified while exposing requested-vs-current impact", () => {
+  const result = planSpeed(snapshot, { mode: "rate", rate: 2 });
+  assert.equal(result.schemaVersion, 2);
+  assert.equal(result.current.native_speed_value, 100);
+  assert.equal(result.current.native_speed_unit, "adobe_native_unverified");
+  assert.equal(result.current.timeline_duration_seconds, 10);
+  assert.equal(result.requested.rate_multiplier, 2);
+  assert.equal(result.requested.planned_duration_seconds, 5);
+  assert.equal(result.comparison.rate_comparison_verified, false);
+  assert.equal(result.comparison.native_speed_semantics_inferred, false);
+  assert.equal(result.comparison.planned_duration_delta_seconds, -5);
+  assert.equal(result.comparison.requires_collision_review, true);
+  assert.equal(result.comparison.linked_membership_verified, false);
+  assert.equal(result.comparison.audio_sync_verified, false);
+  assert.equal(result.duration_math.formula, "source_span_divided_by_requested_rate");
+  assert.equal(result.duration_math.frame_rounding_applied, false);
+  assert.ok(result.warnings.some(value => value.includes("downstream collisions/gaps")));
+});
+test("planner does not invent timeline duration when inspected bounds are absent", () => {
+  const result = planSpeed({ sourceInSeconds: 0, sourceOutSeconds: 8, nativeSpeed: 50, reversed: null }, { mode: "duration", duration_seconds: 4, reverse: false });
+  assert.equal(result.current.timeline_duration_seconds, null);
+  assert.equal(result.comparison.planned_duration_delta_seconds, null);
+  assert.equal(result.comparison.reverse_change_requested, null);
+  assert.equal(result.plan.rate, 2);
 });
 test("ramp integrates constant and linear source-time rates", () => {
   const ramp = (a, b) => planSpeed(snapshot, { mode: "ramp", points: [{ source_offset_seconds: 0, rate: a }, { source_offset_seconds: 10, rate: b }] });
