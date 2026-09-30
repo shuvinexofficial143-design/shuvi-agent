@@ -1,5 +1,7 @@
 mod premiere_execution;
 mod premiere_store;
+mod after_effects;
+mod after_effects_transport;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs::{self, OpenOptions},
@@ -293,6 +295,8 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - premiere_acceptance_cancel: {"action_id":"exact prepared acceptance action UUID"}
 - premiere_acceptance_verify_recovery: {"action_id":"completed trim/move/clone/delete_ripple acceptance action UUID"} — read-only verification after manually opening the Shuvi checkpoint; never opens or overwrites a project automatically
 - premiere_save_project: {}
+- after_effects_capability_report: {}
+- after_effects_plan_hand_track: {"plan":{"property":{"target":{"comp_id":1,"layer_id":2},"path":[{"match_name":"ADBE Transform Group","property_index":1},{"match_name":"ADBE Position","property_index":2}]},"samples":[{"time_seconds":0.0,"point":[100,200],"confidence":0.9}],"coordinate_space":"comp_pixels"}}
 - workspace_scan: {"path":"absolute workspace path"}
 - search_text: {"path":"absolute workspace path","query":"text to find"}
 - replace_text: {"path":"absolute file path","old":"exact old text","new":"replacement text"}
@@ -629,6 +633,8 @@ enum ToolAction {
     PremiereExportStatus { job_id: String },
     PremiereReadinessReport,
     PremiereSaveProject,
+    AfterEffectsCapabilityReport,
+    AfterEffectsPlanHandTrack { plan: after_effects::HandTrackPlan },
     WorkspaceScan { path: String },
     SearchText { path: String, query: String },
     ReplaceText { path: String, old: String, new_value: String },
@@ -5524,6 +5530,21 @@ fn stage_tool(
             "Save the currently active Premiere project through the paired UXP bridge.".to_string(),
             RiskLevel::Medium,
         ),
+        "after_effects_capability_report" => (
+            ToolAction::AfterEffectsCapabilityReport,
+            "Read After Effects source capability report".into(),
+            "Source declaration only; does not claim a live After Effects runtime or successful test execution.".into(),
+            RiskLevel::Low,
+        ),
+        "after_effects_plan_hand_track" => {
+            let value=proposal.arguments.get("plan").cloned().ok_or("after_effects_plan_hand_track requires plan.")?;
+            let plan:after_effects::HandTrackPlan=serde_json::from_value(value).map_err(|e|format!("Invalid After Effects hand-track plan: {e}"))?;
+            plan.validate()?;
+            (ToolAction::AfterEffectsPlanHandTrack {plan},
+                "Plan After Effects hand tracking keyframes".into(),
+                "Validate exact comp/layer/property identity plus bounded external tracking samples; no After Effects mutation.".into(),
+                RiskLevel::Low)
+        }
         "workspace_scan" => {
             let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
             (
@@ -12270,6 +12291,30 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 })).unwrap_or_default(),
                 stderr: String::new(),
                 exit_code: Some(if verified {0} else {1}),
+            })
+        }
+        ToolAction::AfterEffectsCapabilityReport => {
+            Ok(ActionResult {
+                success:true,
+                tool,
+                stdout:serde_json::to_string_pretty(&after_effects::capability_report()).unwrap_or_default(),
+                stderr:String::new(),
+                exit_code:Some(0),
+            })
+        }
+        ToolAction::AfterEffectsPlanHandTrack { plan } => {
+            let summary=plan.summary()?;
+            Ok(ActionResult {
+                success:true,
+                tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "plan":summary,
+                    "next_host_action":"set_values_at_times",
+                    "runtime_verified":false,
+                    "automatic_execution":false
+                })).unwrap_or_default(),
+                stderr:String::new(),
+                exit_code:Some(0),
             })
         }
         ToolAction::WorkspaceScan { path } => {
