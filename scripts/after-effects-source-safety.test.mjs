@@ -264,3 +264,16 @@ test("AE spatial keyframe controls stay spatial-only stale-guarded and readback 
   assert.match(jsx,/verified_spatial_keyframe_readback/);
   assert.match(jsx,/in_spatial_tangent=cloneValue\(p\.keyInSpatialTangent\(i\)\)/);
 });
+
+
+test("AE temporal auto-bezier and continuous flags stay bezier-gated and stale-guarded",()=>{
+  assert.match(transport,/"set_keyframe_temporal_flags"/);
+  assert.match(rust,/"keyframe_temporal_flags":"source_supported_bezier_gated_auto_bezier_continuous_with_time_stale_guard"/);
+  assert.match(jsx,/Temporal keyframe time stale guard changed/);
+  assert.match(jsx,/requires BEZIER incoming and outgoing interpolation/);
+  assert.match(jsx,/setTemporalContinuousAtKey\(index,args\.continuous\)/);
+  assert.match(jsx,/setTemporalAutoBezierAtKey\(index,args\.auto_bezier\)/);
+  assert.match(jsx,/verified_temporal_flag_readback/);
+  assert.match(jsx,/temporal_auto_bezier=!!p\.keyTemporalAutoBezier\(i\)/);
+  assert.match(jsx,/temporal_continuous=!!p\.keyTemporalContinuous\(i\)/);
+});
