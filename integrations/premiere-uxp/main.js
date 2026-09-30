@@ -5146,10 +5146,30 @@ async function transcribeItem(argumentsValue) {
     throw new Error("Premiere did not complete transcription for the requested clip.");
   }
 
+  let observedJson = null;
+  let observedTranscript = null;
+  try {
+    if (typeof premiere.Transcript.exportToJSON === "function") {
+      observedJson = await premiere.Transcript.exportToJSON(clip);
+      if (typeof observedJson === "string" && observedJson.trim()) {
+        observedTranscript = adaptTranscriptTiming(observedJson);
+      }
+    }
+  } catch {
+    observedJson = null;
+    observedTranscript = null;
+  }
+  const verified = typeof observedJson === "string" && observedJson.trim().length > 0;
+
   return {
     transcribed: true,
     itemId,
-    language
+    language,
+    transcriptChars: verified ? observedJson.length : 0,
+    timedSegmentCount: observedTranscript?.supported ? observedTranscript.segments.length : null,
+    verificationStatus: verified ? "verified_readback" : "accepted_unverified",
+    uncertain: !verified,
+    retrySafe: false
   };
 }
 

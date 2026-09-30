@@ -125,3 +125,17 @@ test("transcript import requires canonical post-import export readback before su
   assert.match(arm,/success: verified/);
   assert.match(arm,/post_state_verified/);
 });
+
+test("transcription succeeds only after a non-empty exported transcript readback",()=>{
+  const section=panelSource.slice(panelSource.indexOf("async function transcribeItem"),panelSource.indexOf("async function exportTranscript"));
+  assert.match(section,/premiere\.Transcript\.exportToJSON/);
+  assert.match(section,/observedJson\.trim\(\)\.length > 0/);
+  assert.match(section,/verificationStatus: verified \? "verified_readback" : "accepted_unverified"/);
+  assert.match(section,/retrySafe: false/);
+  const start=rustSource.lastIndexOf("ToolAction::PremiereTranscribeItem");
+  const end=rustSource.indexOf("\n        ToolAction::PremiereExportTranscript",start);
+  const arm=rustSource.slice(start,end);
+  assert.match(arm,/verified_readback/);
+  assert.match(arm,/success: verified/);
+  assert.match(arm,/transcript_readback_verified/);
+});
