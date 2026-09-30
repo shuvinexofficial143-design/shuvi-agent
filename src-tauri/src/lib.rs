@@ -11963,12 +11963,23 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
         ToolAction::PremiereSaveProject => {
             let value = premiere_bridge
                 .request("save_project", json!({}), Duration::from_secs(15)).await?;
+            let accepted = value.get("saved").and_then(Value::as_bool) == Some(true);
+            let verification = value.get("verificationStatus").and_then(Value::as_str)
+                .unwrap_or("accepted_unverified").to_string();
+            let verified = verification == "verified_persistence"
+                && value.get("persistenceVerified").and_then(Value::as_bool) == Some(true);
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
-                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stdout: serde_json::to_string_pretty(&json!({
+                    "save": value,
+                    "native_accepted": accepted,
+                    "verification_status": verification,
+                    "post_state_verified": verified,
+                    "retry_safe": false
+                })).unwrap_or_default(),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0} else {1}),
             })
         }
         ToolAction::WorkspaceScan { path } => {

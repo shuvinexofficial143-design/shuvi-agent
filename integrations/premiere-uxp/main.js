@@ -545,7 +545,12 @@ async function saveProject() {
   return {
     saved: true,
     projectName: project.name || null,
-    projectPath: project.path || null
+    projectPath: project.path || null,
+    verificationStatus: "accepted_unverified",
+    persistenceVerified: false,
+    uncertain: true,
+    retrySafe: false,
+    warning: "Premiere project.save() returned success, but Shuvi did not independently verify persisted project bytes."
   };
 }
 

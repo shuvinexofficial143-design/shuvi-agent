@@ -120,3 +120,20 @@ test("source in/out mutations never claim success without independent source-bou
     assert.match(arm,/"retry_safe": false/);
   }
 });
+
+test("Premiere project save does not promote host acceptance to verified persistence",()=>{
+  const save=uxp.slice(uxp.indexOf("async function saveProject"),uxp.indexOf("async function sortedClipItems"));
+  assert.match(save,/verificationStatus: "accepted_unverified"/);
+  assert.match(save,/persistenceVerified: false/);
+  assert.match(save,/uncertain: true/);
+  assert.match(save,/retrySafe: false/);
+
+  const start=rust.lastIndexOf("ToolAction::PremiereSaveProject");
+  const end=rust.indexOf("\n        ToolAction::WorkspaceScan",start);
+  const arm=rust.slice(start,end);
+  assert.match(arm,/verified_persistence/);
+  assert.match(arm,/persistenceVerified/);
+  assert.match(arm,/success: verified/);
+  assert.match(arm,/"retry_safe": false/);
+  assert.doesNotMatch(arm,/success: true/);
+});
