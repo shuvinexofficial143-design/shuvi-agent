@@ -136,3 +136,21 @@ test("AE execution cannot substitute an arbitrary JSX adapter",()=>{
   assert.match(lib,/resource_dir\(\)/);
   assert.match(lib,/join\("after-effects"\)\.join\("shuvi-ae\.jsx"\)/);
 });
+
+
+test("AE motion graphics creation re-resolves indexed groups and stays non-retryable",()=>{
+  assert.match(transport,/"add_shape_primitive"/);
+  assert.match(transport,/"add_text_animator"/);
+  assert.match(rust,/"shape_primitive":"source_supported_rectangle_ellipse_with_fill_stroke_readback"/);
+  assert.match(rust,/"text_animator":"source_supported_allowlisted_property_with_range_selector_readback"/);
+  assert.match(jsx,/ADBE Root Vectors Group/);
+  assert.match(jsx,/ADBE Vector Graphic - Fill/);
+  assert.match(jsx,/ADBE Vector Graphic - Stroke/);
+  assert.match(jsx,/ADBE Text Animator/);
+  assert.match(jsx,/ADBE Text Selector/);
+  for(const fn of ["addShapePrimitive","addTextAnimator"]){
+    const start=jsx.indexOf("function "+fn+"("),next=jsx.indexOf("\n    function ",start+10);
+    assert.notEqual(start,-1);
+    assert.match(jsx.slice(start,next<0?jsx.length:next),/retry_safe:false/);
+  }
+});
