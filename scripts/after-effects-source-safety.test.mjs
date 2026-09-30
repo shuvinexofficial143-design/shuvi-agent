@@ -277,3 +277,17 @@ test("AE temporal auto-bezier and continuous flags stay bezier-gated and stale-g
   assert.match(jsx,/temporal_auto_bezier=!!p\.keyTemporalAutoBezier\(i\)/);
   assert.match(jsx,/temporal_continuous=!!p\.keyTemporalContinuous\(i\)/);
 });
+
+
+test("AE AV rendering controls are typed allowlisted and independently readable",()=>{
+  assert.match(transport,/"inspect_av_layer_rendering"/);
+  assert.match(transport,/"set_av_layer_rendering"/);
+  assert.match(rust,/"av_layer_rendering":"source_supported_blending_quality_sampling_audio_guide_frame_blending_with_readback"/);
+  assert.match(jsx,/BlendingMode\.MULTIPLY/);
+  assert.match(jsx,/LayerQuality\.BEST/);
+  assert.match(jsx,/LayerSamplingQuality\.BICUBIC/);
+  assert.match(jsx,/FrameBlendingType\.PIXEL_MOTION/);
+  assert.match(jsx,/Cannot enable audio on a layer without audio/);
+  assert.match(jsx,/verified_av_rendering_readback/);
+  assert.match(jsx,/function inspectAVLayerRendering/);
+});
