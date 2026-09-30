@@ -394,3 +394,18 @@ test("AE hand-track rig planner filters smooths and emits only grounded host arg
   assert.match(lib,/- after_effects_plan_hand_track_rig:/);
   assert.match(lib,/AfterEffectsPlanHandTrackRig/);
 });
+
+
+test("AE batch Essential bindings preflight every control before one undo-group mutation",()=>{
+  assert.match(transport,/"apply_essential_bindings"/);
+  assert.match(rust,/"essential_binding_batch":"source_supported_preflight_all_value_and_media_bindings_then_single_undo_group_with_per_binding_readback"/);
+  assert.match(jsx,/apply_essential_bindings requires 1\.\.64 bindings/);
+  assert.match(jsx,/Essential binding indexes must be unique/);
+  assert.match(jsx,/Each Essential binding must provide exactly one of value or source_item_id/);
+  assert.match(jsx,/Essential media binding alternate-source stale guard changed/);
+  assert.match(jsx,/app\.beginUndoGroup\("Shuvi: Apply Essential Bindings"\)/);
+  assert.match(jsx,/verified_essential_binding_batch/);
+  const start=jsx.indexOf("function applyEssentialBindings("),next=jsx.indexOf("\n    function ",start+10);
+  assert.notEqual(start,-1);
+  assert.match(jsx.slice(start,next<0?jsx.length:next),/retry_safe:false/);
+});
