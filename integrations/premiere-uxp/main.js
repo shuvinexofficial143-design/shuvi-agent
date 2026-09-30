@@ -4126,8 +4126,11 @@ async function renameTrack(argumentsValue) {
     throw new Error("Native track rename requires Premiere 26.3+.");
   }
   const inspectedName = track.name ?? null;
+  const inspectedNativeId = Number.isFinite(track.id) ? track.id : null;
   const freshTrack = await resolveTrackByKind(sequence,kind,trackIndex);
-  if (!freshTrack || freshTrack.name !== inspectedName || typeof freshTrack.createSetNameAction !== "function") {
+  if (!freshTrack || freshTrack.name !== inspectedName
+      || (inspectedNativeId!=null && freshTrack.id!==inspectedNativeId)
+      || typeof freshTrack.createSetNameAction !== "function") {
     throw new Error("Premiere track changed during rename preflight; inspect again.");
   }
   let transactionSucceeded = false;
@@ -4139,7 +4142,8 @@ async function renameTrack(argumentsValue) {
   });
   if (!transactionSucceeded) throw new Error("Premiere rejected the track rename transaction.");
   const after = await resolveTrackByKind(sequence,kind,trackIndex);
-  const verified = after?.name === name;
+  const sameNativeTrack=Boolean(after)&&(inspectedNativeId==null||after.id===inspectedNativeId);
+  const verified = sameNativeTrack && after?.name === name;
   return {
     renamed:true,
     kind,
@@ -4147,7 +4151,11 @@ async function renameTrack(argumentsValue) {
     requestedName:name,
     observedName:after?.name ?? null,
     inspectedName,
+    nativeTrackGroupId:inspectedNativeId,
+    nativeTrackGroupIdMatched:sameNativeTrack,
+    nativeTrackGroupIdScope:"track_group",
     stableTrackIdentityAvailable:false,
+    stableTrackUuidAvailable:false,
     verificationStatus:verified ? "verified_readback" : "accepted_unverified",
     retrySafe:false
   };
@@ -4176,13 +4184,16 @@ async function organizeTracks(argumentsValue) {
     const track = await resolveTrackByKind(sequence,kind,trackIndex);
     if (!track) throw new Error("Track organization references a missing existing track.");
     if (typeof track.createSetNameAction !== "function") throw new Error("Native track rename requires Premiere 26.3+.");
-    resolved.push({kind,trackIndex,name,track,inspectedName:track.name ?? null});
+    resolved.push({kind,trackIndex,name,track,inspectedName:track.name ?? null,
+      inspectedNativeId:Number.isFinite(track.id)?track.id:null});
   }
 
   const freshResolved = [];
   for (const entry of resolved) {
     const freshTrack = await resolveTrackByKind(sequence,entry.kind,entry.trackIndex);
-    if (!freshTrack || freshTrack.name !== entry.inspectedName || typeof freshTrack.createSetNameAction !== "function") {
+    if (!freshTrack || freshTrack.name !== entry.inspectedName
+        || (entry.inspectedNativeId!=null&&freshTrack.id!==entry.inspectedNativeId)
+        || typeof freshTrack.createSetNameAction !== "function") {
       throw new Error("Premiere track organization changed during preflight; inspect again.");
     }
     freshResolved.push({...entry,track:freshTrack});
@@ -4205,8 +4216,12 @@ async function organizeTracks(argumentsValue) {
       requestedName:entry.name,
       inspectedName:entry.inspectedName,
       observedName:current?.name ?? null,
+      nativeTrackGroupId:entry.inspectedNativeId,
+      nativeTrackGroupIdMatched:Boolean(current)&&(entry.inspectedNativeId==null||current.id===entry.inspectedNativeId),
+      nativeTrackGroupIdScope:"track_group",
       stableTrackIdentityAvailable:false,
-      verified:current?.name === entry.name
+      stableTrackUuidAvailable:false,
+      verified:Boolean(current)&&(entry.inspectedNativeId==null||current.id===entry.inspectedNativeId)&&current.name === entry.name
     });
   }
   return {
