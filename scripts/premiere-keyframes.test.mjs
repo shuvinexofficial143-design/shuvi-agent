@@ -352,3 +352,21 @@ test("static video and audio parameter writes require native value readback",()=
     assert.match(block,/retrySafe:false/);
   }
 });
+
+test("video and audio keyframe additions require exact native tick and value readback",()=>{
+  assert.match(uxp,/async function readAddedKeyframe/);
+  assert.match(uxp,/getKeyframeListAsTickTimes\(\)/);
+  assert.match(uxp,/String\(time\?\.ticks \?\? ""\) === ticks/);
+  assert.match(uxp,/await param\.getValueAtTime\(matches\[0\]\)/);
+  assert.match(uxp,/verificationStatus:equivalentStaticEffectValue\(expected,observed\) \? "verified_keyframe" : "accepted_unverified"/);
+  for(const [name,next] of [
+    ["addEffectKeyframe","getAudioClipTarget"],
+    ["addVideoKeyframeNamed","resolveNamedAudioParam"],
+    ["addAudioEffectKeyframe","getSequenceMarkers"],
+    ["addAudioKeyframeNamed","applyVideoRecipe"]
+  ]){
+    const block=uxp.slice(uxp.indexOf("async function "+name),uxp.indexOf("async function "+next));
+    assert.match(block,/await readAddedKeyframe/);
+    assert.match(block,/retrySafe:false/);
+  }
+});

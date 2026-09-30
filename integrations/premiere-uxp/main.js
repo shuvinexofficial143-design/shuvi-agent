@@ -1467,6 +1467,28 @@ async function readStaticEffectValue(param, requested) {
   }
 }
 
+async function readAddedKeyframe(param,keyframe,requested) {
+  try {
+    const ticks = String(keyframe?.position?.ticks ?? "");
+    if (!/^-?\d{1,30}$/.test(ticks)) {
+      return {keyframeTicks:null,observedValue:null,observedAvailable:false,verificationStatus:"accepted_unverified"};
+    }
+    const times = await param.getKeyframeListAsTickTimes();
+    const matches = Array.isArray(times) ? times.filter(time => String(time?.ticks ?? "") === ticks) : [];
+    if (matches.length !== 1 || !(await param.isTimeVarying())) {
+      return {keyframeTicks:ticks,observedValue:null,observedAvailable:false,verificationStatus:"accepted_unverified"};
+    }
+    const raw = await param.getValueAtTime(matches[0]);
+    const observed = plainEffectValue(raw?.value ?? raw);
+    const expected = plainEffectValue(requested);
+    return {keyframeTicks:ticks,observedValue:observed,observedAvailable:true,
+      verificationStatus:equivalentStaticEffectValue(expected,observed) ? "verified_keyframe" : "accepted_unverified"};
+  } catch (error) {
+    return {keyframeTicks:null,observedValue:null,observedAvailable:false,verificationStatus:"accepted_unverified",
+      readbackError:String(error).slice(0,240)};
+  }
+}
+
 async function assertResolvedClipMatchesActiveExpectation(project, sequence, item, kind, trackIndex, clipIndex) {
   const clips = activeExpectation?.clips;
   if (!Array.isArray(clips) || clips.length === 0) return;
@@ -1817,6 +1839,7 @@ async function addEffectKeyframe(argumentsValue) {
     throw new Error("Premiere rejected the effect keyframe transaction.");
   }
 
+  const readback = await readAddedKeyframe(param,keyframe,value);
   return {
     added: true,
     track: trackIndex,
@@ -1826,7 +1849,9 @@ async function addEffectKeyframe(argumentsValue) {
     componentMatchName: await component.getMatchName(),
     paramDisplayName: param.displayName || null,
     seconds,
-    value: plainEffectValue(value)
+    requestedValue: plainEffectValue(value),
+    ...readback,
+    retrySafe:false
   };
 }
 
@@ -2114,6 +2139,7 @@ async function addAudioEffectKeyframe(argumentsValue) {
     throw new Error("Premiere rejected the audio effect keyframe transaction.");
   }
 
+  const readback = await readAddedKeyframe(param,keyframe,value);
   return {
     added: true,
     track: trackIndex,
@@ -2123,7 +2149,9 @@ async function addAudioEffectKeyframe(argumentsValue) {
     componentMatchName: await component.getMatchName(),
     paramDisplayName: param.displayName || null,
     seconds,
-    value: plainEffectValue(value)
+    requestedValue: plainEffectValue(value),
+    ...readback,
+    retrySafe:false
   };
 }
 
@@ -3587,6 +3615,7 @@ async function addVideoKeyframeNamed(argumentsValue) {
     throw new Error("Premiere rejected the named video keyframe transaction.");
   }
 
+  const readback = await readAddedKeyframe(target.param,keyframe,value);
   return {
     added: true,
     track: Number(argumentsValue?.track ?? 0),
@@ -3597,7 +3626,9 @@ async function addVideoKeyframeNamed(argumentsValue) {
     paramIndex: target.paramIndex,
     paramDisplayName: target.paramDisplayName,
     seconds,
-    value: plainEffectValue(value)
+    requestedValue: plainEffectValue(value),
+    ...readback,
+    retrySafe:false
   };
 }
 
@@ -3753,6 +3784,7 @@ async function addAudioKeyframeNamed(argumentsValue) {
     throw new Error("Premiere rejected the named audio keyframe transaction.");
   }
 
+  const readback = await readAddedKeyframe(target.param,keyframe,value);
   return {
     added: true,
     track: Number(argumentsValue?.track ?? 0),
@@ -3763,7 +3795,9 @@ async function addAudioKeyframeNamed(argumentsValue) {
     paramIndex: target.paramIndex,
     paramDisplayName: target.paramDisplayName,
     seconds,
-    value: plainEffectValue(value)
+    requestedValue: plainEffectValue(value),
+    ...readback,
+    retrySafe:false
   };
 }
 

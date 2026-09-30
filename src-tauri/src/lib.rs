@@ -9764,15 +9764,16 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }),
                 Duration::from_secs(30),
             ).await?;
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_keyframe");
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
                 stdout: serde_json::to_string_pretty(&json!({
                     "backup": backup,
                     "result": result
                 })).unwrap_or_else(|_| result.to_string()),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereSetVideoParamNamed { track, clip_index, component_match_name, component_display_name, param_display_name, value } => {
@@ -9814,13 +9815,14 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }),
                 Duration::from_secs(30),
             ).await?;
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_keyframe");
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
                 stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": result}))
                     .unwrap_or_else(|_| result.to_string()),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereApplyVideoRecipe { track, clip_index, settings } => {
@@ -9942,15 +9944,16 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }),
                 Duration::from_secs(30),
             ).await?;
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_keyframe");
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
                 stdout: serde_json::to_string_pretty(&json!({
                     "backup": backup,
                     "result": result
                 })).unwrap_or_else(|_| result.to_string()),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereSetAudioParamNamed { track, clip_index, component_match_name, component_display_name, param_display_name, value } => {
@@ -9992,13 +9995,14 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }),
                 Duration::from_secs(30),
             ).await?;
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_keyframe");
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
                 stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": result}))
                     .unwrap_or_else(|_| result.to_string()),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereApplyAudioRecipe { track, clip_index, settings } => {
