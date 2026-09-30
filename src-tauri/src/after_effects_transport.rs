@@ -20,16 +20,16 @@ pub struct Request {
 }
 impl Request {
     pub fn is_mutating(&self)->bool{
-        matches!(self.action.as_str(),"set_property"|"set_values_at_times"|"set_expression"|"add_effect"|"add_null"|"add_text"
+        matches!(self.action.as_str(),"set_property"|"set_values_at_times"|"set_expression"|"add_effect"|"remove_effect"|"add_null"|"add_text"
             |"add_shape"|"add_solid"|"add_camera"|"add_light"|"create_comp"|"import_footage"|"add_item_layer"
             |"set_layer_state"|"set_layer_parent"|"move_layer"|"set_track_matte"|"remove_track_matte"
             |"set_time_remap"|"replace_source"|"set_text_style"|"set_layer_timing"
             |"set_keyframe_interpolation"|"set_keyframe_temporal_ease"|"remove_keyframe"
             |"duplicate_layer"|"remove_layer"|"precompose_layers"|"add_mask"|"add_scene_edit_markers"
-            |"add_render_queue_item"|"save_project")
+            |"add_marker"|"remove_marker"|"add_render_queue_item"|"save_project")
     }
     pub fn is_read_only(&self)->bool{
-        matches!(self.action.as_str(),"inspect_context"|"inspect_comp"|"inspect_property"|"inspect_scene_edits"|"inspect_render_queue")
+        matches!(self.action.as_str(),"inspect_context"|"inspect_comp"|"inspect_property"|"inspect_scene_edits"|"inspect_markers"|"inspect_render_queue")
     }
     pub fn validate(&self)->Result<(),String>{
         if self.schema_version!=1
