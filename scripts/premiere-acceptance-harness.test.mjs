@@ -16,3 +16,9 @@ test("disposable registration and bounded plan are routed through approved typed
   assert.match(harness, /requires_exact_expectation/);
   assert.match(harness, /registration\.zip\(context\)/);
 });
+
+test("ripple-delete is a dedicated bounded acceptance step",()=>{
+  assert.match(harness,/\("delete_ripple","premiere_delete_clip"\)/);
+  assert.match(harness,/requires_prproj_checkpoint/);
+  assert.match(harness,/requires_exact_expectation/);
+});

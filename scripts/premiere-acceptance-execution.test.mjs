@@ -54,3 +54,14 @@ test("persisted acceptance revalidates exact fixtures and backup recovery cannot
   assert.match(load,/recovered.status="uncertain"/);
   assert.match(load,/recovered.recovery_verified=false/);
 });
+
+test("ripple-delete acceptance is exact, checkpointed, media-aware and independently reinspected",()=>{
+  const execution=desktop.slice(desktop.indexOf('ToolAction::PremiereAcceptanceExecute {action_id} =>'),desktop.indexOf('ToolAction::PremiereAcceptanceProbe {group} =>'));
+  assert.match(source,/"delete_ripple"/);
+  assert.match(source,/fn verify_ripple_delete/);
+  assert.match(source,/row.get\("mediaId"\)/);
+  assert.match(source,/start>=target_end-0\.001/);
+  assert.match(execution,/"delete_ripple"=>ToolAction::PremiereDeleteClip/);
+  assert.match(execution,/ripple:true/);
+  assert.match(execution,/verified_timeline_edit\("delete_ripple","premiere_delete_clip"/);
+});

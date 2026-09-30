@@ -88,7 +88,7 @@ fn now() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default
 
 impl Action {
     pub fn new(id: String, step: String, fixture: Fixture, context: &Value, timeline: &Value) -> Result<Self,String> {
-        if !matches!(step.as_str(),"trim"|"move"|"clone"|"scene_markers") {return Err("Acceptance action is unsupported; no arbitrary bridge action.".into());}
+        if !matches!(step.as_str(),"trim"|"move"|"clone"|"delete_ripple"|"scene_markers") {return Err("Acceptance action is unsupported; no arbitrary bridge action.".into());}
         fixture.expected.validate()?;
         if fixture.expected.clips.len()!=1 || fixture.kind!=fixture.expected.clips[0].kind
             || fixture.track!=fixture.expected.clips[0].track || fixture.clip_index!=fixture.expected.clips[0].clip_index
@@ -115,6 +115,11 @@ impl Action {
                 if fixture.start_seconds.is_some() || fixture.end_seconds.is_some()
                     || !fixture.delta_seconds.is_some_and(|n|n.is_finite() && n!=0.0 && n.abs()<=3.0 && start+n>=0.0 && end+n<=86400.0) {
                     return Err("Acceptance move/clone requires a bounded offset of at most three seconds.".into());
+                }
+            },
+            "delete_ripple" => {
+                if fixture.start_seconds.is_some() || fixture.end_seconds.is_some() || fixture.delta_seconds.is_some() {
+                    return Err("Ripple-delete acceptance requires one exact clip and no timing mutation fields.".into());
                 }
             },
             "scene_markers" => {
@@ -159,9 +164,11 @@ impl Action {
             "move"|"clone" if fixture.start_seconds.is_some() || fixture.end_seconds.is_some()
                 || !fixture.delta_seconds.is_some_and(|n|n.is_finite() && n!=0.0 && n.abs()<=3.0 && start+n>=0.0 && end+n<=86400.0)
                 => return Err("Invalid persisted acceptance offset.".into()),
+            "delete_ripple" if fixture.start_seconds.is_some() || fixture.end_seconds.is_some() || fixture.delta_seconds.is_some()
+                => return Err("Invalid persisted acceptance ripple delete.".into()),
             _=>{}
         }
-        if self.schema_version!=1 || self.group!=2 || !matches!(self.step.as_str(),"trim"|"move"|"clone"|"scene_markers")
+        if self.schema_version!=1 || self.group!=2 || !matches!(self.step.as_str(),"trim"|"move"|"clone"|"delete_ripple"|"scene_markers")
             || (self.step=="scene_markers" && (self.fixture.kind!="video" || self.fixture.start_seconds.is_some()
                 || self.fixture.end_seconds.is_some() || self.fixture.delta_seconds.is_some()))
             || !matches!(self.status.as_str(),"prepared"|"executing"|"verified"|"uncertain"|"failed"|"cancelled")
@@ -219,9 +226,9 @@ impl Action {
     }
 
     pub fn verify_recovery(&mut self,context:&Value,timeline:&Value)->Result<bool,String>{
-        if self.checkpoint.is_none() || !matches!(self.step.as_str(),"trim"|"move"|"clone")
+        if self.checkpoint.is_none() || !matches!(self.step.as_str(),"trim"|"move"|"clone"|"delete_ripple")
             || !matches!(self.status.as_str(),"verified"|"uncertain"|"failed") {
-            return Err("Recovery verification requires a completed trim/move/clone acceptance action with checkpoint.".into());
+            return Err("Recovery verification requires a completed trim/move/clone/ripple-delete acceptance action with checkpoint.".into());
         }
         let checkpoint=self.checkpoint.as_deref().ok_or("Checkpoint missing.")?;
         let current_path=context.get("projectPath").and_then(Value::as_str).ok_or("Recovery host project path missing.")?;
@@ -282,6 +289,14 @@ fn track<'a>(timeline:&'a Value,fixture:&Fixture)->Result<&'a Value,String>{
     timeline.get(if fixture.kind=="video" {"videoTracks"}else{"audioTracks"}).and_then(Value::as_array)
         .and_then(|v|v.iter().find(|t|t["index"]==fixture.track)).ok_or("Acceptance track missing.".into())
 }
+fn track_rows(items:&[Value])->Result<Vec<Value>,String>{
+    if items.len()>240 {return Err("Acceptance track exceeds inspection budget.".into());}
+    Ok(items.iter().map(|v|json!({
+        "clipIndex":v.get("clipIndex"),"mediaId":v.get("mediaId"),"name":v.get("name"),
+        "startSeconds":v.get("startSeconds"),"endSeconds":v.get("endSeconds"),
+        "durationSeconds":v.get("durationSeconds"),"targetSignature":v.get("targetSignature")
+    })).collect())
+}
 pub fn exact_clip(timeline:&Value,fixture:&Fixture)->Result<Value,String>{
     let expected=fixture.expected.clips.first().filter(|_|fixture.expected.clips.len()==1)
         .ok_or("Acceptance requires one exact clip expectation.")?;
@@ -291,13 +306,37 @@ pub fn exact_clip(timeline:&Value,fixture:&Fixture)->Result<Value,String>{
         return Err("Clip target signature changed before acceptance.".into());
     }
     Ok(json!({"name":clip.get("name"),"startSeconds":clip.get("startSeconds"),"endSeconds":clip.get("endSeconds"),
-        "targetSignature":clip.get("targetSignature"),"clip_count":items.len()}))
+        "targetSignature":clip.get("targetSignature"),"clip_count":items.len(),"track_items":track_rows(items)?}))
 }
 fn summary(timeline:&Value,fixture:&Fixture)->Result<Value,String>{
     let items=track(timeline,fixture)?.get("items").and_then(Value::as_array).ok_or("Track items missing.")?;
-    if items.len()>240 {return Err("Acceptance track exceeds inspection budget.".into());}
-    Ok(json!({"clip_count":items.len(),"items":items.iter().map(|v|json!({"name":v.get("name"),
-        "startSeconds":v.get("startSeconds"),"endSeconds":v.get("endSeconds")})).collect::<Vec<_>>()}))
+    Ok(json!({"clip_count":items.len(),"items":track_rows(items)?}))
+}
+fn verify_ripple_delete(fixture:&Fixture,before:&Value,state:&Value)->bool{
+    let (Some(before_rows),Some(after_rows),Some(before_count))=(before.get("track_items").and_then(Value::as_array),
+        state.get("items").and_then(Value::as_array),before.get("clip_count").and_then(Value::as_u64)) else{return false};
+    if before_count==0 || after_rows.len() as u64 + 1 != before_count || before_rows.len() as u64 != before_count {return false;}
+    let Some(target)=before_rows.iter().find(|row|row.get("clipIndex").and_then(Value::as_u64)==Some(fixture.clip_index as u64)
+        && row.get("targetSignature").and_then(Value::as_str)==Some(fixture.expected.clips[0].signature.as_str())) else{return false};
+    let (Some(target_start),Some(target_end))=(target.get("startSeconds").and_then(Value::as_f64),target.get("endSeconds").and_then(Value::as_f64)) else{return false};
+    let duration=target_end-target_start;
+    if !target_start.is_finite() || !target_end.is_finite() || duration<=0.0 {return false;}
+    let close=|a:f64,b:f64|(a-b).abs()<0.005;
+    let mut used=vec![false;after_rows.len()];
+    for expected in before_rows.iter().filter(|row|row.get("clipIndex").and_then(Value::as_u64)!=Some(fixture.clip_index as u64)) {
+        let Some(media)=expected.get("mediaId").and_then(Value::as_str).filter(|v|!v.is_empty()) else{return false};
+        let (Some(mut start),Some(mut end))=(expected.get("startSeconds").and_then(Value::as_f64),expected.get("endSeconds").and_then(Value::as_f64)) else{return false};
+        let expected_duration=expected.get("durationSeconds").and_then(Value::as_f64).unwrap_or(end-start);
+        if start>=target_end-0.001 {start-=duration;end-=duration;}
+        let Some(index)=after_rows.iter().enumerate().find_map(|(index,actual)|{
+            if used[index] || actual.get("mediaId").and_then(Value::as_str)!=Some(media) {return None;}
+            let (Some(a_start),Some(a_end))=(actual.get("startSeconds").and_then(Value::as_f64),actual.get("endSeconds").and_then(Value::as_f64)) else{return None};
+            let a_duration=actual.get("durationSeconds").and_then(Value::as_f64).unwrap_or(a_end-a_start);
+            (close(a_start,start)&&close(a_end,end)&&close(a_duration,expected_duration)).then_some(index)
+        }) else{return false};
+        used[index]=true;
+    }
+    used.into_iter().all(|v|v)
 }
 pub fn verify(step:&str,fixture:&Fixture,before:&Value,after:&Value)->bool{
     let Ok(state)=summary(after,fixture) else{return false};
@@ -321,6 +360,7 @@ pub fn verify(step:&str,fixture:&Fixture,before:&Value,after:&Value)->bool{
                 && v["endSeconds"].as_f64().is_some_and(|n|close(n,end)))
             && matches.iter().any(|v|v["startSeconds"].as_f64().is_some_and(|n|close(n,start+d))
                 && v["endSeconds"].as_f64().is_some_and(|n|close(n,end+d)))),
+        "delete_ripple" => verify_ripple_delete(fixture,before,&state),
         _ => false,
     }
 }
@@ -395,7 +435,8 @@ pub fn save(path:&Path,action:&Action)->Result<(),String>{
             delta_seconds:None,expected};
         let context=json!({"projectGuid":"p","projectPath":"C:/disposable.prproj","activeSequence":{"guid":"s"},"premiereVersion":"26"});
         let timeline=json!({"truncated":false,"expected":{"project_guid":"p","project_path":"C:/disposable.prproj"},"sequenceGuid":"s",
-            "videoTracks":[{"index":0,"items":[{"clipIndex":0,"name":"test","startSeconds":0.0,"endSeconds":2.0,"targetSignature":"sig"}]}]});
+            "videoTracks":[{"index":0,"items":[{"clipIndex":0,"mediaId":"m1","name":"test","startSeconds":0.0,"endSeconds":2.0,
+                "durationSeconds":2.0,"targetSignature":"sig"}]}]});
         (fixture,context,timeline)
     }
     #[test] fn rejects_injection_stale_and_dangerous_delta(){let (mut f,c,t)=fixture();
@@ -438,6 +479,24 @@ pub fn save(path:&Path,action:&Action)->Result<(),String>{
         let mut bad_action=Action::new("clone-b".into(),"clone".into(),bad_fixture,&c,&bad).unwrap();
         bad_action.status="executing".into();
         assert!(!bad_action.finish(&bad,true).unwrap());
+    }
+    #[test] fn ripple_delete_requires_full_media_identity_and_expected_shift(){
+        let (mut f,c,mut before)=fixture();f.start_seconds=None;f.end_seconds=None;f.delta_seconds=None;
+        before["videoTracks"][0]["items"].as_array_mut().unwrap().push(json!({
+            "clipIndex":1,"mediaId":"m2","name":"later","startSeconds":3.0,"endSeconds":5.0,
+            "durationSeconds":2.0,"targetSignature":"sig2"
+        }));
+        let mut a=Action::new("delete-a".into(),"delete_ripple".into(),f.clone(),&c,&before).unwrap();
+        a.status="executing".into();
+        let mut after=before.clone();
+        after["videoTracks"][0]["items"]=json!([{
+            "clipIndex":0,"mediaId":"m2","name":"later","startSeconds":1.0,"endSeconds":3.0,
+            "durationSeconds":2.0,"targetSignature":"shifted"
+        }]);
+        assert!(a.finish(&after,true).unwrap());
+        let mut b=Action::new("delete-b".into(),"delete_ripple".into(),f,&c,&before).unwrap();
+        b.status="executing".into();after["videoTracks"][0]["items"][0]["startSeconds"]=json!(1.5);
+        assert!(!b.finish(&after,true).unwrap());
     }
     #[test] fn recovery_requires_checkpoint_project_and_exact_pre_edit_state(){
         let (fixture,mut context,timeline)=fixture();

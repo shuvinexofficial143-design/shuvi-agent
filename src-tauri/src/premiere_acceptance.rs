@@ -84,6 +84,7 @@ impl Report {
             ("trim","premiere_trim_clip")=>"accepted typed trim; exact native timing reinspected",
             ("move_clone","premiere_move_clip")=>"accepted typed move; exact native timing offset reinspected",
             ("move_clone","premiere_clone_clip")=>"accepted typed clone; original plus offset duplicate reinspected",
+            ("delete_ripple","premiere_delete_clip")=>"accepted typed ripple delete; full affected track media/timing delta reinspected",
             _=>return Err("Timeline acceptance requires an allowlisted verified edit/action pair.".into()),
         };
         if version.is_empty() || project.is_empty() || sequence.is_empty() || checkpoint.is_empty() || checkpoint.len()>1024 {
@@ -268,6 +269,7 @@ fn supported_evidence_pair(capability: &str, action: &str) -> bool {
         ("sequence_inspection","inspect_context") | ("timeline_inspection","inspect_timeline") |
         ("project_diagnostics","project_diagnostics") | ("trim","premiere_trim_clip") |
         ("move_clone","premiere_move_clip") | ("move_clone","premiere_clone_clip") |
+        ("delete_ripple","premiere_delete_clip") |
         ("scene_edit_detection","premiere_detect_scene_markers"))
 }
 

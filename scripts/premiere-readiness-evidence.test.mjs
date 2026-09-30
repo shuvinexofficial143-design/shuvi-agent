@@ -33,7 +33,7 @@ test('export jobs reload under a shared lock after native await, retaining other
 test('acceptance plans distinguish dedicated evidence adapters from planned-only mutations',()=>{
   const harness=read('premiere_acceptance_harness');
   assert.match(harness,/fn has_dedicated_execution_adapter/);
-  for(const pair of ['trim.*premiere_trim_clip','move.*premiere_move_clip','clone.*premiere_clone_clip','scene_markers.*premiere_detect_scene_markers']) {
+  for(const pair of ['trim.*premiere_trim_clip','move.*premiere_move_clip','clone.*premiere_clone_clip','delete_ripple.*premiere_delete_clip','scene_markers.*premiere_detect_scene_markers']) {
     assert.match(harness,new RegExp(pair));
   }
   assert.match(harness,/"acceptance_execution_adapter":adapter/);
