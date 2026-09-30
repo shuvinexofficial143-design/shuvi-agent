@@ -228,6 +228,98 @@
         }
         return {verification_status:"verified_readback",num_items:project.numItems,scan_truncated:project.numItems>MAX_ITEMS,items:items};
     }
+    function itemKind(item) {
+        if(item instanceof CompItem)return "comp";
+        if(item instanceof FootageItem)return "footage";
+        if(item instanceof FolderItem)return "folder";
+        return "other";
+    }
+    function resolveFolder(folderId) {
+        if(folderId===null||folderId===undefined)return requireProject().rootFolder;
+        var folder=resolveItem(folderId);
+        if(!(folder instanceof FolderItem))fail("Target parent item is not a project folder.");
+        return folder;
+    }
+    function projectItemSnapshot(item) {
+        return {item_id:item.id,name:String(item.name).slice(0,240),kind:itemKind(item),
+            parent_folder_id:item.parentFolder?item.parentFolder.id:null,label:item.label===undefined?null:item.label,
+            folder_child_count:item instanceof FolderItem?item.numItems:null};
+    }
+    function createProjectFolder(args) {
+        var project=requireProject(),name=boundedString(args.name,120,"project folder name"),parent=resolveFolder(args.parent_folder_id);
+        var before=project.numItems;
+        app.beginUndoGroup("Shuvi: Create project folder");
+        var folder;
+        try{
+            folder=project.items.addFolder(name);
+            if(parent.id!==project.rootFolder.id)folder.parentFolder=parent;
+        }finally{app.endUndoGroup();}
+        var read=folder?project.itemByID(folder.id):null;
+        var verified=project.numItems===before+1&&read&&read instanceof FolderItem&&String(read.name)===name
+            &&read.parentFolder&&read.parentFolder.id===parent.id;
+        return {native_accepted:true,verification_status:verified?"verified_project_folder_creation":"accepted_unverified",retry_safe:false,
+            folder:read?projectItemSnapshot(read):null,before_item_count:before,after_item_count:project.numItems};
+    }
+    function folderMoveWouldCycle(item,parent) {
+        if(!(item instanceof FolderItem))return false;
+        var project=requireProject(),cursor=parent,guard=0;
+        while(cursor&&guard<512){
+            if(cursor.id===item.id)return true;
+            if(cursor.id===project.rootFolder.id)return false;
+            cursor=cursor.parentFolder;guard++;
+        }
+        return guard>=512;
+    }
+    function setProjectItemState(args) {
+        var project=requireProject(),item=resolveItem(args.item_id),expectedName=boundedString(args.expected_name,240,"expected project item name");
+        if(String(item.name)!==expectedName)fail("Project item name stale guard changed.");
+        if(!args.hasOwnProperty("expected_parent_folder_id"))fail("Project item mutation requires expected_parent_folder_id stale guard.");
+        var beforeParent=item.parentFolder?item.parentFolder.id:null;
+        if(beforeParent!==args.expected_parent_folder_id)fail("Project item parent folder stale guard changed.");
+        var requested={},count=0,parent=null;
+        if(args.name!==undefined){requested.name=boundedString(args.name,240,"project item name");count++;}
+        if(args.label!==undefined){
+            if(!finiteNumber(args.label)||Math.floor(args.label)!==args.label||args.label<0||args.label>16)fail("Project item label must be 0..16.");
+            requested.label=args.label;count++;
+        }
+        if(args.parent_folder_id!==undefined){
+            parent=resolveFolder(args.parent_folder_id);
+            if(folderMoveWouldCycle(item,parent))fail("Project folder move would create a parent cycle.");
+            requested.parentFolderId=parent.id;count++;
+        }
+        if(count===0)fail("set_project_item_state requires name, label and/or parent_folder_id.");
+        var before=projectItemSnapshot(item);
+        app.beginUndoGroup("Shuvi: Set project item state");
+        try{
+            if(requested.name!==undefined)item.name=requested.name;
+            if(requested.label!==undefined)item.label=requested.label;
+            if(parent)item.parentFolder=parent;
+        }finally{app.endUndoGroup();}
+        item=project.itemByID(args.item_id);
+        if(!item)fail("Project item disappeared during state mutation.");
+        var after=projectItemSnapshot(item),verified=true;
+        if(requested.name!==undefined&&after.name!==requested.name)verified=false;
+        if(requested.label!==undefined&&after.label!==requested.label)verified=false;
+        if(requested.parentFolderId!==undefined&&after.parent_folder_id!==requested.parentFolderId)verified=false;
+        return {native_accepted:true,verification_status:verified?"verified_project_item_readback":"accepted_unverified",retry_safe:verified,
+            item_id:item.id,before:before,after:after};
+    }
+    function removeProjectItem(args) {
+        var project=requireProject(),item=resolveItem(args.item_id),expectedName=boundedString(args.expected_name,240,"expected project item name");
+        if(String(item.name)!==expectedName)fail("Project item name stale guard changed.");
+        var expectedKind=boundedString(args.expected_kind,16,"expected project item kind"),kind=itemKind(item);
+        if(kind!==expectedKind)fail("Project item kind stale guard changed.");
+        if(!args.hasOwnProperty("expected_parent_folder_id"))fail("Project item removal requires expected_parent_folder_id stale guard.");
+        var parentId=item.parentFolder?item.parentFolder.id:null;
+        if(parentId!==args.expected_parent_folder_id)fail("Project item parent folder stale guard changed.");
+        if(item instanceof FolderItem&&item.numItems!==0)fail("Non-empty project folders cannot be removed automatically.");
+        var id=item.id,before=project.numItems,snapshot=projectItemSnapshot(item);
+        app.beginUndoGroup("Shuvi: Remove project item");
+        try{item.remove();}finally{app.endUndoGroup();}
+        var gone=project.itemByID(id)===null,verified=gone&&project.numItems===before-1;
+        return {native_accepted:true,verification_status:verified?"verified_project_item_delta":"accepted_unverified",retry_safe:false,
+            removed:snapshot,before_item_count:before,after_item_count:project.numItems};
+    }
     function inspectComp(args) {
         var comp = resolveComp(args.comp_id);
         var layers = [], i, limit = Math.min(comp.numLayers, MAX_LAYERS);
@@ -2103,6 +2195,7 @@
         return action === "set_property" || action === "set_values_at_times" || action === "set_expression"
             || action === "add_effect" || action === "remove_effect" || action === "add_null" || action === "add_text" || action === "add_shape" || action === "add_solid"
             || action === "add_camera" || action === "add_light" || action === "create_comp" || action === "set_comp_settings" || action === "import_footage" || action === "add_item_layer"
+            || action === "create_project_folder" || action === "set_project_item_state" || action === "remove_project_item"
             || action === "set_layer_state" || action === "set_layer_parent"
             || action === "move_layer" || action === "set_track_matte" || action === "remove_track_matte"
             || action === "set_time_remap" || action === "replace_source" || action === "relink_footage" || action === "set_proxy" || action === "remove_proxy"
@@ -2164,6 +2257,9 @@
         if (action === "set_comp_settings") return setCompSettings(args);
         if (action === "import_footage") return importFootage(args);
         if (action === "add_item_layer") return addItemLayer(args);
+        if (action === "create_project_folder") return createProjectFolder(args);
+        if (action === "set_project_item_state") return setProjectItemState(args);
+        if (action === "remove_project_item") return removeProjectItem(args);
         if (action === "set_layer_state") return setLayerState(args);
         if (action === "set_layer_parent") return setLayerParent(args);
         if (action === "move_layer") return moveLayer(args);
