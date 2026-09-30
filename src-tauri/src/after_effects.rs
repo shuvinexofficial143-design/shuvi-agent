@@ -316,6 +316,7 @@ pub fn capability_report()->Value {
             "essential_property_inspection":"source_supported_bounded_256_with_source_and_alternate_media_identity",
             "essential_property_static_write":"source_supported_non_media_unkeyed_with_name_stale_guard_and_readback",
             "essential_media_replacement":"source_supported_compatible_item_with_current_alternate_stale_guard_and_readback",
+            "essential_binding_batch":"source_supported_preflight_all_value_and_media_bindings_then_single_undo_group_with_per_binding_readback",
             "runtime_verified":"not_verified"
         },
         "safety":[
