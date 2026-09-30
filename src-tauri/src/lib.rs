@@ -10553,16 +10553,15 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }),
                 Duration::from_secs(30),
             ).await?;
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_creation_identity");
 
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
-                stdout: serde_json::to_string_pretty(&json!({
-                    "backup": backup,
-                    "result": result
-                })).unwrap_or_else(|_| result.to_string()),
+                stdout: json!({"backup":backup,"result":result,"creation_identity_verified":verified,
+                    "boundary_semantics_verified":false,"retry_safe":false}).to_string(),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereTranscribeItem { item_id, language } => {
@@ -10857,17 +10856,14 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     Duration::from_secs(45),
                 )
                 .await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
 
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
-                stdout: serde_json::to_string_pretty(&json!({
-                    "backup": backup,
-                    "result": value
-                }))
-                .unwrap_or_else(|_| value.to_string()),
+                stdout: json!({"backup":backup,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereCreateSubsequence { targets } => {

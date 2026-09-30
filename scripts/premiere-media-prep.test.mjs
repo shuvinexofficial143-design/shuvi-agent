@@ -131,3 +131,31 @@ test("desktop import succeeds only after exact media path readback",()=>{
   assert.match(arm,/success: verified/);
   assert.match(arm,/retry_safe/);
 });
+
+test("sequence-from-media requires a new stable GUID and active-sequence readback",()=>{
+  const sequence=uxp.slice(uxp.indexOf("async function createSequenceFromMedia"),uxp.indexOf("async function saveProject"));
+  assert.match(sequence,/beforeGuids/);
+  assert.match(sequence,/matching\.length === 1/);
+  assert.match(sequence,/activeSequenceVerified/);
+  assert.match(sequence,/verificationStatus: verified \? "verified_readback" : "accepted_unverified"/);
+
+  const start=rust.lastIndexOf("ToolAction::PremiereCreateSequenceFromMedia");
+  const end=rust.indexOf("\n        ToolAction::PremiereCreateSubsequence",start);
+  const arm=rust.slice(start,end);
+  assert.match(arm,/verified_readback/);
+  assert.match(arm,/success: verified/);
+});
+
+test("subclip success proves new project-item identity without claiming boundary semantics",()=>{
+  const subclip=uxp.slice(uxp.indexOf("async function createSubclip"),uxp.indexOf("async function transcribeItem"));
+  assert.match(subclip,/correlationVerified/);
+  assert.match(subclip,/verified_creation_identity/);
+  assert.match(subclip,/boundarySemanticsVerified: false/);
+  assert.match(subclip,/retrySafe: false/);
+
+  const start=rust.lastIndexOf("ToolAction::PremiereCreateSubclip");
+  const end=rust.indexOf("\n        ToolAction::PremiereTranscribeItem",start);
+  const arm=rust.slice(start,end);
+  assert.match(arm,/verified_creation_identity/);
+  assert.match(arm,/boundary_semantics_verified":false/);
+});

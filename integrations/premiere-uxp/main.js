@@ -486,6 +486,10 @@ async function createSequenceFromMedia(argumentsValue) {
     );
   }
 
+  const beforeSequences = await project.getSequences();
+  const beforeGuids = new Set((Array.isArray(beforeSequences) ? beforeSequences : [])
+    .map(value => plainGuid(value.guid)).filter(Boolean));
+
   const sequence = await project.createSequenceFromMedia(
     name,
     resolved.clips,
@@ -493,14 +497,30 @@ async function createSequenceFromMedia(argumentsValue) {
   );
 
   if (!sequence) throw new Error("Premiere did not return the created sequence.");
+  const sequenceGuid = plainGuid(sequence.guid);
+  if (!sequenceGuid) throw new Error("Created Premiere sequence has no stable GUID.");
 
   await project.setActiveSequence(sequence);
 
+  const [afterSequences,activeSequence] = await Promise.all([
+    project.getSequences(), project.getActiveSequence()
+  ]);
+  const matching = (Array.isArray(afterSequences) ? afterSequences : [])
+    .filter(value => plainGuid(value.guid) === sequenceGuid);
+  const sequenceWasNew = !beforeGuids.has(sequenceGuid) && matching.length === 1;
+  const activeSequenceVerified = plainGuid(activeSequence?.guid) === sequenceGuid;
+  const verified = sequenceWasNew && activeSequenceVerified;
+
   return {
     created: true,
-    sequenceGuid: plainGuid(sequence.guid),
+    sequenceGuid,
     sequenceName: sequence.name || name,
-    mediaCount: resolved.clips.length
+    mediaCount: resolved.clips.length,
+    sequenceWasNew,
+    activeSequenceVerified,
+    verificationStatus: verified ? "verified_readback" : "accepted_unverified",
+    uncertain: !verified,
+    retrySafe: false
   };
 }
 
@@ -4931,7 +4951,11 @@ async function createSubclip(argumentsValue) {
     endSeconds,
     hardBoundaries,
     takeVideo,
-    takeAudio
+    takeAudio,
+    boundarySemanticsVerified: false,
+    verificationStatus: correlationVerified ? "verified_creation_identity" : "accepted_unverified",
+    uncertain: !correlationVerified,
+    retrySafe: false
   };
 }
 
