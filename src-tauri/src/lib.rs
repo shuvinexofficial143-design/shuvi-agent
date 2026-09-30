@@ -11126,7 +11126,9 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 Duration::from_secs(30),
             ).await?;
 
-            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_creation_identity");
+            let content_verified=value.get("selectionSemanticsVerified").and_then(Value::as_bool)==Some(true);
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_creation_identity")
+                &&content_verified;
             Ok(ActionResult {
                 success: verified,
                 tool,
@@ -11134,7 +11136,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "backup": backup,
                     "result": value,
                     "creation_identity_verified":verified,
-                    "selection_semantics_verified":false,
+                    "selection_semantics_verified":content_verified,
                     "retry_safe":false
                 }).to_string(),
                 stderr: String::new(),
