@@ -8947,15 +8947,19 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 };
                 let client = PremiereClient { bridge: &state.premiere_bridge, expected: Some(&guard) };
                 let arguments = premiere_talking_head::operation_arguments(edit);
-                let (route, timeout) = match &edit.operation {
-                    premiere_talking_head::EditOperation::Trim { .. } => ("trim_clip", Duration::from_secs(30)),
-                    premiere_talking_head::EditOperation::Delete { .. } => ("delete_clip", Duration::from_secs(30)),
+                let (route, timeout, expected_verification) = match &edit.operation {
+                    premiere_talking_head::EditOperation::Trim { .. } => ("trim_clip", Duration::from_secs(30), "verified_readback"),
+                    premiere_talking_head::EditOperation::Delete { .. } => ("delete_clip", Duration::from_secs(30), "verified_delta"),
                 };
                 match client.request(route, arguments, timeout).await {
-                    Ok(value) => edits.push(json!({"target":edit.target,"status":"applied","native_result":value})),
+                    Ok(value) => {
+                        let verified=value.get("verificationStatus").and_then(Value::as_str)==Some(expected_verification);
+                        edits.push(json!({"target":edit.target,"status":if verified {"applied"} else {"accepted_unverified"},"post_state_verified":verified,"native_result":value}));
+                        if !verified { uncertain=true; break; }
+                    },
                     Err(error) => {
-                        uncertain = error.contains("unknown") || error.contains("timed out") || error.contains("timeout");
-                        edits.push(json!({"target":edit.target,"status":if uncertain {"uncertain"} else {"failed"},"reason":error.chars().take(240).collect::<String>()}));
+                        uncertain = true;
+                        edits.push(json!({"target":edit.target,"status":"uncertain","reason":error.chars().take(240).collect::<String>()}));
                         break;
                     }
                 }
@@ -8978,10 +8982,14 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                         "comments": format!("Transcript selection {}", marker.segment_id),
                     });
                     match client.request("add_marker", args, Duration::from_secs(20)).await {
-                        Ok(value) => markers.push(json!({"segment_id":marker.segment_id,"seconds":marker.seconds,"status":"applied","native_result":value})),
+                        Ok(value) => {
+                            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_delta");
+                            markers.push(json!({"segment_id":marker.segment_id,"seconds":marker.seconds,"status":if verified {"applied"} else {"accepted_unverified"},"post_state_verified":verified,"native_result":value}));
+                            if !verified { uncertain=true; break; }
+                        },
                         Err(error) => {
-                            uncertain = error.contains("unknown") || error.contains("timed out") || error.contains("timeout");
-                            markers.push(json!({"segment_id":marker.segment_id,"status":if uncertain {"uncertain"} else {"failed"},"reason":error.chars().take(240).collect::<String>()}));
+                            uncertain = true;
+                            markers.push(json!({"segment_id":marker.segment_id,"status":"uncertain","reason":error.chars().take(240).collect::<String>()}));
                             break;
                         }
                     }

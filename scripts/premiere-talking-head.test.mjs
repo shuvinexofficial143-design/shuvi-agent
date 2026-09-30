@@ -47,9 +47,11 @@ test("apply requires exact video and optional audio expectations", () => {
   assert.match(rust, /clip\.kind == "audio"/);
 });
 
-test("real edits reuse existing trim and delete native routes", () => {
-  assert.match(rust, /EditOperation::Trim \{ \.\. \} => \("trim_clip"/);
-  assert.match(rust, /EditOperation::Delete \{ \.\. \} => \("delete_clip"/);
+test("real edits reuse existing trim and delete native routes with exact post-state verification", () => {
+  assert.match(rust, /EditOperation::Trim \{ \.\. \} => \("trim_clip", Duration::from_secs\(30\), "verified_readback"\)/);
+  assert.match(rust, /EditOperation::Delete \{ \.\. \} => \("delete_clip", Duration::from_secs\(30\), "verified_delta"\)/);
+  assert.match(rust, /"post_state_verified":verified/);
+  assert.match(rust, /"accepted_unverified"/);
 });
 
 test("apply takes a project checkpoint before mutation", () => {
@@ -63,9 +65,20 @@ test("chapter and highlight selections map to existing markers", () => {
   assert.match(rust, /client\.request\("add_marker"/);
 });
 
-test("uncertain bridge delivery stops the workflow", () => {
-  assert.match(rust, /error\.contains\("unknown"\) \|\| error\.contains\("timed out"\) \|\| error\.contains\("timeout"\)/);
-  assert.match(rust, /if !uncertain && edits\.iter\(\)\.all/);
+test("unverified native replies and any dispatched bridge error stop the workflow", () => {
+  const arm = rust.slice(rust.indexOf("ToolAction::PremiereTranscriptCuts"));
+  assert.match(arm, /if !verified \{ uncertain=true; break; \}/);
+  assert.match(arm, /uncertain = true;/);
+  assert.match(arm, /"status":"uncertain"/);
+  assert.match(arm, /if !uncertain && edits\.iter\(\)\.all/);
+});
+
+test("chapter and highlight marker writes require verified marker delta", () => {
+  const arm = rust.slice(rust.indexOf("ToolAction::PremiereTranscriptCuts"));
+  assert.match(arm, /client\.request\("add_marker"/);
+  assert.match(arm, /verificationStatus/);
+  assert.match(arm, /Some\("verified_delta"\)/);
+  assert.match(arm, /"post_state_verified":verified/);
 });
 
 test("post-edit timeline is reinspected without stale clip guards", () => {
