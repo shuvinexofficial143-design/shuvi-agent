@@ -766,6 +766,84 @@
         return {native_accepted:true,verification_status:verified?"verified_creation_readback":"accepted_unverified",retry_safe:false,
             comp_id:comp.id,item_id:item.id,layer_id:layer?layer.id:null,before_count:before,after_count:comp.numLayers};
     }
+    function justificationEnum(name) {
+        if(name==="left")return ParagraphJustification.LEFT_JUSTIFY;
+        if(name==="right")return ParagraphJustification.RIGHT_JUSTIFY;
+        if(name==="center")return ParagraphJustification.CENTER_JUSTIFY;
+        fail("Unsupported text justification.");
+    }
+    function validateColor(value,label) {
+        if(!(value instanceof Array)||value.length!==3)fail(label+" must be [r,g,b].");
+        var i;for(i=0;i<3;i++)if(!finiteNumber(value[i])||value[i]<0||value[i]>32)fail(label+" values must be finite and bounded.");
+        return value;
+    }
+    function setTextStyle(args) {
+        var comp=resolveComp(args.comp_id),layer=resolveLayer(comp,args.layer_id);
+        var group=layer.property("ADBE Text Properties"),prop=group?group.property("ADBE Text Document"):null;
+        if(!prop)fail("Target layer has no Source Text property.");
+        var doc=prop.value;
+        if(args.text!==undefined){var text=String(args.text);if(text.length>16384)fail("Text exceeds 16 KiB.");doc.text=text;}
+        if(args.font!==undefined)doc.font=boundedString(args.font,240,"font PostScript name");
+        if(args.font_size!==undefined){if(!finiteNumber(args.font_size)||args.font_size<0.1||args.font_size>1296)fail("font_size outside 0.1..1296.");doc.fontSize=args.font_size;}
+        if(args.tracking!==undefined){if(!finiteNumber(args.tracking)||Math.abs(args.tracking)>10000)fail("tracking outside bounded range.");doc.tracking=args.tracking;}
+        if(args.fill_color!==undefined){doc.applyFill=true;doc.fillColor=validateColor(args.fill_color,"fill_color");}
+        if(args.apply_fill!==undefined){if(typeof args.apply_fill!=="boolean")fail("apply_fill must be boolean.");doc.applyFill=args.apply_fill;}
+        if(args.stroke_color!==undefined){doc.applyStroke=true;doc.strokeColor=validateColor(args.stroke_color,"stroke_color");}
+        if(args.stroke_width!==undefined){if(!finiteNumber(args.stroke_width)||args.stroke_width<0||args.stroke_width>1000)fail("stroke_width outside range.");doc.strokeWidth=args.stroke_width;}
+        if(args.apply_stroke!==undefined){if(typeof args.apply_stroke!=="boolean")fail("apply_stroke must be boolean.");doc.applyStroke=args.apply_stroke;}
+        if(args.justification!==undefined)doc.justification=justificationEnum(boundedString(args.justification,16,"justification"));
+        app.beginUndoGroup("Shuvi: Style text");
+        try{prop.setValue(doc);}finally{app.endUndoGroup();}
+        layer=resolveLayer(comp,args.layer_id);prop=layer.property("ADBE Text Properties").property("ADBE Text Document");
+        var read=prop.value,verified=true;
+        if(args.text!==undefined&&String(read.text)!==String(args.text))verified=false;
+        if(args.font!==undefined&&String(read.font)!==String(args.font))verified=false;
+        if(args.font_size!==undefined&&Math.abs(read.fontSize-args.font_size)>EPSILON)verified=false;
+        if(args.tracking!==undefined&&Math.abs(read.tracking-args.tracking)>EPSILON)verified=false;
+        if(args.apply_fill!==undefined&&!!read.applyFill!==args.apply_fill)verified=false;
+        if(args.fill_color!==undefined&&(!read.applyFill||!sameValue(read.fillColor,args.fill_color)))verified=false;
+        if(args.apply_stroke!==undefined&&!!read.applyStroke!==args.apply_stroke)verified=false;
+        if(args.stroke_color!==undefined&&(!read.applyStroke||!sameValue(read.strokeColor,args.stroke_color)))verified=false;
+        if(args.stroke_width!==undefined&&Math.abs(read.strokeWidth-args.stroke_width)>EPSILON)verified=false;
+        if(args.justification!==undefined&&read.justification!==justificationEnum(args.justification))verified=false;
+        return {native_accepted:true,verification_status:verified?"verified_text_readback":"accepted_unverified",retry_safe:verified,
+            comp_id:comp.id,layer_id:layer.id,text:String(read.text),font:String(read.font),font_size:read.fontSize,
+            apply_fill:!!read.applyFill,apply_stroke:!!read.applyStroke,tracking:read.tracking};
+    }
+    function interpolationEnum(name) {
+        if(name==="linear")return KeyframeInterpolationType.LINEAR;
+        if(name==="bezier")return KeyframeInterpolationType.BEZIER;
+        if(name==="hold")return KeyframeInterpolationType.HOLD;
+        fail("Unsupported keyframe interpolation type.");
+    }
+    function setKeyframeInterpolation(args) {
+        var resolved=resolveProperty(args.property),p=resolved.property,index=args.key_index;
+        if(!finiteNumber(index)||Math.floor(index)!==index||index<1||index>p.numKeys)fail("Invalid key_index.");
+        var inType=interpolationEnum(boundedString(args.in_type,16,"incoming interpolation"));
+        var outType=args.out_type===undefined?inType:interpolationEnum(boundedString(args.out_type,16,"outgoing interpolation"));
+        if(!p.isInterpolationTypeValid(inType)||!p.isInterpolationTypeValid(outType))fail("Requested interpolation is invalid for this property.");
+        app.beginUndoGroup("Shuvi: Set keyframe interpolation");
+        try{p.setInterpolationTypeAtKey(index,inType,outType);}finally{app.endUndoGroup();}
+        resolved=resolveProperty(args.property);p=resolved.property;
+        var verified=p.keyInInterpolationType(index)===inType&&p.keyOutInterpolationType(index)===outType;
+        return {native_accepted:true,verification_status:verified?"verified_keyframe_readback":"accepted_unverified",retry_safe:verified,
+            comp_id:resolved.comp.id,layer_id:resolved.layer.id,key_index:index,key_time:p.keyTime(index),in_type:args.in_type,out_type:args.out_type||args.in_type};
+    }
+    function removeKeyframe(args) {
+        var resolved=resolveProperty(args.property),p=resolved.property,index=args.key_index,expected=args.expected_time_seconds;
+        if(!finiteNumber(index)||Math.floor(index)!==index||index<1||index>p.numKeys||!finiteNumber(expected)||expected<0||expected>10800)
+            fail("remove_keyframe requires valid key_index and expected_time_seconds.");
+        var actual=p.keyTime(index);
+        if(Math.abs(actual-expected)>EPSILON)fail("Keyframe time stale guard changed.");
+        var before=p.numKeys;
+        app.beginUndoGroup("Shuvi: Remove keyframe");
+        try{p.removeKey(index);}finally{app.endUndoGroup();}
+        resolved=resolveProperty(args.property);p=resolved.property;
+        var stillPresent=false,i;for(i=1;i<=p.numKeys;i++)if(Math.abs(p.keyTime(i)-expected)<=EPSILON){stillPresent=true;break;}
+        var verified=p.numKeys===before-1&&!stillPresent;
+        return {native_accepted:true,verification_status:verified?"verified_keyframe_delta":"accepted_unverified",retry_safe:verified,
+            comp_id:resolved.comp.id,layer_id:resolved.layer.id,removed_time_seconds:expected,before_num_keys:before,after_num_keys:p.numKeys};
+    }
     function inspectRenderQueue() {
         var queue = requireProject().renderQueue;
         var items = [], i, limit = Math.min(queue.numItems, 256);
@@ -860,7 +938,8 @@
             || action === "add_camera" || action === "add_light" || action === "create_comp" || action === "import_footage" || action === "add_item_layer"
             || action === "set_layer_state" || action === "set_layer_parent"
             || action === "move_layer" || action === "set_track_matte" || action === "remove_track_matte"
-            || action === "set_time_remap" || action === "replace_source"
+            || action === "set_time_remap" || action === "replace_source" || action === "set_text_style"
+            || action === "set_keyframe_interpolation" || action === "remove_keyframe"
             || action === "duplicate_layer" || action === "remove_layer" || action === "precompose_layers"
             || action === "add_mask" || action === "add_scene_edit_markers"
             || action === "add_render_queue_item" || action === "save_project";
@@ -904,6 +983,9 @@
         if (action === "remove_track_matte") return removeTrackMatte(args);
         if (action === "set_time_remap") return setTimeRemap(args);
         if (action === "replace_source") return replaceSource(args);
+        if (action === "set_text_style") return setTextStyle(args);
+        if (action === "set_keyframe_interpolation") return setKeyframeInterpolation(args);
+        if (action === "remove_keyframe") return removeKeyframe(args);
         if (action === "duplicate_layer") return duplicateLayer(args);
         if (action === "remove_layer") return removeLayer(args);
         if (action === "precompose_layers") return precomposeLayers(args);
