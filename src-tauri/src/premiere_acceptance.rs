@@ -485,6 +485,30 @@ mod tests {
         fs::write(&path,"{corrupt").unwrap();assert_eq!(load(&path).unwrap().schema_version,1);
         fs::remove_file(path).unwrap();fs::remove_file(backup).unwrap();
     }
+
+    #[test] fn linked_membership_defaults_to_documented_unsupported() {
+        let report=Report::default();
+        let cap=report.capabilities.iter().find(|c|c.name=="linked_clip_membership").unwrap();
+        assert_eq!(cap.state,"unsupported_documented");
+        assert!(cap.code_tested);
+        assert!(!cap.premiere_runtime_verified);
+        assert!(cap.reason.as_deref().unwrap_or("").contains("candidate audit"));
+    }
+    #[test] fn persisted_linked_membership_cannot_be_runtime_promoted() {
+        let mut report=Report::default();
+        let cap=report.capabilities.iter_mut().find(|c|c.name=="linked_clip_membership").unwrap();
+        cap.state="implemented_unverified".into();
+        cap.reason=None;
+        let migrated=current_report(report).unwrap();
+        let cap=migrated.capabilities.iter().find(|c|c.name=="linked_clip_membership").unwrap();
+        assert_eq!(cap.state,"unsupported_documented");
+        assert!(!cap.premiere_runtime_verified);
+
+        let mut fake=Report::default();
+        let cap=fake.capabilities.iter_mut().find(|c|c.name=="linked_clip_membership").unwrap();
+        cap.state="runtime_verified".into();cap.premiere_runtime_verified=true;
+        assert!(current_report(fake).is_err());
+    }
     #[test] fn bounded_history_keeps_proof_for_promoted_capability() {
         let mut report=Report::default();
         report.verified_probe("project_inspection","inspect_context","25.6","p","s").unwrap();
