@@ -277,7 +277,7 @@ pub fn known_verification_gaps() -> Value {
         "subclip_hard_boundary_mode":{"state":"accepted_unverified","retry_safe":false,
             "reason":"Created subclip identity, source in/out and requested media inclusion can be verified, but the reviewed public API exposes no independent getter for the hasHardBoundaries creation flag."},
         "native_inflight_cancellation":{"state":"cooperative_boundary_only","retry_safe":false,
-            "reason":"Batch cancellation can stop before the next native dispatch, but no reviewed API aborts an already dispatched Premiere transaction; the current item can finish or become uncertain."},
+            "reason":"Batch/session cancellation can stop before the next native dispatch, but no reviewed API aborts an already dispatched Premiere transaction. Session state now preserves cancelled-before-dispatch, cancelled-after-apply and in-flight-uncertain outcomes so blind retry/rollback is never implied."},
         "third_party_mogrt_semantics":{"state":"inspected_only","retry_safe":false,
             "reason":"Third-party MOGRTs are accepted only through exact native property inspection/readback; Shuvi does not infer field meaning, template identity or safe editability from names."},
         "windows_premiere_runtime":{"state":"not_verified",
@@ -299,7 +299,9 @@ pub fn evidence_dimensions(report: &Report, recovery_count: usize, export_count:
         "export_completion":{"state":"not_verified","historical_verified_jobs":export_count,
             "encoder_event_correlation_verified":false,"encoded_media_validation_verified":false},
         "cancellation":{"state":"not_verified","native_inflight_abort_verified":false,
-            "cooperative_between_dispatches_only":true},
+            "cooperative_between_dispatches_only":true,
+            "session_outcome_states":["cancelled","cancelled_after_apply","uncertain"],
+            "automatic_rollback_verified":false},
         "known_unsupported":report.capabilities.iter().filter(|c|c.state=="unsupported_documented").map(|c|c.name.as_str()).collect::<Vec<_>>(),
         "current_source_revision_bound":false,"production_ready":false
     })
