@@ -157,6 +157,8 @@ pub fn capability_report()->Value {
             "layer_remove":"source_supported_with_absence_readback",
             "precompose_move_all_attributes":"source_supported_with_content_identity_readback",
             "mask_create":"source_supported_with_shape_readback",
+            "mask_edit":"source_supported_with_shape_attribute_readback_and_stale_guards",
+            "mask_remove":"source_supported_with_ordered_inventory_delta",
             "scene_edit_detection_read":"source_supported",
             "scene_edit_markers":"source_supported_with_marker_delta_readback",
             "shape_layer_create":"source_supported_with_creation_identity",
