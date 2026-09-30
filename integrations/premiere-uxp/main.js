@@ -5469,6 +5469,25 @@ async function createSubclip(argumentsValue) {
   );
   const correlationVerified =
     beforeBudget.complete && afterBudget.complete && candidates.length === 1;
+  let sourceReadback=null,sourceBoundsVerified=false,mediaSelectionVerified=false;
+  if (correlationVerified) {
+    try {
+      const created=await findProjectItemById(root,candidates[0].id);
+      const createdClip=asClipProjectItem(created);
+      if (createdClip) {
+        sourceReadback=await readSourceInOut(createdClip);
+        const byType=new Map(sourceReadback.channels.map(row=>[row.mediaType,row]));
+        const requestedTypes=[...(takeVideo?["video"]:[]),...(takeAudio?["audio"]:[])];
+        sourceBoundsVerified=requestedTypes.length>0&&requestedTypes.every(mediaType=>{
+          const row=byType.get(mediaType);
+          return row&&Math.abs(row.inSeconds-startSeconds)<=0.001&&Math.abs(row.outSeconds-endSeconds)<=0.001;
+        });
+        mediaSelectionVerified=Boolean(byType.has("video"))===takeVideo&&Boolean(byType.has("audio"))===takeAudio;
+      }
+    } catch {}
+  }
+  const boundarySemanticsVerified=correlationVerified&&sourceBoundsVerified&&mediaSelectionVerified;
+  const verified=correlationVerified&&boundarySemanticsVerified;
 
   return {
     created: true,
@@ -5483,9 +5502,13 @@ async function createSubclip(argumentsValue) {
     hardBoundaries,
     takeVideo,
     takeAudio,
-    boundarySemanticsVerified: false,
-    verificationStatus: correlationVerified ? "verified_creation_identity" : "accepted_unverified",
-    uncertain: !correlationVerified,
+    sourceReadback,
+    sourceBoundsVerified,
+    mediaSelectionVerified,
+    boundarySemanticsVerified,
+    hardBoundaryModeVerified:false,
+    verificationStatus: verified ? "verified_creation_identity" : "accepted_unverified",
+    uncertain: !verified,
     retrySafe: false
   };
 }
