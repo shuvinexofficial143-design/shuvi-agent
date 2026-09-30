@@ -154,3 +154,18 @@ test("AE motion graphics creation re-resolves indexed groups and stays non-retry
     assert.match(jsx.slice(start,next<0?jsx.length:next),/retry_safe:false/);
   }
 });
+
+
+test("AE discovery stays read-only and bounded",()=>{
+  for(const action of ["inspect_project_items","inspect_effects","inspect_keyframes","inspect_layer_properties"]){
+    assert.match(transport,new RegExp('"' + action + '"'));
+    assert.match(jsx,new RegExp('action === "' + action + '"'));
+  }
+  assert.match(rust,/"project_item_inspection":"source_supported_bounded_512_items"/);
+  assert.match(rust,/"effect_inspection":"source_supported_bounded_256_effects"/);
+  assert.match(rust,/"keyframe_inspection":"source_supported_bounded_512_keys"/);
+  assert.match(rust,/"layer_property_tree":"source_supported_depth_6_nodes_1024"/);
+  assert.match(jsx,/state\.count>=1024/);
+  assert.match(jsx,/depth>=6/);
+  assert.match(jsx,/Math\.min\(count,512\)/);
+});
