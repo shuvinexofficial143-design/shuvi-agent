@@ -199,6 +199,37 @@ pub fn capability_report()->Value {
     })
 }
 
+
+pub fn readiness_report()->Value {
+    json!({
+        "schema_version":1,
+        "source_capabilities":capability_report(),
+        "evidence_dimensions":{
+            "node_static_tests":{"state":"not_verified","current_source_revision_bound":false},
+            "rust_unit_tests":{"state":"not_verified","current_source_revision_bound":false},
+            "windows_after_effects_runtime":{"state":"not_verified"},
+            "extendscript_host_acceptance":{"state":"not_verified"},
+            "checkpoint_creation":{"state":"source_implemented_runtime_unverified"},
+            "checkpoint_recovery":{"state":"not_verified","automatic_rollback":false},
+            "project_save_persistence":{"state":"source_implemented_runtime_unverified"},
+            "render_completion":{"state":"not_verified"},
+            "native_inflight_cancellation":{"state":"not_verified"},
+            "production_ready":false
+        },
+        "known_boundaries":{
+            "native_motion_tracker_control":{"state":"unsupported_documented_surface","fallback":"external grounded tracking samples -> verified property keyframes"},
+            "native_hand_detection":{"state":"not_provided_by_after_effects_scripting","fallback":"external detector required"},
+            "project_revision_counter":{"state":"not_available","guard":"exact saved project path plus persistent item/layer IDs and property matchName/index"},
+            "long_running_render_execution":{"state":"not_implemented"},
+            "uxp_transport":{"state":"reserved_not_current_transport"},
+            "uncertain_dispatch":{"state":"durably_blocks_new_dispatch_until_valid_late_receipt_reconciliation"}
+        },
+        "runtime_verified":false,
+        "current_source_revision_bound":false,
+        "note":"Source presence and static guards are not runtime acceptance. Do not promote production readiness until current-revision CI plus Windows/After Effects acceptance evidence exists."
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
