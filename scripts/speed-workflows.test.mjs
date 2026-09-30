@@ -15,7 +15,9 @@ test("all plans explicitly refuse execution and preserve pitch/reverse intent", 
   const result = planSpeed(snapshot, { mode: "rate", rate: 2, reverse: true, preserve_audio_pitch: true });
   assert.equal(result.applied, false);
   assert.equal(result.executable, false);
-  assert.equal(result.capability.status, "unsupported");
+  assert.equal(result.capability.status, "guarded_read_plan");
+  assert.equal(result.capability.write_supported, false);
+  assert.equal(result.capability.readback_supported, true);
   assert.equal(result.plan.reverse, true);
   assert.equal(result.plan.preserve_audio_pitch, true);
 });
@@ -69,4 +71,18 @@ test("native route reads the inspected clip and never starts an edit transaction
   assert.equal(result.target.name, "Example");
   assert.equal(result.applied, false);
   await assert.rejects(panel.executeCommand({ action: "inspect_clip_speed", arguments: { kind: "video", track: 0, clipIndex: 1 } }), /not found/);
+});
+
+
+test("speed write capability probes setters without executing undocumented mutation", async () => {
+  const source=readFileSync(new URL("../integrations/premiere-uxp/main.js",import.meta.url),"utf8");
+  const body=source.slice(source.indexOf("async function inspectSpeedWriteCapability"),source.indexOf("async function planClipSpeed"));
+  assert.match(body,/reviewedWriteRouteAvailable:false/);
+  assert.match(body,/safeAutomaticWrite:false/);
+  assert.match(body,/blocked_until_documented_and_reviewed/);
+  assert.doesNotMatch(body,/executeTransaction|createSetSpeedAction\(/);
+  const inspect=source.slice(source.indexOf("async function inspectClipSpeed"),source.indexOf("async function inspectSpeedWriteCapability"));
+  assert.match(inspect,/getSpeed/);assert.match(inspect,/isSpeedReversed/);
+  assert.match(inspect,/typeof item\.createSetSpeedAction/);
+  assert.match(inspect,/observedUndocumentedWriteMethod/);
 });

@@ -6417,13 +6417,38 @@ async function inspectClipSpeed(argumentsValue) {
     typeof item.getSpeed === "function" ? item.getSpeed() : null,
     typeof item.isSpeedReversed === "function" ? item.isSpeedReversed() : null
   ]);
+  const signature=await clipTargetSignature(project,sequence,item,kind,trackIndex,clipIndex);
+  const observedWriteSurface={
+    createSetSpeedAction:typeof item.createSetSpeedAction==="function",
+    createSetRateAction:typeof item.createSetRateAction==="function",
+    createSetTimeRemapAction:typeof item.createSetTimeRemapAction==="function",
+    setSpeed:typeof item.setSpeed==="function"
+  };
+  const observedUndocumentedWriteMethod=Object.values(observedWriteSurface).some(Boolean);
   return {
-    projectGuid: plainGuid(project.guid), sequenceGuid: plainGuid(sequence.guid),
-    kind, track: trackIndex, clipIndex, name,
+    projectGuid: plainGuid(project.guid), projectPath:project.path||null, sequenceGuid: plainGuid(sequence.guid),
+    kind, track: trackIndex, clipIndex, name, targetSignature:signature,
     startSeconds: start?.seconds ?? null, endSeconds: end?.seconds ?? null,
     sourceInSeconds: sourceIn?.seconds ?? null, sourceOutSeconds: sourceOut?.seconds ?? null,
     nativeSpeed, reversed: reversed === null ? null : Boolean(reversed),
+    nativeReadbackVerified:Number.isFinite(nativeSpeed) && reversed!==null,
+    observedWriteSurface,observedUndocumentedWriteMethod,
+    reviewedWriteRouteAvailable:false,safeAutomaticWrite:false,
     speedWrite: SPEED_CAPABILITY
+  };
+}
+
+async function inspectSpeedWriteCapability(argumentsValue) {
+  const snapshot=await inspectClipSpeed(argumentsValue);
+  return {
+    target:{projectGuid:snapshot.projectGuid,projectPath:snapshot.projectPath,sequenceGuid:snapshot.sequenceGuid,
+      kind:snapshot.kind,track:snapshot.track,clipIndex:snapshot.clipIndex,targetSignature:snapshot.targetSignature},
+    current:{nativeSpeed:snapshot.nativeSpeed,reversed:snapshot.reversed,readbackVerified:snapshot.nativeReadbackVerified},
+    observedWriteSurface:snapshot.observedWriteSurface,
+    observedUndocumentedWriteMethod:snapshot.observedUndocumentedWriteMethod,
+    reviewedWriteRouteAvailable:false,safeAutomaticWrite:false,
+    action:"blocked_until_documented_and_reviewed",
+    reason:"Current reviewed Premiere UXP TrackItem APIs expose getSpeed() and isSpeedReversed(), but no documented speed/time-remapping write action."
   };
 }
 
@@ -6750,6 +6775,8 @@ async function dispatchNativeCommand(command) {
       return await editKeyframe(command.arguments || {});
     case "inspect_clip_speed":
       return await inspectClipSpeed(command.arguments || {});
+    case "speed_write_capability":
+      return await inspectSpeedWriteCapability(command.arguments || {});
     case "plan_clip_speed":
       return await planClipSpeed(command.arguments || {});
     case "inspect_context":

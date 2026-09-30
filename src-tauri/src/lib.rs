@@ -141,6 +141,7 @@ Available tools:
 - premiere_inspect_keyframes: {"target":{"kind":"video|audio","track":0,"clip_index":0,"component_match_name":"exact native match name or supply component_display_name","param_display_name":"exact parameter name"}}
 - premiere_edit_keyframe: {"target":{"kind":"video|audio","track":0,"clip_index":0,"component_match_name":"exact native match name or supply component_display_name","param_display_name":"exact parameter name"},"ticks":"exact ticks from inspection","expected_signature":"targetSignature from inspection","operation":"remove|interpolation","interpolation":"only for interpolation: linear|hold|bezier"}
 - premiere_inspect_clip_speed: {"kind":"video|audio","track":0,"clip_index":0}
+- premiere_speed_write_capability: {"kind":"video|audio","track":0,"clip_index":0}
 - premiere_plan_speed: {"kind":"video|audio","track":0,"clip_index":0,"request":{"mode":"rate|duration|preset|ramp|freeze","rate":"rate mode: multiplier 0.01..100","duration_seconds":"duration/freeze mode: positive seconds","source_seconds":"freeze mode: source time","preset":"preset mode: normal|slow_motion|fast_motion","points":"ramp mode: [{source_offset_seconds:0,rate:1},...]","reverse":"optional boolean","preserve_audio_pitch":"optional boolean"}}
 - premiere_project_diagnostics: {"limits":{"max_items":10000,"max_depth":32,"max_detail_items":200}}
 - premiere_inspect_mogrt_properties: {"track":0,"clip_index":0}
@@ -475,6 +476,7 @@ enum ToolAction {
     PremiereInspectKeyframes { target: ParameterTarget },
     PremiereEditKeyframe { target: ParameterTarget, ticks: String, expected_signature: String, operation: String, interpolation: Option<String> },
     PremiereInspectClipSpeed { kind: String, track: u32, clip_index: u32 },
+    PremiereSpeedWriteCapability { kind:String, track:u32, clip_index:u32 },
     PremierePlanSpeed { kind: String, track: u32, clip_index: u32, request: SpeedRequest },
     PremiereInspectEffectLifecycle { target: ComponentTarget },
     PremiereRemoveEffect { target: ComponentTarget, expected_signature: String },
@@ -1058,6 +1060,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_inspect_keyframes"
         | "premiere_edit_keyframe"
         | "premiere_inspect_clip_speed"
+        | "premiere_speed_write_capability"
         | "premiere_plan_speed"
         | "premiere_project_diagnostics"
         | "premiere_inspect_mogrt_properties"
@@ -2800,6 +2803,18 @@ fn stage_tool(
                 ToolAction::PremiereInspectClipSpeed { kind, track, clip_index },
                 "Inspect Premiere clip speed".to_string(),
                 "Read the exact clip; no speed or timeline modification will be performed.".to_string(),
+                RiskLevel::Low,
+            )
+        }
+        "premiere_speed_write_capability" => {
+            let kind=arg_string(&proposal.arguments,"kind")?.to_ascii_lowercase();
+            let track=proposal.arguments.get("track").and_then(Value::as_u64).filter(|v|*v<=128).ok_or("track must be 0–128.")? as u32;
+            let clip_index=proposal.arguments.get("clip_index").and_then(Value::as_u64).filter(|v|*v<=10_000).ok_or("clip_index must be 0–10000.")? as u32;
+            if !matches!(kind.as_str(),"video"|"audio") {return Err("Speed capability target must be video or audio.".into());}
+            (
+                ToolAction::PremiereSpeedWriteCapability{kind,track,clip_index},
+                "Inspect Premiere speed-write capability".into(),
+                "Read exact speed/reverse state and probe known setter method names without invoking any write. Undocumented methods are never auto-called.".into(),
                 RiskLevel::Low,
             )
         }
@@ -8153,6 +8168,13 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 Duration::from_secs(15),
             ).await?;
             Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&value).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
+        }
+        ToolAction::PremiereSpeedWriteCapability{kind,track,clip_index} => {
+            let value=premiere_bridge.request("speed_write_capability",json!({"kind":kind,"track":track,"clipIndex":clip_index}),Duration::from_secs(15)).await?;
+            let safe=value.get("reviewedWriteRouteAvailable").and_then(Value::as_bool)==Some(false)
+                && value.get("safeAutomaticWrite").and_then(Value::as_bool)==Some(false);
+            Ok(ActionResult{success:safe,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(if safe{0}else{1})})
         }
         ToolAction::PremierePlanSpeed { kind, track, clip_index, request } => {
             let value = premiere_bridge.request(

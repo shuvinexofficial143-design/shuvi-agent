@@ -1,10 +1,13 @@
 // CommonJS for Premiere UXP. Pure planning: never edits a clip or invokes UI.
 const PRESETS = Object.freeze({ slow_motion: 0.5, fast_motion: 2, normal: 1 });
 const SPEED_CAPABILITY = Object.freeze({
-  status: "unsupported",
+  status: "guarded_read_plan",
   adapter: "premiere_uxp",
-  reason: "The reviewed public UXP clip APIs expose speed/reverse reads but no documented speed, pitch, freeze or time-remapping write action.",
-  reviewed: "2026-09-23",
+  write_supported: false,
+  readback_supported: true,
+  planner_supported: true,
+  reason: "The reviewed public UXP clip APIs expose getSpeed()/isSpeedReversed() reads but no documented speed, pitch, freeze or time-remapping write action.",
+  reviewed: "2026-09-30",
   fallback: "User performs the reviewed plan in Premiere; no automatic UI fallback."
 });
 

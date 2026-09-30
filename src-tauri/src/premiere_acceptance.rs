@@ -228,6 +228,8 @@ impl Report {
 
 pub fn known_verification_gaps() -> Value {
     serde_json::json!({
+        "native_speed_time_remap_write":{"state":"unsupported_documented","retry_safe":false,
+            "reason":"Exact speed/reverse readback and planning are implemented, but current reviewed UXP track-item APIs expose no documented speed/time-remapping write action."},
         "native_linked_group_membership":{"state":"unsupported_documented","retry_safe":false,
             "reason":"Candidate clips can be audited by exact media/source/timeline identity, but current reviewed track-item APIs expose no linked-group membership getter."},
         "caption_track_text_write":{"state":"unsupported_documented","retry_safe":false,
