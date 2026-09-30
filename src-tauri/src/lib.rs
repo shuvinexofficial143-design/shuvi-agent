@@ -11673,7 +11673,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let export_complete=jobs.jobs.iter().filter(|j|j.encoder_completion_verified).count();
             let baseline=json!({"bridge_pair":verified("bridge_pair"),"project_inspection":verified("project_inspection"),
                 "timeline_inspection":verified("timeline_inspection"),"trim":verified("trim"),
-                "move_clone":verified("move_clone"),"scene_edit_detection":verified("scene_edit_detection"),
+                "move_clone":verified("move_clone"),"delete_ripple":verified("delete_ripple"),
+                "scene_edit_detection":verified("scene_edit_detection"),
                 "static_parameter_set":verified("static_parameter_set"),"visual_review":verified("visual_review"),
                 "checkpoint_recovery":recovery_count>0,"stale_expectation_host_tested":false,
                 "export_completion_verified":export_complete>0});

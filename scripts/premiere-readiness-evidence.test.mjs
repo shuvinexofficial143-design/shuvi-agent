@@ -52,3 +52,8 @@ test('readiness exposes explicit known host verification gaps instead of hiding 
   assert.match(gaps,/"retry_safe":false/);
   assert.match(desktop,/"known_verification_gaps":premiere_acceptance::known_verification_gaps\(\)/);
 });
+
+test('readiness baseline includes ripple-delete runtime evidence',()=>{
+  const desktop=read('lib');
+  assert.match(desktop,/"delete_ripple":verified\("delete_ripple"\)/);
+});
