@@ -844,6 +844,72 @@
         return {native_accepted:true,verification_status:verified?"verified_keyframe_delta":"accepted_unverified",retry_safe:verified,
             comp_id:resolved.comp.id,layer_id:resolved.layer.id,removed_time_seconds:expected,before_num_keys:before,after_num_keys:p.numKeys};
     }
+    function keyframeEaseArray(value,label,expectedLength) {
+        if(!(value instanceof Array)||value.length!==expectedLength||value.length<1||value.length>8) fail(label+" must match the host keyframe ease dimension count.");
+        var out=[],i;
+        for(i=0;i<value.length;i++){
+            var item=value[i];
+            if(!item||!finiteNumber(item.speed)||!finiteNumber(item.influence)||item.influence<0.1||item.influence>100||Math.abs(item.speed)>1000000000)
+                fail(label+" contains invalid speed/influence.");
+            out.push(new KeyframeEase(item.speed,item.influence));
+        }
+        return out;
+    }
+    function easeSnapshot(items) {
+        var out=[],i;for(i=0;i<items.length;i++)out.push({speed:items[i].speed,influence:items[i].influence});return out;
+    }
+    function sameEase(actual,requested) {
+        if(actual.length!==requested.length)return false;
+        var i;for(i=0;i<actual.length;i++)if(Math.abs(actual[i].speed-requested[i].speed)>EPSILON||Math.abs(actual[i].influence-requested[i].influence)>EPSILON)return false;
+        return true;
+    }
+    function setKeyframeTemporalEase(args) {
+        var resolved=resolveProperty(args.property),p=resolved.property,index=args.key_index;
+        if(!finiteNumber(index)||Math.floor(index)!==index||index<1||index>p.numKeys)fail("Invalid key_index.");
+        var existingIn=p.keyInTemporalEase(index),existingOut=p.keyOutTemporalEase(index);
+        var inEase=keyframeEaseArray(args.in_ease,"in_ease",existingIn.length);
+        var outEase=keyframeEaseArray(args.out_ease,"out_ease",existingOut.length);
+        var time=p.keyTime(index);
+        app.beginUndoGroup("Shuvi: Set temporal ease");
+        try{p.setTemporalEaseAtKey(index,inEase,outEase);}finally{app.endUndoGroup();}
+        resolved=resolveProperty(args.property);p=resolved.property;
+        if(index>p.numKeys||Math.abs(p.keyTime(index)-time)>EPSILON)fail("Keyframe identity changed during temporal ease write.");
+        var afterIn=easeSnapshot(p.keyInTemporalEase(index)),afterOut=easeSnapshot(p.keyOutTemporalEase(index));
+        var requestedIn=easeSnapshot(inEase),requestedOut=easeSnapshot(outEase);
+        var verified=sameEase(afterIn,requestedIn)&&sameEase(afterOut,requestedOut);
+        return {native_accepted:true,verification_status:verified?"verified_temporal_ease_readback":"accepted_unverified",retry_safe:verified,
+            comp_id:resolved.comp.id,layer_id:resolved.layer.id,key_index:index,key_time:time,in_ease:afterIn,out_ease:afterOut};
+    }
+    function setLayerTiming(args) {
+        var comp=resolveComp(args.comp_id),layer=resolveLayer(comp,args.layer_id);
+        if(layer.locked)fail("Layer is locked; timing mutation refused.");
+        var requested={};
+        if(args.start_time!==undefined){if(!finiteNumber(args.start_time)||args.start_time<-10800||args.start_time>10800)fail("start_time outside AE bounds.");requested.startTime=args.start_time;}
+        if(args.stretch!==undefined){if(!finiteNumber(args.stretch)||args.stretch===0||args.stretch<-9900||args.stretch>9900||Math.abs(args.stretch)<1)fail("stretch must be -9900..-1 or 1..9900.");requested.stretch=args.stretch;}
+        if(args.in_point!==undefined){if(!finiteNumber(args.in_point)||args.in_point<-10800||args.in_point>10800)fail("in_point outside AE bounds.");requested.inPoint=args.in_point;}
+        if(args.out_point!==undefined){if(!finiteNumber(args.out_point)||args.out_point<-10800||args.out_point>10800)fail("out_point outside AE bounds.");requested.outPoint=args.out_point;}
+        if(Object.keys(requested).length===0)fail("set_layer_timing requires at least one requested field.");
+        var desiredIn=requested.inPoint!==undefined?requested.inPoint:layer.inPoint;
+        var desiredOut=requested.outPoint!==undefined?requested.outPoint:layer.outPoint;
+        if(desiredOut<=desiredIn)fail("Layer out_point must remain greater than in_point.");
+        var before={start_time:layer.startTime,in_point:layer.inPoint,out_point:layer.outPoint,stretch:layer.stretch};
+        app.beginUndoGroup("Shuvi: Set layer timing");
+        try{
+            if(requested.startTime!==undefined)layer.startTime=requested.startTime;
+            if(requested.stretch!==undefined)layer.stretch=requested.stretch;
+            if(requested.inPoint!==undefined)layer.inPoint=requested.inPoint;
+            if(requested.outPoint!==undefined)layer.outPoint=requested.outPoint;
+        }finally{app.endUndoGroup();}
+        layer=resolveLayer(comp,args.layer_id);
+        var after={start_time:layer.startTime,in_point:layer.inPoint,out_point:layer.outPoint,stretch:layer.stretch};
+        var verified=true;
+        if(requested.startTime!==undefined&&Math.abs(after.start_time-requested.startTime)>EPSILON)verified=false;
+        if(requested.stretch!==undefined&&Math.abs(after.stretch-requested.stretch)>EPSILON)verified=false;
+        if(requested.inPoint!==undefined&&Math.abs(after.in_point-requested.inPoint)>EPSILON)verified=false;
+        if(requested.outPoint!==undefined&&Math.abs(after.out_point-requested.outPoint)>EPSILON)verified=false;
+        return {native_accepted:true,verification_status:verified?"verified_timing_readback":"accepted_unverified",retry_safe:verified,
+            comp_id:comp.id,layer_id:layer.id,before:before,after:after};
+    }
     function inspectRenderQueue() {
         var queue = requireProject().renderQueue;
         var items = [], i, limit = Math.min(queue.numItems, 256);
@@ -938,8 +1004,8 @@
             || action === "add_camera" || action === "add_light" || action === "create_comp" || action === "import_footage" || action === "add_item_layer"
             || action === "set_layer_state" || action === "set_layer_parent"
             || action === "move_layer" || action === "set_track_matte" || action === "remove_track_matte"
-            || action === "set_time_remap" || action === "replace_source" || action === "set_text_style"
-            || action === "set_keyframe_interpolation" || action === "remove_keyframe"
+            || action === "set_time_remap" || action === "replace_source" || action === "set_text_style" || action === "set_layer_timing"
+            || action === "set_keyframe_interpolation" || action === "set_keyframe_temporal_ease" || action === "remove_keyframe"
             || action === "duplicate_layer" || action === "remove_layer" || action === "precompose_layers"
             || action === "add_mask" || action === "add_scene_edit_markers"
             || action === "add_render_queue_item" || action === "save_project";
@@ -984,7 +1050,9 @@
         if (action === "set_time_remap") return setTimeRemap(args);
         if (action === "replace_source") return replaceSource(args);
         if (action === "set_text_style") return setTextStyle(args);
+        if (action === "set_layer_timing") return setLayerTiming(args);
         if (action === "set_keyframe_interpolation") return setKeyframeInterpolation(args);
+        if (action === "set_keyframe_temporal_ease") return setKeyframeTemporalEase(args);
         if (action === "remove_keyframe") return removeKeyframe(args);
         if (action === "duplicate_layer") return duplicateLayer(args);
         if (action === "remove_layer") return removeLayer(args);
