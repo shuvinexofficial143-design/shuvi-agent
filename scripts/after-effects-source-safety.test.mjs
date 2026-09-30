@@ -98,3 +98,19 @@ test("AE runtime preserves host-declared retry safety",()=>{
   assert.match(runtime,/"execution_status_unknown"/);
   assert.match(runtime,/"retry_safe":false/);
 });
+
+
+test("AE effect removal and markers use bounded stale-guarded deltas",()=>{
+  for(const action of ["remove_effect","inspect_markers","add_marker","remove_marker"]) {
+    assert.match(transport,new RegExp('"' + action + '"'));
+    assert.match(jsx,new RegExp('action === "' + action + '"'));
+  }
+  assert.match(rust,/"effect_remove":"source_supported_with_ordered_inventory_delta"/);
+  assert.match(rust,/"marker_add":"source_supported_with_time_value_delta_readback"/);
+  assert.match(rust,/"marker_remove":"source_supported_with_time_comment_stale_guard"/);
+  assert.match(jsx,/Effect stale guard changed/);
+  assert.match(jsx,/sameEffectInventory\(after,expectedAfter\)/);
+  assert.match(jsx,/Marker time stale guard changed/);
+  assert.match(jsx,/Marker comment stale guard changed/);
+  assert.match(jsx,/Marker already exists at requested time/);
+});
