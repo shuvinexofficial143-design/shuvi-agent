@@ -4,6 +4,8 @@ use uuid::Uuid;
 
 const MAX_PROJECT_BYTES:u64=2*1024*1024*1024;
 const BUFFER_BYTES:usize=1024*1024;
+const MAX_CHECKPOINTS_PER_PROJECT:usize=32;
+static CHECKPOINT_IO:std::sync::Mutex<()>=std::sync::Mutex::new(());
 
 fn validate_source(source:&Path)->Result<(),String>{
     if !source.is_absolute(){return Err("After Effects checkpoint requires an absolute project path.".into());}
@@ -35,13 +37,26 @@ fn backup_dir(source:&Path)->Result<PathBuf,String>{
 }
 
 pub fn create(source:&Path,timestamp_ms:u64)->Result<serde_json::Value,String>{
+    let _io=CHECKPOINT_IO.lock().map_err(|_|"After Effects checkpoint lock unavailable.")?;
     validate_source(source)?;
+    let dir=backup_dir(source)?;
+    fs::create_dir_all(&dir).map_err(|e|format!("Could not create After Effects backup folder: {e}"))?;
+    let stem=source.file_stem().and_then(|v|v.to_str()).ok_or("Invalid After Effects project filename.")?;
+    let prefix=format!("{stem}.shuvi-");
+    let existing=fs::read_dir(&dir).map_err(|e|format!("Could not inspect After Effects backup folder: {e}"))?
+        .filter_map(Result::ok)
+        .filter(|e|e.file_type().ok().is_some_and(|t|t.is_file()))
+        .filter(|e|{
+            let name=e.file_name();let name=name.to_string_lossy();
+            name.starts_with(&prefix)&&(name.ends_with(".aep")||name.ends_with(".aepx"))
+        }).take(MAX_CHECKPOINTS_PER_PROJECT+1).count();
+    if existing>=MAX_CHECKPOINTS_PER_PROJECT{
+        return Err("After Effects checkpoint retention limit reached; review/remove old Shuvi backups explicitly before further mutations.".into());
+    }
     let before=fs::metadata(source).map_err(|e|e.to_string())?;
     let before_len=before.len();
     let before_hash=fnv1a(source)?;
-    let dir=backup_dir(source)?;
-    fs::create_dir_all(&dir).map_err(|e|format!("Could not create After Effects backup folder: {e}"))?;
-    let name=source.file_stem().and_then(|v|v.to_str()).ok_or("Invalid After Effects project filename.")?;
+    let name=stem;
     let ext=source.extension().and_then(|v|v.to_str()).unwrap_or("aep");
     let id=Uuid::new_v4().simple().to_string();
     let backup=dir.join(format!("{name}.shuvi-{timestamp_ms}-{id}.{ext}"));
@@ -131,6 +146,18 @@ mod tests{
         assert_eq!(verify(&backup,&source).unwrap()["verified"],true);
         fs::write(&backup,b"tampered").unwrap();
         assert!(verify(&backup,&source).is_err());
+        let _=fs::remove_dir_all(root);
+    }
+    #[test]fn checkpoint_retention_fails_closed_without_deleting_old_backups(){
+        let root=std::env::temp_dir().join(format!("shuvi-ae-checkpoint-retention-{}",Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let source=root.join("edit.aep");fs::write(&source,b"project").unwrap();
+        let backups=root.join("Shuvi Backups");fs::create_dir_all(&backups).unwrap();
+        for i in 0..MAX_CHECKPOINTS_PER_PROJECT{
+            fs::write(backups.join(format!("edit.shuvi-{i}-x.aep")),b"old").unwrap();
+        }
+        assert!(create(&source,999).unwrap_err().contains("retention limit"));
+        assert_eq!(fs::read_dir(&backups).unwrap().count(),MAX_CHECKPOINTS_PER_PROJECT);
         let _=fs::remove_dir_all(root);
     }
     #[test]fn checkpoint_rejects_wrong_extension_empty_and_relative(){
