@@ -651,6 +651,63 @@ async function summarizeTrackItem(item, clipIndex, context = null) {
   };
 }
 
+async function inspectLinkedCandidates(argumentsValue) {
+  const kind=typeof argumentsValue?.kind==="string"?argumentsValue.kind.toLowerCase():"";
+  const trackIndex=Number(argumentsValue?.track), clipIndex=Number(argumentsValue?.clipIndex);
+  const expectedSignature=typeof argumentsValue?.signature==="string"?argumentsValue.signature:"";
+  if (!["video","audio"].includes(kind) || !Number.isInteger(trackIndex) || trackIndex<0 || trackIndex>128
+      || !Number.isInteger(clipIndex) || clipIndex<0 || clipIndex>10000
+      || !expectedSignature || expectedSignature.length>4096) {
+    throw new Error("Linked-candidate audit requires one exact bounded clip and inspected signature.");
+  }
+  const project=await requireProject(), sequence=await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+  const resolved=await resolveSubsequenceTarget(sequence,{kind,track:trackIndex,clipIndex});
+  const actualSignature=await clipTargetSignature(project,sequence,resolved.item,kind,trackIndex,clipIndex);
+  if (actualSignature!==expectedSignature) throw new Error("Linked-candidate source changed; inspect timeline again.");
+
+  const [targetStart,targetEnd,targetIn,targetOut,targetProjectItem]=await Promise.all([
+    resolved.item.getStartTime(),resolved.item.getEndTime(),resolved.item.getInPoint(),resolved.item.getOutPoint(),resolved.item.getProjectItem()
+  ]);
+  const targetMediaId=await projectItemId(targetProjectItem);
+  const targetTimes=[targetStart,targetEnd,targetIn,targetOut].map(value=>plainTickTime(value)?.ticks);
+  if (!targetMediaId || targetTimes.some(value=>value==null)) throw new Error("Linked-candidate target identity is incomplete.");
+
+  const candidates=[];
+  let budget=240,truncated=false;
+  const scan=async (scanKind,count,getTrack)=>{
+    for(let t=0;t<count;t++){
+      const track=await getTrack(t), items=await sortedClipItems(track);
+      for(let i=0;i<items.length;i++){
+        if(budget--<=0){truncated=true;return;}
+        if(scanKind===kind&&t===trackIndex&&i===clipIndex) continue;
+        const item=items[i];
+        const [start,end,input,output,projectItem]=await Promise.all([
+          item.getStartTime(),item.getEndTime(),item.getInPoint(),item.getOutPoint(),item.getProjectItem()
+        ]);
+        const mediaId=await projectItemId(projectItem);
+        if(mediaId!==targetMediaId) continue;
+        const times=[start,end,input,output].map(value=>plainTickTime(value)?.ticks);
+        const sameTimeline=times[0]===targetTimes[0]&&times[1]===targetTimes[1];
+        const sameSource=times[2]===targetTimes[2]&&times[3]===targetTimes[3];
+        if(!sameTimeline&&!sameSource) continue;
+        candidates.push({kind:scanKind,track:t,clipIndex:i,mediaId,sameTimeline,sameSource,
+          signature:await clipTargetSignature(project,sequence,item,scanKind,t,i)});
+        if(candidates.length>=64){truncated=true;return;}
+      }
+      if(truncated)return;
+    }
+  };
+  await scan("video",await sequence.getVideoTrackCount(),index=>sequence.getVideoTrack(index));
+  if(!truncated) await scan("audio",await sequence.getAudioTrackCount(),index=>sequence.getAudioTrack(index));
+  return {target:{kind,track:trackIndex,clipIndex,signature:actualSignature,mediaId:targetMediaId},
+    candidateCount:candidates.length,candidates,truncated,
+    candidateBasis:"same_project_item_plus_exact_source_or_timeline_ticks",
+    nativeLinkGetterAvailable:false,membershipVerified:false,linkedGroupId:null,
+    safeForAutomaticLinkedEdit:false,runtimeVerified:false,
+    warning:"Candidates are observational only. Shuvi must not edit them as a linked group without a future native membership getter."};
+}
+
 async function timelineCapabilities() {
   const project = await requireProject();
   const sequence = await project.getActiveSequence();
@@ -662,7 +719,8 @@ async function timelineCapabilities() {
     verticalClone: {supported: typeof editor?.createCloneTrackItemAction === "function", operation: "clone", preservesOriginal: true},
     verticalMove: {supported: typeof editor?.createCloneTrackItemAction === "function", operation:"clone_verify_delete", atomic:false,
       partialStatePossible:true, linkedMembershipInferred:false},
-    nativeLinkInspection: unavailable("No documented linked-group getter in the reviewed clip API; matching media is not proof of a link."),
+    nativeLinkInspection: {supported:true,mode:"candidate_audit_only",membershipVerified:false,
+      nativeGetterAvailable:false,reason:"Exact media/source/timing candidates can be audited, but matching candidates are not proof of Premiere link membership."},
     selectionInspection: {supported: typeof sequence.getSelection === "function", timelineField: "selected"},
     subsequenceCreation: {supported: typeof sequence.createSubsequence === "function", selectionSemanticsVerified: false},
     replacementNesting: {supported: typeof sequence.createSubsequence === "function" && typeof editor?.createOverwriteItemAction === "function",
@@ -1266,7 +1324,7 @@ function nativeCapabilityRegistry() {
       masks:target("ObjectMaskUtils.hasObjectMask supports bounded project/sequence presence inspection; mask creation/editing remains unsupported."),
       vertical_move:target("Verified cross-track move uses clone correlation followed by exact source deletion; partial completion is surfaced."),
       replacement_nesting:target("Single exact video nesting requires selected-only subsequence inspection and atomic remove/overwrite replacement."),
-      linked_clip_editing:unsupported("Linked-group identity is not available; do not infer links."),
+      linked_clip_editing:target("Bounded exact candidate audit is available, but linked-group membership remains unverified because no native getter is documented."),
       multicam:target("Existing ClipProjectItem multicam identity can be read with isMulticamClip() and inserted through the typed project-item timeline path; creation/switching remain unsupported."),
       caption_write:unsupported("Caption text creation/editing is unsupported; SRT delivery is separate."),
       effect_remove:target("Inspect the exact component chain and removal action."),
@@ -6782,6 +6840,8 @@ async function dispatchNativeCommand(command) {
       return await planVideoRecipe(command.arguments);
     case "timeline_capabilities":
       return await timelineCapabilities();
+    case "inspect_linked_candidates":
+      return await inspectLinkedCandidates(command.arguments || {});
     case "scene_detection_capabilities":
       return await sceneDetectionCapabilities();
     case "scene_edit_detection":

@@ -166,6 +166,7 @@ Available tools:
 - premiere_cancel_graphics_batch: {}
 - premiere_plan_video_recipe: {"track":0,"clip_index":0,"request":{"preset":"zoom_in","start_seconds":0,"end_seconds":2,"bindings":[{"role":"scale","component_match_name":"discovered","param_display_name":"discovered","start_value":100,"end_value":110}]}}
 - premiere_timeline_capabilities: {}
+- premiere_inspect_linked_candidates: {"kind":"video|audio","track":0,"clip_index":0,"signature":"exact inspected targetSignature"}
 - premiere_timeline: {}
 - premiere_caption_tracks: {}
 - premiere_inspect_object_masks: {}
@@ -483,6 +484,7 @@ enum ToolAction {
     PremierePlanMogrtRecipe { track: u32, clip_index: u32, request: GraphicsRequest },
     PremiereProjectDiagnostics { limits: DiagnosticsLimits },
     PremiereTimelineCapabilities,
+    PremiereInspectLinkedCandidates { kind:String, track:u32, clip_index:u32, signature:String },
     PremiereTimeline,
     PremiereCaptionTracks,
     PremiereInspectObjectMasks,
@@ -1081,6 +1083,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_apply_assembly"
         | "premiere_cancel_assembly"
         | "premiere_timeline_capabilities"
+        | "premiere_inspect_linked_candidates"
         | "premiere_timeline"
         | "premiere_caption_tracks"
         | "premiere_inspect_object_masks"
@@ -3112,6 +3115,21 @@ fn stage_tool(
         "premiere_timeline_capabilities" => (
             ToolAction::PremiereTimelineCapabilities, "Inspect timeline capabilities".into(), "Read native timeline capabilities without editing.".into(), RiskLevel::Low
         ),
+        "premiere_inspect_linked_candidates" => {
+            let kind=arg_string(&proposal.arguments,"kind")?.to_ascii_lowercase();
+            let track=proposal.arguments.get("track").and_then(Value::as_u64).unwrap_or(0);
+            let clip_index=proposal.arguments.get("clip_index").and_then(Value::as_u64).unwrap_or(0);
+            let signature=arg_string(&proposal.arguments,"signature")?;
+            if !matches!(kind.as_str(),"video"|"audio") || track>128 || clip_index>10_000 || signature.len()>4096 {
+                return Err("Invalid linked-candidate target.".into());
+            }
+            (
+                ToolAction::PremiereInspectLinkedCandidates{kind,track:track as u32,clip_index:clip_index as u32,signature},
+                "Inspect Premiere linked candidates".into(),
+                "Audit same-media/source/timeline candidates without claiming native linked membership or authorizing grouped edits.".into(),
+                RiskLevel::Low,
+            )
+        }
         "premiere_timeline" => (
             ToolAction::PremiereTimeline,
             "Inspect Premiere timeline".to_string(),
@@ -9174,6 +9192,15 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
         ToolAction::PremiereProjectDiagnostics { limits } => {
             let value = premiere_bridge.request("project_diagnostics", json!({"limits":limits}), Duration::from_secs(30)).await?;
             Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&value).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
+        }
+        ToolAction::PremiereInspectLinkedCandidates{kind,track,clip_index,signature} => {
+            let value=premiere_bridge.request("inspect_linked_candidates",json!({"kind":kind,"track":track,
+                "clipIndex":clip_index,"signature":signature}),Duration::from_secs(20)).await?;
+            let valid=value.get("membershipVerified").and_then(Value::as_bool)==Some(false)
+                && value.get("nativeLinkGetterAvailable").and_then(Value::as_bool)==Some(false)
+                && value.get("safeForAutomaticLinkedEdit").and_then(Value::as_bool)==Some(false);
+            Ok(ActionResult{success:valid,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(if valid{0}else{1})})
         }
         ToolAction::PremiereTimelineCapabilities => {
             let value = premiere_bridge.request("timeline_capabilities", json!({}), Duration::from_secs(12)).await?;
