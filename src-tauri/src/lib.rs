@@ -10879,15 +10879,19 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 Duration::from_secs(30),
             ).await?;
 
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_creation_identity");
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
-                stdout: serde_json::to_string_pretty(&json!({
+                stdout: json!({
                     "backup": backup,
-                    "result": value
-                })).unwrap_or_else(|_| value.to_string()),
+                    "result": value,
+                    "creation_identity_verified":verified,
+                    "selection_semantics_verified":false,
+                    "retry_safe":false
+                }).to_string(),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereInsertProjectItem { item_id, seconds, video_track, audio_track, mode } => {

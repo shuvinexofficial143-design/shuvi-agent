@@ -383,3 +383,13 @@ test("keyframe edits and range removal require exact native post-state",()=>{
   assert.match(edit,/observedMode === mode/);
   assert.match(edit,/verificationStatus:verified \? "verified_keyframe_edit" : "accepted_unverified"/);
 });
+
+test("subsequence requires new sequence and project-item identity without claiming content semantics",()=>{
+  const section=uxp.slice(uxp.indexOf("async function createSubsequence"),uxp.indexOf("async function captionTracks"));
+  assert.match(section,/beforeSequenceGuids/);
+  assert.match(section,/sequenceMatches\.length === 1/);
+  assert.match(section,/projectItemResolved = Boolean\(await findProjectItemById/);
+  assert.match(section,/selectionSemanticsVerified: false/);
+  assert.match(section,/verificationStatus: verified \? "verified_creation_identity" : "accepted_unverified"/);
+  assert.match(section,/retrySafe: false/);
+});

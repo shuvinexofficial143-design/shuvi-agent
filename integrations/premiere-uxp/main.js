@@ -5302,6 +5302,11 @@ async function createSubsequence(argumentsValue) {
   const project = await requireProject();
   const sequence = await project.getActiveSequence();
   if (!sequence) throw new Error("No active Premiere sequence.");
+  const beforeSequences = await project.getSequences();
+  if (!Array.isArray(beforeSequences) || beforeSequences.length > 1024) {
+    throw new Error("Sequence inventory is unavailable or exceeds the complete inspection bound.");
+  }
+  const beforeSequenceGuids = new Set(beforeSequences.map(value => plainGuid(value.guid)).filter(Boolean));
 
   const previousSelection = await sequence.getSelection();
   const previousItems = await previousSelection.getTrackItems();
@@ -5338,6 +5343,7 @@ async function createSubsequence(argumentsValue) {
     throw new Error("Premiere did not return a new subsequence.");
   }
 
+  const sequenceGuid = plainGuid(newSequence.guid);
   let projectItemId = null;
   try {
     const projectItem = await newSequence.getProjectItem();
@@ -5346,6 +5352,24 @@ async function createSubsequence(argumentsValue) {
     projectItemId = null;
   }
 
+  const afterSequences = await project.getSequences();
+  const sequenceMatches = Array.isArray(afterSequences)
+    ? afterSequences.filter(value => plainGuid(value.guid) === sequenceGuid)
+    : [];
+  let projectItemResolved = false;
+  if (projectItemId) {
+    try {
+      const root = await project.getRootItem();
+      projectItemResolved = Boolean(await findProjectItemById(root, projectItemId));
+    } catch {
+      projectItemResolved = false;
+    }
+  }
+  const sequenceIdentityVerified = Boolean(sequenceGuid)
+    && !beforeSequenceGuids.has(sequenceGuid)
+    && sequenceMatches.length === 1;
+  const verified = sequenceIdentityVerified && projectItemResolved && selectionRestored;
+
   return {
     created: true,
     selectedClipCount: uniqueItems.length, // Requested selection count; content semantics remain unverified.
@@ -5353,9 +5377,14 @@ async function createSubsequence(argumentsValue) {
     selectionRestored,
     selectionSemanticsVerified: false,
     warning: "Subsequence created; exact selected-only content and replacement nesting are not verified.",
-    sequenceGuid: plainGuid(newSequence.guid),
+    sequenceGuid,
     sequenceName: newSequence.name || null,
-    projectItemId
+    projectItemId,
+    sequenceIdentityVerified,
+    projectItemResolved,
+    verificationStatus: verified ? "verified_creation_identity" : "accepted_unverified",
+    uncertain: !verified,
+    retrySafe: false
   };
 }
 
