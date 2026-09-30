@@ -257,6 +257,7 @@ pub fn capability_report()->Value {
             "native_hand_detection":"not_provided_by_ae_scripting",
             "external_hand_tracking_apply":"source_supported_when_grounded_samples_are_supplied",
             "hand_track_rig":"source_supported_grounded_samples_to_null_position_keyframes_with_optional_parent_readback",
+            "hand_track_rig_planner":"source_supported_confidence_filter_ema_smoothing_gap_guard_to_ready_host_args",
             "text_layer_create":"source_supported_with_readback",
             "expression_write":"source_supported_with_error_and_readback",
             "layer_parenting":"source_supported_with_parent_id_readback",
