@@ -7997,7 +7997,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             arguments["expectedSignature"] = json!(expected_signature);
             arguments["allowRemoveAll"] = json!(allow_remove_all);
             let value = premiere_bridge.request("remove_keyframe_range", arguments, Duration::from_secs(30)).await?;
-            Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value})).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_range_removal");
+            Ok(ActionResult { success: verified, tool, stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value})).unwrap_or_default(), stderr: String::new(), exit_code: Some(if verified {0}else{1}) })
         }
         ToolAction::PremiereRemoveVideoTransition { track, clip_index, position } => {
             let backup = backup_premiere_project(&premiere_bridge).await?;
@@ -8016,7 +8017,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             arguments["operation"] = json!(operation);
             arguments["interpolation"] = json!(interpolation);
             let value = premiere_bridge.request("edit_keyframe", arguments, Duration::from_secs(20)).await?;
-            Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value})).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_keyframe_edit");
+            Ok(ActionResult { success: verified, tool, stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value})).unwrap_or_default(), stderr: String::new(), exit_code: Some(if verified {0}else{1}) })
         }
         ToolAction::PremiereInspectClipSpeed { kind, track, clip_index } => {
             let value = premiere_bridge.request(

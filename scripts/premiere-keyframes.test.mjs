@@ -370,3 +370,16 @@ test("video and audio keyframe additions require exact native tick and value rea
     assert.match(block,/retrySafe:false/);
   }
 });
+
+test("keyframe edits and range removal require exact native post-state",()=>{
+  const range=uxp.slice(uxp.indexOf("async function removeKeyframeRange"),uxp.indexOf("async function removeVideoTransition"));
+  assert.match(range,/getKeyframeListAsTickTimes\(\)/);
+  assert.match(range,/expectedRemaining/);
+  assert.match(range,/verificationStatus:verified \? "verified_range_removal" : "accepted_unverified"/);
+  assert.match(range,/retrySafe:false/);
+  const edit=uxp.slice(uxp.indexOf("async function editKeyframe"),uxp.indexOf("async function inspectClipSpeed"));
+  assert.match(edit,/afterMatches\.length === 0/);
+  assert.match(edit,/getTemporalInterpolationMode\(\)/);
+  assert.match(edit,/observedMode === mode/);
+  assert.match(edit,/verificationStatus:verified \? "verified_keyframe_edit" : "accepted_unverified"/);
+});

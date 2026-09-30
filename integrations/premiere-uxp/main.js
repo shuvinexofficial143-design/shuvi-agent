@@ -5153,7 +5153,22 @@ async function removeKeyframeRange(argumentsValue) {
     }, "Shuvi: Remove Inspected Keyframe Range");
   });
   if (!succeeded) throw new Error("Premiere rejected the keyframe range transaction.");
-  return { removed: true, count: selected.length, ticks: selected.map(time => time.ticks), startSeconds, endSeconds, endExclusive: true };
+  let verified = false;
+  let observedTicks = [];
+  try {
+    const after = await target.param.getKeyframeListAsTickTimes();
+    observedTicks = Array.isArray(after) ? after.map(time => String(time?.ticks ?? "")) : [];
+    const selectedTicks = new Set(selected.map(time => String(time.ticks)));
+    const beforeTicks = target.times.map(time => String(time.ticks));
+    const expectedRemaining = beforeTicks.filter(ticks => !selectedTicks.has(ticks));
+    verified = observedTicks.length === expectedRemaining.length
+      && selectedTicks.size === selected.length
+      && selected.every(time => !observedTicks.includes(String(time.ticks)))
+      && expectedRemaining.every(ticks => observedTicks.includes(ticks));
+  } catch {}
+  return { removed: true, count: selected.length, ticks: selected.map(time => time.ticks), startSeconds, endSeconds, endExclusive: true,
+    observedTicks:observedTicks.slice(0,256), verificationStatus:verified ? "verified_range_removal" : "accepted_unverified",
+    uncertain:!verified, retrySafe:false };
 }
 
 async function removeVideoTransition(argumentsValue) {
@@ -5196,7 +5211,25 @@ async function editKeyframe(argumentsValue) {
     succeeded = target.project.executeTransaction(compound => compound.addAction(action), "Shuvi: Edit Named Keyframe");
   });
   if (!succeeded) throw new Error("Premiere rejected the keyframe edit transaction.");
-  return { edited: true, operation, ticks: argumentsValue.ticks, interpolation: operation === "interpolation" ? argumentsValue.interpolation : null, targetSignature: target.signature };
+  let verified = false;
+  let observedInterpolation = null;
+  try {
+    const after = await target.param.getKeyframeListAsTickTimes();
+    const afterMatches = Array.isArray(after) ? after.filter(entry => String(entry?.ticks ?? "") === argumentsValue.ticks) : [];
+    if (operation === "remove") {
+      verified = afterMatches.length === 0 && Array.isArray(after) && after.length === target.times.length - 1;
+    } else if (afterMatches.length === 1) {
+      const pointer = target.param.getKeyframePtr(afterMatches[0]);
+      const observedMode = await pointer.getTemporalInterpolationMode();
+      observedInterpolation = observedMode;
+      verified = observedMode === mode;
+    }
+  } catch {}
+  return { edited: true, operation, ticks: argumentsValue.ticks,
+    interpolation: operation === "interpolation" ? argumentsValue.interpolation : null,
+    observedInterpolation, targetSignature: target.signature,
+    verificationStatus:verified ? "verified_keyframe_edit" : "accepted_unverified",
+    uncertain:!verified, retrySafe:false };
 }
 
 async function inspectClipSpeed(argumentsValue) {
