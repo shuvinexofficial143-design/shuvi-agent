@@ -181,6 +181,8 @@ pub fn capability_report()->Value {
             "marker_add":"source_supported_with_time_value_delta_readback",
             "marker_remove":"source_supported_with_time_comment_stale_guard",
             "project_save_persistence":"source_supported_with_independent_file_fingerprint",
+            "shape_primitive":"source_supported_rectangle_ellipse_with_fill_stroke_readback",
+            "text_animator":"source_supported_allowlisted_property_with_range_selector_readback",
             "runtime_verified":"not_verified"
         },
         "safety":[
