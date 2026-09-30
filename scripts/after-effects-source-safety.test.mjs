@@ -7,6 +7,7 @@ const transport=readFileSync(new URL("../src-tauri/src/after_effects_transport.r
 const jsx=readFileSync(new URL("../integrations/after-effects-extendscript/shuvi-ae.jsx",import.meta.url),"utf8");
 const lib=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
 const runtime=readFileSync(new URL("../src-tauri/src/after_effects_runtime.rs",import.meta.url),"utf8");
+const persistence=readFileSync(new URL("../src-tauri/src/after_effects_project_persistence.rs",import.meta.url),"utf8");
 
 test("After Effects source never claims runtime verification",()=>{
   assert.match(rust,/"source_runtime_verified":false/);
@@ -113,4 +114,15 @@ test("AE effect removal and markers use bounded stale-guarded deltas",()=>{
   assert.match(jsx,/Marker time stale guard changed/);
   assert.match(jsx,/Marker comment stale guard changed/);
   assert.match(jsx,/Marker already exists at requested time/);
+});
+
+
+test("AE project save requires independent disk persistence evidence",()=>{
+  assert.match(rust,/"project_save_persistence":"source_supported_with_independent_file_fingerprint"/);
+  assert.match(runtime,/save_before=if request\.action=="save_project"/);
+  assert.match(runtime,/after_effects_project_persistence::assess/);
+  assert.match(runtime,/verification="verified_file_persistence"/);
+  assert.match(persistence,/content_fingerprint_changed/);
+  assert.match(persistence,/"edit_semantics_verified":false/);
+  assert.match(persistence,/"retry_safe":false/);
 });
