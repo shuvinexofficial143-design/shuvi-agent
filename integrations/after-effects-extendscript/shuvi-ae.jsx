@@ -1804,7 +1804,7 @@
     }
     function exportMogrt(args) {
         var comp=resolveComp(args.comp_id),file=absoluteMogrtFile(args.output_file),overwrite=args.overwrite===true;
-        var base=String(file.name).replace(/\.mogrt$/i,"");
+        var base=decodeURI(String(file.name)).replace(/\.mogrt$/i,"");
         if(base.length<1||base.length>120||/[<>:"\\\/|?*]/.test(base)||/[\. ]$/.test(base))
             fail("MOGRT filename is not a safe template name.");
         if(file.exists&&!overwrite)fail("MOGRT output already exists; explicit overwrite=true required.");
