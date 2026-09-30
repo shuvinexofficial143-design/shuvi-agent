@@ -250,6 +250,14 @@ pub fn known_verification_gaps() -> Value {
             "reason":"Track index/name observations are not promoted to a stable native track UUID."},
         "export_completion":{"state":"not_verified","retry_safe":false,
             "reason":"Observed output files do not prove encoder completion or encoded-media validity."},
+        "ame_event_correlation":{"state":"documented_event_uncorrelated","retry_safe":false,
+            "reason":"EncoderManager documents render queue/progress/complete/error/cancel events, but the reviewed reference does not define a payload contract that binds an event to Shuvi's exact export job/output."},
+        "encoded_media_validation":{"state":"hook_required","retry_safe":false,
+            "reason":"File existence/stability is only filesystem evidence. A bounded parser/decoder receipt must validate the exact output before playable media can be claimed."},
+        "native_inflight_cancellation":{"state":"cooperative_boundary_only","retry_safe":false,
+            "reason":"Batch cancellation can stop before the next native dispatch, but no reviewed API aborts an already dispatched Premiere transaction; the current item can finish or become uncertain."},
+        "third_party_mogrt_semantics":{"state":"inspected_only","retry_safe":false,
+            "reason":"Third-party MOGRTs are accepted only through exact native property inspection/readback; Shuvi does not infer field meaning, template identity or safe editability from names."},
         "windows_premiere_runtime":{"state":"not_verified",
             "reason":"Current source revision still requires fresh Windows/Premiere host acceptance evidence."}
     })
@@ -266,8 +274,10 @@ pub fn evidence_dimensions(report: &Report, recovery_count: usize, export_count:
         "uxp_bridge_pairing":{"state":"not_verified","historical_evidence_count":report.evidence.iter().filter(|e|e.capability=="bridge_pair"&&e.result_category=="runtime_verified").count()},
         "native_mutation_acceptance":{"state":"not_verified","historical_verified_capabilities":report.capabilities.iter().filter(|c|c.group!=1&&c.premiere_runtime_verified).count()},
         "checkpoint_recovery":{"state":"not_verified","historical_verified_entries":recovery_count},
-        "export_completion":{"state":"not_verified","historical_verified_jobs":export_count},
-        "cancellation":{"state":"not_verified"},
+        "export_completion":{"state":"not_verified","historical_verified_jobs":export_count,
+            "encoder_event_correlation_verified":false,"encoded_media_validation_verified":false},
+        "cancellation":{"state":"not_verified","native_inflight_abort_verified":false,
+            "cooperative_between_dispatches_only":true},
         "known_unsupported":report.capabilities.iter().filter(|c|c.state=="unsupported_documented").map(|c|c.name.as_str()).collect::<Vec<_>>(),
         "current_source_revision_bound":false,"production_ready":false
     })
