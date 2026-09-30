@@ -21,7 +21,9 @@ pub struct Request {
 impl Request {
     pub fn is_mutating(&self)->bool{
         matches!(self.action.as_str(),"set_property"|"set_values_at_times"|"set_expression"|"add_effect"|"add_null"|"add_text"
-            |"set_layer_parent"|"duplicate_layer"|"remove_layer"|"precompose_layers"|"add_mask"|"add_scene_edit_markers"
+            |"add_shape"|"add_solid"|"add_camera"|"add_light"|"set_layer_state"|"set_layer_parent"|"move_layer"
+            |"set_track_matte"|"remove_track_matte"|"set_time_remap"|"replace_source"
+            |"duplicate_layer"|"remove_layer"|"precompose_layers"|"add_mask"|"add_scene_edit_markers"
             |"add_render_queue_item"|"save_project")
     }
     pub fn is_read_only(&self)->bool{
