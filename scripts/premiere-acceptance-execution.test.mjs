@@ -18,6 +18,21 @@ test("acceptance executor is one preplanned typed action under existing approval
   assert.doesNotMatch(source,/eval\(|executeTransaction|std::process::Command/);
 });
 
+test("acceptance start and finish merge fresh cancellation under a store lock",()=>{
+  const begin=source.slice(source.indexOf('pub fn begin('),source.indexOf('pub fn cancel('));
+  assert.match(begin,/ACTION_IO.lock\(\)/);
+  assert.match(begin,/latest.status!="prepared"/);
+  assert.match(begin,/latest.cancellation_requested/);
+  const progress=source.slice(source.indexOf('pub fn save_progress('),source.indexOf('#[derive'));
+  assert.match(progress,/latest.status!="executing"/);
+  assert.match(progress,/record.cancellation_requested\|=latest.cancellation_requested/);
+  assert.match(desktop,/premiere_acceptance_execution::begin\(&path,&record\)/);
+  const execution=desktop.slice(desktop.indexOf('ToolAction::PremiereAcceptanceExecute {action_id} =>'),desktop.indexOf('ToolAction::PremiereAcceptanceProbe {group} =>'));
+  assert.doesNotMatch(execution,/premiere_acceptance_execution::save\(&path,&record\)/);
+  assert.match(execution,/save_progress\(&path,&mut record\)/);
+  assert.equal((desktop.match(/PendingAction\{created_at_ms:now_ms\(\),premiere_expectation:Some\(target.expected.clone\(\)\)/g)||[]).length,2);
+});
+
 test("persisted acceptance revalidates exact fixtures and backup recovery cannot replay prepared work",()=>{
   const validation=source.slice(source.indexOf('pub fn validate(&self)'),source.indexOf('pub fn identity('));
   assert.match(validation,/fixture.expected.clips.len\(\)!=1/);

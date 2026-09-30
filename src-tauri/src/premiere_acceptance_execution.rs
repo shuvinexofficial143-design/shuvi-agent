@@ -4,6 +4,35 @@ use serde_json::{json, Value};
 use std::{fs, path::Path, time::{SystemTime, UNIX_EPOCH}};
 
 const MAX_BYTES: usize = 32 * 1024;
+static ACTION_IO:std::sync::Mutex<()>=std::sync::Mutex::new(());
+
+pub fn begin(path:&Path,inspected:&Action)->Result<Action,String>{
+    let _io=ACTION_IO.lock().map_err(|_|"Acceptance state lock unavailable.")?;
+    let mut latest=load(path)?;
+    if latest.status!="prepared" || latest.cancellation_requested
+        || serde_json::to_value(&latest).map_err(|e|e.to_string())?!=serde_json::to_value(inspected).map_err(|e|e.to_string())? {
+        return Err("Acceptance changed or was cancelled during inspection; no edit launched.".into());
+    }
+    latest.status="executing".into();save(path,&latest)?;Ok(latest)
+}
+
+pub fn cancel(path:&Path)->Result<Action,String>{
+    let _io=ACTION_IO.lock().map_err(|_|"Acceptance state lock unavailable.")?;
+    let mut latest=load(path)?;
+    if latest.status=="prepared" {latest.status="cancelled".into();}
+    if latest.status=="executing" {latest.cancellation_requested=true;}
+    save(path,&latest)?;Ok(latest)
+}
+
+pub fn save_progress(path:&Path,record:&mut Action)->Result<(),String>{
+    let _io=ACTION_IO.lock().map_err(|_|"Acceptance state lock unavailable.")?;
+    let latest=load(path)?;
+    if latest.action_id!=record.action_id || latest.status!="executing" {
+        return Err("Acceptance completion is stale; terminal or recovered state was preserved.".into());
+    }
+    record.cancellation_requested|=latest.cancellation_requested;
+    save(path,record)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -300,6 +329,17 @@ pub fn save(path:&Path,action:&Action)->Result<(),String>{
 
 #[cfg(test)] mod tests {
     use super::*;
+    #[test]fn cancellation_during_inspection_cannot_be_overwritten_and_late_completion_is_rejected(){
+        let (f,c,t)=fixture();let a=Action::new("a".into(),"trim".into(),f,&c,&t).unwrap();
+        let path=std::env::temp_dir().join(format!("shuvi-acceptance-cancel-{}.json",uuid::Uuid::new_v4()));
+        save(&path,&a).unwrap();cancel(&path).unwrap();
+        assert!(begin(&path,&a).is_err());assert_eq!(load(&path).unwrap().status,"cancelled");
+        fs::remove_file(&path).unwrap();fs::remove_file(path.with_extension("json.bak")).unwrap();
+        save(&path,&a).unwrap();let mut running=begin(&path,&a).unwrap();cancel(&path).unwrap();
+        running.status="uncertain".into();save_progress(&path,&mut running).unwrap();
+        assert!(running.cancellation_requested);assert!(save_progress(&path,&mut running).is_err());
+        fs::remove_file(&path).unwrap();fs::remove_file(path.with_extension("json.bak")).unwrap();
+    }
     #[test]fn persisted_fixture_cannot_drop_or_retarget_clip_or_enlarge_mutation(){
         let (f,c,t)=fixture();let a=Action::new("a".into(),"trim".into(),f,&c,&t).unwrap();
         let mut bad=a.clone();bad.fixture.expected.clips.clear();assert!(bad.validate().is_err());

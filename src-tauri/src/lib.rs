@@ -11241,7 +11241,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     component_match_name:Some(target.component_match_name.clone()),component_display_name:None,
                     param_display_name:target.param_display_name.clone(),value:v}}
             };
-            let inner=PendingAction{premiere_expectation:Some(target.expected.clone()),tool:if target.kind=="video"{"premiere_set_video_param_named"}else{"premiere_set_audio_param_named"}.into(),
+            let inner=PendingAction{created_at_ms:now_ms(),premiere_expectation:Some(target.expected.clone()),tool:if target.kind=="video"{"premiere_set_video_param_named"}else{"premiere_set_audio_param_named"}.into(),
                 detail:"Disposable native parameter delta calibration".into(),action:make_action(value.clone())};
             let changed=Box::pin(execute_tool(inner,state,app)).await;
             let changed=match changed {Ok(result) if result.success=>result,Err(error)=>{
@@ -11268,7 +11268,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                         "reason":"After-delta native inspection missing; restoration not attempted blindly."}).to_string(),stderr:String::new(),exit_code:None});
                 }
             };
-            let restore=PendingAction{premiere_expectation:Some(target.expected.clone()),tool:if target.kind=="video"{"premiere_set_video_param_named"}else{"premiere_set_audio_param_named"}.into(),
+            let restore=PendingAction{created_at_ms:now_ms(),premiere_expectation:Some(target.expected.clone()),tool:if target.kind=="video"{"premiere_set_video_param_named"}else{"premiere_set_audio_param_named"}.into(),
                 detail:"Restore original disposable native value".into(),action:make_action(baseline.clone())};
             let restored=Box::pin(execute_tool(restore,state,app)).await;
             if !restored.is_ok_and(|r|r.success) {
@@ -11316,10 +11316,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
         }
         ToolAction::PremiereAcceptanceCancel {action_id} => {
             let path=premiere_acceptance_action_path(app,&action_id)?;
-            let mut action=premiere_acceptance_execution::load(&path)?;
-            if action.status=="prepared" {action.status="cancelled".into();}
-            if action.status=="executing" {action.cancellation_requested=true;}
-            premiere_acceptance_execution::save(&path,&action)?;
+            let action=premiere_acceptance_execution::cancel(&path)?;
             Ok(ActionResult {success:true,tool,stdout:json!({"action_id":action_id,"status":action.status,
                 "cancellation_requested":action.cancellation_requested,"native_edit_may_have_started":action.status=="executing"}).to_string(),stderr:String::new(),exit_code:Some(0)})
         }
@@ -11368,12 +11365,11 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             if premiere_acceptance_execution::exact_clip(&timeline,&record.fixture)?!=record.before {
                 return Err("Timeline target changed after acceptance planning; inspect and prepare a new action.".into());
             }
-            record.status="executing".into();
-            premiere_acceptance_execution::save(&path,&record)?;
+            record=premiere_acceptance_execution::begin(&path,&record)?;
             let freshest=premiere_acceptance_execution::load(&path)?;
             if freshest.cancellation_requested {
                 record.status="cancelled".into();record.cancellation_requested=true;
-                premiere_acceptance_execution::save(&path,&record)?;
+                premiere_acceptance_execution::save_progress(&path,&mut record)?;
                 return Err("Acceptance cancelled before the native edit.".into());
             }
             let fixture=&record.fixture;
@@ -11403,7 +11399,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 Ok(result)=>result,
                 Err(error)=>{
                     record.status="uncertain".into();record.recovery=Some("Native call failed or result uncertain; checkpoint/host inspection required before any retry.".into());
-                    premiere_acceptance_execution::save(&path,&record)?;
+                    premiere_acceptance_execution::save_progress(&path,&mut record)?;
                     return Ok(ActionResult{success:false,tool,stdout:json!({"action_id":action_id,"status":"uncertain",
                         "retry_automatically":false}).to_string(),stderr:error,exit_code:None});
                 }
@@ -11413,7 +11409,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 v.get("backup").or_else(||v.get("checkpoint")).and_then(Value::as_str).map(str::to_owned));
             if !native_result.success || record.checkpoint.is_none() {
                 record.status="uncertain".into();record.recovery=Some("Native result or checkpoint could not be confirmed; inspect before retry.".into());
-                premiere_acceptance_execution::save(&path,&record)?;
+                premiere_acceptance_execution::save_progress(&path,&mut record)?;
                 return Ok(ActionResult{success:false,tool,stdout:json!({"action_id":action_id,"status":"uncertain",
                     "retry_automatically":false}).to_string(),stderr:native_result.stderr,exit_code:None});
             }
@@ -11441,7 +11437,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     record.status="uncertain".into();record.recovery=Some("Post-inspection unavailable; do not retry or assume success.".into());false}}
             };
             if premiere_acceptance_execution::load(&path).is_ok_and(|latest|latest.cancellation_requested){record.cancellation_requested=true;}
-            premiere_acceptance_execution::save(&path,&record)?;
+            premiere_acceptance_execution::save_progress(&path,&mut record)?;
             if verified && matches!(record.step.as_str(),"trim"|"move"|"clone"|"scene_markers") {
                 let report_path=premiere_acceptance_path(app)?;
                 let mut report=premiere_acceptance::load(&report_path)?;
