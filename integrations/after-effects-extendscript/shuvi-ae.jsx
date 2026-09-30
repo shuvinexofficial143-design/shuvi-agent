@@ -241,6 +241,22 @@
             readback_values: readback
         };
     }
+    function effectInventory(layer) {
+        var parade=layer.property("ADBE Effect Parade");
+        if(!parade)return [];
+        if(parade.numProperties>256)fail("Effect inventory exceeds 256-item safety bound.");
+        var out=[],i;
+        for(i=1;i<=parade.numProperties;i++){
+            var effect=parade.property(i);
+            out.push({match_name:String(effect.matchName),name:String(effect.name)});
+        }
+        return out;
+    }
+    function sameEffectInventory(actual,expected) {
+        if(actual.length!==expected.length)return false;
+        var i;for(i=0;i<actual.length;i++)if(actual[i].match_name!==expected[i].match_name||actual[i].name!==expected[i].name)return false;
+        return true;
+    }
     function addEffect(args) {
         var comp = resolveComp(args.comp_id);
         var layer = resolveLayer(comp, args.layer_id);
@@ -271,6 +287,25 @@
             before_count: beforeCount,
             after_count: afterCount
         };
+    }
+    function removeEffect(args) {
+        var comp=resolveComp(args.comp_id),layer=resolveLayer(comp,args.layer_id);
+        var parade=layer.property("ADBE Effect Parade");
+        if(!parade)fail("Target layer has no effect parade.");
+        var index=args.effect_property_index,expectedMatch=boundedString(args.expected_match_name,160,"expected effect matchName");
+        if(!finiteNumber(index)||Math.floor(index)!==index||index<1||index>parade.numProperties)fail("Invalid effect_property_index.");
+        var target=parade.property(index);
+        if(!target||!target.isEffect||String(target.matchName)!==expectedMatch)fail("Effect stale guard changed.");
+        var before=effectInventory(layer),expectedAfter=[],i;
+        for(i=0;i<before.length;i++)if(i!==index-1)expectedAfter.push(before[i]);
+        app.beginUndoGroup("Shuvi: Remove effect");
+        try{target.remove();}finally{app.endUndoGroup();}
+        layer=resolveLayer(comp,args.layer_id);
+        var after=effectInventory(layer);
+        var verified=after.length===before.length-1&&sameEffectInventory(after,expectedAfter);
+        return {native_accepted:true,verification_status:verified?"verified_effect_delta":"accepted_unverified",retry_safe:false,
+            comp_id:comp.id,layer_id:layer.id,removed_property_index:index,removed_match_name:expectedMatch,
+            before_effects:before,after_effects:after};
     }
     function addNull(args) {
         var comp = resolveComp(args.comp_id);
@@ -910,6 +945,69 @@
         return {native_accepted:true,verification_status:verified?"verified_timing_readback":"accepted_unverified",retry_safe:verified,
             comp_id:comp.id,layer_id:layer.id,before:before,after:after};
     }
+    function markerTarget(args) {
+        var comp=resolveComp(args.comp_id),scope=args.scope===undefined?"layer":boundedString(args.scope,16,"marker scope");
+        if(scope==="comp")return {comp:comp,layer:null,property:comp.markerProperty,scope:"comp"};
+        if(scope!=="layer")fail("Marker scope must be comp or layer.");
+        var layer=resolveLayer(comp,args.layer_id);
+        return {comp:comp,layer:layer,property:layer.marker,scope:"layer"};
+    }
+    function markerValueSnapshot(value) {
+        return {comment:String(value.comment||""),duration:value.duration||0,label:value.label===undefined?0:value.label};
+    }
+    function inspectMarkers(args) {
+        var target=markerTarget(args),p=target.property;
+        var limit=Math.min(p.numKeys,1024),items=[],i;
+        for(i=1;i<=limit;i++){
+            var value=p.keyValue(i),snap=markerValueSnapshot(value);
+            items.push({key_index:i,time_seconds:p.keyTime(i),comment:snap.comment,duration:snap.duration,label:snap.label});
+        }
+        return {verification_status:"verified_readback",scope:target.scope,comp_id:target.comp.id,
+            layer_id:target.layer?target.layer.id:null,num_markers:p.numKeys,scan_truncated:p.numKeys>1024,markers:items};
+    }
+    function addMarker(args) {
+        var target=markerTarget(args),p=target.property,time=args.time_seconds;
+        if(!finiteNumber(time)||time<0||time>10800)fail("Marker time must be 0..10800 seconds.");
+        if(p.numKeys>10000)fail("Marker count exceeds safety bound.");
+        var comment=args.comment===undefined?"":String(args.comment);
+        if(comment.length>2000)fail("Marker comment exceeds 2000 characters.");
+        var duration=args.duration_seconds===undefined?0:args.duration_seconds;
+        if(!finiteNumber(duration)||duration<0||duration>10800)fail("Marker duration outside bounds.");
+        var label=args.label===undefined?0:args.label;
+        if(!finiteNumber(label)||Math.floor(label)!==label||label<0||label>16)fail("Marker label must be 0..16.");
+        var i;
+        for(i=1;i<=p.numKeys;i++)if(Math.abs(p.keyTime(i)-time)<=EPSILON)fail("Marker already exists at requested time; mutation refused.");
+        var before=p.numKeys,mv=new MarkerValue(comment);mv.duration=duration;mv.label=label;
+        app.beginUndoGroup("Shuvi: Add marker");
+        try{p.setValueAtTime(time,mv);}finally{app.endUndoGroup();}
+        target=markerTarget(args);p=target.property;
+        var foundIndex=0;
+        for(i=1;i<=p.numKeys;i++)if(Math.abs(p.keyTime(i)-time)<=EPSILON){foundIndex=i;break;}
+        var read=foundIndex?p.keyValue(foundIndex):null,snap=read?markerValueSnapshot(read):null;
+        var verified=p.numKeys===before+1&&foundIndex>0&&snap&&snap.comment===comment
+            &&Math.abs(snap.duration-duration)<=EPSILON&&snap.label===label;
+        return {native_accepted:true,verification_status:verified?"verified_marker_delta":"accepted_unverified",retry_safe:false,
+            scope:target.scope,comp_id:target.comp.id,layer_id:target.layer?target.layer.id:null,key_index:foundIndex,
+            time_seconds:time,comment:snap?snap.comment:null,duration:snap?snap.duration:null,label:snap?snap.label:null,
+            before_count:before,after_count:p.numKeys};
+    }
+    function removeMarker(args) {
+        var target=markerTarget(args),p=target.property,index=args.key_index,time=args.expected_time_seconds;
+        if(!finiteNumber(index)||Math.floor(index)!==index||index<1||index>p.numKeys||!finiteNumber(time)||time<0||time>10800)
+            fail("remove_marker requires valid key_index and expected_time_seconds.");
+        if(Math.abs(p.keyTime(index)-time)>EPSILON)fail("Marker time stale guard changed.");
+        var value=p.keyValue(index),comment=String(value.comment||"");
+        if(args.expected_comment!==undefined&&comment!==String(args.expected_comment))fail("Marker comment stale guard changed.");
+        var before=p.numKeys;
+        app.beginUndoGroup("Shuvi: Remove marker");
+        try{p.removeKey(index);}finally{app.endUndoGroup();}
+        target=markerTarget(args);p=target.property;
+        var exists=false,i;for(i=1;i<=p.numKeys;i++)if(Math.abs(p.keyTime(i)-time)<=EPSILON){exists=true;break;}
+        var verified=p.numKeys===before-1&&!exists;
+        return {native_accepted:true,verification_status:verified?"verified_marker_delta":"accepted_unverified",retry_safe:false,
+            scope:target.scope,comp_id:target.comp.id,layer_id:target.layer?target.layer.id:null,
+            removed_time_seconds:time,removed_comment:comment,before_count:before,after_count:p.numKeys};
+    }
     function inspectRenderQueue() {
         var queue = requireProject().renderQueue;
         var items = [], i, limit = Math.min(queue.numItems, 256);
@@ -1000,14 +1098,14 @@
     }
     function mutationAction(action) {
         return action === "set_property" || action === "set_values_at_times" || action === "set_expression"
-            || action === "add_effect" || action === "add_null" || action === "add_text" || action === "add_shape" || action === "add_solid"
+            || action === "add_effect" || action === "remove_effect" || action === "add_null" || action === "add_text" || action === "add_shape" || action === "add_solid"
             || action === "add_camera" || action === "add_light" || action === "create_comp" || action === "import_footage" || action === "add_item_layer"
             || action === "set_layer_state" || action === "set_layer_parent"
             || action === "move_layer" || action === "set_track_matte" || action === "remove_track_matte"
             || action === "set_time_remap" || action === "replace_source" || action === "set_text_style" || action === "set_layer_timing"
             || action === "set_keyframe_interpolation" || action === "set_keyframe_temporal_ease" || action === "remove_keyframe"
             || action === "duplicate_layer" || action === "remove_layer" || action === "precompose_layers"
-            || action === "add_mask" || action === "add_scene_edit_markers"
+            || action === "add_mask" || action === "add_scene_edit_markers" || action === "add_marker" || action === "remove_marker"
             || action === "add_render_queue_item" || action === "save_project";
     }
     function assertProjectExpectation(request, action) {
@@ -1033,6 +1131,7 @@
         if (action === "set_values_at_times") return setValuesAtTimes(args);
         if (action === "set_expression") return setExpression(args);
         if (action === "add_effect") return addEffect(args);
+        if (action === "remove_effect") return removeEffect(args);
         if (action === "add_null") return addNull(args);
         if (action === "add_text") return addText(args);
         if (action === "add_shape") return addShape(args);
@@ -1060,6 +1159,9 @@
         if (action === "add_mask") return addMask(args);
         if (action === "inspect_scene_edits") return inspectSceneEdits(args);
         if (action === "add_scene_edit_markers") return addSceneEditMarkers(args);
+        if (action === "inspect_markers") return inspectMarkers(args);
+        if (action === "add_marker") return addMarker(args);
+        if (action === "remove_marker") return removeMarker(args);
         if (action === "inspect_render_queue") return inspectRenderQueue();
         if (action === "add_render_queue_item") return addRenderQueueItem(args);
         if (action === "save_project") return saveProject();
