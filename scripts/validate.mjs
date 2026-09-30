@@ -26,6 +26,8 @@ for (const path of [
   "src-tauri/src/lib.rs",
   "src-tauri/src/after_effects.rs",
   "src-tauri/src/after_effects_transport.rs",
+  "src-tauri/src/after_effects_checkpoint.rs",
+  "src-tauri/src/after_effects_runtime.rs",
   "integrations/after-effects-extendscript/shuvi-ae.jsx",
   "src-tauri/src/premiere_bridge.rs",
   "integrations/premiere-uxp/manifest.json",
