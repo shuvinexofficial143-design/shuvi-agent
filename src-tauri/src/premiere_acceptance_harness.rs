@@ -77,6 +77,12 @@ pub fn save(path:&Path, registration:&Registration) -> Result<(),String> {
     })
 }
 
+fn has_dedicated_execution_adapter(step:&str,tool:&str)->bool{
+    matches!((step,tool),
+        ("trim","premiere_trim_clip")|("move","premiere_move_clip")|
+        ("clone","premiere_clone_clip")|("scene_markers","premiere_detect_scene_markers"))
+}
+
 pub fn plan(group:u8, registration:Option<&Registration>, context:Option<&Value>) -> Result<Value,String> {
     let actions: &[(&str,&str,bool)] = match group {
         1 => &[("context","premiere_context",false),("timeline","premiere_timeline",false),("diagnostics","premiere_project_diagnostics",false)],
@@ -93,9 +99,19 @@ pub fn plan(group:u8, registration:Option<&Registration>, context:Option<&Value>
     let ready=registration.zip(context).is_some_and(|(r,c)|r.check(c).is_ok());
     Ok(json!({"group":group,"estimated_action_count":actions.len(),"action_limit":MAX_ACTIONS,
         "read_only_steps":actions.iter().filter(|a|!a.2).map(|a|json!({"id":a.0,"tool":a.1})).collect::<Vec<_>>(),
-        "mutating_steps":actions.iter().filter(|a|a.2).map(|a|json!({"id":a.0,"tool":a.1,
-            "requires_permission":true,"requires_prproj_checkpoint":true,"requires_exact_expectation":true,
-            "requires_audit_receipt":true,"recovery":"Inspect checkpoint; rollback is not automatic."})).collect::<Vec<_>>(),
+        "mutating_steps":actions.iter().filter(|a|a.2).map(|a|{
+            let adapter=has_dedicated_execution_adapter(a.0,a.1);
+            json!({"id":a.0,"tool":a.1,
+                "requires_permission":true,"requires_prproj_checkpoint":true,"requires_exact_expectation":true,
+                "requires_audit_receipt":true,"acceptance_execution_adapter":adapter,
+                "runtime_promotion_supported":adapter,
+                "manual_typed_execution_only":!adapter,
+                "recovery":"Inspect checkpoint; rollback is not automatic."})
+        }).collect::<Vec<_>>(),
+        "dedicated_execution_steps":actions.iter().filter(|a|a.2&&has_dedicated_execution_adapter(a.0,a.1))
+            .map(|a|a.0).collect::<Vec<_>>(),
+        "planned_only_mutation_steps":actions.iter().filter(|a|a.2&&!has_dedicated_execution_adapter(a.0,a.1))
+            .map(|a|a.0).collect::<Vec<_>>(),
         "evidence_promoted":false,"runtime_verified":false,
         "adversarial_cases":["cancel_after_completion","stale_cancel_after_restart","timeout_after_dispatch_no_retry",
             "wrong_action_response","checkpoint_failure_no_mutation","stale_clip_or_effect_chain","partial_export_not_complete"],
@@ -111,4 +127,12 @@ mod tests {
     #[test] fn groups_bounded_and_read_only_plan(){for g in 1..=8 {let p=plan(g,None,None).unwrap();assert!(p["estimated_action_count"].as_u64().unwrap()<=12);}assert!(plan(9,None,None).is_err());}
     #[test] fn registration_requires_explicit_existing_project(){assert!(Registration::new("p","/missing.prproj",None,true).is_err());assert!(Registration::new("p","relative.prproj",None,false).is_err());}
     #[test] fn mismatch_refuses_mutating_plan(){let p=plan(2,None,Some(&json!({"projectGuid":"p"}))).unwrap();assert_eq!(p["disposable_project_verified"],false);assert_eq!(p["mutating_steps"][0]["requires_prproj_checkpoint"],true);}
+    #[test] fn plan_distinguishes_dedicated_acceptance_adapters_from_manual_typed_steps(){
+        let p=plan(2,None,None).unwrap();
+        let trim=p["mutating_steps"].as_array().unwrap().iter().find(|v|v["id"]=="trim").unwrap();
+        let transition=p["mutating_steps"].as_array().unwrap().iter().find(|v|v["id"]=="transition").unwrap();
+        assert_eq!(trim["acceptance_execution_adapter"],true);assert_eq!(trim["runtime_promotion_supported"],true);
+        assert_eq!(transition["acceptance_execution_adapter"],false);assert_eq!(transition["manual_typed_execution_only"],true);
+        let p3=plan(3,None,None).unwrap();assert!(p3["dedicated_execution_steps"].as_array().unwrap().is_empty());
+    }
 }
