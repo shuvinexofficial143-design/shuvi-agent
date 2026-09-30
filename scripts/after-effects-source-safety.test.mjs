@@ -233,3 +233,18 @@ test("AE relink proxy and AV layer controls require stale guards and readback",(
   assert.match(jsx,/verified_proxy_readback/);
   assert.match(jsx,/verified_layer_flag_readback/);
 });
+
+
+test("AE mask edit and removal stay stale-guarded and readback verified",()=>{
+  for(const action of ["edit_mask","remove_mask"]){
+    assert.match(transport,new RegExp('"' + action + '"'));
+    assert.match(jsx,new RegExp('action === "' + action + '"'));
+  }
+  assert.match(rust,/"mask_edit":"source_supported_with_shape_attribute_readback_and_stale_guards"/);
+  assert.match(rust,/"mask_remove":"source_supported_with_ordered_inventory_delta"/);
+  assert.match(jsx,/Mask name stale guard changed/);
+  assert.match(jsx,/Mask mode stale guard changed/);
+  assert.match(jsx,/Mask is locked; unlock explicitly before editing/);
+  assert.match(jsx,/sameMaskInventory\(after,expectedAfter\)/);
+  assert.match(jsx,/verified_mask_delta/);
+});
