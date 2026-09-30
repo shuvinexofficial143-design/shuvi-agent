@@ -1,7 +1,7 @@
 //! Bounded, data-only template mappings and checkpointed graphics batches.
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{collections::{BTreeMap, HashSet}, fs, io::{Read, Write}, path::Path,
+use std::{collections::{BTreeMap, HashSet}, fs, path::Path,
     sync::{Mutex, atomic::{AtomicBool, Ordering}}, future::Future};
 
 const MAX_BYTES: usize = 96 * 1024;
@@ -138,34 +138,30 @@ impl Library {
         Ok(())
     }
 }
-fn read_library(path: &Path) -> Result<Library, String> {
-    if path.with_extension("json.bak").exists() {
-        return Err("Graphics library has an interrupted update (.json.bak); inspect/recover it before continuing.".into());
-    }
-    if !path.exists() { return Ok(Library::default()); }
-    let mut bytes = Vec::new();
-    fs::File::open(path).map_err(|e| e.to_string())?.take((MAX_BYTES + 1) as u64).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
-    if bytes.len() > MAX_BYTES { return Err("Graphics library exceeds 96 KiB.".into()); }
-    let lib: Library = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+fn decode_library(bytes: &[u8]) -> Result<Library, String> {
+    let lib: Library = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
     lib.validate()?;
     Ok(lib)
+}
+fn read_library(path: &Path) -> Result<Library, String> {
+    let temp = path.with_extension("json.tmp");
+    let backup = path.with_extension("json.bak");
+    if temp.exists() {
+        return Err("Graphics library has an interrupted temporary update; inspect recovery files before continuing.".into());
+    }
+    if !path.exists() {
+        if backup.exists() {
+            return Err("Graphics library primary is missing while a retained backup exists; recover explicitly instead of replaying stale mappings.".into());
+        }
+        return Ok(Library::default());
+    }
+    let bytes = crate::read_file_bytes_bounded(path, MAX_BYTES, "Premiere graphics mapping library")?;
+    decode_library(&bytes)
 }
 fn write_library(path: &Path, lib: &Library) -> Result<(), String> {
     lib.validate()?;
     let bytes = bounded(lib)?;
-    let temp = path.with_extension("json.tmp");
-    let backup = path.with_extension("json.bak");
-    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&temp)
-        .map_err(|e| format!("Graphics temporary file unavailable; inspect interrupted updates: {e}"))?;
-    file.write_all(&bytes).and_then(|_| file.sync_all()).map_err(|e| e.to_string())?;
-    drop(file);
-    if path.exists() { fs::rename(path, &backup).map_err(|e| e.to_string())?; }
-    if let Err(e) = fs::rename(&temp, path) {
-        if backup.exists() { let _ = fs::rename(&backup, path); }
-        return Err(e.to_string());
-    }
-    if backup.exists() { fs::remove_file(backup).map_err(|e| e.to_string())?; }
-    Ok(())
+    crate::premiere_store::replace(path, &bytes, MAX_BYTES, |data| decode_library(data).map(|_| ()))
 }
 pub fn list(path: &Path) -> Result<Vec<SavedMapping>, String> {
     let _lock = STORE_LOCK.lock().map_err(|_| "Graphics library lock unavailable.")?;

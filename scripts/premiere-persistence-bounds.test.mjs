@@ -48,3 +48,13 @@ test('saved Premiere recipes use durable validated snapshots',()=>{
   assert.doesNotMatch(write,/fs::write\(/);
   assert.doesNotMatch(write,/fs::rename\(/);
 });
+
+test('graphics mappings use retained durable snapshots without stale backup replay',()=>{
+  const source=readFileSync('src-tauri/src/premiere_graphics.rs','utf8').split('#[cfg(test)]')[0];
+  assert.match(source,/premiere_store::replace/);
+  assert.match(source,/read_file_bytes_bounded/);
+  assert.match(source,/primary is missing while a retained backup exists/);
+  assert.match(source,/json\.tmp/);
+  assert.doesNotMatch(source,/OpenOptions/);
+  assert.doesNotMatch(source,/fs::rename\(/);
+});
