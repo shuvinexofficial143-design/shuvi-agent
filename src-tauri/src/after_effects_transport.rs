@@ -16,6 +16,8 @@ pub struct Request {
     #[serde(default)]
     pub expected_project_file:Option<String>,
     #[serde(default)]
+    pub expected_project_revision:Option<u64>,
+    #[serde(default)]
     pub args:Value,
 }
 impl Request {
@@ -47,6 +49,9 @@ impl Request {
         }
         if self.is_mutating() && self.expected_project_file.is_none() {
             return Err("Mutating After Effects action requires expected_project_file.".into());
+        }
+        if self.is_mutating() && self.expected_project_revision.is_none_or(|v|v==0) {
+            return Err("Mutating After Effects action requires expected_project_revision.".into());
         }
         if let Some(path)=&self.expected_project_file {
             crate::after_effects::validate_project_path(path)?;
@@ -195,7 +200,7 @@ pub fn parse_receipt(bytes:&[u8],request:&Request)->Result<Receipt,String>{
 #[cfg(test)]
 mod tests{
     use super::*;
-    fn request()->Request{Request{schema_version:1,request_id:"abc-123".into(),action:"inspect_context".into(),expected_project_file:None,args:Value::Object(Default::default())}}
+    fn request()->Request{Request{schema_version:1,request_id:"abc-123".into(),action:"inspect_context".into(),expected_project_file:None,expected_project_revision:None,args:Value::Object(Default::default())}}
 
     #[test]fn request_rejects_unbounded_or_injectable_identity(){
         request().validate().unwrap();
@@ -210,6 +215,8 @@ mod tests{
         let mut mutation=request();mutation.action="set_values_at_times".into();
         assert!(mutation.validate().unwrap_err().contains("expected_project_file"));
         mutation.expected_project_file=Some(if cfg!(windows){r"C:\Work\edit.aep".into()}else{"/tmp/edit.aep".into()});
+        assert!(mutation.validate().unwrap_err().contains("expected_project_revision"));
+        mutation.expected_project_revision=Some(42);
         assert!(mutation.validate().is_ok());
         assert!(mutation.is_mutating());
         let mut unknown=request();unknown.action="do_anything".into();
