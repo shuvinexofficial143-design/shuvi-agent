@@ -100,9 +100,17 @@ function planRecipe(request, inspected) {
     settings.push({component_match_name: component.matchName, component_display_name: component.displayName,
       param_display_name: param.displayName, value: requested.value});
   }
-  const result = {schemaVersion: 1, preset: request.preset, applied: false, settings, skipped,
+  const result = {schemaVersion: 2, preset: request.preset, applied: false, settings, skipped,
     warnings: ["Roles were supplied by the caller. This does not prove the clip is a MOGRT or a parameter is an Essential Graphics text field.", "Review the plan, apply through the checkpointed video recipe tool, then inspect and visually verify; unchanged clip identity does not lock parameter values."],
-    executionTool: "premiere_apply_video_recipe", deterministicTargeting: true, semanticFieldInference: false};
+    executionTool: "premiere_apply_video_recipe",
+    deterministicTargeting: true,
+    semanticFieldInference: false,
+    callerSuppliedSemanticRoles: true,
+    semanticRolesVerified: false,
+    templateSourceIdentityVerified: false,
+    thirdPartyTemplateSafetyVerified: false,
+    safeAutomaticApply: false,
+    requiresVisualReview: true};
   if (JSON.stringify(result).length > LIMITS.resultChars) throw new Error("Graphics plan exceeds the output budget.");
   return result;
 }
