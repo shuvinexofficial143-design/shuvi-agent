@@ -91,11 +91,9 @@ pub fn load(path:&Path)->Result<Jobs,String>{
 }
 pub fn save(path:&Path,jobs:&Jobs)->Result<(),String>{
     jobs.validate()?;let bytes=serde_json::to_vec(jobs).map_err(|e|e.to_string())?;
-    let tmp=path.with_extension("json.tmp");let bak=path.with_extension("json.bak");
-    fs::write(&tmp,bytes).map_err(|e|e.to_string())?;
-    if path.exists(){if bak.exists(){fs::remove_file(&bak).map_err(|e|e.to_string())?;}fs::rename(path,&bak).map_err(|e|e.to_string())?;}
-    if let Err(e)=fs::rename(&tmp,path){if bak.exists(){let _=fs::rename(&bak,path);}return Err(e.to_string());}
-    if bak.exists(){let _=fs::remove_file(bak);}Ok(())
+    crate::premiere_store::replace(path,&bytes,MAX_BYTES,|data|{
+        let jobs:Jobs=serde_json::from_slice(data).map_err(|e|e.to_string())?;jobs.validate()
+    })
 }
 
 #[cfg(test)]mod tests{
