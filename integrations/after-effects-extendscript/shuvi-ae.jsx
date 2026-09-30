@@ -1738,6 +1738,88 @@
             after:{three_d_layer:!!layer.threeDLayer,adjustment_layer:!!layer.adjustmentLayer,collapse_transformation:!!layer.collapseTransformation,
                 motion_blur:!!layer.motionBlur,preserve_transparency:!!layer.preserveTransparency}};
     }
+    function mogrtControllerInventory(comp) {
+        var count=comp.motionGraphicsTemplateControllerCount;
+        if(count>256)fail("Essential Graphics controller inventory exceeds mutation safety bound.");
+        var names=[],i;
+        for(i=1;i<=count;i++)names.push(String(comp.getMotionGraphicsTemplateControllerName(i)).slice(0,240));
+        return names;
+    }
+    function stringInventoryAddedOnce(before,after,name) {
+        if(after.length!==before.length+1)return false;
+        var counts={},i,key;
+        for(i=0;i<before.length;i++){key="$"+before[i];counts[key]=(counts[key]||0)+1;}
+        for(i=0;i<after.length;i++){key="$"+after[i];counts[key]=(counts[key]||0)-1;}
+        for(key in counts)if(counts.hasOwnProperty(key)&&counts[key]!==0){
+            if(key==="$"+name&&counts[key]===-1){counts[key]=0;continue;}
+            return false;
+        }
+        return true;
+    }
+    function inspectMogrt(args) {
+        var comp=resolveComp(args.comp_id),count=comp.motionGraphicsTemplateControllerCount,limit=Math.min(count,256),names=[],i;
+        for(i=1;i<=limit;i++)names.push(String(comp.getMotionGraphicsTemplateControllerName(i)).slice(0,240));
+        return {verification_status:"verified_readback",comp_id:comp.id,template_name:String(comp.motionGraphicsTemplateName||"").slice(0,240),
+            controller_count:count,scan_truncated:count>256,controller_names:names};
+    }
+    function safeControllerName(value) {
+        var name=boundedString(value,120,"Essential Graphics controller name");
+        if(/[\x00-\x1F\x7F]/.test(name))fail("Essential Graphics controller name contains control characters.");
+        return name;
+    }
+    function addMogrtProperty(args) {
+        var resolved=resolveProperty(args.property),comp=resolved.comp,p=resolved.property,name=safeControllerName(args.controller_name);
+        if(typeof p.canAddToMotionGraphicsTemplate!=="function"||typeof p.addToMotionGraphicsTemplateAs!=="function")
+            fail("Current After Effects host does not expose Essential Graphics property authoring.");
+        if(!p.canAddToMotionGraphicsTemplate(comp))fail("Property cannot be added to this Essential Graphics template or is already present.");
+        var before=mogrtControllerInventory(comp);
+        app.beginUndoGroup("Shuvi: Add Essential Graphics property");
+        var accepted=false;
+        try{accepted=!!p.addToMotionGraphicsTemplateAs(comp,name);}finally{app.endUndoGroup();}
+        var after=mogrtControllerInventory(comp),verified=accepted&&stringInventoryAddedOnce(before,after,name);
+        return {native_accepted:accepted,verification_status:verified?"verified_mogrt_controller_delta":"accepted_unverified",retry_safe:false,
+            comp_id:comp.id,layer_id:resolved.layer.id,controller_name:name,before_count:before.length,after_count:after.length};
+    }
+    function addMogrtMediaLayer(args) {
+        var comp=resolveComp(args.comp_id),layer=resolveLayer(comp,args.layer_id),name=safeControllerName(args.controller_name);
+        if(!(layer instanceof AVLayer))fail("MOGRT media replacement controller requires an AVLayer.");
+        if(typeof layer.canAddToMotionGraphicsTemplate!=="function"||typeof layer.addToMotionGraphicsTemplateAs!=="function")
+            fail("Current After Effects host does not expose Essential Graphics media authoring.");
+        if(!layer.canAddToMotionGraphicsTemplate(comp))fail("Layer cannot be added as media replacement or is already present.");
+        var before=mogrtControllerInventory(comp);
+        app.beginUndoGroup("Shuvi: Add Essential Graphics media");
+        var accepted=false;
+        try{accepted=!!layer.addToMotionGraphicsTemplateAs(comp,name);}finally{app.endUndoGroup();}
+        var after=mogrtControllerInventory(comp),verified=accepted&&stringInventoryAddedOnce(before,after,name);
+        return {native_accepted:accepted,verification_status:verified?"verified_mogrt_controller_delta":"accepted_unverified",retry_safe:false,
+            comp_id:comp.id,layer_id:layer.id,controller_name:name,before_count:before.length,after_count:after.length};
+    }
+    function absoluteMogrtFile(value) {
+        var path=boundedString(value,4096,"MOGRT output file");
+        if(!/^([A-Za-z]:[\\\/]|\\\\|\/)/.test(path))fail("MOGRT output_file must be absolute.");
+        if(!/\.mogrt$/i.test(path))fail("MOGRT output_file must end in .mogrt.");
+        var file=new File(path);
+        if(!file.parent||!file.parent.exists)fail("MOGRT output parent folder does not exist.");
+        return file;
+    }
+    function exportMogrt(args) {
+        var comp=resolveComp(args.comp_id),file=absoluteMogrtFile(args.output_file),overwrite=args.overwrite===true;
+        var base=String(file.name).replace(/\.mogrt$/i,"");
+        if(base.length<1||base.length>120||/[<>:"\\\/|?*]/.test(base)||/[\. ]$/.test(base))
+            fail("MOGRT filename is not a safe template name.");
+        if(file.exists&&!overwrite)fail("MOGRT output already exists; explicit overwrite=true required.");
+        if(!requireProject().file)fail("After Effects project must already have an exact saved path before MOGRT export.");
+        var beforeExists=file.exists,beforeLength=beforeExists?file.length:null;
+        comp.motionGraphicsTemplateName=base;
+        if(String(comp.motionGraphicsTemplateName)!==base)fail("MOGRT template name readback failed.");
+        app.project.save();
+        var accepted=!!comp.exportAsMotionGraphicsTemplate(overwrite,file.parent.fsName);
+        var after=new File(file.fsName);
+        var verified=accepted&&after.exists&&after.length>0;
+        return {native_accepted:accepted,verification_status:verified?"verified_mogrt_file_readback":"accepted_unverified",retry_safe:false,
+            comp_id:comp.id,template_name:base,output_file:after.fsName,output_exists:after.exists,size_bytes:after.exists?after.length:null,
+            output_existed_before:beforeExists,before_size_bytes:beforeLength,project_save_requested:true,desktop_file_verification_required:true};
+    }
     function inspectRenderQueue() {
         var queue = requireProject().renderQueue;
         var items = [], i, limit = Math.min(queue.numItems, 256);
@@ -1883,6 +1965,7 @@
             || action === "set_time_remap" || action === "replace_source" || action === "relink_footage" || action === "set_proxy" || action === "remove_proxy"
             || action === "set_av_layer_flags" || action === "set_av_layer_rendering" || action === "set_text_style" || action === "set_layer_timing"
             || action === "add_shape_primitive" || action === "add_text_animator"
+            || action === "add_mogrt_property" || action === "add_mogrt_media_layer" || action === "export_mogrt"
             || action === "set_keyframe_interpolation" || action === "set_keyframe_temporal_ease" || action === "set_keyframe_temporal_flags" || action === "set_keyframe_spatial" || action === "remove_keyframe"
             || action === "duplicate_layer" || action === "remove_layer" || action === "precompose_layers"
             || action === "add_mask" || action === "edit_mask" || action === "remove_mask" || action === "add_scene_edit_markers" || action === "add_marker" || action === "remove_marker"
@@ -1919,6 +2002,7 @@
         if (action === "inspect_keyframes") return inspectKeyframes(args);
         if (action === "inspect_layer_properties") return inspectLayerProperties(args);
         if (action === "inspect_av_layer_rendering") return inspectAVLayerRendering(args);
+        if (action === "inspect_mogrt") return inspectMogrt(args);
         if (action === "set_property") return setProperty(args);
         if (action === "set_values_at_times") return setValuesAtTimes(args);
         if (action === "set_expression") return setExpression(args);
@@ -1950,6 +2034,9 @@
         if (action === "set_layer_timing") return setLayerTiming(args);
         if (action === "add_shape_primitive") return addShapePrimitive(args);
         if (action === "add_text_animator") return addTextAnimator(args);
+        if (action === "add_mogrt_property") return addMogrtProperty(args);
+        if (action === "add_mogrt_media_layer") return addMogrtMediaLayer(args);
+        if (action === "export_mogrt") return exportMogrt(args);
         if (action === "set_keyframe_interpolation") return setKeyframeInterpolation(args);
         if (action === "set_keyframe_temporal_ease") return setKeyframeTemporalEase(args);
         if (action === "set_keyframe_temporal_flags") return setKeyframeTemporalFlags(args);
