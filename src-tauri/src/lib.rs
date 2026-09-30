@@ -299,6 +299,7 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - premiere_acceptance_verify_recovery: {"action_id":"completed trim/move/clone/delete_ripple acceptance action UUID"} — read-only verification after manually opening the Shuvi checkpoint; never opens or overwrites a project automatically
 - premiere_save_project: {}
 - after_effects_capability_report: {}
+- after_effects_readiness_report: {}
 - after_effects_detect: {}
 - after_effects_pending_jobs: {}
 - after_effects_run: {"afterfx_exe":"absolute path to AfterFX.exe","timeout_ms":30000,"request":{"schema_version":1,"request_id":"fresh-id","action":"inspect_context","expected_project_file":null,"args":{}}}
@@ -640,6 +641,7 @@ enum ToolAction {
     PremiereReadinessReport,
     PremiereSaveProject,
     AfterEffectsCapabilityReport,
+    AfterEffectsReadinessReport,
     AfterEffectsDetect,
     AfterEffectsPendingJobs,
     AfterEffectsRun { afterfx_exe:String, timeout_ms:u64, request:after_effects_transport::Request },
@@ -5543,6 +5545,12 @@ fn stage_tool(
             ToolAction::AfterEffectsCapabilityReport,
             "Read After Effects source capability report".into(),
             "Source declaration only; does not claim a live After Effects runtime or successful test execution.".into(),
+            RiskLevel::Low,
+        ),
+        "after_effects_readiness_report" => (
+            ToolAction::AfterEffectsReadinessReport,
+            "Read After Effects readiness evidence".into(),
+            "Report source capabilities, API boundaries and independent runtime evidence dimensions without promoting unexecuted tests.".into(),
             RiskLevel::Low,
         ),
         "after_effects_detect" => (
@@ -12335,6 +12343,11 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 stderr:String::new(),
                 exit_code:Some(0),
             })
+        }
+        ToolAction::AfterEffectsReadinessReport => {
+            Ok(ActionResult {success:true,tool,
+                stdout:serde_json::to_string_pretty(&after_effects::readiness_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::AfterEffectsDetect => {
             let value=after_effects_runtime::detect_installs()?;
