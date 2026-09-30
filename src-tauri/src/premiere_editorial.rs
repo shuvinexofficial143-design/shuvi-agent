@@ -70,7 +70,7 @@ impl Recipe {
             if stage.id.is_empty() || stage.id.len() > 80 || !ids.insert(stage.id.as_str())
                 || stage.dependencies.len() > 16 || !STATES.contains(&stage.state.as_str())
                 || stage.description.len() > 300 || stage.unsupported_behavior.len() > 300
-                || !matches!(stage.stage_type.as_str(),"inspect"|"cut"|"motion"|"color"|"audio"|"graphics"|"native_caption"|"review"|"export"|"input_dependency"|"unsupported")
+                || !matches!(stage.stage_type.as_str(),"inspect"|"cut"|"vertical_move"|"motion"|"color"|"audio"|"graphics"|"native_caption"|"review"|"export"|"input_dependency"|"unsupported")
                 || stage.required_capability.len() > 80
                 || !matches!(stage.stage_type.as_str(),"native_caption"|"input_dependency"|"unsupported")
                     && stage.required_capability != capability(&stage.stage_type)
@@ -123,6 +123,7 @@ fn spec(preset: &str) -> &'static [(&'static str,&'static str,&'static str)] {
 fn required(stage_type:&str) -> &'static [&'static str] {
     match stage_type {
         "cut" => &["start_seconds","end_seconds"],
+        "vertical_move" => &["destination_track","destination_seconds","mode"],
         "motion"|"color" => &["settings"],
         "audio" => &["regions","baseline"],
         "graphics" => &["fields"],
@@ -136,6 +137,7 @@ fn capability(stage_type:&str) -> &'static str {
     match stage_type {
         "inspect"=>"premiere_timeline",
         "cut"=>"premiere_trim_clip",
+        "vertical_move"=>"premiere_move_clip_to_track",
         "motion"|"color"=>"premiere_apply_video_recipe",
         "audio"=>"premiere_plan_audio_automation",
         "graphics"=>"premiere_plan_mogrt_recipe",
@@ -161,6 +163,13 @@ fn parameters_valid(stage_type: &str, parameters: &Value) -> bool {
             let a=parameters.get("start_seconds").and_then(Value::as_f64);
             let b=parameters.get("end_seconds").and_then(Value::as_f64);
             matches!((a,b),(Some(a),Some(b)) if a.is_finite() && b.is_finite() && a>=0.0 && b>a && b<=86_400.0)
+        },
+        "vertical_move" => {
+            let track=parameters.get("destination_track").and_then(Value::as_u64);
+            let seconds=parameters.get("destination_seconds").and_then(Value::as_f64);
+            let mode=parameters.get("mode").and_then(Value::as_str);
+            matches!((track,seconds,mode),(Some(track),Some(seconds),Some("insert"|"overwrite"))
+                if track<=128 && seconds.is_finite() && (0.0..=86_400.0).contains(&seconds))
         },
         "motion"|"color" => parameters.get("settings").and_then(Value::as_array)
             .is_some_and(|v|!v.is_empty() && v.len()<=24 && v.iter().all(|s|
@@ -210,18 +219,28 @@ pub fn plan(request: Request) -> Result<Value,String> {
             unsupported_behavior:format!("Missing or unverified {required_input}; no inferred timing/assets."),
             description:description.into()});
     }
-    for (key,description) in [("speed","Native speed/time-remapping writes are unsupported."),
-        ("masks","Native mask writes are unsupported."),("multicam","Reliable multicam is unsupported."),
-        ("vertical_track_moves","Vertical track moves are unsupported.")] {
+    for (key,description) in [("speed","Native speed/time-remapping writes are unsupported; inspected read/planning remains available."),
+        ("masks","Native mask creation/editing is unsupported; bounded presence inspection remains available."),
+        ("multicam","Native multicam creation/angle switching is unsupported; existing verified multicam project-item insertion is separate.")] {
         if request.options.get(key).and_then(Value::as_bool)==Some(true) {
             stages.push(Stage {id:key.into(),stage_type:"unsupported".into(),dependencies:vec!["inspect".into()],
                 required_capability:"unsupported".into(),targets:json!({}),parameters:json!({}),review_required:false,
                 state:"blocked".into(),unsupported_behavior:description.into(),description:description.into()});
         }
     }
+    if request.options.get("vertical_track_moves").and_then(Value::as_bool)==Some(true) {
+        stages.push(Stage {id:"vertical_track_moves".into(),stage_type:"vertical_move".into(),dependencies:vec!["inspect".into()],
+            required_capability:capability("vertical_move").into(),
+            targets:request.targets.get("vertical_track_moves").cloned().unwrap_or(json!({})),
+            parameters:request.inputs.get("vertical_track_moves").cloned().unwrap_or(json!({})),
+            review_required:true,state:"pending".into(),
+            unsupported_behavior:"Requires exact inspected clip, existing destination track, checkpoint, clone verification and source non-ripple delete; partial completion remains uncertain.".into(),
+            description:"Move one exact clip vertically through clone-verify-delete safety.".into()});
+    }
     stages.push(Stage {id:"captions".into(),stage_type:"native_caption".into(),dependencies:vec!["inspect".into()],required_capability:"unsupported_native_caption_write".into(),
-        targets:json!({}),parameters:json!({}),review_required:true,state:"blocked".into(),unsupported_behavior:"Native caption creation/import is unverified; SRT preview is available separately.".into(),
-        description:"Readable captions when supplied; no native write claim.".into()});
+        targets:json!({}),parameters:json!({}),review_required:true,state:"blocked".into(),
+        unsupported_behavior:"Verified .srt/.vtt project-item import is available separately; native caption cue/text track creation/editing remains unsupported.".into(),
+        description:"Caption-source import is supported separately; no native caption text-write claim.".into()});
     stages.push(Stage {id:"review".into(),stage_type:"review".into(),dependencies:vec!["inspect".into()],required_capability:capability("review").into(),
         targets:json!({}),parameters:request.inputs.get("review").cloned().unwrap_or(json!({})),review_required:true,state:"review_required".into(),
         unsupported_behavior:"Review requires active Premiere, vision provider and explicit sample positions.".into(),
@@ -250,7 +269,7 @@ pub fn plan(request: Request) -> Result<Value,String> {
         let kind=stage.targets.get("kind").and_then(Value::as_str).unwrap_or("");
         let has_target=stage.stage_type=="review" || (exact_target(&stage.targets)
             && match stage.stage_type.as_str() {
-                "color"|"motion"|"graphics"|"transition" => kind=="video",
+                "color"|"motion"|"graphics"|"transition"|"vertical_move" => kind=="video",
                 "audio" => kind=="audio",
                 _ => true,
             });
@@ -266,7 +285,7 @@ pub fn plan(request: Request) -> Result<Value,String> {
         category:request.preset,stages};
     recipe.validate()?;
     Ok(json!({"applied":false,"recipe":recipe,"supported_stages":supported,"blocked_stages":blocked,
-        "missing_inputs":missing,"warnings":["Read-only plan; every mutating stage uses the existing typed permission, checkpoint, target expectation and audit flow.","No beat detection, silence detection, invented B-roll, native captions, masks or speed writes."]}))
+        "missing_inputs":missing,"warnings":["Read-only plan; every mutating stage uses the existing typed permission, checkpoint, target expectation and audit flow.","No beat detection, silence detection, invented B-roll, native caption cue/text writes, mask writes or speed writes."]}))
 }
 
 #[cfg(test)]
@@ -321,5 +340,27 @@ mod tests {
         assert!(r["blocked_stages"].as_array().unwrap().contains(&json!("masks")));
         let mut inputs=HashMap::new();inputs.insert("huge".into(),json!("x".repeat(35_000)));
         assert!(plan(Request {preset:"social_reel".into(),targets:HashMap::new(),inputs,options:HashMap::new()}).is_err());
+    }
+    #[test] fn vertical_track_move_is_typed_source_safe_instead_of_globally_unsupported() {
+        let mut options=HashMap::new();options.insert("vertical_track_moves".into(),json!(true));
+        let mut targets=HashMap::new();targets.insert("vertical_track_moves".into(),json!({
+            "project_guid":"p","sequence_guid":"s","expected_signature":"sig",
+            "kind":"video","track":0,"clip_index":1
+        }));
+        let mut inputs=HashMap::new();inputs.insert("vertical_track_moves".into(),json!({
+            "destination_track":2,"destination_seconds":5.0,"mode":"overwrite"
+        }));
+        let r=plan(Request {preset:"cinematic_reel".into(),targets,inputs,options}).unwrap();
+        assert!(r["supported_stages"].as_array().unwrap().contains(&json!("vertical_track_moves")));
+        let stage=r["recipe"]["stages"].as_array().unwrap().iter().find(|s|s["id"]=="vertical_track_moves").unwrap();
+        assert_eq!(stage["required_capability"],"premiere_move_clip_to_track");
+        assert_eq!(stage["review_required"],true);
+        assert_ne!(stage["stage_type"],"unsupported");
+    }
+    #[test] fn caption_stage_distinguishes_source_import_from_native_text_write() {
+        let r=plan(Request {preset:"social_reel".into(),targets:HashMap::new(),inputs:HashMap::new(),options:HashMap::new()}).unwrap();
+        let stage=r["recipe"]["stages"].as_array().unwrap().iter().find(|s|s["id"]=="captions").unwrap();
+        assert!(stage["unsupported_behavior"].as_str().unwrap().contains(".srt/.vtt"));
+        assert!(stage["unsupported_behavior"].as_str().unwrap().contains("cue/text"));
     }
 }
