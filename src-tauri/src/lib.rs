@@ -9040,16 +9040,14 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 json!({ "track": track, "name": name }),
                 Duration::from_secs(20),
             ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
 
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
-                stdout: serde_json::to_string_pretty(&json!({
-                    "backup": backup,
-                    "result": value
-                })).unwrap_or_else(|_| value.to_string()),
+                stdout: json!({"backup":backup,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereSetCaptionTrackMute { track, muted } => {
@@ -9059,13 +9057,14 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 json!({ "track": track, "muted": muted }),
                 Duration::from_secs(12),
             ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
 
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
-                stdout: serde_json::to_string_pretty(&json!({"checkpoint":checkpoint,"result":value})).unwrap_or_else(|_| value.to_string()),
+                stdout: json!({"checkpoint":checkpoint,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereSetPlayhead { seconds } => {
@@ -9591,12 +9590,13 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 json!({ "kind": kind, "track": track, "muted": muted }),
                 Duration::from_secs(10),
             ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
-                stdout: serde_json::to_string_pretty(&json!({"checkpoint":checkpoint,"result":value})).unwrap_or_else(|_| value.to_string()),
+                stdout: json!({"checkpoint":checkpoint,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereSetClipEnabled { kind, track, clip_index, enabled } => {
@@ -9611,16 +9611,14 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }),
                 Duration::from_secs(20),
             ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
 
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
-                stdout: serde_json::to_string_pretty(&json!({
-                    "backup": backup,
-                    "result": value
-                })).unwrap_or_else(|_| value.to_string()),
+                stdout: json!({"backup":backup,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereListVideoTransitions => {

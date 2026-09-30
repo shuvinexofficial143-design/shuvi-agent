@@ -1269,11 +1269,26 @@ async function setTrackMute(argumentsValue) {
   const success = await track.setMute(muted);
   if (!success) throw new Error("Premiere could not change the track mute state.");
 
+  let observedMuted = null;
+  try {
+    const freshTrack = kind === "video"
+      ? await sequence.getVideoTrack(trackIndex)
+      : await sequence.getAudioTrack(trackIndex);
+    if (freshTrack) observedMuted = Boolean(await freshTrack.isMuted());
+  } catch {
+    observedMuted = null;
+  }
+  const verified = observedMuted === muted;
+
   return {
     changed: true,
     kind,
     track: trackIndex,
-    muted
+    muted,
+    observedMuted,
+    verificationStatus: verified ? "verified_readback" : "accepted_unverified",
+    uncertain: !verified,
+    retrySafe: false
   };
 }
 
@@ -1329,12 +1344,27 @@ async function setClipEnabled(argumentsValue) {
     throw new Error("Premiere rejected the clip enable/disable transaction.");
   }
 
+  let observedEnabled = null;
+  try {
+    const fresh = kind === "video"
+      ? await getVideoClipTarget(trackIndex, clipIndex)
+      : await getAudioClipTarget(trackIndex, clipIndex);
+    observedEnabled = !(await fresh.item.isDisabled());
+  } catch {
+    observedEnabled = null;
+  }
+  const verified = observedEnabled === enabled;
+
   return {
     changed: true,
     kind,
     track: trackIndex,
     clipIndex,
-    enabled
+    enabled,
+    observedEnabled,
+    verificationStatus: verified ? "verified_readback" : "accepted_unverified",
+    uncertain: !verified,
+    retrySafe: false
   };
 }
 
@@ -4915,10 +4945,16 @@ async function setCaptionTrackName(argumentsValue) {
   if (typeof track.createSetNameAction !== "function") {
     throw new Error("This Premiere version does not expose caption track rename actions; Premiere 26.3+ is required.");
   }
+  const inspectedId = track.id ?? null;
+  const freshTrack = await sequence.getCaptionTrack(trackIndex);
+  if (!freshTrack || (inspectedId != null && freshTrack.id !== inspectedId)
+      || typeof freshTrack.createSetNameAction !== "function") {
+    throw new Error("Caption track changed during rename preflight; inspect again.");
+  }
 
   let transactionSucceeded = false;
   project.lockedAccess(() => {
-    const action = track.createSetNameAction(name);
+    const action = freshTrack.createSetNameAction(name);
     transactionSucceeded = project.executeTransaction((compoundAction) => {
       compoundAction.addAction(action);
     }, "Shuvi: Rename Caption Track");
@@ -4928,10 +4964,20 @@ async function setCaptionTrackName(argumentsValue) {
     throw new Error("Premiere rejected the caption track rename transaction.");
   }
 
+  const after = await sequence.getCaptionTrack(trackIndex);
+  const sameTrack = Boolean(after) && (inspectedId == null || after.id === inspectedId);
+  const observedName = after?.name ?? null;
+  const verified = sameTrack && observedName === name;
+
   return {
     renamed: true,
     track: trackIndex,
-    name
+    name,
+    observedName,
+    stableTrackIdentityAvailable: inspectedId != null,
+    verificationStatus: verified ? "verified_readback" : "accepted_unverified",
+    uncertain: !verified,
+    retrySafe: false
   };
 }
 
@@ -4952,16 +4998,33 @@ async function setCaptionTrackMute(argumentsValue) {
 
   const track = await sequence.getCaptionTrack(trackIndex);
   if (!track) throw new Error("Requested Premiere caption track was not found.");
+  const inspectedId = track.id ?? null;
 
   const success = await track.setMute(muted);
   if (!success) {
     throw new Error("Premiere could not change the caption track mute state.");
   }
 
+  let observedMuted = null;
+  let sameTrack = false;
+  try {
+    const after = await sequence.getCaptionTrack(trackIndex);
+    sameTrack = Boolean(after) && (inspectedId == null || after.id === inspectedId);
+    if (after) observedMuted = Boolean(await after.isMuted());
+  } catch {
+    observedMuted = null;
+  }
+  const verified = sameTrack && observedMuted === muted;
+
   return {
     changed: true,
     track: trackIndex,
-    muted
+    muted,
+    observedMuted,
+    stableTrackIdentityAvailable: inspectedId != null,
+    verificationStatus: verified ? "verified_readback" : "accepted_unverified",
+    uncertain: !verified,
+    retrySafe: false
   };
 }
 
