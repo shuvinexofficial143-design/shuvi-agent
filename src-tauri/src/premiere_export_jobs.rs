@@ -14,7 +14,7 @@ pub struct FileObservation {pub at_ms:u64,pub exists:bool,pub size_bytes:Option<
 
 #[derive(Clone,Debug,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(deny_unknown_fields)]
-pub struct MediaValidationReceipt {
+struct MediaValidationReceipt {
     pub schema_version:u8,pub job_id:String,pub output:String,pub observed_size_bytes:u64,
     pub observed_modified_ms:Option<u64>,pub validator:String,pub playable:bool,
     pub container:Option<String>,pub video_streams:Option<u32>,pub audio_streams:Option<u32>
@@ -45,7 +45,7 @@ pub struct Job {pub schema_version:u8,pub job_id:String,pub project_guid:String,
     pub output_existed_before:bool,pub before:FileObservation,pub bridge_state:String,
     pub encoder_completion_verified:bool,
     #[serde(default)]
-    pub media_validation:Option<MediaValidationReceipt>,
+    media_validation:Option<MediaValidationReceipt>,
     pub observations:Vec<FileObservation>}
 
 impl Job {
@@ -89,7 +89,7 @@ impl Job {
             "observed_size_bytes":item.size_bytes,"observed_modified_ms":item.modified_ms,
             "purpose":"Bind an external bounded media parser/decoder receipt to this exact observed file state."}))
     }
-    pub fn record_media_validation(&mut self,receipt:MediaValidationReceipt)->Result<(),String>{
+    fn record_media_validation(&mut self,receipt:MediaValidationReceipt)->Result<(),String>{
         receipt.validate()?;
         if receipt.job_id!=self.job_id||receipt.output!=self.output{
             return Err("Media-validation receipt does not match the exact export job/output.".into());
