@@ -9661,7 +9661,18 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let path=premiere_edit_session_path(app,&session_id)?;
             let mut session=premiere_edit_session::load(&path)?;
             session.cancel();premiere_edit_session::save(&path,&session)?;
-            Ok(ActionResult {success:true,tool,stdout:json!({"session_id":session_id,"status":session.status}).to_string(),stderr:String::new(),exit_code:Some(0)})
+            let uncertain=session.stages.iter().filter(|s|s.state=="uncertain").map(|s|s.id.as_str()).collect::<Vec<_>>();
+            let applied=session.stages.iter().filter(|s|s.state=="cancelled_after_apply").map(|s|s.id.as_str()).collect::<Vec<_>>();
+            Ok(ActionResult {success:true,tool,stdout:json!({
+                "session_id":session_id,
+                "status":session.status,
+                "uncertain_inflight_stages":uncertain,
+                "cancelled_after_apply_stages":applied,
+                "native_inflight_abort_verified":false,
+                "automatic_rollback_performed":false,
+                "retry_safe":uncertain.is_empty()&&applied.is_empty(),
+                "note":"Session cancellation is cooperative. Already dispatched native work cannot be proven aborted and already applied mutations are not rolled back."
+            }).to_string(),stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::PremiereEditSessionNext {session_id} => {
             let path=premiere_edit_session_path(app,&session_id)?;
