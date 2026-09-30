@@ -10456,13 +10456,14 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }),
                 Duration::from_secs(30),
             ).await?;
-            let accepted=value.get("accepted").and_then(Value::as_bool)==Some(true);
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
             Ok(ActionResult{
-                success:accepted,
+                success:verified,
                 tool,
-                stdout:json!({"checkpoint":checkpoint,"result":value,"runtime_verified":false}).to_string(),
+                stdout:json!({"checkpoint":checkpoint,"result":value,"post_state_verified":verified,
+                    "uncertain":!verified,"runtime_verified":false,"retry_safe":false}).to_string(),
                 stderr:String::new(),
-                exit_code:Some(if accepted{0}else{1}),
+                exit_code:Some(if verified{0}else{1}),
             })
         }
         ToolAction::PremiereCancelMediaPrep { generation } => {
@@ -10496,13 +10497,17 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     Duration::from_secs(30),
                 ).await {
                     Ok(value)=>{
-                        let accepted=value.get("accepted").and_then(Value::as_bool)==Some(true);
-                        results.push(json!({"index":index,"item_id":item.item_id.clone(),"status":if accepted{"applied"}else{"failed"},"native_result":value}));
+                        let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+                        results.push(json!({"index":index,"item_id":item.item_id.clone(),
+                            "status":if verified{"applied"}else{"accepted_unverified"},
+                            "post_state_verified":verified,"native_result":value}));
+                        if !verified {uncertain=true;break;}
                     }
                     Err(error)=>{
-                        let delivery_uncertain=error.contains("unknown")||error.contains("timed out")||error.contains("timeout")||error.contains("delivery");
-                        results.push(json!({"index":index,"item_id":item.item_id.clone(),"status":if delivery_uncertain{"uncertain"}else{"failed"},"reason":error.chars().take(240).collect::<String>()}));
-                        if delivery_uncertain{uncertain=true;break;}
+                        uncertain=true;
+                        results.push(json!({"index":index,"item_id":item.item_id.clone(),"status":"uncertain",
+                            "reason":error.chars().take(240).collect::<String>()}));
+                        break;
                     }
                 }
             }

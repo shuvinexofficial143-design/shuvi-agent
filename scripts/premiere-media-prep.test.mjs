@@ -167,3 +167,27 @@ test("subclip success proves new project-item identity without claiming boundary
   assert.match(arm,/verified_creation_identity/);
   assert.match(arm,/boundary_semantics_verified":false/);
 });
+
+
+test("single media preparation succeeds only after exact supported-field readback",()=>{
+  const start=rust.lastIndexOf("ToolAction::PremierePrepareMediaItem");
+  const end=rust.indexOf("\n        ToolAction::PremiereCancelMediaPrep",start);
+  const arm=rust.slice(start,end);
+  assert.match(arm,/verificationStatus/);
+  assert.match(arm,/Some\("verified_readback"\)/);
+  assert.match(arm,/success:verified/);
+  assert.match(arm,/"uncertain":!verified/);
+  assert.match(arm,/"retry_safe":false/);
+});
+
+test("media preparation batch stops after accepted-unverified state or any dispatched error",()=>{
+  const start=rust.lastIndexOf("ToolAction::PremierePrepareMediaBatch");
+  const end=rust.indexOf("\n        ToolAction::PremiereCreateSequenceFromPreset",start);
+  const arm=rust.slice(start,end);
+  assert.match(arm,/Some\("verified_readback"\)/);
+  assert.match(arm,/"accepted_unverified"/);
+  assert.match(arm,/"post_state_verified":verified/);
+  assert.match(arm,/if !verified \{uncertain=true;break;\}/);
+  assert.match(arm,/uncertain=true;/);
+  assert.match(arm,/"status":"uncertain"/);
+});
