@@ -184,7 +184,7 @@ async function assertExpectedTargets(command) {
     "set_clip_enabled", "add_video_transition", "remove_video_transition", "add_video_effect", "add_audio_effect",
     "set_effect_param", "add_effect_keyframe", "set_audio_effect_param", "add_audio_effect_keyframe",
     "set_video_param_named", "add_video_keyframe_named", "set_audio_param_named", "add_audio_keyframe_named",
-    "apply_video_recipe", "apply_audio_recipe", "create_subsequence", "scene_edit_detection"]);
+    "apply_video_recipe", "apply_audio_recipe", "create_subsequence", "replace_with_subsequence", "scene_edit_detection"]);
   if (expected == null) {
     if (clipMutation.has(command.action)) throw new Error("Clip mutation requires inspected project/sequence/clip expectations.");
     return;
@@ -625,11 +625,13 @@ async function timelineCapabilities() {
   return {
     sequenceGuid: plainGuid(sequence.guid), runtimeVerified: false,
     verticalClone: {supported: typeof editor?.createCloneTrackItemAction === "function", operation: "clone", preservesOriginal: true},
-    verticalMove: unavailable("No dedicated vertical move action in the reviewed public API; clone is a distinct operation."),
+    verticalMove: {supported: typeof editor?.createCloneTrackItemAction === "function", operation:"clone_verify_delete", atomic:false,
+      partialStatePossible:true, linkedMembershipInferred:false},
     nativeLinkInspection: unavailable("No documented linked-group getter in the reviewed clip API; matching media is not proof of a link."),
     selectionInspection: {supported: typeof sequence.getSelection === "function", timelineField: "selected"},
     subsequenceCreation: {supported: typeof sequence.createSubsequence === "function", selectionSemanticsVerified: false},
-    replacementNesting: unavailable("Atomic replacement and exact selected-only subsequence semantics remain unverified."),
+    replacementNesting: {supported: typeof sequence.createSubsequence === "function" && typeof editor?.createOverwriteItemAction === "function",
+      mode:"single_exact_video_clip", atomicReplacement:true, linkedAudio:false, selectedOnlyContentRequiresPostInspection:true},
     multicam: unavailable("Documented native multicam creation/switching API unavailable in reviewed references.")
   };
 }
@@ -1226,7 +1228,8 @@ function nativeCapabilityRegistry() {
       ame:target("Manager presence does not establish AME installation or correlated completion."),
       speed_write:unsupported("No reviewed native speed write route; planning only."),
       masks:unsupported("No reviewed safe mask write route."),
-      vertical_move:unsupported("Vertical clone preserves the original and is not a move."),
+      vertical_move:target("Verified cross-track move uses clone correlation followed by exact source deletion; partial completion is surfaced."),
+      replacement_nesting:target("Single exact video nesting requires selected-only subsequence inspection and atomic remove/overwrite replacement."),
       linked_clip_editing:unsupported("Linked-group identity is not available; do not infer links."),
       multicam:unsupported("No reviewed native multicam creation/switching route."),
       caption_write:unsupported("Caption text creation/editing is unsupported; SRT delivery is separate."),
@@ -5615,6 +5618,143 @@ async function createSubsequence(argumentsValue) {
   };
 }
 
+async function sequenceClipContent(sequence) {
+  const video = [], audio = [];
+  let budget = 64;
+  const collect = async (kind,count,getTrack) => {
+    const out = kind === "video" ? video : audio;
+    for (let trackIndex=0; trackIndex<count; trackIndex++) {
+      const track = await getTrack(trackIndex);
+      if (!track) continue;
+      const items = await track.getTrackItems(premiere.Constants.TrackItemType.CLIP,false);
+      if (!Array.isArray(items) || items.length > budget) throw new Error("Nested sequence content exceeds the 64-clip verification bound.");
+      for (let clipIndex=0; clipIndex<items.length; clipIndex++) {
+        const item=items[clipIndex];
+        const [start,end,projectItem]=await Promise.all([item.getStartTime(),item.getEndTime(),item.getProjectItem()]);
+        const mediaId=await projectItemId(projectItem);
+        if (!mediaId || !Number.isFinite(start?.seconds) || !Number.isFinite(end?.seconds) || end.seconds<=start.seconds) {
+          throw new Error("Nested sequence contains an unidentifiable clip.");
+        }
+        out.push({kind,trackIndex,clipIndex,mediaId,startSeconds:start.seconds,endSeconds:end.seconds,durationSeconds:end.seconds-start.seconds});
+        budget--;
+      }
+    }
+  };
+  const videoCount=await sequence.getVideoTrackCount(), audioCount=await sequence.getAudioTrackCount();
+  if (videoCount>128 || audioCount>128) throw new Error("Nested sequence track count exceeds the verification bound.");
+  await collect("video",videoCount,index=>sequence.getVideoTrack(index));
+  await collect("audio",audioCount,index=>sequence.getAudioTrack(index));
+  return {video,audio};
+}
+
+async function replaceWithSubsequence(argumentsValue) {
+  const kind = typeof argumentsValue?.kind === "string" ? argumentsValue.kind.toLowerCase() : "";
+  const trackIndex = Number(argumentsValue?.track);
+  const clipIndex = Number(argumentsValue?.clipIndex);
+  if (kind !== "video" || !Number.isInteger(trackIndex) || trackIndex<0 || trackIndex>128
+      || !Number.isInteger(clipIndex) || clipIndex<0 || clipIndex>10000) {
+    throw new Error("Replacement nesting v1 requires one exact bounded video clip.");
+  }
+
+  const project=await requireProject(), sequence=await project.getActiveSequence();
+  if (!sequence) throw new Error("No active Premiere sequence.");
+  const sourceTrack=await sequence.getVideoTrack(trackIndex);
+  if (!sourceTrack) throw new Error("Replacement nesting source track was not found.");
+  const sourceItems=await sortedClipItems(sourceTrack), sourceItem=sourceItems[clipIndex];
+  if (!sourceItem) throw new Error("Replacement nesting source clip was not found.");
+  await assertResolvedClipMatchesActiveExpectation(project,sequence,sourceItem,"video",trackIndex,clipIndex);
+
+  const [sourceStart,sourceEnd,sourceProjectItem]=await Promise.all([
+    sourceItem.getStartTime(),sourceItem.getEndTime(),sourceItem.getProjectItem()
+  ]);
+  const sourceMediaId=await projectItemId(sourceProjectItem);
+  if (!sourceMediaId || !Number.isFinite(sourceStart?.seconds) || !Number.isFinite(sourceEnd?.seconds)
+      || sourceEnd.seconds<=sourceStart.seconds) throw new Error("Replacement nesting source identity/timing is unavailable.");
+  const durationSeconds=sourceEnd.seconds-sourceStart.seconds;
+  const beforeTrack=await snapshotTrackItems(project,sequence,"video",trackIndex);
+  const sourceRow=beforeTrack.find(row=>row.clipIndex===clipIndex);
+  if (!sourceRow) throw new Error("Replacement nesting source disappeared during preflight.");
+  if (beforeTrack.some(row=>row.clipIndex!==clipIndex && row.startSeconds<sourceEnd.seconds-0.001 && row.endSeconds>sourceStart.seconds+0.001)) {
+    throw new Error("Replacement nesting requires a non-overlapping source range on its video track.");
+  }
+
+  const nested=await createSubsequence({targets:[{kind:"video",track:trackIndex,clipIndex}]});
+  if (nested.verificationStatus!=="verified_creation_identity" || !nested.sequenceGuid || !nested.projectItemId) {
+    return {nestedSequenceCreated:Boolean(nested.created),replacementApplied:false,nested,
+      verificationStatus:"accepted_unverified",uncertain:true,cleanupNeeded:true,retrySafe:false};
+  }
+
+  const sequences=await project.getSequences();
+  const nestedMatches=Array.isArray(sequences)?sequences.filter(value=>plainGuid(value.guid)===nested.sequenceGuid):[];
+  if (nestedMatches.length!==1) {
+    return {nestedSequenceCreated:true,replacementApplied:false,nested,verificationStatus:"accepted_unverified",
+      uncertain:true,cleanupNeeded:true,retrySafe:false,reason:"Nested sequence identity became ambiguous."};
+  }
+  const nestedSequence=nestedMatches[0], nestedContent=await sequenceClipContent(nestedSequence);
+  const contentVerified=nestedContent.video.length===1 && nestedContent.audio.length===0
+    && nestedContent.video[0].mediaId===sourceMediaId
+    && Math.abs(nestedContent.video[0].durationSeconds-durationSeconds)<=0.001;
+  if (!contentVerified) {
+    return {nestedSequenceCreated:true,replacementApplied:false,nested,nestedContent,
+      verificationStatus:"accepted_unverified",uncertain:true,cleanupNeeded:true,retrySafe:false,
+      reason:"Selected-only nested sequence content was not independently verified."};
+  }
+
+  const nestedProjectItem=await nestedSequence.getProjectItem();
+  const nestedProjectItemId=await projectItemId(nestedProjectItem);
+  if (!nestedProjectItemId || nestedProjectItemId!==nested.projectItemId) {
+    return {nestedSequenceCreated:true,replacementApplied:false,nested,
+      verificationStatus:"accepted_unverified",uncertain:true,cleanupNeeded:true,retrySafe:false,
+      reason:"Nested project item identity changed before replacement."};
+  }
+
+  const freshTrack=await sequence.getVideoTrack(trackIndex), freshItems=await sortedClipItems(freshTrack);
+  const freshSource=freshItems[clipIndex];
+  if (!freshSource) throw new Error("Replacement nesting source changed before mutation.");
+  const freshSignature=await clipTargetSignature(project,sequence,freshSource,"video",trackIndex,clipIndex);
+  const expected=activeExpectation?.clips?.find(clip=>clip.kind==="video"&&clip.track===trackIndex&&clip.clip_index===clipIndex);
+  if (!expected || freshSignature!==expected.signature) throw new Error("Replacement nesting source changed before mutation.");
+
+  const editor=premiere.SequenceEditor.getEditor(sequence);
+  if (typeof editor?.createRemoveItemsAction!=="function" || typeof editor?.createOverwriteItemAction!=="function") {
+    throw new Error("Native replacement nesting actions are unavailable.");
+  }
+  let selected=false, transactionSucceeded=false, transactionError=null;
+  try {
+    premiere.TrackItemSelection.createEmptySelection(selection=>{
+      selected=selection.addItem(freshSource,false);
+      if (!selected) return;
+      project.lockedAccess(()=>{
+        const remove=editor.createRemoveItemsAction(selection,false,premiere.Constants.MediaType.VIDEO,true);
+        const overwrite=editor.createOverwriteItemAction(nestedProjectItem,sourceStart,trackIndex,0);
+        transactionSucceeded=project.executeTransaction(compound=>{
+          compound.addAction(remove);compound.addAction(overwrite);
+        },"Shuvi: Replace Clip With Nested Sequence");
+      });
+    });
+  } catch (error) { transactionError=String(error?.message||error).slice(0,240); }
+  if (!selected || !transactionSucceeded) {
+    return {nestedSequenceCreated:true,replacementApplied:false,nested,nestedContent,contentVerified:true,
+      transactionError,verificationStatus:"accepted_unverified",uncertain:true,cleanupNeeded:true,retrySafe:false};
+  }
+
+  const afterTrack=await snapshotTrackItems(project,sequence,"video",trackIndex);
+  const candidates=afterTrack.filter(row=>row.mediaId===nestedProjectItemId
+    && Math.abs(row.startSeconds-sourceStart.seconds)<=0.001
+    && Math.abs(row.durationSeconds-durationSeconds)<=0.001);
+  const candidate=candidates.length===1?candidates[0]:null;
+  const unaffectedBefore=beforeTrack.filter(row=>row.clipIndex!==clipIndex);
+  const afterWithoutNested=candidate?afterTrack.filter(row=>row!==candidate):afterTrack;
+  const unaffectedVerified=timelineRowsMatchExpected(unaffectedBefore,afterWithoutNested);
+  const verified=afterTrack.length===beforeTrack.length && candidates.length===1 && unaffectedVerified;
+  return {nestedSequenceCreated:true,replacementApplied:true,nestedSequenceGuid:nested.sequenceGuid,
+    nestedProjectItemId,sourceMediaId,track:trackIndex,clipIndex,startSeconds:sourceStart.seconds,
+    durationSeconds,contentVerified:true,selectionRestored:nested.selectionRestored,
+    candidateCount:candidates.length,unaffectedTrackVerified:unaffectedVerified,
+    verificationStatus:verified?"verified_replacement_nest":"accepted_unverified",
+    uncertain:!verified,cleanupNeeded:!verified,retrySafe:false};
+}
+
 async function captionTracks() {
   const project = await requireProject();
   const sequence = await project.getActiveSequence();
@@ -6514,6 +6654,8 @@ async function dispatchNativeCommand(command) {
       return await createSequenceFromMedia(command.arguments || {});
     case "create_subsequence":
       return await createSubsequence(command.arguments || {});
+    case "replace_with_subsequence":
+      return await replaceWithSubsequence(command.arguments || {});
     case "inspect_assembly_items":
       return await inspectAssemblyItems(command.arguments || {});
     case "insert_project_item":

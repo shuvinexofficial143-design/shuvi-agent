@@ -108,3 +108,17 @@ test("vertical track move is clone-verify then non-ripple source delete with par
   assert.match(arm,/sourceDeleted/);
   assert.match(arm,/"retry_safe":false/);
 });
+
+test("replacement nesting verifies selected-only content and one atomic remove-overwrite transaction",()=>{
+  const body=uxp.slice(uxp.indexOf("async function replaceWithSubsequence"),uxp.indexOf("async function captionTracks"));
+  assert.match(body,/await createSubsequence/);
+  assert.match(body,/nestedContent\.video\.length===1/);
+  assert.match(body,/nestedContent\.audio\.length===0/);
+  assert.match(body,/createRemoveItemsAction/);
+  assert.match(body,/createOverwriteItemAction/);
+  assert.match(body,/compound\.addAction\(remove\);compound\.addAction\(overwrite\)/);
+  assert.match(body,/verified_replacement_nest/);
+  assert.match(body,/linkedAudio:false|linked audio/i);
+  assert.match(rust,/PremiereReplaceWithSubsequence/);
+  assert.match(rust,/linked_audio_inferred":false/);
+});

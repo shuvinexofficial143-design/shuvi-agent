@@ -14,6 +14,17 @@ pub struct SourceTarget {
     pub signature: String,
 }
 
+impl SourceTarget {
+    pub fn validate(&self) -> Result<(), String> {
+        if !matches!(self.kind.as_str(), "video" | "audio")
+            || self.track > 128 || self.clip_index > 10_000
+            || self.signature.is_empty() || self.signature.len() > 4096 {
+            return Err("Exact bounded source target is required.".into());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CloneToTrack {
@@ -29,12 +40,8 @@ fn default_align() -> bool { true }
 
 impl CloneToTrack {
     pub fn validate(&self) -> Result<(), String> {
-        if !matches!(self.source.kind.as_str(), "video" | "audio") {
-            return Err("Layer source kind must be video or audio.".into());
-        }
-        if self.source.track > 128 || self.source.clip_index > 10_000
-            || self.source.signature.is_empty() || self.source.signature.len() > 4096
-            || self.destination_track > 128
+        self.source.validate()?;
+        if self.destination_track > 128
         {
             return Err("Layer source/destination is outside bounds.".into());
         }

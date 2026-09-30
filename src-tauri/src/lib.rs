@@ -224,6 +224,7 @@ Transcript rebuild handles explicit interior text removal by creating and insert
 - premiere_import_media: {"paths":["absolute media path 1","absolute media path 2"]}
 - premiere_create_sequence_from_media: {"name":"sequence name","paths":["absolute media path 1","absolute media path 2"]}
 - premiere_create_subsequence: {"targets":[{"kind":"video|audio","track":0,"clip_index":0}]}
+- premiere_replace_with_subsequence: {"source":{"kind":"video","track":0,"clip_index":0,"signature":"exact inspected targetSignature"},"expected":"exact one-source expectation"}
 - premiere_insert_project_item: {"item_id":"project item id","seconds":0,"video_track":0,"audio_track":0,"mode":"insert|overwrite"}
 - premiere_insert_media: {"path":"absolute media path","seconds":0,"video_track":0,"audio_track":0,"mode":"insert|overwrite"}
 - premiere_trim_clip: {"kind":"video|audio","track":0,"clip_index":0,"start_seconds":0.0,"end_seconds":5.0}
@@ -580,6 +581,7 @@ enum ToolAction {
     PremiereImportMedia { paths: Vec<String> },
     PremiereCreateSequenceFromMedia { name: String, paths: Vec<String> },
     PremiereCreateSubsequence { targets: Vec<Value> },
+    PremiereReplaceWithSubsequence { source: premiere_layering::SourceTarget },
     PremiereInsertProjectItem { item_id: String, seconds: f64, video_track: u32, audio_track: u32, mode: String },
     PremiereInsertMedia { path: String, seconds: f64, video_track: u32, audio_track: u32, mode: String },
     PremiereTrimClip { kind: String, track: u32, clip_index: u32, start_seconds: Option<f64>, end_seconds: Option<f64> },
@@ -1162,6 +1164,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_import_media"
         | "premiere_create_sequence_from_media"
         | "premiere_create_subsequence"
+        | "premiere_replace_with_subsequence"
         | "premiere_insert_project_item"
         | "premiere_insert_media"
         | "premiere_trim_clip"
@@ -5076,6 +5079,25 @@ fn stage_tool(
                 ToolAction::PremiereMoveClipToTrack { request },
                 "Move Premiere clip to another track".into(),
                 "Clone to a clear destination, verify the exact correlated clone, then non-ripple delete the exact source. Partial completion is uncertain and never retried automatically.".into(),
+                RiskLevel::High,
+            )
+        }
+        "premiere_replace_with_subsequence" => {
+            let source: premiere_layering::SourceTarget = serde_json::from_value(
+                proposal.arguments.get("source").cloned().unwrap_or(Value::Null)
+            ).map_err(|e| format!("Invalid replacement nesting source: {e}"))?;
+            source.validate()?;
+            if source.kind!="video" {return Err("Replacement nesting v1 supports one exact video clip only.".into());}
+            let expected=premiere_expectation.as_ref().ok_or("Replacement nesting requires the exact source expectation.")?;
+            if expected.sequence_guid.is_none() || expected.clips.len()!=1
+                || !expected.clips.iter().any(|clip|clip.kind=="video"&&clip.track==source.track
+                    && clip.clip_index==source.clip_index&&clip.signature==source.signature) {
+                return Err("Replacement nesting expectation must exactly match the source video clip.".into());
+            }
+            (
+                ToolAction::PremiereReplaceWithSubsequence {source},
+                "Replace Premiere clip with nested subsequence".into(),
+                "Create and inspect a selected-only single-video subsequence, then atomically remove the exact source and overwrite the same range with the nested sequence. Linked audio is never inferred.".into(),
                 RiskLevel::High,
             )
         }
@@ -11179,6 +11201,29 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "partial_completion_possible":!verified,"linked_media_inferred":false,"retry_safe":false}).to_string(),
                 stderr:String::new(),
                 exit_code:Some(if verified{0}else{1}),
+            })
+        }
+        ToolAction::PremiereReplaceWithSubsequence {source} => {
+            source.validate()?;
+            if source.kind!="video" {return Err("Replacement nesting v1 supports video only.".into());}
+            let expected=premiere_bridge.expected.ok_or("Replacement nesting requires exact source expectation.")?;
+            let checkpoint=backup_premiere_project(&premiere_bridge).await?;
+            let client=PremiereClient{bridge:&state.premiere_bridge,expected:Some(expected)};
+            let result=client.request(
+                "replace_with_subsequence",
+                json!({"kind":"video","track":source.track,"clipIndex":source.clip_index}),
+                Duration::from_secs(90),
+            ).await?;
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_replacement_nest")
+                && result.get("replacementApplied").and_then(Value::as_bool)==Some(true)
+                && result.get("contentVerified").and_then(Value::as_bool)==Some(true)
+                && result.get("unaffectedTrackVerified").and_then(Value::as_bool)==Some(true)
+                && result.get("uncertain").and_then(Value::as_bool)==Some(false);
+            Ok(ActionResult{
+                success:verified,tool,
+                stdout:json!({"checkpoint":checkpoint,"result":result,"verified":verified,
+                    "linked_audio_inferred":false,"retry_safe":false}).to_string(),
+                stderr:String::new(),exit_code:Some(if verified{0}else{1}),
             })
         }
         ToolAction::PremiereLayerClips { batch } => {
