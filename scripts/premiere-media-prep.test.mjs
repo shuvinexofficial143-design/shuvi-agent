@@ -53,7 +53,15 @@ test("sequence preset creation uses stable 26.3 API and verifies new sequence id
   assert.match(uxp,/createSequenceWithPresetPath/);
   assert.match(uxp,/Sequence preset creation requires Premiere 26\.3\+/);
   assert.match(uxp,/sequenceWasNew/);
+  assert.match(uxp,/verificationStatus:!beforeGuids\.has\(guid\) && matches\.length === 1 \? "verified_readback" : "accepted_unverified"/);
   assert.match(rust,/Sequence preset path must be an existing absolute file/);
+  const start=rust.lastIndexOf("ToolAction::PremiereCreateSequenceFromPreset");
+  const end=rust.indexOf("\n        ToolAction::PremiereGetWorkArea",start);
+  const arm=rust.slice(start,end);
+  assert.match(arm,/verified_readback/);
+  assert.match(arm,/success:verified/);
+  assert.match(arm,/"post_state_verified":verified/);
+  assert.match(arm,/"retry_safe":false/);
 });
 
 test("work area uses stable 26.5 WorkAreaUtils and readback",()=>{

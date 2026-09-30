@@ -10528,11 +10528,11 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 json!({"name":name,"presetPath":preset_path}),
                 Duration::from_secs(45),
             ).await?;
-            let created=value.get("created").and_then(Value::as_bool)==Some(true);
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
             Ok(ActionResult{
-                success:created,tool,
-                stdout:json!({"checkpoint":checkpoint,"result":value}).to_string(),
-                stderr:String::new(),exit_code:Some(if created{0}else{1})
+                success:verified,tool,
+                stdout:json!({"checkpoint":checkpoint,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
+                stderr:String::new(),exit_code:Some(if verified{0}else{1})
             })
         }
         ToolAction::PremiereGetWorkArea => {
