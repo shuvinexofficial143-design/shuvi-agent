@@ -1446,6 +1446,27 @@ function plainEffectValue(value) {
   return String(value);
 }
 
+function equivalentStaticEffectValue(expected, observed) {
+  if (typeof expected === "number" && typeof observed === "number") {
+    return Number.isFinite(expected) && Number.isFinite(observed)
+      && Math.abs(expected-observed) <= Math.max(0.000001,Math.abs(expected)*0.000001);
+  }
+  return expected === observed;
+}
+
+async function readStaticEffectValue(param, requested) {
+  try {
+    const raw = await param.getStartValue();
+    const observed = plainEffectValue(raw?.value ?? raw);
+    const expected = plainEffectValue(requested);
+    return {observedValue:observed, observedAvailable:true,
+      verificationStatus:equivalentStaticEffectValue(expected,observed) ? "verified_readback" : "accepted_unverified"};
+  } catch (error) {
+    return {observedValue:null, observedAvailable:false, verificationStatus:"accepted_unverified",
+      readbackError:String(error).slice(0,240)};
+  }
+}
+
 async function assertResolvedClipMatchesActiveExpectation(project, sequence, item, kind, trackIndex, clipIndex) {
   const clips = activeExpectation?.clips;
   if (!Array.isArray(clips) || clips.length === 0) return;
@@ -1745,6 +1766,7 @@ async function setEffectParam(argumentsValue) {
     throw new Error("Premiere rejected the effect parameter transaction.");
   }
 
+  const readback = await readStaticEffectValue(param,value);
   return {
     changed: true,
     track: trackIndex,
@@ -1753,7 +1775,9 @@ async function setEffectParam(argumentsValue) {
     paramIndex,
     componentMatchName: await component.getMatchName(),
     paramDisplayName: param.displayName || null,
-    value: plainEffectValue(value)
+    requestedValue: plainEffectValue(value),
+    ...readback,
+    retrySafe:false
   };
 }
 
@@ -2039,6 +2063,7 @@ async function setAudioEffectParam(argumentsValue) {
     throw new Error("Premiere rejected the audio effect parameter transaction.");
   }
 
+  const readback = await readStaticEffectValue(param,value);
   return {
     changed: true,
     track: trackIndex,
@@ -2047,7 +2072,9 @@ async function setAudioEffectParam(argumentsValue) {
     paramIndex,
     componentMatchName: await component.getMatchName(),
     paramDisplayName: param.displayName || null,
-    value: plainEffectValue(value)
+    requestedValue: plainEffectValue(value),
+    ...readback,
+    retrySafe:false
   };
 }
 
@@ -3512,6 +3539,7 @@ async function setVideoParamNamed(argumentsValue) {
     throw new Error("Premiere rejected the named video parameter transaction.");
   }
 
+  const readback = await readStaticEffectValue(target.param,value);
   return {
     changed: true,
     track: Number(argumentsValue?.track ?? 0),
@@ -3521,7 +3549,9 @@ async function setVideoParamNamed(argumentsValue) {
     componentDisplayName: target.componentDisplayName,
     paramIndex: target.paramIndex,
     paramDisplayName: target.paramDisplayName,
-    value: plainEffectValue(value)
+    requestedValue: plainEffectValue(value),
+    ...readback,
+    retrySafe:false
   };
 }
 
@@ -3676,6 +3706,7 @@ async function setAudioParamNamed(argumentsValue) {
     throw new Error("Premiere rejected the named audio parameter transaction.");
   }
 
+  const readback = await readStaticEffectValue(target.param,value);
   return {
     changed: true,
     track: Number(argumentsValue?.track ?? 0),
@@ -3685,7 +3716,9 @@ async function setAudioParamNamed(argumentsValue) {
     componentDisplayName: target.componentDisplayName,
     paramIndex: target.paramIndex,
     paramDisplayName: target.paramDisplayName,
-    value: plainEffectValue(value)
+    requestedValue: plainEffectValue(value),
+    ...readback,
+    retrySafe:false
   };
 }
 

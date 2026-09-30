@@ -335,3 +335,20 @@ test("effect removal requires an exact bounded post-chain delta",()=>{
   assert.match(remove,/verificationStatus:removed \? "verified_delta" : "accepted_unverified"/);
   assert.match(remove,/retrySafe:false/);
 });
+
+test("static video and audio parameter writes require native value readback",()=>{
+  assert.match(uxp,/async function readStaticEffectValue/);
+  assert.match(uxp,/param\.getStartValue\(\)/);
+  assert.match(uxp,/verificationStatus:equivalentStaticEffectValue\(expected,observed\) \? "verified_readback" : "accepted_unverified"/);
+  assert.match(uxp,/Math\.max\(0\.000001,Math\.abs\(expected\)\*0\.000001\)/);
+  for(const [name,next] of [
+    ["setEffectParam","addEffectKeyframe"],
+    ["setVideoParamNamed","addVideoKeyframeNamed"],
+    ["setAudioEffectParam","addAudioEffectKeyframe"],
+    ["setAudioParamNamed","addAudioKeyframeNamed"]
+  ]){
+    const block=uxp.slice(uxp.indexOf("async function "+name),uxp.indexOf("async function "+next));
+    assert.match(block,/await readStaticEffectValue/);
+    assert.match(block,/retrySafe:false/);
+  }
+});

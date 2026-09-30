@@ -9737,15 +9737,16 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }),
                 Duration::from_secs(30),
             ).await?;
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
                 stdout: serde_json::to_string_pretty(&json!({
                     "backup": backup,
                     "result": result
                 })).unwrap_or_else(|_| result.to_string()),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereAddEffectKeyframe { expected_signature, track, clip_index, component_index, param_index, seconds, value } => {
@@ -9788,13 +9789,14 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }),
                 Duration::from_secs(30),
             ).await?;
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
                 stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": result}))
                     .unwrap_or_else(|_| result.to_string()),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereAddVideoKeyframeNamed { track, clip_index, component_match_name, component_display_name, param_display_name, seconds, value } => {
@@ -9913,15 +9915,16 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }),
                 Duration::from_secs(30),
             ).await?;
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
                 stdout: serde_json::to_string_pretty(&json!({
                     "backup": backup,
                     "result": result
                 })).unwrap_or_else(|_| result.to_string()),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereAddAudioEffectKeyframe { expected_signature, track, clip_index, component_index, param_index, seconds, value } => {
@@ -9964,13 +9967,14 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }),
                 Duration::from_secs(30),
             ).await?;
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
                 stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": result}))
                     .unwrap_or_else(|_| result.to_string()),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereAddAudioKeyframeNamed { track, clip_index, component_match_name, component_display_name, param_display_name, seconds, value } => {
