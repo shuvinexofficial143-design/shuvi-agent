@@ -2009,6 +2009,70 @@
             comp_id:resolved.comp.id,layer_id:resolved.layer.id,essential_index:resolved.index,essential_name:String(p.name),
             before_source_item_id:beforeId,after_source_item_id:afterId,requested_source_item_id:source.id};
     }
+    function applyEssentialBindings(args) {
+        var comp=resolveComp(args.comp_id),resolved=essentialGroup(comp,args.layer_id),bindings=args.bindings;
+        if(!(bindings instanceof Array)||bindings.length<1||bindings.length>64)
+            fail("apply_essential_bindings requires 1..64 bindings.");
+        var plans=[],seen={},i;
+        for(i=0;i<bindings.length;i++){
+            var binding=bindings[i],index=binding.essential_index;
+            if(!finiteNumber(index)||Math.floor(index)!==index||index<1||index>resolved.group.numProperties)
+                fail("Essential binding has invalid essential_index.");
+            if(seen[index])fail("Essential binding indexes must be unique.");
+            seen[index]=true;
+            var p=resolved.group.property(index),expected=boundedString(binding.expected_name,240,"expected Essential Property name");
+            if(String(p.name)!==expected)fail("Essential binding name stale guard changed.");
+            var hasValue=binding.hasOwnProperty("value"),hasSource=binding.hasOwnProperty("source_item_id");
+            if(hasValue===hasSource)fail("Each Essential binding must provide exactly one of value or source_item_id.");
+            if(hasSource){
+                if(!p.canSetAlternateSource||typeof p.setAlternateSource!=="function")
+                    fail("Essential media binding does not support Media Replacement.");
+                if(!binding.hasOwnProperty("expected_alternate_source_item_id"))
+                    fail("Essential media binding requires expected_alternate_source_item_id.");
+                var current=null;try{current=p.alternateSource;}catch(ignoreCurrent){}
+                var currentId=current&&current.id?current.id:null,expectedAlt=binding.expected_alternate_source_item_id;
+                if(expectedAlt!==null&&(!finiteNumber(expectedAlt)||Math.floor(expectedAlt)!==expectedAlt||expectedAlt<1))
+                    fail("Essential media expected alternate source must be null or positive item ID.");
+                if(currentId!==expectedAlt)fail("Essential media binding alternate-source stale guard changed.");
+                var source=resolveItem(binding.source_item_id);
+                if(source.isMediaReplacementCompatible!==true)fail("Essential media binding source is not Media Replacement compatible.");
+                plans.push({kind:"media",index:index,name:expected,property:p,source:source,before_item_id:currentId});
+            }else{
+                if(p.canSetAlternateSource)fail("Media Replacement Essential Property requires source_item_id binding.");
+                if(p.numKeys!==undefined&&p.numKeys>0)fail("Batch static Essential Property write refused because keyframes already exist.");
+                if(typeof p.setValue!=="function")fail("Batch Essential Property is not directly writable.");
+                plans.push({kind:"value",index:index,name:expected,property:p,value:cloneValue(binding.value),
+                    before:essentialEntry(p,index)});
+            }
+        }
+
+        app.beginUndoGroup("Shuvi: Apply Essential Bindings");
+        try{
+            for(i=0;i<plans.length;i++){
+                if(plans[i].kind==="media")plans[i].property.setAlternateSource(plans[i].source);
+                else plans[i].property.setValue(plans[i].value);
+            }
+        }finally{app.endUndoGroup();}
+
+        resolved=essentialGroup(comp,args.layer_id);
+        var results=[],verified=true;
+        for(i=0;i<plans.length;i++){
+            var plan=plans[i],prop=resolved.group.property(plan.index);
+            if(!prop||String(prop.name)!==plan.name){verified=false;results.push({essential_index:plan.index,verified:false,reason:"identity_changed"});continue;}
+            if(plan.kind==="media"){
+                var afterSource=prop.alternateSource,afterId=afterSource&&afterSource.id?afterSource.id:null,ok=afterId===plan.source.id;
+                if(!ok)verified=false;
+                results.push({essential_index:plan.index,name:plan.name,kind:"media",before_source_item_id:plan.before_item_id,
+                    requested_source_item_id:plan.source.id,after_source_item_id:afterId,verified:ok});
+            }else{
+                var afterValue=null;try{afterValue=cloneValue(prop.value);}catch(ignoreValue){}
+                var okValue=sameValue(afterValue,plan.value);if(!okValue)verified=false;
+                results.push({essential_index:plan.index,name:plan.name,kind:"value",requested_value:plan.value,after_value:afterValue,verified:okValue});
+            }
+        }
+        return {native_accepted:true,verification_status:verified?"verified_essential_binding_batch":"accepted_unverified",retry_safe:false,
+            comp_id:comp.id,layer_id:resolved.layer.id,binding_count:plans.length,results:results};
+    }
     function applyHandTrackRig(args) {
         var comp=resolveComp(args.comp_id);
         if(args.coordinate_space!==undefined&&args.coordinate_space!=="comp_pixels")
@@ -2202,7 +2266,7 @@
             || action === "set_av_layer_flags" || action === "set_av_layer_rendering" || action === "set_text_style" || action === "set_layer_timing"
             || action === "add_shape_primitive" || action === "add_text_animator"
             || action === "add_mogrt_property" || action === "add_mogrt_media_layer" || action === "export_mogrt"
-            || action === "set_essential_property" || action === "set_essential_media_source"
+            || action === "set_essential_property" || action === "set_essential_media_source" || action === "apply_essential_bindings"
             || action === "apply_hand_track_rig"
             || action === "set_keyframe_interpolation" || action === "set_keyframe_temporal_ease" || action === "set_keyframe_temporal_flags" || action === "set_keyframe_spatial" || action === "remove_keyframe"
             || action === "duplicate_layer" || action === "remove_layer" || action === "precompose_layers"
@@ -2281,6 +2345,7 @@
         if (action === "export_mogrt") return exportMogrt(args);
         if (action === "set_essential_property") return setEssentialProperty(args);
         if (action === "set_essential_media_source") return setEssentialMediaSource(args);
+        if (action === "apply_essential_bindings") return applyEssentialBindings(args);
         if (action === "apply_hand_track_rig") return applyHandTrackRig(args);
         if (action === "set_keyframe_interpolation") return setKeyframeInterpolation(args);
         if (action === "set_keyframe_temporal_ease") return setKeyframeTemporalEase(args);
