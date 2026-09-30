@@ -171,6 +171,7 @@ pub fn capability_report()->Value {
             "time_remap_toggle":"source_supported_with_readback",
             "source_replacement":"source_supported_with_source_item_id_readback",
             "composition_create":"source_supported_with_creation_settings_readback",
+            "composition_settings":"source_supported_with_work_area_bg_motion_blur_sampling_resolution_and_frame_rate_readback",
             "footage_import":"source_supported_footage_only_with_file_identity_readback",
             "project_item_layer_add":"source_supported_with_source_item_id_readback",
             "text_document_style":"source_supported_with_requested_field_readback",
