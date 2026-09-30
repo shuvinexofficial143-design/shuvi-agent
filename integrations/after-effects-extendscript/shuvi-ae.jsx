@@ -1610,6 +1610,105 @@
         return {native_accepted:true,verification_status:verified?"verified_proxy_readback":"accepted_unverified",retry_safe:verified,
             item_id:item.id,before_proxy_file:before,after_use_proxy:!!item.useProxy};
     }
+    function blendingModeEnum(name) {
+        var values={
+            normal:BlendingMode.NORMAL,add:BlendingMode.ADD,alpha_add:BlendingMode.ALPHA_ADD,
+            multiply:BlendingMode.MULTIPLY,screen:BlendingMode.SCREEN,overlay:BlendingMode.OVERLAY,
+            soft_light:BlendingMode.SOFT_LIGHT,hard_light:BlendingMode.HARD_LIGHT,darken:BlendingMode.DARKEN,
+            lighten:BlendingMode.LIGHTEN,difference:BlendingMode.DIFFERENCE,exclusion:BlendingMode.EXCLUSION,
+            color:BlendingMode.COLOR,hue:BlendingMode.HUE,saturation:BlendingMode.SATURATION,luminosity:BlendingMode.LUMINOSITY,
+            color_dodge:BlendingMode.COLOR_DODGE,color_burn:BlendingMode.COLOR_BURN,linear_dodge:BlendingMode.LINEAR_DODGE,
+            linear_burn:BlendingMode.LINEAR_BURN,linear_light:BlendingMode.LINEAR_LIGHT,vivid_light:BlendingMode.VIVID_LIGHT,
+            pin_light:BlendingMode.PIN_LIGHT,hard_mix:BlendingMode.HARD_MIX,divide:BlendingMode.DIVIDE,subtract:BlendingMode.SUBTRACT
+        };
+        if(!values.hasOwnProperty(name))fail("Unsupported allowlisted blending mode.");
+        return values[name];
+    }
+    function qualityEnum(name) {
+        if(name==="best")return LayerQuality.BEST;
+        if(name==="draft")return LayerQuality.DRAFT;
+        if(name==="wireframe")return LayerQuality.WIREFRAME;
+        fail("Unsupported layer quality.");
+    }
+    function samplingQualityEnum(name) {
+        if(name==="bicubic")return LayerSamplingQuality.BICUBIC;
+        if(name==="bilinear")return LayerSamplingQuality.BILINEAR;
+        fail("Unsupported layer sampling quality.");
+    }
+    function frameBlendingEnum(name) {
+        if(name==="frame_mix")return FrameBlendingType.FRAME_MIX;
+        if(name==="pixel_motion")return FrameBlendingType.PIXEL_MOTION;
+        if(name==="none")return FrameBlendingType.NO_FRAME_BLEND;
+        fail("Unsupported frame blending type.");
+    }
+    function enumKey(map,value) {
+        var key;for(key in map)if(map.hasOwnProperty(key)&&map[key]===value)return key;return null;
+    }
+    function avRenderingSnapshot(layer) {
+        var blends={
+            normal:BlendingMode.NORMAL,add:BlendingMode.ADD,alpha_add:BlendingMode.ALPHA_ADD,
+            multiply:BlendingMode.MULTIPLY,screen:BlendingMode.SCREEN,overlay:BlendingMode.OVERLAY,
+            soft_light:BlendingMode.SOFT_LIGHT,hard_light:BlendingMode.HARD_LIGHT,darken:BlendingMode.DARKEN,
+            lighten:BlendingMode.LIGHTEN,difference:BlendingMode.DIFFERENCE,exclusion:BlendingMode.EXCLUSION,
+            color:BlendingMode.COLOR,hue:BlendingMode.HUE,saturation:BlendingMode.SATURATION,luminosity:BlendingMode.LUMINOSITY,
+            color_dodge:BlendingMode.COLOR_DODGE,color_burn:BlendingMode.COLOR_BURN,linear_dodge:BlendingMode.LINEAR_DODGE,
+            linear_burn:BlendingMode.LINEAR_BURN,linear_light:BlendingMode.LINEAR_LIGHT,vivid_light:BlendingMode.VIVID_LIGHT,
+            pin_light:BlendingMode.PIN_LIGHT,hard_mix:BlendingMode.HARD_MIX,divide:BlendingMode.DIVIDE,subtract:BlendingMode.SUBTRACT
+        };
+        var qualities={best:LayerQuality.BEST,draft:LayerQuality.DRAFT,wireframe:LayerQuality.WIREFRAME};
+        var samples={bicubic:LayerSamplingQuality.BICUBIC,bilinear:LayerSamplingQuality.BILINEAR};
+        var frames={frame_mix:FrameBlendingType.FRAME_MIX,pixel_motion:FrameBlendingType.PIXEL_MOTION,none:FrameBlendingType.NO_FRAME_BLEND};
+        return {
+            blending_mode:enumKey(blends,layer.blendingMode),
+            quality:enumKey(qualities,layer.quality),
+            sampling_quality:enumKey(samples,layer.samplingQuality),
+            has_audio:!!layer.hasAudio,
+            audio_enabled:!!layer.audioEnabled,
+            guide_layer:!!layer.guideLayer,
+            frame_blending:!!layer.frameBlending,
+            frame_blending_type:enumKey(frames,layer.frameBlendingType)
+        };
+    }
+    function inspectAVLayerRendering(args) {
+        var comp=resolveComp(args.comp_id),layer=resolveLayer(comp,args.layer_id);
+        if(!(layer instanceof AVLayer))fail("Target layer is not an AVLayer.");
+        return {verification_status:"verified_readback",comp_id:comp.id,layer_id:layer.id,rendering:avRenderingSnapshot(layer)};
+    }
+    function setAVLayerRendering(args) {
+        var comp=resolveComp(args.comp_id),layer=resolveLayer(comp,args.layer_id);
+        if(!(layer instanceof AVLayer))fail("Target layer is not an AVLayer.");
+        if(layer.locked)fail("Layer is locked; AV rendering mutation refused.");
+        var requested={},count=0;
+        if(args.blending_mode!==undefined){requested.blendingMode=blendingModeEnum(boundedString(args.blending_mode,32,"blending mode"));count++;}
+        if(args.quality!==undefined){requested.quality=qualityEnum(boundedString(args.quality,16,"quality"));count++;}
+        if(args.sampling_quality!==undefined){requested.samplingQuality=samplingQualityEnum(boundedString(args.sampling_quality,16,"sampling quality"));count++;}
+        if(args.audio_enabled!==undefined){
+            if(typeof args.audio_enabled!=="boolean")fail("audio_enabled must be boolean.");
+            if(args.audio_enabled&& !layer.hasAudio)fail("Cannot enable audio on a layer without audio.");
+            requested.audioEnabled=args.audio_enabled;count++;
+        }
+        if(args.guide_layer!==undefined){if(typeof args.guide_layer!=="boolean")fail("guide_layer must be boolean.");requested.guideLayer=args.guide_layer;count++;}
+        if(args.frame_blending_type!==undefined){requested.frameBlendingType=frameBlendingEnum(boundedString(args.frame_blending_type,24,"frame blending type"));count++;}
+        if(count===0)fail("set_av_layer_rendering requires at least one requested field.");
+        var before=avRenderingSnapshot(layer);
+
+        app.beginUndoGroup("Shuvi: Set AV layer rendering");
+        try{
+            if(requested.blendingMode!==undefined)layer.blendingMode=requested.blendingMode;
+            if(requested.quality!==undefined)layer.quality=requested.quality;
+            if(requested.samplingQuality!==undefined)layer.samplingQuality=requested.samplingQuality;
+            if(requested.audioEnabled!==undefined)layer.audioEnabled=requested.audioEnabled;
+            if(requested.guideLayer!==undefined)layer.guideLayer=requested.guideLayer;
+            if(requested.frameBlendingType!==undefined)layer.frameBlendingType=requested.frameBlendingType;
+        }finally{app.endUndoGroup();}
+
+        layer=resolveLayer(comp,args.layer_id);
+        var verified=true,key;
+        for(key in requested)if(requested.hasOwnProperty(key)&&layer[key]!==requested[key])verified=false;
+        var after=avRenderingSnapshot(layer);
+        return {native_accepted:true,verification_status:verified?"verified_av_rendering_readback":"accepted_unverified",retry_safe:verified,
+            comp_id:comp.id,layer_id:layer.id,before:before,after:after};
+    }
     function setAVLayerFlags(args) {
         var comp=resolveComp(args.comp_id),layer=resolveLayer(comp,args.layer_id);
         if(!(layer instanceof AVLayer))fail("Target layer is not an AVLayer.");
@@ -1781,7 +1880,7 @@
             || action === "set_layer_state" || action === "set_layer_parent"
             || action === "move_layer" || action === "set_track_matte" || action === "remove_track_matte"
             || action === "set_time_remap" || action === "replace_source" || action === "relink_footage" || action === "set_proxy" || action === "remove_proxy"
-            || action === "set_av_layer_flags" || action === "set_text_style" || action === "set_layer_timing"
+            || action === "set_av_layer_flags" || action === "set_av_layer_rendering" || action === "set_text_style" || action === "set_layer_timing"
             || action === "add_shape_primitive" || action === "add_text_animator"
             || action === "set_keyframe_interpolation" || action === "set_keyframe_temporal_ease" || action === "set_keyframe_temporal_flags" || action === "set_keyframe_spatial" || action === "remove_keyframe"
             || action === "duplicate_layer" || action === "remove_layer" || action === "precompose_layers"
@@ -1811,6 +1910,7 @@
         if (action === "inspect_property") return inspectProperty(args);
         if (action === "inspect_keyframes") return inspectKeyframes(args);
         if (action === "inspect_layer_properties") return inspectLayerProperties(args);
+        if (action === "inspect_av_layer_rendering") return inspectAVLayerRendering(args);
         if (action === "set_property") return setProperty(args);
         if (action === "set_values_at_times") return setValuesAtTimes(args);
         if (action === "set_expression") return setExpression(args);
@@ -1837,6 +1937,7 @@
         if (action === "set_proxy") return setProxy(args);
         if (action === "remove_proxy") return removeProxy(args);
         if (action === "set_av_layer_flags") return setAVLayerFlags(args);
+        if (action === "set_av_layer_rendering") return setAVLayerRendering(args);
         if (action === "set_text_style") return setTextStyle(args);
         if (action === "set_layer_timing") return setLayerTiming(args);
         if (action === "add_shape_primitive") return addShapePrimitive(args);
