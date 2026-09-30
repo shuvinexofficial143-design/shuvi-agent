@@ -26,7 +26,7 @@ impl Request {
             |"set_time_remap"|"replace_source"|"set_text_style"|"set_layer_timing"|"add_shape_primitive"|"add_text_animator"
             |"set_keyframe_interpolation"|"set_keyframe_temporal_ease"|"remove_keyframe"
             |"duplicate_layer"|"remove_layer"|"precompose_layers"|"add_mask"|"add_scene_edit_markers"
-            |"add_marker"|"remove_marker"|"add_render_queue_item"|"save_project")
+            |"add_marker"|"remove_marker"|"add_render_queue_item"|"render_queue"|"save_project")
     }
     pub fn is_read_only(&self)->bool{
         matches!(self.action.as_str(),"inspect_context"|"inspect_project_items"|"inspect_comp"|"inspect_effects"
