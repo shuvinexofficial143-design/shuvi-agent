@@ -114,7 +114,12 @@
         for(i=1;i<=limit;i++){
             var entry={key_index:i,time_seconds:p.keyTime(i),value:cloneValue(p.keyValue(i)),
                 in_interpolation:String(p.keyInInterpolationType(i)),out_interpolation:String(p.keyOutInterpolationType(i))};
-            try{entry.in_ease=easeSnapshot(p.keyInTemporalEase(i));entry.out_ease=easeSnapshot(p.keyOutTemporalEase(i));}catch(ignore){}
+            try{
+                entry.in_ease=easeSnapshot(p.keyInTemporalEase(i));
+                entry.out_ease=easeSnapshot(p.keyOutTemporalEase(i));
+                entry.temporal_auto_bezier=!!p.keyTemporalAutoBezier(i);
+                entry.temporal_continuous=!!p.keyTemporalContinuous(i);
+            }catch(ignore){}
             try{
                 entry.in_spatial_tangent=cloneValue(p.keyInSpatialTangent(i));
                 entry.out_spatial_tangent=cloneValue(p.keyOutSpatialTangent(i));
@@ -1231,6 +1236,36 @@
         return {native_accepted:true,verification_status:verified?"verified_temporal_ease_readback":"accepted_unverified",retry_safe:verified,
             comp_id:resolved.comp.id,layer_id:resolved.layer.id,key_index:index,key_time:time,in_ease:afterIn,out_ease:afterOut};
     }
+    function setKeyframeTemporalFlags(args) {
+        var resolved=resolveProperty(args.property),p=resolved.property,index=args.key_index,expected=args.expected_time_seconds;
+        if(!finiteNumber(index)||Math.floor(index)!==index||index<1||index>p.numKeys
+            ||!finiteNumber(expected)||expected<0||expected>10800) {
+            fail("set_keyframe_temporal_flags requires valid key_index and expected_time_seconds.");
+        }
+        if(Math.abs(p.keyTime(index)-expected)>EPSILON)fail("Temporal keyframe time stale guard changed.");
+        var hasAuto=args.auto_bezier!==undefined,hasContinuous=args.continuous!==undefined;
+        if(!hasAuto&&!hasContinuous)fail("set_keyframe_temporal_flags requires auto_bezier and/or continuous.");
+        if(hasAuto&&typeof args.auto_bezier!=="boolean")fail("auto_bezier must be boolean.");
+        if(hasContinuous&&typeof args.continuous!=="boolean")fail("continuous must be boolean.");
+
+        var inType=p.keyInInterpolationType(index),outType=p.keyOutInterpolationType(index);
+        if((args.auto_bezier===true||args.continuous===true)
+            &&(inType!==KeyframeInterpolationType.BEZIER||outType!==KeyframeInterpolationType.BEZIER)) {
+            fail("Temporal auto-Bezier/continuous=true requires BEZIER incoming and outgoing interpolation.");
+        }
+        var before={auto_bezier:!!p.keyTemporalAutoBezier(index),continuous:!!p.keyTemporalContinuous(index)};
+        app.beginUndoGroup("Shuvi: Set temporal keyframe flags");
+        try{
+            if(hasContinuous)p.setTemporalContinuousAtKey(index,args.continuous);
+            if(hasAuto)p.setTemporalAutoBezierAtKey(index,args.auto_bezier);
+        }finally{app.endUndoGroup();}
+        resolved=resolveProperty(args.property);p=resolved.property;
+        if(index>p.numKeys||Math.abs(p.keyTime(index)-expected)>EPSILON)fail("Temporal keyframe identity changed during mutation.");
+        var after={auto_bezier:!!p.keyTemporalAutoBezier(index),continuous:!!p.keyTemporalContinuous(index)};
+        var verified=(!hasAuto||after.auto_bezier===args.auto_bezier)&&(!hasContinuous||after.continuous===args.continuous);
+        return {native_accepted:true,verification_status:verified?"verified_temporal_flag_readback":"accepted_unverified",retry_safe:verified,
+            comp_id:resolved.comp.id,layer_id:resolved.layer.id,key_index:index,key_time:expected,before:before,after:after};
+    }
     function spatialVector(value,label,dimensions) {
         if(!(value instanceof Array)||value.length!==dimensions)fail(label+" must contain exactly "+dimensions+" finite values.");
         var out=[],i;
@@ -1748,7 +1783,7 @@
             || action === "set_time_remap" || action === "replace_source" || action === "relink_footage" || action === "set_proxy" || action === "remove_proxy"
             || action === "set_av_layer_flags" || action === "set_text_style" || action === "set_layer_timing"
             || action === "add_shape_primitive" || action === "add_text_animator"
-            || action === "set_keyframe_interpolation" || action === "set_keyframe_temporal_ease" || action === "set_keyframe_spatial" || action === "remove_keyframe"
+            || action === "set_keyframe_interpolation" || action === "set_keyframe_temporal_ease" || action === "set_keyframe_temporal_flags" || action === "set_keyframe_spatial" || action === "remove_keyframe"
             || action === "duplicate_layer" || action === "remove_layer" || action === "precompose_layers"
             || action === "add_mask" || action === "edit_mask" || action === "remove_mask" || action === "add_scene_edit_markers" || action === "add_marker" || action === "remove_marker"
             || action === "add_render_queue_item" || action === "render_queue" || action === "save_project";
@@ -1808,6 +1843,7 @@
         if (action === "add_text_animator") return addTextAnimator(args);
         if (action === "set_keyframe_interpolation") return setKeyframeInterpolation(args);
         if (action === "set_keyframe_temporal_ease") return setKeyframeTemporalEase(args);
+        if (action === "set_keyframe_temporal_flags") return setKeyframeTemporalFlags(args);
         if (action === "set_keyframe_spatial") return setKeyframeSpatial(args);
         if (action === "remove_keyframe") return removeKeyframe(args);
         if (action === "duplicate_layer") return duplicateLayer(args);
