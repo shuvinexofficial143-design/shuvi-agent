@@ -300,7 +300,7 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - premiere_save_project: {}
 - after_effects_capability_report: {}
 - after_effects_detect: {}
-- after_effects_run: {"afterfx_exe":"absolute path to AfterFX.exe","core_script":"absolute path to shuvi-ae.jsx","timeout_ms":30000,"request":{"schema_version":1,"request_id":"fresh-id","action":"inspect_context","expected_project_file":null,"args":{}}}
+- after_effects_run: {"afterfx_exe":"absolute path to AfterFX.exe","timeout_ms":30000,"request":{"schema_version":1,"request_id":"fresh-id","action":"inspect_context","expected_project_file":null,"args":{}}}
 - after_effects_plan_hand_track: {"plan":{"property":{"target":{"comp_id":1,"layer_id":2},"path":[{"match_name":"ADBE Transform Group","property_index":1},{"match_name":"ADBE Position","property_index":2}]},"samples":[{"time_seconds":0.0,"point":[100,200],"confidence":0.9}],"coordinate_space":"comp_pixels"}}
 - workspace_scan: {"path":"absolute workspace path"}
 - search_text: {"path":"absolute workspace path","query":"text to find"}
@@ -640,7 +640,7 @@ enum ToolAction {
     PremiereSaveProject,
     AfterEffectsCapabilityReport,
     AfterEffectsDetect,
-    AfterEffectsRun { afterfx_exe:String, core_script:String, timeout_ms:u64, request:after_effects_transport::Request },
+    AfterEffectsRun { afterfx_exe:String, timeout_ms:u64, request:after_effects_transport::Request },
     AfterEffectsPlanHandTrack { plan: after_effects::HandTrackPlan },
     WorkspaceScan { path: String },
     SearchText { path: String, query: String },
@@ -5551,16 +5551,15 @@ fn stage_tool(
         ),
         "after_effects_run" => {
             let afterfx_exe=absolute_path(arg_string(&proposal.arguments,"afterfx_exe")?)?;
-            let core_script=absolute_path(arg_string(&proposal.arguments,"core_script")?)?;
             let timeout_ms=proposal.arguments.get("timeout_ms").and_then(Value::as_u64).unwrap_or(30_000).clamp(1_000,120_000);
             let request_value=proposal.arguments.get("request").cloned().ok_or("after_effects_run requires request.")?;
             let request:after_effects_transport::Request=serde_json::from_value(request_value)
                 .map_err(|e|format!("Invalid After Effects request: {e}"))?;
             request.validate()?;
             let risk=if request.is_mutating(){RiskLevel::High}else{RiskLevel::Low};
-            let detail=format!("Typed After Effects action={} request_id={}; mutation={}; timeout_ms={}. Mutations require exact project path and verified checkpoint before dispatch.",
+            let detail=format!("Typed After Effects action={} request_id={}; mutation={}; timeout_ms={}. Only Shuvi's bundled AE adapter may execute; mutations require exact project path and verified checkpoint before dispatch.",
                 request.action,request.request_id,request.is_mutating(),timeout_ms);
-            (ToolAction::AfterEffectsRun {afterfx_exe,core_script,timeout_ms,request},
+            (ToolAction::AfterEffectsRun {afterfx_exe,timeout_ms,request},
                 "Run typed After Effects action".into(),detail,risk)
         }
         "after_effects_plan_hand_track" => {
@@ -12334,12 +12333,15 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)})
         }
-        ToolAction::AfterEffectsRun {afterfx_exe,core_script,timeout_ms,request} => {
+        ToolAction::AfterEffectsRun {afterfx_exe,timeout_ms,request} => {
             let workspace=app.path().app_local_data_dir()
                 .map_err(|e|format!("Could not resolve Shuvi local data directory: {e}"))?
                 .join("after-effects-jobs");
+            let core_script=app.path().resource_dir()
+                .map_err(|e|format!("Could not resolve Shuvi resource directory: {e}"))?
+                .join("after-effects").join("shuvi-ae.jsx");
             let value=after_effects_runtime::execute(
-                Path::new(&afterfx_exe),Path::new(&core_script),&workspace,&request,timeout_ms
+                Path::new(&afterfx_exe),&core_script,&workspace,&request,timeout_ms
             ).await?;
             let verified=value.get("state").and_then(Value::as_str)==Some("verified");
             Ok(ActionResult {
