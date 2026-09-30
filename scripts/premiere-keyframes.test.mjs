@@ -310,3 +310,18 @@ test("shared clip resolvers revalidate active inspected signatures after async t
   const audio=uxp.slice(uxp.indexOf("async function getAudioClipTarget"),uxp.indexOf("async function listAudioEffects"));
   assert.match(audio,/assertResolvedClipMatchesActiveExpectation\(project,sequence,item,"audio",trackIndex,clipIndex\)/);
 });
+
+test("video and audio effect append require an exact bounded post-state delta",()=>{
+  assert.match(uxp,/function unchangedComponentPrefix/);
+  const video=uxp.slice(uxp.indexOf("async function addVideoEffect"),uxp.indexOf("async function resolveEffectParam"));
+  assert.match(video,/before = await inspectClipEffects/);
+  assert.match(video,/after = await inspectClipEffects/);
+  assert.match(video,/after\.componentCount === before\.componentCount \+ 1/);
+  assert.match(video,/unchangedComponentPrefix\(before\.components,after\.components\)/);
+  assert.match(video,/verificationStatus:appended \? "verified_delta" : "accepted_unverified"/);
+  const audio=uxp.slice(uxp.indexOf("async function addAudioEffect"),uxp.indexOf("async function resolveAudioEffectParam"));
+  assert.match(audio,/before = await inspectAudioClipEffects/);
+  assert.match(audio,/after = await inspectAudioClipEffects/);
+  assert.match(audio,/after\.componentCount === before\.componentCount \+ 1/);
+  assert.match(audio,/retrySafe:false/);
+});

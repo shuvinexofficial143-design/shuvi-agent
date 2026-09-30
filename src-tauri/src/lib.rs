@@ -9704,15 +9704,19 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }),
                 Duration::from_secs(30),
             ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_delta");
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
                 stdout: serde_json::to_string_pretty(&json!({
                     "backup": backup,
-                    "result": value
+                    "result": value,
+                    "post_state_verified":verified,
+                    "runtime_acceptance_promoted":false,
+                    "retry_safe":false
                 })).unwrap_or_else(|_| value.to_string()),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereSetEffectParam { expected_signature, track, clip_index, component_index, param_index, value } => {
@@ -9876,15 +9880,19 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }),
                 Duration::from_secs(30),
             ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_delta");
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
                 stdout: serde_json::to_string_pretty(&json!({
                     "backup": backup,
-                    "result": value
+                    "result": value,
+                    "post_state_verified":verified,
+                    "runtime_acceptance_promoted":false,
+                    "retry_safe":false
                 })).unwrap_or_else(|_| value.to_string()),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereSetAudioEffectParam { expected_signature, track, clip_index, component_index, param_index, value } => {

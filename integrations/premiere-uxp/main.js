@@ -1623,6 +1623,19 @@ async function inspectClipEffects(argumentsValue) {
   };
 }
 
+function unchangedComponentPrefix(before, after) {
+  if (!Array.isArray(before) || !Array.isArray(after) || after.length < before.length) return false;
+  return before.every((component,index) => {
+    const current = after[index];
+    if (!current || component.matchName !== current.matchName || component.displayName !== current.displayName
+        || component.paramCount !== current.paramCount || !Array.isArray(component.params) || !Array.isArray(current.params)
+        || component.params.length !== current.params.length) return false;
+    return component.params.every((param,paramIndex) =>
+      param.displayName === current.params[paramIndex]?.displayName
+    );
+  });
+}
+
 async function addVideoEffect(argumentsValue) {
   const trackIndex = Number(argumentsValue?.track ?? 0);
   const clipIndex = Number(argumentsValue?.clipIndex ?? 0);
@@ -1638,6 +1651,10 @@ async function addVideoEffect(argumentsValue) {
     throw new Error("Installed Premiere video effect was not found: " + matchName);
   }
 
+  const before = await inspectClipEffects({track:trackIndex,clipIndex});
+  if (before.componentsTruncated || before.componentCount !== before.components.length) {
+    throw new Error("Video effect chain must be completely inspectable before mutation.");
+  }
   const { project, item } = await getVideoClipTarget(trackIndex, clipIndex);
   const chain = await item.getComponentChain();
   const component = await premiere.VideoFilterFactory.createComponent(matchName);
@@ -1654,11 +1671,22 @@ async function addVideoEffect(argumentsValue) {
     throw new Error("Premiere rejected the video effect transaction.");
   }
 
+  const after = await inspectClipEffects({track:trackIndex,clipIndex});
+  const appended = !after.componentsTruncated && after.componentCount === before.componentCount + 1
+    && after.components.length === after.componentCount
+    && unchangedComponentPrefix(before.components,after.components)
+    && after.components[before.componentCount]?.matchName === matchName;
   return {
     added: true,
     track: trackIndex,
     clipIndex,
-    matchName
+    matchName,
+    componentCountBefore:before.componentCount,
+    componentCountAfter:after.componentCount,
+    appendedComponentIndex:appended ? before.componentCount : null,
+    verificationStatus:appended ? "verified_delta" : "accepted_unverified",
+    uncertain:!appended,
+    retrySafe:false
   };
 }
 
@@ -1914,6 +1942,10 @@ async function addAudioEffect(argumentsValue) {
     throw new Error("Installed Premiere audio effect was not found: " + displayName);
   }
 
+  const before = await inspectAudioClipEffects({track:trackIndex,clipIndex});
+  if (before.componentsTruncated || before.componentCount !== before.components.length) {
+    throw new Error("Audio effect chain must be completely inspectable before mutation.");
+  }
   const { project, item } = await getAudioClipTarget(trackIndex, clipIndex);
   const chain = await item.getComponentChain();
   const component = await premiere.AudioFilterFactory.createComponentByDisplayName(
@@ -1933,11 +1965,22 @@ async function addAudioEffect(argumentsValue) {
     throw new Error("Premiere rejected the audio effect transaction.");
   }
 
+  const after = await inspectAudioClipEffects({track:trackIndex,clipIndex});
+  const appended = !after.componentsTruncated && after.componentCount === before.componentCount + 1
+    && after.components.length === after.componentCount
+    && unchangedComponentPrefix(before.components,after.components)
+    && after.components[before.componentCount]?.displayName === displayName;
   return {
     added: true,
     track: trackIndex,
     clipIndex,
-    displayName
+    displayName,
+    componentCountBefore:before.componentCount,
+    componentCountAfter:after.componentCount,
+    appendedComponentIndex:appended ? before.componentCount : null,
+    verificationStatus:appended ? "verified_delta" : "accepted_unverified",
+    uncertain:!appended,
+    retrySafe:false
   };
 }
 
