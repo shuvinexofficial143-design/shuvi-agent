@@ -29,7 +29,8 @@ impl Request {
             |"add_marker"|"remove_marker"|"add_render_queue_item"|"save_project")
     }
     pub fn is_read_only(&self)->bool{
-        matches!(self.action.as_str(),"inspect_context"|"inspect_comp"|"inspect_property"|"inspect_scene_edits"|"inspect_markers"|"inspect_render_queue")
+        matches!(self.action.as_str(),"inspect_context"|"inspect_project_items"|"inspect_comp"|"inspect_effects"
+            |"inspect_property"|"inspect_keyframes"|"inspect_layer_properties"|"inspect_scene_edits"|"inspect_markers"|"inspect_render_queue")
     }
     pub fn validate(&self)->Result<(),String>{
         if self.schema_version!=1
