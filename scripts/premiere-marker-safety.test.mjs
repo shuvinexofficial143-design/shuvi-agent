@@ -33,3 +33,17 @@ test('indistinguishable markers and truncated inspection cannot authorize remova
   await assert.rejects(f.panel.removeMarker({markerIndex:0,expectedSignature:signature}),/bound/);
   assert.equal(f.removals,0);
 });
+
+test('marker add and remove expose exact post-state delta verification',()=>{
+  const source=readFileSync('integrations/premiere-uxp/main.js','utf8');
+  const add=source.slice(source.indexOf('async function addMarker'),source.indexOf('async function removeMarker'));
+  assert.match(add,/const before = await listMarkers\(\)/);
+  assert.match(add,/after\.count === before\.count \+ 1/);
+  assert.match(add,/extras\.length === 1 && matchingExtras\.length === 1/);
+  assert.match(add,/verificationStatus:verified \? "verified_delta" : "accepted_unverified"/);
+  const remove=source.slice(source.indexOf('async function removeMarker'),source.indexOf('function asProjectItem'));
+  assert.match(remove,/const before = await listMarkers\(\)/);
+  assert.match(remove,/after\.count \+ 1 === before\.count/);
+  assert.match(remove,/remainingMatch === 0 && otherStatePreserved/);
+  assert.match(remove,/retrySafe:false/);
+});

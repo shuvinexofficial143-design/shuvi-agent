@@ -2798,6 +2798,10 @@ async function addMarker(argumentsValue) {
     throw new Error("Marker duration must be between 0 and 86400 seconds.");
   }
 
+  const before = await listMarkers();
+  if (before.truncated || before.markers.length !== before.count) {
+    throw new Error("Marker list must be completely inspectable before addition.");
+  }
   const { project, markers } = await getSequenceMarkers();
   const start = premiere.TickTime.createWithSeconds(seconds);
   const duration = premiere.TickTime.createWithSeconds(durationSeconds);
@@ -2820,13 +2824,38 @@ async function addMarker(argumentsValue) {
     throw new Error("Premiere rejected the marker transaction.");
   }
 
+  const after = await listMarkers();
+  const beforeCounts = new Map();
+  for (const row of before.markers) beforeCounts.set(row.targetSignature, (beforeCounts.get(row.targetSignature) || 0) + 1);
+  const extras = [];
+  for (const row of after.markers) {
+    const remaining = beforeCounts.get(row.targetSignature) || 0;
+    if (remaining > 0) beforeCounts.set(row.targetSignature, remaining - 1);
+    else extras.push(row);
+  }
+  const unchangedPreserved = [...beforeCounts.values()].every(count => count === 0);
+  const epsilon = 0.001;
+  const matchingExtras = extras.filter(row =>
+    row.name === name && row.type === markerType && row.comments === comments
+    && Math.abs(row.startSeconds - seconds) <= epsilon
+    && Math.abs(row.durationSeconds - durationSeconds) <= epsilon
+  );
+  const verified = !after.truncated && after.markers.length === after.count
+    && after.count === before.count + 1 && unchangedPreserved
+    && extras.length === 1 && matchingExtras.length === 1;
   return {
     added: true,
     name,
     markerType,
     seconds,
     durationSeconds,
-    comments
+    comments,
+    markerCountBefore:before.count,
+    markerCountAfter:after.count,
+    addedMarkerSignature:verified ? matchingExtras[0].targetSignature : null,
+    verificationStatus:verified ? "verified_delta" : "accepted_unverified",
+    uncertain:!verified,
+    retrySafe:false
   };
 }
 
@@ -2836,9 +2865,15 @@ async function removeMarker(argumentsValue) {
     throw new Error("markerIndex must be a non-negative integer.");
   }
 
+  const before = await listMarkers();
+  if (before.truncated || before.markers.length !== before.count) {
+    throw new Error("Marker list exceeds complete inspection bound.");
+  }
   const { project, sequence, markers } = await getSequenceMarkers();
   const values = await markers.getMarkers([]);
-  if (values.length > 1000) throw new Error("Marker list exceeds complete inspection bound.");
+  if (values.length !== before.count || values.length > 1000) {
+    throw new Error("Marker list changed during removal preflight; inspect again.");
+  }
   const timed = [];
 
   for (const marker of values) {
@@ -2873,9 +2908,27 @@ async function removeMarker(argumentsValue) {
     throw new Error("Premiere rejected the marker removal transaction.");
   }
 
+  const after = await listMarkers();
+  const beforeCounts = new Map();
+  for (const row of before.markers) beforeCounts.set(row.targetSignature, (beforeCounts.get(row.targetSignature) || 0) + 1);
+  const expectedCount = beforeCounts.get(signature) || 0;
+  if (expectedCount > 0) beforeCounts.set(signature, expectedCount - 1);
+  const afterCounts = new Map();
+  for (const row of after.markers) afterCounts.set(row.targetSignature, (afterCounts.get(row.targetSignature) || 0) + 1);
+  const remainingMatch = afterCounts.get(signature) || 0;
+  const otherStatePreserved = [...beforeCounts.entries()].every(([key,count]) => (afterCounts.get(key) || 0) === count)
+    && [...afterCounts.entries()].every(([key,count]) => key === signature || (beforeCounts.get(key) || 0) === count);
+  const verified = !after.truncated && after.markers.length === after.count
+    && after.count + 1 === before.count && remainingMatch === 0 && otherStatePreserved;
   return {
     removed: true,
-    markerIndex
+    markerIndex,
+    removedSignature:signature,
+    markerCountBefore:before.count,
+    markerCountAfter:after.count,
+    verificationStatus:verified ? "verified_delta" : "accepted_unverified",
+    uncertain:!verified,
+    retrySafe:false
   };
 }
 
