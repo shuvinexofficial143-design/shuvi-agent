@@ -67,3 +67,14 @@ test("advanced assembly stops conservatively on mutating route errors",()=>{
   assert.match(rust,/uncertain=true;/);
   assert.match(rust,/"automatic_rollback":false/);
 });
+
+
+test("advanced assembly stops after an accepted but unverified transition",()=>{
+  const start=rust.indexOf("ToolAction::PremiereAssembly{assembly,apply}");
+  const end=rust.indexOf("ToolAction::PremiereFinishMediaBatch",start);
+  const arm=rust.slice(start,end);
+  assert.match(arm,/verificationStatus/);
+  assert.match(arm,/"status":if verified \{"verified"\}else\{"accepted_unverified"\}/);
+  assert.match(arm,/if !verified \{uncertain=true;break;\}/);
+  assert.match(arm,/transition_results\.iter\(\)\.all\(\|row\|row\["status"\]=="verified"\)/);
+});

@@ -58,3 +58,24 @@ test("playhead movement and vision review require exact native position readback
   assert.match(rust,/playhead readback did not confirm the post-finishing review frame/);
   assert.match(rust,/playhead readback did not confirm the review-session frame/);
 });
+
+
+test("Premiere transitions stay accepted-unverified without independent presence readback",()=>{
+  const add=uxp.slice(uxp.indexOf("async function addVideoTransition"),uxp.indexOf("function plainEffectValue"));
+  assert.match(add,/verificationStatus: "accepted_unverified"/);
+  assert.match(add,/uncertain: true/);
+  assert.match(add,/retrySafe: false/);
+  const remove=uxp.slice(uxp.indexOf("async function removeVideoTransition"),uxp.indexOf("async function editKeyframe"));
+  assert.match(remove,/verificationStatus: "accepted_unverified"/);
+  assert.match(remove,/uncertain: true/);
+  assert.match(remove,/retrySafe: false/);
+
+  for(const [name,next] of [["PremiereRemoveVideoTransition","PremiereInspectKeyframes"],["PremiereAddVideoTransition","PremiereListVideoEffects"]]){
+    const start=rust.lastIndexOf("ToolAction::"+name);
+    const end=rust.indexOf("\n        ToolAction::"+next,start);
+    const arm=rust.slice(start,end);
+    assert.match(arm,/verified_transition/);
+    assert.match(arm,/success: verified/);
+    assert.match(arm,/"retry_safe": false/);
+  }
+});

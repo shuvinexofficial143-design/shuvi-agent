@@ -7999,7 +7999,14 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
         ToolAction::PremiereRemoveVideoTransition { track, clip_index, position } => {
             let backup = backup_premiere_project(&premiere_bridge).await?;
             let value = premiere_bridge.request("remove_video_transition", json!({"track":track,"clipIndex":clip_index,"position":position}), Duration::from_secs(20)).await?;
-            Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value})).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_transition");
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value, "uncertain": !verified, "retry_safe": false})).unwrap_or_default(),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1})
+            })
         }
         ToolAction::PremiereInspectKeyframes { target } => {
             let value = premiere_bridge.request("inspect_keyframes", target.bridge_arguments(), Duration::from_secs(20)).await?;
@@ -8366,7 +8373,11 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                         }),
                         Duration::from_secs(30),
                     ).await {
-                        Ok(value)=>transition_results.push(json!({"index":i,"shot_index":transition.shot_index,"clip_index":clip_index,"status":"accepted","native_result":value})),
+                        Ok(value)=>{
+                            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_transition");
+                            transition_results.push(json!({"index":i,"shot_index":transition.shot_index,"clip_index":clip_index,"status":if verified {"verified"}else{"accepted_unverified"},"native_result":value}));
+                            if !verified {uncertain=true;break;}
+                        },
                         Err(error)=>{
                             uncertain=true;
                             transition_results.push(json!({"index":i,"shot_index":transition.shot_index,"status":"uncertain","reason":error.chars().take(240).collect::<String>()}));
@@ -8420,7 +8431,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let complete=!uncertain&&!cancelled
                 &&shot_results.len()==assembly.shots.len()&&shot_results.iter().all(|row|row["status"]=="verified")
                 &&music_results.len()==assembly.music.len()&&music_results.iter().all(|row|row["status"]=="verified")
-                &&transition_results.len()==assembly.transitions.len()&&transition_results.iter().all(|row|row["status"]=="accepted")
+                &&transition_results.len()==assembly.transitions.len()&&transition_results.iter().all(|row|row["status"]=="verified")
                 &&marker_results.len()==assembly.chapters.len()&&marker_results.iter().all(|row|row["status"]=="accepted")
                 &&graphics_complete;
 
@@ -9699,15 +9710,18 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 Duration::from_secs(30),
             ).await?;
 
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_transition");
             Ok(ActionResult {
-                success: true,
+                success: verified,
                 tool,
                 stdout: serde_json::to_string_pretty(&json!({
                     "backup": backup,
-                    "result": value
+                    "result": value,
+                    "uncertain": !verified,
+                    "retry_safe": false
                 })).unwrap_or_else(|_| value.to_string()),
                 stderr: String::new(),
-                exit_code: Some(0),
+                exit_code: Some(if verified {0}else{1}),
             })
         }
         ToolAction::PremiereListVideoEffects => {

@@ -1694,12 +1694,17 @@ async function addVideoTransition(argumentsValue) {
 
   return {
     added: true,
+    transactionSucceeded: true,
     track: trackIndex,
     clipIndex,
     matchName,
     durationSeconds,
     position,
-    forceSingleSided
+    forceSingleSided,
+    verificationStatus: "accepted_unverified",
+    uncertain: true,
+    retrySafe: false,
+    warning: "Native transaction accepted; transition presence/details were not independently inspected."
   };
 }
 
@@ -5915,7 +5920,16 @@ async function removeVideoTransition(argumentsValue) {
     succeeded = target.project.executeTransaction(compound => compound.addAction(action), "Shuvi: Remove Video Transition");
   });
   if (!succeeded) throw new Error("Premiere rejected the transition removal transaction.");
-  return { transactionSucceeded: true, track, clipIndex, position, warning: "Native transaction accepted; transition presence/details were not independently inspected." };
+  return {
+    transactionSucceeded: true,
+    track,
+    clipIndex,
+    position,
+    verificationStatus: "accepted_unverified",
+    uncertain: true,
+    retrySafe: false,
+    warning: "Native transaction accepted; transition presence/details were not independently inspected."
+  };
 }
 
 async function editKeyframe(argumentsValue) {
