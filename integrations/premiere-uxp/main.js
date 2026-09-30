@@ -5257,6 +5257,32 @@ async function setWorkArea(argumentsValue) {
   };
 }
 
+async function readSourceInOut(clip) {
+  const mediaTypes=[
+    ["video",premiere.Constants.MediaType?.VIDEO],
+    ["audio",premiere.Constants.MediaType?.AUDIO],
+    ["data",premiere.Constants.MediaType?.DATA]
+  ];
+  const channels=[];
+  const failures=[];
+  for (const [name,mediaType] of mediaTypes) {
+    if (mediaType==null) continue;
+    try {
+      const [inPoint,outPoint]=await Promise.all([clip.getInPoint(mediaType),clip.getOutPoint(mediaType)]);
+      const inSeconds=Number.isFinite(inPoint?.seconds)?inPoint.seconds:null;
+      const outSeconds=Number.isFinite(outPoint?.seconds)?outPoint.seconds:null;
+      if (inSeconds==null||outSeconds==null) {
+        failures.push({mediaType:name,reason:"non_finite_readback"});
+        continue;
+      }
+      channels.push({mediaType:name,inSeconds,outSeconds,inTicks:String(inPoint?.ticks??""),outTicks:String(outPoint?.ticks??"")});
+    } catch (error) {
+      failures.push({mediaType:name,reason:String(error?.message||error).slice(0,120)});
+    }
+  }
+  return {channels,failures,readableChannels:channels.length};
+}
+
 async function setSourceInOut(argumentsValue) {
   const itemId =
     typeof argumentsValue?.itemId === "string"
@@ -5272,6 +5298,7 @@ async function setSourceInOut(argumentsValue) {
   }
 
   const { project, clip } = await requireClipProjectItemById(itemId);
+  const before=await readSourceInOut(clip);
   let transactionSucceeded = false;
 
   project.lockedAccess(() => {
@@ -5289,15 +5316,24 @@ async function setSourceInOut(argumentsValue) {
     throw new Error("Premiere rejected the source in/out transaction.");
   }
 
+  const fresh=await requireClipProjectItemById(itemId);
+  const after=await readSourceInOut(fresh.clip);
+  const required=new Set(before.channels.map(row=>row.mediaType));
+  const observed=new Map(after.channels.map(row=>[row.mediaType,row]));
+  const verified=required.size>0&&[...required].every(mediaType=>{
+    const row=observed.get(mediaType);
+    return row&&Math.abs(row.inSeconds-inSeconds)<=0.001&&Math.abs(row.outSeconds-outSeconds)<=0.001;
+  });
   return {
     changed: true,
     itemId,
     inSeconds,
     outSeconds,
-    verificationStatus: "accepted_unverified",
-    uncertain: true,
+    readback:{before,after,requiredMediaTypes:[...required]},
+    verificationStatus: verified ? "verified_source_inout" : "accepted_unverified",
+    uncertain: !verified,
     retrySafe: false,
-    warning: "Native transaction accepted; source in/out points were not independently read back."
+    warning: verified?null:"Native transaction accepted, but every previously readable source media type was not independently read back at the requested in/out."
   };
 }
 
