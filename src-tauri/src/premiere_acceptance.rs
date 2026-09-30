@@ -225,6 +225,25 @@ impl Report {
     pub fn verified_count(&self) -> usize {self.capabilities.iter().filter(|c|c.premiere_runtime_verified).count()}
 }
 
+pub fn known_verification_gaps() -> Value {
+    serde_json::json!({
+        "project_save_persistence":{"state":"accepted_unverified","retry_safe":false,
+            "reason":"Native Project.save() success is not an independent persisted-file readback."},
+        "video_transition_presence":{"state":"accepted_unverified","retry_safe":false,
+            "reason":"No reviewed stable transition presence/removal inspection is available in the current adapter."},
+        "source_in_out":{"state":"accepted_unverified","retry_safe":false,
+            "reason":"No reviewed independent source-bound in/out getter is available in the current adapter."},
+        "scale_to_frame":{"state":"accepted_unverified","retry_safe":false,
+            "reason":"No dedicated scale-to-frame state getter is available in the current adapter."},
+        "stable_track_identity":{"state":"not_established",
+            "reason":"Track index/name observations are not promoted to a stable native track UUID."},
+        "export_completion":{"state":"not_verified","retry_safe":false,
+            "reason":"Observed output files do not prove encoder completion or encoded-media validity."},
+        "windows_premiere_runtime":{"state":"not_verified",
+            "reason":"Current source revision still requires fresh Windows/Premiere host acceptance evidence."}
+    })
+}
+
 pub fn evidence_dimensions(report: &Report, recovery_count: usize, export_count: usize) -> Value {
     serde_json::json!({
         "source_implementation":{"state":"CODE_PRESENT","completion_percentage":null},

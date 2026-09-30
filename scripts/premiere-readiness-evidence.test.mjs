@@ -41,3 +41,14 @@ test('acceptance plans distinguish dedicated evidence adapters from planned-only
   assert.match(harness,/"manual_typed_execution_only":!adapter/);
   assert.match(harness,/"planned_only_mutation_steps"/);
 });
+
+test('readiness exposes explicit known host verification gaps instead of hiding them',()=>{
+  const acceptance=read('premiere_acceptance'),desktop=read('lib');
+  const gaps=acceptance.split('pub fn known_verification_gaps')[1].split('pub fn evidence_dimensions')[0];
+  for(const key of ['project_save_persistence','video_transition_presence','source_in_out','scale_to_frame','stable_track_identity','export_completion','windows_premiere_runtime']) {
+    assert.ok(gaps.includes(`"${key}"`),key);
+  }
+  assert.match(gaps,/"accepted_unverified"/);
+  assert.match(gaps,/"retry_safe":false/);
+  assert.match(desktop,/"known_verification_gaps":premiere_acceptance::known_verification_gaps\(\)/);
+});

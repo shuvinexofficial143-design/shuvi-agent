@@ -11684,6 +11684,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 "premiere_runtime_verified_pct":if total>0{native*100/total}else{0},
                 "recovery_verified_entries":recovery_count,"export_completion_verified_jobs":export_complete,
                 "baseline":baseline,"production_ready":false,
+                "known_verification_gaps":premiere_acceptance::known_verification_gaps(),
                 "runtime_verified":by_state("runtime_verified"),"implemented_unverified":by_state("implemented_unverified"),
                 "unsupported_documented":by_state("unsupported_documented"),"blocked_environment":by_state("blocked_environment"),
                 "runtime_failed":by_state("runtime_failed"),
