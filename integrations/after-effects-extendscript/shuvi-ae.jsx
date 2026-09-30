@@ -622,6 +622,142 @@
             vertex_count: vertices.length
         };
     }
+    function maskModeFromName(name) {
+        if(name==="none")return MaskMode.NONE;
+        if(name==="add")return MaskMode.ADD;
+        if(name==="subtract")return MaskMode.SUBTRACT;
+        if(name==="intersect")return MaskMode.INTERSECT;
+        if(name==="lighten")return MaskMode.LIGHTEN;
+        if(name==="darken")return MaskMode.DARKEN;
+        if(name==="difference")return MaskMode.DIFFERENCE;
+        fail("Unsupported mask mode.");
+    }
+    function maskModeName(mode) {
+        if(mode===MaskMode.NONE)return "none";
+        if(mode===MaskMode.ADD)return "add";
+        if(mode===MaskMode.SUBTRACT)return "subtract";
+        if(mode===MaskMode.INTERSECT)return "intersect";
+        if(mode===MaskMode.LIGHTEN)return "lighten";
+        if(mode===MaskMode.DARKEN)return "darken";
+        if(mode===MaskMode.DIFFERENCE)return "difference";
+        return "unknown";
+    }
+    function maskSnapshot(mask) {
+        var shape=mask.property("ADBE Mask Shape").value;
+        return {name:String(mask.name),mode:maskModeName(mask.maskMode),inverted:!!mask.inverted,locked:!!mask.locked,
+            vertices:cloneValue(shape.vertices),in_tangents:cloneValue(shape.inTangents),
+            out_tangents:cloneValue(shape.outTangents),closed:!!shape.closed,
+            feather:cloneValue(mask.property("ADBE Mask Feather").value),
+            opacity:mask.property("ADBE Mask Opacity").value,
+            expansion:mask.property("ADBE Mask Offset").value};
+    }
+    function validateMaskShape(args,current) {
+        if(args.vertices===undefined)return null;
+        if(!(args.vertices instanceof Array)||args.vertices.length<3||args.vertices.length>512)fail("Mask requires 3..512 vertices.");
+        var vertices=[],inTangents=[],outTangents=[],i;
+        for(i=0;i<args.vertices.length;i++){
+            var v=args.vertices[i];
+            if(!(v instanceof Array)||v.length!==2||!finiteNumber(v[0])||!finiteNumber(v[1]))fail("Mask vertices must be finite [x,y] pairs.");
+            vertices.push([v[0],v[1]]);
+            inTangents.push([0,0]);outTangents.push([0,0]);
+        }
+        if(args.in_tangents!==undefined){
+            if(!(args.in_tangents instanceof Array)||args.in_tangents.length!==vertices.length)fail("Mask in_tangents length mismatch.");
+            inTangents=args.in_tangents;
+        }else if(current&&current.in_tangents&&current.in_tangents.length===vertices.length)inTangents=current.in_tangents;
+        if(args.out_tangents!==undefined){
+            if(!(args.out_tangents instanceof Array)||args.out_tangents.length!==vertices.length)fail("Mask out_tangents length mismatch.");
+            outTangents=args.out_tangents;
+        }else if(current&&current.out_tangents&&current.out_tangents.length===vertices.length)outTangents=current.out_tangents;
+        for(i=0;i<vertices.length;i++){
+            if(!(inTangents[i] instanceof Array)||inTangents[i].length!==2||!(outTangents[i] instanceof Array)||outTangents[i].length!==2
+                ||!finiteNumber(inTangents[i][0])||!finiteNumber(inTangents[i][1])||!finiteNumber(outTangents[i][0])||!finiteNumber(outTangents[i][1]))
+                fail("Mask tangents must be finite [x,y] pairs.");
+        }
+        return {vertices:vertices,inTangents:inTangents,outTangents:outTangents,closed:args.closed===undefined?(current?current.closed:true):args.closed!==false};
+    }
+    function editMask(args) {
+        var comp=resolveComp(args.comp_id),layer=resolveLayer(comp,args.layer_id),masks=layer.property("ADBE Mask Parade");
+        var index=args.mask_property_index;
+        if(!masks||!finiteNumber(index)||Math.floor(index)!==index||index<1||index>masks.numProperties)fail("Invalid mask_property_index.");
+        var mask=masks.property(index);
+        if(!mask||!mask.isMask)fail("Mask property index is stale.");
+        var before=maskSnapshot(mask);
+        if(args.expected_name!==undefined&&before.name!==String(args.expected_name))fail("Mask name stale guard changed.");
+        if(args.expected_mode!==undefined&&before.mode!==String(args.expected_mode))fail("Mask mode stale guard changed.");
+        if(mask.locked&&args.locked!==false)fail("Mask is locked; unlock explicitly before editing.");
+        var nextShape=validateMaskShape(args,before),requestedCount=0;
+        if(nextShape)requestedCount++;
+        if(args.name!==undefined){boundedString(args.name,240,"mask name");requestedCount++;}
+        if(args.mode!==undefined){maskModeFromName(boundedString(args.mode,24,"mask mode"));requestedCount++;}
+        if(args.inverted!==undefined){if(typeof args.inverted!=="boolean")fail("mask inverted must be boolean.");requestedCount++;}
+        if(args.locked!==undefined){if(typeof args.locked!=="boolean")fail("mask locked must be boolean.");requestedCount++;}
+        if(args.feather!==undefined){validatePoint2(args.feather,"mask feather",false);requestedCount++;}
+        if(args.opacity!==undefined){if(!finiteNumber(args.opacity)||args.opacity<0||args.opacity>100)fail("mask opacity must be 0..100.");requestedCount++;}
+        if(args.expansion!==undefined){if(!finiteNumber(args.expansion)||Math.abs(args.expansion)>100000)fail("mask expansion outside bounds.");requestedCount++;}
+        if(requestedCount===0)fail("edit_mask requires at least one requested change.");
+        app.beginUndoGroup("Shuvi: Edit mask");
+        try{
+            if(args.locked===false)mask.locked=false;
+            if(nextShape){var shape=new Shape();shape.vertices=nextShape.vertices;shape.inTangents=nextShape.inTangents;shape.outTangents=nextShape.outTangents;shape.closed=nextShape.closed;mask.property("ADBE Mask Shape").setValue(shape);}
+            if(args.name!==undefined)mask.name=args.name;
+            if(args.mode!==undefined)mask.maskMode=maskModeFromName(args.mode);
+            if(args.inverted!==undefined)mask.inverted=args.inverted;
+            if(args.feather!==undefined)mask.property("ADBE Mask Feather").setValue(args.feather);
+            if(args.opacity!==undefined)mask.property("ADBE Mask Opacity").setValue(args.opacity);
+            if(args.expansion!==undefined)mask.property("ADBE Mask Offset").setValue(args.expansion);
+            if(args.locked===true)mask.locked=true;
+        }finally{app.endUndoGroup();}
+        layer=resolveLayer(comp,args.layer_id);masks=layer.property("ADBE Mask Parade");mask=masks.property(index);
+        var after=maskSnapshot(mask),verified=true;
+        if(nextShape&&( !samePointList(after.vertices,nextShape.vertices)||!samePointList(after.in_tangents,nextShape.inTangents)
+            ||!samePointList(after.out_tangents,nextShape.outTangents)||after.closed!==nextShape.closed))verified=false;
+        if(args.name!==undefined&&after.name!==String(args.name))verified=false;
+        if(args.mode!==undefined&&after.mode!==String(args.mode))verified=false;
+        if(args.inverted!==undefined&&after.inverted!==args.inverted)verified=false;
+        if(args.locked!==undefined&&after.locked!==args.locked)verified=false;
+        if(args.feather!==undefined&&!sameValue(after.feather,args.feather))verified=false;
+        if(args.opacity!==undefined&&Math.abs(after.opacity-args.opacity)>EPSILON)verified=false;
+        if(args.expansion!==undefined&&Math.abs(after.expansion-args.expansion)>EPSILON)verified=false;
+        return {native_accepted:true,verification_status:verified?"verified_mask_readback":"accepted_unverified",retry_safe:verified,
+            comp_id:comp.id,layer_id:layer.id,mask_property_index:index,before:before,after:after};
+    }
+    function maskInventory(layer) {
+        var masks=layer.property("ADBE Mask Parade"),out=[],i;
+        if(!masks)return out;
+        if(masks.numProperties>512)fail("Mask inventory exceeds safety bound.");
+        for(i=1;i<=masks.numProperties;i++){
+            var m=masks.property(i),shape=m.property("ADBE Mask Shape").value;
+            out.push({name:String(m.name),mode:maskModeName(m.maskMode),inverted:!!m.inverted,vertex_count:shape.vertices.length,closed:!!shape.closed});
+        }
+        return out;
+    }
+    function sameMaskInventory(actual,expected) {
+        if(actual.length!==expected.length)return false;
+        var i;for(i=0;i<actual.length;i++){
+            var a=actual[i],e=expected[i];
+            if(a.name!==e.name||a.mode!==e.mode||a.inverted!==e.inverted||a.vertex_count!==e.vertex_count||a.closed!==e.closed)return false;
+        }
+        return true;
+    }
+    function removeMask(args) {
+        var comp=resolveComp(args.comp_id),layer=resolveLayer(comp,args.layer_id),masks=layer.property("ADBE Mask Parade");
+        var index=args.mask_property_index;
+        if(!masks||!finiteNumber(index)||Math.floor(index)!==index||index<1||index>masks.numProperties)fail("Invalid mask_property_index.");
+        var mask=masks.property(index),snap=maskSnapshot(mask);
+        if(args.expected_name!==undefined&&snap.name!==String(args.expected_name))fail("Mask name stale guard changed.");
+        if(args.expected_mode!==undefined&&snap.mode!==String(args.expected_mode))fail("Mask mode stale guard changed.");
+        if(mask.locked)fail("Mask is locked; remove refused until explicitly unlocked.");
+        var before=maskInventory(layer),expectedAfter=[],i;
+        for(i=0;i<before.length;i++)if(i!==index-1)expectedAfter.push(before[i]);
+        app.beginUndoGroup("Shuvi: Remove mask");
+        try{mask.remove();}finally{app.endUndoGroup();}
+        layer=resolveLayer(comp,args.layer_id);
+        var after=maskInventory(layer),verified=after.length===before.length-1&&sameMaskInventory(after,expectedAfter);
+        return {native_accepted:true,verification_status:verified?"verified_mask_delta":"accepted_unverified",retry_safe:false,
+            comp_id:comp.id,layer_id:layer.id,removed_mask_property_index:index,removed:before[index-1],
+            before_masks:before,after_masks:after};
+    }
     function inspectSceneEdits(args) {
         var comp = resolveComp(args.comp_id);
         var layer = resolveLayer(comp, args.layer_id);
@@ -1431,7 +1567,7 @@
             || action === "add_shape_primitive" || action === "add_text_animator"
             || action === "set_keyframe_interpolation" || action === "set_keyframe_temporal_ease" || action === "remove_keyframe"
             || action === "duplicate_layer" || action === "remove_layer" || action === "precompose_layers"
-            || action === "add_mask" || action === "add_scene_edit_markers" || action === "add_marker" || action === "remove_marker"
+            || action === "add_mask" || action === "edit_mask" || action === "remove_mask" || action === "add_scene_edit_markers" || action === "add_marker" || action === "remove_marker"
             || action === "add_render_queue_item" || action === "render_queue" || action === "save_project";
     }
     function assertProjectExpectation(request, action) {
@@ -1493,6 +1629,8 @@
         if (action === "remove_layer") return removeLayer(args);
         if (action === "precompose_layers") return precomposeLayers(args);
         if (action === "add_mask") return addMask(args);
+        if (action === "edit_mask") return editMask(args);
+        if (action === "remove_mask") return removeMask(args);
         if (action === "inspect_scene_edits") return inspectSceneEdits(args);
         if (action === "add_scene_edit_markers") return addSceneEditMarkers(args);
         if (action === "inspect_markers") return inspectMarkers(args);
