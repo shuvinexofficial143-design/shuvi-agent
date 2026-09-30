@@ -5,7 +5,7 @@ use std::{fs,path::Path,time::{SystemTime,UNIX_EPOCH}};
 
 const MAX_BYTES:usize=96*1024;
 const MAX_HISTORY:usize=64;
-const STATES:&[&str]=&["pending","blocked","ready","awaiting_approval","executing","applied","review_required","reviewing","completed","skipped","failed","cancelled"];
+const STATES:&[&str]=&["pending","blocked","ready","awaiting_approval","executing","applied","review_required","reviewing","completed","skipped","failed","cancelled","cancelled_after_apply","uncertain"];
 
 #[derive(Clone,Debug,Serialize,Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -74,7 +74,7 @@ impl Session {
         for i in 0..self.stages.len(){
             if self.stages[i].state!="pending" {continue;}
             let dependencies=&self.recipe.stages[i].dependencies;
-            if dependencies.iter().any(|id|self.stages.iter().any(|s|&s.id==id && matches!(s.state.as_str(),"blocked"|"failed"|"cancelled"))){
+            if dependencies.iter().any(|id|self.stages.iter().any(|s|&s.id==id && matches!(s.state.as_str(),"blocked"|"failed"|"cancelled"|"cancelled_after_apply"|"uncertain"))){
                 self.stages[i].reason=Some("Required predecessor is blocked or failed; explicit replan required.".into());
                 self.event(i,"blocked",None)?;continue;
             }
@@ -118,7 +118,31 @@ impl Session {
         if acceptable {self.event(i,"completed",None)}else{self.event(i,"failed",None)}
     }
     pub fn cancel(&mut self){if self.status!="running" {return;} self.status="cancelled".into();self.current_stage=None;
-        for run in &mut self.stages {if matches!(run.state.as_str(),"pending"|"ready"|"awaiting_approval"|"review_required"|"reviewing") {run.state="cancelled".into();}}
+        for run in &mut self.stages {
+            match run.state.as_str() {
+                "pending"|"ready"|"awaiting_approval" => {
+                    run.state="cancelled".into();
+                    run.reason=Some("Cancelled before any typed action receipt was recorded.".into());
+                }
+                "applied" => {
+                    run.state="cancelled_after_apply".into();
+                    run.reason=Some("Typed mutation was already applied; session cancellation does not roll it back. Inspect before any further edit.".into());
+                }
+                "review_required"|"reviewing" if run.action_id.is_some() => {
+                    run.state="cancelled_after_apply".into();
+                    run.reason=Some("Typed mutation was already applied but review was not completed; cancellation does not roll it back.".into());
+                }
+                "review_required"|"reviewing" => {
+                    run.state="cancelled".into();
+                    run.reason=Some("Review-only stage cancelled before completion.".into());
+                }
+                "executing" => {
+                    run.state="uncertain".into();
+                    run.reason=Some("Cancellation cannot prove an already dispatched native mutation stopped; inspect native state before retry.".into());
+                }
+                _ => {}
+            }
+        }
     }
 }
 
