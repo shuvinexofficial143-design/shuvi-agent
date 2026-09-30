@@ -27,6 +27,16 @@ test("clone destination is explicit existing and clear",()=>{
   assert.match(uxp,/clearDestinationRequired:true/);
 });
 
+test("cross-track clone revalidates source and destination immediately before dispatch",()=>{
+  const clone=uxp.slice(uxp.indexOf("async function cloneClipToTrack"),uxp.indexOf("async function resolveTrackByKind"));
+  assert.match(clone,/freshSourceItems/);
+  assert.match(clone,/freshSourceSignature !== expectedSource\.signature/);
+  assert.match(clone,/preDispatchDestination = await snapshotTrackItems/);
+  assert.match(clone,/destinationState\(preDispatchDestination\) !== destinationState\(before\)/);
+  assert.match(clone,/destination changed during preflight/);
+  assert.match(clone,/new Set\(preDispatchDestination\.map/);
+});
+
 test("post clone correlation requires exact same media time and duration",()=>{
   assert.match(uxp,/row\.mediaId === mediaId/);
   assert.match(uxp,/Math\.abs\(row\.startSeconds-destinationSeconds\)/);

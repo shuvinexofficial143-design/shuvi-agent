@@ -3117,7 +3117,7 @@ async function cloneClipToTrack(argumentsValue) {
     ? await sequence.getVideoTrack(sourceTrack)
     : await sequence.getAudioTrack(sourceTrack);
   const sourceItems = await sortedClipItems(sourceTrackObject);
-  const sourceItem = sourceItems[clipIndex];
+  let sourceItem = sourceItems[clipIndex];
   if (!sourceItem) throw new Error("Cross-track clone source clip was not found.");
 
   const [sourceStart,sourceEnd,sourceProjectItem] = await Promise.all([
@@ -3135,6 +3135,32 @@ async function cloneClipToTrack(argumentsValue) {
   const before = await snapshotTrackItems(project,sequence,kind,destinationTrack);
   if (before.some(row => row.startSeconds < destinationEnd && row.endSeconds > destinationSeconds)) {
     throw new Error("Cross-track clone destination range is occupied; choose a clear existing track/range.");
+  }
+
+  // Re-resolve both source and destination immediately before mutation. The initial
+  // inspection can go stale while native metadata is awaited, so never dispatch
+  // against an earlier clear-range observation.
+  const freshSourceTrackObject = kind === "video"
+    ? await sequence.getVideoTrack(sourceTrack)
+    : await sequence.getAudioTrack(sourceTrack);
+  const freshSourceItems = await sortedClipItems(freshSourceTrackObject);
+  sourceItem = freshSourceItems[clipIndex];
+  if (!sourceItem) throw new Error("Cross-track clone source changed during preflight; inspect again.");
+  const expectedSource = activeExpectation?.clips?.find(clip =>
+    clip.kind === kind && clip.track === sourceTrack && clip.clip_index === clipIndex
+  );
+  const freshSourceSignature = await clipTargetSignature(project,sequence,sourceItem,kind,sourceTrack,clipIndex);
+  if (!expectedSource || freshSourceSignature !== expectedSource.signature) {
+    throw new Error("Cross-track clone source changed during preflight; inspect again.");
+  }
+
+  const preDispatchDestination = await snapshotTrackItems(project,sequence,kind,destinationTrack);
+  const destinationState = rows => JSON.stringify(rows.map(row => [
+    row.signature,row.mediaId,row.startSeconds,row.endSeconds
+  ]));
+  if (destinationState(preDispatchDestination) !== destinationState(before)
+      || preDispatchDestination.some(row => row.startSeconds < destinationEnd && row.endSeconds > destinationSeconds)) {
+    throw new Error("Cross-track clone destination changed during preflight; inspect again.");
   }
 
   const editor = premiere.SequenceEditor.getEditor(sequence);
@@ -3161,7 +3187,7 @@ async function cloneClipToTrack(argumentsValue) {
   if (!transactionSucceeded) throw new Error("Premiere rejected the cross-track clone transaction.");
 
   const after = await snapshotTrackItems(project,sequence,kind,destinationTrack);
-  const beforeSignatures = new Set(before.map(row => row.signature));
+  const beforeSignatures = new Set(preDispatchDestination.map(row => row.signature));
   const epsilon = 0.001;
   const candidates = after.filter(row =>
     !beforeSignatures.has(row.signature)
