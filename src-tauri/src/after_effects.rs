@@ -188,6 +188,8 @@ impl HandTrackRigPlan {
             previous_point=Some(point.clone());
             prepared.push(json!({"time_seconds":sample.time_seconds,"point":point,"confidence":sample.confidence}));
         }
+        let prepared_count=prepared.len();
+        let filtered_count=self.samples.len()-prepared_count;
         Ok(json!({
             "host_action":"apply_hand_track_rig",
             "args":{
@@ -199,8 +201,8 @@ impl HandTrackRigPlan {
                 "preserve_visual":self.preserve_visual.unwrap_or(true)
             },
             "source_sample_count":self.samples.len(),
-            "prepared_sample_count":previous_point.as_ref().map(|_|prepared.len()).unwrap_or(0),
-            "filtered_sample_count":self.samples.len()-prepared.len(),
+            "prepared_sample_count":prepared_count,
+            "filtered_sample_count":filtered_count,
             "min_confidence":threshold,
             "smoothing_alpha":alpha,
             "max_gap_seconds":self.max_gap_seconds,
