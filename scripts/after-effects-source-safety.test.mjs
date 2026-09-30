@@ -6,6 +6,7 @@ const rust=readFileSync(new URL("../src-tauri/src/after_effects.rs",import.meta.
 const transport=readFileSync(new URL("../src-tauri/src/after_effects_transport.rs",import.meta.url),"utf8");
 const jsx=readFileSync(new URL("../integrations/after-effects-extendscript/shuvi-ae.jsx",import.meta.url),"utf8");
 const lib=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
+const runtime=readFileSync(new URL("../src-tauri/src/after_effects_runtime.rs",import.meta.url),"utf8");
 
 test("After Effects source never claims runtime verification",()=>{
   assert.match(rust,/"source_runtime_verified":false/);
@@ -87,4 +88,13 @@ test("AE temporal easing and timing require exact host readback",()=>{
   assert.match(jsx,/keyOutTemporalEase\(index\)/);
   assert.match(jsx,/Layer out_point must remain greater than in_point/);
   assert.match(jsx,/verified_timing_readback/);
+});
+
+
+test("AE runtime preserves host-declared retry safety",()=>{
+  assert.match(runtime,/host_retry_safe=receipt\.result\.as_ref\(\)/);
+  assert.match(runtime,/receipt\.ok&&post_verified&&host_retry_safe/);
+  assert.match(runtime,/"host_retry_safe":host_retry_safe/);
+  assert.match(runtime,/"execution_status_unknown"/);
+  assert.match(runtime,/"retry_safe":false/);
 });
