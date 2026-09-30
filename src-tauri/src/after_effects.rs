@@ -199,6 +199,10 @@ pub fn capability_report()->Value {
             "proxy_set_remove":"source_supported_with_proxy_state_file_readback",
             "av_layer_flags":"source_supported_with_boolean_readback",
             "av_layer_rendering":"source_supported_blending_quality_sampling_audio_guide_frame_blending_with_readback",
+            "mogrt_controller_inspection":"source_supported_bounded_256_controllers",
+            "mogrt_property_controller_add":"source_supported_with_controller_inventory_delta",
+            "mogrt_media_controller_add":"source_supported_with_controller_inventory_delta",
+            "mogrt_export":"source_supported_host_export_plus_desktop_exact_file_evidence",
             "runtime_verified":"not_verified"
         },
         "safety":[
