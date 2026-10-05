@@ -1,0 +1,30 @@
+name: Audition Source CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  audition-static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - name: Repository structural validation
+        run: npm run validate
+      - name: Audition source safety tests
+        run: node --test scripts/audition-source-safety.test.mjs
+
+  audition-rust:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust compile check
+        run: cargo check --manifest-path src-tauri/Cargo.toml
+      - name: Audition Rust unit tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib audition
