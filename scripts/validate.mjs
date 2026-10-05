@@ -75,6 +75,7 @@ for (const path of [
   "integrations/premiere-uxp/recipe-plans.js",
   "integrations/premiere-uxp/caption-workflows.js",
   "src-tauri/src/audition.rs",
+  "src-tauri/src/audition_acceptance.rs",
   "src-tauri/src/audition_bridge.rs",
   "src-tauri/src/audition_bridge_queue.rs",
   "integrations/audition-cep/CSXS/manifest.xml",
