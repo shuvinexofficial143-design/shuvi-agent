@@ -303,6 +303,8 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - after_effects_readiness_report: {}
 - after_effects_detect: {}
 - after_effects_pending_jobs: {}
+- after_effects_cancel_render: {"request_id":"exact unresolved render_queue request ID"} — writes a request-scoped cooperative cancel marker; native stop is verified only by a later AE USER_STOPPED receipt
+- after_effects_verify_checkpoint: {"backup_path":"absolute Shuvi Backups .aep/.aepx path","expected_project_path":"absolute original .aep/.aepx path"} — verifies backup fingerprint/path binding only; never restores or opens a project automatically
 - after_effects_run: {"afterfx_exe":"absolute path to AfterFX.exe","timeout_ms":30000,"request":{"schema_version":1,"request_id":"fresh-id","action":"inspect_context","expected_project_file":null,"expected_project_revision":null,"args":{}}} — for every mutating action copy exact expected_project_file + expected_project_revision from the latest inspect_context receipt
 - after_effects_plan_hand_track: {"plan":{"property":{"target":{"comp_id":1,"layer_id":2},"path":[{"match_name":"ADBE Transform Group","property_index":1},{"match_name":"ADBE Position","property_index":2}]},"samples":[{"time_seconds":0.0,"point":[100,200],"confidence":0.9}],"coordinate_space":"comp_pixels"}}
 - after_effects_plan_hand_track_rig: {"plan":{"comp_id":1,"target_layer_id":2,"samples":[{"time_seconds":0.0,"point":[100,200],"confidence":0.95}],"coordinate_space":"comp_pixels","name":"Shuvi Hand Track","preserve_visual":true,"min_confidence":0.5,"smoothing_alpha":0.35,"max_gap_seconds":0.25}}
@@ -646,6 +648,8 @@ enum ToolAction {
     AfterEffectsReadinessReport,
     AfterEffectsDetect,
     AfterEffectsPendingJobs,
+    AfterEffectsCancelRender { request_id:String },
+    AfterEffectsVerifyCheckpoint { backup_path:String, expected_project_path:String },
     AfterEffectsRun { afterfx_exe:String, timeout_ms:u64, request:after_effects_transport::Request },
     AfterEffectsPlanHandTrack { plan: after_effects::HandTrackPlan },
     AfterEffectsPlanHandTrackRig { plan: after_effects::HandTrackRigPlan },
@@ -5568,6 +5572,21 @@ fn stage_tool(
             "Read-only receipt reconciliation. Valid late receipts release their durable request lock; missing or invalid receipts remain blocking and retry_safe=false.".into(),
             RiskLevel::Low,
         ),
+        "after_effects_cancel_render" => {
+            let request_id=arg_string(&proposal.arguments,"request_id")?;
+            (ToolAction::AfterEffectsCancelRender {request_id:request_id.clone()},
+                "Request After Effects render cancellation".into(),
+                format!("Request cooperative stop for exact unresolved render_queue request_id={request_id}. This writes a marker only; no process kill and no native-stop claim before a USER_STOPPED receipt."),
+                RiskLevel::Medium)
+        }
+        "after_effects_verify_checkpoint" => {
+            let backup_path=absolute_path(arg_string(&proposal.arguments,"backup_path")?)?;
+            let expected_project_path=absolute_path(arg_string(&proposal.arguments,"expected_project_path")?)?;
+            (ToolAction::AfterEffectsVerifyCheckpoint {backup_path:backup_path.clone(),expected_project_path:expected_project_path.clone()},
+                "Verify After Effects checkpoint".into(),
+                format!("Read-only verification of backup fingerprint and exact source-path binding. backup={backup_path}; expected_project={expected_project_path}. Does not restore, overwrite or open a project."),
+                RiskLevel::Low)
+        }
         "after_effects_run" => {
             let afterfx_exe=absolute_path(arg_string(&proposal.arguments,"afterfx_exe")?)?;
             let timeout_ms=proposal.arguments.get("timeout_ms").and_then(Value::as_u64).unwrap_or(30_000).clamp(1_000,120_000);
@@ -12375,6 +12394,24 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let clear=value.get("blocking_count").and_then(Value::as_u64)==Some(0);
             Ok(ActionResult {success:clear,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(if clear{0}else{1})})
+        }
+        ToolAction::AfterEffectsCancelRender {request_id} => {
+            let workspace=app.path().app_local_data_dir()
+                .map_err(|e|format!("Could not resolve Shuvi local data directory: {e}"))?
+                .join("after-effects-jobs");
+            let value=after_effects_runtime::cancel_render(&workspace,&request_id)?;
+            let requested=value.get("cancel_request_written").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult {success:requested,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(if requested{0}else{1})})
+        }
+        ToolAction::AfterEffectsVerifyCheckpoint {backup_path,expected_project_path} => {
+            let evidence=after_effects_checkpoint::verify(Path::new(&backup_path),Path::new(&expected_project_path))?;
+            let value=json!({"checkpoint":evidence,"backup_integrity_verified":true,
+                "automatic_restore_performed":false,"project_opened_automatically":false,
+                "recovery_of_host_state_verified":false,"manual_open_required":true,
+                "note":"This proves checkpoint bytes/path binding only. Open the checkpoint manually in After Effects before separately verifying recovered host state."});
+            Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::AfterEffectsRun {afterfx_exe,timeout_ms,request} => {
             let workspace=app.path().app_local_data_dir()
