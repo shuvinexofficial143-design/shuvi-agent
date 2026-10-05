@@ -113,13 +113,19 @@ pub fn load(path:&Path)->Result<Option<Registration>,String>{
         registration.validate()?;
         Ok(registration)
     };
-    if !path.exists() && !backup.exists(){return Ok(None);}
-    read(path).or_else(|primary_error|{
-        if backup.exists(){read(&backup).map(Some).map_err(|_|primary_error)}
-        else{Err(primary_error)}
-    }).map(Some).or_else(|error|{
-        if path.exists()||backup.exists(){Err(error)}else{Ok(None)}
-    })
+    if path.exists(){
+        match read(path){
+            Ok(registration)=>return Ok(Some(registration)),
+            Err(primary_error)=>{
+                if backup.exists(){
+                    return read(&backup).map(Some).map_err(|_|primary_error);
+                }
+                return Err(primary_error);
+            }
+        }
+    }
+    if backup.exists(){return read(&backup).map(Some);}
+    Ok(None)
 }
 
 pub fn save(path:&Path,registration:&Registration)->Result<(),String>{
