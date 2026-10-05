@@ -35,6 +35,7 @@ mod premiere_diagnostics;
 mod premiere_review;
 mod premiere_editorial;
 mod premiere_export;
+mod media_encoder;
 mod premiere_acceptance;
 mod premiere_acceptance_harness;
 mod premiere_acceptance_execution;
@@ -291,6 +292,9 @@ Cross-track clone computes native vertical offsets from inspected source/destina
 - media_encoder_launch: {}
 - media_encoder_start_batch: {}
 - media_encoder_set_xmp: {"embedded":true,"sidecar":false}
+- media_encoder_inspect_preset: {"preset":"absolute .epr path"}
+- media_encoder_encode_file: {"request":{"input":"absolute media file","output":"absolute output file","preset":"absolute .epr","range":"entire|in_out","in_seconds":"required for in_out","out_seconds":"required for in_out","remove_upon_completion":false,"start_queue_immediately":false,"overwrite":false}}
+- media_encoder_encode_project_item: {"request":{"item_id":"exact inspected project item id","output":"absolute output file","preset":"absolute .epr","range":"entire|in_out|work_area","remove_upon_completion":false,"start_queue_immediately":false,"overwrite":false},"expected":{"project_guid":"...","project_path":"saved .prproj","sequence_guid":null,"clips":[]}}
 - premiere_plan_interchange_export: {"request":{"format":"aaf|fcpxml|otio","output":"absolute output file","overwrite":false,"suppress_ui":true,"aaf_options":"required only for aaf; exact documented fields"}}
 - premiere_export_fcpxml: {"request":{"format":"fcpxml","output":"absolute output file","overwrite":false,"suppress_ui":true,"aaf_options":null},"expected":{"project_guid":"...","sequence_guid":"...","clips":[]}}
 - premiere_export_otio: {"request":{"format":"otio","output":"absolute output file","overwrite":false,"suppress_ui":true,"aaf_options":null},"expected":{"project_guid":"...","sequence_guid":"...","clips":[]}}
@@ -642,6 +646,9 @@ enum ToolAction {
     MediaEncoderLaunch,
     MediaEncoderStartBatch,
     MediaEncoderSetXmp { embedded: Option<bool>, sidecar: Option<bool> },
+    MediaEncoderInspectPreset { preset: String },
+    MediaEncoderEncodeFile { request: media_encoder::FileEncodeRequest },
+    MediaEncoderEncodeProjectItem { request: media_encoder::ProjectItemEncodeRequest },
     PremiereAcceptanceReport,
     PremiereAcceptanceProbe { group: u8 },
     PremiereAcceptanceRegisterDisposable { project_guid: String, project_path: String, sequence_guid: Option<String> },
@@ -1247,6 +1254,9 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "media_encoder_launch"
         | "media_encoder_start_batch"
         | "media_encoder_set_xmp"
+        | "media_encoder_inspect_preset"
+        | "media_encoder_encode_file"
+        | "media_encoder_encode_project_item"
         | "premiere_plan_interchange_export"
         | "premiere_export_fcpxml"
         | "premiere_export_otio"
@@ -2351,7 +2361,7 @@ fn stage_tool(
 ) -> Result<PendingActionView, String> {
     let tool = proposal.tool.clone();
     let premiere_expectation = if let Some(value) = proposal.arguments.get("expected") {
-        if !tool.starts_with("premiere_") { return Err("Premiere expectations only apply to Premiere tools.".into()); }
+        if !(tool.starts_with("premiere_") || tool.starts_with("media_encoder_")) { return Err("Premiere expectations only apply to Premiere/Media Encoder tools.".into()); }
         let expected: PremiereExpectation = serde_json::from_value(value.clone()).map_err(|e| format!("Invalid Premiere expectation: {e}"))?;
         expected.validate()?;
         Some(expected)
@@ -5595,6 +5605,40 @@ fn stage_tool(
                 "Configure Media Encoder XMP export settings".into(),
                 "Set documented EncoderManager XMP flags. The API exposes setters but no independent getter, so acceptance remains unverified state.".into(),
                 RiskLevel::Medium)
+        }
+        "media_encoder_inspect_preset" => {
+            let preset=arg_string(&proposal.arguments,"preset")?;
+            let local=media_encoder::inspect_preset(&preset)?;
+            (ToolAction::MediaEncoderInspectPreset {preset:preset.clone()},
+                "Inspect Media Encoder preset".into(),
+                format!("Validate trusted local .epr and ask Premiere for its export extension. size_bytes={}",local.size_bytes),
+                RiskLevel::Low)
+        }
+        "media_encoder_encode_file" => {
+            let request:media_encoder::FileEncodeRequest=serde_json::from_value(
+                proposal.arguments.get("request").cloned().unwrap_or(Value::Null)
+            ).map_err(|e|format!("Invalid Media Encoder file request: {e}"))?;
+            request.validate()?;
+            (ToolAction::MediaEncoderEncodeFile {request:request.clone()},
+                "Encode file with Adobe Media Encoder".into(),
+                format!("Encode {} -> {} using {}; range={}; start_queue_immediately={}. Native acceptance/events do not prove completion.",
+                    request.input,request.output,request.preset,request.range,request.start_queue_immediately),
+                RiskLevel::High)
+        }
+        "media_encoder_encode_project_item" => {
+            let request:media_encoder::ProjectItemEncodeRequest=serde_json::from_value(
+                proposal.arguments.get("request").cloned().unwrap_or(Value::Null)
+            ).map_err(|e|format!("Invalid Media Encoder project-item request: {e}"))?;
+            request.validate()?;
+            let expected=premiere_expectation.as_ref().ok_or("Project-item encoding requires inspected project expectation.")?;
+            if expected.project_path.is_none()||!expected.clips.is_empty(){
+                return Err("Project-item encoding requires saved project identity without timeline clip expectations.".into());
+            }
+            (ToolAction::MediaEncoderEncodeProjectItem {request:request.clone()},
+                "Encode Premiere project item with Media Encoder".into(),
+                format!("Encode inspected item_id={} -> {} using {}; range={}; start_queue_immediately={}.",
+                    request.item_id,request.output,request.preset,request.range,request.start_queue_immediately),
+                RiskLevel::High)
         }
         "premiere_export_sequence" => {
             let output = arg_string(&proposal.arguments, "output")?;
@@ -12343,6 +12387,52 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let value=premiere_bridge.request("media_encoder_set_xmp",json!({"embedded":embedded,"sidecar":sidecar}),Duration::from_secs(20)).await?;
             let accepted=value.get("accepted").and_then(Value::as_bool)==Some(true);
             Ok(ActionResult{success:accepted,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(if accepted{0}else{1})})
+        }
+        ToolAction::MediaEncoderInspectPreset {preset} => {
+            let local=media_encoder::inspect_preset(&preset)?;
+            let value=premiere_bridge.request("media_encoder_inspect_preset",json!({"preset":preset}),Duration::from_secs(15)).await?;
+            Ok(ActionResult{success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({"local":local,"host":value})).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MediaEncoderEncodeFile {request} => {
+            request.validate()?;
+            let _=premiere_delivery::validate_output_file(&request.output,request.overwrite)?;
+            let before=premiere_delivery::observed_file(&request.output);
+            let value=premiere_bridge.request("media_encoder_encode_file",json!({
+                "input":request.input,"output":request.output,"preset":request.preset,"range":request.range,
+                "inSeconds":request.in_seconds,"outSeconds":request.out_seconds,
+                "removeUponCompletion":request.remove_upon_completion,
+                "startQueueImmediately":request.start_queue_immediately,
+                "overwrite":request.overwrite
+            }),Duration::from_secs(45)).await?;
+            let accepted=value.get("accepted").and_then(Value::as_bool)==Some(true);
+            let after=premiere_delivery::observed_file(&request.output);
+            Ok(ActionResult{success:accepted,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "accepted":accepted,"native":value,"output_before":before,"output_after":after,
+                    "completion_verified":false,"retry_automatically":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(if accepted{0}else{1})})
+        }
+        ToolAction::MediaEncoderEncodeProjectItem {request} => {
+            request.validate()?;
+            let _=premiere_delivery::validate_output_file(&request.output,request.overwrite)?;
+            let expected=premiere_bridge.expected.ok_or("Project-item encoding requires inspected project expectation.")?;
+            let value=premiere_bridge.request("media_encoder_encode_project_item",json!({
+                "itemId":request.item_id,"output":request.output,"preset":request.preset,"range":request.range,
+                "removeUponCompletion":request.remove_upon_completion,
+                "startQueueImmediately":request.start_queue_immediately,
+                "overwrite":request.overwrite
+            }),Duration::from_secs(45)).await?;
+            let accepted=value.get("accepted").and_then(Value::as_bool)==Some(true);
+            let observed=premiere_delivery::observed_file(&request.output);
+            Ok(ActionResult{success:accepted,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "accepted":accepted,"project_guid":expected.project_guid,"native":value,
+                    "output_observation":observed,"completion_verified":false,"retry_automatically":false
+                })).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(if accepted{0}else{1})})
         }
         ToolAction::PremierePlanExport {output,preset,queue_to_ame,overwrite} => {
