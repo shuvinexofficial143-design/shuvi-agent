@@ -60,7 +60,10 @@ test("After Effects adapter plan stays staged and guarded",()=>{
   assert.match(motion,/\$verified_receipt/);
   assert.match(motion,/vector_transform_readback_required/);
   assert.match(motion,/missing_inspected_asset_item_id/);
-  assert.match(motion,/shape_visual_spec_missing/);
+  assert.match(motion,/ShapeSpec/);
+  assert.match(motion,/add_shape_primitive/);
+  assert.match(motion,/Shape layer.*requires fill_color and\/or stroke_color/);
+  assert.doesNotMatch(motion,/shape_visual_spec_missing/);
   assert.match(motion,/transparent_render_output_not_planned/);
   assert.match(motion,/directional_easing_needs_temporal_ease_synthesis/);
 });
@@ -78,7 +81,8 @@ test("provider-generated motion plans are strict and fail closed",()=>{
   assert.match(provider,/raw JSON only/);
   assert.match(provider,/Generated motion-graphics plan changed the fixed objective/);
   assert.match(provider,/invented unavailable asset_id/);
-  assert.match(provider,/Provider-generated shape layers are disabled/);
+  assert.match(provider,/Shape layers require shape=/);
+  assert.match(provider,/ellipse roundness must be 0/);
   assert.match(provider,/must return raw JSON without markdown fences/);
   assert.match(provider,/MAX_PROVIDER_PLAN_BYTES:usize=256\*1024/);
   assert.doesNotMatch(provider,/Command::new/);
@@ -118,6 +122,7 @@ test("motion correction stays snapshot-bound and proposal-only",()=>{
   assert.match(correction,/MAX_CORRECTION_CONTEXT_BYTES:usize=384\*1024/);
   assert.match(correction,/You may change only layer animation tracks/);
   assert.match(correction,/changed immutable layer identity\/content/);
+  assert.match(correction,/old\.shape!=new\.shape/);
   assert.match(correction,/returned the unchanged plan/);
   assert.match(review,/MAX_REVIEW_ACTIVE_LAYERS:usize=512/);
   assert.doesNotMatch(correction,/Command::new/);
