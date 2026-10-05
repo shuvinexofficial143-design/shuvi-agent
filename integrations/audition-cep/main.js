@@ -100,6 +100,14 @@
           rememberCommands(result);
           return result;
         });
+      case "script_dictionary":
+        var query = args.query == null ? "" : String(args.query);
+        var maxClasses = args.maxClasses == null ? 64 : Number(args.maxClasses);
+        if (query.length > 120) return Promise.reject(new Error("Script Dictionary query exceeds 120 characters."));
+        if (!isFinite(maxClasses) || Math.floor(maxClasses) !== maxClasses || maxClasses < 1 || maxClasses > 128) {
+          return Promise.reject(new Error("Script Dictionary maxClasses must be an integer from 1 to 128."));
+        }
+        return evalHost("script_dictionary", {query: query, maxClasses: maxClasses});
       case "command_enabled":
         requireInspectedCommand(args);
         return evalHost("command_enabled", {property: args.property, value: args.value});
