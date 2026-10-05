@@ -50,7 +50,7 @@
 - Preview review can establish that one approved image was visually reviewed, but keeps renderer provenance, render-output verification, automatic correction, and production readiness false.
 - Receipt-bound `motion_graphics_review_remotion_frames` verifies and stages 2–8 exact Remotion preview PNGs at approval time, sends those ordered images together in one vision request, and strict-parses cross-frame issues grounded to exact supplied sample times/layer IDs. It can assess sampled continuity/timing progression without claiming unsampled motion, renderer-process provenance, export correctness, or alpha correctness.
 - Each review returns an exact `fnv1a64` plan snapshot.
-- Provider-backed `motion_graphics_generate_correction` accepts only a `revise` review whose snapshot matches the exact supplied plan, caps request metadata at 3 iterations, preserves all fixed plan constraints and scene/layer identity/content, and permits only animation-track/keyframe/easing changes.
+- Provider-backed `motion_graphics_generate_correction` accepts exactly one `revise` review source: either the strict single-frame `VisualReview` or the strict ordered `MultiFrameReview` plus its exact approved frame times. The snapshot must match the exact supplied plan, request metadata is capped at 3 iterations, all fixed plan constraints and scene/layer identity/content are preserved, and only animation-track/keyframe/easing changes are permitted.
 - Correction proposals reject unchanged plans, oversized context, markdown/tool-call output, topology/content drift, and shape synthesis. They never execute AE/Remotion mutations automatically.
 - Validation/adapter summaries explicitly keep renderer execution, preview-render verification, and production readiness false.
 
