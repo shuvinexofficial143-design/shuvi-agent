@@ -9718,6 +9718,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 schema_version:1,
                 acceptance_action_id:acceptance_action_id.clone(),
                 render_action_id:request.render_action_id.clone(),
+                review_action_id:request.review_action_id.clone(),
                 plan_snapshot:current.plan_snapshot,
                 manifest_sha256:current.accepted.manifest_sha256,
                 output_file:current_final.file.clone(),
@@ -9746,6 +9747,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let _acceptance_audit=verify_motion_action_receipt_tokens(
                 app,&request.final_acceptance_action_id,"motion_graphics_accept_final_remotion",&[
                     format!("render_action_id={}",acceptance.render_action_id),
+                    format!("review_action_id={}",acceptance.review_action_id),
                     format!("plan_snapshot={}",acceptance.plan_snapshot),
                     format!("manifest_sha256={}",acceptance.manifest_sha256),
                     format!("output_sha256={}",acceptance.output_sha256),
