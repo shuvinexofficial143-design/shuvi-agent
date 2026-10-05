@@ -22,7 +22,10 @@ pub fn readiness_report()->serde_json::Value{
             "wave_playhead_readback":true,
             "wave_playhead_write":true,
             "application_command_inventory":true,
+            "live_command_search":true,
             "live_script_dictionary_inspection":true,
+            "stale_document_signature_guard":true,
+            "feature_discovery_planner":true,
             "command_enabled_probe":true,
             "inspected_command_invoke":true,
             "effect_parameter_dom":"not_claimed",
@@ -116,6 +119,27 @@ impl InspectedCommand{
     }
 }
 
+pub fn feature_queries(feature:&str)->Result<&'static [&'static str],String>{
+    match feature {
+        "noise_reduction" => Ok(&["noise","denoise","reduction"]),
+        "eq" => Ok(&["equalizer","parametric","eq"]),
+        "compressor" => Ok(&["compressor","compression","dynamics"]),
+        "loudness" => Ok(&["loudness","normalize","amplitude"]),
+        "export" => Ok(&["export","save","mixdown"]),
+        "multitrack" => Ok(&["multitrack","mix","track"]),
+        "voice_cleanup" => Ok(&["speech","voice","noise","dynamics"]),
+        _ => Err("Audition feature must be noise_reduction, eq, compressor, loudness, export, multitrack, or voice_cleanup.".into()),
+    }
+}
+
+pub fn validate_document_signature(value:&str)->Result<&str,String>{
+    let trimmed=value.trim();
+    if trimmed.is_empty()||trimmed.len()>1200||trimmed.chars().any(char::is_control){
+        return Err("Audition expected document signature must be 1..1200 characters without control characters.".into());
+    }
+    Ok(trimmed)
+}
+
 pub fn validate_playhead_percent(value:f64)->Result<f64,String>{
     if !value.is_finite()||!(0.0..=1.0).contains(&value){
         return Err("Audition playhead percent must be between 0 and 1.".into());
@@ -136,5 +160,11 @@ mod tests{
         assert_eq!(validate_playhead_percent(0.5).unwrap(),0.5);
         assert!(validate_playhead_percent(-0.1).is_err());
         assert!(validate_playhead_percent(1.1).is_err());
+    }
+    #[test]fn discovery_features_are_bounded(){
+        assert_eq!(feature_queries("noise_reduction").unwrap()[0],"noise");
+        assert!(feature_queries("unknown").is_err());
+        assert_eq!(validate_document_signature("WaveDocument|voice.wav|48000|1000").unwrap(),"WaveDocument|voice.wav|48000|1000");
+        assert!(validate_document_signature("").is_err());
     }
 }
