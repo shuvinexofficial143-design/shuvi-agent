@@ -23,6 +23,7 @@ function shuviAuditionInspectContext()
         durationSeconds: null,
         playheadSamples: null,
         playheadSeconds: null,
+        documentSignature: "no_document",
         runtimeVerified: false
     };
 
@@ -48,6 +49,12 @@ function shuviAuditionInspectContext()
             if (out.playheadSamples !== null) out.playheadSeconds = out.playheadSamples / out.sampleRate;
         }
     }
+
+    out.documentSignature = shuviAuditionBoundString(
+        [out.documentType || "", out.documentName || "", out.sampleRate == null ? "" : out.sampleRate,
+         out.durationSamples == null ? "" : out.durationSamples].join("|"),
+        1200
+    );
 
     return out;
 }
@@ -214,6 +221,31 @@ function shuviAuditionScriptDictionary(args)
     };
 }
 
+function shuviAuditionSearchCommands(args)
+{
+    var query = args && typeof args.query == "string" ? args.query.toLowerCase() : "";
+    if (!query.length || query.length > 120) throw new Error("Command search query must be 1 to 120 characters.");
+
+    var inventory = shuviAuditionListCommands();
+    var matches = [];
+    for (var i = 0; i < inventory.commands.length && matches.length < 100; ++i)
+    {
+        var row = inventory.commands[i];
+        var haystack = [row.property || "", row.value || "", row.help || ""].join(" ").toLowerCase();
+        if (haystack.indexOf(query) >= 0) matches.push(row);
+    }
+
+    return {
+        query: query,
+        count: matches.length,
+        maxMatches: 100,
+        truncated: matches.length >= 100,
+        commands: matches,
+        sourceCount: inventory.count,
+        runtimeVerified: false
+    };
+}
+
 function shuviAuditionResolveCommand(propertyName, commandValue)
 {
     if (typeof propertyName != "string" || typeof commandValue != "string")
@@ -248,6 +280,14 @@ function shuviAuditionCommandEnabled(args)
 function shuviAuditionInvokeCommand(args)
 {
     var commandValue = shuviAuditionResolveCommand(args.property, args.value);
+    var expectedSignature = args && typeof args.expectedDocumentSignature == "string" ? args.expectedDocumentSignature : "";
+    if (!expectedSignature.length || expectedSignature.length > 1200)
+        throw new Error("Exact expected Audition document signature is required.");
+
+    var context = shuviAuditionInspectContext();
+    if (context.documentSignature != expectedSignature)
+        throw new Error("Audition document changed; inspect context again before invoking the command.");
+
     var enabled = false;
     try { enabled = Boolean(app.isCommandEnabled(commandValue)); } catch (e0) { enabled = false; }
     if (!enabled) throw new Error("Audition reports that the inspected command is currently disabled.");
@@ -259,6 +299,8 @@ function shuviAuditionInvokeCommand(args)
         property: args.property,
         value: commandValue,
         enabledBefore: true,
+        expectedDocumentSignature: expectedSignature,
+        observedDocumentSignature: context.documentSignature,
         verificationStatus: "accepted_unverified_command_side_effect",
         retrySafe: false,
         runtimeVerified: false
@@ -270,6 +312,13 @@ function shuviAuditionSetPlayheadPercent(args)
     var percent = Number(args.percent);
     if (isNaN(percent) || percent < 0 || percent > 1)
         throw new Error("Playhead percent must be between 0 and 1.");
+
+    var expectedSignature = args && typeof args.expectedDocumentSignature == "string" ? args.expectedDocumentSignature : "";
+    if (!expectedSignature.length || expectedSignature.length > 1200)
+        throw new Error("Exact expected Audition document signature is required.");
+    var beforeContext = shuviAuditionInspectContext();
+    if (beforeContext.documentSignature != expectedSignature)
+        throw new Error("Audition document changed; inspect context again before moving the playhead.");
 
     var doc = null;
     try { doc = app.activeDocument; } catch (e0) { doc = null; }
@@ -288,6 +337,8 @@ function shuviAuditionSetPlayheadPercent(args)
 
     return {
         requestedPercent: percent,
+        expectedDocumentSignature: expectedSignature,
+        observedDocumentSignature: beforeContext.documentSignature,
         expectedSamples: expected,
         observedSamples: isNaN(observed) ? null : observed,
         verificationStatus: verified ? "verified_playhead_readback" : "accepted_unverified",
@@ -311,6 +362,7 @@ function shuviAuditionDispatch(action, encodedArgs)
         var data = null;
         if (action == "inspect_context") data = shuviAuditionInspectContext();
         else if (action == "list_commands") data = shuviAuditionListCommands();
+        else if (action == "search_commands") data = shuviAuditionSearchCommands(args);
         else if (action == "script_dictionary") data = shuviAuditionScriptDictionary(args);
         else if (action == "command_enabled") data = shuviAuditionCommandEnabled(args);
         else if (action == "set_playhead_percent") data = shuviAuditionSetPlayheadPercent(args);
