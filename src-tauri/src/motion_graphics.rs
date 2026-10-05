@@ -418,6 +418,18 @@ fn ae_interpolation(easing:Easing)->(&'static str,&'static str,bool){
     }
 }
 
+const AE_DEFAULT_EASE_SPEED:f64=0.0;
+const AE_DEFAULT_EASE_INFLUENCE:f64=33.333_333;
+
+fn ae_temporal_ease_sides(easing:Easing)->Option<(bool,bool)>{
+    match easing {
+        Easing::EaseIn=>Some((true,false)),
+        Easing::EaseOut=>Some((false,true)),
+        Easing::EaseInOut=>Some((true,true)),
+        Easing::Linear|Easing::Hold=>None,
+    }
+}
+
 fn ae_tracks_can_coalesce(first:&Track,second:&Track)->bool{
     first.keyframes.len()==second.keyframes.len()
         && first.keyframes.iter().zip(second.keyframes.iter()).all(|(a,b)|
@@ -441,7 +453,6 @@ impl AfterEffectsPlanRequest {
 
         let mut steps=Vec::<Value>::new();
         let mut blockers=Vec::<Value>::new();
-        let mut approximate_curves=0_usize;
         let create_comp_id="create_comp";
         push_ae_step(&mut steps,json!({
             "step_id":create_comp_id,
@@ -675,7 +686,6 @@ impl AfterEffectsPlanRequest {
 
                         for (key_index,keyframe) in track.keyframes.iter().enumerate() {
                             let (in_interpolation,out_interpolation,exact)=ae_interpolation(keyframe.easing);
-                            if !exact { approximate_curves+=1; }
                             let interpolation_id=format!("{prefix}_pair_t{track_index}_{other_index}_k{key_index}_interp");
                             push_ae_step(&mut steps,json!({
                                 "step_id":interpolation_id,
@@ -701,6 +711,37 @@ impl AfterEffectsPlanRequest {
                                 "checkpoint_required":true,
                                 "automatic_execution":false
                             }))?;
+                            if let Some((apply_in,apply_out))=ae_temporal_ease_sides(keyframe.easing) {
+                                let temporal_id=format!("{prefix}_pair_t{track_index}_{other_index}_k{key_index}_ease");
+                                push_ae_step(&mut steps,json!({
+                                    "step_id":temporal_id,
+                                    "scene_id":scene.id,
+                                    "layer_id":layer.id,
+                                    "property":pair_label,
+                                    "keyframe_index":key_index+1,
+                                    "host_action":"set_keyframe_temporal_ease_uniform",
+                                    "host_args":{
+                                        "property":property.clone(),
+                                        "key_index":key_index+1,
+                                        "expected_time_seconds":scene.start_seconds+keyframe.time_seconds,
+                                        "apply_in":apply_in,
+                                        "apply_out":apply_out,
+                                        "speed":AE_DEFAULT_EASE_SPEED,
+                                        "influence":AE_DEFAULT_EASE_INFLUENCE
+                                    },
+                                    "depends_on":[interpolation_id],
+                                    "coalesced_component_pair":true,
+                                    "curve_semantics_exact":true,
+                                    "temporal_ease_contract":"zero_speed_33_333333_influence",
+                                    "host_dimension_count_inferred":false,
+                                    "requires_verified_dependency_receipts":true,
+                                    "requires_fresh_inspection":true,
+                                    "requires_fresh_project_revision":true,
+                                    "requires_unique_request_id":true,
+                                    "checkpoint_required":true,
+                                    "automatic_execution":false
+                                }))?;
+                            }
                         }
                         continue;
                     }
@@ -752,7 +793,6 @@ impl AfterEffectsPlanRequest {
 
                     for (key_index,keyframe) in track.keyframes.iter().enumerate() {
                         let (in_interpolation,out_interpolation,exact)=ae_interpolation(keyframe.easing);
-                        if !exact { approximate_curves+=1; }
                         let interpolation_id=format!("{prefix}_t{track_index}_k{key_index}_interp");
                         push_ae_step(&mut steps,json!({
                             "step_id":interpolation_id,
@@ -786,6 +826,46 @@ impl AfterEffectsPlanRequest {
                             "checkpoint_required":true,
                             "automatic_execution":false
                         }))?;
+                        if let Some((apply_in,apply_out))=ae_temporal_ease_sides(keyframe.easing) {
+                            let temporal_id=format!("{prefix}_t{track_index}_k{key_index}_ease");
+                            let temporal_property=json!({
+                                "target":{
+                                    "comp_id":verified_receipt_ref(create_comp_id,"comp_id"),
+                                    "layer_id":verified_receipt_ref(&create_id,"layer_id")
+                                },
+                                "path":[
+                                    {"match_name":"ADBE Transform Group","property_index":null},
+                                    {"match_name":match_name,"property_index":null}
+                                ]
+                            });
+                            push_ae_step(&mut steps,json!({
+                                "step_id":temporal_id,
+                                "scene_id":scene.id,
+                                "layer_id":layer.id,
+                                "property":track.property,
+                                "keyframe_index":key_index+1,
+                                "host_action":"set_keyframe_temporal_ease_uniform",
+                                "host_args":{
+                                    "property":temporal_property,
+                                    "key_index":key_index+1,
+                                    "expected_time_seconds":scene.start_seconds+keyframe.time_seconds,
+                                    "apply_in":apply_in,
+                                    "apply_out":apply_out,
+                                    "speed":AE_DEFAULT_EASE_SPEED,
+                                    "influence":AE_DEFAULT_EASE_INFLUENCE
+                                },
+                                "depends_on":[interpolation_id],
+                                "curve_semantics_exact":true,
+                                "temporal_ease_contract":"zero_speed_33_333333_influence",
+                                "host_dimension_count_inferred":false,
+                                "requires_verified_dependency_receipts":true,
+                                "requires_fresh_inspection":true,
+                                "requires_fresh_project_revision":true,
+                                "requires_unique_request_id":true,
+                                "checkpoint_required":true,
+                                "automatic_execution":false
+                            }))?;
+                        }
                     }
                 }
             }
@@ -797,14 +877,6 @@ impl AfterEffectsPlanRequest {
                 "required":"The current adapter builds composition content only. A verified alpha-capable output-module/render-queue plan must be added before transparent-overlay delivery can be claimed."
             }));
         }
-        if approximate_curves>0 {
-            blockers.push(json!({
-                "code":"directional_easing_needs_temporal_ease_synthesis",
-                "affected_keyframes":approximate_curves,
-                "required":"ease_in/ease_out/ease_in_out now stage directional incoming/outgoing BEZIER interpolation correctly, but exact temporal speed/influence still requires bounded set_keyframe_temporal_ease synthesis and readback."
-            }));
-        }
-
         Ok(json!({
             "schema_version":1,
             "adapter":"after_effects",
@@ -983,8 +1055,21 @@ mod tests{
         assert_eq!(interpolation_steps[1]["host_args"]["out_type"],"linear");
         assert_eq!(interpolation_steps[2]["host_args"]["in_type"],"bezier");
         assert_eq!(interpolation_steps[2]["host_args"]["out_type"],"bezier");
-        assert_eq!(value["blockers"].as_array().unwrap().iter()
-            .find(|b|b["code"]=="directional_easing_needs_temporal_ease_synthesis").unwrap()["affected_keyframes"],3);
+        assert!(!value["blockers"].as_array().unwrap().iter()
+            .any(|b|b["code"]=="directional_easing_needs_temporal_ease_synthesis"));
+        let temporal_steps=value["steps"].as_array().unwrap().iter()
+            .filter(|step|step["host_action"]=="set_keyframe_temporal_ease_uniform").collect::<Vec<_>>();
+        assert_eq!(temporal_steps.len(),3);
+        assert_eq!(temporal_steps[0]["host_args"]["apply_in"],false);
+        assert_eq!(temporal_steps[0]["host_args"]["apply_out"],true);
+        assert_eq!(temporal_steps[1]["host_args"]["apply_in"],true);
+        assert_eq!(temporal_steps[1]["host_args"]["apply_out"],false);
+        assert_eq!(temporal_steps[2]["host_args"]["apply_in"],true);
+        assert_eq!(temporal_steps[2]["host_args"]["apply_out"],true);
+        assert_eq!(temporal_steps[0]["host_args"]["speed"],0.0);
+        assert_eq!(temporal_steps[0]["host_args"]["influence"],33.333_333);
+        assert!(temporal_steps.iter().all(|step|step["host_dimension_count_inferred"]==false));
+        assert!(temporal_steps.iter().all(|step|step["host_args"].get("in_ease").is_none()));
     }
 
     #[test]
