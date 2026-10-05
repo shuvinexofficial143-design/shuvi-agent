@@ -31,7 +31,7 @@ export function commandPlan(scope){
 
 function run(command,args){
   const started=Date.now();
-  const result=spawnSync(command,args,{cwd:process.cwd(),encoding:"utf8",stdio:["ignore","pipe","pipe"],shell:false});
+  const result=spawnSync(command,args,{cwd:process.cwd(),encoding:"utf8",stdio:["ignore","pipe","pipe"],shell:false,maxBuffer:32*1024*1024});
   return {
     exit_code:typeof result.status==="number"?result.status:null,
     signal:result.signal??null,
