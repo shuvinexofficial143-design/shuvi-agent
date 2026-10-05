@@ -2,6 +2,7 @@ use crate::motion_graphics::{DeliveryKind,Plan,RemotionPlanRequest};
 use crate::motion_graphics_remotion::EvidenceRequest;
 use serde::{Deserialize,Serialize};
 use serde_json::Value;
+use sha2::{Digest,Sha256};
 use std::{collections::BTreeMap,fs,path::{Path,PathBuf}};
 use uuid::Uuid;
 
@@ -37,6 +38,15 @@ pub struct ExecutionRequest{
 
 fn default_timeout_ms()->u64{15*60*1000}
 
+pub fn planned_manifest_sha256(plan:&Plan,asset_paths:&BTreeMap<String,String>)->Result<String,String>{
+    let manifest=RemotionPlanRequest{plan:plan.clone(),asset_paths:asset_paths.clone()}.plan()?;
+    let mut bytes=serde_json::to_vec_pretty(&manifest).map_err(|e|e.to_string())?;
+    bytes.push(b'\n');
+    let mut hash=Sha256::new();
+    hash.update(&bytes);
+    Ok(format!("{:x}",hash.finalize()))
+}
+
 #[derive(Debug,Clone,Serialize)]
 pub struct PreparedExecution{
     pub job_id:String,
@@ -44,6 +54,7 @@ pub struct PreparedExecution{
     pub node_program:String,
     pub render_script:String,
     pub manifest_path:String,
+    pub manifest_sha256:String,
     pub output_file:String,
     pub evidence_path:String,
     pub preview_dir:String,
@@ -153,6 +164,9 @@ pub fn prepare(request:&ExecutionRequest)->Result<PreparedExecution,String>{
     let manifest_path=job_dir.join("manifest.json");
     let mut manifest_bytes=serde_json::to_vec_pretty(&manifest).map_err(|e|e.to_string())?;
     manifest_bytes.push(b'\n');
+    let mut manifest_hash=Sha256::new();
+    manifest_hash.update(&manifest_bytes);
+    let manifest_sha256=format!("{:x}",manifest_hash.finalize());
     fs::write(&manifest_path,manifest_bytes).map_err(|e|format!("Could not write deterministic Remotion manifest: {e}"))?;
     let evidence_path=job_dir.join("evidence.json");
 
@@ -162,6 +176,7 @@ pub fn prepare(request:&ExecutionRequest)->Result<PreparedExecution,String>{
         node_program,
         render_script:job_dir.join("render.mjs").display().to_string(),
         manifest_path:manifest_path.display().to_string(),
+        manifest_sha256,
         output_file:output.display().to_string(),
         evidence_path:evidence_path.display().to_string(),
         preview_dir:preview.display().to_string(),
