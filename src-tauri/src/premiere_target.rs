@@ -62,7 +62,8 @@ impl PremiereClient<'_> {
             if !matches!(action, "save_project" | "create_bin" | "rename_project_item" | "move_project_item"
                 | "relink_media" | "prepare_media_item" | "attach_proxy" | "import_media"
                 | "set_source_inout" | "clear_source_inout" | "create_subclip" | "transcribe_item"
-                | "import_transcript" | "create_sequence_from_media" | "create_sequence_from_preset")
+                | "import_transcript" | "create_sequence_from_media" | "create_sequence_from_preset"
+                | "media_encoder_encode_project_item")
                 && expected.sequence_guid.is_none() {
                 return Err("Timeline mutation requires an inspected sequence GUID.".into());
             }
@@ -93,7 +94,8 @@ impl PremiereClient<'_> {
         }
         // Recheck after the capability/identity await, immediately before enqueueing.
         // This narrows the race; Adobe still receives a path and offers no exclusive handle.
-        if matches!(action,"export_sequence"|"export_sequence_frame"|"export_interchange") {
+        if matches!(action,"export_sequence"|"export_sequence_frame"|"export_interchange"
+            |"media_encoder_encode_file"|"media_encoder_encode_project_item") {
             let output=arguments.get("output").and_then(Value::as_str).ok_or("Export output missing.")?;
             let overwrite=arguments.get("overwrite").and_then(Value::as_bool).ok_or("Export overwrite policy missing.")?;
             crate::premiere_delivery::validate_output_file(output,overwrite)?;
@@ -114,7 +116,10 @@ pub fn mutation_requires_expectation(action: &str) -> bool {
         | "list_video_transitions" | "list_video_effects" | "inspect_clip_effects"
         | "list_audio_effects" | "inspect_audio_clip_effects" | "list_markers"
         | "inspect_export" | "inspect_keyframes" | "inspect_effect_lifecycle"
-        | "inspect_clip_speed" | "plan_clip_speed" | "set_playhead")
+        | "inspect_clip_speed" | "plan_clip_speed" | "set_playhead"
+        | "media_encoder_status" | "media_encoder_events" | "media_encoder_launch"
+        | "media_encoder_start_batch" | "media_encoder_set_xmp" | "media_encoder_inspect_preset"
+        | "media_encoder_encode_file")
 }
 
 #[cfg(test)]
