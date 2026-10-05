@@ -43,7 +43,8 @@ test("motion graphics docs do not overclaim renderer or visual review readiness"
   assert.match(status,/Source runtime verification: \*\*not verified\*\*/);
   assert.match(status,/Production ready: \*\*false\*\*/);
   assert.match(status,/No renderer is launched/);
-  assert.match(status,/Dedicated single-frame review remains available/);\n  assert.match(status,/receipt-bound multi-frame review now compares 2–8 ordered Remotion sample frames/);
+  assert.match(status,/Dedicated single-frame review remains available/);
+  assert.match(status,/receipt-bound multi-frame review now compares 2–8 ordered Remotion sample frames/);
   assert.match(status,/does not prove that After Effects\/Remotion produced it/);
   assert.match(status,/persistent multi-iteration correction session is not yet implemented/);
 });
@@ -190,7 +191,7 @@ test("receipt-bound multi-frame Remotion review is bounded and never auto-fixes"
   assert.match(rust,/multi_frame_review_completed":true/);
   assert.match(rust,/renderer_provenance_verified":accepted\.runtime_process_provenance_verified/);
   assert.match(review,/multi_frame_prompt/);
-  assert.match(review,/frame_times_seconds\\.len\\(\\)<2\\|\\|frame_times_seconds\\.len\\(\\)>MAX_MULTI_REVIEW_FRAMES/);
+  assert.match(review,/frame_times_seconds\.len\(\)<2\|\|frame_times_seconds\.len\(\)>MAX_MULTI_REVIEW_FRAMES/);
   assert.match(review,/unsupplied frame time/);
   assert.match(review,/Do not claim audio, renderer process provenance, export correctness, alpha correctness, or unsampled motion/);
   assert.match(evidence,/MAX_MULTI_REVIEW_FRAMES:usize=8/);
