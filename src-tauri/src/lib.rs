@@ -286,6 +286,11 @@ Cross-track clone computes native vertical offsets from inspected source/destina
 - premiere_add_marker: {"name":"marker name","marker_type":"Comment|Chapter|Segmentation|WebLink","seconds":10.0,"duration_seconds":0.0,"comments":"optional notes"}
 - premiere_remove_marker: {"marker_index":0}
 - premiere_export_sequence: {"output":"absolute output media path","preset":"optional absolute .epr preset path","queue_to_ame":false}
+- media_encoder_status: {}
+- media_encoder_events: {"limit":20}
+- media_encoder_launch: {}
+- media_encoder_start_batch: {}
+- media_encoder_set_xmp: {"embedded":true,"sidecar":false}
 - premiere_plan_interchange_export: {"request":{"format":"aaf|fcpxml|otio","output":"absolute output file","overwrite":false,"suppress_ui":true,"aaf_options":"required only for aaf; exact documented fields"}}
 - premiere_export_fcpxml: {"request":{"format":"fcpxml","output":"absolute output file","overwrite":false,"suppress_ui":true,"aaf_options":null},"expected":{"project_guid":"...","sequence_guid":"...","clips":[]}}
 - premiere_export_otio: {"request":{"format":"otio","output":"absolute output file","overwrite":false,"suppress_ui":true,"aaf_options":null},"expected":{"project_guid":"...","sequence_guid":"...","clips":[]}}
@@ -343,6 +348,7 @@ Rules:
 - Use run_project_task instead of raw shell commands when test/build/lint/typecheck is enough.
 - For browser/app UI work, prefer a Shuvi-managed browser when isolation matters, then use window-scoped semantic UI tools first. Use ui_toggle and ui_expand_collapse for supported controls. ui_send_keys is a high-risk fallback only after an exact element is focused and semantic patterns are unavailable. pointer_click is a final high-risk coordinate fallback: inspect_screen first, use coordinates only when semantic UI/DOM control cannot target the control, and never repeat a failed coordinate click blindly.
 - For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_timeline/premiere_list_items/premiere_project_tree for inspection, premiere_set_playhead for non-destructive navigation, premiere_inspect_frame for playhead-positioned visual review and premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media/premiere_insert_media/premiere_save_project for native editing. premiere_insert_media, premiere_trim_clip, premiere_roll_edit, premiere_move_clip, premiere_clone_clip, premiere_delete_clip, premiere_add_video_transition, premiere_add_video_effect, premiere_set_effect_param, premiere_add_effect_keyframe, premiere_add_audio_effect, premiere_set_audio_effect_param and premiere_add_audio_effect_keyframe are high risk because they change the timeline or effect state; premiere_insert_mogrt_path and premiere_insert_mogrt_library are high risk because they add graphics to the timeline; premiere_export_sequence is high risk because it writes media and may start encoding; inspect the timeline first when practical. Unsupported native capabilities must fail clearly; never bypass their safety gates with UI automation. Use visual inspection only as observational evidence. Major sequence creation and timeline insert/overwrite actions automatically save and copy the current .prproj into a sibling 'Shuvi Backups' folder before editing; the edit is refused if a saved local project cannot be checkpointed.
+- Media Encoder control currently uses Premiere UXP EncoderManager: inspect status/events first; launch is separate from starting the queue; starting a batch is high risk and must never be blindly retried. AME queue/progress events are observational until an exact Shuvi request-to-native-job correlation is proven. Direct Media Encoder UXP remains a future adapter while Adobe's AME UXP surface is public beta.
 - Project diagnostics are read-only and bounded. Inspect traversal/truncation and unknown status fields before interpreting counts; proxy attachment does not establish proxy health and duplicate path candidates are not authorization to delete/relink.
 - Graphics plans must use inspected primitive types without coercion or semantic-name inference. Copy settings and expected into premiere_apply_video_recipe; skipped fields were not applied.
 - Saved graphics mappings require an inspected reference clip and explicit caller-defined roles; saving checks every native field. Template provenance is caller-supplied, not inferred. List mappings to obtain the revision before updating/deleting/applying. Batch graphics and lower thirds share one executor for title/chapter/CTA/price/location cards. Use clear existing video/audio tracks. All mapped roles need values. Duration only shortens video-only native graphics; no extension or inferred linked audio. Batches checkpoint once and return partial results; uncertain delivery must never be blindly retried.
@@ -631,6 +637,11 @@ enum ToolAction {
     PremiereOrganizeTracks { request: premiere_layering::TrackOrganization },
     PremiereDeleteClip { kind: String, track: u32, clip_index: u32, ripple: bool },
     PremierePlanExport { output: String, preset: Option<String>, queue_to_ame: bool, overwrite: bool },
+    MediaEncoderStatus,
+    MediaEncoderEvents { limit: u32 },
+    MediaEncoderLaunch,
+    MediaEncoderStartBatch,
+    MediaEncoderSetXmp { embedded: Option<bool>, sidecar: Option<bool> },
     PremiereAcceptanceReport,
     PremiereAcceptanceProbe { group: u8 },
     PremiereAcceptanceRegisterDisposable { project_guid: String, project_path: String, sequence_guid: Option<String> },
@@ -1231,6 +1242,11 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_organize_tracks"
         | "premiere_delete_clip"
         | "premiere_export_sequence"
+        | "media_encoder_status"
+        | "media_encoder_events"
+        | "media_encoder_launch"
+        | "media_encoder_start_batch"
+        | "media_encoder_set_xmp"
         | "premiere_plan_interchange_export"
         | "premiere_export_fcpxml"
         | "premiere_export_otio"
@@ -5545,6 +5561,41 @@ fn stage_tool(
         }
         "premiere_readiness_report" => (ToolAction::PremiereReadinessReport,
             "Read Premiere production readiness gates".into(),"Report code, mock, Rust, native runtime, recovery and export completion separately.".into(),RiskLevel::Low),
+        "media_encoder_status" => (
+            ToolAction::MediaEncoderStatus,
+            "Inspect Adobe Media Encoder capability".into(),
+            "Read installed/available EncoderManager controls and retained observational event state; no render is started.".into(),
+            RiskLevel::Low,
+        ),
+        "media_encoder_events" => {
+            let limit=proposal.arguments.get("limit").and_then(Value::as_u64).unwrap_or(20);
+            if !(1..=100).contains(&limit){return Err("Media Encoder event limit must be 1..100.".into());}
+            (ToolAction::MediaEncoderEvents {limit:limit as u32},
+                "Inspect Adobe Media Encoder events".into(),
+                "Read-only bounded AME queue/progress/complete/error/cancel event journal. Events are not automatically correlated to a Shuvi export request.".into(),
+                RiskLevel::Low)
+        }
+        "media_encoder_launch" => (
+            ToolAction::MediaEncoderLaunch,
+            "Launch Adobe Media Encoder".into(),
+            "Ask Premiere EncoderManager to launch AME. Host acceptance is not proof that AME finished opening.".into(),
+            RiskLevel::Medium,
+        ),
+        "media_encoder_start_batch" => (
+            ToolAction::MediaEncoderStartBatch,
+            "Start Adobe Media Encoder queue".into(),
+            "Start the existing AME batch queue. This may write every queued output; completion must be observed separately and the action is not blindly retry-safe.".into(),
+            RiskLevel::High,
+        ),
+        "media_encoder_set_xmp" => {
+            let embedded=match proposal.arguments.get("embedded"){Some(Value::Bool(v))=>Some(*v),Some(_)=>return Err("embedded must be boolean.".into()),None=>None};
+            let sidecar=match proposal.arguments.get("sidecar"){Some(Value::Bool(v))=>Some(*v),Some(_)=>return Err("sidecar must be boolean.".into()),None=>None};
+            if embedded.is_none()&&sidecar.is_none(){return Err("Set embedded and/or sidecar XMP.".into());}
+            (ToolAction::MediaEncoderSetXmp {embedded,sidecar},
+                "Configure Media Encoder XMP export settings".into(),
+                "Set documented EncoderManager XMP flags. The API exposes setters but no independent getter, so acceptance remains unverified state.".into(),
+                RiskLevel::Medium)
+        }
         "premiere_export_sequence" => {
             let output = arg_string(&proposal.arguments, "output")?;
             let preset = arg_optional_string(&proposal.arguments, "preset");
@@ -12265,6 +12316,34 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }).to_string(),
                 stderr:String::new(),exit_code:Some(if requests_accepted{0}else{1})
             })
+        }
+        ToolAction::MediaEncoderStatus => {
+            let value=premiere_bridge.request("media_encoder_status",json!({}),Duration::from_secs(12)).await?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MediaEncoderEvents {limit} => {
+            let value=premiere_bridge.request("media_encoder_events",json!({"limit":limit}),Duration::from_secs(12)).await?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MediaEncoderLaunch => {
+            let value=premiere_bridge.request("media_encoder_launch",json!({}),Duration::from_secs(20)).await?;
+            let accepted=value.get("accepted").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{success:accepted,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(if accepted{0}else{1})})
+        }
+        ToolAction::MediaEncoderStartBatch => {
+            let value=premiere_bridge.request("media_encoder_start_batch",json!({}),Duration::from_secs(20)).await?;
+            let accepted=value.get("accepted").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{success:accepted,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(if accepted{0}else{1})})
+        }
+        ToolAction::MediaEncoderSetXmp {embedded,sidecar} => {
+            let value=premiere_bridge.request("media_encoder_set_xmp",json!({"embedded":embedded,"sidecar":sidecar}),Duration::from_secs(20)).await?;
+            let accepted=value.get("accepted").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{success:accepted,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(if accepted{0}else{1})})
         }
         ToolAction::PremierePlanExport {output,preset,queue_to_ame,overwrite} => {
             let context=premiere_bridge.request("inspect_export",json!({}),Duration::from_secs(12)).await?;
