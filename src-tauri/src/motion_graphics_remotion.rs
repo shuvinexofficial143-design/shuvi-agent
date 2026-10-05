@@ -15,6 +15,8 @@ const MAX_PREVIEW_BYTES:u64=12*1024*1024;
 const MAX_PREVIEW_FRAMES:usize=32;
 const MAX_ASSET_SNAPSHOTS:usize=8_192;
 const MAX_PATH_CHARS:usize=4_096;
+const MAX_REVIEW_FRAME_BYTES:u64=8*1024*1024;
+const MAX_MULTI_REVIEW_FRAMES:usize=8;
 
 #[derive(Debug,Clone,Serialize,Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -45,6 +47,15 @@ pub struct PreviewFrameEvidence {
     pub file:String,
     pub bytes:u64,
     pub sha256:String,
+}
+
+#[derive(Debug,Clone)]
+pub struct StagedPreviewFrame {
+    pub requested_time_seconds:f64,
+    pub rendered_time_seconds:f64,
+    pub file:String,
+    pub sha256:String,
+    pub bytes:Vec<u8>,
 }
 
 #[derive(Debug,Clone,Serialize,Deserialize)]
@@ -332,6 +343,32 @@ pub fn verify(request:&EvidenceRequest)->Result<AcceptedEvidence,String>{
     })
 }
 
+pub fn verify_and_stage_review(request:&EvidenceRequest)->Result<(AcceptedEvidence,Vec<StagedPreviewFrame>),String>{
+    let accepted=verify(request)?;
+    if accepted.preview_frames.len()<2||accepted.preview_frames.len()>MAX_MULTI_REVIEW_FRAMES{
+        return Err(format!("Remotion multi-frame review requires 2..={MAX_MULTI_REVIEW_FRAMES} verified preview frames."));
+    }
+    let mut staged=Vec::with_capacity(accepted.preview_frames.len());
+    for (index,row) in accepted.preview_frames.iter().enumerate(){
+        let path=validate_path_text(&row.file,"Remotion review frame path")?;
+        let bytes=bounded_read(&path,MAX_REVIEW_FRAME_BYTES,"Remotion review frame")?;
+        if bytes.len()<8||&bytes[..8]!=b"\x89PNG\r\n\x1a\n"{
+            return Err(format!("Remotion review frame {index} lost its PNG signature after evidence verification."));
+        }
+        if bytes.len() as u64!=row.bytes||sha256_bytes(&bytes)!=row.sha256.to_ascii_lowercase(){
+            return Err(format!("Remotion review frame {index} changed after evidence verification."));
+        }
+        staged.push(StagedPreviewFrame{
+            requested_time_seconds:row.requested_time_seconds,
+            rendered_time_seconds:row.rendered_time_seconds,
+            file:row.file.clone(),
+            sha256:row.sha256.clone(),
+            bytes,
+        });
+    }
+    Ok((accepted,staged))
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -405,6 +442,9 @@ mod tests{
         assert!(accepted.receipt_binding_verified);
         assert!(accepted.preview_files_sha256_verified);
         assert!(!accepted.runtime_process_provenance_verified);
+        let (_,frames)=verify_and_stage_review(&request).unwrap();
+        assert_eq!(frames.len(),2);
+        assert_eq!(frames[0].requested_time_seconds,0.5);
         assert!(!accepted.production_ready);
         fs::remove_dir_all(dir).unwrap();
     }
