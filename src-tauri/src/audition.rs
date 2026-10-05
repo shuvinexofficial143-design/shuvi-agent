@@ -1,6 +1,6 @@
 use serde::{Deserialize,Serialize};
-use serde_json::json;
-use std::{fs,path::Path};
+use serde_json::{json,Value};
+use std::{collections::BTreeMap,fs,path::Path};
 
 const MAX_COMMAND:usize=240;
 
@@ -133,6 +133,50 @@ pub fn feature_queries(feature:&str)->Result<&'static [&'static str],String>{
     }
 }
 
+pub fn rank_feature_commands(feature:&str,inventories:&[Value])->Result<Vec<Value>,String>{
+    let allowed_queries=feature_queries(feature)?;
+    let mut by_identity:BTreeMap<(String,String),(u32,Vec<String>,String)>=BTreeMap::new();
+
+    for inventory in inventories.iter().take(8){
+        let query=inventory.get("query").and_then(Value::as_str).unwrap_or("").to_ascii_lowercase();
+        if !allowed_queries.iter().any(|allowed|*allowed==query){continue;}
+        let Some(rows)=inventory.get("commands").and_then(Value::as_array) else{continue;};
+
+        for row in rows.iter().take(100){
+            let Some(property)=row.get("property").and_then(Value::as_str) else{continue;};
+            let Some(value)=row.get("value").and_then(Value::as_str) else{continue;};
+            if property.is_empty()||value.is_empty()||property.len()>MAX_COMMAND||value.len()>MAX_COMMAND{continue;}
+            let help=row.get("help").and_then(Value::as_str).unwrap_or("");
+            let property_l=property.to_ascii_lowercase();
+            let value_l=value.to_ascii_lowercase();
+            let help_l=help.to_ascii_lowercase();
+
+            let mut score=1_u32;
+            if property_l.contains(&query){score=score.saturating_add(4);}
+            if value_l.contains(&query){score=score.saturating_add(4);}
+            if help_l.contains(&query){score=score.saturating_add(2);}
+
+            let entry=by_identity.entry((property.to_string(),value.to_string()))
+                .or_insert_with(||(0,Vec::new(),help.chars().take(500).collect()));
+            entry.0=entry.0.saturating_add(score);
+            if !entry.1.iter().any(|existing|existing==&query){entry.1.push(query.clone());}
+        }
+    }
+
+    let mut ranked=by_identity.into_iter().map(|((property,value),(score,query_hits,help))|
+        json!({"property":property,"value":value,"help":help,"score":score,"query_hits":query_hits})
+    ).collect::<Vec<_>>();
+    ranked.sort_by(|a,b|{
+        let a_score=a.get("score").and_then(Value::as_u64).unwrap_or(0);
+        let b_score=b.get("score").and_then(Value::as_u64).unwrap_or(0);
+        b_score.cmp(&a_score).then_with(||
+            a.get("property").and_then(Value::as_str).unwrap_or("")
+                .cmp(b.get("property").and_then(Value::as_str).unwrap_or("")))
+    });
+    ranked.truncate(32);
+    Ok(ranked)
+}
+
 pub fn validate_document_signature(value:&str)->Result<&str,String>{
     let trimmed=value.trim();
     if trimmed.is_empty()||trimmed.len()>1200||trimmed.chars().any(char::is_control){
@@ -167,5 +211,19 @@ mod tests{
         assert!(feature_queries("unknown").is_err());
         assert_eq!(validate_document_signature("WaveDocument|voice.wav|48000|1000").unwrap(),"WaveDocument|voice.wav|48000|1000");
         assert!(validate_document_signature("").is_err());
+    }
+    #[test]fn feature_command_ranking_deduplicates_and_scores_live_matches(){
+        let inventories=vec![
+            json!({"query":"noise","commands":[
+                {"property":"COMMAND_effect_noise","value":"effect.noise","help":"Noise Reduction"},
+                {"property":"COMMAND_other","value":"other","help":"Noise helper"}]}),
+            json!({"query":"reduction","commands":[
+                {"property":"COMMAND_effect_noise","value":"effect.noise","help":"Noise Reduction"}]})
+        ];
+        let ranked=rank_feature_commands("noise_reduction",&inventories).unwrap();
+        assert_eq!(ranked.len(),2);
+        assert_eq!(ranked[0]["property"],"COMMAND_effect_noise");
+        assert!(ranked[0]["score"].as_u64().unwrap()>ranked[1]["score"].as_u64().unwrap());
+        assert!(rank_feature_commands("unknown",&inventories).is_err());
     }
 }
