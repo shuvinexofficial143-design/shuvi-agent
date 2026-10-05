@@ -188,7 +188,7 @@ test("AE unresolved dispatch survives timeout and blocks blind next run",()=>{
 test("AE readiness never promotes unexecuted source to production",()=>{
   assert.match(rust,/pub fn readiness_report/);
   assert.match(rust,/"windows_after_effects_runtime":\{"state":"not_verified"/);
-  assert.match(rust,/"render_completion":\{"state":"not_verified"/);
+  assert.match(rust,/"render_completion":\{"state":"source_implemented_runtime_unverified","media_parse_source_implemented":true,"media_decode_verified":false/);
   assert.match(rust,/"production_ready":false/);
   assert.match(rust,/"current_source_revision_bound":false/);
   assert.match(lib,/- after_effects_readiness_report: \{\}/);
