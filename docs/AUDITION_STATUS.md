@@ -14,6 +14,7 @@
 - ExtendScript context inspection for active document type and WaveDocument sample-rate/duration/playhead.
 - Bounded live application command inventory discovered from Application.reflect.properties where property names begin with COMMAND_.
 - Exact command-enabled probe using the live Application property/value pair.
+- Active-document signatures are returned by context inspection; playhead changes and generic command invocation require the same inspected signature so a stale document is rejected.
 - Exact generic command invocation using app.isCommandEnabled then app.invokeCommand.
 - Generic command invocation remains accepted-unverified, high-risk and non-retry-safe.
 - WaveDocument playhead movement by normalized percent with native playhead sample readback.
@@ -23,6 +24,7 @@
 
 - A command cannot be invoked by the CEP panel until the current pairing has listed the live command inventory and cached the exact property/value pair.
 - A live Application[property] value mismatch blocks the command.
+- A changed Audition document signature blocks guarded mutations.
 - Disabled commands are not invoked.
 - The generic command route does not claim the command's side effect was verified.
 - No blind retry is allowed after generic command acceptance.
