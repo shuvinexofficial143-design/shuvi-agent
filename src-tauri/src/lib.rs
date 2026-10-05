@@ -12361,6 +12361,30 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 stderr:String::new(),exit_code:Some(if requests_accepted{0}else{1})
             })
         }
+        ToolAction::PremierePlanExport {output,preset,queue_to_ame,overwrite} => {
+            let context=premiere_bridge.request("inspect_export",json!({}),Duration::from_secs(12)).await?;
+            let project=context.get("projectGuid").and_then(Value::as_str).filter(|v|!v.is_empty()).ok_or("Premiere project GUID unavailable.")?;
+            let sequence=context.get("sequenceGuid").and_then(Value::as_str).filter(|v|!v.is_empty()).ok_or("Premiere sequence GUID unavailable.")?;
+            let local=premiere_export::inspect(&output,preset.as_deref(),overwrite,context.get("projectPath").and_then(Value::as_str))?;
+            let ame=context.get("ameAvailable").and_then(Value::as_bool).unwrap_or(false);
+            let mut warnings=local.warnings.clone();
+            if queue_to_ame && !ame {warnings.push("Adobe Media Encoder is unavailable.".into());}
+            if preset.is_none() {warnings.push("Premiere default export settings are not inspectable here; no codec or bitrate is inferred.".into());}
+            let value=json!({"executable":local.executable && (!queue_to_ame || ame),
+                "output":local.output,"output_exists":local.output_exists,"parent_exists":local.parent_exists,
+                "preset":local.preset,"preset_exists":local.preset_exists,"overwrite":overwrite,
+                "warnings":warnings,"ame_required":queue_to_ame,"ame_available":ame,
+                "project":{"guid":project,"path":context.get("projectPath")},
+                "sequence":{"guid":sequence,"name":context.get("sequenceName")},
+                "expected":{"project_guid":project,"project_path":context.get("projectPath"),"sequence_guid":sequence,"clips":[]},
+                "default_preset_details_inspectable":false,
+                "collision_protection":premiere_delivery::collision_protection(),
+                "unique_output_candidate":premiere_delivery::unique_output_candidate(&output)?,
+                "unique_output_reserved":false,
+                "note":"Adobe's boolean export result does not prove finished media encoding."});
+            Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
         ToolAction::MediaEncoderStatus => {
             let value=premiere_bridge.request("media_encoder_status",json!({}),Duration::from_secs(12)).await?;
             Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
@@ -12434,30 +12458,6 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "output_observation":observed,"completion_verified":false,"retry_automatically":false
                 })).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(if accepted{0}else{1})})
-        }
-        ToolAction::PremierePlanExport {output,preset,queue_to_ame,overwrite} => {
-            let context=premiere_bridge.request("inspect_export",json!({}),Duration::from_secs(12)).await?;
-            let project=context.get("projectGuid").and_then(Value::as_str).filter(|v|!v.is_empty()).ok_or("Premiere project GUID unavailable.")?;
-            let sequence=context.get("sequenceGuid").and_then(Value::as_str).filter(|v|!v.is_empty()).ok_or("Premiere sequence GUID unavailable.")?;
-            let local=premiere_export::inspect(&output,preset.as_deref(),overwrite,context.get("projectPath").and_then(Value::as_str))?;
-            let ame=context.get("ameAvailable").and_then(Value::as_bool).unwrap_or(false);
-            let mut warnings=local.warnings.clone();
-            if queue_to_ame && !ame {warnings.push("Adobe Media Encoder is unavailable.".into());}
-            if preset.is_none() {warnings.push("Premiere default export settings are not inspectable here; no codec or bitrate is inferred.".into());}
-            let value=json!({"executable":local.executable && (!queue_to_ame || ame),
-                "output":local.output,"output_exists":local.output_exists,"parent_exists":local.parent_exists,
-                "preset":local.preset,"preset_exists":local.preset_exists,"overwrite":overwrite,
-                "warnings":warnings,"ame_required":queue_to_ame,"ame_available":ame,
-                "project":{"guid":project,"path":context.get("projectPath")},
-                "sequence":{"guid":sequence,"name":context.get("sequenceName")},
-                "expected":{"project_guid":project,"project_path":context.get("projectPath"),"sequence_guid":sequence,"clips":[]},
-                "default_preset_details_inspectable":false,
-                "collision_protection":premiere_delivery::collision_protection(),
-                "unique_output_candidate":premiere_delivery::unique_output_candidate(&output)?,
-                "unique_output_reserved":false,
-                "note":"Adobe's boolean export result does not prove finished media encoding."});
-            Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
-                stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::PremiereExportSequence { output, preset, queue_to_ame, overwrite } => {
             let context=premiere_bridge.request("inspect_export",json!({}),Duration::from_secs(12)).await?;
