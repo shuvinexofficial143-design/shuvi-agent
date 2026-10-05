@@ -42,3 +42,20 @@ test("motion graphics docs do not overclaim renderer or visual review readiness"
   assert.match(status,/No renderer is launched/);
   assert.match(status,/Image\/frame review is not yet wired/);
 });
+
+
+test("After Effects adapter plan stays staged and guarded",()=>{
+  assert.match(rust,/motion_graphics_plan_after_effects/);
+  assert.match(rust,/MotionGraphicsPlanAfterEffects/);
+  assert.match(motion,/AfterEffectsPlanRequest/);
+  assert.match(motion,/automatic_execution":false/);
+  assert.match(motion,/host_mutation_performed":false/);
+  assert.match(motion,/requires_fresh_project_revision":true/);
+  assert.match(motion,/requires_unique_request_id":true/);
+  assert.match(motion,/\$verified_receipt/);
+  assert.match(motion,/vector_transform_readback_required/);
+  assert.match(motion,/missing_inspected_asset_item_id/);
+  assert.match(motion,/shape_visual_spec_missing/);
+  assert.match(motion,/transparent_render_output_not_planned/);
+  assert.match(motion,/directional_easing_needs_temporal_ease_synthesis/);
+});
