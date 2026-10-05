@@ -100,6 +100,21 @@
           rememberCommands(result);
           return result;
         });
+      case "search_commands":
+        var commandQuery = args.query == null ? "" : String(args.query);
+        if (!commandQuery.length || commandQuery.length > 120) {
+          return Promise.reject(new Error("Command search query must be 1 to 120 characters."));
+        }
+        return evalHost("search_commands", {query: commandQuery}).then(function (result) {
+          var rows = result && result.commands instanceof Array ? result.commands : [];
+          for (var i = 0; i < rows.length; i += 1) {
+            var row = rows[i];
+            if (row && typeof row.property === "string" && typeof row.value === "string") {
+              inspectedCommands[commandKey(row.property, row.value)] = true;
+            }
+          }
+          return result;
+        });
       case "script_dictionary":
         var query = args.query == null ? "" : String(args.query);
         var maxClasses = args.maxClasses == null ? 64 : Number(args.maxClasses);
@@ -115,10 +130,20 @@
         if (typeof args.percent !== "number" || !isFinite(args.percent) || args.percent < 0 || args.percent > 1) {
           return Promise.reject(new Error("Playhead percent must be between 0 and 1."));
         }
-        return evalHost("set_playhead_percent", {percent: args.percent});
+        if (typeof args.expectedDocumentSignature !== "string" || !args.expectedDocumentSignature.length || args.expectedDocumentSignature.length > 1200) {
+          return Promise.reject(new Error("Exact expected Audition document signature is required."));
+        }
+        return evalHost("set_playhead_percent", {percent: args.percent, expectedDocumentSignature: args.expectedDocumentSignature});
       case "invoke_command":
         requireInspectedCommand(args);
-        return evalHost("invoke_command", {property: args.property, value: args.value});
+        if (typeof args.expectedDocumentSignature !== "string" || !args.expectedDocumentSignature.length || args.expectedDocumentSignature.length > 1200) {
+          return Promise.reject(new Error("Exact expected Audition document signature is required."));
+        }
+        return evalHost("invoke_command", {
+          property: args.property,
+          value: args.value,
+          expectedDocumentSignature: args.expectedDocumentSignature
+        });
       default:
         return Promise.reject(new Error("Unsupported Shuvi Audition command: " + command.action));
     }
