@@ -93,6 +93,127 @@ function shuviAuditionListCommands()
     };
 }
 
+function shuviAuditionDictionaryMember(member)
+{
+    var out = {
+        name: null,
+        type: null,
+        dataType: null,
+        help: null,
+        description: null
+    };
+    try { out.name = shuviAuditionBoundString(member.name, 160); } catch (e0) {}
+    try { out.type = shuviAuditionBoundString(member.type, 80); } catch (e1) {}
+    try { out.dataType = shuviAuditionBoundString(member.dataType, 160); } catch (e2) {}
+    try { out.help = shuviAuditionBoundString(member.help, 500); } catch (e3) {}
+    try { out.description = shuviAuditionBoundString(member.description, 1000); } catch (e4) {}
+    return out;
+}
+
+function shuviAuditionDictionaryMembers(items, maxItems)
+{
+    var output = [];
+    var sourceLength = items && typeof items.length == "number" ? items.length : 0;
+    var limit = Math.min(sourceLength, maxItems);
+    for (var i = 0; i < limit; ++i)
+    {
+        output.push(shuviAuditionDictionaryMember(items[i]));
+    }
+    return {
+        count: output.length,
+        sourceCount: sourceLength,
+        truncated: sourceLength > limit,
+        items: output
+    };
+}
+
+function shuviAuditionScriptDictionary(args)
+{
+    var query = "";
+    if (args && typeof args.query == "string")
+    {
+        query = args.query.toLowerCase();
+        if (query.length > 120) throw new Error("Script Dictionary query exceeds 120 characters.");
+    }
+
+    var maxClasses = Number(args && args.maxClasses != null ? args.maxClasses : 64);
+    if (isNaN(maxClasses) || Math.floor(maxClasses) != maxClasses || maxClasses < 1 || maxClasses > 128)
+        throw new Error("Script Dictionary maxClasses must be an integer from 1 to 128.");
+
+    var groups = $.dictionary.getGroups();
+    var groupNames = [];
+    var rawGroups = groups && typeof groups.length == "number" ? groups : [];
+    for (var g = 0; g < rawGroups.length && groupNames.length < 64; ++g)
+    {
+        var groupValue = rawGroups[g];
+        var groupName = "";
+        if (groupValue && typeof groupValue.length == "number" && typeof groupValue != "string")
+            groupName = groupValue.length ? String(groupValue[0]) : "";
+        else
+            groupName = String(groupValue || "");
+        if (groupName.length) groupNames.push(shuviAuditionBoundString(groupName, 160));
+    }
+    if (!groupNames.length) groupNames.push("");
+
+    var seen = {};
+    var classes = [];
+    var scannedClasses = 0;
+    var truncated = false;
+
+    for (var gi = 0; gi < groupNames.length; ++gi)
+    {
+        var names = $.dictionary.getClasses(groupNames[gi]);
+        if (!names || typeof names.length != "number") continue;
+
+        for (var ci = 0; ci < names.length; ++ci)
+        {
+            scannedClasses += 1;
+            var rawName = String(names[ci] || "");
+            var className = rawName.split("\t")[0];
+            if (!className.length || seen[className]) continue;
+            seen[className] = true;
+
+            if (query.length && className.toLowerCase().indexOf(query) < 0) continue;
+            if (classes.length >= maxClasses)
+            {
+                truncated = true;
+                break;
+            }
+
+            var ref = $.dictionary.getClass(className);
+            if (!ref) continue;
+
+            classes.push({
+                name: shuviAuditionBoundString(className, 160),
+                group: shuviAuditionBoundString(groupNames[gi], 160),
+                help: shuviAuditionBoundString(ref.help || "", 500),
+                description: shuviAuditionBoundString(ref.description || "", 1000),
+                staticProperties: shuviAuditionDictionaryMembers(ref.staticProperties, 64),
+                staticMethods: shuviAuditionDictionaryMembers(ref.staticMethods, 64),
+                properties: shuviAuditionDictionaryMembers(ref.properties, 64),
+                methods: shuviAuditionDictionaryMembers(ref.methods, 64)
+            });
+        }
+        if (truncated) break;
+    }
+
+    return {
+        schemaVersion: 1,
+        query: query,
+        groupCount: groupNames.length,
+        groups: groupNames,
+        scannedClasses: scannedClasses,
+        returnedClasses: classes.length,
+        maxClasses: maxClasses,
+        maxMembersPerCategory: 64,
+        truncated: truncated,
+        classes: classes,
+        source: "$.dictionary",
+        readOnly: true,
+        runtimeVerified: false
+    };
+}
+
 function shuviAuditionResolveCommand(propertyName, commandValue)
 {
     if (typeof propertyName != "string" || typeof commandValue != "string")
@@ -190,6 +311,7 @@ function shuviAuditionDispatch(action, encodedArgs)
         var data = null;
         if (action == "inspect_context") data = shuviAuditionInspectContext();
         else if (action == "list_commands") data = shuviAuditionListCommands();
+        else if (action == "script_dictionary") data = shuviAuditionScriptDictionary(args);
         else if (action == "command_enabled") data = shuviAuditionCommandEnabled(args);
         else if (action == "set_playhead_percent") data = shuviAuditionSetPlayheadPercent(args);
         else if (action == "invoke_command") data = shuviAuditionInvokeCommand(args);
