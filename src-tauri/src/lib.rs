@@ -8657,10 +8657,12 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::MotionGraphicsReviewPreview {preview_path,preview_bytes,sample_time_seconds,plan,provider} => {
+            let plan_snapshot=plan.fingerprint()?;
             let prompt=motion_graphics_review::review_prompt(&plan,sample_time_seconds)?;
             let analysis=analyze_png_bytes_with_provider(&provider,&prompt,&preview_bytes).await?;
             let review=motion_graphics_review::parse_review(&plan,&analysis)?;
             let value=json!({
+                "plan_snapshot":plan_snapshot,
                 "review":review,
                 "sample_time_seconds":sample_time_seconds,
                 "preview_path":preview_path,
