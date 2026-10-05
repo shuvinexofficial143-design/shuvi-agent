@@ -27,6 +27,7 @@ use keyring::Entry;
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use sysinfo::{Pid, System};
 use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
@@ -2931,9 +2932,10 @@ fn stage_tool(
             request.validate()?;
             let plan_snapshot=request.plan.fingerprint()?;
             let manifest_sha256=motion_graphics_remotion_runtime::planned_manifest_sha256(&request.plan,&request.asset_paths)?;
+            let output_path_sha256=motion_path_sha256(&request.output_file);
             let detail=format!(
-                "Run Shuvi fixed Remotion renderer | plan_snapshot={} | manifest_sha256={} | output={} | runtime_dir={} | timeout_ms={} | writes media and evidence",
-                plan_snapshot,manifest_sha256,request.output_file,request.runtime_dir,request.timeout_ms
+                "Run Shuvi fixed Remotion renderer | plan_snapshot={} | manifest_sha256={} | output_path_sha256={} | timeout_ms={} | writes media and evidence",
+                plan_snapshot,manifest_sha256,output_path_sha256,request.timeout_ms
             );
             (ToolAction::MotionGraphicsRunRemotion {request},
                 "Render motion graphics with fixed Remotion runtime".into(),
@@ -6598,6 +6600,12 @@ fn now_ms() -> u64 {
         .min(u64::MAX as u128) as u64
 }
 
+fn motion_path_sha256(value:&str)->String{
+    let mut hash=Sha256::new();
+    hash.update(value.as_bytes());
+    format!("{:x}",hash.finalize())
+}
+
 fn audit_safe_action_detail(tool: &str, detail: &str) -> String {
     match tool {
         "powershell" => format!(
@@ -6842,7 +6850,7 @@ fn verify_remotion_action_receipt_binding(
     for token in [
         format!("plan_snapshot={plan_snapshot}"),
         format!("manifest_sha256={manifest_sha256}"),
-        format!("output={output_file}"),
+        format!("output_path_sha256={}",motion_path_sha256(output_file)),
     ]{
         if !receipt.detail.contains(&token){
             return Err("Remotion action audit receipt does not bind the exact approved plan, manifest, and output path.".into());
