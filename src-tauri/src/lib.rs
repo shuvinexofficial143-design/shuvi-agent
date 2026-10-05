@@ -175,7 +175,7 @@ Available tools:
 - motion_graphics_correction_session_record_renderer_approval: {"session_id":"UUID","action_id":"successful motion_graphics_run_remotion action UUID","evidence":{"plan":"exact revised Plan","asset_paths":{},"manifest_path":"absolute manifest","evidence_path":"absolute evidence"}} — freeze verified render evidence and bind it to the exact successful approved Remotion action before advancing the session
 - motion_graphics_correction_session_record_rerender: {"session_id":"UUID","action_id":"same approved render action UUID","evidence":{"plan":"exact revised Plan","asset_paths":{},"manifest_path":"absolute manifest","evidence_path":"absolute evidence"}} — reverify the same action/manifest/output hashes and move the session back to awaiting_review
 - motion_graphics_probe_remotion_alpha: {"request":{"evidence":{"plan":"exact transparent-overlay Plan","asset_paths":{},"manifest_path":"absolute manifest","evidence_path":"absolute evidence"},"ffprobe_executable":"absolute ffprobe executable"}} — approved read-only media probe; verifies the exact accepted MOV reports ProRes + yuva* pixel format and persists an action-bound alpha attestation
-- motion_graphics_accept_final_remotion: {"request":{"render_action_id":"successful exact render action UUID","evidence":{"plan":"exact Plan","asset_paths":{},"manifest_path":"absolute manifest","evidence_path":"absolute evidence"},"review":"exact passing MultiFrameReview","frame_times_seconds":[1,2],"alpha_probe_action_id":"required only for transparent overlay"}} — combine exact process audit binding, file hashes, passing multi-frame review, and alpha attestation when required
+- motion_graphics_accept_final_remotion: {"request":{"render_action_id":"successful exact render action UUID","review_action_id":"successful motion_graphics_review_remotion_frames action UUID","evidence":{"plan":"exact Plan","asset_paths":{},"manifest_path":"absolute manifest","evidence_path":"absolute evidence"},"review":"exact passing MultiFrameReview","frame_times_seconds":[1,2],"alpha_probe_action_id":"required only for transparent overlay"}} — combine exact render audit binding, audit-bound passing multi-frame review, file hashes, and alpha attestation when required
 - motion_graphics_plan_premiere_insertion: {"request":{"final_acceptance_action_id":"UUID from final acceptance","seconds":0,"video_track":0,"audio_track":0,"mode":"insert|overwrite"}} — return a normal permission-gated premiere_insert_media proposal from persisted final acceptance; never inserts automatically
 - audition_detect: {}
 - audition_launch: {}
@@ -3155,8 +3155,8 @@ fn stage_tool(
             let validated=request.validate()?;
             let final_render=validated.accepted.final_render.as_ref().ok_or("Final acceptance requires final render evidence.")?;
             let detail=format!(
-                "Accept exact Remotion delivery | render_action_id={} | plan_snapshot={} | manifest_sha256={} | output_sha256={} | output_path_sha256={}",
-                request.render_action_id,validated.plan_snapshot,validated.accepted.manifest_sha256,final_render.sha256,motion_path_sha256(&final_render.file)
+                "Accept exact Remotion delivery | render_action_id={} | review_action_id={} | plan_snapshot={} | manifest_sha256={} | output_sha256={} | output_path_sha256={}",
+                request.render_action_id,request.review_action_id,validated.plan_snapshot,validated.accepted.manifest_sha256,final_render.sha256,motion_path_sha256(&final_render.file)
             );
             (ToolAction::MotionGraphicsAcceptFinalRemotion {request,validated},
                 "Accept verified Remotion delivery".into(),detail,RiskLevel::Low)
@@ -6617,6 +6617,13 @@ fn motion_path_sha256(value:&str)->String{
     format!("{:x}",hash.finalize())
 }
 
+fn motion_json_sha256(value:&Value)->Result<String,String>{
+    let bytes=serde_json::to_vec(value).map_err(|e|format!("Could not encode motion audit JSON: {e}"))?;
+    let mut hash=Sha256::new();
+    hash.update(bytes);
+    Ok(format!("{:x}",hash.finalize()))
+}
+
 fn audit_safe_action_detail(tool: &str, detail: &str) -> String {
     match tool {
         "powershell" => format!(
@@ -6633,16 +6640,33 @@ fn audit_safe_action_detail(tool: &str, detail: &str) -> String {
 }
 
 fn successful_execution_audit_detail(tool:&str,base:&str,result:&ActionResult)->String{
-    if tool!="motion_graphics_run_remotion"||!result.success{return base.to_string();}
+    if !result.success{return base.to_string();}
     let Ok(value)=serde_json::from_str::<Value>(&result.stdout) else{
-        return format!("{base} | verified_output_sha256_unavailable");
+        return match tool{
+            "motion_graphics_run_remotion"=>format!("{base} | verified_output_sha256_unavailable"),
+            "motion_graphics_review_remotion_frames"=>format!("{base} | review_result_binding_unavailable"),
+            _=>base.to_string(),
+        };
     };
-    let output_sha=value.pointer("/receipt_evidence/final_render/sha256")
-        .and_then(Value::as_str)
-        .filter(|v|v.len()==64&&v.bytes().all(|b|b.is_ascii_hexdigit()));
-    match output_sha{
-        Some(hash)=>format!("{base} | verified_output_sha256={}",hash.to_ascii_lowercase()),
-        None=>format!("{base} | verified_output_sha256_unavailable"),
+    match tool{
+        "motion_graphics_run_remotion"=>{
+            let output_sha=value.pointer("/receipt_evidence/final_render/sha256")
+                .and_then(Value::as_str)
+                .filter(|v|v.len()==64&&v.bytes().all(|b|b.is_ascii_hexdigit()));
+            match output_sha{
+                Some(hash)=>format!("{base} | verified_output_sha256={}",hash.to_ascii_lowercase()),
+                None=>format!("{base} | verified_output_sha256_unavailable"),
+            }
+        }
+        "motion_graphics_review_remotion_frames"=>{
+            let Some(review)=value.get("review") else{return format!("{base} | review_result_binding_unavailable");};
+            let Ok(review_sha)=motion_json_sha256(review) else{return format!("{base} | review_result_binding_unavailable");};
+            let plan_snapshot=value.get("plan_snapshot").and_then(Value::as_str).unwrap_or("");
+            let manifest_sha=value.get("manifest_sha256").and_then(Value::as_str).unwrap_or("");
+            let verdict=review.get("verdict").and_then(Value::as_str).unwrap_or("");
+            format!("{base} | review_result_sha256={review_sha} | review_plan_snapshot={plan_snapshot} | review_manifest_sha256={manifest_sha} | review_verdict={verdict}")
+        }
+        _=>base.to_string(),
     }
 }
 
@@ -9664,6 +9688,17 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             }
             let _audit=verify_remotion_action_receipt_binding(
                 app,&request.render_action_id,&current.plan_snapshot,&current.accepted.manifest_sha256,&current_final.file,&current_final.sha256
+            )?;
+            let review_value=serde_json::to_value(&request.review)
+                .map_err(|e|format!("Could not encode final visual review for audit binding: {e}"))?;
+            let review_sha256=motion_json_sha256(&review_value)?;
+            let _review_audit=verify_motion_action_receipt_tokens(
+                app,&request.review_action_id,"motion_graphics_review_remotion_frames",&[
+                    format!("review_result_sha256={review_sha256}"),
+                    format!("review_plan_snapshot={}",current.plan_snapshot),
+                    format!("review_manifest_sha256={}",current.accepted.manifest_sha256),
+                    "review_verdict=pass".to_string(),
+                ]
             )?;
             let alpha_verified=if request.evidence.plan.delivery==motion_graphics::DeliveryKind::TransparentOverlay{
                 let alpha_id=request.alpha_probe_action_id.as_deref().ok_or("Transparent final acceptance requires alpha probe action ID.")?;
