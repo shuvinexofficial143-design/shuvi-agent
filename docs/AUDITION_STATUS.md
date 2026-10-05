@@ -22,7 +22,7 @@
 - Read-only live runtime probe that checks bridge connectivity, document context, command inventory, WaveDocument dictionary visibility and discovery counts for the main audio feature groups without editing audio.
 - Generic command receipts now retain bounded before/after document context while still refusing to call semantic audio changes verified.
 - Disposable acceptance registration is implemented for future real-host mutation testing. It stores the exact Audition version, document type/name and guarded document signature only after explicit disposable authorization.
-- Acceptance status and plan are read-only. The plan explicitly keeps destructive execution, semantic result verification and recovery verification unimplemented until a safe real-host path exists.
+- Acceptance status, plan and feature preflight are read-only. The preflight requires the exact registered disposable host/document identity, refreshes bounded live command/dictionary evidence, ranks candidates, rechecks enabled state, and never invokes a command. Destructive execution, semantic result verification and recovery verification remain unimplemented until a safe real-host path exists.
 
 ## Intentional safety limits
 
@@ -43,6 +43,6 @@
 
 1. Pair a compatible Audition host and run audition_runtime_probe plus feature discovery.
 2. Register only a throwaway test document with audition_acceptance_register_disposable and confirm audition_acceptance_status still matches the exact host/document.
-3. Review the live Script Dictionary and ranked command candidates, then add safe typed operations only for methods actually observed there.
+3. Run audition_acceptance_preflight for the target feature, review the refreshed Script Dictionary evidence, ranked candidates and enabled-state probes, then add safe typed operations only for methods actually observed there.
 4. Add checkpoint/output validation before any destructive acceptance execution is implemented.
 5. Run a disposable real-host acceptance suite before setting runtime_verified or production_ready.
