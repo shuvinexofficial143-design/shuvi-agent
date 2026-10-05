@@ -1,6 +1,7 @@
 use serde::{Deserialize,Serialize};
 use serde_json::{json,Value};
 use std::collections::{BTreeMap,HashSet};
+use std::path::Path;
 
 const MAX_OBJECTIVE_CHARS:usize=1_500;
 const MAX_SCENES:usize=64;
@@ -370,6 +371,109 @@ pub struct AfterEffectsPlanRequest {
     pub plan:Plan,
     #[serde(default)]
     pub asset_item_ids:BTreeMap<String,u32>,
+}
+
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AfterEffectsOutputPlanRequest {
+    pub project_file:String,
+    pub comp_id:u32,
+    pub output_file:String,
+    pub output_module_template:String,
+    #[serde(default)]
+    pub render_settings_template:Option<String>,
+    pub transparent_required:bool,
+}
+
+fn validate_ae_single_file_output(path:&str)->Result<(),String>{
+    validate_label(path,"After Effects output_file",4_096)?;
+    let value=Path::new(path);
+    if !value.is_absolute() {
+        return Err("After Effects output_file must be an absolute path.".into());
+    }
+    let extension=value.extension().and_then(|v|v.to_str()).unwrap_or("").to_ascii_lowercase();
+    if !matches!(extension.as_str(),"mov"|"mp4"|"m4v"|"m4a"|"avi"|"wav"|"png"|"jpg"|"jpeg") {
+        return Err("After Effects output_file must use a single-file extension supported by the guarded render route.".into());
+    }
+    Ok(())
+}
+
+impl AfterEffectsOutputPlanRequest {
+    pub fn plan(&self)->Result<Value,String>{
+        crate::after_effects::validate_project_path(&self.project_file)?;
+        if self.comp_id==0 {
+            return Err("After Effects output planning requires a non-zero inspected comp_id.".into());
+        }
+        validate_ae_single_file_output(&self.output_file)?;
+        validate_label(&self.output_module_template,"After Effects output module template",240)?;
+        if let Some(template)=self.render_settings_template.as_deref() {
+            validate_label(template,"After Effects render settings template",240)?;
+        }
+
+        let add_id="add_render_queue_item";
+        let mut add_args=json!({
+            "comp_id":self.comp_id,
+            "output_module_template":self.output_module_template,
+            "output_file":self.output_file
+        });
+        if let (Some(template),Value::Object(map))=(self.render_settings_template.as_deref(),&mut add_args) {
+            map.insert("render_settings_template".into(),json!(template));
+        }
+        let steps=vec![
+            json!({
+                "step_id":add_id,
+                "host_action":"add_render_queue_item",
+                "host_args":add_args,
+                "produces":{"queue_index":"result.queue_index"},
+                "requires_fresh_inspection":true,
+                "requires_fresh_project_revision":true,
+                "requires_unique_request_id":true,
+                "checkpoint_required":true,
+                "automatic_execution":false
+            }),
+            json!({
+                "step_id":"inspect_output_module",
+                "host_action":"inspect_output_module",
+                "host_args":{
+                    "queue_index":verified_receipt_ref(add_id,"queue_index"),
+                    "output_module_index":1
+                },
+                "depends_on":[add_id],
+                "requires_verified_dependency_receipts":true,
+                "requires_fresh_inspection":true,
+                "requires_exact_project_identity":true,
+                "automatic_execution":false
+            })
+        ];
+        let mut blockers=Vec::<Value>::new();
+        if self.transparent_required {
+            blockers.push(json!({
+                "code":"alpha_output_runtime_attestation_required",
+                "required":"Execute the approved queue-setup step, then inspect the exact output module. Transparent rendering remains blocked until runtime acceptance establishes that the exact host Format/Channels/Depth evidence is alpha-capable; template names or localized display strings alone are insufficient."
+            }));
+        }
+        Ok(json!({
+            "schema_version":1,
+            "adapter":"after_effects_output",
+            "project_file":self.project_file,
+            "comp_id":self.comp_id,
+            "output_file":self.output_file,
+            "transparent_required":self.transparent_required,
+            "steps":steps,
+            "blockers":blockers,
+            "step_count":steps.len(),
+            "blocker_count":blockers.len(),
+            "queue_setup_planned":true,
+            "output_module_inspection_planned":true,
+            "render_action_planned":false,
+            "host_mutation_performed":false,
+            "output_module_settings_runtime_verified":false,
+            "alpha_capability_verified":false,
+            "render_completion_verified":false,
+            "production_ready":false,
+            "evidence_contract":"Only inspect_output_module host readback may ground Format/Channels/Depth evidence. The planner never infers alpha from an output-module template name."
+        }))
+    }
 }
 
 fn verified_receipt_ref(step_id:&str,field:&str)->Value{
@@ -1198,6 +1302,45 @@ mod tests{
             tracks:vec![]
         });
         assert!(plan.validate().is_err());
+    }
+
+    #[test]
+    fn after_effects_output_planner_stages_queue_inspection_without_render_or_alpha_claim(){
+        let request=AfterEffectsOutputPlanRequest{
+            project_file:if cfg!(windows){r"C:\Work\motion.aep".into()}else{"/tmp/motion.aep".into()},
+            comp_id:42,
+            output_file:if cfg!(windows){r"C:\Work\motion-alpha.mov".into()}else{"/tmp/motion-alpha.mov".into()},
+            output_module_template:"Caller Selected Template".into(),
+            render_settings_template:Some("Best Settings".into()),
+            transparent_required:true,
+        };
+        let value=request.plan().unwrap();
+        assert_eq!(value["adapter"],"after_effects_output");
+        assert_eq!(value["render_action_planned"],false);
+        assert_eq!(value["alpha_capability_verified"],false);
+        assert_eq!(value["host_mutation_performed"],false);
+        let steps=value["steps"].as_array().unwrap();
+        assert_eq!(steps.len(),2);
+        assert_eq!(steps[0]["host_action"],"add_render_queue_item");
+        assert_eq!(steps[1]["host_action"],"inspect_output_module");
+        assert_eq!(steps[1]["host_args"]["queue_index"],verified_receipt_ref("add_render_queue_item","queue_index"));
+        assert!(value["blockers"].as_array().unwrap().iter()
+            .any(|b|b["code"]=="alpha_output_runtime_attestation_required"));
+    }
+
+    #[test]
+    fn after_effects_output_planner_rejects_relative_or_unsupported_output(){
+        let mut request=AfterEffectsOutputPlanRequest{
+            project_file:if cfg!(windows){r"C:\Work\motion.aep".into()}else{"/tmp/motion.aep".into()},
+            comp_id:42,
+            output_file:"relative.mov".into(),
+            output_module_template:"Template".into(),
+            render_settings_template:None,
+            transparent_required:false,
+        };
+        assert!(request.plan().unwrap_err().contains("absolute"));
+        request.output_file=if cfg!(windows){r"C:\Work\motion.gif".into()}else{"/tmp/motion.gif".into()};
+        assert!(request.plan().unwrap_err().contains("single-file extension"));
     }
 
     #[test]
