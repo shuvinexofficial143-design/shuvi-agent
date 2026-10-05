@@ -73,14 +73,14 @@
 - A valid plan does not prove visual quality, renderer compatibility, output persistence, or final export correctness.
 - Dedicated single-frame review remains available, and receipt-bound multi-frame review now compares 2–8 ordered Remotion sample frames in one vision request. Neither route proves that Shuvi itself launched the renderer process.
 - A single reviewed PNG does not prove that After Effects/Remotion produced it, that motion timing is correct, or that final export is valid.
-- A bounded correction-proposal step exists, but a persistent multi-iteration correction session is not yet implemented. Review suggestions/revised plans are returned as data and are never auto-applied.
+- A bounded correction-proposal step exists. A new source-only correction-session state machine now tracks exact plan snapshots, pass/revise review rounds, up to 3 correction attempts, explicit renderer-approval receipts, and re-render evidence while blocking stale snapshots and repeated failed revised snapshots. Persistence/tool wiring and automatic orchestration are still not implemented; revised plans are never auto-applied.
 - Renderer execution must remain behind Shuvi's permission/action layer.
 
 ## Next source phase
 
 1. Add a runtime-bound alpha acceptance/attestation contract that consumes exact `inspect_output_module` evidence without trusting template names or localized strings by themselves.
 2. Runtime-accept the managed Remotion action on an explicitly approved environment with Node and the exact pinned dependencies installed; source wiring is complete, but no real render/runtime claim should be made until that acceptance run succeeds.
-3. Add a persistent correction session that can consume bounded single-frame or receipt-bound multi-frame review results across review → proposal → approved renderer action → re-render → re-review, with no blind retries.
+3. Wire the new bounded correction-session state machine into persisted Shuvi tools so single-frame or receipt-bound multi-frame reviews can advance review → proposal → approved renderer action → re-render → re-review without blind retries.
 4. Add final runtime-process provenance and final output acceptance, then optional Premiere transparent-overlay insertion.
 5. Extend shape support only if a future requirement needs arbitrary path/Bézier geometry; rectangle/ellipse primitives are already source-planned.
 6. Make the default temporal-ease strength configurable only if a future product requirement needs renderer-neutral curve-strength controls; do not infer them from prose.
