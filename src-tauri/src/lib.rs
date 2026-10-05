@@ -167,6 +167,8 @@ Available tools:
 - motion_graphics_generate_correction: {"request":{"plan":"exact reviewed Plan object","plan_snapshot":"exact fnv1a64 snapshot from motion_graphics_review_preview","review":"exact revise VisualReview object","iteration":1,"max_iterations":3}} — ask the active provider once for a snapshot-bound full Plan revision; only animation tracks may change, never auto-run renderer mutations
 - motion_graphics_correction_session_start: {"plan_snapshot":"exact fnv1a64 snapshot from the reviewed plan","max_corrections":3} — create one bounded persisted correction session; does not review, correct, render, or apply anything automatically
 - motion_graphics_correction_session_status: {"session_id":"UUID returned by start"} — read the exact persisted correction-session state only
+- motion_graphics_correction_session_record_review: {"request":{"session_id":"UUID","plan":"exact reviewed Plan","kind":"single_frame|multi_frame","review":"exact strict review object","frame_times_seconds":[1,2]}} — revalidate the exact Plan/review evidence, then advance only the persisted correction-session state
+- motion_graphics_correction_session_record_correction: {"request":{"session_id":"UUID","prior_plan":"exact current Plan","revised_plan":"exact proposed revised Plan"}} — revalidate immutable correction constraints and exact snapshots, then record only the proposal; no renderer action is executed
 - audition_detect: {}
 - audition_launch: {}
 - audition_readiness_report: {}
@@ -559,6 +561,8 @@ enum ToolAction {
     MotionGraphicsGenerateCorrection { request: motion_graphics_correction::CorrectionRequest, provider: ProviderContext },
     MotionGraphicsCorrectionSessionStart { plan_snapshot:String, max_corrections:u8 },
     MotionGraphicsCorrectionSessionStatus { session_id:String },
+    MotionGraphicsCorrectionSessionRecordReview { request:motion_graphics_correction_session::ReviewRecordRequest },
+    MotionGraphicsCorrectionSessionRecordCorrection { request:motion_graphics_correction_session::CorrectionRecordRequest },
     AuditionDetect,
     AuditionLaunch,
     AuditionReadinessReport,
@@ -1195,6 +1199,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "motion_graphics_generate_correction"
         | "motion_graphics_correction_session_start"
         | "motion_graphics_correction_session_status"
+        | "motion_graphics_correction_session_record_review"
+        | "motion_graphics_correction_session_record_correction"
         | "audition_detect"
         | "audition_launch"
         | "audition_readiness_report"
@@ -3023,6 +3029,36 @@ fn stage_tool(
                 "Read motion correction session status".into(),
                 "Read one bounded persisted correction-session snapshot; no mutation.".into(),
                 RiskLevel::Low)
+        }
+        "motion_graphics_correction_session_record_review" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"motion_graphics_correction_session_record_review requires request.".to_string())?;
+            let request:motion_graphics_correction_session::ReviewRecordRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid motion correction review record: {e}"))?;
+            let summary=request.validate()?;
+            let detail=format!(
+                "Record exact validated {:?} review | session={} | snapshot={} | issues={} | no renderer execution",
+                summary.kind,request.session_id,summary.plan_snapshot,summary.issue_count
+            );
+            (ToolAction::MotionGraphicsCorrectionSessionRecordReview {request},
+                "Record motion correction review evidence".into(),
+                detail,
+                RiskLevel::Low)
+        }
+        "motion_graphics_correction_session_record_correction" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"motion_graphics_correction_session_record_correction requires request.".to_string())?;
+            let request:motion_graphics_correction_session::CorrectionRecordRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid motion correction proposal record: {e}"))?;
+            let summary=request.validate()?;
+            let detail=format!(
+                "Record validated correction proposal | session={} | prior={} | revised={} | no renderer execution",
+                request.session_id,summary.prior_plan_snapshot,summary.revised_plan_snapshot
+            );
+            (ToolAction::MotionGraphicsCorrectionSessionRecordCorrection {request},
+                "Record motion correction proposal".into(),
+                detail,
+                RiskLevel::Medium)
         }
         "audition_detect" => (
             ToolAction::AuditionDetect,
@@ -9196,6 +9232,57 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let path=motion_graphics_correction_session_path(app,&session_id)?;
             let session=motion_graphics_correction_session::load(&path)?;
             Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&session).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MotionGraphicsCorrectionSessionRecordReview {request} => {
+            let summary=request.validate()?;
+            let path=motion_graphics_correction_session_path(app,&request.session_id)?;
+            let mut session=motion_graphics_correction_session::load(&path)?;
+            if let Err(error)=session.record_review(summary.kind,summary.plan_snapshot.clone(),summary.verdict,summary.issue_count){
+                if session.status==motion_graphics_correction_session::SessionStatus::Stagnated {
+                    motion_graphics_correction_session::save(&path,&session)?;
+                }
+                return Err(error);
+            }
+            motion_graphics_correction_session::save(&path,&session)?;
+            let value=json!({
+                "session_id":session.session_id,
+                "status":session.status,
+                "review_round":session.review_round,
+                "plan_snapshot":summary.plan_snapshot,
+                "kind":summary.kind,
+                "verdict":summary.verdict,
+                "issue_count":summary.issue_count,
+                "correction_generation_performed":false,
+                "renderer_execution_performed":false
+            });
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MotionGraphicsCorrectionSessionRecordCorrection {request} => {
+            let summary=request.validate()?;
+            let path=motion_graphics_correction_session_path(app,&request.session_id)?;
+            let mut session=motion_graphics_correction_session::load(&path)?;
+            let iteration=match session.record_correction(summary.prior_plan_snapshot.clone(),summary.revised_plan_snapshot.clone()){
+                Ok(iteration)=>iteration,
+                Err(error)=>{
+                    if session.status==motion_graphics_correction_session::SessionStatus::Stagnated {
+                        motion_graphics_correction_session::save(&path,&session)?;
+                    }
+                    return Err(error);
+                }
+            };
+            motion_graphics_correction_session::save(&path,&session)?;
+            let value=json!({
+                "session_id":session.session_id,
+                "status":session.status,
+                "correction_iteration":iteration,
+                "prior_plan_snapshot":summary.prior_plan_snapshot,
+                "revised_plan_snapshot":summary.revised_plan_snapshot,
+                "renderer_approval_recorded":false,
+                "renderer_execution_performed":false
+            });
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::AuditionDetect => {
