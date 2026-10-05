@@ -230,6 +230,14 @@ test("motion correction session start and status persist bounded state without a
   assert.doesNotMatch(correctionSession,/Command::new/);
 });
 
+test("motion correction session can be cancelled without renderer execution",()=>{
+  assert.match(rust,/motion_graphics_correction_session_cancel/);
+  assert.match(rust,/MotionGraphicsCorrectionSessionCancel/);
+  assert.match(rust,/session\.cancel\(\)\?/);
+  assert.match(correctionSession,/SessionStatus::Cancelled/);
+  assert.doesNotMatch(correctionSession,/Command::new/);
+});
+
 test("motion correction session records exact reviews and proposals before renderer approval",()=>{
   assert.match(rust,/motion_graphics_correction_session_record_review/);
   assert.match(rust,/motion_graphics_correction_session_record_correction/);
@@ -261,6 +269,15 @@ test("correction session binds approved Remotion render and rerender evidence",(
   assert.match(correctionSession,/rerender_output_sha256/);
   assert.match(correctionSession,/Re-render evidence action_id does not match the approved renderer action/);
   assert.doesNotMatch(correctionSession,/Command::new/);
+});
+
+test("persisted delivery attestations require matching audit receipts",()=>{
+  assert.match(rust,/verify_motion_action_receipt_tokens/);
+  assert.match(rust,/motion_graphics_probe_remotion_alpha/);
+  assert.match(rust,/motion_graphics_accept_final_remotion/);
+  assert.match(rust,/output_path_sha256=/);
+  assert.match(rust,/motion_path_sha256/);
+  assert.match(rust,/Motion action audit receipt does not bind the exact persisted attestation evidence/);
 });
 
 test("final Remotion delivery requires real alpha evidence and keeps Premiere insertion approval-gated",()=>{
