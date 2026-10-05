@@ -82,3 +82,26 @@ test("Script Dictionary discovery does not promote effect controls",()=>{
   assert.match(model,/multitrack_mix_write":"not_claimed"/);
   assert.doesNotMatch(rust,/AuditionSetEffect/);
 });
+
+
+test("Audition command search and document guards are bounded",()=>{
+  assert.match(host,/function shuviAuditionSearchCommands/);
+  assert.match(host,/matches\.length < 100/);
+  assert.match(host,/documentSignature: "no_document"/);
+  assert.match(host,/context\.documentSignature != expectedSignature/);
+  assert.match(host,/Audition document changed; inspect context again/);
+  assert.match(panel,/case "search_commands"/);
+  assert.match(panel,/expectedDocumentSignature/);
+  assert.match(rust,/"audition_search_commands"/);
+  assert.match(rust,/expected_document_signature/);
+  assert.match(rust,/"document_identity_guarded":true/);
+});
+
+test("Audition generic mutation still requires live inventory and unchanged document",()=>{
+  assert.match(panel,/requireInspectedCommand\(args\)/);
+  assert.match(host,/shuviAuditionResolveCommand\(args\.property, args\.value\)/);
+  assert.match(host,/app\.isCommandEnabled\(commandValue\)/);
+  assert.match(host,/expectedDocumentSignature: expectedSignature/);
+  assert.match(host,/observedDocumentSignature: context\.documentSignature/);
+  assert.match(host,/accepted_unverified_command_side_effect/);
+});
