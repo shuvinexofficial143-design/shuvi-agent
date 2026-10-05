@@ -66,44 +66,49 @@ impl CorrectionRequest {
 
     pub fn validate_revision(&self,revised:&Plan)->Result<(),String>{
         self.validate()?;
-        revised.validate()?;
-        if revised.schema_version!=self.plan.schema_version
-            || revised.objective!=self.plan.objective
-            || revised.renderer!=self.plan.renderer
-            || (revised.duration_seconds-self.plan.duration_seconds).abs()>0.000_001
-            || revised.canvas.width!=self.plan.canvas.width
-            || revised.canvas.height!=self.plan.canvas.height
-            || (revised.canvas.fps-self.plan.canvas.fps).abs()>0.000_001
-            || revised.canvas.transparent_background!=self.plan.canvas.transparent_background
-            || revised.delivery!=self.plan.delivery {
-            return Err("Motion correction changed a fixed plan constraint.".into());
-        }
-        if revised.review.sample_times_seconds!=self.plan.review.sample_times_seconds
-            || revised.review.criteria!=self.plan.review.criteria {
-            return Err("Motion correction changed the review specification.".into());
-        }
-        if revised.scenes.len()!=self.plan.scenes.len() {
-            return Err("Motion correction changed scene topology.".into());
-        }
-        for (before,after) in self.plan.scenes.iter().zip(&revised.scenes) {
-            if before.id!=after.id
-                || (before.start_seconds-after.start_seconds).abs()>0.000_001
-                || (before.duration_seconds-after.duration_seconds).abs()>0.000_001
-                || before.layers.len()!=after.layers.len() {
-                return Err(format!("Motion correction changed scene topology for '{}'.",before.id));
-            }
-            for (old,new) in before.layers.iter().zip(&after.layers) {
-                if old.id!=new.id || old.kind!=new.kind || old.name!=new.name
-                    || old.text!=new.text || old.asset_id!=new.asset_id || old.shape!=new.shape {
-                    return Err(format!("Motion correction changed immutable layer identity/content for '{}'.",old.id));
-                }
-            }
-        }
-        if revised.fingerprint()?==self.plan_snapshot {
-            return Err("Motion correction provider returned the unchanged plan.".into());
-        }
-        Ok(())
+        validate_revision_constraints(&self.plan,revised)
     }
+}
+
+pub fn validate_revision_constraints(prior:&Plan,revised:&Plan)->Result<(),String>{
+    prior.validate()?;
+    revised.validate()?;
+    if revised.schema_version!=prior.schema_version
+        || revised.objective!=prior.objective
+        || revised.renderer!=prior.renderer
+        || (revised.duration_seconds-prior.duration_seconds).abs()>0.000_001
+        || revised.canvas.width!=prior.canvas.width
+        || revised.canvas.height!=prior.canvas.height
+        || (revised.canvas.fps-prior.canvas.fps).abs()>0.000_001
+        || revised.canvas.transparent_background!=prior.canvas.transparent_background
+        || revised.delivery!=prior.delivery {
+        return Err("Motion correction changed a fixed plan constraint.".into());
+    }
+    if revised.review.sample_times_seconds!=prior.review.sample_times_seconds
+        || revised.review.criteria!=prior.review.criteria {
+        return Err("Motion correction changed the review specification.".into());
+    }
+    if revised.scenes.len()!=prior.scenes.len() {
+        return Err("Motion correction changed scene topology.".into());
+    }
+    for (before,after) in prior.scenes.iter().zip(&revised.scenes) {
+        if before.id!=after.id
+            || (before.start_seconds-after.start_seconds).abs()>0.000_001
+            || (before.duration_seconds-after.duration_seconds).abs()>0.000_001
+            || before.layers.len()!=after.layers.len() {
+            return Err(format!("Motion correction changed scene topology for '{}'.",before.id));
+        }
+        for (old,new) in before.layers.iter().zip(&after.layers) {
+            if old.id!=new.id || old.kind!=new.kind || old.name!=new.name
+                || old.text!=new.text || old.asset_id!=new.asset_id || old.shape!=new.shape {
+                return Err(format!("Motion correction changed immutable layer identity/content for '{}'.",old.id));
+            }
+        }
+    }
+    if revised.fingerprint()?==prior.fingerprint()? {
+        return Err("Motion correction provider returned the unchanged plan.".into());
+    }
+    Ok(())
 }
 
 pub fn system_prompt()->&'static str{
