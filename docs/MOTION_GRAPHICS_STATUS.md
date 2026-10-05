@@ -67,6 +67,8 @@
 - Transparent-overlay queue setup and output-module evidence are now source-planned, but delivery is still not claimed until runtime alpha attestation maps exact host output settings to an accepted alpha-capable configuration and final render evidence is verified.
 - The deterministic Remotion manifest now includes its bounded review sample specification and can be consumed by the fixed `remotion-runtime/` source. Runtime execution is still permission-bound and has not been verified in packaged Shuvi on a real render yet.
 - Read-only `motion_graphics_accept_remotion_evidence` now verifies an exact regenerated manifest against the saved manifest, binds the runtime receipt to the manifest SHA-256, and re-hashes every referenced preview/final output file. It deliberately reports `runtime_process_provenance_verified=false`: receipt/file consistency is not proof that Shuvi launched the renderer process.
+- High-risk `motion_graphics_run_remotion` is now source-wired behind normal Shuvi approval. It materializes only compile-time embedded reviewed Remotion source, requires the exact pinned dependency versions, refuses output overwrite, registers the Node child as a managed process, enforces Shuvi's 4 GB hard RAM ceiling plus a bounded timeout, and accepts success only after the emitted receipt/final file re-pass SHA-256 evidence verification. No real render has been run in this source-only phase.
+- The managed route verifies dependency package versions but does not claim byte-level integrity of third-party `node_modules`; `dependency_source_integrity_verified=false` remains explicit until a stronger packaging/supply-chain attestation exists.
 - Provider plan generation has not yet been verified with a real API request in the packaged Shuvi runtime.
 - A valid plan does not prove visual quality, renderer compatibility, output persistence, or final export correctness.
 - Dedicated single-frame review remains available, and receipt-bound multi-frame review now compares 2–8 ordered Remotion sample frames in one vision request. Neither route proves that Shuvi itself launched the renderer process.
@@ -77,7 +79,7 @@
 ## Next source phase
 
 1. Add a runtime-bound alpha acceptance/attestation contract that consumes exact `inspect_output_module` evidence without trusting template names or localized strings by themselves.
-2. Wire the fixed reviewed `remotion-runtime/` into Shuvi's permission/action layer and runtime acceptance; arbitrary provider-generated renderer code remains forbidden.
+2. Runtime-accept the managed Remotion action on an explicitly approved environment with Node and the exact pinned dependencies installed; source wiring is complete, but no real render/runtime claim should be made until that acceptance run succeeds.
 3. Add a persistent correction session that can consume bounded single-frame or receipt-bound multi-frame review results across review → proposal → approved renderer action → re-render → re-review, with no blind retries.
 4. Add final runtime-process provenance and final output acceptance, then optional Premiere transparent-overlay insertion.
 5. Extend shape support only if a future requirement needs arbitrary path/Bézier geometry; rectangle/ellipse primitives are already source-planned.
