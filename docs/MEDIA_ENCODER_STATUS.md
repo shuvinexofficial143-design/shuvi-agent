@@ -9,10 +9,16 @@
 - Added documented batch-start control when Premiere exposes EncoderManager.startBatchEncode (26.3+).
 - Added embedded/sidecar XMP setters when the 26.3+ APIs are exposed.
 - Added bounded in-plugin event journal for queue, progress, complete, error and cancel events.
+- Added strict local .epr inspection: absolute existing regular non-symlink preset with bounded size.
+- Added host-side preset extension inspection through EncoderManager.getExportFileExtension when an active sequence is available.
+- Added typed standalone-file encoding through EncoderManager.encodeFile with explicit entire/in-out range handling.
+- Added typed inspected Premiere project-item encoding through EncoderManager.encodeProjectItem with entire/in-out/work-area range handling.
+- Output paths are rechecked immediately before dispatch, collisions are blocked unless overwrite was explicitly approved, and preset/output extensions are compared when Adobe exposes the preset extension.
 - Event rows retain only bounded job ID/progress/error/output-file fields.
-- Event evidence is observational and is **not** treated as exact Shuvi-export correlation.
+- Event evidence is observational and is **not** treated as exact Shuvi-export correlation. A single new queue event is retained only as an unverified candidate because another writer could have queued work concurrently.
 - Batch start is high risk and not blindly retry-safe.
 - Host acceptance never implies completed encoding or valid/playable media.
 - Direct Media Encoder UXP is not the production transport yet; Adobe documents that surface as public beta with Media Encoder 27.0+.
 - No heavy Adobe install/update is performed by source code.
-- Next source priorities: safe .epr extension/preset inspection, typed standalone-file/project-item encoding, stronger exact job ownership correlation, and real Windows/Premiere/AME acceptance testing.
+- Remaining source priority: exact job ownership cannot be proven through Premiere's boolean encodeFile/encodeProjectItem return values alone. Direct Media Encoder UXP 27.0+ returns native job IDs, but that API remains public beta and is not promoted to the production transport yet.
+- Next phase: real Windows/Premiere/AME acceptance testing, then evaluate an optional direct-AME UXP adapter for exact job IDs without weakening the stable Premiere route.
