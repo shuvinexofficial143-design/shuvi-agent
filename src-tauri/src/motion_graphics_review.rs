@@ -6,6 +6,7 @@ const MAX_REVIEW_ISSUES:usize=24;
 const MAX_REVIEW_TEXT_CHARS:usize=1_200;
 const MAX_REVIEW_ID_CHARS:usize=80;
 const MAX_REVIEW_JSON_BYTES:usize=128*1024;
+const MAX_REVIEW_ACTIVE_LAYERS:usize=512;
 
 #[derive(Debug,Clone,Copy,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="snake_case")]
@@ -73,6 +74,9 @@ pub fn review_prompt(plan:&Plan,sample_time_seconds:f64)->Result<String,String>{
             && sample_time_seconds<=scene.start_seconds+scene.duration_seconds+0.000_001)
         .flat_map(|scene|scene.layers.iter().map(|layer|layer.id.as_str()))
         .collect::<Vec<_>>();
+    if layer_ids.len()>MAX_REVIEW_ACTIVE_LAYERS {
+        return Err(format!("Motion preview review exceeds {MAX_REVIEW_ACTIVE_LAYERS} active layer IDs at one sample time."));
+    }
     let layer_ids=serde_json::to_string(&layer_ids).map_err(|e|e.to_string())?;
     Ok(format!(
         "Review this single motion-graphics preview frame at sample_time_seconds={sample_time_seconds}. Objective: {}. Review criteria are exactly {criteria}. Visible/active layer IDs at this time are {layer_ids}. Return exactly one raw JSON object with no markdown, prose, tool calls, or extra keys. Schema: {{\"schema_version\":1,\"verdict\":\"pass|revise\",\"issues\":[{{\"id\":\"short_ascii_id\",\"severity\":\"info|minor|major|blocking\",\"criterion\":\"exact criterion from the supplied list\",\"target_layer_id\":\"optional exact active layer id or null\",\"observation\":\"what is visibly wrong in this frame\",\"suggested_correction\":\"bounded high-level correction, not code or a tool call\"}}]}}. If verdict is pass, issues must be empty. If verdict is revise, issues must be non-empty. Judge only what is visibly supported by this frame. Do not claim timing, motion continuity, audio, renderer identity, export correctness, or off-frame content from a single image.",
