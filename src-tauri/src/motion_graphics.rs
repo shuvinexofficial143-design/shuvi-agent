@@ -384,19 +384,27 @@ fn push_ae_step(steps:&mut Vec<Value>,step:Value)->Result<(),String>{
     Ok(())
 }
 
-fn ae_track_match_name(property:Property)->Option<&'static str>{
+fn ae_track_match_name(property:Property)->&'static str{
     match property {
-        Property::Opacity=>Some("ADBE Opacity"),
-        Property::RotationDegrees=>Some("ADBE Rotate Z"),
-        Property::X|Property::Y|Property::ScaleX|Property::ScaleY=>None,
+        Property::Opacity=>"ADBE Opacity",
+        Property::RotationDegrees=>"ADBE Rotate Z",
+        Property::X|Property::Y=>"ADBE Position",
+        Property::ScaleX|Property::ScaleY=>"ADBE Scale",
+    }
+}
+
+fn ae_component_index(property:Property)->Option<usize>{
+    match property {
+        Property::X|Property::ScaleX=>Some(0),
+        Property::Y|Property::ScaleY=>Some(1),
+        Property::RotationDegrees|Property::Opacity=>None,
     }
 }
 
 fn ae_keyframe_value(property:Property,value:f64)->Value{
     match property {
-        Property::Opacity=>json!(value*100.0),
-        Property::RotationDegrees=>json!(value),
-        _=>Value::Null,
+        Property::Opacity|Property::ScaleX|Property::ScaleY=>json!(value*100.0),
+        Property::X|Property::Y|Property::RotationDegrees=>json!(value),
     }
 }
 
@@ -552,17 +560,39 @@ impl AfterEffectsPlanRequest {
                     "automatic_execution":false
                 }))?;
 
+                let has_x=layer.tracks.iter().any(|track|track.property==Property::X);
+                let has_y=layer.tracks.iter().any(|track|track.property==Property::Y);
+                let has_scale_x=layer.tracks.iter().any(|track|track.property==Property::ScaleX);
+                let has_scale_y=layer.tracks.iter().any(|track|track.property==Property::ScaleY);
+                let position_component_conflict=has_x&&has_y;
+                let scale_component_conflict=has_scale_x&&has_scale_y;
+                if position_component_conflict {
+                    blockers.push(json!({
+                        "code":"combined_vector_component_tracks_need_coalescing",
+                        "scene_id":scene.id,
+                        "layer_id":layer.id,
+                        "property":"position",
+                        "required":"X and Y share one After Effects Position property. Independent component timelines are refused until they are coalesced into one exact combined-property timeline with deterministic easing."
+                    }));
+                }
+                if scale_component_conflict {
+                    blockers.push(json!({
+                        "code":"combined_vector_component_tracks_need_coalescing",
+                        "scene_id":scene.id,
+                        "layer_id":layer.id,
+                        "property":"scale",
+                        "required":"ScaleX and ScaleY share one After Effects Scale property. Independent component timelines are refused until they are coalesced into one exact combined-property timeline with deterministic easing."
+                    }));
+                }
+
                 for (track_index,track) in layer.tracks.iter().enumerate() {
-                    let Some(match_name)=ae_track_match_name(track.property) else {
-                        blockers.push(json!({
-                            "code":"vector_transform_readback_required",
-                            "scene_id":scene.id,
-                            "layer_id":layer.id,
-                            "property":track.property,
-                            "required":"X/Y and per-axis scale tracks must first inspect the exact AE transform property dimensionality/separation and then synthesize full vector values. The adapter refuses to guess the other vector components."
-                        }));
+                    let component_index=ae_component_index(track.property);
+                    if component_index.is_some()
+                        && ((matches!(track.property,Property::X|Property::Y)&&position_component_conflict)
+                            || (matches!(track.property,Property::ScaleX|Property::ScaleY)&&scale_component_conflict)) {
                         continue;
-                    };
+                    }
+                    let match_name=ae_track_match_name(track.property);
                     let property=json!({
                         "target":{
                             "comp_id":verified_receipt_ref(create_comp_id,"comp_id"),
@@ -576,14 +606,27 @@ impl AfterEffectsPlanRequest {
                     let times=track.keyframes.iter().map(|keyframe|scene.start_seconds+keyframe.time_seconds).collect::<Vec<_>>();
                     let values=track.keyframes.iter().map(|keyframe|ae_keyframe_value(track.property,keyframe.value)).collect::<Vec<_>>();
                     let keys_id=format!("{prefix}_t{track_index}_keys");
+                    let (key_action,key_args)=if let Some(component_index)=component_index {
+                        ("set_component_values_at_times",json!({
+                            "property":property,
+                            "times":times,
+                            "values":values,
+                            "component_index":component_index,
+                            "expected_existing_key_times":[]
+                        }))
+                    } else {
+                        ("set_values_at_times",json!({"property":property,"times":times,"values":values}))
+                    };
                     push_ae_step(&mut steps,json!({
                         "step_id":keys_id,
                         "scene_id":scene.id,
                         "layer_id":layer.id,
                         "property":track.property,
-                        "host_action":"set_values_at_times",
-                        "host_args":{"property":property,"times":times,"values":values},
+                        "host_action":key_action,
+                        "host_args":key_args,
                         "depends_on":[create_id,timing_id],
+                        "preserves_unmodified_vector_components":component_index.is_some(),
+                        "requires_unseparated_dimensions":component_index.is_some(),
                         "requires_verified_dependency_receipts":true,
                         "requires_fresh_inspection":true,
                         "requires_fresh_project_revision":true,
@@ -767,7 +810,7 @@ mod tests{
     }
 
     #[test]
-    fn after_effects_adapter_refuses_to_guess_vector_components_or_missing_assets(){
+    fn after_effects_adapter_uses_component_readback_write_and_blocks_missing_assets(){
         let mut plan=valid_plan();
         plan.renderer=Renderer::AfterEffects;
         plan.delivery=DeliveryKind::StandaloneVideo;
@@ -787,10 +830,67 @@ mod tests{
         };
         let value=request.plan().unwrap();
         let blockers=value["blockers"].as_array().unwrap();
-        assert!(blockers.iter().any(|b|b["code"]=="vector_transform_readback_required"));
         assert!(blockers.iter().any(|b|b["code"]=="missing_inspected_asset_item_id"));
+        let component=value["steps"].as_array().unwrap().iter()
+            .find(|step|step["host_action"]=="set_component_values_at_times").unwrap();
+        assert_eq!(component["host_args"]["component_index"],0);
+        assert_eq!(component["host_args"]["expected_existing_key_times"],json!([]));
+        assert_eq!(component["host_args"]["values"],json!([10.0,20.0]));
+        assert_eq!(component["preserves_unmodified_vector_components"],true);
         assert!(!value["steps"].as_array().unwrap().iter().any(|step|
             step.get("layer_id").and_then(Value::as_str)==Some("photo") && step["host_action"]=="add_item_layer"));
+    }
+
+    #[test]
+    fn after_effects_adapter_blocks_conflicting_component_timelines_until_coalesced(){
+        let mut plan=valid_plan();
+        plan.renderer=Renderer::AfterEffects;
+        plan.delivery=DeliveryKind::StandaloneVideo;
+        plan.canvas.transparent_background=false;
+        plan.scenes[0].layers[0].tracks=vec![
+            Track{property:Property::X,keyframes:vec![
+                Keyframe{time_seconds:0.0,value:10.0,easing:Easing::Linear},
+                Keyframe{time_seconds:1.0,value:20.0,easing:Easing::Linear},
+            ]},
+            Track{property:Property::Y,keyframes:vec![
+                Keyframe{time_seconds:0.0,value:30.0,easing:Easing::Linear},
+                Keyframe{time_seconds:1.0,value:40.0,easing:Easing::Linear},
+            ]}
+        ];
+        let request=AfterEffectsPlanRequest{
+            project_file:if cfg!(windows){r"C:\Work\motion.aep".into()}else{"/tmp/motion.aep".into()},
+            composition_name:"Shuvi Motion".into(),
+            plan,
+            asset_item_ids:BTreeMap::new(),
+        };
+        let value=request.plan().unwrap();
+        assert!(value["blockers"].as_array().unwrap().iter()
+            .any(|b|b["code"]=="combined_vector_component_tracks_need_coalescing" && b["property"]=="position"));
+        assert!(!value["steps"].as_array().unwrap().iter()
+            .any(|step|step["host_action"]=="set_component_values_at_times"));
+    }
+
+    #[test]
+    fn after_effects_scale_component_converts_factor_to_percent(){
+        let mut plan=valid_plan();
+        plan.renderer=Renderer::AfterEffects;
+        plan.delivery=DeliveryKind::StandaloneVideo;
+        plan.canvas.transparent_background=false;
+        plan.scenes[0].layers[0].tracks=vec![Track{property:Property::ScaleX,keyframes:vec![
+            Keyframe{time_seconds:0.0,value:0.5,easing:Easing::Linear},
+            Keyframe{time_seconds:1.0,value:1.25,easing:Easing::Linear},
+        ]}];
+        let request=AfterEffectsPlanRequest{
+            project_file:if cfg!(windows){r"C:\Work\motion.aep".into()}else{"/tmp/motion.aep".into()},
+            composition_name:"Shuvi Motion".into(),
+            plan,
+            asset_item_ids:BTreeMap::new(),
+        };
+        let value=request.plan().unwrap();
+        let component=value["steps"].as_array().unwrap().iter()
+            .find(|step|step["host_action"]=="set_component_values_at_times").unwrap();
+        assert_eq!(component["host_args"]["component_index"],0);
+        assert_eq!(component["host_args"]["values"],json!([50.0,125.0]));
     }
 
     #[test]
