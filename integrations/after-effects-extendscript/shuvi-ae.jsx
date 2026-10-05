@@ -21,14 +21,16 @@
     function cloneValue(value, depth) {
         depth = depth || 0;
         if (depth > 8) fail("After Effects value exceeds serialization depth.");
-        if (value === null || typeof value === "string" || typeof value === "boolean" || typeof value === "number") return value;
+        if (value === null || typeof value === "boolean") return value;
+        if (typeof value === "number") {if(!finiteNumber(value))fail("After Effects value is non-finite.");return value;}
+        if (typeof value === "string") {if(value.length>16384)fail("After Effects value string exceeds 16 KiB.");return value;}
         if (value instanceof Array) {
             if (value.length > 64) fail("After Effects value array exceeds bound.");
             var out = [], i;
             for (i = 0; i < value.length; i++) out.push(cloneValue(value[i], depth + 1));
             return out;
         }
-        return String(value);
+        var text=String(value);if(text.length>16384)fail("After Effects serialized value exceeds 16 KiB.");return text;
     }
     function sameValue(a, b) {
         if (typeof a === "number" && typeof b === "number") return Math.abs(a - b) <= EPSILON;
@@ -1131,6 +1133,7 @@
                 if(typeof value!=="boolean")fail("depth_of_field must be boolean.");
                 value=value?1:0;
             }else if(!finiteNumber(value))fail(argKey+" must be finite.");
+            if(argKey==="iris_shape"&&Math.floor(value)!==value)fail("iris_shape must be an integer host enum.");
             validateBoundedProperty(p,value,label);
             requested.push({arg:argKey,propName:propName,label:label,value:value,before:cloneValue(p.value)});
         }
@@ -1235,6 +1238,7 @@
                 var k;for(k=0;k<3;k++)if(!finiteNumber(value[k])||value[k]<0||value[k]>1)fail("Light color values must be 0..1.");
                 value=[value[0],value[1],value[2]];
             }else if(!finiteNumber(value))fail(argKey+" must be finite.");
+            if(argKey==="falloff_type"&&Math.floor(value)!==value)fail("falloff_type must be an integer host enum.");
             validateBoundedProperty(p,value,label);
             requested.push({arg:argKey,propName:propName,label:label,value:value,before:cloneValue(p.value)});
         }
@@ -1598,8 +1602,10 @@
     }
     function setTextStyle(args) {
         var comp=resolveComp(args.comp_id),layer=resolveLayer(comp,args.layer_id);
+        if(layer.locked)fail("Text layer is locked.");
         var group=layer.property("ADBE Text Properties"),prop=group?group.property("ADBE Text Document"):null;
         if(!prop)fail("Target layer has no Source Text property.");
+        if(prop.numKeys>0||prop.expressionEnabled)fail("Static text style refuses existing keyframes or an enabled expression.");
         var doc=prop.value;
         if(args.text!==undefined){var text=String(args.text);if(text.length>16384)fail("Text exceeds 16 KiB.");doc.text=text;}
         if(args.font!==undefined)doc.font=boundedString(args.font,240,"font PostScript name");
@@ -2494,12 +2500,13 @@
         if(!(layer instanceof AVLayer)||!layer.hasAudio)fail("Target layer has no audio component.");
         var group=layer.property("ADBE Audio Group"),p=group?group.property("ADBE Audio Levels"):null;
         if(!p||!p.canVaryOverTime)fail("Audio Levels property is unavailable or non-animatable.");
+        if(String(p.matchName)!=="ADBE Audio Levels")fail("Audio Levels matchName changed.");
         return {layer:layer,property:p};
     }
     function validateAudioDb(p,value,label) {
         if(!finiteNumber(value)||Math.abs(value)>1000)fail(label+" must be a finite bounded dB value.");
-        try{if(p.hasMin&&value<p.minValue-EPSILON)fail(label+" is below the host Audio Levels minimum.");}catch(ignoreMin){}
-        try{if(p.hasMax&&value>p.maxValue+EPSILON)fail(label+" is above the host Audio Levels maximum.");}catch(ignoreMax){}
+        if(p.hasMin&&value<p.minValue-EPSILON)fail(label+" is below the host Audio Levels minimum.");
+        if(p.hasMax&&value>p.maxValue+EPSILON)fail(label+" is above the host Audio Levels maximum.");
         return value;
     }
     function inspectAudioLevels(args) {
@@ -2512,6 +2519,7 @@
     }
     function setAudioGain(args) {
         var comp=resolveComp(args.comp_id),resolved=audioLevelsProperty(comp,args.layer_id),p=resolved.property;
+        if(resolved.layer.locked||p.expressionEnabled)fail("Audio writes refuse locked layers or enabled expressions.");
         if(p.numKeys!==0)fail("Static audio gain refused because Audio Levels already has keyframes.");
         var left=validateAudioDb(p,args.left_db,"left_db"),right=args.right_db===undefined?left:validateAudioDb(p,args.right_db,"right_db");
         var requested=[left,right],before=cloneValue(p.value);
@@ -2524,6 +2532,7 @@
     }
     function applyAudioEnvelope(args) {
         var comp=resolveComp(args.comp_id),resolved=audioLevelsProperty(comp,args.layer_id),p=resolved.property,points=args.points;
+        if(resolved.layer.locked||p.expressionEnabled)fail("Audio writes refuse locked layers or enabled expressions.");
         if(p.numKeys!==0)fail("Audio envelope requires zero existing Audio Levels keyframes.");
         if(!(points instanceof Array)||points.length<2||points.length>512)fail("Audio envelope requires 2..512 points.");
         var times=[],values=[],previous=-1,i;
@@ -2818,7 +2827,8 @@
             if(!queue.rendering){
                 callbacksRestored=true;
                 for(j=0;j<before.length;j++){
-                    try{queue.item(before[j].queue_index).onStatusChanged=null;}
+                    try{queue.item(before[j].queue_index).onStatusChanged=null;
+                        if(queue.item(before[j].queue_index).onStatusChanged)callbacksRestored=false;}
                     catch(ignoreRestore){callbacksRestored=false;}
                 }
             }
@@ -2899,7 +2909,7 @@
             fail("Mutating After Effects action requires exact expected_project_file.");
         }
         var expectedRevision=request.expected_project_revision;
-        if(!finiteNumber(expectedRevision)||Math.floor(expectedRevision)!==expectedRevision||expectedRevision<1) {
+        if(!finiteNumber(expectedRevision)||Math.floor(expectedRevision)!==expectedRevision||expectedRevision<1||expectedRevision>9007199254740991) {
             fail("Mutating After Effects action requires exact expected_project_revision.");
         }
         var project = requireProject();
@@ -2912,9 +2922,11 @@
     }
     function dispatch(request) {
         if (!request || request.schema_version !== 1) fail("Unsupported Shuvi After Effects request schema.");
+        if(typeof request.request_id!=="string"||!/^[A-Za-z0-9_-]{1,80}$/.test(request.request_id))fail("Invalid After Effects request identity.");
         var action = boundedString(request.action, 80, "action");
         assertProjectExpectation(request, action);
         var args = request.args || {};
+        if(typeof args!=="object"||args instanceof Array)fail("After Effects args must be an object.");
         if (action === "inspect_context") return inspectContext();
         if (action === "inspect_project_items") return inspectProjectItems();
         if (action === "inspect_comp") return inspectComp(args);

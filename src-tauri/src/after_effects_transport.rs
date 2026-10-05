@@ -54,8 +54,11 @@ impl Request {
         if self.is_mutating() && self.expected_project_file.is_none() {
             return Err("Mutating After Effects action requires expected_project_file.".into());
         }
-        if self.is_mutating() && self.expected_project_revision.is_none_or(|v|v==0) {
+        if self.is_mutating() && self.expected_project_revision.is_none_or(|v|v==0||v>9_007_199_254_740_991) {
             return Err("Mutating After Effects action requires expected_project_revision.".into());
+        }
+        if !self.args.is_object() && !(self.is_read_only()&&self.args.is_null()) {
+            return Err("After Effects args must be an object (or null for read-only inspection).".into());
         }
         if let Some(path)=&self.expected_project_file {
             crate::after_effects::validate_project_path(path)?;
@@ -244,6 +247,13 @@ mod tests{
         assert!(mutation.is_mutating());
         let mut unknown=request();unknown.action="do_anything".into();
         assert!(unknown.validate().unwrap_err().contains("Unsupported typed"));
+    }
+    #[test]fn revision_and_args_remain_exact_in_javascript_transport(){
+        let mut x=request();x.action="add_null".into();
+        x.expected_project_file=Some(if cfg!(windows){r"C:\Work\edit.aep".into()}else{"/tmp/edit.aep".into()});
+        x.expected_project_revision=Some(9_007_199_254_740_992);assert!(x.validate().is_err());
+        x.expected_project_revision=Some(5);x.args=serde_json::json!([]);assert!(x.validate().is_err());
+        x.args=serde_json::json!({});assert!(x.validate().is_ok());
     }
 
     #[test]fn runner_uses_exact_request_identity_and_afterfx_r(){

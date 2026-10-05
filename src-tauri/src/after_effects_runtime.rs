@@ -13,6 +13,13 @@ fn regular_file(path:&Path,label:&str)->Result<(),String>{
     if !path.is_absolute(){return Err(format!("{label} must be an absolute path."));}
     let meta=fs::symlink_metadata(path).map_err(|e|format!("{label} unavailable: {e}"))?;
     if !meta.is_file()||meta.file_type().is_symlink(){return Err(format!("{label} must be a regular non-symlink file."));}
+    for ancestor in path.ancestors(){
+        let metadata=fs::symlink_metadata(ancestor).map_err(|e|format!("{label} path unavailable: {e}"))?;
+        if metadata.file_type().is_symlink(){return Err(format!("{label} path contains a symlink."));}
+        #[cfg(target_os="windows")]
+        {use std::os::windows::fs::MetadataExt;
+            if metadata.file_attributes()&0x400!=0{return Err(format!("{label} path contains a reparse point."));}}
+    }
     Ok(())
 }
 
@@ -67,10 +74,10 @@ fn trusted_preset_bytes(request:&Request)->Result<(Vec<u8>,Value),String>{
 }
 fn render_output_evidence(result:&Value)->Value{
     let Some(outputs)=result.get("outputs").and_then(Value::as_array) else {
-        return json!({"desktop_outputs_verified":false,"reason":"Host render result has no output inventory.","media_parse_verified":false,"media_decode_verified":false});
+        return json!({"desktop_outputs_verified":false,"reason":"Host render result has no output inventory.","media_parse_verified":false,"media_decode_verified":false,"media_probe_available":crate::after_effects_media_validation::detect_probe().is_some(),"media_probe_evidence":[],"render_completion_verified":false});
     };
     if outputs.is_empty()||outputs.len()>64{
-        return json!({"desktop_outputs_verified":false,"reason":"Host render output inventory is empty or oversized.","media_parse_verified":false,"media_decode_verified":false});
+        return json!({"desktop_outputs_verified":false,"reason":"Host render output inventory is empty or oversized.","media_parse_verified":false,"media_decode_verified":false,"media_probe_available":crate::after_effects_media_validation::detect_probe().is_some(),"media_probe_evidence":[],"render_completion_verified":false});
     }
     let mut observed=Vec::new();let mut desktop_verified=true;let mut parse_verified=true;
     let probe_available=crate::after_effects_media_validation::detect_probe().is_some();
@@ -148,6 +155,7 @@ pub fn cancel_render(workspace:&Path,request_id:&str)->Result<Value,String>{
     if !valid_request_id(request_id){return Err("Invalid After Effects request_id.".into());}
     let request_path=job_path(workspace,request_id,"request.json");
     if !request_path.is_file(){return Err("No unresolved After Effects request exists for this request_id.".into());}
+    regular_file(&request_path,"After Effects cancellation request")?;
     let raw=crate::read_file_bytes_bounded(&request_path,512*1024,"After Effects cancellation request")?;
     let request:Request=serde_json::from_slice(&raw).map_err(|_|"After Effects request JSON is corrupt.")?;
     request.validate()?;
@@ -155,11 +163,17 @@ pub fn cancel_render(workspace:&Path,request_id:&str)->Result<Value,String>{
     if request.action!="render_queue"{return Err("Only After Effects render_queue supports cooperative native cancellation.".into());}
     let receipt_path=job_path(workspace,request_id,"receipt.json");
     if receipt_path.is_file(){
-        return Ok(json!({"request_id":request_id,"state":"already_finished","cancel_request_written":false,
-            "native_stop_verified":false,"retry_safe":false,"automatic_rollback_performed":false}));
+        regular_file(&receipt_path,"After Effects cancellation receipt")?;
+        let bytes=crate::read_file_bytes_bounded(&receipt_path,512*1024,"After Effects cancellation receipt")?;
+        if after_effects_transport::parse_receipt(&bytes,&request).is_ok(){
+            return Ok(json!({"request_id":request_id,"state":"already_finished","cancel_request_written":false,
+                "native_stop_verified":false,"retry_safe":false,"automatic_rollback_performed":false}));
+        }
+        // A partial or invalid receipt is not terminal evidence; a scoped stop request remains safe.
     }
     let cancel_path=job_path(workspace,request_id,"cancel");
     if cancel_path.exists(){
+        regular_file(&cancel_path,"After Effects cancel marker")?;
         let meta=fs::symlink_metadata(&cancel_path).map_err(|e|e.to_string())?;
         if !meta.is_file()||meta.file_type().is_symlink(){return Err("Existing After Effects cancel marker is not a regular file.".into());}
         let bytes=crate::read_file_bytes_bounded(&cancel_path,16*1024,"After Effects cancel marker")?;
@@ -168,6 +182,7 @@ pub fn cancel_render(workspace:&Path,request_id:&str)->Result<Value,String>{
             ||marker.get("schema_version").and_then(Value::as_u64)!=Some(1)
             ||marker.get("expected_project_file").and_then(Value::as_str)!=request.expected_project_file.as_deref()
             ||marker.get("expected_project_revision").and_then(Value::as_u64)!=request.expected_project_revision
+            ||marker.get("requested_at_ms").and_then(Value::as_u64).is_none_or(|v|v==0)
             ||marker.get("scope").and_then(Value::as_str)!=Some("render_queue_status_boundary_cooperative_stop"){
             return Err("Existing After Effects cancel marker identity mismatch.".into());
         }
@@ -222,7 +237,6 @@ pub fn pending_jobs(workspace:&Path,reconcile_receipts:bool)->Result<Value,Strin
     let mut request_paths=Vec::new();
     for entry in fs::read_dir(workspace).map_err(|e|format!("Could not inspect After Effects job workspace: {e}"))?{
         let entry=entry.map_err(|e|e.to_string())?;
-        if !entry.file_type().map_err(|e|e.to_string())?.is_file(){continue;}
         let name=entry.file_name().to_string_lossy().into_owned();
         if name.starts_with("shuvi-ae-")&&name.ends_with(".request.json"){
             request_paths.push(entry.path());
@@ -231,6 +245,9 @@ pub fn pending_jobs(workspace:&Path,reconcile_receipts:bool)->Result<Value,Strin
     }
     let mut jobs=Vec::new();let mut blocking=0usize;let mut reconciled=0usize;
     for request_path in request_paths{
+        if let Err(error)=regular_file(&request_path,"After Effects pending request"){
+            blocking+=1;jobs.push(json!({"request_path":request_path,"state":"unsafe_request_path","error":error,"reconciled":false}));continue;
+        }
         let raw=crate::read_file_bytes_bounded(&request_path,512*1024,"After Effects pending request")?;
         let request:Request=match serde_json::from_slice(&raw){
             Ok(v)=>v,
@@ -255,6 +272,9 @@ pub fn pending_jobs(workspace:&Path,reconcile_receipts:bool)->Result<Value,Strin
                 "state":if cancel_requested&&request.action=="render_queue"{"cancel_requested_waiting_for_receipt"}else{"receipt_missing"},
                 "cancel_requested":cancel_requested,"native_stop_verified":false,
                 "retry_safe":false,"reconciled":false}));continue;
+        }
+        if let Err(error)=regular_file(&receipt_path,"After Effects late receipt"){
+            blocking+=1;jobs.push(json!({"request_id":request.request_id,"state":"unsafe_receipt_path","error":error,"reconciled":false}));continue;
         }
         let receipt_bytes=crate::read_file_bytes_bounded(&receipt_path,512*1024,"After Effects late receipt")?;
         match after_effects_transport::parse_receipt(&receipt_bytes,&request){
@@ -369,7 +389,8 @@ pub async fn execute(
     let mut last_parse_error:Option<String>=None;
     loop{
         if plan.receipt_path.is_file(){
-            match crate::read_file_bytes_bounded(&plan.receipt_path,512*1024,"After Effects receipt")
+            match regular_file(&plan.receipt_path,"After Effects receipt")
+                .and_then(|_|crate::read_file_bytes_bounded(&plan.receipt_path,512*1024,"After Effects receipt"))
                 .and_then(|bytes|after_effects_transport::parse_receipt(&bytes,request))
             {
                 Ok(receipt)=>{
@@ -548,6 +569,24 @@ mod tests{
         }
         let mut bad=result.clone();bad["outputs"][0]["comp_id"]=json!(99);receipt.result=Some(bad);
         assert_eq!(cancellation_outcome(&request,&receipt),(false,false));
+    }
+    #[test]fn partial_or_wrong_identity_receipt_is_not_already_finished(){
+        for bytes in [b"{".as_slice(),br#"{"schema_version":1,"request_id":"other","ok":true,"result":{}}"#.as_slice()]{
+            let root=std::env::temp_dir().join(format!("shuvi-ae-partial-{}",uuid::Uuid::new_v4()));
+            fs::create_dir_all(&root).unwrap();let request=render_request(&root);
+            fs::write(job_path(&root,&request.request_id,"request.json"),serde_json::to_vec(&request).unwrap()).unwrap();
+            fs::write(job_path(&root,&request.request_id,"receipt.json"),bytes).unwrap();
+            let result=cancel_render(&root,&request.request_id).unwrap();
+            assert_eq!(result["state"],"cancel_requested");assert_eq!(result["native_stop_verified"],false);
+            assert!(job_path(&root,&request.request_id,"cancel").is_file());let _=fs::remove_dir_all(root);
+        }
+    }
+    #[test]fn invalid_output_inventory_retains_separate_negative_evidence(){
+        for result in [json!({}),json!({"outputs":[]})]{
+            let evidence=render_output_evidence(&result);
+            assert_eq!(evidence["desktop_outputs_verified"],false);assert_eq!(evidence["media_parse_verified"],false);
+            assert_eq!(evidence["render_completion_verified"],false);assert!(evidence["media_probe_evidence"].is_array());
+        }
     }
     #[test]fn detection_never_promotes_runtime(){
         let value=detect_installs().unwrap();

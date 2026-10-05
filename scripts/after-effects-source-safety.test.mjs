@@ -12,6 +12,21 @@ const persistence=readFileSync(new URL("../src-tauri/src/after_effects_project_p
 const checkpoint=readFileSync(new URL("../src-tauri/src/after_effects_checkpoint.rs",import.meta.url),"utf8");
 const tauri=readFileSync(new URL("../src-tauri/tauri.conf.json",import.meta.url),"utf8");
 
+test("Every AE host dispatch has exactly one Rust classification and identical mutation guards",()=>{
+  const mutating=transport.slice(transport.indexOf("pub fn is_mutating"),transport.indexOf("pub fn is_read_only"));
+  const reading=transport.slice(transport.indexOf("pub fn is_read_only"),transport.indexOf("pub fn validate"));
+  const names=s=>[...s.matchAll(/"([a-z_]+)"/g)].map(m=>m[1]);
+  const writes=names(mutating),reads=names(reading);
+  const dispatch=jsx.slice(jsx.indexOf("function dispatch(request)"));
+  const host=[...dispatch.matchAll(/if \(action === "([a-z_]+)"\)/g)].map(m=>m[1]);
+  const hostMutations=names(jsx.slice(jsx.indexOf("function mutationAction(action)"),jsx.indexOf("function assertProjectExpectation")));
+  const sorted=a=>[...a].sort();
+  assert.equal(new Set(host).size,host.length,"duplicate host dispatch");
+  assert.equal(new Set([...reads,...writes]).size,reads.length+writes.length,"ambiguous Rust classification");
+  assert.deepEqual(sorted(host),sorted([...reads,...writes]),"Rust and host action inventories differ");
+  assert.deepEqual(sorted(hostMutations),sorted(writes),"a host mutation could bypass its checkpoint/revision guard");
+});
+
 test("After Effects source never claims runtime verification",()=>{
   assert.match(rust,/"source_runtime_verified":false/);
   assert.match(rust,/"runtime_verified":"not_verified"/);

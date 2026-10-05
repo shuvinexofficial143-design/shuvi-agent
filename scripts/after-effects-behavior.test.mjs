@@ -147,3 +147,31 @@ test("AE presets require staged files, isolate selection and report observable d
   assert.equal(result.selection_restored,true);assert.equal(result.property_delta.changed.length,1);
   assert.equal(result.semantic_result_verified,false);assert.equal(result.retry_safe,false);
 });
+
+test("AE discrete camera/light options reject fractional host enums before writes",()=>{
+  const camera=propertyHost("camera",{"ADBE Iris Shape":{value:1,minValue:1,maxValue:10}});
+  assert.throws(()=>camera.run("set_camera_options",{iris_shape:2.5}),/integer host enum/);
+  assert.equal(camera.context.calls.writes.length,0);
+  const light=propertyHost("light",{"ADBE Light Falloff Type":{value:1,minValue:1,maxValue:3}});
+  assert.throws(()=>light.run("set_light_options",{falloff_type:1.5}),/integer host enum/);
+  assert.equal(light.context.calls.writes.length,0);
+});
+
+test("AE audio bounds and expressions reject the whole envelope before mutation",()=>{
+  const host=propertyHost("av",{"ADBE Audio Levels":{value:[0,0],canVaryOverTime:true,minValue:-48,maxValue:12}});
+  vm.runInContext("function AVLayer(){};Object.setPrototypeOf(layer,AVLayer.prototype);layer.hasAudio=true;",host.context);
+  assert.throws(()=>host.run("set_audio_gain",{left_db:0,right_db:13}),/above the host Audio Levels maximum/);
+  assert.throws(()=>host.run("apply_audio_envelope",{points:[{time_seconds:0,left_db:0},{time_seconds:1,left_db:-49}]}),/below the host Audio Levels minimum/);
+  assert.equal(host.context.calls.writes.length,0);assert.equal(host.context.calls.undo,0);
+  vm.runInContext('props["ADBE Audio Levels"].expressionEnabled=true;',host.context);
+  assert.throws(()=>host.run("set_audio_gain",{left_db:0}),/enabled expressions/);
+  assert.equal(host.context.calls.writes.length,0);
+});
+
+test("AE callback cleanup must read back before completion is verified",()=>{
+  const host=renderHost("complete");
+  vm.runInContext('var callbackSlot=null;Object.defineProperty(item,"onStatusChanged",{get:function(){return callbackSlot;},set:function(v){if(v!==null)callbackSlot=v;}});',host.context);
+  const result=host.run();
+  assert.equal(result.callbacks_restored,false);assert.equal(result.render_completion_verified,false);
+  assert.equal(result.outcome_uncertain,true);assert.equal(result.retry_safe,false);
+});
