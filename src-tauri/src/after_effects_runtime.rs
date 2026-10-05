@@ -41,12 +41,12 @@ fn trusted_afterfx_exe(_path:&Path)->Result<(),String>{
 
 fn render_output_evidence(result:&Value)->Value{
     let Some(outputs)=result.get("outputs").and_then(Value::as_array) else {
-        return json!({"desktop_outputs_verified":false,"reason":"Host render result has no output inventory.","media_parse_verified":false});
+        return json!({"desktop_outputs_verified":false,"reason":"Host render result has no output inventory.","media_parse_verified":false,"media_decode_verified":false});
     };
     if outputs.is_empty()||outputs.len()>64{
-        return json!({"desktop_outputs_verified":false,"reason":"Host render output inventory is empty or oversized.","media_parse_verified":false});
+        return json!({"desktop_outputs_verified":false,"reason":"Host render output inventory is empty or oversized.","media_parse_verified":false,"media_decode_verified":false});
     }
-    let mut observed=Vec::new();let mut verified=true;
+    let mut observed=Vec::new();let mut desktop_verified=true;let mut parse_verified=true;
     for output in outputs{
         let path=output.get("output_file").and_then(Value::as_str).unwrap_or("");
         let expected_size=output.get("size_bytes").and_then(Value::as_u64);
@@ -57,13 +57,22 @@ fn render_output_evidence(result:&Value)->Value{
         let regular=meta.as_ref().is_some_and(|m|m.is_file()&&!m.file_type().is_symlink());
         let size=meta.as_ref().map(|m|m.len());
         let item_verified=host_done&&host_changed&&regular&&size.is_some_and(|v|v>0)&&size==expected_size;
-        if !item_verified{verified=false;}
+        if !item_verified{desktop_verified=false;}
+        let parse=if item_verified {
+            crate::after_effects_media_validation::validate(path,size)
+        } else {
+            json!({"output_file":path,"media_parse_verified":false,"media_decode_verified":false,
+                "error":"Desktop output evidence failed before parsing."})
+        };
+        let item_parse=parse.get("media_parse_verified").and_then(Value::as_bool)==Some(true);
+        if !item_parse{parse_verified=false;}
         observed.push(json!({"output_file":path,"host_done":host_done,"host_changed":host_changed,
             "expected_size_bytes":expected_size,"desktop_size_bytes":size,"regular_non_symlink":regular,
-            "verified":item_verified}));
+            "desktop_verified":item_verified,"media_validation":parse}));
     }
-    json!({"desktop_outputs_verified":verified,"outputs":observed,"media_parse_verified":false,
-        "note":"Desktop metadata confirms exact non-empty files matching host-reported sizes; it does not prove media decodability."})
+    json!({"desktop_outputs_verified":desktop_verified,"media_parse_verified":parse_verified,"media_decode_verified":false,
+        "outputs":observed,
+        "note":"Host DONE + exact desktop file metadata + bounded structural parsing are independent evidence. Byte-stream decode remains unverified."})
 }
 
 fn mogrt_output_evidence(result:&Value)->Value{
@@ -144,7 +153,9 @@ pub fn pending_jobs(workspace:&Path,reconcile_receipts:bool)->Result<Value,Strin
                 let render_evidence=if request.action=="render_queue" {
                     receipt.result.as_ref().map(render_output_evidence)
                 }else{None};
-                let render_verified=render_evidence.as_ref().and_then(|v|v.get("desktop_outputs_verified")).and_then(Value::as_bool)==Some(true);
+                let render_verified=render_evidence.as_ref().is_some_and(|v|
+                    v.get("desktop_outputs_verified").and_then(Value::as_bool)==Some(true)
+                    && v.get("media_parse_verified").and_then(Value::as_bool)==Some(true));
                 let mogrt_evidence=if request.action=="export_mogrt" {
                     receipt.result.as_ref().map(mogrt_output_evidence)
                 }else{None};
@@ -262,7 +273,9 @@ pub async fn execute(
                     let render_evidence=if request.action=="render_queue" {
                         receipt.result.as_ref().map(render_output_evidence)
                     }else{None};
-                    let render_verified=render_evidence.as_ref().and_then(|v|v.get("desktop_outputs_verified")).and_then(Value::as_bool)==Some(true);
+                    let render_verified=render_evidence.as_ref().is_some_and(|v|
+                    v.get("desktop_outputs_verified").and_then(Value::as_bool)==Some(true)
+                    && v.get("media_parse_verified").and_then(Value::as_bool)==Some(true));
                     let mogrt_evidence=if request.action=="export_mogrt" {
                         receipt.result.as_ref().map(mogrt_output_evidence)
                     }else{None};
