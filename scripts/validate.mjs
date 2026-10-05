@@ -151,7 +151,7 @@ if (!auditionManifest.includes('Host Name="AUDT"') ||
   ok("Audition CEP manifest checked.");
 }
 if (!auditionBridgeRust.includes("127.0.0.1") ||
-    !auditionBridgeRust.includes("17362") ||
+    !auditionBridgeRust.includes("17_362") ||
     !auditionBridgeRust.includes("X-Shuvi-Token") && !auditionBridgeRust.includes("x-shuvi-token") ||
     !auditionPanel.includes("http://127.0.0.1:17362")) {
   fail("Audition bridge must stay localhost-only on 17362 and token-authenticated.");
