@@ -228,6 +228,26 @@ test("motion correction session start and status persist bounded state without a
   assert.doesNotMatch(correctionSession,/Command::new/);
 });
 
+test("motion correction session records exact reviews and proposals before renderer approval",()=>{
+  assert.match(rust,/motion_graphics_correction_session_record_review/);
+  assert.match(rust,/motion_graphics_correction_session_record_correction/);
+  assert.match(rust,/MotionGraphicsCorrectionSessionRecordReview/);
+  assert.match(rust,/MotionGraphicsCorrectionSessionRecordCorrection/);
+  assert.match(rust,/request\.validate\(\)\?/);
+  assert.match(rust,/session\.record_review\(/);
+  assert.match(rust,/session\.record_correction\(/);
+  assert.match(rust,/correction_generation_performed":false/);
+  assert.match(rust,/renderer_approval_recorded":false/);
+  assert.match(rust,/renderer_execution_performed":false/);
+  assert.match(correctionSession,/ReviewRecordRequest/);
+  assert.match(correctionSession,/validate_multi_frame_review/);
+  assert.match(correctionSession,/validate_review/);
+  assert.match(correctionSession,/CorrectionRecordRequest/);
+  assert.match(correctionSession,/validate_revision_constraints/);
+  assert.match(correction,/pub fn validate_revision_constraints/);
+  assert.doesNotMatch(correctionSession,/Command::new/);
+});
+
 test("motion correction stays snapshot-bound and proposal-only",()=>{
   assert.match(rust,/motion_graphics_generate_correction/);
   assert.match(rust,/MotionGraphicsGenerateCorrection/);
