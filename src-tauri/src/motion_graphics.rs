@@ -1,6 +1,6 @@
 use serde::{Deserialize,Serialize};
 use serde_json::{json,Value};
-use std::collections::HashSet;
+use std::collections::{BTreeMap,HashSet};
 
 const MAX_OBJECTIVE_CHARS:usize=1_500;
 const MAX_SCENES:usize=64;
@@ -275,6 +275,289 @@ impl Plan {
             "keyframe_count":keyframe_count,
             "review_sample_count":self.review.sample_times_seconds.len(),
             "renderer_execution_performed":false,
+            "preview_render_verified":false,
+            "visual_review_verified":false,
+            "production_ready":false
+        }))
+    }
+}
+
+
+const MAX_AE_ADAPTER_STEPS:usize=4_096;
+
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AfterEffectsPlanRequest {
+    pub project_file:String,
+    pub composition_name:String,
+    pub plan:Plan,
+    #[serde(default)]
+    pub asset_item_ids:BTreeMap<String,u32>,
+}
+
+fn verified_receipt_ref(step_id:&str,field:&str)->Value{
+    json!({"$verified_receipt":{"step_id":step_id,"field":field}})
+}
+
+fn push_ae_step(steps:&mut Vec<Value>,step:Value)->Result<(),String>{
+    if steps.len()>=MAX_AE_ADAPTER_STEPS {
+        return Err(format!("After Effects adapter plan exceeds {MAX_AE_ADAPTER_STEPS} bounded steps."));
+    }
+    steps.push(step);
+    Ok(())
+}
+
+fn ae_track_match_name(property:Property)->Option<&'static str>{
+    match property {
+        Property::Opacity=>Some("ADBE Opacity"),
+        Property::RotationDegrees=>Some("ADBE Rotate Z"),
+        Property::X|Property::Y|Property::ScaleX|Property::ScaleY=>None,
+    }
+}
+
+fn ae_keyframe_value(property:Property,value:f64)->Value{
+    match property {
+        Property::Opacity=>json!(value*100.0),
+        Property::RotationDegrees=>json!(value),
+        _=>Value::Null,
+    }
+}
+
+fn ae_interpolation(easing:Easing)->(&'static str,bool){
+    match easing {
+        Easing::Linear=>("linear",true),
+        Easing::Hold=>("hold",true),
+        Easing::EaseIn|Easing::EaseOut|Easing::EaseInOut=>("bezier",false),
+    }
+}
+
+impl AfterEffectsPlanRequest {
+    pub fn plan(&self)->Result<Value,String>{
+        self.plan.validate()?;
+        crate::after_effects::validate_project_path(&self.project_file)?;
+        validate_label(&self.composition_name,"After Effects composition name",120)?;
+        if self.plan.renderer==Renderer::Remotion {
+            return Err("A Remotion-only motion-graphics plan cannot be routed through the After Effects adapter.".into());
+        }
+        for (asset_id,item_id) in &self.asset_item_ids {
+            validate_id(asset_id,"After Effects asset binding id")?;
+            if *item_id==0 {
+                return Err(format!("After Effects asset binding '{asset_id}' must use a non-zero inspected project item ID."));
+            }
+        }
+
+        let mut steps=Vec::<Value>::new();
+        let mut blockers=Vec::<Value>::new();
+        let mut approximate_curves=0_usize;
+        let create_comp_id="create_comp";
+        push_ae_step(&mut steps,json!({
+            "step_id":create_comp_id,
+            "host_action":"create_comp",
+            "host_args":{
+                "name":self.composition_name,
+                "width":self.plan.canvas.width,
+                "height":self.plan.canvas.height,
+                "pixel_aspect":1.0,
+                "duration_seconds":self.plan.duration_seconds,
+                "frame_rate":self.plan.canvas.fps
+            },
+            "produces":{"comp_id":"result.comp_id"},
+            "requires_fresh_inspection":true,
+            "requires_fresh_project_revision":true,
+            "requires_unique_request_id":true,
+            "checkpoint_required":true,
+            "automatic_execution":false
+        }))?;
+
+        for (scene_index,scene) in self.plan.scenes.iter().enumerate() {
+            for (layer_index,layer) in scene.layers.iter().enumerate() {
+                let prefix=format!("s{scene_index}_l{layer_index}");
+                let create_id=format!("{prefix}_create");
+                let comp_ref=verified_receipt_ref(create_comp_id,"comp_id");
+                let (host_action,host_args)=match layer.kind {
+                    LayerKind::Text=>(
+                        "add_text",
+                        json!({"comp_id":comp_ref,"text":layer.text.as_deref().unwrap_or(""),"name":layer.name})
+                    ),
+                    LayerKind::Group=>(
+                        "add_null",
+                        json!({"comp_id":comp_ref,"name":layer.name})
+                    ),
+                    LayerKind::Image|LayerKind::Video=>{
+                        let asset_id=layer.asset_id.as_deref().ok_or_else(||format!("Layer '{}' lost its required asset_id.",layer.id))?;
+                        let Some(item_id)=self.asset_item_ids.get(asset_id).copied() else {
+                            blockers.push(json!({
+                                "code":"missing_inspected_asset_item_id",
+                                "scene_id":scene.id,
+                                "layer_id":layer.id,
+                                "asset_id":asset_id,
+                                "required":"Bind asset_id to a non-zero item_id returned by fresh after_effects_run inspect_project_items."
+                            }));
+                            continue;
+                        };
+                        ("add_item_layer",json!({"comp_id":comp_ref,"item_id":item_id}))
+                    },
+                    LayerKind::Shape=>{
+                        blockers.push(json!({
+                            "code":"shape_visual_spec_missing",
+                            "scene_id":scene.id,
+                            "layer_id":layer.id,
+                            "required":"Renderer-neutral schema currently identifies a shape layer but does not yet define rectangle/ellipse geometry, fill, stroke, or path data. No invisible empty shape is fabricated."
+                        }));
+                        continue;
+                    }
+                };
+
+                push_ae_step(&mut steps,json!({
+                    "step_id":create_id,
+                    "scene_id":scene.id,
+                    "layer_id":layer.id,
+                    "host_action":host_action,
+                    "host_args":host_args,
+                    "depends_on":[create_comp_id],
+                    "produces":{"layer_id":"result.layer_id"},
+                    "requires_verified_dependency_receipts":true,
+                    "requires_fresh_inspection":true,
+                    "requires_fresh_project_revision":true,
+                    "requires_unique_request_id":true,
+                    "checkpoint_required":true,
+                    "automatic_execution":false
+                }))?;
+
+                let layer_ref=verified_receipt_ref(&create_id,"layer_id");
+                let timing_id=format!("{prefix}_timing");
+                push_ae_step(&mut steps,json!({
+                    "step_id":timing_id,
+                    "scene_id":scene.id,
+                    "layer_id":layer.id,
+                    "host_action":"set_layer_timing",
+                    "host_args":{
+                        "comp_id":verified_receipt_ref(create_comp_id,"comp_id"),
+                        "layer_id":layer_ref,
+                        "in_point":scene.start_seconds,
+                        "out_point":scene.start_seconds+scene.duration_seconds
+                    },
+                    "depends_on":[create_id],
+                    "requires_verified_dependency_receipts":true,
+                    "requires_fresh_inspection":true,
+                    "requires_fresh_project_revision":true,
+                    "requires_unique_request_id":true,
+                    "checkpoint_required":true,
+                    "automatic_execution":false
+                }))?;
+
+                for (track_index,track) in layer.tracks.iter().enumerate() {
+                    let Some(match_name)=ae_track_match_name(track.property) else {
+                        blockers.push(json!({
+                            "code":"vector_transform_readback_required",
+                            "scene_id":scene.id,
+                            "layer_id":layer.id,
+                            "property":track.property,
+                            "required":"X/Y and per-axis scale tracks must first inspect the exact AE transform property dimensionality/separation and then synthesize full vector values. The adapter refuses to guess the other vector components."
+                        }));
+                        continue;
+                    };
+                    let property=json!({
+                        "target":{
+                            "comp_id":verified_receipt_ref(create_comp_id,"comp_id"),
+                            "layer_id":verified_receipt_ref(&create_id,"layer_id")
+                        },
+                        "path":[
+                            {"match_name":"ADBE Transform Group","property_index":null},
+                            {"match_name":match_name,"property_index":null}
+                        ]
+                    });
+                    let times=track.keyframes.iter().map(|keyframe|scene.start_seconds+keyframe.time_seconds).collect::<Vec<_>>();
+                    let values=track.keyframes.iter().map(|keyframe|ae_keyframe_value(track.property,keyframe.value)).collect::<Vec<_>>();
+                    let keys_id=format!("{prefix}_t{track_index}_keys");
+                    push_ae_step(&mut steps,json!({
+                        "step_id":keys_id,
+                        "scene_id":scene.id,
+                        "layer_id":layer.id,
+                        "property":track.property,
+                        "host_action":"set_values_at_times",
+                        "host_args":{"property":property,"times":times,"values":values},
+                        "depends_on":[create_id,timing_id],
+                        "requires_verified_dependency_receipts":true,
+                        "requires_fresh_inspection":true,
+                        "requires_fresh_project_revision":true,
+                        "requires_unique_request_id":true,
+                        "checkpoint_required":true,
+                        "automatic_execution":false
+                    }))?;
+
+                    for (key_index,keyframe) in track.keyframes.iter().enumerate() {
+                        let (interpolation,exact)=ae_interpolation(keyframe.easing);
+                        if !exact { approximate_curves+=1; }
+                        let interpolation_id=format!("{prefix}_t{track_index}_k{key_index}_interp");
+                        push_ae_step(&mut steps,json!({
+                            "step_id":interpolation_id,
+                            "scene_id":scene.id,
+                            "layer_id":layer.id,
+                            "property":track.property,
+                            "keyframe_index":key_index+1,
+                            "host_action":"set_keyframe_interpolation",
+                            "host_args":{
+                                "property":{
+                                    "target":{
+                                        "comp_id":verified_receipt_ref(create_comp_id,"comp_id"),
+                                        "layer_id":verified_receipt_ref(&create_id,"layer_id")
+                                    },
+                                    "path":[
+                                        {"match_name":"ADBE Transform Group","property_index":null},
+                                        {"match_name":match_name,"property_index":null}
+                                    ]
+                                },
+                                "key_index":key_index+1,
+                                "in_type":interpolation,
+                                "out_type":interpolation
+                            },
+                            "depends_on":[keys_id],
+                            "curve_semantics_exact":exact,
+                            "requires_temporal_ease_tuning":!exact,
+                            "requires_verified_dependency_receipts":true,
+                            "requires_fresh_inspection":true,
+                            "requires_fresh_project_revision":true,
+                            "requires_unique_request_id":true,
+                            "checkpoint_required":true,
+                            "automatic_execution":false
+                        }))?;
+                    }
+                }
+            }
+        }
+
+        if self.plan.delivery==DeliveryKind::TransparentOverlay {
+            blockers.push(json!({
+                "code":"transparent_render_output_not_planned",
+                "required":"The current adapter builds composition content only. A verified alpha-capable output-module/render-queue plan must be added before transparent-overlay delivery can be claimed."
+            }));
+        }
+        if approximate_curves>0 {
+            blockers.push(json!({
+                "code":"directional_easing_needs_temporal_ease_synthesis",
+                "affected_keyframes":approximate_curves,
+                "required":"ease_in/ease_out/ease_in_out currently map only to AE bezier interpolation type. Exact directional curve semantics require bounded set_keyframe_temporal_ease synthesis and readback."
+            }));
+        }
+
+        Ok(json!({
+            "schema_version":1,
+            "adapter":"after_effects",
+            "source_plan_valid":true,
+            "renderer_request":self.plan.renderer,
+            "renderer_candidate":"after_effects",
+            "project_file":self.project_file,
+            "composition_name":self.composition_name,
+            "steps":steps,
+            "blockers":blockers,
+            "step_count":steps.len(),
+            "blocker_count":blockers.len(),
+            "dynamic_binding_contract":"Resolve every $verified_receipt reference only from the matching prior after_effects_run verified receipt; never from model text or guessed IDs.",
+            "execution_contract":"Before every mutating host step, run a fresh inspect_context and use its exact saved project path and project_revision in a fresh after_effects_run request. Stop on uncertain/unverified receipts.",
+            "automatic_execution":false,
+            "host_mutation_performed":false,
+            "renderer_runtime_verified":false,
             "preview_render_verified":false,
             "visual_review_verified":false,
             "production_ready":false
