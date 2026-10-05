@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "composition": {"name":"Shuvi Acceptance","width":320,"height":180,"pixel_aspect":1,"duration_seconds":1,"frame_rate":24},
+  "slider_effect": {"effect_match_name":"ADBE Slider Control"},
+  "three_d_switch": {"three_d_layer":true}
+}

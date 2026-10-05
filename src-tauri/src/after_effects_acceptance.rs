@@ -131,8 +131,12 @@ fn property(comp:u64,layer:u64,group:&str,name:&str)->Value{
     json!({"target":{"comp_id":comp,"layer_id":layer},"path":[{"match_name":group},{"match_name":name}]})
 }
 fn id(value:&Value,key:&str)->Result<u64,String>{value[key].as_u64().filter(|v|*v>0).ok_or_else(||format!("Verified created {key} missing."))}
+fn fixture_args(name:&str)->Result<Value,String>{
+    let fixtures:Value=serde_json::from_str(include_str!("../../fixtures/after-effects/acceptance-args.json")).map_err(|e|e.to_string())?;
+    fixtures.get(name).filter(|v|v.is_object()).cloned().ok_or_else(||format!("Controlled fixture args missing: {name}"))
+}
 async fn core_cases(s:&mut Suite)->Result<(),String>{
-    let comp=s.step("create_comp",json!({"name":"Shuvi Acceptance","width":320,"height":180,"pixel_aspect":1.0,"duration_seconds":1.0,"frame_rate":24.0})).await?;
+    let comp=s.step("create_comp",fixture_args("composition")?).await?;
     let comp=id(&comp,"comp_id")?;
     let null=s.step("add_null",json!({"comp_id":comp,"name":"Acceptance Control"})).await?;let null=id(&null,"layer_id")?;
     let opacity=property(comp,null,"ADBE Transform Group","ADBE Opacity");
@@ -152,7 +156,8 @@ async fn core_cases(s:&mut Suite)->Result<(),String>{
     s.inspect("inspect_keyframes",json!({"property":position})).await?;
     s.step("set_expression",json!({"property":opacity,"expression":"75"})).await?;
     s.inspect("inspect_property",json!({"property":opacity})).await?;
-    s.step("add_effect",json!({"comp_id":comp,"layer_id":null,"match_name":"ADBE Slider Control"})).await?;
+    let mut effect_args=fixture_args("slider_effect")?;effect_args["comp_id"]=json!(comp);effect_args["layer_id"]=json!(null);
+    s.step("add_effect",effect_args).await?;
     s.inspect("inspect_effects",json!({"comp_id":comp,"layer_id":null})).await?;
     let text=s.step("add_text",json!({"comp_id":comp,"text":"Shuvi Acceptance","name":"Acceptance Title"})).await?;let text=id(&text,"layer_id")?;
     s.step("set_text_style",json!({"comp_id":comp,"layer_id":text,"font_size":28})).await?;
@@ -185,7 +190,8 @@ async fn core_cases(s:&mut Suite)->Result<(),String>{
         else{s.events.push(json!({"case":"light_availability","field":field,"state":"unsupported_property","mutation_attempted":false}));}
     }
     if light_args.as_object().is_some_and(|v|v.len()>2){s.step("set_light_options",light_args).await?;}
-    s.step("set_av_layer_flags",json!({"comp_id":comp,"layer_id":text,"three_d_layer":true})).await?;
+    let mut flags_args=fixture_args("three_d_switch")?;flags_args["comp_id"]=json!(comp);flags_args["layer_id"]=json!(text);
+    s.step("set_av_layer_flags",flags_args).await?;
     let material=s.inspect("inspect_3d_material",json!({"comp_id":comp,"layer_id":text})).await?;
     let mut material_args=json!({"comp_id":comp,"layer_id":text});
     for (field,match_name,value) in [("ambient","ADBE Ambient Coefficient",json!(25)),("diffuse","ADBE Diffuse Coefficient",json!(50)),
@@ -424,7 +430,7 @@ mod tests{
             runtime.block_on(async{match phase.as_str(){"render"=>render_cases(&mut suite,false).await,
                 "cancel"=>render_cases(&mut suite,true).await,"preset"=>preset_cases(&mut suite).await,_=>core_cases(&mut suite).await}})
         });
-        let report=suite.report(outcome.as_ref().err().map(String::as_str));
+        let mut report=suite.report(outcome.as_ref().err().map(String::as_str));report["phase"]=json!(phase);
         let bytes=serde_json::to_vec_pretty(&report).expect("Report serialization");
         assert!(bytes.len()<=8*1024*1024,"Acceptance report exceeds bound; raw receipts remain retained");
         let report_path=suite.root.join("acceptance-report.json");write_new(&report_path,&bytes).expect("Persist acceptance evidence");

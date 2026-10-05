@@ -3,11 +3,13 @@ import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 import vm from "node:vm";
 const source=readFileSync(new URL("../integrations/after-effects-extendscript/acceptance/fixture.jsx",import.meta.url),"utf8");
+const adapter=readFileSync(new URL("../integrations/after-effects-extendscript/shuvi-ae.jsx",import.meta.url),"utf8");
+const args=JSON.parse(readFileSync(new URL("../fixtures/after-effects/acceptance-args.json",import.meta.url),"utf8"));
 const runId="a".repeat(32),dir="C:/runs/shuvi-ae-acceptance-"+runId;
 function fixture(userProject=null){
   const context=vm.createContext({dir,runId,userProject});
   vm.runInContext(`
-    var files={},calls={newProject:0,close:0,save:0,open:0};
+    var files={},calls={newProject:0,close:0,save:0,open:0},$={os:"Windows",global:{}};
     function File(path){this.fsName=path.replace(/\\\\/g,"/");}
     Object.defineProperties(File.prototype,{exists:{get:function(){return !!files[this.fsName];}},
       length:{get:function(){var f=files[this.fsName];return f?f.length||f.raw.length:0;}},
@@ -46,4 +48,26 @@ test("AE fixture reopen requires exact project revision and independent save/che
   vm.runInContext('config.expected_project_revision=1;',host.context);
   const result=host.run();assert.equal(host.context.calls.close,1);assert.equal(host.context.calls.open,1);
   assert.equal(result.persistence_verified,false);assert.equal(result.runtime_verified,false);assert.equal(result.production_ready,false);
+});
+test("AE acceptance composition fixture executes the actual adapter argument contract",()=>{
+  const host=fixture();host.run();
+  vm.runInContext(`function CompItem(){};
+    app.beginUndoGroup=function(){};app.endUndoGroup=function(){};
+    app.project.items={addComp:function(name,w,h,pixel,duration,rate){
+      var comp=new CompItem();Object.assign(comp,{id:12,width:w,height:h,duration:duration,frameRate:rate});
+      app.project.numItems++;app.project.itemByID=function(){return comp;};return comp;}};`,host.context);
+  vm.runInContext(adapter,host.context);
+  const result=vm.runInContext(`ShuviAE.dispatch(${JSON.stringify({schema_version:1,request_id:"fixture-comp",action:"create_comp",expected_project_file:dir+"/acceptance.aep",expected_project_revision:1,args:args.composition})})`,host.context);
+  assert.equal(result.verification_status,"verified_creation_readback");assert.equal(result.retry_safe,false);
+});
+test("AE acceptance effect fixture executes the actual adapter argument contract",()=>{
+  const host=fixture();host.run();
+  vm.runInContext(`function CompItem(){};var comp=new CompItem();comp.id=12;comp.numLayers=1;
+    var effect=null,parade={numProperties:0,canAddProperty:function(n){return n==="ADBE Slider Control";},
+      addProperty:function(n){this.numProperties++;return effect={matchName:n,propertyIndex:1};},property:function(){return effect;}};
+    var layer={id:34,property:function(){return parade;}};comp.layer=function(){return layer;};app.project.itemByID=function(){return comp;};
+    app.beginUndoGroup=function(){};app.endUndoGroup=function(){};`,host.context);
+  vm.runInContext(adapter,host.context);
+  const result=vm.runInContext(`ShuviAE.dispatch(${JSON.stringify({schema_version:1,request_id:"fixture-effect",action:"add_effect",expected_project_file:dir+"/acceptance.aep",expected_project_revision:1,args:{...args.slider_effect,comp_id:12,layer_id:34}})})`,host.context);
+  assert.equal(result.verification_status,"verified_delta");assert.equal(result.effect_match_name,"ADBE Slider Control");
 });
