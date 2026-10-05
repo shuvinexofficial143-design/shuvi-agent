@@ -19,6 +19,8 @@
 - Delivery modes: standalone video or transparent overlay.
 - Bounded canvas, duration, scene, layer, animation-track, keyframe, review-sample, and review-criteria contracts.
 - Layer kinds for text, shape, image, video, and group.
+- Shape layers now carry explicit bounded rectangle/ellipse geometry plus size, position, rectangle roundness, RGBA fill/stroke, and stroke width; invisible shape specs fail closed.
+- The AE adapter maps those explicit shape specs only through the existing verified `add_shape` + `add_shape_primitive` host routes.
 - Typed transform animation properties for position, scale, rotation, and opacity.
 - Strictly increasing bounded keyframe times.
 - Transparent-overlay plans require a transparent canvas.
@@ -43,7 +45,8 @@
 - Claude does not directly render an MP4 in this foundation.
 - No After Effects project/comp is created by the validator or AE adapter planner.
 - The adapter refuses to guess X/Y or per-axis scale values because AE transform properties may be combined or separated; exact vector synthesis needs fresh property readback first.
-- Shape layers are not fabricated as invisible placeholders: the current neutral schema still needs explicit geometry/fill/stroke/path data before shape content can be mapped.
+- Shape support is intentionally limited to rectangle/ellipse primitives already exposed by the verified AE bridge; arbitrary Bézier/path synthesis is not claimed.
+- Shape geometry/style is immutable during provider correction proposals; correction may change only animation tracks.
 - Image/video layers require an `asset_id -> item_id` binding grounded in fresh `inspect_project_items` evidence.
 - `ease_in`, `ease_out`, and `ease_in_out` currently map only to AE bezier interpolation type; exact directional temporal-ease semantics are not claimed until bounded temporal-ease synthesis/readback is added.
 - Transparent-overlay delivery is not claimed until an alpha-capable output-module/render plan is implemented and verified.
@@ -57,7 +60,8 @@
 
 ## Next source phase
 
-1. Extend the neutral schema/AE adapter for explicit shape geometry/style and exact vector transform synthesis after fresh AE property readback.
+1. Add exact vector transform synthesis after fresh AE property readback, preserving untouched vector components and refusing separated-dimension ambiguity.
+2. Extend shape support only if a future requirement needs arbitrary path/Bézier geometry; rectangle/ellipse primitives are now source-planned.
 3. Add bounded temporal-ease synthesis/readback for directional easing.
 4. Add alpha-capable AE render/output-module planning and evidence without auto-rendering.
 5. Build the Remotion adapter as a separate renderer implementation.
