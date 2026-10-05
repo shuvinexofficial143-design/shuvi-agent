@@ -408,11 +408,13 @@ fn ae_keyframe_value(property:Property,value:f64)->Value{
     }
 }
 
-fn ae_interpolation(easing:Easing)->(&'static str,bool){
+fn ae_interpolation(easing:Easing)->(&'static str,&'static str,bool){
     match easing {
-        Easing::Linear=>("linear",true),
-        Easing::Hold=>("hold",true),
-        Easing::EaseIn|Easing::EaseOut|Easing::EaseInOut=>("bezier",false),
+        Easing::Linear=>("linear","linear",true),
+        Easing::Hold=>("hold","hold",true),
+        Easing::EaseIn=>("bezier","linear",false),
+        Easing::EaseOut=>("linear","bezier",false),
+        Easing::EaseInOut=>("bezier","bezier",false),
     }
 }
 
@@ -672,7 +674,7 @@ impl AfterEffectsPlanRequest {
                         }))?;
 
                         for (key_index,keyframe) in track.keyframes.iter().enumerate() {
-                            let (interpolation,exact)=ae_interpolation(keyframe.easing);
+                            let (in_interpolation,out_interpolation,exact)=ae_interpolation(keyframe.easing);
                             if !exact { approximate_curves+=1; }
                             let interpolation_id=format!("{prefix}_pair_t{track_index}_{other_index}_k{key_index}_interp");
                             push_ae_step(&mut steps,json!({
@@ -685,8 +687,8 @@ impl AfterEffectsPlanRequest {
                                 "host_args":{
                                     "property":property.clone(),
                                     "key_index":key_index+1,
-                                    "in_type":interpolation,
-                                    "out_type":interpolation
+                                    "in_type":in_interpolation,
+                                    "out_type":out_interpolation
                                 },
                                 "depends_on":[second_keys_id],
                                 "coalesced_component_pair":true,
@@ -749,7 +751,7 @@ impl AfterEffectsPlanRequest {
                     }))?;
 
                     for (key_index,keyframe) in track.keyframes.iter().enumerate() {
-                        let (interpolation,exact)=ae_interpolation(keyframe.easing);
+                        let (in_interpolation,out_interpolation,exact)=ae_interpolation(keyframe.easing);
                         if !exact { approximate_curves+=1; }
                         let interpolation_id=format!("{prefix}_t{track_index}_k{key_index}_interp");
                         push_ae_step(&mut steps,json!({
@@ -771,8 +773,8 @@ impl AfterEffectsPlanRequest {
                                     ]
                                 },
                                 "key_index":key_index+1,
-                                "in_type":interpolation,
-                                "out_type":interpolation
+                                "in_type":in_interpolation,
+                                "out_type":out_interpolation
                             },
                             "depends_on":[keys_id],
                             "curve_semantics_exact":exact,
@@ -799,7 +801,7 @@ impl AfterEffectsPlanRequest {
             blockers.push(json!({
                 "code":"directional_easing_needs_temporal_ease_synthesis",
                 "affected_keyframes":approximate_curves,
-                "required":"ease_in/ease_out/ease_in_out currently map only to AE bezier interpolation type. Exact directional curve semantics require bounded set_keyframe_temporal_ease synthesis and readback."
+                "required":"ease_in/ease_out/ease_in_out now stage directional incoming/outgoing BEZIER interpolation correctly, but exact temporal speed/influence still requires bounded set_keyframe_temporal_ease synthesis and readback."
             }));
         }
 
@@ -952,6 +954,37 @@ mod tests{
         assert_eq!(component["preserves_unmodified_vector_components"],true);
         assert!(!value["steps"].as_array().unwrap().iter().any(|step|
             step.get("layer_id").and_then(Value::as_str)==Some("photo") && step["host_action"]=="add_item_layer"));
+    }
+
+    #[test]
+    fn after_effects_adapter_maps_directional_easing_to_the_correct_keyframe_side(){
+        let mut plan=valid_plan();
+        plan.renderer=Renderer::AfterEffects;
+        plan.delivery=DeliveryKind::StandaloneVideo;
+        plan.canvas.transparent_background=false;
+        plan.scenes[0].layers[0].tracks=vec![Track{property:Property::Opacity,keyframes:vec![
+            Keyframe{time_seconds:0.0,value:0.0,easing:Easing::EaseOut},
+            Keyframe{time_seconds:1.0,value:1.0,easing:Easing::EaseIn},
+            Keyframe{time_seconds:2.0,value:0.5,easing:Easing::EaseInOut},
+        ]}];
+        let request=AfterEffectsPlanRequest{
+            project_file:if cfg!(windows){r"C:\Work\motion.aep".into()}else{"/tmp/motion.aep".into()},
+            composition_name:"Shuvi Motion".into(),
+            plan,
+            asset_item_ids:BTreeMap::new(),
+        };
+        let value=request.plan().unwrap();
+        let interpolation_steps=value["steps"].as_array().unwrap().iter()
+            .filter(|step|step["host_action"]=="set_keyframe_interpolation").collect::<Vec<_>>();
+        assert_eq!(interpolation_steps.len(),3);
+        assert_eq!(interpolation_steps[0]["host_args"]["in_type"],"linear");
+        assert_eq!(interpolation_steps[0]["host_args"]["out_type"],"bezier");
+        assert_eq!(interpolation_steps[1]["host_args"]["in_type"],"bezier");
+        assert_eq!(interpolation_steps[1]["host_args"]["out_type"],"linear");
+        assert_eq!(interpolation_steps[2]["host_args"]["in_type"],"bezier");
+        assert_eq!(interpolation_steps[2]["host_args"]["out_type"],"bezier");
+        assert_eq!(value["blockers"].as_array().unwrap().iter()
+            .find(|b|b["code"]=="directional_easing_needs_temporal_ease_synthesis").unwrap()["affected_keyframes"],3);
     }
 
     #[test]
