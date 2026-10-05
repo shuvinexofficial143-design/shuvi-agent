@@ -14,6 +14,7 @@ use super::audition_bridge_queue::CommandQueue;
 pub const ALLOWED_ACTIONS: &[&str] = &[
     "inspect_context",
     "list_commands",
+    "script_dictionary",
     "command_enabled",
     "set_playhead_percent",
     "invoke_command",
