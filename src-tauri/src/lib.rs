@@ -9492,6 +9492,153 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)})
         }
+        ToolAction::MotionGraphicsProbeRemotionAlpha {request,accepted} => {
+            let current=request.validate()?;
+            let staged_final=accepted.final_render.as_ref().ok_or("Staged alpha probe lost final render evidence.")?;
+            let current_final=current.final_render.as_ref().ok_or("Alpha probe lost final render evidence.")?;
+            if current.manifest_sha256!=accepted.manifest_sha256
+                ||current_final.sha256!=staged_final.sha256
+                ||current_final.file!=staged_final.file {
+                return Err("Remotion alpha-probe evidence changed after approval staging.".into());
+            }
+
+            let mut child=Command::new(&request.ffprobe_executable)
+                .args(["-v","error","-select_streams","v:0","-show_entries","stream=codec_name,pix_fmt,width,height","-of","json"])
+                .arg(&current_final.file)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e|format!("Could not launch approved ffprobe: {e}"))?;
+            let pid=child.id();
+            if let Err(error)=register_managed_process(state,pid){
+                let _=child.kill();let _=child.wait();
+                return Err(format!("ffprobe stopped before it could remain untracked: {error}"));
+            }
+            let timed_out=AtomicBool::new(false);
+            let over_ram=AtomicBool::new(false);
+            let started=std::time::Instant::now();
+            let output_result=std::thread::scope(|scope|{
+                let monitor=scope.spawn(||{
+                    while managed_process_identity_matches(state,pid).unwrap_or(false){
+                        if started.elapsed()>=Duration::from_secs(20){
+                            timed_out.store(true,Ordering::Release);
+                            let _=terminate_registered_process_tree(state,pid);
+                            break;
+                        }
+                        if current_runtime_status(state).map(|v|v.over_hard_limit).unwrap_or(false){
+                            over_ram.store(true,Ordering::Release);
+                            let _=terminate_registered_process_tree(state,pid);
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                });
+                let output=child.wait_with_output();
+                let _=monitor.join();
+                output
+            });
+            unregister_managed_process(state,pid);
+            let output=output_result.map_err(|e|format!("Could not wait for ffprobe: {e}"))?;
+            if timed_out.load(Ordering::Acquire){
+                return Err("Alpha probe exceeded the 20 second safety timeout.".into());
+            }
+            if over_ram.load(Ordering::Acquire){
+                return Err("Alpha probe exceeded Shuvi's 4 GB hard RAM ceiling.".into());
+            }
+            if !output.status.success(){
+                return Err(format!("ffprobe failed: {}",truncate_output(String::from_utf8_lossy(&output.stderr).to_string())));
+            }
+            if output.stdout.len()>64*1024||output.stderr.len()>64*1024{
+                return Err("Alpha probe output exceeded the 64 KiB evidence limit.".into());
+            }
+            let body:Value=serde_json::from_slice(&output.stdout)
+                .map_err(|e|format!("ffprobe returned invalid JSON: {e}"))?;
+            let streams=body.get("streams").and_then(Value::as_array)
+                .ok_or("ffprobe returned no streams array.")?;
+            if streams.len()!=1{return Err("Alpha probe requires exactly one selected video stream.".into());}
+            let codec=streams[0].get("codec_name").and_then(Value::as_str).unwrap_or("").to_ascii_lowercase();
+            let pix_fmt=streams[0].get("pix_fmt").and_then(Value::as_str).unwrap_or("").to_ascii_lowercase();
+            if codec!="prores"||!pix_fmt.starts_with("yuva"){
+                return Err(format!("Transparent output alpha probe failed: codec={codec}, pix_fmt={pix_fmt}."));
+            }
+            let action_id=execution_action_id.ok_or("Alpha probe requires an approved action identity.")?.to_string();
+            let attestation=motion_graphics_delivery::AlphaAttestation{
+                schema_version:1,
+                action_id:action_id.clone(),
+                manifest_sha256:current.manifest_sha256.clone(),
+                output_file:current_final.file.clone(),
+                output_sha256:current_final.sha256.clone(),
+                codec_name:codec,
+                pixel_format:pix_fmt,
+                alpha_channel_probe_verified:true,
+            };
+            motion_graphics_delivery::save_alpha(&motion_graphics_alpha_probe_path(app,&action_id)?,&attestation)?;
+            Ok(ActionResult{
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "attestation":attestation,
+                    "managed_process_verified":true,
+                    "timeout_guard_verified":true,
+                    "ram_guard_verified":true,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:truncate_output(String::from_utf8_lossy(&output.stderr).to_string()),
+                exit_code:output.status.code()
+            })
+        }
+        ToolAction::MotionGraphicsAcceptFinalRemotion {request,validated} => {
+            let current=request.validate()?;
+            let staged_final=validated.accepted.final_render.as_ref().ok_or("Staged final acceptance lost output evidence.")?;
+            let current_final=current.accepted.final_render.as_ref().ok_or("Final acceptance lost output evidence.")?;
+            if current.plan_snapshot!=validated.plan_snapshot
+                ||current.accepted.manifest_sha256!=validated.accepted.manifest_sha256
+                ||current_final.sha256!=staged_final.sha256
+                ||current_final.file!=staged_final.file {
+                return Err("Final Remotion acceptance evidence changed after approval staging.".into());
+            }
+            let _audit=verify_remotion_action_receipt_binding(
+                app,&request.render_action_id,&current.plan_snapshot,&current.accepted.manifest_sha256,&current_final.file
+            )?;
+            let alpha_verified=if request.evidence.plan.delivery==motion_graphics::DeliveryKind::TransparentOverlay{
+                let alpha_id=request.alpha_probe_action_id.as_deref().ok_or("Transparent final acceptance requires alpha probe action ID.")?;
+                let alpha=motion_graphics_delivery::load_alpha(&motion_graphics_alpha_probe_path(app,alpha_id)?)?;
+                alpha.matches(&current.accepted)?;
+                true
+            }else{false};
+            let acceptance_action_id=execution_action_id.ok_or("Final acceptance requires an approved action identity.")?.to_string();
+            let acceptance=motion_graphics_delivery::FinalAcceptance{
+                schema_version:1,
+                acceptance_action_id:acceptance_action_id.clone(),
+                render_action_id:request.render_action_id.clone(),
+                plan_snapshot:current.plan_snapshot,
+                manifest_sha256:current.accepted.manifest_sha256,
+                output_file:current_final.file.clone(),
+                output_sha256:current_final.sha256.clone(),
+                delivery:request.evidence.plan.delivery,
+                runtime_process_provenance_verified:true,
+                final_output_sha256_verified:true,
+                visual_review_verified:true,
+                alpha_channel_probe_verified:alpha_verified,
+                delivery_acceptance_verified:true,
+                dependency_source_integrity_verified:false,
+                production_ready:false,
+            };
+            motion_graphics_delivery::save_final(&motion_graphics_final_acceptance_path(app,&acceptance_action_id)?,&acceptance)?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&json!({
+                "acceptance":acceptance,
+                "persisted":true,
+                "premiere_insertion_plannable":true,
+                "automatic_premiere_insertion":false
+            })).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MotionGraphicsPlanPremiereInsertion {request} => {
+            let acceptance=motion_graphics_delivery::load_final(
+                &motion_graphics_final_acceptance_path(app,&request.final_acceptance_action_id)?
+            )?;
+            let value=request.plan(&acceptance)?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
         ToolAction::AuditionDetect => {
             let value=audition::detect_installs()?;
             Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
