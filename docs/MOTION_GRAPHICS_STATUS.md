@@ -1,6 +1,6 @@
 # Motion graphics / Claude status
 
-- Current phase: renderer-neutral planning foundation.
+- Current phase: renderer-neutral planning + fixed Remotion review/correction/delivery source pipeline.
 - Source runtime verification: **not verified**.
 - Production ready: **false**.
 - No renderer is launched by the current motion-graphics plan validator.
@@ -73,14 +73,16 @@
 - A valid plan does not prove visual quality, renderer compatibility, output persistence, or final export correctness.
 - Dedicated single-frame review remains available, and receipt-bound multi-frame review now compares 2–8 ordered Remotion sample frames in one vision request. Neither route proves that Shuvi itself launched the renderer process.
 - A single reviewed PNG does not prove that After Effects/Remotion produced it, that motion timing is correct, or that final export is valid.
-- A bounded correction-proposal step exists. The correction-session state machine tracks exact plan snapshots, pass/revise review rounds, up to 3 correction attempts, explicit renderer-approval receipts, and re-render evidence while blocking stale snapshots and repeated failed revised snapshots. Bounded app-data persistence plus start/status are source-wired, and `motion_graphics_correction_session_record_review` now revalidates the exact Plan with either strict single-frame or strict multi-frame review evidence before advancing state. `motion_graphics_correction_session_record_correction` revalidates immutable prior/revised Plan constraints and snapshots before recording a proposal. Renderer-approval and re-render record tools are still not wired, and revised plans are never auto-applied.
+- The persisted correction-session loop is source-wired through exact review evidence → validated correction proposal → successful approved `motion_graphics_run_remotion` audit binding → re-render evidence → re-review. Renderer approval requires the same plan snapshot, deterministic manifest SHA-256, output path, and final output SHA-256; staged evidence is reverified at execution time and blind retries remain blocked. Revised plans are never auto-applied.
+- Transparent Remotion delivery now has an approved `motion_graphics_probe_remotion_alpha` source path. It runs an exact `ffprobe` executable as a Shuvi-managed child with timeout/RAM guards, requires the already SHA-256-verified final MOV, and accepts alpha only when the selected video stream reports ProRes plus a `yuva*` pixel format. The resulting action-bound attestation is persisted and cannot be substituted across a different manifest/output hash.
+- `motion_graphics_accept_final_remotion` combines the exact successful render-action audit binding, final output SHA-256, passing strict multi-frame visual review, and alpha attestation when transparent delivery requires it. The final acceptance remains `production_ready=false` because third-party dependency byte-level source integrity and packaged real-runtime acceptance are still separate concerns.
+- `motion_graphics_plan_premiere_insertion` reads persisted final acceptance and emits only a normal `premiere_insert_media` proposal. It never edits Premiere automatically and still requires the existing Premiere permission/checkpoint path.
 - Renderer execution must remain behind Shuvi's permission/action layer.
 
-## Next source phase
+## Remaining verification / runtime work
 
-1. Add a runtime-bound alpha acceptance/attestation contract that consumes exact `inspect_output_module` evidence without trusting template names or localized strings by themselves.
-2. Runtime-accept the managed Remotion action on an explicitly approved environment with Node and the exact pinned dependencies installed; source wiring is complete, but no real render/runtime claim should be made until that acceptance run succeeds.
-3. Finish the persisted correction-session wiring with explicit approved-renderer receipt and re-render evidence record tools, then bind re-review to the resulting revised-plan evidence without blind retries.
-4. Add final runtime-process provenance and final output acceptance, then optional Premiere transparent-overlay insertion.
-5. Extend shape support only if a future requirement needs arbitrary path/Bézier geometry; rectangle/ellipse primitives are already source-planned.
-6. Make the default temporal-ease strength configurable only if a future product requirement needs renderer-neutral curve-strength controls; do not infer them from prose.
+1. Run the Motion Graphics source CI and Rust compile/tests on a real Windows environment; source code must not be called runtime-verified until those checks pass.
+2. Perform one explicitly approved real Remotion render with Node and the exact pinned dependencies, then exercise multi-frame review, correction/re-render, alpha probe for a transparent MOV, final acceptance, and the optional Premiere insertion plan.
+3. Byte-level third-party dependency/source integrity remains unverified, so final acceptance deliberately keeps `dependency_source_integrity_verified=false` and `production_ready=false`.
+4. The After Effects-specific final delivery/alpha acceptance path still needs its own live host acceptance if AE is used as the final renderer; the completed final-delivery acceptance described above is the fixed Remotion route.
+5. Arbitrary Bézier/path shape synthesis and configurable curve-strength controls remain optional future expansions, not blockers for the current rectangle/ellipse + deterministic easing scope.
