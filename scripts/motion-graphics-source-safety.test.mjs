@@ -235,6 +235,7 @@ test("motion correction session can be cancelled without renderer execution",()=
   assert.match(rust,/MotionGraphicsCorrectionSessionCancel/);
   assert.match(rust,/session\.cancel\(\)\?/);
   assert.match(correctionSession,/SessionStatus::Cancelled/);
+  assert.match(correctionSession,/SessionStatus::Completed\|SessionStatus::Stagnated\|SessionStatus::Cancelled\|SessionStatus::Failed/);
   assert.doesNotMatch(correctionSession,/Command::new/);
 });
 
@@ -266,6 +267,8 @@ test("correction session binds approved Remotion render and rerender evidence",(
   assert.match(rust,/manifest_sha256=/);
   assert.match(rust,/renderer_action_audit_binding_verified":true/);
   assert.match(rust,/rerender_evidence_verified":true/);
+  assert.match(rust,/successful_execution_audit_detail/);
+  assert.match(rust,/verified_output_sha256=/);
   assert.match(correctionSession,/rerender_output_sha256/);
   assert.match(correctionSession,/Re-render evidence action_id does not match the approved renderer action/);
   assert.doesNotMatch(correctionSession,/Command::new/);
@@ -292,6 +295,10 @@ test("final Remotion delivery requires real alpha evidence and keeps Premiere in
   assert.match(delivery,/codec_name!="prores"/);
   assert.match(delivery,/pixel_format\.to_ascii_lowercase\(\)\.starts_with\("yuva"\)/);
   assert.match(delivery,/Final Remotion acceptance requires a passing multi-frame visual review/);
+  assert.match(delivery,/review_action_id/);
+  assert.match(rust,/review_result_sha256=/);
+  assert.match(rust,/review_verdict=pass/);
+  assert.match(rust,/motion_graphics_review_remotion_frames/);
   assert.match(delivery,/runtime_process_provenance_verified/);
   assert.match(delivery,/dependency_source_integrity_verified/);
   assert.match(delivery,/production_ready:false/);
