@@ -305,6 +305,7 @@ pub fn capability_report()->Value {
             "keyframe_interpolation":"source_supported_with_in_out_type_readback",
             "keyframe_remove":"source_supported_with_time_stale_guard_and_delta_readback",
             "keyframe_temporal_ease":"source_supported_with_dimension_bound_speed_influence_readback",
+            "keyframe_temporal_ease_uniform":"source_supported_host_dimension_readback_with_inactive_side_preservation_and_time_stale_guard",
             "keyframe_temporal_flags":"source_supported_bezier_gated_auto_bezier_continuous_with_time_stale_guard",
             "keyframe_spatial_controls":"source_supported_two_three_d_spatial_tangents_continuity_auto_bezier_roving_with_time_stale_guard",
             "layer_timing":"source_supported_with_start_in_out_stretch_readback",
