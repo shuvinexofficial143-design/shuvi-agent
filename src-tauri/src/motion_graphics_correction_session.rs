@@ -120,6 +120,8 @@ pub struct CorrectionCheckpoint {
     pub approved_action_id:Option<String>,
     #[serde(default)]
     pub rerender_manifest_sha256:Option<String>,
+    #[serde(default)]
+    pub rerender_output_sha256:Option<String>,
 }
 
 #[derive(Debug,Clone,Serialize,Deserialize)]
@@ -249,6 +251,7 @@ impl Session {
             revised_plan_snapshot:revised_plan_snapshot.clone(),
             approved_action_id:None,
             rerender_manifest_sha256:None,
+            rerender_output_sha256:None,
         });
         self.correction_count=iteration;
         self.current_plan_snapshot=revised_plan_snapshot;
@@ -271,22 +274,23 @@ impl Session {
         Ok(())
     }
 
-    pub fn record_rerender(&mut self,manifest_sha256:String)->Result<(),String>{
+    pub fn record_rerender(&mut self,action_id:String,manifest_sha256:String,output_sha256:String)->Result<(),String>{
         self.validate()?;
         if self.status!=SessionStatus::AwaitingRerender{
             return Err("Motion correction session is not awaiting re-render evidence.".into());
         }
-        if !valid_sha256(&manifest_sha256){
-            return Err("Re-render evidence requires an exact SHA-256 manifest hash.".into());
+        if !valid_sha256(&manifest_sha256)||!valid_sha256(&output_sha256){
+            return Err("Re-render evidence requires exact SHA-256 manifest and output hashes.".into());
         }
         let row=self.corrections.last_mut().ok_or("Motion correction session has no approved correction.")?;
-        if row.approved_action_id.is_none(){
-            return Err("Re-render evidence cannot be recorded before renderer approval.".into());
+        if row.approved_action_id.as_deref()!=Some(action_id.as_str()){
+            return Err("Re-render evidence action_id does not match the approved renderer action.".into());
         }
-        if row.rerender_manifest_sha256.is_some(){
+        if row.rerender_manifest_sha256.is_some()||row.rerender_output_sha256.is_some(){
             return Err("Re-render evidence was already recorded for this correction.".into());
         }
         row.rerender_manifest_sha256=Some(manifest_sha256);
+        row.rerender_output_sha256=Some(output_sha256);
         self.review_round=self.review_round.saturating_add(1);
         self.status=SessionStatus::AwaitingReview;
         Ok(())
@@ -379,7 +383,7 @@ mod tests{
         assert_eq!(s.status,SessionStatus::AwaitingRendererApproval);
         s.record_renderer_approval(Uuid::new_v4().to_string()).unwrap();
         assert_eq!(s.status,SessionStatus::AwaitingRerender);
-        s.record_rerender("a".repeat(64)).unwrap();
+        s.record_rerender(s.corrections.last().unwrap().approved_action_id.clone().unwrap(),"a".repeat(64),"d".repeat(64)).unwrap();
         assert_eq!(s.status,SessionStatus::AwaitingReview);
         assert_eq!(s.review_round,2);
         assert_eq!(s.correction_count,1);
@@ -393,7 +397,7 @@ mod tests{
         let prior=s.current_plan_snapshot.clone();
         s.record_correction(prior,snapshot("2222222222222222")).unwrap();
         s.record_renderer_approval(Uuid::new_v4().to_string()).unwrap();
-        s.record_rerender("b".repeat(64)).unwrap();
+        s.record_rerender(s.corrections.last().unwrap().approved_action_id.clone().unwrap(),"b".repeat(64),"e".repeat(64)).unwrap();
         s.record_review(ReviewKind::MultiFrame,s.current_plan_snapshot.clone(),Verdict::Revise,1).unwrap();
         let prior=s.current_plan_snapshot.clone();
         assert!(s.record_correction(prior,snapshot("2222222222222222")).is_err());
@@ -407,7 +411,7 @@ mod tests{
         let prior=s.current_plan_snapshot.clone();
         s.record_correction(prior,snapshot("2222222222222222")).unwrap();
         s.record_renderer_approval(Uuid::new_v4().to_string()).unwrap();
-        s.record_rerender("c".repeat(64)).unwrap();
+        s.record_rerender(s.corrections.last().unwrap().approved_action_id.clone().unwrap(),"c".repeat(64),"f".repeat(64)).unwrap();
         s.record_review(ReviewKind::MultiFrame,s.current_plan_snapshot.clone(),Verdict::Revise,1).unwrap();
         assert_eq!(s.status,SessionStatus::Stagnated);
     }
