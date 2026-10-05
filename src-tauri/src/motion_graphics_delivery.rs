@@ -1,8 +1,8 @@
-use crate::motion_graphics::{DeliveryKind,Plan};
+use crate::motion_graphics::DeliveryKind;
 use crate::motion_graphics_remotion::{self,AcceptedEvidence,EvidenceRequest};
 use crate::motion_graphics_review::{self,MultiFrameReview,Verdict};
 use serde::{Deserialize,Serialize};
-use std::{fs,path::{Path,PathBuf}};
+use std::path::{Path,PathBuf};
 use uuid::Uuid;
 
 const MAX_ATTESTATION_BYTES:usize=64*1024;
@@ -229,18 +229,15 @@ impl PremiereInsertionPlanRequest{
     }
 }
 
-fn save_json<T:Serialize>(path:&Path,value:&T,label:&str)->Result<(),String>{
-    let bytes=serde_json::to_vec(value).map_err(|e|format!("Could not encode {label}: {e}"))?;
-    if bytes.len()>MAX_ATTESTATION_BYTES{return Err(format!("{label} exceeds the 64 KiB limit."));}
-    crate::premiere_store::replace(path,&bytes,MAX_ATTESTATION_BYTES,|candidate|{
-        let _:serde_json::Value=serde_json::from_slice(candidate).map_err(|e|e.to_string())?;
-        Ok(())
-    }).map_err(|e|format!("{label} persistence failed: {e}"))
-}
-
 pub fn save_alpha(path:&Path,value:&AlphaAttestation)->Result<(),String>{
     value.validate()?;
-    save_json(path,value,"alpha attestation")
+    let bytes=serde_json::to_vec(value).map_err(|e|format!("Could not encode alpha attestation: {e}"))?;
+    if bytes.len()>MAX_ATTESTATION_BYTES{return Err("Alpha attestation exceeds the 64 KiB limit.".into());}
+    crate::premiere_store::replace(path,&bytes,MAX_ATTESTATION_BYTES,|candidate|{
+        let decoded:AlphaAttestation=serde_json::from_slice(candidate)
+            .map_err(|e|format!("Invalid persisted alpha attestation: {e}"))?;
+        decoded.validate()
+    }).map_err(|e|format!("Alpha attestation persistence failed: {e}"))
 }
 
 pub fn load_alpha(path:&Path)->Result<AlphaAttestation,String>{
@@ -252,7 +249,13 @@ pub fn load_alpha(path:&Path)->Result<AlphaAttestation,String>{
 
 pub fn save_final(path:&Path,value:&FinalAcceptance)->Result<(),String>{
     value.validate()?;
-    save_json(path,value,"final motion acceptance")
+    let bytes=serde_json::to_vec(value).map_err(|e|format!("Could not encode final motion acceptance: {e}"))?;
+    if bytes.len()>MAX_ATTESTATION_BYTES{return Err("Final motion acceptance exceeds the 64 KiB limit.".into());}
+    crate::premiere_store::replace(path,&bytes,MAX_ATTESTATION_BYTES,|candidate|{
+        let decoded:FinalAcceptance=serde_json::from_slice(candidate)
+            .map_err(|e|format!("Invalid persisted final motion acceptance: {e}"))?;
+        decoded.validate()
+    }).map_err(|e|format!("Final motion acceptance persistence failed: {e}"))
 }
 
 pub fn load_final(path:&Path)->Result<FinalAcceptance,String>{
