@@ -1756,6 +1756,52 @@
         return {native_accepted:true,verification_status:verified?"verified_temporal_ease_readback":"accepted_unverified",retry_safe:verified,
             comp_id:resolved.comp.id,layer_id:resolved.layer.id,key_index:index,key_time:time,in_ease:afterIn,out_ease:afterOut};
     }
+    function cloneEaseArray(items) {
+        var out=[],i;for(i=0;i<items.length;i++)out.push(new KeyframeEase(items[i].speed,items[i].influence));return out;
+    }
+    function uniformEaseArray(items,speed,influence) {
+        var out=[],i;for(i=0;i<items.length;i++)out.push(new KeyframeEase(speed,influence));return out;
+    }
+    function setKeyframeTemporalEaseUniform(args) {
+        var resolved=resolveProperty(args.property),p=resolved.property,index=args.key_index,expected=args.expected_time_seconds;
+        if(!finiteNumber(index)||Math.floor(index)!==index||index<1||index>p.numKeys
+            ||!finiteNumber(expected)||expected<0||expected>10800) {
+            fail("set_keyframe_temporal_ease_uniform requires valid key_index and expected_time_seconds.");
+        }
+        if(Math.abs(p.keyTime(index)-expected)>EPSILON)fail("Uniform temporal ease keyframe time stale guard changed.");
+        var applyIn=args.apply_in===true,applyOut=args.apply_out===true;
+        if(!applyIn&&!applyOut)fail("set_keyframe_temporal_ease_uniform requires apply_in and/or apply_out.");
+        if(args.apply_in!==undefined&&typeof args.apply_in!=="boolean")fail("apply_in must be boolean.");
+        if(args.apply_out!==undefined&&typeof args.apply_out!=="boolean")fail("apply_out must be boolean.");
+        var speed=args.speed,influence=args.influence;
+        if(!finiteNumber(speed)||Math.abs(speed)>1000000000||!finiteNumber(influence)||influence<0.1||influence>100) {
+            fail("set_keyframe_temporal_ease_uniform contains invalid speed/influence.");
+        }
+
+        var beforeIn=p.keyInTemporalEase(index),beforeOut=p.keyOutTemporalEase(index);
+        if(beforeIn.length<1||beforeIn.length>8||beforeOut.length<1||beforeOut.length>8) {
+            fail("Temporal ease dimension count is outside the bounded host contract.");
+        }
+        var inEase=applyIn?uniformEaseArray(beforeIn,speed,influence):cloneEaseArray(beforeIn);
+        var outEase=applyOut?uniformEaseArray(beforeOut,speed,influence):cloneEaseArray(beforeOut);
+        var beforeInSnapshot=easeSnapshot(beforeIn),beforeOutSnapshot=easeSnapshot(beforeOut);
+        app.beginUndoGroup("Shuvi: Set uniform temporal ease");
+        try{p.setTemporalEaseAtKey(index,inEase,outEase);}finally{app.endUndoGroup();}
+        resolved=resolveProperty(args.property);p=resolved.property;
+        if(index>p.numKeys||Math.abs(p.keyTime(index)-expected)>EPSILON)fail("Uniform temporal ease keyframe identity changed during mutation.");
+        var afterIn=easeSnapshot(p.keyInTemporalEase(index)),afterOut=easeSnapshot(p.keyOutTemporalEase(index));
+        var requestedIn=easeSnapshot(inEase),requestedOut=easeSnapshot(outEase);
+        var verified=sameEase(afterIn,requestedIn)&&sameEase(afterOut,requestedOut);
+        var preservedIn=applyIn||sameEase(afterIn,beforeInSnapshot);
+        var preservedOut=applyOut||sameEase(afterOut,beforeOutSnapshot);
+        verified=verified&&preservedIn&&preservedOut;
+        return {native_accepted:true,verification_status:verified?"verified_uniform_temporal_ease_readback":"accepted_unverified",retry_safe:verified,
+            comp_id:resolved.comp.id,layer_id:resolved.layer.id,key_index:index,key_time:expected,
+            apply_in:applyIn,apply_out:applyOut,speed:speed,influence:influence,
+            in_dimension_count:afterIn.length,out_dimension_count:afterOut.length,
+            inactive_in_preserved:preservedIn,inactive_out_preserved:preservedOut,
+            in_ease:afterIn,out_ease:afterOut};
+    }
     function setKeyframeTemporalFlags(args) {
         var resolved=resolveProperty(args.property),p=resolved.property,index=args.key_index,expected=args.expected_time_seconds;
         if(!finiteNumber(index)||Math.floor(index)!==index||index<1||index>p.numKeys
@@ -2948,7 +2994,7 @@
             || action === "add_mogrt_property" || action === "add_mogrt_media_layer" || action === "export_mogrt"
             || action === "set_essential_property" || action === "set_essential_media_source" || action === "apply_essential_bindings"
             || action === "apply_hand_track_rig"
-            || action === "set_keyframe_interpolation" || action === "set_keyframe_temporal_ease" || action === "set_keyframe_temporal_flags" || action === "set_keyframe_spatial" || action === "remove_keyframe"
+            || action === "set_keyframe_interpolation" || action === "set_keyframe_temporal_ease" || action === "set_keyframe_temporal_ease_uniform" || action === "set_keyframe_temporal_flags" || action === "set_keyframe_spatial" || action === "remove_keyframe"
             || action === "duplicate_layer" || action === "remove_layer" || action === "precompose_layers"
             || action === "add_mask" || action === "edit_mask" || action === "remove_mask" || action === "add_scene_edit_markers" || action === "add_marker" || action === "remove_marker"
             || action === "add_render_queue_item" || action === "render_queue" || action === "save_project";
@@ -3048,6 +3094,7 @@
         if (action === "apply_hand_track_rig") return applyHandTrackRig(args);
         if (action === "set_keyframe_interpolation") return setKeyframeInterpolation(args);
         if (action === "set_keyframe_temporal_ease") return setKeyframeTemporalEase(args);
+        if (action === "set_keyframe_temporal_ease_uniform") return setKeyframeTemporalEaseUniform(args);
         if (action === "set_keyframe_temporal_flags") return setKeyframeTemporalFlags(args);
         if (action === "set_keyframe_spatial") return setKeyframeSpatial(args);
         if (action === "remove_keyframe") return removeKeyframe(args);
