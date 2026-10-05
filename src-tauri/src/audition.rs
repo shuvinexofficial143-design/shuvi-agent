@@ -62,6 +62,28 @@ pub fn detect_installs()->Result<serde_json::Value,String>{
     Ok(json!({"candidates":candidates,"runtime_verified":false}))
 }
 
+#[cfg(target_os="windows")]
+pub fn latest_executable()->Result<std::path::PathBuf,String>{
+    let program_files=std::env::var_os("ProgramFiles").ok_or("ProgramFiles environment variable unavailable.")?;
+    let adobe=Path::new(&program_files).join("Adobe");
+    if !adobe.is_dir(){return Err("Adobe Audition was not found in Program Files/Adobe.".into());}
+    let mut candidates=Vec::new();
+    for entry in fs::read_dir(&adobe).map_err(|e|format!("Could not inspect Adobe install folder: {e}"))?.take(128){
+        let entry=entry.map_err(|e|e.to_string())?;
+        let name=entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("Adobe Audition"){continue;}
+        let exe=entry.path().join("Adobe Audition.exe");
+        if exe.is_file(){candidates.push((name,exe));}
+    }
+    candidates.sort_by(|a,b|a.0.cmp(&b.0));
+    candidates.pop().map(|(_,path)|path).ok_or_else(||"Adobe Audition was not found in the standard Adobe Program Files folders.".into())
+}
+
+#[cfg(not(target_os="windows"))]
+pub fn latest_executable()->Result<std::path::PathBuf,String>{
+    Err("Adobe Audition desktop launch is Windows-targeted in Shuvi.".into())
+}
+
 #[cfg(not(target_os="windows"))]
 pub fn detect_installs()->Result<serde_json::Value,String>{
     Ok(json!({
