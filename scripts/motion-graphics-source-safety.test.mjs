@@ -82,6 +82,20 @@ test("After Effects adapter plan stays staged and guarded",()=>{
 });
 
 
+test("After Effects output planner stages host evidence without alpha or render overclaim",()=>{
+  assert.match(rust,/motion_graphics_plan_after_effects_output/);
+  assert.match(rust,/MotionGraphicsPlanAfterEffectsOutput/);
+  assert.match(motion,/AfterEffectsOutputPlanRequest/);
+  assert.match(motion,/add_render_queue_item/);
+  assert.match(motion,/inspect_output_module/);
+  assert.match(motion,/alpha_output_runtime_attestation_required/);
+  assert.match(motion,/render_action_planned":false/);
+  assert.match(motion,/alpha_capability_verified":false/);
+  assert.match(motion,/output_module_settings_runtime_verified":false/);
+  assert.match(motion,/never infers alpha from an output-module template name/);
+});
+
+
 test("provider-generated motion plans are strict and fail closed",()=>{
   assert.match(rust,/motion_graphics_generate_plan/);
   assert.match(rust,/MotionGraphicsGeneratePlan/);
