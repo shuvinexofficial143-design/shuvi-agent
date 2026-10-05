@@ -165,6 +165,8 @@ Available tools:
 - motion_graphics_generate_plan: {"request":{"objective":"motion goal","renderer":"auto|after_effects|remotion","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":true},"delivery":"standalone_video|transparent_overlay","available_asset_ids":["optional_asset_1"],"review_criteria":["readability"]}} — call the active provider once for strict raw JSON, then fail-closed validate fixed constraints/assets; does not run a renderer
 - motion_graphics_review_preview: {"preview_png":"absolute .png path","sample_time_seconds":1.0,"plan":{"schema_version":1,"objective":"...","renderer":"auto|after_effects|remotion","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":true},"delivery":"standalone_video|transparent_overlay","scenes":[...],"review":{"sample_times_seconds":[1],"criteria":["readability"]}}} — stage exact bounded PNG bytes, send only those approved bytes to the active vision provider, strict-parse visible-frame critique, and never auto-apply fixes
 - motion_graphics_generate_correction: {"request":{"plan":"exact reviewed Plan object","plan_snapshot":"exact fnv1a64 snapshot from motion_graphics_review_preview","review":"exact revise VisualReview object","iteration":1,"max_iterations":3}} — ask the active provider once for a snapshot-bound full Plan revision; only animation tracks may change, never auto-run renderer mutations
+- motion_graphics_correction_session_start: {"plan_snapshot":"exact fnv1a64 snapshot from the reviewed plan","max_corrections":3} — create one bounded persisted correction session; does not review, correct, render, or apply anything automatically
+- motion_graphics_correction_session_status: {"session_id":"UUID returned by start"} — read the exact persisted correction-session state only
 - audition_detect: {}
 - audition_launch: {}
 - audition_readiness_report: {}
@@ -555,6 +557,8 @@ enum ToolAction {
     MotionGraphicsGeneratePlan { request: motion_graphics_provider::ProviderPlanRequest, provider: ProviderContext },
     MotionGraphicsReviewPreview { preview_path: String, preview_bytes: Vec<u8>, sample_time_seconds: f64, plan: motion_graphics::Plan, provider: ProviderContext },
     MotionGraphicsGenerateCorrection { request: motion_graphics_correction::CorrectionRequest, provider: ProviderContext },
+    MotionGraphicsCorrectionSessionStart { plan_snapshot:String, max_corrections:u8 },
+    MotionGraphicsCorrectionSessionStatus { session_id:String },
     AuditionDetect,
     AuditionLaunch,
     AuditionReadinessReport,
@@ -1189,6 +1193,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "motion_graphics_generate_plan"
         | "motion_graphics_review_preview"
         | "motion_graphics_generate_correction"
+        | "motion_graphics_correction_session_start"
+        | "motion_graphics_correction_session_status"
         | "audition_detect"
         | "audition_launch"
         | "audition_readiness_report"
@@ -2999,6 +3005,24 @@ fn stage_tool(
                 "Generate motion-graphics correction proposal".into(),
                 detail,
                 RiskLevel::Medium)
+        }
+        "motion_graphics_correction_session_start" => {
+            let plan_snapshot=arg_string(&proposal.arguments,"plan_snapshot")?;
+            let max=proposal.arguments.get("max_corrections").and_then(Value::as_u64).unwrap_or(3);
+            let max_corrections=u8::try_from(max).map_err(|_|"max_corrections must be 1..=3.".to_string())?;
+            motion_graphics_correction_session::Session::new(Uuid::nil().to_string(),plan_snapshot.clone(),max_corrections)?;
+            (ToolAction::MotionGraphicsCorrectionSessionStart {plan_snapshot,max_corrections},
+                "Start bounded motion correction session".into(),
+                "Persist only correction-session state. No review, correction, renderer, or host mutation is executed.".into(),
+                RiskLevel::Low)
+        }
+        "motion_graphics_correction_session_status" => {
+            let session_id=arg_string(&proposal.arguments,"session_id")?;
+            Uuid::parse_str(&session_id).map_err(|_|"Invalid motion correction session ID.")?;
+            (ToolAction::MotionGraphicsCorrectionSessionStatus {session_id},
+                "Read motion correction session status".into(),
+                "Read one bounded persisted correction-session snapshot; no mutation.".into(),
+                RiskLevel::Low)
         }
         "audition_detect" => (
             ToolAction::AuditionDetect,
@@ -6475,6 +6499,13 @@ fn premiere_review_path(app: &AppHandle, session_id: &str) -> Result<std::path::
     if Uuid::parse_str(session_id).is_err() { return Err("Invalid Premiere review session ID.".into()); }
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("premiere-reviews");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join(format!("{session_id}.json")))
+}
+
+fn motion_graphics_correction_session_path(app:&AppHandle,session_id:&str)->Result<std::path::PathBuf,String>{
+    Uuid::parse_str(session_id).map_err(|_|"Invalid motion correction session ID.")?;
+    let dir=app.path().app_data_dir().map_err(|e|e.to_string())?.join("motion-correction-sessions");
+    fs::create_dir_all(&dir).map_err(|e|e.to_string())?;
     Ok(dir.join(format!("{session_id}.json")))
 }
 
