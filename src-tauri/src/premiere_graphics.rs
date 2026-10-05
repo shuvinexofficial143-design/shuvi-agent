@@ -349,7 +349,7 @@ mod tests {
         lib.validate().unwrap(); let mut extra = saved(); extra.mapping.name = "extra".into(); lib.entries.push(extra); assert!(lib.validate().is_err());
         let dir = std::env::temp_dir().join(format!("shuvi-graphics-{}",uuid::Uuid::new_v4())); fs::create_dir(&dir).unwrap();
         let path = dir.join("mappings.json"); save(&path,mapping(),None).unwrap();
-        fs::write(path.with_extension("json.bak"),b"{}").unwrap(); assert!(list(&path).is_err());
+        fs::write(path.with_extension("json.tmp"),b"interrupted").unwrap(); assert!(list(&path).is_err());
         fs::remove_dir_all(dir).unwrap();
     }
     #[test] fn one_and_many_execute_once_with_one_checkpoint() {
