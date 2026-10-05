@@ -173,7 +173,7 @@ test("receipt-bound multi-frame Remotion review is bounded and never auto-fixes"
   assert.match(rust,/multi_frame_review_completed":true/);
   assert.match(rust,/renderer_provenance_verified":accepted\.runtime_process_provenance_verified/);
   assert.match(review,/multi_frame_prompt/);
-  assert.match(review,/2\.\.=\{MAX_MULTI_REVIEW_FRAMES\}/);
+  assert.match(review,/2\.\.=MAX_MULTI_REVIEW_FRAMES/);
   assert.match(review,/unsupplied frame time/);
   assert.match(review,/Do not claim audio, renderer process provenance, export correctness, alpha correctness, or unsampled motion/);
   assert.match(evidence,/MAX_MULTI_REVIEW_FRAMES:usize=8/);
