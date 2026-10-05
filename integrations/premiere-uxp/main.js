@@ -21,6 +21,163 @@ let activeExpectation = null;
 let deliverySession = null;
 const deliveredCommands = new Set();
 
+const mediaEncoderEvents = [];
+let mediaEncoderListenersBound = false;
+let mediaEncoderEventSequence = 0;
+
+function boundedMediaEncoderString(value, max = 4096) {
+  if (value == null) return null;
+  const text = String(value);
+  return text.length <= max ? text : text.slice(0, max);
+}
+
+function recordMediaEncoderEvent(kind, event) {
+  const progress = Number(event?.progressAmount);
+  const errorNumber = Number(event?.inErrorNumber);
+  const outputFiles = Array.isArray(event?.outputFiles)
+    ? event.outputFiles.slice(0, 32).map(value => boundedMediaEncoderString(value, 4096)).filter(Boolean)
+    : [];
+  mediaEncoderEvents.push({
+    sequence: ++mediaEncoderEventSequence,
+    observedAtMs: Date.now(),
+    kind,
+    jobID: boundedMediaEncoderString(event?.jobID, 160),
+    progressAmount: Number.isFinite(progress) && progress >= 0 && progress <= 1 ? progress : null,
+    inErrorNumber: Number.isFinite(errorNumber) ? errorNumber : null,
+    outputFiles
+  });
+  if (mediaEncoderEvents.length > 128) mediaEncoderEvents.splice(0, mediaEncoderEvents.length - 128);
+}
+
+function mediaEncoderCapabilities() {
+  const managerAvailable = typeof premiere.EncoderManager?.getManager === "function";
+  let manager = null;
+  let ameInstalled = false;
+  if (managerAvailable) {
+    try {
+      manager = premiere.EncoderManager.getManager();
+      ameInstalled = Boolean(manager?.isAMEInstalled);
+    } catch {
+      manager = null;
+    }
+  }
+  return {
+    sourceRuntimeVerified: false,
+    managerAvailable,
+    managerApiSince: "25.6",
+    ameInstalled,
+    launchSupported: Boolean(manager && typeof manager.launchEncoder === "function"),
+    launchApiSince: "26.3",
+    startBatchSupported: Boolean(manager && typeof manager.startBatchEncode === "function"),
+    startBatchApiSince: "26.3",
+    embeddedXmpSetterSupported: Boolean(manager && typeof manager.setEmbeddedXMPEnabled === "function"),
+    sidecarXmpSetterSupported: Boolean(manager && typeof manager.setSidecarXMPEnabled === "function"),
+    xmpApiSince: "26.3",
+    encoderEventsSupported: Boolean(premiere.EventManager?.addEventListener && manager),
+    directMediaEncoderUxp: {
+      state: "future_adapter_public_beta_not_current_transport",
+      minimumDocumentedHost: "27.0"
+    }
+  };
+}
+
+function bindMediaEncoderListeners() {
+  if (mediaEncoderListenersBound) return true;
+  if (typeof premiere.EncoderManager?.getManager !== "function" ||
+      typeof premiere.EventManager?.addEventListener !== "function") return false;
+  const manager = premiere.EncoderManager.getManager();
+  const bindings = [
+    [premiere.EncoderManager.EVENT_RENDER_QUEUE, "queued"],
+    [premiere.EncoderManager.EVENT_RENDER_PROGRESS, "progress"],
+    [premiere.EncoderManager.EVENT_RENDER_COMPLETE, "complete"],
+    [premiere.EncoderManager.EVENT_RENDER_ERROR, "error"],
+    [premiere.EncoderManager.EVENT_RENDER_CANCEL, "cancelled"]
+  ];
+  for (const [eventName, kind] of bindings) {
+    if (!eventName) continue;
+    premiere.EventManager.addEventListener(manager, eventName, event => recordMediaEncoderEvent(kind, event));
+  }
+  mediaEncoderListenersBound = true;
+  return true;
+}
+
+async function inspectMediaEncoder() {
+  const capabilities = mediaEncoderCapabilities();
+  const listenersBound = capabilities.encoderEventsSupported ? bindMediaEncoderListeners() : false;
+  return {
+    schemaVersion: 1,
+    hostVersion: typeof host?.version === "string" ? host.version.slice(0, 80) : null,
+    ...capabilities,
+    listenersBound,
+    retainedEventCount: mediaEncoderEvents.length,
+    eventCorrelation: "observational_only_not_bound_to_shuvi_export_request",
+    productionReady: false
+  };
+}
+
+async function inspectMediaEncoderEvents(argumentsValue) {
+  const limit = Number(argumentsValue?.limit ?? 20);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    throw new Error("Media Encoder event limit must be an integer from 1 to 100.");
+  }
+  bindMediaEncoderListeners();
+  return {
+    count: Math.min(limit, mediaEncoderEvents.length),
+    events: mediaEncoderEvents.slice(-limit),
+    correlatedToShuviExport: false,
+    note: "Encoder jobID/event evidence is observational until an exact Shuvi request-to-native-job correlation is proven."
+  };
+}
+
+async function launchMediaEncoder() {
+  const capabilities = mediaEncoderCapabilities();
+  if (!capabilities.ameInstalled) throw new Error("Adobe Media Encoder is not installed.");
+  if (!capabilities.launchSupported) throw new Error("EncoderManager.launchEncoder requires Premiere 26.3+.");
+  bindMediaEncoderListeners();
+  const accepted = Boolean(await premiere.EncoderManager.getManager().launchEncoder());
+  return {accepted, state: accepted ? "launch_requested" : "rejected", runtimeVerified: false, retrySafe: true, apiSince: "26.3"};
+}
+
+async function startMediaEncoderBatch() {
+  const capabilities = mediaEncoderCapabilities();
+  if (!capabilities.ameInstalled) throw new Error("Adobe Media Encoder is not installed.");
+  if (!capabilities.startBatchSupported) throw new Error("EncoderManager.startBatchEncode requires Premiere 26.3+.");
+  bindMediaEncoderListeners();
+  const accepted = Boolean(await premiere.EncoderManager.getManager().startBatchEncode());
+  return {accepted, state: accepted ? "batch_start_requested" : "rejected", completionVerified: false, retrySafe: false, apiSince: "26.3"};
+}
+
+async function setMediaEncoderXmp(argumentsValue) {
+  const embeddedPresent = typeof argumentsValue?.embedded === "boolean";
+  const sidecarPresent = typeof argumentsValue?.sidecar === "boolean";
+  if (!embeddedPresent && !sidecarPresent) throw new Error("Set at least one of embedded or sidecar to a boolean.");
+  const capabilities = mediaEncoderCapabilities();
+  if (!capabilities.ameInstalled) throw new Error("Adobe Media Encoder is not installed.");
+  const manager = premiere.EncoderManager.getManager();
+  let embeddedAccepted = null;
+  let sidecarAccepted = null;
+  if (embeddedPresent) {
+    if (!capabilities.embeddedXmpSetterSupported) throw new Error("Embedded XMP control requires Premiere 26.3+.");
+    embeddedAccepted = Boolean(await manager.setEmbeddedXMPEnabled(argumentsValue.embedded));
+  }
+  if (sidecarPresent) {
+    if (!capabilities.sidecarXmpSetterSupported) throw new Error("Sidecar XMP control requires Premiere 26.3+.");
+    sidecarAccepted = Boolean(await manager.setSidecarXMPEnabled(argumentsValue.sidecar));
+  }
+  const accepted = embeddedAccepted !== false && sidecarAccepted !== false;
+  return {
+    accepted,
+    embedded: embeddedPresent ? argumentsValue.embedded : null,
+    sidecar: sidecarPresent ? argumentsValue.sidecar : null,
+    embeddedAccepted,
+    sidecarAccepted,
+    verificationStatus: "accepted_unverified_no_documented_getter",
+    retrySafe: true,
+    apiSince: "26.3"
+  };
+}
+
+
 // Retain IDs for the whole pairing. Never evict an ID and permit its replay.
 function claimCommand(command, sessionToken) {
   if (deliverySession !== sessionToken) { deliveredCommands.clear(); deliverySession = sessionToken; }
@@ -1522,6 +1679,7 @@ async function exportSequence(argumentsValue) {
   if (!sequence) throw new Error("No active Premiere sequence.");
 
   const manager = premiere.EncoderManager.getManager();
+  if (queueToAme) bindMediaEncoderListeners();
 
   if (queueToAme && !manager.isAMEInstalled) {
     throw new Error("Adobe Media Encoder is not installed.");
@@ -7191,6 +7349,16 @@ async function dispatchNativeCommand(command) {
       return await organizeTracks(command.arguments || {});
     case "delete_clip":
       return await deleteClip(command.arguments || {});
+    case "media_encoder_status":
+      return await inspectMediaEncoder();
+    case "media_encoder_events":
+      return await inspectMediaEncoderEvents(command.arguments || {});
+    case "media_encoder_launch":
+      return await launchMediaEncoder();
+    case "media_encoder_start_batch":
+      return await startMediaEncoderBatch();
+    case "media_encoder_set_xmp":
+      return await setMediaEncoderXmp(command.arguments || {});
     case "inspect_export":
       return await inspectExport();
     case "export_interchange":
