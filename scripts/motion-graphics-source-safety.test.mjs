@@ -5,6 +5,7 @@ import {readFileSync} from "node:fs";
 const rust=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
 const motion=readFileSync(new URL("../src-tauri/src/motion_graphics.rs",import.meta.url),"utf8");
 const provider=readFileSync(new URL("../src-tauri/src/motion_graphics_provider.rs",import.meta.url),"utf8");
+const review=readFileSync(new URL("../src-tauri/src/motion_graphics_review.rs",import.meta.url),"utf8");
 const status=readFileSync(new URL("../docs/MOTION_GRAPHICS_STATUS.md",import.meta.url),"utf8");
 
 test("motion graphics keeps a renderer-neutral bounded schema",()=>{
@@ -78,4 +79,22 @@ test("provider-generated motion plans are strict and fail closed",()=>{
   assert.match(provider,/must return raw JSON without markdown fences/);
   assert.match(provider,/MAX_PROVIDER_PLAN_BYTES:usize=256\*1024/);
   assert.doesNotMatch(provider,/Command::new/);
+});
+
+
+test("motion preview review sends only approved bytes and never auto-fixes",()=>{
+  assert.match(rust,/motion_graphics_review_preview/);
+  assert.match(rust,/MotionGraphicsReviewPreview/);
+  assert.match(rust,/preview_bytes: Vec<u8>/);
+  assert.match(rust,/read_file_bytes_bounded\(path,8\*1024\*1024,"motion preview PNG"\)/);
+  assert.match(rust,/analyze_png_bytes_with_provider\(&provider,&prompt,&preview_bytes\)\.await\?/);
+  assert.match(rust,/preview_bytes_bound_at_approval":true/);
+  assert.match(rust,/renderer_provenance_verified":false/);
+  assert.match(rust,/automatic_correction_performed":false/);
+  assert.match(review,/Judge only what is visibly supported by this frame/);
+  assert.match(review,/must return raw JSON without markdown fences/);
+  assert.match(review,/used a criterion outside the plan allowlist/);
+  assert.match(review,/invented unknown layer id/);
+  assert.match(review,/A passing motion visual review must not contain issues/);
+  assert.doesNotMatch(review,/Command::new/);
 });
