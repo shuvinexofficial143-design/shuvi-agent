@@ -39,6 +39,10 @@
 - Component vector writes fail closed on separated dimensions, expression-enabled properties, stale existing-key timelines, dimension changes, or failed untouched-component readback.
 - Dynamic comp/layer IDs may be resolved only from matching verified prior `after_effects_run` receipts.
 - Every future AE mutation still requires a fresh `inspect_context`, exact saved-project path/revision, a unique request ID, the existing checkpoint boundary, and normal Shuvi approval.
+- The AE bridge now exposes bounded read-only `inspect_output_module` evidence: exact queue/output-module identity, output file, bounded host `GetSettingsFormat.STRING` settings, raw Format/Channels/Depth display hints, and bounded template inventory.
+- That inspection deliberately keeps `alpha_semantics_verified=false`; localized/display setting strings are evidence, not an automatic alpha-capability claim.
+- Read-only `motion_graphics_plan_after_effects_output` now stages exactly two future steps: approved `add_render_queue_item` followed by `inspect_output_module` using the verified queue-index receipt. It never adds a render action.
+- Transparent output keeps the explicit `alpha_output_runtime_attestation_required` blocker until runtime acceptance proves the exact host output settings are alpha-capable.
 - Dedicated `motion_graphics_review_preview` stages the exact bounded PNG bytes before approval and sends only those approved bytes to the selected vision provider.
 - Single-frame review requires explicit plan review criteria, strict raw-JSON critique, known criteria/layer IDs, bounded issue text, and a pass/revise consistency check.
 - Preview review can establish that one approved image was visually reviewed, but keeps renderer provenance, render-output verification, automatic correction, and production readiness false.
@@ -57,7 +61,7 @@
 - Shape geometry/style is immutable during provider correction proposals; correction may change only animation tracks.
 - Image/video layers require an `asset_id -> item_id` binding grounded in fresh `inspect_project_items` evidence.
 - `ease_in`, `ease_out`, and `ease_in_out` now have a deterministic source-planned AE mapping: directional interpolation plus a fixed zero-speed / 33.333333-influence eased side using host-dimension-aware readback. This is a Shuvi default curve contract, not a claim that it is the ideal creative curve for every animation.
-- Transparent-overlay delivery is not claimed until an alpha-capable output-module/render plan is implemented and verified.
+- Transparent-overlay queue setup and output-module evidence are now source-planned, but delivery is still not claimed until runtime alpha attestation maps exact host output settings to an accepted alpha-capable configuration and final render evidence is verified.
 - No Remotion project/code is generated or executed by the current planner.
 - Provider plan generation has not yet been verified with a real API request in the packaged Shuvi runtime.
 - A valid plan does not prove visual quality, renderer compatibility, output persistence, or final export correctness.
@@ -68,7 +72,7 @@
 
 ## Next source phase
 
-1. Add alpha-capable AE render/output-module planning and evidence without auto-rendering.
+1. Add a runtime-bound alpha acceptance/attestation contract that consumes exact `inspect_output_module` evidence without trusting template names or localized strings by themselves.
 2. Build the Remotion adapter as a separate renderer implementation.
 3. Add preview render evidence and bounded frame extraction so reviewed PNGs can be tied to a verified renderer output.
 4. Add bounded multi-frame continuity review on top of the single-frame strict review contract.
