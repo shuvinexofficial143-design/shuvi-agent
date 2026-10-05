@@ -212,6 +212,22 @@ test("bounded correction session blocks stale snapshots and blind retries",()=>{
   assert.doesNotMatch(correctionSession,/Command::new/);
 });
 
+test("motion correction session start and status persist bounded state without auto execution",()=>{
+  assert.match(rust,/motion_graphics_correction_session_start/);
+  assert.match(rust,/motion_graphics_correction_session_status/);
+  assert.match(rust,/MotionGraphicsCorrectionSessionStart/);
+  assert.match(rust,/MotionGraphicsCorrectionSessionStatus/);
+  assert.match(rust,/motion_graphics_correction_session::save\(&path,&session\)\?/);
+  assert.match(rust,/motion_graphics_correction_session::load\(&path\)\?/);
+  assert.match(rust,/review_recording_wired":false/);
+  assert.match(rust,/automatic_execution":false/);
+  assert.match(correctionSession,/pub fn save\(path:&Path/);
+  assert.match(correctionSession,/pub fn load\(path:&Path/);
+  assert.match(correctionSession,/MAX_SESSION_BYTES:usize=64\*1024/);
+  assert.match(correctionSession,/SessionStatus::Failed/);
+  assert.doesNotMatch(correctionSession,/Command::new/);
+});
+
 test("motion correction stays snapshot-bound and proposal-only",()=>{
   assert.match(rust,/motion_graphics_generate_correction/);
   assert.match(rust,/MotionGraphicsGenerateCorrection/);
