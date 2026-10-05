@@ -163,6 +163,23 @@ test("motion preview review sends only approved bytes and never auto-fixes",()=>
 });
 
 
+test("managed Remotion render action uses embedded fixed source and guarded execution",()=>{
+  const runtime=readFileSync(new URL("../src-tauri/src/motion_graphics_remotion_runtime.rs",import.meta.url),"utf8");
+  assert.match(rust,/motion_graphics_run_remotion/);
+  assert.match(rust,/MotionGraphicsRunRemotion/);
+  assert.match(rust,/RiskLevel::High/);
+  assert.match(rust,/register_managed_process\(state,child_pid\)/);
+  assert.match(rust,/status\.over_hard_limit/);
+  assert.match(rust,/prepared\.timeout_ms/);
+  assert.match(rust,/shuvi_managed_runtime_launch_verified":true/);
+  assert.match(runtime,/include_bytes!\("\.\.\/\.\.\/remotion-runtime\/render\.mjs"\)/);
+  assert.match(runtime,/REQUIRED_PACKAGES/);
+  assert.match(runtime,/output_file already exists; overwrite is intentionally refused/);
+  assert.match(runtime,/dependency_versions/);
+  assert.doesNotMatch(runtime,/Command::new/);
+  assert.doesNotMatch(runtime,/eval\s*\(|new Function|Function\s*\(/);
+});
+
 test("receipt-bound multi-frame Remotion review is bounded and never auto-fixes",()=>{
   const evidence=readFileSync(new URL("../src-tauri/src/motion_graphics_remotion.rs",import.meta.url),"utf8");
   assert.match(rust,/motion_graphics_review_remotion_frames/);
