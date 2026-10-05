@@ -443,3 +443,28 @@ test("AE 26.5 layer-input render-stage control uses source identity and cycle-sa
   assert.match(jsx,/setLayerInputStage\(requested\)/);
   assert.match(jsx,/verified_layer_input_stage_readback/);
 });
+
+
+test("AE advanced 3D camera light material mesh and preset workflows stay typed and fail closed",()=>{
+  for(const action of ["inspect_camera_options","set_camera_options","inspect_light_options","set_light_options",
+    "inspect_3d_material","set_3d_material","add_parametric_mesh","inspect_parametric_mesh","apply_preset"]){
+    assert.match(transport,new RegExp('"' + action + '"'));
+    assert.match(jsx,new RegExp('action === "' + action + '"'));
+  }
+  assert.match(rust,/"camera_options":"source_supported_static_zoom_dof_focus_aperture_blur_and_26_3_advanced_dof_with_readback"/);
+  assert.match(rust,/"light_options":"source_supported_type_environment_source_intensity_color_cone_shadow_with_readback"/);
+  assert.match(rust,/"material_3d":"source_supported_static_material_flags_and_coefficients_with_readback"/);
+  assert.match(rust,/"parametric_mesh_26_3":"source_supported_create_and_inspect_type_options"/);
+  assert.match(rust,/"animation_preset_apply":"source_supported_selection_isolated_revision_observed_semantics_unverified_visual_review_required"/);
+  assert.match(jsx,/ADBE Camera Options Group/);
+  assert.match(jsx,/FocusAreaWidth/);
+  assert.match(jsx,/NearFarBlurMultiplier/);
+  assert.match(jsx,/LightType\.ENVIRONMENT/);
+  assert.match(jsx,/Environment light source must be a 2D layer/);
+  assert.match(jsx,/Parametric Mesh requires After Effects 26\.3 or later/);
+  assert.match(jsx,/comp\.layers\.addParametricMesh\(name,type\)/);
+  assert.match(jsx,/preset_file must be an absolute \.ffx path/);
+  assert.match(jsx,/selection_restored:selectionRestored/);
+  assert.match(jsx,/semantic_result_verified:false/);
+  assert.match(jsx,/visual_review_required:true/);
+});
