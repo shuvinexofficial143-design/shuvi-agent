@@ -37,7 +37,7 @@ impl Request {
     pub fn is_read_only(&self)->bool{
         matches!(self.action.as_str(),"inspect_context"|"inspect_project_items"|"inspect_comp"|"inspect_camera_options"|"inspect_light_options"
             |"inspect_3d_material"|"inspect_parametric_mesh"|"inspect_layer_transform"|"inspect_effects"
-            |"inspect_property"|"inspect_keyframes"|"inspect_layer_properties"|"inspect_av_layer_rendering"|"inspect_audio_levels"|"inspect_layer_input_stage"|"inspect_mogrt"|"inspect_essential_properties"|"inspect_scene_edits"|"inspect_markers"|"inspect_render_queue")
+            |"inspect_property"|"inspect_keyframes"|"inspect_layer_properties"|"inspect_av_layer_rendering"|"inspect_audio_levels"|"inspect_layer_input_stage"|"inspect_mogrt"|"inspect_essential_properties"|"inspect_scene_edits"|"inspect_markers"|"inspect_render_queue"|"inspect_output_module")
     }
     pub fn validate(&self)->Result<(),String>{
         if self.schema_version!=1
