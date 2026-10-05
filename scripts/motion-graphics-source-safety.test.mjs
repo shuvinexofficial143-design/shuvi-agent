@@ -61,6 +61,9 @@ test("After Effects adapter plan stays staged and guarded",()=>{
   assert.match(motion,/set_component_values_at_times/);
   assert.match(motion,/expected_existing_key_times/);
   assert.match(motion,/combined_vector_component_tracks_need_coalescing/);
+  assert.match(motion,/ae_tracks_can_coalesce/);
+  assert.match(motion,/coalesced_component_pair/);
+  assert.match(motion,/Mismatched timelines remain fail-closed/);
   assert.match(motion,/preserves_unmodified_vector_components/);
   assert.match(motion,/missing_inspected_asset_item_id/);
   assert.match(motion,/ShapeSpec/);
