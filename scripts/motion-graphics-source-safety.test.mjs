@@ -73,7 +73,12 @@ test("After Effects adapter plan stays staged and guarded",()=>{
   assert.match(motion,/transparent_render_output_not_planned/);
   assert.match(motion,/Easing::EaseIn=>\("bezier","linear",false\)/);
   assert.match(motion,/Easing::EaseOut=>\("linear","bezier",false\)/);
-  assert.match(motion,/directional_easing_needs_temporal_ease_synthesis/);
+  assert.match(motion,/set_keyframe_temporal_ease_uniform/);
+  assert.match(motion,/AE_DEFAULT_EASE_SPEED:f64=0\.0/);
+  assert.match(motion,/AE_DEFAULT_EASE_INFLUENCE:f64=33\.333_333/);
+  assert.match(motion,/ae_temporal_ease_sides/);
+  assert.match(motion,/host_dimension_count_inferred":false/);
+  assert.match(motion,/zero_speed_33_333333_influence/);
 });
 
 
