@@ -22,7 +22,7 @@ pub struct Request {
 }
 impl Request {
     pub fn is_mutating(&self)->bool{
-        matches!(self.action.as_str(),"set_property"|"set_values_at_times"|"set_expression"|"add_effect"|"remove_effect"|"add_null"|"add_text"
+        matches!(self.action.as_str(),"set_property"|"set_values_at_times"|"set_component_values_at_times"|"set_expression"|"add_effect"|"remove_effect"|"add_null"|"add_text"
             |"add_shape"|"add_solid"|"add_camera"|"add_light"|"set_camera_options"|"set_light_options"|"set_3d_material"
             |"add_parametric_mesh"|"apply_preset"|"set_layer_transform"|"create_comp"|"set_comp_settings"|"import_footage"|"add_item_layer"
             |"create_project_folder"|"set_project_item_state"|"remove_project_item"
