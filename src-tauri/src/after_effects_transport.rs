@@ -101,6 +101,7 @@ pub struct RunnerPlan {
     pub request_path:PathBuf,
     pub receipt_path:PathBuf,
     pub runner_path:PathBuf,
+    pub cancel_path:PathBuf,
     pub runner_script:String,
     pub afterfx_arguments:Vec<String>,
     pub runtime_verified:bool,
@@ -138,18 +139,21 @@ pub fn runner_plan(
     let request_path=workspace.join(format!("{prefix}.request.json"));
     let receipt_path=workspace.join(format!("{prefix}.receipt.json"));
     let runner_path=workspace.join(format!("{prefix}.runner.jsx"));
-    for (path,label) in [(&request_path,"request"),(&receipt_path,"receipt"),(&runner_path,"runner")] {
+    let cancel_path=workspace.join(format!("{prefix}.cancel"));
+    for (path,label) in [(&request_path,"request"),(&receipt_path,"receipt"),(&runner_path,"runner"),(&cancel_path,"cancel")] {
         validate_absolute(path,&format!("After Effects {label} path"))?;
     }
 
     let core=js_string(&core_script.to_string_lossy())?;
     let req=js_string(&request_path.to_string_lossy())?;
     let receipt=js_string(&receipt_path.to_string_lossy())?;
+    let cancel=js_string(&cancel_path.to_string_lossy())?;
     let request_id=js_string(&request.request_id)?;
     let runner_script=format!(r#"(function(){{
 var corePath={core};
 var requestPath={req};
 var receiptPath={receipt};
+var cancelPath={cancel};
 var expectedRequestId={request_id};
 var receipt={{schema_version:1,request_id:expectedRequestId,ok:false,host_version:null,result:null,error:null}};
 function writeReceipt(){{
@@ -170,6 +174,8 @@ try{{
     if(!request||request.request_id!==expectedRequestId) throw new Error("Shuvi AE request identity mismatch.");
     $.evalFile(new File(corePath));
     if(typeof ShuviAE==="undefined"||!ShuviAE.dispatch) throw new Error("Shuvi AE adapter failed to load.");
+    $.global.ShuviAECancelPath=cancelPath;
+    $.global.ShuviAERequestId=expectedRequestId;
     receipt.result=ShuviAE.dispatch(request);
     receipt.host_version=String(app.version);
     receipt.ok=true;
@@ -188,6 +194,7 @@ writeReceipt();
         request_path,
         receipt_path,
         runner_path:runner_path.clone(),
+        cancel_path,
         runner_script,
         afterfx_arguments:vec!["-r".into(),runner_path.to_string_lossy().into_owned()],
         runtime_verified:false,
@@ -235,6 +242,8 @@ mod tests{
         assert_eq!(plan.afterfx_arguments[0],"-r");
         assert!(plan.runner_script.contains("request.request_id!==expectedRequestId"));
         assert!(plan.runner_script.contains("$.evalFile"));
+        assert!(plan.runner_script.contains("$.global.ShuviAECancelPath=cancelPath"));
+        assert!(plan.cancel_path.ends_with("shuvi-ae-abc-123.cancel"));
         assert!(!plan.runtime_verified);
     }
 
