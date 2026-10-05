@@ -1076,15 +1076,23 @@
     function requireStaticProperty(group,name,label) {
         var p=group?group.property(name):null;
         if(!p||typeof p.setValue!=="function")fail(label+" property is unavailable.");
+        if(String(p.matchName)!==name)fail(label+" property matchName changed.");
         if(p.numKeys!==undefined&&p.numKeys>0)fail(label+" static write refused because keyframes already exist.");
+        if(p.expressionEnabled)fail(label+" static write refused because an expression is enabled.");
         return p;
     }
-    function setBoundedProperty(p,value,label) {
+    function validateBoundedProperty(p,value,label) {
         if(typeof value==="number"){
             if(!finiteNumber(value)||Math.abs(value)>1000000)fail(label+" must be finite and bounded.");
-            try{if(p.hasMin&&value<p.minValue-EPSILON)fail(label+" is below host minimum.");}catch(ignoreMin){}
-            try{if(p.hasMax&&value>p.maxValue+EPSILON)fail(label+" is above host maximum.");}catch(ignoreMax){}
-        }
+            if(p.hasMin&&value<p.minValue-EPSILON)fail(label+" is below host minimum.");
+            if(p.hasMax&&value>p.maxValue+EPSILON)fail(label+" is above host maximum.");
+        }else if(value instanceof Array){
+            if(value.length<2||value.length>3)fail(label+" vector dimensions exceed bounds.");
+            for(var v=0;v<value.length;v++)if(!finiteNumber(value[v])||Math.abs(value[v])>1000000)fail(label+" vector must be finite and bounded.");
+        }else fail(label+" requires a numeric value or vector.");
+    }
+    function setBoundedProperty(p,value,label) {
+        validateBoundedProperty(p,value,label);
         p.setValue(value);
     }
     function cameraOptionsSnapshot(layer) {
@@ -1100,6 +1108,10 @@
             blur_level:read("ADBE Camera Blur Level"),
             focus_area_width:read("FocusAreaWidth"),
             near_far_blur_multiplier:read("NearFarBlurMultiplier")
+            ,iris_shape:read("ADBE Iris Shape"),iris_rotation:read("ADBE Iris Rotation"),iris_roundness:read("ADBE Iris Roundness")
+            ,iris_aspect_ratio:read("ADBE Iris Aspect Ratio"),iris_diffraction_fringe:read("ADBE Iris Diffraction Fringe")
+            ,iris_highlight_gain:read("ADBE Iris Highlight Gain"),iris_highlight_threshold:read("ADBE Iris Highlight Threshold")
+            ,iris_highlight_saturation:read("ADBE Iris Hightlight Saturation")
         };
     }
     function inspectCameraOptions(args) {
@@ -1119,6 +1131,7 @@
                 if(typeof value!=="boolean")fail("depth_of_field must be boolean.");
                 value=value?1:0;
             }else if(!finiteNumber(value))fail(argKey+" must be finite.");
+            validateBoundedProperty(p,value,label);
             requested.push({arg:argKey,propName:propName,label:label,value:value,before:cloneValue(p.value)});
         }
         add("zoom","ADBE Camera Zoom","Camera Zoom");
@@ -1128,6 +1141,14 @@
         add("blur_level","ADBE Camera Blur Level","Camera Blur Level");
         add("focus_area_width","FocusAreaWidth","Camera Focus Area Width");
         add("near_far_blur_multiplier","NearFarBlurMultiplier","Camera Near/Far Blur Multiplier");
+        add("iris_shape","ADBE Iris Shape","Camera Iris Shape");
+        add("iris_rotation","ADBE Iris Rotation","Camera Iris Rotation");
+        add("iris_roundness","ADBE Iris Roundness","Camera Iris Roundness");
+        add("iris_aspect_ratio","ADBE Iris Aspect Ratio","Camera Iris Aspect Ratio");
+        add("iris_diffraction_fringe","ADBE Iris Diffraction Fringe","Camera Iris Diffraction Fringe");
+        add("iris_highlight_gain","ADBE Iris Highlight Gain","Camera Iris Highlight Gain");
+        add("iris_highlight_threshold","ADBE Iris Highlight Threshold","Camera Iris Highlight Threshold");
+        add("iris_highlight_saturation","ADBE Iris Hightlight Saturation","Camera Iris Highlight Saturation");
         if(requested.length===0)fail("set_camera_options requires at least one option.");
         app.beginUndoGroup("Shuvi: Set camera options");
         try{
@@ -1175,7 +1196,8 @@
             color:read("ADBE Light Color"),
             cone_angle:read("ADBE Light Cone Angle"),
             cone_feather:read("ADBE Light Cone Feather 2"),
-            casts_shadows:read("Casts Shadows"),
+            casts_shadows:read("ADBE Casts Shadows"),
+            falloff_type:read("ADBE Light Falloff Type"),falloff_radius:read("ADBE Light Falloff Start"),falloff_distance:read("ADBE Light Falloff Distance"),
             shadow_darkness:read("ADBE Light Shadow Darkness"),
             shadow_diffusion:read("ADBE Light Shadow Diffusion")
         };
@@ -1192,6 +1214,10 @@
         if(!g)fail("Light Options group is unavailable.");
         if(args.light_type!==undefined)newType=lightTypeValue(boundedString(args.light_type,24,"light_type"));
         if(args.hasOwnProperty("light_source_layer_id")){
+            var supportedSource;
+            try{supportedSource=layer.lightSource;}catch(unavailableSource){fail("Environment light source is unavailable in this host.");}
+            if(supportedSource===undefined||typeof LightType.ENVIRONMENT==="undefined"||layer.lightType!==LightType.ENVIRONMENT)
+                fail("Environment source edit requires an inspected environment light on a supported host.");
             newSourceMarker=true;
             if(args.light_source_layer_id!==null){
                 newSource=resolveLayer(comp,args.light_source_layer_id);
@@ -1209,16 +1235,22 @@
                 var k;for(k=0;k<3;k++)if(!finiteNumber(value[k])||value[k]<0||value[k]>1)fail("Light color values must be 0..1.");
                 value=[value[0],value[1],value[2]];
             }else if(!finiteNumber(value))fail(argKey+" must be finite.");
+            validateBoundedProperty(p,value,label);
             requested.push({arg:argKey,propName:propName,label:label,value:value,before:cloneValue(p.value)});
         }
         add("intensity","ADBE Light Intensity","Light Intensity");
         add("color","ADBE Light Color","Light Color");
         add("cone_angle","ADBE Light Cone Angle","Light Cone Angle");
         add("cone_feather","ADBE Light Cone Feather 2","Light Cone Feather");
-        add("casts_shadows","Casts Shadows","Light Casts Shadows");
+        add("casts_shadows","ADBE Casts Shadows","Light Casts Shadows");
+        add("falloff_type","ADBE Light Falloff Type","Light Falloff Type");
+        add("falloff_radius","ADBE Light Falloff Start","Light Falloff Radius");
+        add("falloff_distance","ADBE Light Falloff Distance","Light Falloff Distance");
         add("shadow_darkness","ADBE Light Shadow Darkness","Light Shadow Darkness");
         add("shadow_diffusion","ADBE Light Shadow Diffusion","Light Shadow Diffusion");
         if(newType===null&&!newSourceMarker&&requested.length===0)fail("set_light_options requires at least one option.");
+        if(newType!==null&&newType!==layer.lightType&&(requested.length>0||newSourceMarker))
+            fail("Change light type separately, then inspect the new type before editing its properties.");
         var beforeType=lightTypeName(layer.lightType),beforeSource=null;try{beforeSource=layer.lightSource;}catch(ignoreBeforeSource){}
         app.beginUndoGroup("Shuvi: Set light options");
         try{
@@ -1241,15 +1273,18 @@
             before_light_source_layer_id:beforeSource?beforeSource.id:null,after_light_source_layer_id:afterSource?afterSource.id:null,results:results};
     }
     function materialProperty(layer,name) {
-        var p=layer.property(name);
-        if(!p)fail("3D Material property unavailable: "+name);
+        var g=layer.property("ADBE Material Options Group"),p=g?g.property(name):null;
+        if(!p||String(p.matchName)!==name)fail("3D Material property unavailable: "+name);
         return p;
     }
     function inspect3DMaterial(args) {
         var comp=resolveComp(args.comp_id),layer=resolveLayer(comp,args.layer_id);
         if(!layer.threeDLayer)fail("Target layer is not 3D.");
-        var names=["Accepts Lights","Accepts Shadows","Casts Shadows","Ambient","Diffuse","Specular","Shininess","Light Transmission","Metal"],out={},i;
-        for(i=0;i<names.length;i++){var p=layer.property(names[i]);if(p)out[names[i]]=staticPropertyRead(p);}
+        var names=["ADBE Accepts Lights","ADBE Accepts Shadows","ADBE Casts Shadows","ADBE Ambient Coefficient","ADBE Diffuse Coefficient",
+            "ADBE Specular Coefficient","ADBE Shininess Coefficient","ADBE Light Transmission","ADBE Metal Coefficient",
+            "ADBE Reflection Coefficient","ADBE Glossiness Coefficient","ADBE Fresnel Coefficient","ADBE Transparency Coefficient","ADBE Transp Rolloff","ADBE Index of Refraction"],out={},i;
+        var g=layer.property("ADBE Material Options Group");if(!g)fail("3D Material Options group is unavailable in this renderer.");
+        for(i=0;i<names.length;i++){var p=g.property(names[i]);if(p&&String(p.matchName)===names[i])out[names[i]]=staticPropertyRead(p);}
         return {verification_status:"verified_readback",comp_id:comp.id,layer_id:layer.id,material:out};
     }
     function set3DMaterial(args) {
@@ -1257,22 +1292,27 @@
         if(!layer.threeDLayer)fail("Target layer is not 3D.");
         if(layer.locked)fail("3D layer is locked.");
         var map=[
-            ["accepts_lights","Accepts Lights",true],["accepts_shadows","Accepts Shadows",true],["casts_shadows","Casts Shadows",true],
-            ["ambient","Ambient",false],["diffuse","Diffuse",false],["specular","Specular",false],["shininess","Shininess",false],
-            ["light_transmission","Light Transmission",false],["metal","Metal",false]
+            ["accepts_lights","ADBE Accepts Lights",true],["accepts_shadows","ADBE Accepts Shadows",true],["casts_shadows","ADBE Casts Shadows",true],
+            ["ambient","ADBE Ambient Coefficient",false],["diffuse","ADBE Diffuse Coefficient",false],["specular","ADBE Specular Coefficient",false],["shininess","ADBE Shininess Coefficient",false],
+            ["light_transmission","ADBE Light Transmission",false],["metal","ADBE Metal Coefficient",false],
+            ["reflection","ADBE Reflection Coefficient",false],["glossiness","ADBE Glossiness Coefficient",false],
+            ["fresnel","ADBE Fresnel Coefficient",false],["transparency","ADBE Transparency Coefficient",false],
+            ["transparency_rolloff","ADBE Transp Rolloff",false],["index_of_refraction","ADBE Index of Refraction",false]
         ],requested=[],i;
+        var g=layer.property("ADBE Material Options Group");if(!g)fail("3D Material Options group is unavailable in this renderer.");
         for(i=0;i<map.length;i++){
             if(args[map[i][0]]===undefined)continue;
-            var p=requireStaticProperty(layer,map[i][1],"3D Material "+map[i][1]),value=args[map[i][0]];
+            var p=requireStaticProperty(g,map[i][1],"3D Material "+map[i][1]),value=args[map[i][0]];
             if(map[i][2]){
                 if(typeof value!=="boolean")fail(map[i][0]+" must be boolean.");
                 value=value?1:0;
             }else if(!finiteNumber(value))fail(map[i][0]+" must be finite.");
+            validateBoundedProperty(p,value,map[i][0]);
             requested.push({arg:map[i][0],name:map[i][1],value:value,before:cloneValue(p.value)});
         }
         if(requested.length===0)fail("set_3d_material requires at least one property.");
         app.beginUndoGroup("Shuvi: Set 3D material");
-        try{for(i=0;i<requested.length;i++)setBoundedProperty(layer.property(requested[i].name),requested[i].value,requested[i].name);}
+        try{for(i=0;i<requested.length;i++)setBoundedProperty(g.property(requested[i].name),requested[i].value,requested[i].name);}
         finally{app.endUndoGroup();}
         layer=resolveLayer(comp,args.layer_id);var verified=true,results=[];
         for(i=0;i<requested.length;i++){
@@ -2600,6 +2640,51 @@
             fail("Render cancel marker request/project identity mismatch.");
         return marker;
     }
+    function transformBindings() {
+        return [["position","ADBE Position"],["scale","ADBE Scale"],["orientation","ADBE Orientation"],
+            ["x_rotation","ADBE Rotate X"],["y_rotation","ADBE Rotate Y"],["z_rotation","ADBE Rotate Z"],
+            ["point_of_interest","ADBE Point of Interest"]];
+    }
+    function inspectLayerTransform(args) {
+        var comp=resolveComp(args.comp_id),layer=resolveLayer(comp,args.layer_id),g=layer.property("ADBE Transform Group");
+        if(!g)fail("Transform group is unavailable.");
+        var bindings=transformBindings(),out={},i;
+        for(i=0;i<bindings.length;i++){
+            var p=g.property(bindings[i][1]);
+            if(p&&String(p.matchName)===bindings[i][1])out[bindings[i][0]]=staticPropertyRead(p);
+        }
+        return {verification_status:"verified_readback",comp_id:comp.id,layer_id:layer.id,three_d_layer:!!layer.threeDLayer,transform:out};
+    }
+    function setLayerTransform(args) {
+        var comp=resolveComp(args.comp_id),layer=resolveLayer(comp,args.layer_id),g=layer.property("ADBE Transform Group");
+        if(layer.locked)fail("Transform target layer is locked.");
+        if(!g)fail("Transform group is unavailable.");
+        var bindings=transformBindings(),requested=[],i;
+        for(i=0;i<bindings.length;i++){
+            var key=bindings[i][0],name=bindings[i][1];if(args[key]===undefined)continue;
+            var p=requireStaticProperty(g,name,"Transform "+key),value=cloneValue(args[key]),before=cloneValue(p.value);
+            if(p.dimensionsSeparated)fail("Combined transform write refused for separated dimensions; inspect and target each follower explicitly.");
+            if(before instanceof Array){
+                if(!(value instanceof Array)||value.length!==before.length)fail("Transform vector dimensions changed.");
+            }else if(typeof value!=="number")fail("Transform scalar requires a number.");
+            validateBoundedProperty(p,value,key);
+            if(args.expected&&args.expected.hasOwnProperty(key)&&!sameValue(before,args.expected[key]))fail("Transform property stale guard changed.");
+            requested.push({field:key,name:name,value:value,before:before});
+        }
+        if(requested.length===0)fail("set_layer_transform requires at least one inspected transform property.");
+        app.beginUndoGroup("Shuvi: Set layer transform");
+        try{for(i=0;i<requested.length;i++)setBoundedProperty(g.property(requested[i].name),requested[i].value,requested[i].field);}
+        finally{app.endUndoGroup();}
+        layer=resolveLayer(comp,args.layer_id);g=layer.property("ADBE Transform Group");
+        var verified=true,results=[];
+        for(i=0;i<requested.length;i++){
+            var after=cloneValue(g.property(requested[i].name).value),ok=sameValue(after,requested[i].value);
+            if(!ok)verified=false;
+            results.push({field:requested[i].field,before:requested[i].before,requested:requested[i].value,after:after,verified:ok});
+        }
+        return {native_accepted:true,verification_status:verified?"verified_transform_readback":"accepted_unverified",retry_safe:verified,
+            comp_id:comp.id,layer_id:layer.id,results:results};
+    }
     function renderQueue(args) {
         var queue=requireProject().renderQueue;
         if(queue.rendering)fail("After Effects render queue is already rendering.");
@@ -2737,7 +2822,7 @@
         return action === "set_property" || action === "set_values_at_times" || action === "set_expression"
             || action === "add_effect" || action === "remove_effect" || action === "add_null" || action === "add_text" || action === "add_shape" || action === "add_solid"
             || action === "add_camera" || action === "add_light" || action === "set_camera_options" || action === "set_light_options" || action === "set_3d_material"
-            || action === "add_parametric_mesh" || action === "apply_preset"
+            || action === "add_parametric_mesh" || action === "apply_preset" || action === "set_layer_transform"
             || action === "create_comp" || action === "set_comp_settings" || action === "import_footage" || action === "add_item_layer"
             || action === "create_project_folder" || action === "set_project_item_state" || action === "remove_project_item"
             || action === "set_layer_state" || action === "set_layer_parent"
@@ -2781,6 +2866,7 @@
         if (action === "inspect_project_items") return inspectProjectItems();
         if (action === "inspect_comp") return inspectComp(args);
         if (action === "inspect_camera_options") return inspectCameraOptions(args);
+        if (action === "inspect_layer_transform") return inspectLayerTransform(args);
         if (action === "inspect_light_options") return inspectLightOptions(args);
         if (action === "inspect_3d_material") return inspect3DMaterial(args);
         if (action === "inspect_parametric_mesh") return inspectParametricMesh(args);
@@ -2805,6 +2891,7 @@
         if (action === "add_camera") return addCamera(args);
         if (action === "add_light") return addLight(args);
         if (action === "set_camera_options") return setCameraOptions(args);
+        if (action === "set_layer_transform") return setLayerTransform(args);
         if (action === "set_light_options") return setLightOptions(args);
         if (action === "set_3d_material") return set3DMaterial(args);
         if (action === "add_parametric_mesh") return addParametricMesh(args);

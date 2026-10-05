@@ -73,3 +73,57 @@ test("AE completed render remains completion when no cancellation is observed",(
   assert.equal(result.render_completion_verified,true);assert.equal(result.render_cancel_verified,false);
   assert.equal(result.media_parse_verified,false);assert.equal(host.context.calls.stop,0);
 });
+
+function propertyHost(kind,properties){
+  const context=vm.createContext({kind,fixture:JSON.stringify(properties)});
+  vm.runInContext(`
+    var calls={writes:[],undo:0},$={global:{}};
+    function File(path){this.fsName=path;}
+    function CompItem(){}function CameraLayer(){}function LightLayer(){}
+    var LightType={PARALLEL:1,SPOT:2,POINT:3,AMBIENT:4,ENVIRONMENT:5};
+    var props=JSON.parse(fixture),group={property:function(name){return props[name]||null;}};
+    for(var name in props){(function(p,name){p.matchName=name;p.name="localized name";p.numKeys=p.numKeys||0;
+      p.hasMin=true;p.hasMax=true;p.minValue=p.minValue===undefined?0:p.minValue;p.maxValue=p.maxValue===undefined?1000000:p.maxValue;
+      p.setValue=function(value){calls.writes.push(name);p.value=value;};})(props[name],name);}
+    var layer=kind==="camera"?new CameraLayer():kind==="light"?new LightLayer():{};
+    layer.id=34;layer.locked=false;layer.threeDLayer=true;layer.lightType=2;
+    layer.property=function(name){return /Group$/.test(name)?group:null;};
+    var comp=new CompItem();comp.id=12;comp.numLayers=1;comp.layer=function(){return layer;};
+    var app={project:{file:{fsName:"C:/edit.aep"},revision:5,itemByID:function(){return comp;}},
+      beginUndoGroup:function(){calls.undo++;},endUndoGroup:function(){}};
+  `,context);
+  vm.runInContext(source,context);
+  return {context,run:(action,args)=>JSON.parse(JSON.stringify(vm.runInContext(`ShuviAE.dispatch(${JSON.stringify({schema_version:1,request_id:"props",action,
+    expected_project_file:"C:/edit.aep",expected_project_revision:5,args:{comp_id:12,layer_id:34,...args}})})`,context)))};
+}
+test("AE camera batch preflights all host bounds before its first write",()=>{
+  const host=propertyHost("camera",{"ADBE Camera Zoom":{value:100},"ADBE Camera Aperture":{value:5,maxValue:10}});
+  assert.throws(()=>host.run("set_camera_options",{zoom:200,aperture:11}),/above host maximum/);
+  assert.equal(host.context.calls.writes.length,0);assert.equal(host.context.calls.undo,0);
+  const result=host.run("set_camera_options",{zoom:200,aperture:8});
+  assert.equal(result.verification_status,"verified_camera_options_readback");
+  assert.equal(host.context.calls.writes.length,2);
+});
+test("AE material edits use stable matchNames and refuse expressions",()=>{
+  const host=propertyHost("av",{"ADBE Ambient Coefficient":{value:50,maxValue:100},"ADBE Diffuse Coefficient":{value:50,maxValue:100,expressionEnabled:true}});
+  assert.throws(()=>host.run("set_3d_material",{ambient:70,diffuse:80}),/expression is enabled/);
+  assert.equal(host.context.calls.writes.length,0);
+  const result=host.run("set_3d_material",{ambient:70});
+  assert.equal(result.verification_status,"verified_3d_material_readback");
+});
+test("AE transform writes reject separated dimensions, stale values and invalid vectors",()=>{
+  const host=propertyHost("av",{"ADBE Position":{value:[1,2,3]},"ADBE Orientation":{value:[0,0,0]}});
+  assert.throws(()=>host.run("set_layer_transform",{position:[4,5]}),/dimensions changed/);
+  assert.throws(()=>host.run("set_layer_transform",{position:[4,5,6],expected:{position:[99,2,3]}}),/stale guard changed/);
+  assert.equal(host.context.calls.writes.length,0);
+  const result=host.run("set_layer_transform",{position:[4,5,6],orientation:[10,20,30]});
+  assert.equal(result.verification_status,"verified_transform_readback");
+  const separated=propertyHost("av",{"ADBE Position":{value:[1,2,3],dimensionsSeparated:true}});
+  assert.throws(()=>separated.run("set_layer_transform",{position:[4,5,6]}),/separated dimensions/);
+});
+test("AE light type changes are separate from edits to type-specific properties",()=>{
+  const host=propertyHost("light",{"ADBE Light Intensity":{value:100}});
+  assert.throws(()=>host.run("set_light_options",{light_type:"point",intensity:50}),/Change light type separately/);
+  assert.equal(host.context.calls.writes.length,0);
+  assert.equal(host.run("set_light_options",{intensity:50}).verification_status,"verified_light_options_readback");
+});

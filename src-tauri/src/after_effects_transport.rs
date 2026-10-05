@@ -24,7 +24,7 @@ impl Request {
     pub fn is_mutating(&self)->bool{
         matches!(self.action.as_str(),"set_property"|"set_values_at_times"|"set_expression"|"add_effect"|"remove_effect"|"add_null"|"add_text"
             |"add_shape"|"add_solid"|"add_camera"|"add_light"|"set_camera_options"|"set_light_options"|"set_3d_material"
-            |"add_parametric_mesh"|"apply_preset"|"create_comp"|"set_comp_settings"|"import_footage"|"add_item_layer"
+            |"add_parametric_mesh"|"apply_preset"|"set_layer_transform"|"create_comp"|"set_comp_settings"|"import_footage"|"add_item_layer"
             |"create_project_folder"|"set_project_item_state"|"remove_project_item"
             |"set_layer_state"|"set_layer_parent"|"move_layer"|"set_track_matte"|"remove_track_matte"
             |"set_time_remap"|"replace_source"|"relink_footage"|"set_proxy"|"remove_proxy"|"set_av_layer_flags"|"set_av_layer_rendering"
@@ -36,7 +36,7 @@ impl Request {
     }
     pub fn is_read_only(&self)->bool{
         matches!(self.action.as_str(),"inspect_context"|"inspect_project_items"|"inspect_comp"|"inspect_camera_options"|"inspect_light_options"
-            |"inspect_3d_material"|"inspect_parametric_mesh"|"inspect_effects"
+            |"inspect_3d_material"|"inspect_parametric_mesh"|"inspect_layer_transform"|"inspect_effects"
             |"inspect_property"|"inspect_keyframes"|"inspect_layer_properties"|"inspect_av_layer_rendering"|"inspect_audio_levels"|"inspect_layer_input_stage"|"inspect_mogrt"|"inspect_essential_properties"|"inspect_scene_edits"|"inspect_markers"|"inspect_render_queue")
     }
     pub fn validate(&self)->Result<(),String>{
