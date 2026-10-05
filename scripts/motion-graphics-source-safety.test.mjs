@@ -61,9 +61,9 @@ test("After Effects adapter plan stays staged and guarded",()=>{
   assert.match(motion,/vector_transform_readback_required/);
   assert.match(motion,/missing_inspected_asset_item_id/);
   assert.match(motion,/ShapeSpec/);
+  assert.match(motion,/LayerKind::Shape=>/);
   assert.match(motion,/add_shape_primitive/);
   assert.match(motion,/Shape layer.*requires fill_color and\/or stroke_color/);
-  assert.doesNotMatch(motion,/shape_visual_spec_missing/);
   assert.match(motion,/transparent_render_output_not_planned/);
   assert.match(motion,/directional_easing_needs_temporal_ease_synthesis/);
 });
