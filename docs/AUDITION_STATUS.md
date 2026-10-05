@@ -29,7 +29,8 @@
 - A changed Audition document signature blocks guarded mutations.
 - Disabled commands are not invoked.
 - The generic command route does not claim the command's side effect was verified.
-- No blind retry is allowed after generic command acceptance.
+- Feature-command acceptance still does not prove that noise reduction, EQ, compression, loudness or any other semantic audio result occurred; it remains accepted-unverified until real host/output evidence exists.
+- No blind retry is allowed after generic or feature-command acceptance.
 - No direct effect-parameter API is claimed yet.
 - Noise reduction, EQ/compressor parameter writes, diagnostics repair, Favorites execution semantics and multitrack mix writes are not yet source-complete.
 - No saved/output audio is considered valid only because a host command returned.
