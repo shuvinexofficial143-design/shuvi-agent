@@ -48,7 +48,8 @@ test("motion graphics docs do not overclaim renderer or visual review readiness"
   assert.match(status,/Dedicated single-frame review remains available/);
   assert.match(status,/receipt-bound multi-frame review now compares 2–8 ordered Remotion sample frames/);
   assert.match(status,/does not prove that After Effects\/Remotion produced it/);
-  assert.match(status,/persistent multi-iteration correction session is not yet implemented/);
+  assert.match(status,/dependency_source_integrity_verified=false/);
+  assert.match(status,/After Effects-specific final delivery\/alpha acceptance path still needs its own live host acceptance/);
 });
 
 
