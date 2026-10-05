@@ -6632,6 +6632,20 @@ fn audit_safe_action_detail(tool: &str, detail: &str) -> String {
     }
 }
 
+fn successful_execution_audit_detail(tool:&str,base:&str,result:&ActionResult)->String{
+    if tool!="motion_graphics_run_remotion"||!result.success{return base.to_string();}
+    let Ok(value)=serde_json::from_str::<Value>(&result.stdout) else{
+        return format!("{base} | verified_output_sha256_unavailable");
+    };
+    let output_sha=value.pointer("/receipt_evidence/final_render/sha256")
+        .and_then(Value::as_str)
+        .filter(|v|v.len()==64&&v.bytes().all(|b|b.is_ascii_hexdigit()));
+    match output_sha{
+        Some(hash)=>format!("{base} | verified_output_sha256={}",hash.to_ascii_lowercase()),
+        None=>format!("{base} | verified_output_sha256_unavailable"),
+    }
+}
+
 fn audit_io_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -6852,6 +6866,7 @@ fn verify_remotion_action_receipt_binding(
     plan_snapshot:&str,
     manifest_sha256:&str,
     output_file:&str,
+    output_sha256:&str,
 )->Result<AuditEntry,String>{
     let receipt=read_action_audit_receipt(app,action_id)?
         .ok_or_else(||"No audit receipt exists for the supplied Remotion action ID.".to_string())?;
@@ -6862,6 +6877,7 @@ fn verify_remotion_action_receipt_binding(
         format!("plan_snapshot={plan_snapshot}"),
         format!("manifest_sha256={manifest_sha256}"),
         format!("output_path_sha256={}",motion_path_sha256(output_file)),
+        format!("verified_output_sha256={}",output_sha256.to_ascii_lowercase()),
     ]{
         if !receipt.detail.contains(&token){
             return Err("Remotion action audit receipt does not bind the exact approved plan, manifest, and output path.".into());
@@ -9489,7 +9505,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 return Err("Approved Remotion renderer evidence belongs to a stale correction-session plan.".into());
             }
             let _audit=verify_remotion_action_receipt_binding(
-                app,&action_id,&plan_snapshot,&current.manifest_sha256,&current_final.file
+                app,&action_id,&plan_snapshot,&current.manifest_sha256,&current_final.file,&current_final.sha256
             )?;
             session.record_renderer_approval(action_id.clone())?;
             motion_graphics_correction_session::save(&path,&session)?;
@@ -9647,7 +9663,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 return Err("Final Remotion acceptance evidence changed after approval staging.".into());
             }
             let _audit=verify_remotion_action_receipt_binding(
-                app,&request.render_action_id,&current.plan_snapshot,&current.accepted.manifest_sha256,&current_final.file
+                app,&request.render_action_id,&current.plan_snapshot,&current.accepted.manifest_sha256,&current_final.file,&current_final.sha256
             )?;
             let alpha_verified=if request.evidence.plan.delivery==motion_graphics::DeliveryKind::TransparentOverlay{
                 let alpha_id=request.alpha_probe_action_id.as_deref().ok_or("Transparent final acceptance requires alpha probe action ID.")?;
@@ -15248,13 +15264,14 @@ async fn execute_action(
 
     match execution {
         Ok(result) => {
+            let executed_audit_detail=successful_execution_audit_detail(&tool,&audit_detail,&result);
             append_audit(
                 &app,
                 &AuditEntry {
                     timestamp_ms: now_ms(),
                     event: "executed".into(),
                     tool,
-                    detail: audit_detail.clone(),
+                    detail: executed_audit_detail,
                     success: result.success,
                     action_id: Some(action_id.clone()),
                 },
