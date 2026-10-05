@@ -155,6 +155,7 @@ Available tools:
 - motion_graphics_validate_plan: {"plan":{"schema_version":1,"objective":"short goal","renderer":"auto|after_effects|remotion","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":true},"delivery":"standalone_video|transparent_overlay","scenes":[{"id":"scene_1","start_seconds":0,"duration_seconds":4,"layers":[{"id":"title","kind":"text|shape|image|video|group","name":"Title","text":"optional text","asset_id":"optional_asset_id","shape":{"kind":"rectangle|ellipse","size":[640,160],"position":[0,0],"roundness":24,"fill_color":[0.1,0.2,0.3,1],"stroke_color":[1,1,1,1],"stroke_width":4},"tracks":[{"property":"x|y|scale_x|scale_y|rotation_degrees|opacity","keyframes":[{"time_seconds":0,"value":0,"easing":"linear|ease_in|ease_out|ease_in_out|hold"}]}]}]}],"review":{"sample_times_seconds":[1,2,3],"criteria":["readability"]}}}
 - motion_graphics_plan_after_effects: {"request":{"project_file":"absolute saved .aep/.aepx","composition_name":"Shuvi Motion","plan":{"schema_version":1,"objective":"...","renderer":"auto|after_effects","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":true},"delivery":"standalone_video|transparent_overlay","scenes":[...],"review":{"sample_times_seconds":[],"criteria":[]}},"asset_item_ids":{"asset_1":123}}} — read-only adapter planner; every emitted AE mutation still requires fresh inspect_context, exact project revision and normal after_effects_run approval
 - motion_graphics_plan_after_effects_output: {"request":{"project_file":"absolute saved .aep/.aepx","comp_id":123,"output_file":"absolute single-file output path","output_module_template":"caller-selected template","render_settings_template":"optional caller-selected template","transparent_required":true}} — read-only queue/evidence planner; stages add_render_queue_item then inspect_output_module, never renders, and never infers alpha from a template name
+- motion_graphics_plan_remotion: {"request":{"plan":{"schema_version":1,"objective":"...","renderer":"auto|remotion","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":false},"delivery":"standalone_video|transparent_overlay","scenes":[...],"review":{"sample_times_seconds":[],"criteria":[]}},"asset_paths":{"asset_1":"absolute local asset path"}}} — read-only deterministic Remotion manifest planner; does not generate arbitrary code, write files, or execute a renderer
 - motion_graphics_generate_plan: {"request":{"objective":"motion goal","renderer":"auto|after_effects|remotion","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":true},"delivery":"standalone_video|transparent_overlay","available_asset_ids":["optional_asset_1"],"review_criteria":["readability"]}} — call the active provider once for strict raw JSON, then fail-closed validate fixed constraints/assets; does not run a renderer
 - motion_graphics_review_preview: {"preview_png":"absolute .png path","sample_time_seconds":1.0,"plan":{"schema_version":1,"objective":"...","renderer":"auto|after_effects|remotion","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":true},"delivery":"standalone_video|transparent_overlay","scenes":[...],"review":{"sample_times_seconds":[1],"criteria":["readability"]}}} — stage exact bounded PNG bytes, send only those approved bytes to the active vision provider, strict-parse visible-frame critique, and never auto-apply fixes
 - motion_graphics_generate_correction: {"request":{"plan":"exact reviewed Plan object","plan_snapshot":"exact fnv1a64 snapshot from motion_graphics_review_preview","review":"exact revise VisualReview object","iteration":1,"max_iterations":3}} — ask the active provider once for a snapshot-bound full Plan revision; only animation tracks may change, never auto-run renderer mutations
@@ -541,6 +542,7 @@ enum ToolAction {
     MotionGraphicsValidatePlan { plan: motion_graphics::Plan },
     MotionGraphicsPlanAfterEffects { request: motion_graphics::AfterEffectsPlanRequest },
     MotionGraphicsPlanAfterEffectsOutput { request: motion_graphics::AfterEffectsOutputPlanRequest },
+    MotionGraphicsPlanRemotion { request: motion_graphics::RemotionPlanRequest },
     MotionGraphicsGeneratePlan { request: motion_graphics_provider::ProviderPlanRequest, provider: ProviderContext },
     MotionGraphicsReviewPreview { preview_path: String, preview_bytes: Vec<u8>, sample_time_seconds: f64, plan: motion_graphics::Plan, provider: ProviderContext },
     MotionGraphicsGenerateCorrection { request: motion_graphics_correction::CorrectionRequest, provider: ProviderContext },
@@ -1171,6 +1173,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "motion_graphics_validate_plan"
         | "motion_graphics_plan_after_effects"
         | "motion_graphics_plan_after_effects_output"
+        | "motion_graphics_plan_remotion"
         | "motion_graphics_generate_plan"
         | "motion_graphics_review_preview"
         | "motion_graphics_generate_correction"
@@ -2852,6 +2855,17 @@ fn stage_tool(
             (ToolAction::MotionGraphicsPlanAfterEffectsOutput {request},
                 "Plan After Effects output evidence".into(),
                 "Read-only planner that stages an approved render-queue setup followed by exact output-module settings inspection. It never starts rendering or infers alpha capability from template names.".into(),
+                RiskLevel::Low)
+        }
+        "motion_graphics_plan_remotion" => {
+            let request_value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"motion_graphics_plan_remotion requires request.".to_string())?;
+            let request:motion_graphics::RemotionPlanRequest=serde_json::from_value(request_value)
+                .map_err(|e|format!("Invalid motion-graphics Remotion adapter request: {e}"))?;
+            request.plan()?;
+            (ToolAction::MotionGraphicsPlanRemotion {request},
+                "Plan motion graphics for Remotion".into(),
+                "Read-only deterministic manifest adapter. It validates grounded local assets and exact frame-position mapping without arbitrary code generation, filesystem writes, or renderer execution.".into(),
                 RiskLevel::Low)
         }
         "motion_graphics_generate_plan" => {
@@ -8655,6 +8669,11 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::MotionGraphicsPlanAfterEffectsOutput {request} => {
+            let value=request.plan()?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MotionGraphicsPlanRemotion {request} => {
             let value=request.plan()?;
             Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)})
