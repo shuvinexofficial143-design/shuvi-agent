@@ -21,6 +21,8 @@
 - Separate readiness report that keeps source coding, host runtime evidence and production readiness distinct.
 - Read-only live runtime probe that checks bridge connectivity, document context, command inventory, WaveDocument dictionary visibility and discovery counts for the main audio feature groups without editing audio.
 - Generic command receipts now retain bounded before/after document context while still refusing to call semantic audio changes verified.
+- Disposable acceptance registration is implemented for future real-host mutation testing. It stores the exact Audition version, document type/name and guarded document signature only after explicit disposable authorization.
+- Acceptance status and plan are read-only. The plan explicitly keeps destructive execution, semantic result verification and recovery verification unimplemented until a safe real-host path exists.
 
 ## Intentional safety limits
 
@@ -39,8 +41,8 @@
 
 ## Next source phase
 
-1. Run the implemented Script Dictionary inspection on a compatible Audition host and capture the real current WaveDocument/Multitrack/effect objects and methods.
-2. Review those live results, then add safe typed operations only for methods actually observed there.
-3. Prefer specific typed cleanup/favorite/export actions over generic command invocation.
-4. Add checkpoint/output validation where a mutation can change or overwrite audio.
+1. Pair a compatible Audition host and run audition_runtime_probe plus feature discovery.
+2. Register only a throwaway test document with audition_acceptance_register_disposable and confirm audition_acceptance_status still matches the exact host/document.
+3. Review the live Script Dictionary and ranked command candidates, then add safe typed operations only for methods actually observed there.
+4. Add checkpoint/output validation before any destructive acceptance execution is implemented.
 5. Run a disposable real-host acceptance suite before setting runtime_verified or production_ready.
