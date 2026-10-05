@@ -9,6 +9,7 @@ const lib=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8"
 const runtime=readFileSync(new URL("../src-tauri/src/after_effects_runtime.rs",import.meta.url),"utf8");
 const mediaValidation=readFileSync(new URL("../src-tauri/src/after_effects_media_validation.rs",import.meta.url),"utf8");
 const persistence=readFileSync(new URL("../src-tauri/src/after_effects_project_persistence.rs",import.meta.url),"utf8");
+const checkpoint=readFileSync(new URL("../src-tauri/src/after_effects_checkpoint.rs",import.meta.url),"utf8");
 const tauri=readFileSync(new URL("../src-tauri/tauri.conf.json",import.meta.url),"utf8");
 
 test("After Effects source never claims runtime verification",()=>{
@@ -485,4 +486,49 @@ test("AE render media structural parsers stay bounded and keep decode evidence s
   assert.match(mediaValidation,/"media_parse_verified":true/);
   assert.match(mediaValidation,/"media_decode_verified":false/);
   assert.match(mediaValidation,/No bounded built-in structural parser/);
+});
+
+
+test("AE render cancellation is request-scoped cooperative and never a blind process kill",()=>{
+  assert.match(transport,/cancel_path:PathBuf/);
+  assert.match(transport,/\.global\.ShuviAECancelPath=cancelPath/);
+  assert.match(runtime,/pub fn cancel_render/);
+  assert.match(runtime,/Only After Effects render_queue supports cooperative native cancellation/);
+  assert.match(runtime,/"native_stop_verified":false/);
+  assert.match(runtime,/cancel_requested_waiting_for_receipt/);
+  assert.match(jsx,/ShuviAEOnRenderStatusChanged/);
+  assert.match(jsx,/app\.project\.renderQueue\.stopRendering\(\)/);
+  assert.match(jsx,/RQItemStatus\.USER_STOPPED/);
+  assert.match(jsx,/verified_render_cancelled_before_start/);
+  assert.match(jsx,/verified_render_cancelled/);
+  assert.match(rust,/"render_cancellation":"source_supported_request_scoped_marker_before_start_or_on_status_changed_stopRendering_runtime_unverified"/);
+  assert.match(rust,/"general_mutation_abort_supported":false/);
+  assert.match(rust,/"instant_abort_guaranteed":false/);
+  assert.match(lib,/after_effects_cancel_render/);
+  assert.doesNotMatch(runtime,/taskkill|TerminateProcess|kill\(/i);
+});
+
+test("AE checkpoint recovery proves backup integrity without automatic restore",()=>{
+  assert.match(checkpoint,/pub fn verify\(backup:&Path,expected_source:&Path\)/);
+  assert.match(checkpoint,/Checkpoint backup path missing/);
+  assert.match(checkpoint,/Checkpoint fingerprint missing/);
+  assert.match(checkpoint,/"recovery_of_host_state_verified":false/);
+  assert.match(lib,/after_effects_verify_checkpoint/);
+  assert.match(lib,/"automatic_restore_performed":false/);
+  assert.match(lib,/"project_opened_automatically":false/);
+  assert.match(lib,/"manual_open_required":true/);
+  assert.match(rust,/"checkpoint_recovery":\{"state":"source_verifier_implemented_runtime_unverified"/);
+  assert.match(rust,/"automatic_restore":false/);
+});
+
+test("AE verified render extensions align with built-in structural parsers",()=>{
+  const renderPathStart=jsx.indexOf("function singleFileRenderPath(");
+  const renderPathEnd=jsx.indexOf("\n    function ",renderPathStart+10);
+  const body=jsx.slice(renderPathStart,renderPathEnd<0?jsx.length:renderPathEnd);
+  for(const ext of [".mov",".mp4",".m4v",".m4a",".avi",".wav",".png",".jpg",".jpeg"]){
+    assert.match(body,new RegExp(ext.replace(".","\\.")));
+  }
+  for(const ext of [".aif",".aiff",".mxf"]){
+    assert.doesNotMatch(body,new RegExp(ext.replace(".","\\.")));
+  }
 });
