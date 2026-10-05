@@ -68,7 +68,7 @@ impl Registry {
     pub fn find_mut(&mut self,version:&str,target:&Target)->Result<&mut Entry,String>{
         self.entries.iter_mut().find(|e|e.premiere_version==version && e.component_match_name==target.component_match_name
             && e.param_display_name==target.param_display_name && e.project_guid==target.expected.project_guid
-            && e.sequence_guid==target.expected.sequence_guid).ok_or("Observe this exact native parameter and host version before probing.".into())
+            && Some(e.sequence_guid.as_str())==target.expected.sequence_guid.as_deref()).ok_or("Observe this exact native parameter and host version before probing.".into())
     }
     pub fn annotations(&self,version:&str,settings:&Value)->Value{
         let Some(items)=settings.as_array() else{return json!([])};

@@ -2251,7 +2251,7 @@ while ($true) {{
         $text
         break
     }}
-}"#
+}}"#
     );
 
     let output = run_hidden_powershell(&script)?;

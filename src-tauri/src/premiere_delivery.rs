@@ -92,7 +92,7 @@ pub struct InterchangeRequest{
     pub output:String,
     #[serde(default)]
     pub overwrite:bool,
-    #[serde(default=true_bool)]
+    #[serde(default="true_bool")]
     pub suppress_ui:bool,
     #[serde(default)]
     pub aaf_options:Option<AafOptions>,
