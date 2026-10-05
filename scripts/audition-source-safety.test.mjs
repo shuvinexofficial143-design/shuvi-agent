@@ -126,3 +126,12 @@ test("Script Dictionary query also searches bounded members and help",()=>{
   assert.match(host,/member\.description/);
   assert.match(host,/shuviAuditionDictionaryClassMatches\(ref, className, query\)/);
 });
+
+
+test("Audition generic command records before-after context without semantic promotion",()=>{
+  assert.match(host,/beforeContext: context/);
+  assert.match(host,/afterContext: afterContext/);
+  assert.match(host,/documentIdentityStableAfter/);
+  assert.match(host,/verificationStatus: "accepted_unverified_command_side_effect"/);
+  assert.match(host,/runtimeVerified: false/);
+});
