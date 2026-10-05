@@ -227,10 +227,18 @@ pub fn validate_project_path(path:&str)->Result<(),String>{
 pub fn capability_report()->Value {
     json!({
         "schema_version":1,
+        "source_coding_complete_for_declared_scope":true,
         "source_runtime_verified":false,
+        "declared_scope_exclusions":[
+            "native_motion_tracker_control_not_exposed_by_reviewed_scripting_surface",
+            "native_hand_detection_not_provided_by_after_effects_scripting",
+            "media_byte_stream_decode_requires_separate_decoder_runtime",
+            "non_render_inflight_abort_has_no_reviewed_safe_native_route",
+            "uxp_transport_reserved_until_after_effects_uxp_is_a_supported_target"
+        ],
         "current_transport":{
             "kind":"extendscript_afterfx_r",
-            "state":"source_planned_unverified",
+            "state":"source_implemented_runtime_unverified",
             "requires_afterfx_executable":true,
             "requires_script_file_access_for_bidirectional_receipts":true
         },
@@ -336,7 +344,8 @@ pub fn capability_report()->Value {
             "persistent comp/layer identity is rechecked before mutation",
             "property paths use stable matchName and optional propertyIndex stale guards",
             "uncertain mutation is not blindly retried",
-            "native tracker results are never fabricated"
+            "native tracker results are never fabricated",
+            "declared source completion never implies runtime acceptance or production readiness"
         ]
     })
 }
@@ -345,6 +354,7 @@ pub fn capability_report()->Value {
 pub fn readiness_report()->Value {
     json!({
         "schema_version":1,
+        "source_coding_status":"complete_for_declared_extendscript_scope",
         "source_capabilities":capability_report(),
         "evidence_dimensions":{
             "node_static_tests":{"state":"not_verified","current_source_revision_bound":false},
@@ -372,7 +382,7 @@ pub fn readiness_report()->Value {
         },
         "runtime_verified":false,
         "current_source_revision_bound":false,
-        "note":"Source presence and static guards are not runtime acceptance. Do not promote production readiness until current-revision CI plus Windows/After Effects acceptance evidence exists."
+        "note":"Source coding is complete for the declared ExtendScript scope, with explicit exclusions above. This is not runtime acceptance. Do not promote production readiness until current-revision CI plus Windows/After Effects acceptance evidence exists."
     })
 }
 
