@@ -430,6 +430,57 @@
             readback_values: readback
         };
     }
+    function setComponentValuesAtTimes(args) {
+        validateTimesValues(args.times,args.values);
+        var resolved=resolveProperty(args.property),p=resolved.property;
+        if(!p.canVaryOverTime||typeof p.setValuesAtTimes!=="function")fail("Target component property cannot accept temporal keyframes.");
+        if(p.expressionEnabled)fail("Component keyframe write refused because an expression is enabled.");
+        var match=String(p.matchName||"");
+        if(match!=="ADBE Position"&&match!=="ADBE Scale")fail("Component keyframe write supports only ADBE Position or ADBE Scale.");
+        if(p.dimensionsSeparated===true)fail("Component keyframe write refused for separated dimensions.");
+        var baseValue=cloneValue(p.value);
+        if(!(baseValue instanceof Array)||baseValue.length<2||baseValue.length>3)fail("Component keyframe target must be a 2D or 3D vector property.");
+        var component=args.component_index;
+        if(!finiteNumber(component)||Math.floor(component)!==component||component<0||component>1||component>=baseValue.length)
+            fail("component_index must target X/Y within the inspected vector dimensions.");
+        var expected=args.expected_existing_key_times;
+        if(!(expected instanceof Array)||expected.length!==p.numKeys||expected.length>MAX_SAMPLES)
+            fail("expected_existing_key_times must exactly match the current bounded keyframe count.");
+        var i,previous=-1;
+        for(i=0;i<expected.length;i++){
+            if(!finiteNumber(expected[i])||expected[i]<0||expected[i]>10800||expected[i]<=previous)
+                fail("expected_existing_key_times must be finite strictly increasing composition seconds.");
+            if(Math.abs(p.keyTime(i+1)-expected[i])>EPSILON)fail("Component keyframe existing-time stale guard changed.");
+            previous=expected[i];
+        }
+        var times=args.times.slice(0),scalars=[],bases=[],vectors=[];
+        for(i=0;i<args.values.length;i++){
+            var scalar=args.values[i];
+            if(!finiteNumber(scalar)||Math.abs(scalar)>1000000)fail("Component keyframe scalar is invalid or unbounded.");
+            var base=cloneValue(p.valueAtTime(times[i],true));
+            if(!(base instanceof Array)||base.length!==baseValue.length)fail("Component keyframe vector dimensionality changed.");
+            var vector=[],j;for(j=0;j<base.length;j++)vector.push(base[j]);
+            vector[component]=scalar;
+            scalars.push(scalar);bases.push(base);vectors.push(vector);
+        }
+        var beforeCount=p.numKeys;
+        app.beginUndoGroup("Shuvi: Apply component keyframes");
+        try{p.setValuesAtTimes(times,vectors);}finally{app.endUndoGroup();}
+        resolved=resolveProperty(args.property);p=resolved.property;
+        var readback=[],verified=true,preserved=true;
+        for(i=0;i<times.length;i++){
+            var actual=cloneValue(p.valueAtTime(times[i],true));readback.push(actual);
+            if(!(actual instanceof Array)||actual.length!==vectors[i].length||!sameValue(actual,vectors[i]))verified=false;
+            if(actual instanceof Array){
+                for(var k=0;k<actual.length;k++)if(k!==component&&!sameValue(actual[k],bases[i][k]))preserved=false;
+            }else preserved=false;
+        }
+        if(!preserved)verified=false;
+        return {native_accepted:true,verification_status:verified?"verified_component_keyframe_readback":"accepted_unverified",
+            retry_safe:verified,comp_id:resolved.comp.id,layer_id:resolved.layer.id,property_match_name:match,
+            component_index:component,sample_count:times.length,before_num_keys:beforeCount,after_num_keys:p.numKeys,
+            expected_existing_key_times_verified:true,preserved_components_verified:preserved,requested_values:scalars,readback_values:readback};
+    }
     function effectInventory(layer) {
         var parade=layer.property("ADBE Effect Parade");
         if(!parade)return [];
@@ -2882,7 +2933,7 @@
         return windows ? a.toLowerCase() === b.toLowerCase() : a === b;
     }
     function mutationAction(action) {
-        return action === "set_property" || action === "set_values_at_times" || action === "set_expression"
+        return action === "set_property" || action === "set_values_at_times" || action === "set_component_values_at_times" || action === "set_expression"
             || action === "add_effect" || action === "remove_effect" || action === "add_null" || action === "add_text" || action === "add_shape" || action === "add_solid"
             || action === "add_camera" || action === "add_light" || action === "set_camera_options" || action === "set_light_options" || action === "set_3d_material"
             || action === "add_parametric_mesh" || action === "apply_preset" || action === "set_layer_transform"
@@ -2946,6 +2997,7 @@
         if (action === "inspect_essential_properties") return inspectEssentialProperties(args);
         if (action === "set_property") return setProperty(args);
         if (action === "set_values_at_times") return setValuesAtTimes(args);
+        if (action === "set_component_values_at_times") return setComponentValuesAtTimes(args);
         if (action === "set_expression") return setExpression(args);
         if (action === "add_effect") return addEffect(args);
         if (action === "remove_effect") return removeEffect(args);
