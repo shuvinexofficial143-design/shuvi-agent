@@ -110,6 +110,16 @@ test("AE temporal easing and timing require exact host readback",()=>{
 });
 
 
+test("AE component vector keyframes preserve untouched host dimensions",()=>{
+  assert.match(transport,/"set_component_values_at_times"/);
+  assert.match(jsx,/Component keyframe write refused for separated dimensions/);
+  assert.match(jsx,/expected_existing_key_times/);
+  assert.match(jsx,/p\.valueAtTime\(times\[i\],true\)/);
+  assert.match(jsx,/vector\[component\]=scalar/);
+  assert.match(jsx,/preserved_components_verified:preserved/);
+  assert.match(jsx,/verified_component_keyframe_readback/);
+});
+
 test("AE runtime preserves host-declared retry safety",()=>{
   assert.match(runtime,/host_retry_safe=receipt\.result\.as_ref\(\)/);
   assert.match(runtime,/receipt\.ok&&post_verified&&host_retry_safe/);
