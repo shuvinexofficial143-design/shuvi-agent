@@ -8,6 +8,7 @@ const provider=readFileSync(new URL("../src-tauri/src/motion_graphics_provider.r
 const review=readFileSync(new URL("../src-tauri/src/motion_graphics_review.rs",import.meta.url),"utf8");
 const correction=readFileSync(new URL("../src-tauri/src/motion_graphics_correction.rs",import.meta.url),"utf8");
 const correctionSession=readFileSync(new URL("../src-tauri/src/motion_graphics_correction_session.rs",import.meta.url),"utf8");
+const delivery=readFileSync(new URL("../src-tauri/src/motion_graphics_delivery.rs",import.meta.url),"utf8");
 const status=readFileSync(new URL("../docs/MOTION_GRAPHICS_STATUS.md",import.meta.url),"utf8");
 
 test("motion graphics keeps a renderer-neutral bounded schema",()=>{
@@ -219,7 +220,7 @@ test("motion correction session start and status persist bounded state without a
   assert.match(rust,/MotionGraphicsCorrectionSessionStatus/);
   assert.match(rust,/motion_graphics_correction_session::save\(&path,&session\)\?/);
   assert.match(rust,/motion_graphics_correction_session::load\(&path\)\?/);
-  assert.match(rust,/review_recording_wired":false/);
+  assert.match(rust,/review_recording_wired":true/);
   assert.match(rust,/automatic_execution":false/);
   assert.match(correctionSession,/pub fn save\(path:&Path/);
   assert.match(correctionSession,/pub fn load\(path:&Path/);
@@ -246,6 +247,39 @@ test("motion correction session records exact reviews and proposals before rende
   assert.match(correctionSession,/validate_revision_constraints/);
   assert.match(correction,/pub fn validate_revision_constraints/);
   assert.doesNotMatch(correctionSession,/Command::new/);
+});
+
+test("correction session binds approved Remotion render and rerender evidence",()=>{
+  assert.match(rust,/motion_graphics_correction_session_record_renderer_approval/);
+  assert.match(rust,/motion_graphics_correction_session_record_rerender/);
+  assert.match(rust,/verify_remotion_action_receipt_binding/);
+  assert.match(rust,/plan_snapshot=/);
+  assert.match(rust,/manifest_sha256=/);
+  assert.match(rust,/renderer_action_audit_binding_verified":true/);
+  assert.match(rust,/rerender_evidence_verified":true/);
+  assert.match(correctionSession,/rerender_output_sha256/);
+  assert.match(correctionSession,/Re-render evidence action_id does not match the approved renderer action/);
+  assert.doesNotMatch(correctionSession,/Command::new/);
+});
+
+test("final Remotion delivery requires real alpha evidence and keeps Premiere insertion approval-gated",()=>{
+  assert.match(rust,/motion_graphics_probe_remotion_alpha/);
+  assert.match(rust,/MotionGraphicsProbeRemotionAlpha/);
+  assert.match(rust,/register_managed_process\(state,pid\)/);
+  assert.match(rust,/Alpha probe exceeded the 20 second safety timeout/);
+  assert.match(rust,/Alpha probe exceeded Shuvi's 4 GB hard RAM ceiling/);
+  assert.match(rust,/motion_graphics_accept_final_remotion/);
+  assert.match(rust,/motion_graphics_plan_premiere_insertion/);
+  assert.match(delivery,/AlphaAttestation/);
+  assert.match(delivery,/codec_name!="prores"/);
+  assert.match(delivery,/pixel_format\.to_ascii_lowercase\(\)\.starts_with\("yuva"\)/);
+  assert.match(delivery,/Final Remotion acceptance requires a passing multi-frame visual review/);
+  assert.match(delivery,/runtime_process_provenance_verified/);
+  assert.match(delivery,/dependency_source_integrity_verified/);
+  assert.match(delivery,/production_ready:false/);
+  assert.match(delivery,/"tool":"premiere_insert_media"/);
+  assert.match(delivery,/"automatic_execution":false/);
+  assert.match(delivery,/"requires_normal_premiere_approval":true/);
 });
 
 test("motion correction stays snapshot-bound and proposal-only",()=>{
