@@ -67,6 +67,12 @@ impl Suite{
                     if receipt["schema_version"]!=1||receipt["request_id"]!=id||receipt["run_id"]!=self.run_id{
                         return Err("Fixture receipt identity mismatch; lifecycle remains unresolved.".into());
                     }
+                    if receipt["ok"]==true&&(receipt["result"]["request_id"]!=id||receipt["result"]["run_id"]!=self.run_id
+                        ||receipt["result"]["phase"]!=phase||receipt["result"]["project_file"].as_str()!=Some(self.project.to_string_lossy().as_ref())
+                        ||receipt["result"]["project_revision"].as_u64().is_none_or(|v|v==0)
+                        ||receipt["result"]["size_bytes"].as_u64().is_none_or(|v|v==0)){
+                        return Err("Fixture success receipt lacks exact host/project evidence; lifecycle remains unresolved.".into());
+                    }
                     self.events.push(json!({"case":phase,"fixture_receipt":receipt,"retry_safe":false}));
                     fs::remove_file(&pending).map_err(|e|e.to_string())?;
                     if receipt["ok"]!=true{return Err(format!("Fixture {phase} rejected: {}",receipt["error"]));}
@@ -177,9 +183,13 @@ async fn core_cases(s:&mut Suite)->Result<(),String>{
         if options["options"][field].is_object(){camera_args[field]=value;}
         else{s.events.push(json!({"case":"camera_availability","field":field,"state":"unsupported_property","mutation_attempted":false}));}
     }
+    if options["options"]["iris_shape"]["value"].is_number(){camera_args["iris_shape"]=options["options"]["iris_shape"]["value"].clone();}
     if camera_args.as_object().is_some_and(|v|v.len()>2){s.step("set_camera_options",camera_args).await?;}
     let transform=s.inspect("inspect_layer_transform",json!({"comp_id":comp,"layer_id":camera})).await?;
-    s.events.push(json!({"case":"camera_point_of_interest_availability","inspection":transform,"editing_pending":true}));
+    if transform["transform"]["point_of_interest"].is_object(){
+        s.step("set_layer_transform",json!({"comp_id":comp,"layer_id":camera,"point_of_interest":[160,90,0]})).await?;
+        s.inspect("inspect_layer_transform",json!({"comp_id":comp,"layer_id":camera})).await?;
+    }else{s.events.push(json!({"case":"camera_point_of_interest_availability","inspection":transform,"state":"unsupported_property","mutation_attempted":false}));}
     let light=s.step("add_light",json!({"comp_id":comp,"name":"Acceptance Light","center_point":[160,90]})).await?;let light=id(&light,"layer_id")?;
     let options=s.inspect("inspect_light_options",json!({"comp_id":comp,"layer_id":light})).await?;
     let mut light_args=json!({"comp_id":comp,"layer_id":light});
@@ -189,6 +199,7 @@ async fn core_cases(s:&mut Suite)->Result<(),String>{
         if options["options"][field].is_object(){light_args[field]=value;}
         else{s.events.push(json!({"case":"light_availability","field":field,"state":"unsupported_property","mutation_attempted":false}));}
     }
+    if options["options"]["falloff_type"]["value"].is_number(){light_args["falloff_type"]=options["options"]["falloff_type"]["value"].clone();}
     if light_args.as_object().is_some_and(|v|v.len()>2){s.step("set_light_options",light_args).await?;}
     let mut flags_args=fixture_args("three_d_switch")?;flags_args["comp_id"]=json!(comp);flags_args["layer_id"]=json!(text);
     s.step("set_av_layer_flags",flags_args).await?;
@@ -200,7 +211,7 @@ async fn core_cases(s:&mut Suite)->Result<(),String>{
         else{s.events.push(json!({"case":"material_availability","match_name":match_name,"state":"unsupported_property","mutation_attempted":false}));}
     }
     if material_args.as_object().is_some_and(|v|v.len()>2){s.step("set_3d_material",material_args).await?;}
-    s.step("set_layer_transform",json!({"comp_id":comp,"layer_id":text,"position":[160,90,0],"orientation":[0,0,0]})).await?;
+    s.step("set_layer_transform",json!({"comp_id":comp,"layer_id":text,"position":[160,90,0],"orientation":[0,0,0],"scale":[110,110,110],"x_rotation":10,"y_rotation":20})).await?;
     s.inspect("inspect_layer_transform",json!({"comp_id":comp,"layer_id":text})).await?;
     let recipe=crate::after_effects_templates::TemplatePlan{schema_version:1,name:"Acceptance title".into(),category:"title".into(),
         project_file:s.project.to_string_lossy().into_owned(),bindings:Default::default(),
@@ -231,6 +242,9 @@ async fn core_cases(s:&mut Suite)->Result<(),String>{
     }
     s.events.push(json!({"case":"essential_independent_inspection","inspection":essential_after}));
     s.step("save_project",json!({})).await?;
+    let transform_args=json!({"comp_id":comp,"layer_id":text});
+    let saved_transform=s.inspect("inspect_layer_transform",transform_args.clone()).await?;
+    let saved_keys=s.inspect("inspect_keyframes",json!({"property":position})).await?;
     let snapshots=[("opacity",json!({"property":opacity})),("position",json!({"property":position}))];
     let mut saved=Vec::new();for (name,args) in &snapshots{saved.push(json!({"name":name,"args":args,"value":s.inspect("inspect_property",args.clone()).await?}));}
     let before=s.context().await?;
@@ -243,6 +257,14 @@ async fn core_cases(s:&mut Suite)->Result<(),String>{
     s.lifecycle("reopen",json!({"expected_project_revision":before["project_revision"],"saved_file_verified":true,
         "checkpoint_verified":true,"expected_size_bytes":meta.len(),"expected_modified_ms":modified}))?;
     s.context().await?;
+    let reopened_transform=s.inspect("inspect_layer_transform",transform_args).await?;
+    let reopened_keys=s.inspect("inspect_keyframes",json!({"property":position})).await?;
+    let transforms_persisted=saved_transform["transform"]==reopened_transform["transform"];
+    let keys_persisted=saved_keys["keyframes"]==reopened_keys["keyframes"];
+    s.events.push(json!({"case":"transform_keyframe_save_reopen","transforms_persisted":transforms_persisted,
+        "keyframes_persisted":keys_persisted,"before_transform":saved_transform,"after_transform":reopened_transform,
+        "before_keys":saved_keys,"after_keys":reopened_keys,"visual_semantics_verified":false}));
+    if !transforms_persisted||!keys_persisted{return Err("Independent reopened transforms/keyframes did not persist.".into());}
     let reopened_essential=s.inspect("inspect_essential_properties",essential_args).await?;
     let essential_persisted=reopened_essential["properties"].as_array().is_some_and(|v|v.iter().any(|p|p["name"]=="Acceptance Slider"&&p["value"]==17));
     s.events.push(json!({"case":"essential_save_reopen","before":essential_after,"after":reopened_essential,"persistence_verified":essential_persisted}));
