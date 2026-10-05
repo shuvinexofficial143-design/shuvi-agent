@@ -4,6 +4,7 @@ import {readFileSync} from "node:fs";
 
 const rust=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
 const motion=readFileSync(new URL("../src-tauri/src/motion_graphics.rs",import.meta.url),"utf8");
+const provider=readFileSync(new URL("../src-tauri/src/motion_graphics_provider.rs",import.meta.url),"utf8");
 const status=readFileSync(new URL("../docs/MOTION_GRAPHICS_STATUS.md",import.meta.url),"utf8");
 
 test("motion graphics keeps a renderer-neutral bounded schema",()=>{
@@ -58,4 +59,23 @@ test("After Effects adapter plan stays staged and guarded",()=>{
   assert.match(motion,/shape_visual_spec_missing/);
   assert.match(motion,/transparent_render_output_not_planned/);
   assert.match(motion,/directional_easing_needs_temporal_ease_synthesis/);
+});
+
+
+test("provider-generated motion plans are strict and fail closed",()=>{
+  assert.match(rust,/motion_graphics_generate_plan/);
+  assert.match(rust,/MotionGraphicsGeneratePlan/);
+  assert.match(rust,/motion_graphics_provider::system_prompt/);
+  assert.match(rust,/send_chat\(/);
+  assert.match(rust,/response\.tool_proposal\.is_some\(\)/);
+  assert.match(rust,/request\.parse_generated\(&response\.content\)\?/);
+  assert.match(rust,/strict_json_validated":true/);
+  assert.match(rust,/fixed_constraints_preserved":true/);
+  assert.match(provider,/raw JSON only/);
+  assert.match(provider,/Generated motion-graphics plan changed the fixed objective/);
+  assert.match(provider,/invented unavailable asset_id/);
+  assert.match(provider,/Provider-generated shape layers are disabled/);
+  assert.match(provider,/must return raw JSON without markdown fences/);
+  assert.match(provider,/MAX_PROVIDER_PLAN_BYTES:usize=256\*1024/);
+  assert.doesNotMatch(provider,/Command::new/);
 });
