@@ -62,3 +62,23 @@ test("Audition bridge uses bounded authenticated request routing",()=>{
   assert.match(panel,/deliveredCount >= 1024/);
   assert.match(panel,/body\.length > 220000/);
 });
+
+
+test("Audition Script Dictionary reflection is bounded and read only",()=>{
+  assert.match(host,/\$\.dictionary\.getGroups\(\)/);
+  assert.match(host,/\$\.dictionary\.getClasses/);
+  assert.match(host,/\$\.dictionary\.getClass/);
+  assert.match(host,/maxClasses < 1 \|\| maxClasses > 128/);
+  assert.match(host,/shuviAuditionDictionaryMembers\(ref\.methods, 64\)/);
+  assert.match(host,/readOnly: true/);
+  assert.match(panel,/case "script_dictionary"/);
+  assert.match(rust,/"audition_script_dictionary"/);
+  assert.match(bridge,/"script_dictionary"/);
+});
+
+test("Script Dictionary discovery does not promote effect controls",()=>{
+  assert.match(model,/effect_parameter_dom":"not_claimed"/);
+  assert.match(model,/noise_reduction_effect_write":"not_claimed"/);
+  assert.match(model,/multitrack_mix_write":"not_claimed"/);
+  assert.doesNotMatch(rust,/AuditionSetEffect/);
+});
