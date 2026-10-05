@@ -33,6 +33,8 @@
 - A single X or Y track preserves the other After Effects Position components from exact host readback; a single ScaleX or ScaleY track does the same for Scale, with neutral scale factors converted to AE percent values.
 - Aligned paired X+Y or ScaleX+ScaleY tracks are source-coalesced as two guarded component writes on the same exact host key timeline: the first requires no existing keys, the second requires the first write's exact absolute key times, and interpolation is staged only after both components are present.
 - Paired tracks with mismatched keyframe times or easing remain fail-closed rather than synthesizing an unproven shared curve.
+- Keyframe easing semantics are now explicit and local: ease-in affects the incoming/arrival side, ease-out the outgoing/departure side, ease-in-out both sides, while linear/hold apply to both.
+- The AE adapter now stages the correct directional interpolation types for those sides; exact temporal speed/influence values are still intentionally unclaimed until bounded temporal-ease synthesis/readback is added.
 - Component vector writes fail closed on separated dimensions, expression-enabled properties, stale existing-key timelines, dimension changes, or failed untouched-component readback.
 - Dynamic comp/layer IDs may be resolved only from matching verified prior `after_effects_run` receipts.
 - Every future AE mutation still requires a fresh `inspect_context`, exact saved-project path/revision, a unique request ID, the existing checkpoint boundary, and normal Shuvi approval.
@@ -53,7 +55,7 @@
 - Shape support is intentionally limited to rectangle/ellipse primitives already exposed by the verified AE bridge; arbitrary Bézier/path synthesis is not claimed.
 - Shape geometry/style is immutable during provider correction proposals; correction may change only animation tracks.
 - Image/video layers require an `asset_id -> item_id` binding grounded in fresh `inspect_project_items` evidence.
-- `ease_in`, `ease_out`, and `ease_in_out` currently map only to AE bezier interpolation type; exact directional temporal-ease semantics are not claimed until bounded temporal-ease synthesis/readback is added.
+- `ease_in`, `ease_out`, and `ease_in_out` now map to the correct incoming/outgoing AE interpolation sides, but exact temporal speed/influence curve strength is not claimed until bounded temporal-ease synthesis/readback is added.
 - Transparent-overlay delivery is not claimed until an alpha-capable output-module/render plan is implemented and verified.
 - No Remotion project/code is generated or executed by the current planner.
 - Provider plan generation has not yet been verified with a real API request in the packaged Shuvi runtime.
