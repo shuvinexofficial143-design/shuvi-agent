@@ -78,6 +78,11 @@ mod premiere_bridge_queue;
 mod premiere_bridge;
 use premiere_bridge::{PremiereBridgeShared, PremiereBridgeStatus};
 
+mod audition;
+mod audition_bridge_queue;
+mod audition_bridge;
+use audition_bridge::{AuditionBridgeShared, AuditionBridgeStatus};
+
 const KEYRING_SERVICE: &str = "Shuvi";
 const SOFT_LIMIT_MB: f64 = 3584.0;
 const HARD_LIMIT_MB: f64 = 4096.0;
@@ -142,6 +147,17 @@ Available tools:
 - ui_expand_collapse: {"name":"exact visible name","automation_id":"optional exact automation id","window":"optional exact top-level window name","action":"expand|collapse"}
 - ui_send_keys: {"name":"exact visible name","automation_id":"optional exact automation id","window":"optional exact top-level window name","keys":"SendKeys sequence"}
 - pointer_click: {"x":123,"y":456,"button":"left|right|middle","clicks":1}
+- audition_detect: {}
+- audition_launch: {}
+- audition_readiness_report: {}
+- audition_bridge_start: {}
+- audition_bridge_status: {}
+- audition_bridge_stop: {}
+- audition_context: {}
+- audition_list_commands: {}
+- audition_command_enabled: {"command":{"property":"exact inspected COMMAND_* property","value":"exact inspected command value"}}
+- audition_set_playhead: {"percent":0.5}
+- audition_invoke_command: {"command":{"property":"exact inspected COMMAND_* property","value":"exact inspected command value"}}
 - premiere_detect: {}
 - premiere_launch: {"project":"optional absolute .prproj path"}
 - premiere_bridge_start: {}
@@ -355,6 +371,7 @@ Rules:
 - For browser/app UI work, prefer a Shuvi-managed browser when isolation matters, then use window-scoped semantic UI tools first. Use ui_toggle and ui_expand_collapse for supported controls. ui_send_keys is a high-risk fallback only after an exact element is focused and semantic patterns are unavailable. pointer_click is a final high-risk coordinate fallback: inspect_screen first, use coordinates only when semantic UI/DOM control cannot target the control, and never repeat a failed coordinate click blindly.
 - For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_timeline/premiere_list_items/premiere_project_tree for inspection, premiere_set_playhead for non-destructive navigation, premiere_inspect_frame for playhead-positioned visual review and premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media/premiere_insert_media/premiere_save_project for native editing. premiere_insert_media, premiere_trim_clip, premiere_roll_edit, premiere_move_clip, premiere_clone_clip, premiere_delete_clip, premiere_add_video_transition, premiere_add_video_effect, premiere_set_effect_param, premiere_add_effect_keyframe, premiere_add_audio_effect, premiere_set_audio_effect_param and premiere_add_audio_effect_keyframe are high risk because they change the timeline or effect state; premiere_insert_mogrt_path and premiere_insert_mogrt_library are high risk because they add graphics to the timeline; premiere_export_sequence is high risk because it writes media and may start encoding; inspect the timeline first when practical. Unsupported native capabilities must fail clearly; never bypass their safety gates with UI automation. Use visual inspection only as observational evidence. Major sequence creation and timeline insert/overwrite actions automatically save and copy the current .prproj into a sibling 'Shuvi Backups' folder before editing; the edit is refused if a saved local project cannot be checkpointed.
 - Media Encoder control currently uses Premiere UXP EncoderManager: inspect status/events first; launch is separate from starting the queue; starting a batch is high risk and must never be blindly retried. AME queue/progress events are observational until an exact Shuvi request-to-native-job correlation is proven. Direct Media Encoder UXP remains a future adapter while Adobe's AME UXP surface is public beta.
+- Adobe Audition uses an authenticated localhost CEP + ExtendScript bridge. Start and pair audition_bridge_start before native host actions. Always call audition_list_commands before audition_command_enabled or audition_invoke_command; only exact live COMMAND_* property/value pairs are accepted by the panel. Generic command invocation is high risk and host acceptance does not prove the audio edit or saved output. Do not claim noise reduction, effect-parameter, or multitrack-write support until those APIs are observed from the live Audition Script Dictionary and separately implemented.
 - Project diagnostics are read-only and bounded. Inspect traversal/truncation and unknown status fields before interpreting counts; proxy attachment does not establish proxy health and duplicate path candidates are not authorization to delete/relink.
 - Graphics plans must use inspected primitive types without coercion or semantic-name inference. Copy settings and expected into premiere_apply_video_recipe; skipped fields were not applied.
 - Saved graphics mappings require an inspected reference clip and explicit caller-defined roles; saving checks every native field. Template provenance is caller-supplied, not inferred. List mappings to obtain the revision before updating/deleting/applying. Batch graphics and lower thirds share one executor for title/chapter/CTA/price/location cards. Use clear existing video/audio tracks. All mapped roles need values. Duration only shortens video-only native graphics; no extension or inferred linked audio. Batches checkpoint once and return partial results; uncertain delivery must never be blindly retried.
@@ -501,6 +518,17 @@ enum ToolAction {
     UiExpandCollapse { name: Option<String>, automation_id: Option<String>, window: Option<String>, action: String },
     UiSendKeys { name: Option<String>, automation_id: Option<String>, window: Option<String>, keys: String },
     PointerClick { x: i32, y: i32, button: String, clicks: u32 },
+    AuditionDetect,
+    AuditionLaunch,
+    AuditionReadinessReport,
+    AuditionBridgeStart,
+    AuditionBridgeStatus,
+    AuditionBridgeStop,
+    AuditionContext,
+    AuditionListCommands,
+    AuditionCommandEnabled { command: audition::InspectedCommand },
+    AuditionSetPlayhead { percent: f64 },
+    AuditionInvokeCommand { command: audition::InspectedCommand },
     PremiereDetect,
     PremiereLaunch { project: Option<String> },
     PremiereBridgeStart,
@@ -762,6 +790,7 @@ struct ActionState {
     running_action_tools: Mutex<HashMap<String, String>>,
     browser_sessions: Mutex<HashMap<u32, BrowserSession>>,
     premiere_bridge: Arc<PremiereBridgeShared>,
+    audition_bridge: Arc<AuditionBridgeShared>,
     premiere_export_jobs_io: Mutex<()>,
     acceptance_probe_running: AtomicBool,
     finishing_running: premiere_execution::Execution,
@@ -1104,6 +1133,17 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "ui_expand_collapse"
         | "ui_send_keys"
         | "pointer_click"
+        | "audition_detect"
+        | "audition_launch"
+        | "audition_readiness_report"
+        | "audition_bridge_start"
+        | "audition_bridge_status"
+        | "audition_bridge_stop"
+        | "audition_context"
+        | "audition_list_commands"
+        | "audition_command_enabled"
+        | "audition_set_playhead"
+        | "audition_invoke_command"
         | "premiere_detect"
         | "premiere_launch"
         | "premiere_bridge_start"
@@ -2730,6 +2770,82 @@ fn stage_tool(
                 format!("{button} click x={x}, y={y}, clicks={clicks}"),
                 RiskLevel::High,
             )
+        }
+        "audition_detect" => (
+            ToolAction::AuditionDetect,
+            "Detect Adobe Audition".into(),
+            "Read-only bounded Program Files/Adobe scan for Audition.".into(),
+            RiskLevel::Low,
+        ),
+        "audition_launch" => (
+            ToolAction::AuditionLaunch,
+            "Launch Adobe Audition".into(),
+            "Launch the newest detected Adobe Audition installation as a Shuvi-managed process.".into(),
+            RiskLevel::Medium,
+        ),
+        "audition_readiness_report" => (
+            ToolAction::AuditionReadinessReport,
+            "Read Audition readiness".into(),
+            "Report implemented CEP/ExtendScript scope and unverified runtime boundaries without claiming live host acceptance.".into(),
+            RiskLevel::Low,
+        ),
+        "audition_bridge_start" => (
+            ToolAction::AuditionBridgeStart,
+            "Start Audition bridge".into(),
+            "Start Shuvi's authenticated localhost bridge for the Audition CEP panel.".into(),
+            RiskLevel::Medium,
+        ),
+        "audition_bridge_status" => (
+            ToolAction::AuditionBridgeStatus,
+            "Read Audition bridge status".into(),
+            "Check whether the Audition CEP bridge is enabled and paired.".into(),
+            RiskLevel::Low,
+        ),
+        "audition_bridge_stop" => (
+            ToolAction::AuditionBridgeStop,
+            "Stop Audition bridge".into(),
+            "Disable the current Audition pairing token and clear queued native commands.".into(),
+            RiskLevel::Low,
+        ),
+        "audition_context" => (
+            ToolAction::AuditionContext,
+            "Inspect Audition context".into(),
+            "Read active document type, WaveDocument timing and playhead data through the paired CEP bridge.".into(),
+            RiskLevel::Low,
+        ),
+        "audition_list_commands" => (
+            ToolAction::AuditionListCommands,
+            "List Audition commands".into(),
+            "Read a bounded live COMMAND_* inventory from Application reflection and cache it in the paired panel for exact later invocation.".into(),
+            RiskLevel::Low,
+        ),
+        "audition_command_enabled" => {
+            let command:audition::InspectedCommand=serde_json::from_value(
+                proposal.arguments.get("command").cloned().unwrap_or(Value::Null)
+            ).map_err(|e|format!("Invalid Audition command identity: {e}"))?;
+            command.validate()?;
+            (ToolAction::AuditionCommandEnabled {command:command.clone()},
+                "Check Audition command".into(),
+                format!("Recheck whether inspected {}={} is currently enabled.",command.property,command.value),
+                RiskLevel::Low)
+        }
+        "audition_set_playhead" => {
+            let percent=proposal.arguments.get("percent").and_then(Value::as_f64).ok_or("Numeric Audition playhead percent required.")?;
+            audition::validate_playhead_percent(percent)?;
+            (ToolAction::AuditionSetPlayhead {percent},
+                "Move Audition waveform playhead".into(),
+                format!("Set WaveDocument playhead to {:.4}% and require native readback.",percent*100.0),
+                RiskLevel::Low)
+        }
+        "audition_invoke_command" => {
+            let command:audition::InspectedCommand=serde_json::from_value(
+                proposal.arguments.get("command").cloned().unwrap_or(Value::Null)
+            ).map_err(|e|format!("Invalid Audition command identity: {e}"))?;
+            command.validate()?;
+            (ToolAction::AuditionInvokeCommand {command:command.clone()},
+                "Invoke inspected Audition command".into(),
+                format!("Invoke exact live Audition command {}={} after panel cache and enabled-state checks. Side effects remain accepted-unverified.",command.property,command.value),
+                RiskLevel::High)
         }
         "premiere_detect" => (
             ToolAction::PremiereDetect,
@@ -8265,6 +8381,85 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 Err("Coordinate pointer fallback is currently available on Windows only.".into())
             }
         }
+        ToolAction::AuditionDetect => {
+            let value=audition::detect_installs()?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionLaunch => {
+            let executable=audition::latest_executable()?;
+            let child=Command::new(&executable).spawn()
+                .map_err(|e|format!("Could not launch Adobe Audition: {e}"))?;
+            let child_pid=child.id();
+            if let Err(error)=register_managed_process(state,child_pid){
+                let _=terminate_managed_process_tree(child_pid);
+                return Err(format!("Audition was stopped before it could remain untracked: {error}"));
+            }
+            Ok(ActionResult{success:true,tool,
+                stdout:format!("Launched Adobe Audition from {} with root PID {}. Shuvi is tracking the managed process tree.",executable.display(),child_pid),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionReadinessReport => {
+            let value=audition::readiness_report();
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionBridgeStart => {
+            let status=state.audition_bridge.start()?;
+            Ok(ActionResult{success:true,tool,
+                stdout:format!("Audition bridge enabled on 127.0.0.1:{}; paired={}. Open the Shuvi Audition Bridge panel and paste the pairing token.",status.port,status.paired),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionBridgeStatus => {
+            let status=state.audition_bridge.status()?;
+            Ok(ActionResult{success:true,tool,
+                stdout:format!("Audition bridge: enabled={}, server_started={}, paired={}, port={}, queued_commands={}",status.enabled,status.server_started,status.paired,status.port,status.queued_commands),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionBridgeStop => {
+            let status=state.audition_bridge.stop()?;
+            Ok(ActionResult{success:true,tool,
+                stdout:format!("Audition bridge stopped; enabled={}, paired={}.",status.enabled,status.paired),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionContext => {
+            let value=state.audition_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionListCommands => {
+            let value=state.audition_bridge.request("list_commands",json!({}),Duration::from_secs(15)).await?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionCommandEnabled {command} => {
+            command.validate()?;
+            let value=state.audition_bridge.request("command_enabled",
+                json!({"property":command.property,"value":command.value}),Duration::from_secs(8)).await?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionSetPlayhead {percent} => {
+            audition::validate_playhead_percent(percent)?;
+            let value=state.audition_bridge.request("set_playhead_percent",json!({"percent":percent}),Duration::from_secs(8)).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_playhead_readback");
+            Ok(ActionResult{success:verified,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(if verified{0}else{1})})
+        }
+        ToolAction::AuditionInvokeCommand {command} => {
+            command.validate()?;
+            let value=state.audition_bridge.request("invoke_command",
+                json!({"property":command.property,"value":command.value}),Duration::from_secs(20)).await?;
+            let accepted=value.get("accepted").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{success:accepted,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "accepted":accepted,
+                    "native":value,
+                    "side_effect_verified":false,
+                    "retry_automatically":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(if accepted{0}else{1})})
+        }
         ToolAction::PremiereDetect => {
             let installations = find_premiere_installations()?;
 
@@ -13573,6 +13768,27 @@ fn clear_session_checkpoint(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn audition_bridge_start(
+    state: State<'_, ActionState>,
+) -> Result<AuditionBridgeStatus, String> {
+    state.audition_bridge.start()
+}
+
+#[tauri::command]
+fn audition_bridge_status(
+    state: State<'_, ActionState>,
+) -> Result<AuditionBridgeStatus, String> {
+    state.audition_bridge.status()
+}
+
+#[tauri::command]
+fn audition_bridge_stop(
+    state: State<'_, ActionState>,
+) -> Result<AuditionBridgeStatus, String> {
+    state.audition_bridge.stop()
+}
+
+#[tauri::command]
 fn premiere_bridge_start(
     state: State<'_, ActionState>,
 ) -> Result<PremiereBridgeStatus, String> {
@@ -13733,6 +13949,9 @@ pub fn run() {
             premiere_bridge_start,
             premiere_bridge_status,
             premiere_bridge_stop,
+            audition_bridge_start,
+            audition_bridge_status,
+            audition_bridge_stop,
             export_diagnostics,
         ])
         .run(tauri::generate_context!())
