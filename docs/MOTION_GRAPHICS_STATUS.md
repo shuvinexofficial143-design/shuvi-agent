@@ -43,6 +43,8 @@
 - That inspection deliberately keeps `alpha_semantics_verified=false`; localized/display setting strings are evidence, not an automatic alpha-capability claim.
 - Read-only `motion_graphics_plan_after_effects_output` now stages exactly two future steps: approved `add_render_queue_item` followed by `inspect_output_module` using the verified queue-index receipt. It never adds a render action.
 - Transparent output keeps the explicit `alpha_output_runtime_attestation_required` blocker until runtime acceptance proves the exact host output settings are alpha-capable.
+- Read-only `motion_graphics_plan_remotion` now maps a validated renderer-neutral plan into a bounded deterministic Remotion manifest with composition dimensions/fps/duration, exact floating frame positions, typed layers/tracks, and explicit absolute local asset bindings.
+- The Remotion adapter does not generate arbitrary React/TypeScript, does not write files, and does not execute a renderer yet; asset existence and final output remain runtime-unverified.
 - Dedicated `motion_graphics_review_preview` stages the exact bounded PNG bytes before approval and sends only those approved bytes to the selected vision provider.
 - Single-frame review requires explicit plan review criteria, strict raw-JSON critique, known criteria/layer IDs, bounded issue text, and a pass/revise consistency check.
 - Preview review can establish that one approved image was visually reviewed, but keeps renderer provenance, render-output verification, automatic correction, and production readiness false.
@@ -62,7 +64,7 @@
 - Image/video layers require an `asset_id -> item_id` binding grounded in fresh `inspect_project_items` evidence.
 - `ease_in`, `ease_out`, and `ease_in_out` now have a deterministic source-planned AE mapping: directional interpolation plus a fixed zero-speed / 33.333333-influence eased side using host-dimension-aware readback. This is a Shuvi default curve contract, not a claim that it is the ideal creative curve for every animation.
 - Transparent-overlay queue setup and output-module evidence are now source-planned, but delivery is still not claimed until runtime alpha attestation maps exact host output settings to an accepted alpha-capable configuration and final render evidence is verified.
-- No Remotion project/code is generated or executed by the current planner.
+- A deterministic Remotion manifest planner now exists, but no reviewed Remotion runtime/project consumes it yet; no Remotion code generation, filesystem write, bundle, render, or output verification is claimed.
 - Provider plan generation has not yet been verified with a real API request in the packaged Shuvi runtime.
 - A valid plan does not prove visual quality, renderer compatibility, output persistence, or final export correctness.
 - Dedicated single-frame image review is now wired through the existing provider vision transport; multi-frame continuity review is not yet implemented.
@@ -73,7 +75,7 @@
 ## Next source phase
 
 1. Add a runtime-bound alpha acceptance/attestation contract that consumes exact `inspect_output_module` evidence without trusting template names or localized strings by themselves.
-2. Build the Remotion adapter as a separate renderer implementation.
+2. Build a fixed reviewed Remotion runtime that consumes only the deterministic manifest; keep arbitrary provider-generated renderer code forbidden.
 3. Add preview render evidence and bounded frame extraction so reviewed PNGs can be tied to a verified renderer output.
 4. Add bounded multi-frame continuity review on top of the single-frame strict review contract.
 5. Add a persistent correction session that carries the existing snapshot/iteration rules across review → proposal → approved renderer action → re-render → re-review, with no blind retries.
