@@ -179,7 +179,7 @@ pub fn prepare(request:&ExecutionRequest)->Result<PreparedExecution,String>{
 #[cfg(test)]
 mod tests{
     use super::*;
-    use crate::motion_graphics::{Canvas,DeliveryKind,Renderer,ReviewSpec};
+    use crate::motion_graphics::{Canvas,DeliveryKind,Layer,LayerKind,Renderer,ReviewSpec,Scene};
 
     fn base()->ExecutionRequest{
         let root=std::env::temp_dir().join("shuvi-remotion-runtime-test");
@@ -187,7 +187,10 @@ mod tests{
             plan:Plan{
                 schema_version:1,objective:"render".into(),renderer:Renderer::Remotion,duration_seconds:1.0,
                 canvas:Canvas{width:640,height:360,fps:30.0,transparent_background:false},
-                delivery:DeliveryKind::StandaloneVideo,scenes:vec![],
+                delivery:DeliveryKind::StandaloneVideo,
+                scenes:vec![Scene{id:"scene".into(),start_seconds:0.0,duration_seconds:1.0,layers:vec![
+                    Layer{id:"group".into(),kind:LayerKind::Group,name:"Group".into(),text:None,asset_id:None,shape:None,tracks:vec![]}
+                ]}],
                 review:ReviewSpec{sample_times_seconds:vec![],criteria:vec![]},
             },
             asset_paths:BTreeMap::new(),
@@ -211,8 +214,8 @@ mod tests{
     #[test]
     fn fixed_sources_are_compile_time_embedded(){
         assert!(PACKAGE_JSON.starts_with(b"{"));
-        assert!(RENDER_MJS.windows(28).any(|w|w==b"arbitrary_provider_code_exe"));
-        assert!(INDEX_MJS.windows(12).any(|w|w==b"registerRoot"));
-        assert!(RUNTIME_MJS.windows(11).any(|w|w==b"OffthreadVi"));
+        assert!(String::from_utf8_lossy(RENDER_MJS).contains("arbitrary_provider_code_executed:false"));
+        assert!(String::from_utf8_lossy(INDEX_MJS).contains("registerRoot"));
+        assert!(String::from_utf8_lossy(RUNTIME_MJS).contains("OffthreadVideo"));
     }
 }
