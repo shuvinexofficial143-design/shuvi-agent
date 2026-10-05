@@ -102,7 +102,7 @@ test("Remotion adapter is deterministic manifest-only and grounded",()=>{
   assert.match(motion,/RemotionPlanRequest/);
   assert.match(motion,/Remotion asset path/);
   assert.match(motion,/frame_position/);
-  assert.match(motion,/remotion_runtime_renderer_not_implemented/);
+  assert.match(motion,/remotion_runtime_execution_required/);
   assert.match(motion,/remotion_alpha_output_runtime_not_verified/);
   assert.match(motion,/code_generation_performed":false/);
   assert.match(motion,/filesystem_write_performed":false/);
