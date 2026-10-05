@@ -237,6 +237,20 @@ test("AE executable path is restricted to the canonical Adobe install tree",()=>
 });
 
 
+test("AE output-module inspection is bounded read-only host evidence",()=>{
+  assert.match(transport,/"inspect_output_module"/);
+  assert.match(rust,/"output_module_inspection":"source_supported_bounded_raw_string_settings_templates_file_identity_alpha_semantics_unverified"/);
+  assert.match(jsx,/function inspectOutputModule\(args\)/);
+  assert.match(jsx,/GetSettingsFormat\.STRING/);
+  assert.match(jsx,/boundedSettingsSnapshot/);
+  assert.match(jsx,/state\.nodes>=512/);
+  assert.match(jsx,/Math\.min\(templateCount,128\)/);
+  assert.match(jsx,/verified_output_module_readback/);
+  assert.match(jsx,/alpha_semantics_verified:false/);
+  assert.match(jsx,/localized\/display strings are not converted into an alpha-capability claim/);
+});
+
+
 test("AE render requires exact queue identity host DONE and desktop output evidence",()=>{
   assert.match(transport,/"render_queue"/);
   assert.match(rust,/"render_queue_execute":"source_supported_exact_queued_set_host_done_desktop_files_optional_trusted_probe_parse_separate_completion_evidence"/);
