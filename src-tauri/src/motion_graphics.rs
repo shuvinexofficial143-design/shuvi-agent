@@ -38,6 +38,32 @@ pub enum LayerKind {
 
 #[derive(Debug,Clone,Copy,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="snake_case")]
+pub enum ShapeKind {
+    Rectangle,
+    Ellipse,
+}
+
+fn default_stroke_width()->f64{1.0}
+
+#[derive(Debug,Clone,Serialize,Deserialize,PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ShapeSpec {
+    pub kind:ShapeKind,
+    pub size:[f64;2],
+    #[serde(default)]
+    pub position:[f64;2],
+    #[serde(default)]
+    pub roundness:f64,
+    #[serde(default)]
+    pub fill_color:Option<[f64;4]>,
+    #[serde(default)]
+    pub stroke_color:Option<[f64;4]>,
+    #[serde(default="default_stroke_width")]
+    pub stroke_width:f64,
+}
+
+#[derive(Debug,Clone,Copy,Serialize,Deserialize,PartialEq,Eq)]
+#[serde(rename_all="snake_case")]
 pub enum Property {
     X,
     Y,
@@ -91,6 +117,8 @@ pub struct Layer {
     pub text:Option<String>,
     #[serde(default)]
     pub asset_id:Option<String>,
+    #[serde(default)]
+    pub shape:Option<ShapeSpec>,
     #[serde(default)]
     pub tracks:Vec<Track>,
 }
@@ -149,6 +177,33 @@ fn validate_number(value:f64,label:&str,min:f64,max:f64)->Result<(),String>{
     Ok(())
 }
 
+impl ShapeSpec {
+    fn validate(&self,layer_id:&str)->Result<(),String>{
+        for (axis,value) in self.size.iter().enumerate() {
+            validate_number(*value,&format!("Shape layer '{layer_id}' size[{axis}]"),0.0001,1_000_000.0)?;
+        }
+        for (axis,value) in self.position.iter().enumerate() {
+            validate_number(*value,&format!("Shape layer '{layer_id}' position[{axis}]"),-1_000_000.0,1_000_000.0)?;
+        }
+        validate_number(self.roundness,&format!("Shape layer '{layer_id}' roundness"),0.0,100_000.0)?;
+        if self.kind==ShapeKind::Ellipse && self.roundness.abs()>0.000_001 {
+            return Err(format!("Shape layer '{layer_id}' ellipse roundness must be 0 because AE ellipse primitives do not expose rectangle roundness."));
+        }
+        if self.fill_color.is_none() && self.stroke_color.is_none() {
+            return Err(format!("Shape layer '{layer_id}' requires fill_color and/or stroke_color."));
+        }
+        for (label,color) in [("fill_color",self.fill_color.as_ref()),("stroke_color",self.stroke_color.as_ref())] {
+            if let Some(color)=color {
+                for (index,value) in color.iter().enumerate() {
+                    validate_number(*value,&format!("Shape layer '{layer_id}' {label}[{index}]"),0.0,1.0)?;
+                }
+            }
+        }
+        validate_number(self.stroke_width,&format!("Shape layer '{layer_id}' stroke_width"),0.0,10_000.0)?;
+        Ok(())
+    }
+}
+
 impl Plan {
     pub fn validate(&self)->Result<(),String>{
         if self.schema_version!=1 {
@@ -202,7 +257,18 @@ impl Plan {
                         return Err(format!("Text layer '{}' requires non-empty text.",layer.id)),
                     LayerKind::Image|LayerKind::Video if layer.asset_id.is_none() =>
                         return Err(format!("{:?} layer '{}' requires asset_id.",layer.kind,layer.id)),
+                    LayerKind::Shape if layer.shape.is_none() =>
+                        return Err(format!("Shape layer '{}' requires explicit shape geometry/style.",layer.id)),
                     _=>{}
+                }
+                if layer.kind!=LayerKind::Shape && layer.shape.is_some() {
+                    return Err(format!("Non-shape layer '{}' cannot carry a shape specification.",layer.id));
+                }
+                if layer.kind==LayerKind::Shape && (layer.text.is_some() || layer.asset_id.is_some()) {
+                    return Err(format!("Shape layer '{}' cannot carry text or asset_id.",layer.id));
+                }
+                if let Some(shape)=layer.shape.as_ref() {
+                    shape.validate(&layer.id)?;
                 }
                 if layer.tracks.len()>MAX_TRACKS_PER_LAYER {
                     return Err(format!("Layer '{}' exceeds {MAX_TRACKS_PER_LAYER} animation tracks.",layer.id));
@@ -385,6 +451,7 @@ impl AfterEffectsPlanRequest {
                 let prefix=format!("s{scene_index}_l{layer_index}");
                 let create_id=format!("{prefix}_create");
                 let comp_ref=verified_receipt_ref(create_comp_id,"comp_id");
+                let mut shape_spec:Option<&ShapeSpec>=None;
                 let (host_action,host_args)=match layer.kind {
                     LayerKind::Text=>(
                         "add_text",
@@ -409,13 +476,8 @@ impl AfterEffectsPlanRequest {
                         ("add_item_layer",json!({"comp_id":comp_ref,"item_id":item_id}))
                     },
                     LayerKind::Shape=>{
-                        blockers.push(json!({
-                            "code":"shape_visual_spec_missing",
-                            "scene_id":scene.id,
-                            "layer_id":layer.id,
-                            "required":"Renderer-neutral schema currently identifies a shape layer but does not yet define rectangle/ellipse geometry, fill, stroke, or path data. No invisible empty shape is fabricated."
-                        }));
-                        continue;
+                        shape_spec=layer.shape.as_ref();
+                        ("add_shape",json!({"comp_id":comp_ref,"name":layer.name}))
                     }
                 };
 
@@ -436,6 +498,39 @@ impl AfterEffectsPlanRequest {
                 }))?;
 
                 let layer_ref=verified_receipt_ref(&create_id,"layer_id");
+                let mut content_ready_id=create_id.clone();
+                if let Some(shape)=shape_spec {
+                    let primitive_id=format!("{prefix}_shape_primitive");
+                    let kind=match shape.kind {ShapeKind::Rectangle=>"rectangle",ShapeKind::Ellipse=>"ellipse"};
+                    let mut primitive_args=json!({
+                        "comp_id":verified_receipt_ref(create_comp_id,"comp_id"),
+                        "layer_id":verified_receipt_ref(&create_id,"layer_id"),
+                        "kind":kind,
+                        "size":shape.size,
+                        "position":shape.position,
+                        "roundness":shape.roundness,
+                        "stroke_width":shape.stroke_width
+                    });
+                    if let Value::Object(map)=&mut primitive_args {
+                        if let Some(fill)=shape.fill_color {map.insert("fill_color".into(),json!(fill));}
+                        if let Some(stroke)=shape.stroke_color {map.insert("stroke_color".into(),json!(stroke));}
+                    }
+                    push_ae_step(&mut steps,json!({
+                        "step_id":primitive_id,
+                        "scene_id":scene.id,
+                        "layer_id":layer.id,
+                        "host_action":"add_shape_primitive",
+                        "host_args":primitive_args,
+                        "depends_on":[create_id],
+                        "requires_verified_dependency_receipts":true,
+                        "requires_fresh_inspection":true,
+                        "requires_fresh_project_revision":true,
+                        "requires_unique_request_id":true,
+                        "checkpoint_required":true,
+                        "automatic_execution":false
+                    }))?;
+                    content_ready_id=primitive_id;
+                }
                 let timing_id=format!("{prefix}_timing");
                 push_ae_step(&mut steps,json!({
                     "step_id":timing_id,
@@ -448,7 +543,7 @@ impl AfterEffectsPlanRequest {
                         "in_point":scene.start_seconds,
                         "out_point":scene.start_seconds+scene.duration_seconds
                     },
-                    "depends_on":[create_id],
+                    "depends_on":[content_ready_id],
                     "requires_verified_dependency_receipts":true,
                     "requires_fresh_inspection":true,
                     "requires_fresh_project_revision":true,
@@ -591,7 +686,7 @@ mod tests{
             scenes:vec![Scene{
                 id:"intro".into(),start_seconds:0.0,duration_seconds:4.0,
                 layers:vec![Layer{
-                    id:"title".into(),kind:LayerKind::Text,name:"Title".into(),text:Some("Hello".into()),asset_id:None,
+                    id:"title".into(),kind:LayerKind::Text,name:"Title".into(),text:Some("Hello".into()),asset_id:None,shape:None,
                     tracks:vec![Track{property:Property::Opacity,keyframes:vec![
                         Keyframe{time_seconds:0.0,value:0.0,easing:Easing::EaseOut},
                         Keyframe{time_seconds:0.4,value:1.0,easing:Easing::EaseOut},
@@ -682,7 +777,7 @@ mod tests{
             Keyframe{time_seconds:1.0,value:20.0,easing:Easing::Linear},
         ]}];
         plan.scenes[0].layers.push(Layer{
-            id:"photo".into(),kind:LayerKind::Image,name:"Photo".into(),text:None,asset_id:Some("photo_1".into()),tracks:vec![]
+            id:"photo".into(),kind:LayerKind::Image,name:"Photo".into(),text:None,asset_id:Some("photo_1".into()),shape:None,tracks:vec![]
         });
         let request=AfterEffectsPlanRequest{
             project_file:if cfg!(windows){r"C:\Work\motion.aep".into()}else{"/tmp/motion.aep".into()},
@@ -696,6 +791,46 @@ mod tests{
         assert!(blockers.iter().any(|b|b["code"]=="missing_inspected_asset_item_id"));
         assert!(!value["steps"].as_array().unwrap().iter().any(|step|
             step.get("layer_id").and_then(Value::as_str)==Some("photo") && step["host_action"]=="add_item_layer"));
+    }
+
+    #[test]
+    fn shape_schema_maps_to_existing_ae_shape_primitives(){
+        let mut plan=valid_plan();
+        plan.renderer=Renderer::AfterEffects;
+        plan.delivery=DeliveryKind::StandaloneVideo;
+        plan.canvas.transparent_background=false;
+        plan.scenes[0].layers.push(Layer{
+            id:"badge".into(),kind:LayerKind::Shape,name:"Badge".into(),text:None,asset_id:None,
+            shape:Some(ShapeSpec{kind:ShapeKind::Rectangle,size:[640.0,160.0],position:[0.0,0.0],roundness:24.0,
+                fill_color:Some([0.1,0.2,0.3,1.0]),stroke_color:Some([1.0,1.0,1.0,1.0]),stroke_width:4.0}),
+            tracks:vec![]
+        });
+        let request=AfterEffectsPlanRequest{
+            project_file:if cfg!(windows){r"C:\Work\motion.aep".into()}else{"/tmp/motion.aep".into()},
+            composition_name:"Shuvi Motion".into(),
+            plan,
+            asset_item_ids:BTreeMap::new(),
+        };
+        let value=request.plan().unwrap();
+        let steps=value["steps"].as_array().unwrap();
+        assert!(steps.iter().any(|step|step.get("layer_id").and_then(Value::as_str)==Some("badge") && step["host_action"]=="add_shape"));
+        let primitive=steps.iter().find(|step|step.get("layer_id").and_then(Value::as_str)==Some("badge") && step["host_action"]=="add_shape_primitive").unwrap();
+        assert_eq!(primitive["host_args"]["kind"],"rectangle");
+        assert_eq!(primitive["host_args"]["size"],json!([640.0,160.0]));
+        assert_eq!(primitive["host_args"]["fill_color"],json!([0.1,0.2,0.3,1.0]));
+        assert!(!value["blockers"].as_array().unwrap().iter().any(|blocker|blocker["code"]=="shape_visual_spec_missing"));
+    }
+
+    #[test]
+    fn shape_schema_rejects_invisible_or_invalid_geometry(){
+        let mut plan=valid_plan();
+        plan.scenes[0].layers.push(Layer{
+            id:"bad_shape".into(),kind:LayerKind::Shape,name:"Bad shape".into(),text:None,asset_id:None,
+            shape:Some(ShapeSpec{kind:ShapeKind::Ellipse,size:[100.0,100.0],position:[0.0,0.0],roundness:10.0,
+                fill_color:None,stroke_color:None,stroke_width:1.0}),
+            tracks:vec![]
+        });
+        assert!(plan.validate().is_err());
     }
 
     #[test]
