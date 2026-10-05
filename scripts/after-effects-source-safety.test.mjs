@@ -7,6 +7,7 @@ const transport=readFileSync(new URL("../src-tauri/src/after_effects_transport.r
 const jsx=readFileSync(new URL("../integrations/after-effects-extendscript/shuvi-ae.jsx",import.meta.url),"utf8");
 const lib=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
 const runtime=readFileSync(new URL("../src-tauri/src/after_effects_runtime.rs",import.meta.url),"utf8");
+const mediaValidation=readFileSync(new URL("../src-tauri/src/after_effects_media_validation.rs",import.meta.url),"utf8");
 const persistence=readFileSync(new URL("../src-tauri/src/after_effects_project_persistence.rs",import.meta.url),"utf8");
 const tauri=readFileSync(new URL("../src-tauri/tauri.conf.json",import.meta.url),"utf8");
 
@@ -206,14 +207,17 @@ test("AE executable path is restricted to the canonical Adobe install tree",()=>
 
 test("AE render requires exact queue identity host DONE and desktop output evidence",()=>{
   assert.match(transport,/"render_queue"/);
-  assert.match(rust,/"render_queue_execute":"source_supported_exact_queued_set_with_host_done_and_desktop_file_evidence"/);
-  assert.match(rust,/"render_media_parse_validation":"not_implemented"/);
+  assert.match(rust,/"render_queue_execute":"source_supported_exact_queued_set_with_host_done_desktop_file_and_structural_parse_evidence"/);
+  assert.match(rust,/"render_media_parse_validation":"source_supported_mp4_mov_m4v_m4a_wav_avi_png_jpeg_bounded_structural_parse"/);
+  assert.match(rust,/"render_media_decode_validation":"not_implemented_decode_remains_separate"/);
   assert.match(jsx,/unlisted render-enabled queue item would also render/);
   assert.match(jsx,/item\.status===RQItemStatus\.DONE/);
   assert.match(jsx,/verified_render_completion/);
   assert.match(runtime,/fn render_output_evidence/);
   assert.match(runtime,/desktop_outputs_verified/);
-  assert.match(runtime,/media_parse_verified":false/);
+  assert.match(runtime,/after_effects_media_validation::validate/);
+  assert.match(runtime,/media_parse_verified/);
+  assert.match(runtime,/media_decode_verified":false/);
   assert.match(runtime,/verification=="verified_render_completion"&&render_verified/);
 });
 
@@ -467,4 +471,18 @@ test("AE advanced 3D camera light material mesh and preset workflows stay typed 
   assert.match(jsx,/selection_restored:selectionRestored/);
   assert.match(jsx,/semantic_result_verified:false/);
   assert.match(jsx,/visual_review_required:true/);
+});
+
+
+test("AE render media structural parsers stay bounded and keep decode evidence separate",()=>{
+  assert.match(mediaValidation,/MAX_MEDIA_BYTES/);
+  assert.match(mediaValidation,/MAX_BOXES/);
+  assert.match(mediaValidation,/MAX_CHUNKS/);
+  assert.match(mediaValidation,/parse_iso_bmff/);
+  assert.match(mediaValidation,/parse_riff/);
+  assert.match(mediaValidation,/parse_png/);
+  assert.match(mediaValidation,/parse_jpeg/);
+  assert.match(mediaValidation,/"media_parse_verified":true/);
+  assert.match(mediaValidation,/"media_decode_verified":false/);
+  assert.match(mediaValidation,/No bounded built-in structural parser/);
 });
