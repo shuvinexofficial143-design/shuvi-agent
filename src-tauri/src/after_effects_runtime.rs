@@ -24,7 +24,7 @@ fn regular_file(path:&Path,label:&str)->Result<(),String>{
 }
 
 #[cfg(target_os="windows")]
-fn trusted_afterfx_exe(path:&Path)->Result<(),String>{
+pub(crate) fn trusted_afterfx_exe(path:&Path)->Result<(),String>{
     regular_file(path,"After Effects executable")?;
     if !path.file_name().and_then(|v|v.to_str()).is_some_and(|v|v.eq_ignore_ascii_case("afterfx.exe")){
         return Err("After Effects executable must be AfterFX.exe.".into());
@@ -43,7 +43,7 @@ fn trusted_afterfx_exe(path:&Path)->Result<(),String>{
 }
 
 #[cfg(not(target_os="windows"))]
-fn trusted_afterfx_exe(_path:&Path)->Result<(),String>{
+pub(crate) fn trusted_afterfx_exe(_path:&Path)->Result<(),String>{
     Err("After Effects execution is currently restricted to trusted Windows Adobe installs.".into())
 }
 

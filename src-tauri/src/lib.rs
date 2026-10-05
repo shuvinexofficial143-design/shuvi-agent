@@ -9,6 +9,8 @@ mod after_effects_project_persistence;
 mod after_effects_media_validation;
 mod after_effects_runtime;
 mod after_effects_templates;
+#[cfg(test)]
+mod after_effects_acceptance;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs::{self, OpenOptions},
