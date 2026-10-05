@@ -23,6 +23,7 @@ jobs:
           name: frontend-test-attestation
           path: .shuvi-attest/frontend-*.json
           if-no-files-found: warn
+          include-hidden-files: true
 
   rust:
     runs-on: windows-latest
@@ -41,3 +42,4 @@ jobs:
           name: rust-test-attestation
           path: .shuvi-attest/rust-*.json
           if-no-files-found: warn
+          include-hidden-files: true
