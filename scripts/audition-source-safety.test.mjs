@@ -145,3 +145,23 @@ test("Audition runtime probe is read only and does not promote edit readiness",(
   assert.match(rust,/"production_ready":false/);
   assert.match(rust,/"support_proven":false/);
 });
+
+
+test("Audition feature command invocation requires live semantic membership",()=>{
+  assert.match(rust,/"audition_invoke_feature_command"/);
+  assert.match(rust,/feature_membership_rechecked":true/);
+  assert.match(rust,/command_enabled_rechecked":true/);
+  assert.match(rust,/semantic_audio_effect_verified":false/);
+  assert.match(rust,/matched_queries/);
+  assert.match(rust,/Exact Audition command is not present in the current live discovery results/);
+  assert.match(rust,/retry_automatically":false/);
+});
+
+test("Audition feature command route preserves stale-document protection",()=>{
+  assert.match(rust,/expected_document_signature/);
+  assert.match(rust,/audition::validate_document_signature/);
+  assert.match(rust,/expectedDocumentSignature/);
+  assert.match(rust,/document_identity_guarded":true/);
+  assert.match(panel,/requireInspectedCommand\(args\)/);
+  assert.match(host,/context\.documentSignature != expectedSignature/);
+});
