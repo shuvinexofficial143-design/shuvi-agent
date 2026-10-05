@@ -111,6 +111,19 @@ test("Remotion adapter is deterministic manifest-only and grounded",()=>{
 });
 
 
+test("Remotion runtime evidence stays receipt-bound without process-provenance overclaim",()=>{
+  const evidence=readFileSync(new URL("../src-tauri/src/motion_graphics_remotion.rs",import.meta.url),"utf8");
+  assert.match(rust,/motion_graphics_accept_remotion_evidence/);
+  assert.match(rust,/MotionGraphicsAcceptRemotionEvidence/);
+  assert.match(evidence,/manifest_sha256/);
+  assert.match(evidence,/receipt_binding_verified:true/);
+  assert.match(evidence,/runtime_process_provenance_verified:false/);
+  assert.match(evidence,/preview frame SHA-256 mismatch/);
+  assert.match(evidence,/final output SHA-256 mismatch/);
+  assert.match(evidence,/alpha_channel_probe_verified/);
+  assert.doesNotMatch(evidence,/Command::new/);
+});
+
 test("provider-generated motion plans are strict and fail closed",()=>{
   assert.match(rust,/motion_graphics_generate_plan/);
   assert.match(rust,/MotionGraphicsGeneratePlan/);
