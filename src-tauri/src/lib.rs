@@ -80,6 +80,7 @@ use premiere_bridge::{PremiereBridgeShared, PremiereBridgeStatus};
 
 mod audition;
 mod audition_acceptance;
+mod motion_graphics;
 mod audition_bridge_queue;
 mod audition_bridge;
 use audition_bridge::{AuditionBridgeShared, AuditionBridgeStatus};
@@ -148,6 +149,7 @@ Available tools:
 - ui_expand_collapse: {"name":"exact visible name","automation_id":"optional exact automation id","window":"optional exact top-level window name","action":"expand|collapse"}
 - ui_send_keys: {"name":"exact visible name","automation_id":"optional exact automation id","window":"optional exact top-level window name","keys":"SendKeys sequence"}
 - pointer_click: {"x":123,"y":456,"button":"left|right|middle","clicks":1}
+- motion_graphics_validate_plan: {"plan":{"schema_version":1,"objective":"short goal","renderer":"auto|after_effects|remotion","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":true},"delivery":"standalone_video|transparent_overlay","scenes":[{"id":"scene_1","start_seconds":0,"duration_seconds":4,"layers":[{"id":"title","kind":"text|shape|image|video|group","name":"Title","text":"optional text","asset_id":"optional_asset_id","tracks":[{"property":"x|y|scale_x|scale_y|rotation_degrees|opacity","keyframes":[{"time_seconds":0,"value":0,"easing":"linear|ease_in|ease_out|ease_in_out|hold"}]}]}]}],"review":{"sample_times_seconds":[1,2,3],"criteria":["readability"]}}}
 - audition_detect: {}
 - audition_launch: {}
 - audition_readiness_report: {}
@@ -528,6 +530,7 @@ enum ToolAction {
     UiExpandCollapse { name: Option<String>, automation_id: Option<String>, window: Option<String>, action: String },
     UiSendKeys { name: Option<String>, automation_id: Option<String>, window: Option<String>, keys: String },
     PointerClick { x: i32, y: i32, button: String, clicks: u32 },
+    MotionGraphicsValidatePlan { plan: motion_graphics::Plan },
     AuditionDetect,
     AuditionLaunch,
     AuditionReadinessReport,
@@ -859,7 +862,7 @@ fn providers() -> Vec<ProviderDescriptor> {
         ProviderDescriptor {
             id: "anthropic",
             name: "Anthropic Claude",
-            default_model: "claude-sonnet-4-5",
+            default_model: "claude-sonnet-5-5",
             api_key_required: true,
             custom_base_url: false,
         },
@@ -1152,6 +1155,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "ui_expand_collapse"
         | "ui_send_keys"
         | "pointer_click"
+        | "motion_graphics_validate_plan"
         | "audition_detect"
         | "audition_launch"
         | "audition_readiness_report"
@@ -2798,6 +2802,17 @@ fn stage_tool(
                 format!("{button} click x={x}, y={y}, clicks={clicks}"),
                 RiskLevel::High,
             )
+        }
+        "motion_graphics_validate_plan" => {
+            let plan_value=proposal.arguments.get("plan").cloned()
+                .ok_or_else(||"motion_graphics_validate_plan requires plan.".to_string())?;
+            let plan:motion_graphics::Plan=serde_json::from_value(plan_value)
+                .map_err(|e|format!("Invalid motion-graphics plan schema: {e}"))?;
+            plan.validate()?;
+            (ToolAction::MotionGraphicsValidatePlan {plan},
+                "Validate motion-graphics plan".into(),
+                "Validate a renderer-neutral motion-graphics timeline, layers, animation tracks, transparency contract and review samples. This is read-only and does not run After Effects or Remotion.".into(),
+                RiskLevel::Low)
         }
         "audition_detect" => (
             ToolAction::AuditionDetect,
@@ -8508,6 +8523,11 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             {
                 Err("Coordinate pointer fallback is currently available on Windows only.".into())
             }
+        }
+        ToolAction::MotionGraphicsValidatePlan {plan} => {
+            let value=plan.summary()?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::AuditionDetect => {
             let value=audition::detect_installs()?;
