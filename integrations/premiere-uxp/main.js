@@ -101,6 +101,160 @@ function bindMediaEncoderListeners() {
   return true;
 }
 
+
+function mediaEncoderRangeCode(range, allowWorkArea) {
+  if (range === "entire") return 0;
+  if (range === "in_out") return 1;
+  if (allowWorkArea && range === "work_area") return 2;
+  throw new Error(allowWorkArea
+    ? "Range must be entire, in_out, or work_area."
+    : "Range must be entire or in_out.");
+}
+
+function mediaEncoderEventCandidates(afterSequence) {
+  return mediaEncoderEvents
+    .filter(row => row.sequence > afterSequence && row.kind === "queued")
+    .slice(0, 8)
+    .map(row => ({sequence: row.sequence, jobID: row.jobID, outputFiles: row.outputFiles}));
+}
+
+async function inspectMediaEncoderPreset(argumentsValue) {
+  const preset = typeof argumentsValue?.preset === "string" ? argumentsValue.preset.trim() : "";
+  if (!preset || preset.length > 4096 || !/\.epr$/i.test(preset)) {
+    throw new Error("Preset inspection requires one bounded .epr path.");
+  }
+  const project = await requireProject();
+  const sequence = await project.getActiveSequence();
+  if (!sequence) throw new Error("Preset extension inspection requires an active Premiere sequence.");
+  const extension = await premiere.EncoderManager.getExportFileExtension(sequence, preset);
+  const normalized = typeof extension === "string" ? extension.replace(/^\./, "").toLowerCase() : "";
+  if (!normalized || normalized.length > 32 || !/^[a-z0-9]+$/i.test(normalized)) {
+    throw new Error("Premiere did not return a usable export extension for this preset.");
+  }
+  return {
+    preset,
+    exportExtension: normalized,
+    sequenceGuid: plainGuid(sequence.guid),
+    sequenceName: sequence.name || null,
+    runtimeVerified: false
+  };
+}
+
+async function encodeMediaFile(argumentsValue) {
+  const input = typeof argumentsValue?.input === "string" ? argumentsValue.input.trim() : "";
+  const output = typeof argumentsValue?.output === "string" ? argumentsValue.output.trim() : "";
+  const preset = typeof argumentsValue?.preset === "string" ? argumentsValue.preset.trim() : "";
+  const range = typeof argumentsValue?.range === "string" ? argumentsValue.range : "entire";
+  const removeUponCompletion = Boolean(argumentsValue?.removeUponCompletion);
+  const startQueueImmediately = Boolean(argumentsValue?.startQueueImmediately);
+  const workArea = mediaEncoderRangeCode(range, false);
+  if (!input || !output || !preset) throw new Error("File encoding requires input, output, and preset paths.");
+  if (typeof premiere.EncoderManager?.getManager !== "function") throw new Error("EncoderManager is unavailable.");
+  const manager = premiere.EncoderManager.getManager();
+  if (!manager.isAMEInstalled) throw new Error("Adobe Media Encoder is not installed.");
+  if (typeof manager.encodeFile !== "function") throw new Error("EncoderManager.encodeFile is unavailable.");
+
+  let inSeconds = 0, outSeconds = 0;
+  if (workArea === 1) {
+    inSeconds = Number(argumentsValue?.inSeconds);
+    outSeconds = Number(argumentsValue?.outSeconds);
+    if (!Number.isFinite(inSeconds) || !Number.isFinite(outSeconds) || inSeconds < 0 || outSeconds <= inSeconds || outSeconds > 86400) {
+      throw new Error("File in/out range is invalid.");
+    }
+  }
+  bindMediaEncoderListeners();
+  const beforeEventSequence = mediaEncoderEventSequence;
+  const accepted = Boolean(await manager.encodeFile(
+    input,
+    output,
+    preset,
+    premiere.TickTime.createWithSeconds(inSeconds),
+    premiere.TickTime.createWithSeconds(outSeconds),
+    workArea,
+    removeUponCompletion,
+    startQueueImmediately
+  ));
+  await new Promise(resolve => setTimeout(resolve, 250));
+  const candidates = mediaEncoderEventCandidates(beforeEventSequence);
+  return {
+    accepted,
+    state: accepted ? (startQueueImmediately ? "encode_requested" : "queued_requested") : "rejected",
+    sourceType: "file",
+    input,
+    output,
+    preset,
+    range,
+    workAreaCode: workArea,
+    removeUponCompletion,
+    startQueueImmediately,
+    completionVerified: false,
+    retrySafe: false,
+    eventCandidateCount: candidates.length,
+    nativeJobIdCandidate: candidates.length === 1 ? candidates[0].jobID : null,
+    jobCorrelation: candidates.length === 1
+      ? "single_new_queue_event_observed_unverified_external_writer_race"
+      : "not_correlated",
+    eventCandidates: candidates
+  };
+}
+
+async function encodeMediaProjectItem(argumentsValue) {
+  const itemId = typeof argumentsValue?.itemId === "string" ? argumentsValue.itemId.trim() : "";
+  const output = typeof argumentsValue?.output === "string" ? argumentsValue.output.trim() : "";
+  const preset = typeof argumentsValue?.preset === "string" ? argumentsValue.preset.trim() : "";
+  const range = typeof argumentsValue?.range === "string" ? argumentsValue.range : "entire";
+  const removeUponCompletion = Boolean(argumentsValue?.removeUponCompletion);
+  const startQueueImmediately = Boolean(argumentsValue?.startQueueImmediately);
+  const workArea = mediaEncoderRangeCode(range, true);
+  if (!itemId || !output || !preset) throw new Error("Project-item encoding requires itemId, output, and preset.");
+  const project = await requireProject();
+  const root = await project.getRootItem();
+  const item = await findProjectItemById(root, itemId);
+  const clip = item ? asClipProjectItem(item) : null;
+  if (!clip || await projectItemId(clip) !== itemId) throw new Error("Exact Premiere project item was not found.");
+  let offline = false;
+  try { offline = Boolean(await clip.isOffline()); } catch {}
+  if (offline) throw new Error("Offline project item cannot be sent to Media Encoder.");
+
+  const manager = premiere.EncoderManager.getManager();
+  if (!manager?.isAMEInstalled) throw new Error("Adobe Media Encoder is not installed.");
+  if (typeof manager.encodeProjectItem !== "function") throw new Error("EncoderManager.encodeProjectItem is unavailable.");
+
+  bindMediaEncoderListeners();
+  const beforeEventSequence = mediaEncoderEventSequence;
+  const accepted = Boolean(await manager.encodeProjectItem(
+    clip,
+    output,
+    preset,
+    workArea,
+    removeUponCompletion,
+    startQueueImmediately
+  ));
+  await new Promise(resolve => setTimeout(resolve, 250));
+  const candidates = mediaEncoderEventCandidates(beforeEventSequence);
+  return {
+    accepted,
+    state: accepted ? (startQueueImmediately ? "encode_requested" : "queued_requested") : "rejected",
+    sourceType: "project_item",
+    itemId,
+    itemName: item?.name || null,
+    output,
+    preset,
+    range,
+    workAreaCode: workArea,
+    removeUponCompletion,
+    startQueueImmediately,
+    completionVerified: false,
+    retrySafe: false,
+    eventCandidateCount: candidates.length,
+    nativeJobIdCandidate: candidates.length === 1 ? candidates[0].jobID : null,
+    jobCorrelation: candidates.length === 1
+      ? "single_new_queue_event_observed_unverified_external_writer_race"
+      : "not_correlated",
+    eventCandidates: candidates
+  };
+}
+
 async function inspectMediaEncoder() {
   const capabilities = mediaEncoderCapabilities();
   const listenersBound = capabilities.encoderEventsSupported ? bindMediaEncoderListeners() : false;
@@ -7359,6 +7513,12 @@ async function dispatchNativeCommand(command) {
       return await startMediaEncoderBatch();
     case "media_encoder_set_xmp":
       return await setMediaEncoderXmp(command.arguments || {});
+    case "media_encoder_inspect_preset":
+      return await inspectMediaEncoderPreset(command.arguments || {});
+    case "media_encoder_encode_file":
+      return await encodeMediaFile(command.arguments || {});
+    case "media_encoder_encode_project_item":
+      return await encodeMediaProjectItem(command.arguments || {});
     case "inspect_export":
       return await inspectExport();
     case "export_interchange":
