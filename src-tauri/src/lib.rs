@@ -83,6 +83,7 @@ mod audition_acceptance;
 mod motion_graphics;
 mod motion_graphics_provider;
 mod motion_graphics_review;
+mod motion_graphics_correction;
 mod audition_bridge_queue;
 mod audition_bridge;
 use audition_bridge::{AuditionBridgeShared, AuditionBridgeStatus};
@@ -155,6 +156,7 @@ Available tools:
 - motion_graphics_plan_after_effects: {"request":{"project_file":"absolute saved .aep/.aepx","composition_name":"Shuvi Motion","plan":{"schema_version":1,"objective":"...","renderer":"auto|after_effects","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":true},"delivery":"standalone_video|transparent_overlay","scenes":[...],"review":{"sample_times_seconds":[],"criteria":[]}},"asset_item_ids":{"asset_1":123}}} — read-only adapter planner; every emitted AE mutation still requires fresh inspect_context, exact project revision and normal after_effects_run approval
 - motion_graphics_generate_plan: {"request":{"objective":"motion goal","renderer":"auto|after_effects|remotion","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":true},"delivery":"standalone_video|transparent_overlay","available_asset_ids":["optional_asset_1"],"review_criteria":["readability"]}} — call the active provider once for strict raw JSON, then fail-closed validate fixed constraints/assets; does not run a renderer
 - motion_graphics_review_preview: {"preview_png":"absolute .png path","sample_time_seconds":1.0,"plan":{"schema_version":1,"objective":"...","renderer":"auto|after_effects|remotion","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":true},"delivery":"standalone_video|transparent_overlay","scenes":[...],"review":{"sample_times_seconds":[1],"criteria":["readability"]}}} — stage exact bounded PNG bytes, send only those approved bytes to the active vision provider, strict-parse visible-frame critique, and never auto-apply fixes
+- motion_graphics_generate_correction: {"request":{"plan":"exact reviewed Plan object","plan_snapshot":"exact fnv1a64 snapshot from motion_graphics_review_preview","review":"exact revise VisualReview object","iteration":1,"max_iterations":3}} — ask the active provider once for a snapshot-bound full Plan revision; only animation tracks may change, never auto-run renderer mutations
 - audition_detect: {}
 - audition_launch: {}
 - audition_readiness_report: {}
@@ -539,6 +541,7 @@ enum ToolAction {
     MotionGraphicsPlanAfterEffects { request: motion_graphics::AfterEffectsPlanRequest },
     MotionGraphicsGeneratePlan { request: motion_graphics_provider::ProviderPlanRequest, provider: ProviderContext },
     MotionGraphicsReviewPreview { preview_path: String, preview_bytes: Vec<u8>, sample_time_seconds: f64, plan: motion_graphics::Plan, provider: ProviderContext },
+    MotionGraphicsGenerateCorrection { request: motion_graphics_correction::CorrectionRequest, provider: ProviderContext },
     AuditionDetect,
     AuditionLaunch,
     AuditionReadinessReport,
@@ -1167,6 +1170,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "motion_graphics_plan_after_effects"
         | "motion_graphics_generate_plan"
         | "motion_graphics_review_preview"
+        | "motion_graphics_generate_correction"
         | "audition_detect"
         | "audition_launch"
         | "audition_readiness_report"
@@ -2883,6 +2887,23 @@ fn stage_tool(
                 preview_path,preview_bytes,sample_time_seconds,plan,provider
             },
                 "Review motion preview with AI vision".into(),
+                detail,
+                RiskLevel::Medium)
+        }
+        "motion_graphics_generate_correction" => {
+            let request_value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"motion_graphics_generate_correction requires request.".to_string())?;
+            let request:motion_graphics_correction::CorrectionRequest=serde_json::from_value(request_value)
+                .map_err(|e|format!("Invalid motion-graphics correction request: {e}"))?;
+            request.validate()?;
+            let provider=provider_context
+                .ok_or_else(||"Motion-graphics correction planning requires the active provider context.".to_string())?;
+            let detail=format!(
+                "Generate snapshot-bound motion correction with {}/{} | iteration {}/{} | no renderer execution",
+                provider.provider,provider.model,request.iteration,request.max_iterations
+            );
+            (ToolAction::MotionGraphicsGenerateCorrection {request,provider},
+                "Generate motion-graphics correction proposal".into(),
                 detail,
                 RiskLevel::Medium)
         }
@@ -8672,6 +8693,47 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 "visual_review_completed":true,
                 "renderer_provenance_verified":false,
                 "render_output_verified":false,
+                "automatic_correction_performed":false,
+                "production_ready":false
+            });
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MotionGraphicsGenerateCorrection {request,provider} => {
+            let prompt=request.prompt()?;
+            let key=load_api_key(&provider.provider)?;
+            let response=send_chat(
+                ChatInput{
+                    provider:provider.provider.clone(),
+                    model:provider.model.clone(),
+                    base_url:provider.base_url.clone(),
+                    messages:vec![
+                        ChatMessage{role:"system".into(),content:motion_graphics_correction::system_prompt().into()},
+                        ChatMessage{role:"user".into(),content:prompt},
+                    ],
+                    orchestration_context:None,
+                },
+                key
+            ).await?;
+            if response.tool_proposal.is_some() {
+                return Err("Motion correction provider returned a tool proposal instead of the required raw revised Plan JSON.".into());
+            }
+            let prior_snapshot=request.plan_snapshot.clone();
+            let revised=request.parse_revision(&response.content)?;
+            let revised_snapshot=revised.fingerprint()?;
+            let value=json!({
+                "prior_plan_snapshot":prior_snapshot,
+                "revised_plan_snapshot":revised_snapshot,
+                "revised_plan":revised,
+                "iteration":request.iteration,
+                "max_iterations":request.max_iterations,
+                "provider":response.provider,
+                "model":response.model,
+                "usage":response.usage,
+                "strict_json_validated":true,
+                "snapshot_match_verified":true,
+                "immutable_topology_preserved":true,
+                "renderer_execution_performed":false,
                 "automatic_correction_performed":false,
                 "production_ready":false
             });
