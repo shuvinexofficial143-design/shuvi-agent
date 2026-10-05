@@ -163,6 +163,25 @@ test("motion preview review sends only approved bytes and never auto-fixes",()=>
 });
 
 
+test("receipt-bound multi-frame Remotion review is bounded and never auto-fixes",()=>{
+  const evidence=readFileSync(new URL("../src-tauri/src/motion_graphics_remotion.rs",import.meta.url),"utf8");
+  assert.match(rust,/motion_graphics_review_remotion_frames/);
+  assert.match(rust,/MotionGraphicsReviewRemotionFrames/);
+  assert.match(rust,/verify_and_stage_review\(&request\)/);
+  assert.match(rust,/analyze_png_frames_with_provider\(&provider,&prompt,&frames\)\.await\?/);
+  assert.match(rust,/preview_bytes_bound_at_approval":true/);
+  assert.match(rust,/multi_frame_review_completed":true/);
+  assert.match(rust,/renderer_provenance_verified":accepted\.runtime_process_provenance_verified/);
+  assert.match(review,/multi_frame_prompt/);
+  assert.match(review,/2\.\.=\{MAX_MULTI_REVIEW_FRAMES\}/);
+  assert.match(review,/unsupplied frame time/);
+  assert.match(review,/Do not claim audio, renderer process provenance, export correctness, alpha correctness, or unsampled motion/);
+  assert.match(evidence,/MAX_MULTI_REVIEW_FRAMES:usize=8/);
+  assert.match(evidence,/changed after evidence verification/);
+  assert.doesNotMatch(review,/Command::new/);
+  assert.doesNotMatch(evidence,/Command::new/);
+});
+
 test("motion correction stays snapshot-bound and proposal-only",()=>{
   assert.match(rust,/motion_graphics_generate_correction/);
   assert.match(rust,/MotionGraphicsGenerateCorrection/);
