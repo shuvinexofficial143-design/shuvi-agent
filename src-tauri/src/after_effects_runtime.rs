@@ -47,6 +47,8 @@ fn render_output_evidence(result:&Value)->Value{
         return json!({"desktop_outputs_verified":false,"reason":"Host render output inventory is empty or oversized.","media_parse_verified":false,"media_decode_verified":false});
     }
     let mut observed=Vec::new();let mut desktop_verified=true;let mut parse_verified=true;
+    let probe_available=crate::after_effects_media_validation::detect_probe().is_some();
+    let probe_deadline=Instant::now()+Duration::from_secs(15);
     for output in outputs{
         let path=output.get("output_file").and_then(Value::as_str).unwrap_or("");
         let expected_size=output.get("size_bytes").and_then(Value::as_u64);
@@ -59,7 +61,7 @@ fn render_output_evidence(result:&Value)->Value{
         let item_verified=host_done&&host_changed&&regular&&size.is_some_and(|v|v>0)&&size==expected_size;
         if !item_verified{desktop_verified=false;}
         let parse=if item_verified {
-            crate::after_effects_media_validation::validate(path,size)
+            crate::after_effects_media_validation::validate_with_budget(path,size,probe_deadline.saturating_duration_since(Instant::now()))
         } else {
             json!({"output_file":path,"media_parse_verified":false,"media_decode_verified":false,
                 "error":"Desktop output evidence failed before parsing."})
@@ -71,8 +73,10 @@ fn render_output_evidence(result:&Value)->Value{
             "desktop_verified":item_verified,"media_validation":parse}));
     }
     json!({"desktop_outputs_verified":desktop_verified,"media_parse_verified":parse_verified,"media_decode_verified":false,
+        "media_probe_available":probe_available,"media_probe_evidence":observed.iter().map(|v|v["media_validation"]["media_probe_evidence"].clone()).collect::<Vec<_>>(),
+        "render_completion_verified":desktop_verified&&result.get("render_completion_verified").and_then(Value::as_bool)==Some(true),
         "outputs":observed,
-        "note":"Host DONE + exact desktop file metadata + bounded structural parsing are independent evidence. Byte-stream decode remains unverified."})
+        "note":"Host DONE, desktop files, structural markers and trusted probe metadata are separate evidence. Metadata parse never proves byte-stream decode or playability."})
 }
 
 fn mogrt_output_evidence(result:&Value)->Value{

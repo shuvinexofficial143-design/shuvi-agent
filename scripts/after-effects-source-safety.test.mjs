@@ -209,7 +209,7 @@ test("AE executable path is restricted to the canonical Adobe install tree",()=>
 test("AE render requires exact queue identity host DONE and desktop output evidence",()=>{
   assert.match(transport,/"render_queue"/);
   assert.match(rust,/"render_queue_execute":"source_supported_exact_queued_set_with_host_done_desktop_file_and_structural_parse_evidence"/);
-  assert.match(rust,/"render_media_parse_validation":"source_supported_mp4_mov_m4v_m4a_wav_avi_png_jpeg_bounded_structural_parse"/);
+  assert.match(rust,/"render_media_parse_validation":"source_supported_optional_trusted_ffprobe_bounded_stream_duration_metadata_structural_checks_separate"/);
   assert.match(rust,/"render_media_decode_validation":"not_implemented_decode_remains_separate"/);
   assert.match(jsx,/unlisted render-enabled queue item would also render/);
   assert.match(jsx,/item\.status===RQItemStatus\.DONE/);
@@ -531,4 +531,23 @@ test("AE verified render extensions align with built-in structural parsers",()=>
   for(const ext of [".aif",".aiff",".mxf"]){
     assert.doesNotMatch(body,new RegExp(ext.replace(".","\\.")));
   }
+});
+
+test("AE parse evidence requires trusted bounded probe metadata rather than marker scans",()=>{
+  const start=mediaValidation.indexOf("fn parse_iso_bmff"),end=mediaValidation.indexOf("pub fn validate");
+  assert.doesNotMatch(mediaValidation.slice(start,end),/"media_parse_verified":true/);
+  assert.match(mediaValidation,/ProgramFiles/);
+  assert.match(mediaValidation,/ffprobe\.exe/);
+  assert.match(mediaValidation,/command\.args\(/);
+  assert.match(mediaValidation,/\.arg\(path\)\.stdin\(Stdio::null\(\)\)/);
+  assert.match(mediaValidation,/MAX_PROBE_STDOUT/);
+  assert.match(mediaValidation,/MAX_PROBE_STDERR/);
+  assert.match(mediaValidation,/PROBE_TIMEOUT/);
+  assert.match(mediaValidation,/Timed media requires a finite positive duration/);
+  assert.match(mediaValidation,/Media probe found no valid audio\/video stream/);
+  assert.match(mediaValidation,/Rendered media changed while probing/);
+  assert.match(mediaValidation,/single-file probe refused/);
+  assert.match(runtime,/Duration::from_secs\(15\)/);
+  assert.match(runtime,/"media_probe_available":probe_available/);
+  assert.match(runtime,/"render_completion_verified":desktop_verified/);
 });

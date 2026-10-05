@@ -317,7 +317,7 @@ pub fn capability_report()->Value {
             "keyframe_inspection":"source_supported_bounded_512_keys",
             "layer_property_tree":"source_supported_depth_6_nodes_1024",
             "render_queue_execute":"source_supported_exact_queued_set_with_host_done_desktop_file_and_structural_parse_evidence",
-            "render_media_parse_validation":"source_supported_mp4_mov_m4v_m4a_wav_avi_png_jpeg_bounded_structural_parse",
+            "render_media_parse_validation":"source_supported_optional_trusted_ffprobe_bounded_stream_duration_metadata_structural_checks_separate",
             "render_media_decode_validation":"not_implemented_decode_remains_separate",
             "render_cancellation":"source_supported_request_scoped_marker_before_start_or_on_status_changed_stopRendering_runtime_unverified",
             "checkpoint_recovery_verifier":"source_supported_exact_backup_fingerprint_and_source_path_binding_manual_open_required",
