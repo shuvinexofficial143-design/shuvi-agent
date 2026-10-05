@@ -10,7 +10,7 @@
 - Shuvi already has a native Anthropic provider using the Messages API.
 - Anthropic API keys remain stored through Shuvi's existing credential-store path.
 - The default Anthropic model is `claude-sonnet-5-5`.
-- The normal provider chat path is still text-oriented; frame/image review is not yet wired into the dedicated motion-graphics workflow.
+- The normal provider chat path is still text-oriented; dedicated strict motion-plan generation now reuses that provider path, while frame/image review is not yet wired into the dedicated motion-graphics workflow.
 
 ## Implemented motion-graphics source scope
 
@@ -23,6 +23,8 @@
 - Strictly increasing bounded keyframe times.
 - Transparent-overlay plans require a transparent canvas.
 - Read-only `motion_graphics_validate_plan` Shuvi tool.
+- Provider-backed `motion_graphics_generate_plan` source path: the selected existing provider is asked once for raw renderer-neutral JSON, then Shuvi strictly parses and validates it before accepting the plan.
+- Provider planning preserves fixed objective, renderer, duration, canvas, delivery, allowed asset IDs, and required review criteria; markdown/tool proposals, constraint drift, invented assets, and provider-generated shape layers fail closed.
 - Read-only `motion_graphics_plan_after_effects` adapter planner.
 - The AE adapter composes only existing typed host actions and never dispatches them automatically.
 - It currently plans composition creation; text/group/image/video layer creation when enough inspected identity exists; scene in/out timing; opacity and Z-rotation keyframes; and interpolation-type writes.
@@ -40,6 +42,7 @@
 - `ease_in`, `ease_out`, and `ease_in_out` currently map only to AE bezier interpolation type; exact directional temporal-ease semantics are not claimed until bounded temporal-ease synthesis/readback is added.
 - Transparent-overlay delivery is not claimed until an alpha-capable output-module/render plan is implemented and verified.
 - No Remotion project/code is generated or executed by the current planner.
+- Provider plan generation has not yet been verified with a real API request in the packaged Shuvi runtime.
 - A valid plan does not prove visual quality, renderer compatibility, output persistence, or final export correctness.
 - Image/frame review is not yet wired into the Anthropic request path.
 - No correction loop is claimed until preview frames can be sent back to the selected vision-capable provider and the resulting fixes can be independently applied and re-rendered.
@@ -47,8 +50,7 @@
 
 ## Next source phase
 
-1. Add a dedicated provider planner that asks the selected model for the renderer-neutral schema and validates it before accepting the plan.
-2. Extend the neutral schema/AE adapter for explicit shape geometry/style and exact vector transform synthesis after fresh AE property readback.
+1. Extend the neutral schema/AE adapter for explicit shape geometry/style and exact vector transform synthesis after fresh AE property readback.
 3. Add bounded temporal-ease synthesis/readback for directional easing.
 4. Add alpha-capable AE render/output-module planning and evidence without auto-rendering.
 5. Build the Remotion adapter as a separate renderer implementation.
