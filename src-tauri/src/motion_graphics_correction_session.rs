@@ -1,4 +1,6 @@
-use crate::motion_graphics_review::Verdict;
+use crate::motion_graphics::Plan;
+use crate::motion_graphics_correction;
+use crate::motion_graphics_review::{self,MultiFrameReview,Verdict,VisualReview};
 use serde::{Deserialize,Serialize};
 use std::{fs,path::Path};
 use uuid::Uuid;
@@ -26,6 +28,76 @@ pub enum SessionStatus {
     Stagnated,
     Cancelled,
     Failed,
+}
+
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewRecordRequest {
+    pub session_id:String,
+    pub plan:Plan,
+    pub kind:ReviewKind,
+    pub review:serde_json::Value,
+    #[serde(default)]
+    pub frame_times_seconds:Vec<f64>,
+}
+
+#[derive(Debug,Clone)]
+pub struct ReviewRecordSummary {
+    pub plan_snapshot:String,
+    pub kind:ReviewKind,
+    pub verdict:Verdict,
+    pub issue_count:usize,
+}
+
+impl ReviewRecordRequest {
+    pub fn validate(&self)->Result<ReviewRecordSummary,String>{
+        Uuid::parse_str(&self.session_id).map_err(|_|"Invalid motion correction session ID.".to_string())?;
+        self.plan.validate()?;
+        let plan_snapshot=self.plan.fingerprint()?;
+        let (verdict,issue_count)=match self.kind {
+            ReviewKind::SingleFrame=>{
+                if !self.frame_times_seconds.is_empty(){
+                    return Err("Single-frame session review must not include frame_times_seconds.".into());
+                }
+                let review:VisualReview=serde_json::from_value(self.review.clone())
+                    .map_err(|e|format!("Invalid single-frame motion review: {e}"))?;
+                motion_graphics_review::validate_review(&self.plan,&review)?;
+                (review.verdict,review.issues.len())
+            }
+            ReviewKind::MultiFrame=>{
+                let review:MultiFrameReview=serde_json::from_value(self.review.clone())
+                    .map_err(|e|format!("Invalid multi-frame motion review: {e}"))?;
+                motion_graphics_review::validate_multi_frame_review(&self.plan,&self.frame_times_seconds,&review)?;
+                (review.verdict,review.issues.len())
+            }
+        };
+        Ok(ReviewRecordSummary{plan_snapshot,kind:self.kind,verdict,issue_count})
+    }
+}
+
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CorrectionRecordRequest {
+    pub session_id:String,
+    pub prior_plan:Plan,
+    pub revised_plan:Plan,
+}
+
+#[derive(Debug,Clone)]
+pub struct CorrectionRecordSummary {
+    pub prior_plan_snapshot:String,
+    pub revised_plan_snapshot:String,
+}
+
+impl CorrectionRecordRequest {
+    pub fn validate(&self)->Result<CorrectionRecordSummary,String>{
+        Uuid::parse_str(&self.session_id).map_err(|_|"Invalid motion correction session ID.".to_string())?;
+        motion_graphics_correction::validate_revision_constraints(&self.prior_plan,&self.revised_plan)?;
+        Ok(CorrectionRecordSummary{
+            prior_plan_snapshot:self.prior_plan.fingerprint()?,
+            revised_plan_snapshot:self.revised_plan.fingerprint()?,
+        })
+    }
 }
 
 #[derive(Debug,Clone,Serialize,Deserialize)]
