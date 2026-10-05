@@ -155,6 +155,7 @@ Available tools:
 - audition_bridge_stop: {}
 - audition_context: {}
 - audition_list_commands: {}
+- audition_script_dictionary: {"query":"optional class-name substring","max_classes":64}
 - audition_command_enabled: {"command":{"property":"exact inspected COMMAND_* property","value":"exact inspected command value"}}
 - audition_set_playhead: {"percent":0.5}
 - audition_invoke_command: {"command":{"property":"exact inspected COMMAND_* property","value":"exact inspected command value"}}
@@ -526,6 +527,7 @@ enum ToolAction {
     AuditionBridgeStop,
     AuditionContext,
     AuditionListCommands,
+    AuditionScriptDictionary { query: Option<String>, max_classes: u32 },
     AuditionCommandEnabled { command: audition::InspectedCommand },
     AuditionSetPlayhead { percent: f64 },
     AuditionInvokeCommand { command: audition::InspectedCommand },
@@ -1141,6 +1143,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "audition_bridge_stop"
         | "audition_context"
         | "audition_list_commands"
+        | "audition_script_dictionary"
         | "audition_command_enabled"
         | "audition_set_playhead"
         | "audition_invoke_command"
@@ -2819,6 +2822,20 @@ fn stage_tool(
             "Read a bounded live COMMAND_* inventory from Application reflection and cache it in the paired panel for exact later invocation.".into(),
             RiskLevel::Low,
         ),
+        "audition_script_dictionary" => {
+            let query=proposal.arguments.get("query").and_then(Value::as_str).map(str::to_string);
+            if query.as_ref().is_some_and(|v|v.len()>120||v.chars().any(char::is_control)){
+                return Err("Audition Script Dictionary query must be at most 120 characters without control characters.".into());
+            }
+            let max_classes=proposal.arguments.get("max_classes").and_then(Value::as_u64).unwrap_or(64);
+            if !(1..=128).contains(&max_classes){
+                return Err("Audition Script Dictionary max_classes must be 1..128.".into());
+            }
+            (ToolAction::AuditionScriptDictionary {query,max_classes:max_classes as u32},
+                "Inspect Audition Script Dictionary".into(),
+                "Read-only bounded reflection of live Audition classes, properties and methods. This discovers APIs; it does not authorize or perform audio edits.".into(),
+                RiskLevel::Low)
+        }
         "audition_command_enabled" => {
             let command:audition::InspectedCommand=serde_json::from_value(
                 proposal.arguments.get("command").cloned().unwrap_or(Value::Null)
@@ -8429,6 +8446,12 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
         }
         ToolAction::AuditionListCommands => {
             let value=state.audition_bridge.request("list_commands",json!({}),Duration::from_secs(15)).await?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionScriptDictionary {query,max_classes} => {
+            let value=state.audition_bridge.request("script_dictionary",
+                json!({"query":query,"maxClasses":max_classes}),Duration::from_secs(20)).await?;
             Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)})
         }
