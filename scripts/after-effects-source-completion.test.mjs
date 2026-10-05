@@ -8,6 +8,7 @@ const files={
   runtime:readFileSync(new URL("../src-tauri/src/after_effects_runtime.rs",import.meta.url),"utf8"),
   checkpoint:readFileSync(new URL("../src-tauri/src/after_effects_checkpoint.rs",import.meta.url),"utf8"),
   media:readFileSync(new URL("../src-tauri/src/after_effects_media_validation.rs",import.meta.url),"utf8"),
+  templates:readFileSync(new URL("../src-tauri/src/after_effects_templates.rs",import.meta.url),"utf8"),
   jsx:readFileSync(new URL("../integrations/after-effects-extendscript/shuvi-ae.jsx",import.meta.url),"utf8"),
   lib:readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8")
 };
@@ -30,8 +31,19 @@ test("After Effects completion keeps unavoidable exclusions explicit",()=>{
     "non_render_inflight_abort_has_no_reviewed_safe_native_route",
     "uxp_transport_reserved_until_after_effects_uxp_is_a_supported_target"
   ]) assert.match(files.rust,new RegExp(token));
-  assert.match(files.rust,/"render_media_decode_validation":"not_implemented_decode_remains_separate"/);
+  assert.match(files.rust,/"render_media_decode_validation":"intentional_separate_decoder_runtime_boundary"/);
   assert.match(files.rust,/"non_render_mutation_cancellation":\{"state":"unsupported_no_documented_safe_abort"/);
+});
+
+test("AE readiness preserves all nine independent evidence dimensions",()=>{
+  for(const dimension of ["source_implementation","node_static_tests","windows_after_effects_runtime","extendscript_host_acceptance",
+    "mutation_semantics","project_save_persistence","render_completion","media_parse","production_ready"]){
+    assert.match(files.rust,new RegExp('"'+dimension+'"\\s*:'));
+  }
+  assert.match(files.rust,/"media_parse_verified":false/);
+  assert.match(files.rust,/"unsaved_host_edits_preserved":false/);
+  assert.match(files.rust,/"automatic_execution":false/);
+  assert.doesNotMatch(files.rust,/"render_media_parse_validation":"not_implemented"/);
 });
 
 test("After Effects complete source retains verification and recovery boundaries",()=>{

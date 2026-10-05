@@ -223,9 +223,9 @@ test("AE executable path is restricted to the canonical Adobe install tree",()=>
 
 test("AE render requires exact queue identity host DONE and desktop output evidence",()=>{
   assert.match(transport,/"render_queue"/);
-  assert.match(rust,/"render_queue_execute":"source_supported_exact_queued_set_with_host_done_desktop_file_and_structural_parse_evidence"/);
+  assert.match(rust,/"render_queue_execute":"source_supported_exact_queued_set_host_done_desktop_files_optional_trusted_probe_parse_separate_completion_evidence"/);
   assert.match(rust,/"render_media_parse_validation":"source_supported_optional_trusted_ffprobe_bounded_stream_duration_metadata_structural_checks_separate"/);
-  assert.match(rust,/"render_media_decode_validation":"not_implemented_decode_remains_separate"/);
+  assert.match(rust,/"render_media_decode_validation":"intentional_separate_decoder_runtime_boundary"/);
   assert.match(jsx,/unlisted render-enabled queue item would also render/);
   assert.match(jsx,/item\.status===RQItemStatus\.DONE/);
   assert.match(jsx,/verified_render_completion/);
@@ -471,11 +471,11 @@ test("AE advanced 3D camera light material mesh and preset workflows stay typed 
     assert.match(transport,new RegExp('"' + action + '"'));
     assert.match(jsx,new RegExp('action === "' + action + '"'));
   }
-  assert.match(rust,/"camera_options":"source_supported_static_zoom_dof_focus_aperture_blur_and_26_3_advanced_dof_with_readback"/);
-  assert.match(rust,/"light_options":"source_supported_type_environment_source_intensity_color_cone_shadow_with_readback"/);
-  assert.match(rust,/"material_3d":"source_supported_static_material_flags_and_coefficients_with_readback"/);
+  assert.match(rust,/"camera_options":"source_supported_static_zoom_dof_focus_aperture_blur_iris_and_host_gated_advanced_dof_preflight_readback"/);
+  assert.match(rust,/"light_options":"source_supported_type_environment_source_intensity_color_cone_shadow_falloff_preflight_readback"/);
+  assert.match(rust,/"material_3d":"source_supported_stable_matchnames_flags_coefficients_reflection_transparency_preflight_readback"/);
   assert.match(rust,/"parametric_mesh_26_3":"source_supported_create_and_inspect_type_options"/);
-  assert.match(rust,/"animation_preset_apply":"source_supported_selection_isolated_revision_observed_semantics_unverified_visual_review_required"/);
+  assert.match(rust,/"animation_preset_apply":"source_supported_trusted_project_asset_root_byte_verified_staging_selection_isolated_bounded_effect_property_delta_semantics_unverified"/);
   assert.match(jsx,/ADBE Camera Options Group/);
   assert.match(jsx,/FocusAreaWidth/);
   assert.match(jsx,/NearFarBlurMultiplier/);
@@ -516,7 +516,7 @@ test("AE render cancellation is request-scoped cooperative and never a blind pro
   assert.match(jsx,/RQItemStatus\.USER_STOPPED/);
   assert.match(jsx,/verified_render_cancelled_before_start/);
   assert.match(jsx,/verified_render_cancelled/);
-  assert.match(rust,/"render_cancellation":"source_supported_request_scoped_marker_before_start_or_on_status_changed_stopRendering_runtime_unverified"/);
+  assert.match(rust,/"render_cancellation":"source_supported_durable_request_project_revision_marker_exact_owned_queue_status_callback_stop_and_terminal_receipt_evidence_runtime_unverified"/);
   assert.match(rust,/"general_mutation_abort_supported":false/);
   assert.match(rust,/"instant_abort_guaranteed":false/);
   assert.match(lib,/after_effects_cancel_render/);
@@ -532,7 +532,7 @@ test("AE checkpoint recovery proves backup integrity without automatic restore",
   assert.match(lib,/"automatic_restore_performed":false/);
   assert.match(lib,/"project_opened_automatically":false/);
   assert.match(lib,/"manual_open_required":true/);
-  assert.match(rust,/"checkpoint_recovery":\{"state":"source_verifier_implemented_runtime_unverified"/);
+  assert.match(rust,/"checkpoint_recovery":\{"state":"source_verifier_and_approval_required_planner_implemented_runtime_unverified"/);
   assert.match(rust,/"automatic_restore":false/);
 });
 
