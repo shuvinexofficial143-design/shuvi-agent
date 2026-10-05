@@ -7,6 +7,7 @@ const motion=readFileSync(new URL("../src-tauri/src/motion_graphics.rs",import.m
 const provider=readFileSync(new URL("../src-tauri/src/motion_graphics_provider.rs",import.meta.url),"utf8");
 const review=readFileSync(new URL("../src-tauri/src/motion_graphics_review.rs",import.meta.url),"utf8");
 const correction=readFileSync(new URL("../src-tauri/src/motion_graphics_correction.rs",import.meta.url),"utf8");
+const correctionSession=readFileSync(new URL("../src-tauri/src/motion_graphics_correction_session.rs",import.meta.url),"utf8");
 const status=readFileSync(new URL("../docs/MOTION_GRAPHICS_STATUS.md",import.meta.url),"utf8");
 
 test("motion graphics keeps a renderer-neutral bounded schema",()=>{
@@ -198,6 +199,17 @@ test("receipt-bound multi-frame Remotion review is bounded and never auto-fixes"
   assert.match(evidence,/changed after evidence verification/);
   assert.doesNotMatch(review,/Command::new/);
   assert.doesNotMatch(evidence,/Command::new/);
+});
+
+test("bounded correction session blocks stale snapshots and blind retries",()=>{
+  assert.match(rust,/mod motion_graphics_correction_session;/);
+  assert.match(correctionSession,/MAX_CORRECTIONS:u8=3/);
+  assert.match(correctionSession,/Motion correction review snapshot is stale or belongs to another plan/);
+  assert.match(correctionSession,/blind retry is blocked/);
+  assert.match(correctionSession,/AwaitingRendererApproval/);
+  assert.match(correctionSession,/Re-render evidence cannot be recorded before renderer approval/);
+  assert.match(correctionSession,/SessionStatus::Stagnated/);
+  assert.doesNotMatch(correctionSession,/Command::new/);
 });
 
 test("motion correction stays snapshot-bound and proposal-only",()=>{
