@@ -1,3 +1,5 @@
+#![recursion_limit = "512"]
+
 mod premiere_execution;
 mod premiere_store;
 mod after_effects;

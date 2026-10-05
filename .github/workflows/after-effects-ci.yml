@@ -17,7 +17,7 @@ jobs:
       - name: Repository structural validation
         run: npm run validate
       - name: After Effects source safety tests
-        run: node --test scripts/after-effects-source-safety.test.mjs scripts/after-effects-source-completion.test.mjs
+        run: node --test scripts/after-effects-source-safety.test.mjs scripts/after-effects-source-completion.test.mjs scripts/after-effects-behavior.test.mjs
 
   ae-rust:
     runs-on: windows-latest

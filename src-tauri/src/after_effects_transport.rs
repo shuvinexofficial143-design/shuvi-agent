@@ -176,6 +176,8 @@ try{{
     if(typeof ShuviAE==="undefined"||!ShuviAE.dispatch) throw new Error("Shuvi AE adapter failed to load.");
     $.global.ShuviAECancelPath=cancelPath;
     $.global.ShuviAERequestId=expectedRequestId;
+    $.global.ShuviAEExpectedProjectFile=request.expected_project_file;
+    $.global.ShuviAEExpectedProjectRevision=request.expected_project_revision;
     receipt.result=ShuviAE.dispatch(request);
     receipt.host_version=String(app.version);
     receipt.ok=true;
