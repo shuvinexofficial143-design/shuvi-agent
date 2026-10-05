@@ -166,12 +166,34 @@ async fn core_cases(s:&mut Suite)->Result<(),String>{
     s.inspect("inspect_comp",json!({"comp_id":id(&precomp,"created_comp_id")?})).await?;
     let camera=s.step("add_camera",json!({"comp_id":comp,"name":"Acceptance Camera","center_point":[160,90]})).await?;let camera=id(&camera,"layer_id")?;
     let options=s.inspect("inspect_camera_options",json!({"comp_id":comp,"layer_id":camera})).await?;
-    if !options["options"]["zoom"].is_null(){s.step("set_camera_options",json!({"comp_id":comp,"layer_id":camera,"zoom":500})).await?;}
+    let mut camera_args=json!({"comp_id":comp,"layer_id":camera});
+    for (field,value) in [("zoom",json!(500)),("depth_of_field",json!(true)),("focus_distance",json!(400)),
+        ("aperture",json!(5)),("blur_level",json!(25)),("iris_rotation",json!(10)),("iris_roundness",json!(50))]{
+        if options["options"][field].is_object(){camera_args[field]=value;}
+        else{s.events.push(json!({"case":"camera_availability","field":field,"state":"unsupported_property","mutation_attempted":false}));}
+    }
+    if camera_args.as_object().is_some_and(|v|v.len()>2){s.step("set_camera_options",camera_args).await?;}
+    let transform=s.inspect("inspect_layer_transform",json!({"comp_id":comp,"layer_id":camera})).await?;
+    s.events.push(json!({"case":"camera_point_of_interest_availability","inspection":transform,"editing_pending":true}));
     let light=s.step("add_light",json!({"comp_id":comp,"name":"Acceptance Light","center_point":[160,90]})).await?;let light=id(&light,"layer_id")?;
-    s.inspect("inspect_light_options",json!({"comp_id":comp,"layer_id":light})).await?;
-    s.step("set_light_options",json!({"comp_id":comp,"layer_id":light,"intensity":80})).await?;
+    let options=s.inspect("inspect_light_options",json!({"comp_id":comp,"layer_id":light})).await?;
+    let mut light_args=json!({"comp_id":comp,"layer_id":light});
+    for (field,value) in [("intensity",json!(80)),("color",json!([1,0.8,0.6])),("cone_angle",json!(45)),
+        ("cone_feather",json!(25)),("casts_shadows",json!(true)),("shadow_darkness",json!(50)),
+        ("shadow_diffusion",json!(20)),("falloff_radius",json!(50)),("falloff_distance",json!(500))]{
+        if options["options"][field].is_object(){light_args[field]=value;}
+        else{s.events.push(json!({"case":"light_availability","field":field,"state":"unsupported_property","mutation_attempted":false}));}
+    }
+    if light_args.as_object().is_some_and(|v|v.len()>2){s.step("set_light_options",light_args).await?;}
     s.step("set_av_layer_flags",json!({"comp_id":comp,"layer_id":text,"three_d_layer":true})).await?;
-    s.inspect("inspect_3d_material",json!({"comp_id":comp,"layer_id":text})).await?;
+    let material=s.inspect("inspect_3d_material",json!({"comp_id":comp,"layer_id":text})).await?;
+    let mut material_args=json!({"comp_id":comp,"layer_id":text});
+    for (field,match_name,value) in [("ambient","ADBE Ambient Coefficient",json!(25)),("diffuse","ADBE Diffuse Coefficient",json!(50)),
+        ("specular","ADBE Specular Coefficient",json!(25)),("shininess","ADBE Shininess Coefficient",json!(20))]{
+        if material["material"][match_name].is_object(){material_args[field]=value;}
+        else{s.events.push(json!({"case":"material_availability","match_name":match_name,"state":"unsupported_property","mutation_attempted":false}));}
+    }
+    if material_args.as_object().is_some_and(|v|v.len()>2){s.step("set_3d_material",material_args).await?;}
     s.step("set_layer_transform",json!({"comp_id":comp,"layer_id":text,"position":[160,90,0],"orientation":[0,0,0]})).await?;
     s.inspect("inspect_layer_transform",json!({"comp_id":comp,"layer_id":text})).await?;
     let recipe=crate::after_effects_templates::TemplatePlan{schema_version:1,name:"Acceptance title".into(),category:"title".into(),
@@ -182,6 +204,26 @@ async fn core_cases(s:&mut Suite)->Result<(),String>{
     for step in plan["steps"].as_array().ok_or("Template plan steps missing.")?{
         s.step(step["host_action"].as_str().ok_or("Action missing.")?,step["host_args"].clone()).await?;
     }
+    // Controlled numeric controller; media replacement remains a separately approved asset case.
+    let slider=json!({"target":{"comp_id":comp,"layer_id":null},"path":[{"match_name":"ADBE Effect Parade"},
+        {"match_name":"ADBE Slider Control"},{"match_name":"ADBE Slider Control-0001"}]});
+    s.inspect("inspect_mogrt",json!({"comp_id":comp})).await?;
+    s.step("add_mogrt_property",json!({"property":slider,"controller_name":"Acceptance Slider"})).await?;
+    let consumer=s.step("create_comp",json!({"name":"Acceptance Consumer","width":320,"height":180,"duration_seconds":1.0,"frame_rate":24.0})).await?;
+    let consumer=id(&consumer,"comp_id")?;
+    let instance=s.step("add_item_layer",json!({"comp_id":consumer,"item_id":comp})).await?;let instance=id(&instance,"layer_id")?;
+    let essential=s.inspect("inspect_essential_properties",json!({"comp_id":consumer,"layer_id":instance})).await?;
+    let entries=essential["properties"].as_array().ok_or("Essential inventory missing.")?;
+    let matches:Vec<_>=entries.iter().filter(|p|p["name"]=="Acceptance Slider").collect();
+    if matches.len()!=1{return Err("Controlled Essential Property did not resolve uniquely.".into());}
+    s.step("set_essential_property",json!({"comp_id":consumer,"layer_id":instance,"essential_index":matches[0]["essential_index"],
+        "expected_name":"Acceptance Slider","value":17})).await?;
+    let essential_after=s.inspect("inspect_essential_properties",json!({"comp_id":consumer,"layer_id":instance})).await?;
+    let essential_args=json!({"comp_id":consumer,"layer_id":instance});
+    if !essential_after["properties"].as_array().is_some_and(|v|v.iter().any(|p|p["name"]=="Acceptance Slider"&&p["value"]==17)){
+        return Err("Independent Essential Property value inspection failed.".into());
+    }
+    s.events.push(json!({"case":"essential_independent_inspection","inspection":essential_after}));
     s.step("save_project",json!({})).await?;
     let snapshots=[("opacity",json!({"property":opacity})),("position",json!({"property":position}))];
     let mut saved=Vec::new();for (name,args) in &snapshots{saved.push(json!({"name":name,"args":args,"value":s.inspect("inspect_property",args.clone()).await?}));}
@@ -195,6 +237,10 @@ async fn core_cases(s:&mut Suite)->Result<(),String>{
     s.lifecycle("reopen",json!({"expected_project_revision":before["project_revision"],"saved_file_verified":true,
         "checkpoint_verified":true,"expected_size_bytes":meta.len(),"expected_modified_ms":modified}))?;
     s.context().await?;
+    let reopened_essential=s.inspect("inspect_essential_properties",essential_args).await?;
+    let essential_persisted=reopened_essential["properties"].as_array().is_some_and(|v|v.iter().any(|p|p["name"]=="Acceptance Slider"&&p["value"]==17));
+    s.events.push(json!({"case":"essential_save_reopen","before":essential_after,"after":reopened_essential,"persistence_verified":essential_persisted}));
+    if !essential_persisted{return Err("Essential Property did not persist after reopen.".into());}
     for snapshot in saved{
         let after=s.inspect("inspect_property",snapshot["args"].clone()).await?;
         let persisted=snapshot["value"]["value"]==after["value"]&&snapshot["value"]["num_keys"]==after["num_keys"]
@@ -228,6 +274,85 @@ async fn late_receipt_case(s:&mut Suite)->Result<(),String>{
         }tokio::time::sleep(Duration::from_millis(100)).await;
     }Err("Late receipt remains unresolved; no retry or process kill.".into())
 }
+async fn render_cases(s:&mut Suite,cancel_only:bool)->Result<(),String>{
+    let template=std::env::var("SHUVI_AE_OUTPUT_TEMPLATE").map_err(|_|"Render acceptance requires an exact inspected output module template name.")?;
+    let extension=std::env::var("SHUVI_AE_OUTPUT_EXTENSION").map_err(|_|"Render output extension missing.")?;
+    if template.is_empty()||template.len()>240||!matches!(extension.as_str(),"mov"|"mp4"|"avi"){
+        return Err("Explicit bounded single-file render template/extension required.".into());
+    }
+    let comp=s.step("create_comp",json!({"name":"Acceptance Render","width":320,"height":180,"duration_seconds":1.0,"frame_rate":24.0})).await?;
+    let comp=id(&comp,"comp_id")?;
+    let shape=s.step("add_shape",json!({"comp_id":comp,"name":"Render Rectangle"})).await?;
+    s.step("add_shape_primitive",json!({"comp_id":comp,"layer_id":id(&shape,"layer_id")?,"kind":"rectangle","size":[100,80],"fill_color":[0,0.5,1,1]})).await?;
+    let output=s.root.join(format!("completion.{extension}"));
+    let queue=s.step("add_render_queue_item",json!({"comp_id":comp,"output_file":output,"output_module_template":template})).await?;
+    let items=json!([{"queue_index":queue["queue_index"],"comp_id":comp,"output_file":output}]);
+    if cancel_only{return during_cancel_case(s,items).await;}
+    let context=s.context().await?;
+    let prevented=Request{schema_version:1,request_id:s.id(),action:"render_queue".into(),expected_project_file:Some(s.project.to_string_lossy().into_owned()),
+        expected_project_revision:context["project_revision"].as_u64(),args:json!({"items":items})};
+    // Acceptance-only reserved transport makes pre-start cancellation deterministic: marker
+    // publication precedes AfterFX launch. Production execute keeps its collision guard intact.
+    crate::after_effects_checkpoint::create_for_request(&s.project,crate::now_ms(),&prevented.request_id,
+        prevented.expected_project_revision.ok_or("Revision missing.")?)?;
+    let plan=after_effects_transport::runner_plan(&s.exe,&s.core,&s.jobs,&prevented)?;
+    write_new(&plan.request_path,&serde_json::to_vec(&prevented).map_err(|e|e.to_string())?)?;
+    write_new(&plan.runner_path,plan.runner_script.as_bytes())?;
+    let requested=runtime::cancel_render(&s.jobs,&prevented.request_id)?;
+    Command::new(&s.exe).args(&plan.afterfx_arguments).spawn().map_err(|e|e.to_string())?;
+    let start=Instant::now();let receipt=loop{
+        if plan.receipt_path.is_file(){
+            let bytes=crate::read_file_bytes_bounded(&plan.receipt_path,512*1024,"Pre-start render receipt")?;
+            if let Ok(receipt)=after_effects_transport::parse_receipt(&bytes,&prevented){break receipt;}
+        }
+        if start.elapsed()>Duration::from_secs(30){return Err("Pre-start cancellation outcome unresolved; no next render or retry.".into());}
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    let result=receipt.result.ok_or("Pre-start cancellation receipt has no result.")?;
+    s.events.push(json!({"case":"cancel_before_start_attempt","request":prevented,"execution":result,
+        "cancel_request":requested,"origin":"acceptance_reserved_typed_transport",
+        "verified":result["render_started"]==false&&result["render_cancel_verified"]==true}));
+    if result["render_started"]!=false||result["render_cancel_verified"]!=true{
+        return Err("Pre-start cancellation was not exercised deterministically; preserve evidence, review timing, no blind retry.".into());
+    }
+    let reconciled=runtime::pending_jobs(&s.jobs,true)?;
+    if reconciled["jobs"][0]["state"]!="cancelled"||reconciled["jobs"][0]["native_stop_verified"]!=false||!plan.cancel_path.is_file(){
+        return Err("Prevented-before-start reconciliation or durable marker evidence failed.".into());
+    }
+    let context=s.context().await?;
+    let request=Request{schema_version:1,request_id:s.id(),action:"render_queue".into(),expected_project_file:Some(s.project.to_string_lossy().into_owned()),
+        expected_project_revision:context["project_revision"].as_u64(),args:json!({"items":items})};
+    let rendered=runtime::execute(&s.exe,&s.core,&s.jobs,&request,120_000).await?;
+    s.events.push(json!({"case":"render_completion","request":request,"execution":rendered,
+        "render_completion_verified":rendered["render_output_evidence"]["render_completion_verified"]==true,
+        "media_parse_verified":rendered["render_output_evidence"]["media_parse_verified"]==true,
+        "media_decode_verified":false,"playability_verified":false}));
+    if rendered["state"]=="execution_status_unknown"||rendered["render_output_evidence"]["render_completion_verified"]!=true{
+        return Err("Render completion was not verified; preserve uncertain state without retry.".into());
+    }
+    Ok(())
+}
+async fn during_cancel_case(s:&mut Suite,items:Value)->Result<(),String>{
+    let context=s.context().await?;
+    let request=Request{schema_version:1,request_id:s.id(),action:"render_queue".into(),expected_project_file:Some(s.project.to_string_lossy().into_owned()),
+        expected_project_revision:context["project_revision"].as_u64(),args:json!({"items":items})};
+    let jobs=s.jobs.clone();let cancel_id=request.request_id.clone();
+    let cancel=std::thread::spawn(move||{
+        let start=Instant::now();while start.elapsed()<Duration::from_secs(10){
+            if jobs.join(format!("shuvi-ae-{cancel_id}.request.json")).is_file(){
+                std::thread::sleep(Duration::from_millis(300));return runtime::cancel_render(&jobs,&cancel_id);
+            }std::thread::sleep(Duration::from_millis(10));
+        }Err("Timed cancellation request was not observed.".into())
+    });
+    let stopped=runtime::execute(&s.exe,&s.core,&s.jobs,&request,120_000).await;
+    let cancel_request=cancel.join().map_err(|_|"Cancel helper panicked.")?;let stopped=stopped?;
+    let during_verified=stopped["result"]["render_started"]==true&&stopped["native_stop_verified"]==true;
+    s.events.push(json!({"case":"cooperative_cancel_during_attempt","execution":stopped,
+        "cancel_request":cancel_request.as_ref().ok(),"cancel_error":cancel_request.as_ref().err(),
+        "during_render_verified":during_verified,"state":if during_verified{"verified"}else{"not_exercised_or_uncertain"}}));
+    if stopped["state"]=="execution_status_unknown"{return Err("Cooperative render outcome unresolved; no process kill or retry.".into());}
+    Ok(())
+}
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -243,11 +368,14 @@ mod tests{
     #[test]
     #[ignore="Requires an existing compatible trusted After Effects install, explicit disposable-only opt-in and clean source checkout"]
     fn real_host_acceptance(){
+        let phase=std::env::var("SHUVI_AE_PHASE").unwrap_or_else(|_|"core".into());
+        assert!(matches!(phase.as_str(),"core"|"render"|"cancel"),"Unsupported acceptance phase");
         let mut suite=Suite::new().expect("Real After Effects acceptance unavailable or not explicitly enabled");
         let bootstrap=suite.lifecycle("bootstrap",json!({}));
         let outcome=bootstrap.and_then(|_|{
             let runtime=tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e|e.to_string())?;
-            runtime.block_on(core_cases(&mut suite))
+            runtime.block_on(async{match phase.as_str(){"render"=>render_cases(&mut suite,false).await,
+                "cancel"=>render_cases(&mut suite,true).await,_=>core_cases(&mut suite).await}})
         });
         let report=suite.report(outcome.as_ref().err().map(String::as_str));
         let bytes=serde_json::to_vec_pretty(&report).expect("Report serialization");

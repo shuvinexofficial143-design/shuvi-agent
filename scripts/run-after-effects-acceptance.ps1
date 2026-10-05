@@ -3,6 +3,9 @@
 param(
     [switch]$Run,
     [string]$AfterFXPath,
+    [ValidateSet('core','render','cancel')][string]$Phase = 'core',
+    [string]$OutputModuleTemplate,
+    [ValidateSet('mov','mp4','avi')][string]$OutputExtension = 'mov',
     [string]$EvidenceRoot = $env:TEMP
 )
 $ErrorActionPreference = 'Stop'
@@ -54,6 +57,9 @@ $availability = [ordered]@{
 }
 $availability | ConvertTo-Json -Depth 6
 if (-not $Run) { return }
+if ($Phase -in @('render','cancel') -and (-not $OutputModuleTemplate -or $OutputModuleTemplate.Length -gt 240)) {
+    throw 'Render phases require an exact inspected output module template; no template names are guessed.'
+}
 if ($null -eq $selected) { throw 'Real AE runtime unavailable or ambiguous; no software was installed and no fixture was created.' }
 if ($null -eq $cargoCommand) { throw 'Rust toolchain unavailable; no software was installed and no fixture was created.' }
 if (Get-Process AfterFX -ErrorAction SilentlyContinue) { throw 'An AfterFX process is already running. Preserve/close user work before explicitly starting a disposable acceptance session.' }
@@ -65,14 +71,23 @@ if ($LASTEXITCODE -ne 0 -or $dirty) { throw 'Acceptance requires a clean source 
 $previousOptIn = [Environment]::GetEnvironmentVariable('SHUVI_AE_ACCEPTANCE','Process')
 $previousExe = [Environment]::GetEnvironmentVariable('SHUVI_AE_EXE','Process')
 $previousRoot = [Environment]::GetEnvironmentVariable('SHUVI_AE_EVIDENCE_ROOT','Process')
+$previousPhase = [Environment]::GetEnvironmentVariable('SHUVI_AE_PHASE','Process')
+$previousTemplate = [Environment]::GetEnvironmentVariable('SHUVI_AE_OUTPUT_TEMPLATE','Process')
+$previousExtension = [Environment]::GetEnvironmentVariable('SHUVI_AE_OUTPUT_EXTENSION','Process')
 try {
     $env:SHUVI_AE_ACCEPTANCE = 'disposable-only'
     $env:SHUVI_AE_EXE = $selected
     $env:SHUVI_AE_EVIDENCE_ROOT = [IO.Path]::GetFullPath($EvidenceRoot)
+    $env:SHUVI_AE_PHASE = $Phase
+    $env:SHUVI_AE_OUTPUT_TEMPLATE = $OutputModuleTemplate
+    $env:SHUVI_AE_OUTPUT_EXTENSION = $OutputExtension
     & $cargoCommand.Source test --manifest-path (Join-Path $repoRoot 'src-tauri\Cargo.toml') --lib after_effects_acceptance::tests::real_host_acceptance -- --ignored --exact --nocapture --test-threads=1
     if ($LASTEXITCODE -ne 0) { throw 'Acceptance stopped or failed. Review retained request/receipt evidence; do not retry uncertain mutations.' }
 } finally {
     [Environment]::SetEnvironmentVariable('SHUVI_AE_ACCEPTANCE',$previousOptIn,'Process')
     [Environment]::SetEnvironmentVariable('SHUVI_AE_EXE',$previousExe,'Process')
     [Environment]::SetEnvironmentVariable('SHUVI_AE_EVIDENCE_ROOT',$previousRoot,'Process')
+    [Environment]::SetEnvironmentVariable('SHUVI_AE_PHASE',$previousPhase,'Process')
+    [Environment]::SetEnvironmentVariable('SHUVI_AE_OUTPUT_TEMPLATE',$previousTemplate,'Process')
+    [Environment]::SetEnvironmentVariable('SHUVI_AE_OUTPUT_EXTENSION',$previousExtension,'Process')
 }
