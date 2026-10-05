@@ -79,6 +79,7 @@ mod premiere_bridge;
 use premiere_bridge::{PremiereBridgeShared, PremiereBridgeStatus};
 
 mod audition;
+mod audition_acceptance;
 mod audition_bridge_queue;
 mod audition_bridge;
 use audition_bridge::{AuditionBridgeShared, AuditionBridgeStatus};
@@ -151,6 +152,9 @@ Available tools:
 - audition_launch: {}
 - audition_readiness_report: {}
 - audition_runtime_probe: {}
+- audition_acceptance_status: {}
+- audition_acceptance_register_disposable: {"explicitly_disposable":true}
+- audition_acceptance_plan: {"feature":"optional noise_reduction|eq|compressor|loudness|export|multitrack|voice_cleanup"}
 - audition_bridge_start: {}
 - audition_bridge_status: {}
 - audition_bridge_stop: {}
@@ -527,6 +531,9 @@ enum ToolAction {
     AuditionLaunch,
     AuditionReadinessReport,
     AuditionRuntimeProbe,
+    AuditionAcceptanceStatus,
+    AuditionAcceptanceRegisterDisposable,
+    AuditionAcceptancePlan { feature: Option<String> },
     AuditionBridgeStart,
     AuditionBridgeStatus,
     AuditionBridgeStop,
@@ -1147,6 +1154,9 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "audition_launch"
         | "audition_readiness_report"
         | "audition_runtime_probe"
+        | "audition_acceptance_status"
+        | "audition_acceptance_register_disposable"
+        | "audition_acceptance_plan"
         | "audition_bridge_start"
         | "audition_bridge_status"
         | "audition_bridge_stop"
@@ -2810,6 +2820,30 @@ fn stage_tool(
             "Run bounded read-only host checks through the paired Audition bridge. This proves observation only and performs no audio edit.".into(),
             RiskLevel::Low,
         ),
+        "audition_acceptance_status" => (
+            ToolAction::AuditionAcceptanceStatus,
+            "Read Audition acceptance status".into(),
+            "Read the locally registered disposable Audition document and, when paired, compare it with the current host document. No audio edit.".into(),
+            RiskLevel::Low,
+        ),
+        "audition_acceptance_register_disposable" => {
+            if proposal.arguments.get("explicitly_disposable").and_then(Value::as_bool)!=Some(true) {
+                return Err("Explicit explicitly_disposable=true authorization is required.".into());
+            }
+            (ToolAction::AuditionAcceptanceRegisterDisposable,
+                "Register disposable Audition document".into(),
+                "High risk authorization boundary: register the exact current Audition document and host version as disposable for future acceptance testing. Registration itself does not edit audio and does not enable mutation automatically.".into(),
+                RiskLevel::High)
+        }
+        "audition_acceptance_plan" => {
+            let feature=arg_optional_string(&proposal.arguments,"feature");
+            if let Some(value)=feature.as_deref(){audition::feature_queries(value)?;}
+            (ToolAction::AuditionAcceptancePlan {feature:feature.clone()},
+                "Plan Audition acceptance".into(),
+                feature.as_deref().map(|value|format!("Read-only acceptance plan for Audition feature '{value}'. No mutation is enabled."))
+                    .unwrap_or_else(||"Read-only Audition acceptance plan. No mutation is enabled.".into()),
+                RiskLevel::Low)
+        }
         "audition_bridge_start" => (
             ToolAction::AuditionBridgeStart,
             "Start Audition bridge".into(),
@@ -6246,6 +6280,12 @@ fn premiere_edit_job_path(app:&AppHandle,id:&str)->Result<std::path::PathBuf,Str
     Ok(dir.join(format!("{id}.json")))
 }
 
+fn audition_acceptance_path(app:&AppHandle)->Result<std::path::PathBuf,String>{
+    let dir=app.path().app_data_dir().map_err(|e|e.to_string())?.join("audition-acceptance");
+    fs::create_dir_all(&dir).map_err(|e|e.to_string())?;
+    Ok(dir.join("disposable-v1.json"))
+}
+
 fn premiere_acceptance_path(app: &AppHandle) -> Result<std::path::PathBuf,String> {
     let dir=app.path().app_data_dir().map_err(|e|e.to_string())?.join("premiere-acceptance");
     fs::create_dir_all(&dir).map_err(|e|e.to_string())?;
@@ -8521,6 +8561,57 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 "edit_runtime_verified":false,
                 "production_ready":false
             });
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionAcceptanceStatus => {
+            let registration=audition_acceptance::load(&audition_acceptance_path(app)?)?;
+            let mut current_match=Value::Null;
+            let mut current_context=Value::Null;
+            if registration.is_some() && state.audition_bridge.status()?.paired {
+                let context=state.audition_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+                current_match=json!(registration.as_ref().is_some_and(|saved|saved.check(&context).is_ok()));
+                current_context=context;
+            }
+            let value=json!({
+                "registration":registration,
+                "current_identity_matches":current_match,
+                "current_context":current_context,
+                "mutation_enabled_automatically":false,
+                "production_ready":false
+            });
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionAcceptanceRegisterDisposable => {
+            if !state.audition_bridge.status()?.paired {
+                return Err("A paired live Audition host is required to register a disposable acceptance document.".into());
+            }
+            let context=state.audition_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let registration=audition_acceptance::Registration::from_context(&context,true)?;
+            audition_acceptance::save(&audition_acceptance_path(app)?,&registration)?;
+            Ok(ActionResult{success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "registered":true,
+                    "registration":registration,
+                    "verified_current_host_identity":true,
+                    "mutation_enabled_automatically":false,
+                    "next":"audition_acceptance_plan"
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionAcceptancePlan {feature} => {
+            let registration=audition_acceptance::load(&audition_acceptance_path(app)?)?;
+            let mut value=audition_acceptance::plan(registration.as_ref(),feature.as_deref())?;
+            if let Some(saved)=registration.as_ref() {
+                if state.audition_bridge.status()?.paired {
+                    let context=state.audition_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+                    if let Some(map)=value.as_object_mut(){
+                        map.insert("current_identity_matches".into(),json!(saved.check(&context).is_ok()));
+                        map.insert("current_context".into(),context);
+                    }
+                }
+            }
             Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)})
         }
