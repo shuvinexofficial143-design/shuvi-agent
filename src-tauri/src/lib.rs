@@ -155,10 +155,11 @@ Available tools:
 - audition_bridge_stop: {}
 - audition_context: {}
 - audition_list_commands: {}
+- audition_search_commands: {"query":"noise|normalize|loudness|compressor|eq|export etc"}
 - audition_script_dictionary: {"query":"optional class-name substring","max_classes":64}
 - audition_command_enabled: {"command":{"property":"exact inspected COMMAND_* property","value":"exact inspected command value"}}
-- audition_set_playhead: {"percent":0.5}
-- audition_invoke_command: {"command":{"property":"exact inspected COMMAND_* property","value":"exact inspected command value"}}
+- audition_set_playhead: {"percent":0.5,"expected_document_signature":"copy documentSignature from audition_context"}
+- audition_invoke_command: {"command":{"property":"exact inspected COMMAND_* property","value":"exact inspected command value"},"expected_document_signature":"copy documentSignature from audition_context"}
 - premiere_detect: {}
 - premiere_launch: {"project":"optional absolute .prproj path"}
 - premiere_bridge_start: {}
@@ -527,10 +528,11 @@ enum ToolAction {
     AuditionBridgeStop,
     AuditionContext,
     AuditionListCommands,
+    AuditionSearchCommands { query: String },
     AuditionScriptDictionary { query: Option<String>, max_classes: u32 },
     AuditionCommandEnabled { command: audition::InspectedCommand },
-    AuditionSetPlayhead { percent: f64 },
-    AuditionInvokeCommand { command: audition::InspectedCommand },
+    AuditionSetPlayhead { percent: f64, expected_document_signature: String },
+    AuditionInvokeCommand { command: audition::InspectedCommand, expected_document_signature: String },
     PremiereDetect,
     PremiereLaunch { project: Option<String> },
     PremiereBridgeStart,
@@ -1143,6 +1145,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "audition_bridge_stop"
         | "audition_context"
         | "audition_list_commands"
+        | "audition_search_commands"
         | "audition_script_dictionary"
         | "audition_command_enabled"
         | "audition_set_playhead"
@@ -2822,6 +2825,16 @@ fn stage_tool(
             "Read a bounded live COMMAND_* inventory from Application reflection and cache it in the paired panel for exact later invocation.".into(),
             RiskLevel::Low,
         ),
+        "audition_search_commands" => {
+            let query=arg_string(&proposal.arguments,"query")?;
+            if query.len()>120 || query.chars().any(char::is_control) {
+                return Err("Audition command search query must be 1..120 characters without control characters.".into());
+            }
+            (ToolAction::AuditionSearchCommands {query:query.clone()},
+                "Search Audition commands".into(),
+                format!("Search the live Audition COMMAND_* inventory for '{query}' and cache exact matching command identities."),
+                RiskLevel::Low)
+        }
         "audition_script_dictionary" => {
             let query=proposal.arguments.get("query").and_then(Value::as_str).map(str::to_string);
             if query.as_ref().is_some_and(|v|v.len()>120||v.chars().any(char::is_control)){
@@ -2849,9 +2862,13 @@ fn stage_tool(
         "audition_set_playhead" => {
             let percent=proposal.arguments.get("percent").and_then(Value::as_f64).ok_or("Numeric Audition playhead percent required.")?;
             audition::validate_playhead_percent(percent)?;
-            (ToolAction::AuditionSetPlayhead {percent},
+            let expected_document_signature=arg_string(&proposal.arguments,"expected_document_signature")?;
+            if expected_document_signature.len()>1200 || expected_document_signature.chars().any(char::is_control) {
+                return Err("Audition expected document signature must be 1..1200 characters without control characters.".into());
+            }
+            (ToolAction::AuditionSetPlayhead {percent,expected_document_signature},
                 "Move Audition waveform playhead".into(),
-                format!("Set WaveDocument playhead to {:.4}% and require native readback.",percent*100.0),
+                format!("Set the inspected WaveDocument playhead to {:.4}% and require native readback without changing document identity.",percent*100.0),
                 RiskLevel::Low)
         }
         "audition_invoke_command" => {
@@ -2859,9 +2876,13 @@ fn stage_tool(
                 proposal.arguments.get("command").cloned().unwrap_or(Value::Null)
             ).map_err(|e|format!("Invalid Audition command identity: {e}"))?;
             command.validate()?;
-            (ToolAction::AuditionInvokeCommand {command:command.clone()},
+            let expected_document_signature=arg_string(&proposal.arguments,"expected_document_signature")?;
+            if expected_document_signature.len()>1200 || expected_document_signature.chars().any(char::is_control) {
+                return Err("Audition expected document signature must be 1..1200 characters without control characters.".into());
+            }
+            (ToolAction::AuditionInvokeCommand {command:command.clone(),expected_document_signature},
                 "Invoke inspected Audition command".into(),
-                format!("Invoke exact live Audition command {}={} after panel cache and enabled-state checks. Side effects remain accepted-unverified.",command.property,command.value),
+                format!("Invoke exact live Audition command {}={} only if the inspected Audition document signature is unchanged. Side effects remain accepted-unverified.",command.property,command.value),
                 RiskLevel::High)
         }
         "premiere_detect" => (
@@ -8449,6 +8470,11 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)})
         }
+        ToolAction::AuditionSearchCommands {query} => {
+            let value=state.audition_bridge.request("search_commands",json!({"query":query}),Duration::from_secs(12)).await?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
         ToolAction::AuditionScriptDictionary {query,max_classes} => {
             let value=state.audition_bridge.request("script_dictionary",
                 json!({"query":query,"maxClasses":max_classes}),Duration::from_secs(20)).await?;
@@ -8462,22 +8488,27 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)})
         }
-        ToolAction::AuditionSetPlayhead {percent} => {
+        ToolAction::AuditionSetPlayhead {percent,expected_document_signature} => {
             audition::validate_playhead_percent(percent)?;
-            let value=state.audition_bridge.request("set_playhead_percent",json!({"percent":percent}),Duration::from_secs(8)).await?;
-            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_playhead_readback");
+            let value=state.audition_bridge.request("set_playhead_percent",
+                json!({"percent":percent,"expectedDocumentSignature":expected_document_signature}),Duration::from_secs(8)).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_playhead_readback")
+                && value.get("expectedDocumentSignature")==value.get("observedDocumentSignature");
             Ok(ActionResult{success:verified,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(if verified{0}else{1})})
         }
-        ToolAction::AuditionInvokeCommand {command} => {
+        ToolAction::AuditionInvokeCommand {command,expected_document_signature} => {
             command.validate()?;
             let value=state.audition_bridge.request("invoke_command",
-                json!({"property":command.property,"value":command.value}),Duration::from_secs(20)).await?;
-            let accepted=value.get("accepted").and_then(Value::as_bool)==Some(true);
+                json!({"property":command.property,"value":command.value,
+                    "expectedDocumentSignature":expected_document_signature}),Duration::from_secs(20)).await?;
+            let accepted=value.get("accepted").and_then(Value::as_bool)==Some(true)
+                && value.get("expectedDocumentSignature")==value.get("observedDocumentSignature");
             Ok(ActionResult{success:accepted,tool,
                 stdout:serde_json::to_string_pretty(&json!({
                     "accepted":accepted,
                     "native":value,
+                    "document_identity_guarded":true,
                     "side_effect_verified":false,
                     "retry_automatically":false
                 })).unwrap_or_default(),
