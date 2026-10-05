@@ -169,6 +169,7 @@ Available tools:
 - motion_graphics_generate_correction: {"request":{"plan":"exact reviewed Plan object","plan_snapshot":"exact fnv1a64 snapshot from motion_graphics_review_preview","review":"exact revise VisualReview object","iteration":1,"max_iterations":3}} — ask the active provider once for a snapshot-bound full Plan revision; only animation tracks may change, never auto-run renderer mutations
 - motion_graphics_correction_session_start: {"plan_snapshot":"exact fnv1a64 snapshot from the reviewed plan","max_corrections":3} — create one bounded persisted correction session; does not review, correct, render, or apply anything automatically
 - motion_graphics_correction_session_status: {"session_id":"UUID returned by start"} — read the exact persisted correction-session state only
+- motion_graphics_correction_session_cancel: {"session_id":"UUID returned by start"} — cancel one non-terminal persisted correction session without running any renderer or host mutation
 - motion_graphics_correction_session_record_review: {"request":{"session_id":"UUID","plan":"exact reviewed Plan","kind":"single_frame|multi_frame","review":"exact strict review object","frame_times_seconds":[1,2]}} — revalidate the exact Plan/review evidence, then advance only the persisted correction-session state
 - motion_graphics_correction_session_record_correction: {"request":{"session_id":"UUID","prior_plan":"exact current Plan","revised_plan":"exact proposed revised Plan"}} — revalidate immutable correction constraints and exact snapshots, then record only the proposal; no renderer action is executed
 - motion_graphics_correction_session_record_renderer_approval: {"session_id":"UUID","action_id":"successful motion_graphics_run_remotion action UUID","evidence":{"plan":"exact revised Plan","asset_paths":{},"manifest_path":"absolute manifest","evidence_path":"absolute evidence"}} — freeze verified render evidence and bind it to the exact successful approved Remotion action before advancing the session
@@ -568,6 +569,7 @@ enum ToolAction {
     MotionGraphicsGenerateCorrection { request: motion_graphics_correction::CorrectionRequest, provider: ProviderContext },
     MotionGraphicsCorrectionSessionStart { plan_snapshot:String, max_corrections:u8 },
     MotionGraphicsCorrectionSessionStatus { session_id:String },
+    MotionGraphicsCorrectionSessionCancel { session_id:String },
     MotionGraphicsCorrectionSessionRecordReview { request:motion_graphics_correction_session::ReviewRecordRequest },
     MotionGraphicsCorrectionSessionRecordCorrection { request:motion_graphics_correction_session::CorrectionRecordRequest },
     MotionGraphicsCorrectionSessionRecordRendererApproval { session_id:String, action_id:String, evidence:motion_graphics_remotion::EvidenceRequest, accepted:motion_graphics_remotion::AcceptedEvidence },
@@ -1211,6 +1213,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "motion_graphics_generate_correction"
         | "motion_graphics_correction_session_start"
         | "motion_graphics_correction_session_status"
+        | "motion_graphics_correction_session_cancel"
         | "motion_graphics_correction_session_record_review"
         | "motion_graphics_correction_session_record_correction"
         | "motion_graphics_correction_session_record_renderer_approval"
@@ -3048,6 +3051,14 @@ fn stage_tool(
             (ToolAction::MotionGraphicsCorrectionSessionStatus {session_id},
                 "Read motion correction session status".into(),
                 "Read one bounded persisted correction-session snapshot; no mutation.".into(),
+                RiskLevel::Low)
+        }
+        "motion_graphics_correction_session_cancel" => {
+            let session_id=arg_string(&proposal.arguments,"session_id")?;
+            Uuid::parse_str(&session_id).map_err(|_|"Invalid motion correction session ID.")?;
+            (ToolAction::MotionGraphicsCorrectionSessionCancel {session_id},
+                "Cancel motion correction session".into(),
+                "Update only persisted correction-session state to cancelled. No renderer or host mutation.".into(),
                 RiskLevel::Low)
         }
         "motion_graphics_correction_session_record_review" => {
@@ -9398,6 +9409,17 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let session=motion_graphics_correction_session::load(&path)?;
             Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&session).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MotionGraphicsCorrectionSessionCancel {session_id} => {
+            let path=motion_graphics_correction_session_path(app,&session_id)?;
+            let mut session=motion_graphics_correction_session::load(&path)?;
+            session.cancel()?;
+            motion_graphics_correction_session::save(&path,&session)?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&json!({
+                "session_id":session.session_id,
+                "status":session.status,
+                "renderer_execution_performed":false
+            })).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::MotionGraphicsCorrectionSessionRecordReview {request} => {
             let summary=request.validate()?;
