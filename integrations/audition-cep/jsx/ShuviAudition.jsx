@@ -134,6 +134,39 @@ function shuviAuditionDictionaryMembers(items, maxItems)
     };
 }
 
+function shuviAuditionDictionaryClassMatches(ref, className, query)
+{
+    if (!query.length) return true;
+
+    var base = [className || "", ref.help || "", ref.description || ""].join(" ").toLowerCase();
+    if (base.indexOf(query) >= 0) return true;
+
+    var groups = [ref.staticProperties, ref.staticMethods, ref.properties, ref.methods];
+    for (var g = 0; g < groups.length; ++g)
+    {
+        var items = groups[g];
+        var count = items && typeof items.length == "number" ? Math.min(items.length, 64) : 0;
+        for (var i = 0; i < count; ++i)
+        {
+            var member = items[i];
+            var text = "";
+            try
+            {
+                text = [
+                    member.name || "",
+                    member.type || "",
+                    member.dataType || "",
+                    member.help || "",
+                    member.description || ""
+                ].join(" ").toLowerCase();
+            }
+            catch (e) { text = ""; }
+            if (text.indexOf(query) >= 0) return true;
+        }
+    }
+    return false;
+}
+
 function shuviAuditionScriptDictionary(args)
 {
     var query = "";
@@ -180,15 +213,15 @@ function shuviAuditionScriptDictionary(args)
             if (!className.length || seen[className]) continue;
             seen[className] = true;
 
-            if (query.length && className.toLowerCase().indexOf(query) < 0) continue;
+            var ref = $.dictionary.getClass(className);
+            if (!ref) continue;
+            if (!shuviAuditionDictionaryClassMatches(ref, className, query)) continue;
+
             if (classes.length >= maxClasses)
             {
                 truncated = true;
                 break;
             }
-
-            var ref = $.dictionary.getClass(className);
-            if (!ref) continue;
 
             classes.push({
                 name: shuviAuditionBoundString(className, 160),
