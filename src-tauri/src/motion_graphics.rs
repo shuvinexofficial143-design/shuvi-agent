@@ -546,8 +546,8 @@ impl RemotionPlanRequest {
 
         let duration_in_frames=(self.plan.duration_seconds*self.plan.canvas.fps).ceil() as u64;
         let mut blockers=vec![json!({
-            "code":"remotion_runtime_renderer_not_implemented",
-            "required":"This adapter produces a deterministic bounded render manifest only. A fixed reviewed Remotion runtime must consume the manifest before renderer execution can be claimed."
+            "code":"remotion_runtime_execution_required",
+            "required":"Pass this deterministic manifest to Shuvi's fixed reviewed remotion-runtime. Renderer execution, preview provenance, and final output remain unclaimed until a runtime evidence receipt is produced."
         })];
         if self.plan.delivery==DeliveryKind::TransparentOverlay {
             blockers.push(json!({
@@ -571,6 +571,7 @@ impl RemotionPlanRequest {
                 "transparent_background":self.plan.canvas.transparent_background
             },
             "delivery":self.plan.delivery,
+            "review":self.plan.review,
             "scenes":scenes,
             "asset_binding_count":self.asset_paths.len(),
             "blockers":blockers,
@@ -1438,7 +1439,8 @@ mod tests{
             .find(|layer|layer["id"]=="photo").unwrap();
         assert_eq!(photo["tracks"][0]["keyframes"][0]["frame_position"],15.0);
         assert_eq!(photo["asset_existence_runtime_verified"],false);
-        assert!(value["blockers"].as_array().unwrap().iter().any(|b|b["code"]=="remotion_runtime_renderer_not_implemented"));
+        assert_eq!(value["review"]["sample_times_seconds"],json!([0.5,1.5]));
+        assert!(value["blockers"].as_array().unwrap().iter().any(|b|b["code"]=="remotion_runtime_execution_required"));
     }
 
     #[test]
