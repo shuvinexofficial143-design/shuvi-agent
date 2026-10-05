@@ -29,8 +29,10 @@
 - Provider planning preserves fixed objective, renderer, duration, canvas, delivery, allowed asset IDs, and required review criteria; markdown/tool proposals, constraint drift, invented assets, and provider-generated shape layers fail closed.
 - Read-only `motion_graphics_plan_after_effects` adapter planner.
 - The AE adapter composes only existing typed host actions and never dispatches them automatically.
-- It currently plans composition creation; text/group/image/video/rectangle/ellipse layer content when enough inspected identity exists; scene in/out timing; opacity, Z-rotation, and single-axis Position/Scale component keyframes; and interpolation-type writes.
+- It currently plans composition creation; text/group/image/video/rectangle/ellipse layer content when enough inspected identity exists; scene in/out timing; opacity, Z-rotation, single-axis Position/Scale component keyframes, aligned paired X+Y / ScaleX+ScaleY component timelines, and interpolation-type writes.
 - A single X or Y track preserves the other After Effects Position components from exact host readback; a single ScaleX or ScaleY track does the same for Scale, with neutral scale factors converted to AE percent values.
+- Aligned paired X+Y or ScaleX+ScaleY tracks are source-coalesced as two guarded component writes on the same exact host key timeline: the first requires no existing keys, the second requires the first write's exact absolute key times, and interpolation is staged only after both components are present.
+- Paired tracks with mismatched keyframe times or easing remain fail-closed rather than synthesizing an unproven shared curve.
 - Component vector writes fail closed on separated dimensions, expression-enabled properties, stale existing-key timelines, dimension changes, or failed untouched-component readback.
 - Dynamic comp/layer IDs may be resolved only from matching verified prior `after_effects_run` receipts.
 - Every future AE mutation still requires a fresh `inspect_context`, exact saved-project path/revision, a unique request ID, the existing checkpoint boundary, and normal Shuvi approval.
@@ -46,8 +48,8 @@
 
 - Claude does not directly render an MP4 in this foundation.
 - No After Effects project/comp is created by the validator or AE adapter planner.
-- The adapter no longer guesses X/Y or per-axis scale values: one component track per combined Position/Scale property is source-planned through exact host readback and untouched-component preservation.
-- Paired X+Y or ScaleX+ScaleY tracks remain blocked until their shared After Effects property timelines can be deterministically coalesced; separated dimensions also fail closed.
+- The adapter no longer guesses X/Y or per-axis scale values: component tracks on combined Position/Scale properties are source-planned through exact host readback and untouched-component preservation.
+- Paired X+Y or ScaleX+ScaleY tracks are accepted only when their keyframe times and easing exactly align; otherwise the planner blocks them. Separated dimensions also fail closed.
 - Shape support is intentionally limited to rectangle/ellipse primitives already exposed by the verified AE bridge; arbitrary Bézier/path synthesis is not claimed.
 - Shape geometry/style is immutable during provider correction proposals; correction may change only animation tracks.
 - Image/video layers require an `asset_id -> item_id` binding grounded in fresh `inspect_project_items` evidence.
@@ -63,12 +65,11 @@
 
 ## Next source phase
 
-1. Coalesce paired X+Y and ScaleX+ScaleY tracks into one deterministic shared-property timeline while preserving exact host readback and easing semantics.
-2. Extend shape support only if a future requirement needs arbitrary path/Bézier geometry; rectangle/ellipse primitives are now source-planned.
-3. Add bounded temporal-ease synthesis/readback for directional easing.
-4. Add alpha-capable AE render/output-module planning and evidence without auto-rendering.
-5. Build the Remotion adapter as a separate renderer implementation.
-6. Add preview render evidence and bounded frame extraction so reviewed PNGs can be tied to a verified renderer output.
-7. Add bounded multi-frame continuity review on top of the single-frame strict review contract.
-8. Add a persistent correction session that carries the existing snapshot/iteration rules across review → proposal → approved renderer action → re-render → re-review, with no blind retries.
-9. Add final output evidence and optional Premiere transparent-overlay insertion.
+1. Add bounded temporal-ease synthesis/readback for directional easing.
+2. Add alpha-capable AE render/output-module planning and evidence without auto-rendering.
+3. Build the Remotion adapter as a separate renderer implementation.
+4. Add preview render evidence and bounded frame extraction so reviewed PNGs can be tied to a verified renderer output.
+5. Add bounded multi-frame continuity review on top of the single-frame strict review contract.
+6. Add a persistent correction session that carries the existing snapshot/iteration rules across review → proposal → approved renderer action → re-render → re-review, with no blind retries.
+7. Add final output evidence and optional Premiere transparent-overlay insertion.
+8. Extend shape support only if a future requirement needs arbitrary path/Bézier geometry; rectangle/ellipse primitives are already source-planned.
