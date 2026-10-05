@@ -26,6 +26,7 @@ pub fn readiness_report()->serde_json::Value{
             "live_script_dictionary_inspection":true,
             "stale_document_signature_guard":true,
             "feature_discovery_planner":true,
+            "read_only_runtime_probe":true,
             "command_enabled_probe":true,
             "inspected_command_invoke":true,
             "effect_parameter_dom":"not_claimed",
