@@ -85,7 +85,7 @@ impl AuditionBridgeShared {
 
             let shared = Arc::clone(self);
             thread::Builder::new()
-                .name("shuvi-premiere-bridge".into())
+                .name("shuvi-audition-bridge".into())
                 .spawn(move || {
                     for stream in listener.incoming() {
                         let Ok(stream) = stream else {
@@ -423,7 +423,7 @@ fn handle_client(mut stream: TcpStream, shared: Arc<AuditionBridgeShared>) {
                 "200 OK",
                 &json!({
                     "ok": true,
-                    "service": "shuvi-premiere-bridge",
+                    "service": "shuvi-audition-bridge",
                     "port": AUDITION_BRIDGE_PORT
                 })
                 .to_string(),
