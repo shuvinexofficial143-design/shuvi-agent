@@ -2913,9 +2913,11 @@ fn stage_tool(
             let request:motion_graphics_remotion_runtime::ExecutionRequest=serde_json::from_value(request_value)
                 .map_err(|e|format!("Invalid Remotion execution request: {e}"))?;
             request.validate()?;
+            let plan_snapshot=request.plan.fingerprint()?;
+            let manifest_sha256=motion_graphics_remotion_runtime::planned_manifest_sha256(&request.plan,&request.asset_paths)?;
             let detail=format!(
-                "Run Shuvi's embedded fixed Remotion renderer | runtime_dir={} | output={} | timeout_ms={} | writes media and evidence",
-                request.runtime_dir,request.output_file,request.timeout_ms
+                "Run Shuvi fixed Remotion renderer | plan_snapshot={} | manifest_sha256={} | output={} | runtime_dir={} | timeout_ms={} | writes media and evidence",
+                plan_snapshot,manifest_sha256,request.output_file,request.runtime_dir,request.timeout_ms
             );
             (ToolAction::MotionGraphicsRunRemotion {request},
                 "Render motion graphics with fixed Remotion runtime".into(),
