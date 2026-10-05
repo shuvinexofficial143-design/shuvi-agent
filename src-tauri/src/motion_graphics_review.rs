@@ -158,7 +158,7 @@ mod tests{
             canvas:Canvas{width:1920,height:1080,fps:30.0,transparent_background:true},
             delivery:DeliveryKind::TransparentOverlay,
             scenes:vec![Scene{id:"intro".into(),start_seconds:0.0,duration_seconds:3.0,layers:vec![
-                Layer{id:"title".into(),kind:LayerKind::Text,name:"Title".into(),text:Some("Hello".into()),asset_id:None,
+                Layer{id:"title".into(),kind:LayerKind::Text,name:"Title".into(),text:Some("Hello".into()),asset_id:None,shape:None,
                     tracks:vec![Track{property:Property::Opacity,keyframes:vec![
                         Keyframe{time_seconds:0.0,value:0.0,easing:Easing::EaseOut},
                         Keyframe{time_seconds:0.5,value:1.0,easing:Easing::EaseOut},
