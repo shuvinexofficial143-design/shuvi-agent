@@ -622,4 +622,70 @@ mod tests{
         plan.scenes[0].layers[0].tracks[0].keyframes[0].value=2.0;
         assert!(plan.validate().is_err());
     }
+
+    #[test]
+    fn after_effects_adapter_composes_existing_actions_without_execution(){
+        let mut plan=valid_plan();
+        plan.renderer=Renderer::AfterEffects;
+        let request=AfterEffectsPlanRequest{
+            project_file:if cfg!(windows){r"C:\Work\motion.aep".into()}else{"/tmp/motion.aep".into()},
+            composition_name:"Shuvi Motion".into(),
+            plan,
+            asset_item_ids:BTreeMap::new(),
+        };
+        let value=request.plan().unwrap();
+        assert_eq!(value["adapter"],"after_effects");
+        assert_eq!(value["automatic_execution"],false);
+        assert_eq!(value["host_mutation_performed"],false);
+        assert_eq!(value["renderer_runtime_verified"],false);
+        let steps=value["steps"].as_array().unwrap();
+        assert_eq!(steps[0]["host_action"],"create_comp");
+        assert!(steps.iter().any(|step|step["host_action"]=="add_text"));
+        assert!(steps.iter().any(|step|step["host_action"]=="set_layer_timing"));
+        assert!(steps.iter().any(|step|step["host_action"]=="set_values_at_times"));
+        assert!(steps.iter().any(|step|step["host_action"]=="set_keyframe_interpolation"));
+        assert!(value["blockers"].as_array().unwrap().iter()
+            .any(|blocker|blocker["code"]=="transparent_render_output_not_planned"));
+    }
+
+    #[test]
+    fn after_effects_adapter_refuses_to_guess_vector_components_or_missing_assets(){
+        let mut plan=valid_plan();
+        plan.renderer=Renderer::AfterEffects;
+        plan.delivery=DeliveryKind::StandaloneVideo;
+        plan.canvas.transparent_background=false;
+        plan.scenes[0].layers[0].tracks=vec![Track{property:Property::X,keyframes:vec![
+            Keyframe{time_seconds:0.0,value:10.0,easing:Easing::Linear},
+            Keyframe{time_seconds:1.0,value:20.0,easing:Easing::Linear},
+        ]}];
+        plan.scenes[0].layers.push(Layer{
+            id:"photo".into(),kind:LayerKind::Image,name:"Photo".into(),text:None,asset_id:Some("photo_1".into()),tracks:vec![]
+        });
+        let request=AfterEffectsPlanRequest{
+            project_file:if cfg!(windows){r"C:\Work\motion.aep".into()}else{"/tmp/motion.aep".into()},
+            composition_name:"Shuvi Motion".into(),
+            plan,
+            asset_item_ids:BTreeMap::new(),
+        };
+        let value=request.plan().unwrap();
+        let blockers=value["blockers"].as_array().unwrap();
+        assert!(blockers.iter().any(|b|b["code"]=="vector_transform_readback_required"));
+        assert!(blockers.iter().any(|b|b["code"]=="missing_inspected_asset_item_id"));
+        assert!(!value["steps"].as_array().unwrap().iter().any(|step|
+            step.get("layer_id").and_then(Value::as_str)==Some("photo") && step["host_action"]=="add_item_layer"));
+    }
+
+    #[test]
+    fn after_effects_adapter_rejects_remotion_only_route(){
+        let mut plan=valid_plan();
+        plan.renderer=Renderer::Remotion;
+        let request=AfterEffectsPlanRequest{
+            project_file:if cfg!(windows){r"C:\Work\motion.aep".into()}else{"/tmp/motion.aep".into()},
+            composition_name:"Shuvi Motion".into(),
+            plan,
+            asset_item_ids:BTreeMap::new(),
+        };
+        assert!(request.plan().unwrap_err().contains("Remotion-only"));
+    }
+
 }
