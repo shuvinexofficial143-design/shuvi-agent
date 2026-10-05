@@ -40,14 +40,14 @@ impl CommandQueue {
 
     pub fn complete(&mut self, result: AuditionBridgeResult) -> Result<(), String> {
         self.cleanup(Instant::now());
-        let pending = self.pending.get_mut(&result.id).ok_or("Unknown, cancelled or expired Premiere result id.")?;
-        if result.action != pending.action { return Err("Premiere result action does not match its request.".into()); }
+        let pending = self.pending.get_mut(&result.id).ok_or("Unknown, cancelled or expired Audition result id.")?;
+        if result.action != pending.action { return Err("Audition result action does not match its request.".into()); }
         if (result.success && (result.data.is_none() || result.error.is_some()))
             || (!result.success && (result.data.is_some() || result.error.as_ref().is_none_or(|e| e.trim().is_empty()))) {
-            return Err("Contradictory or incomplete Premiere result envelope.".into());
+            return Err("Contradictory or incomplete Audition result envelope.".into());
         }
         if !pending.dispatched { return Err("Audition command has not been dispatched.".into()); }
-        if pending.result.is_some() { return Err("Duplicate Premiere result rejected.".into()); }
+        if pending.result.is_some() { return Err("Duplicate Audition result rejected.".into()); }
         pending.result = Some(result);
         Ok(())
     }
