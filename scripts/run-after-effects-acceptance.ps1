@@ -3,7 +3,8 @@
 param(
     [switch]$Run,
     [string]$AfterFXPath,
-    [ValidateSet('core','render','cancel')][string]$Phase = 'core',
+    [ValidateSet('core','render','cancel','preset')][string]$Phase = 'core',
+    [string]$PresetFile,
     [string]$OutputModuleTemplate,
     [ValidateSet('mov','mp4','avi')][string]$OutputExtension = 'mov',
     [string]$EvidenceRoot = $env:TEMP
@@ -60,6 +61,10 @@ if (-not $Run) { return }
 if ($Phase -in @('render','cancel') -and (-not $OutputModuleTemplate -or $OutputModuleTemplate.Length -gt 240)) {
     throw 'Render phases require an exact inspected output module template; no template names are guessed.'
 }
+if ($Phase -eq 'preset' -and (-not $PresetFile -or -not [IO.Path]::IsPathRooted($PresetFile) -or
+    [IO.Path]::GetExtension($PresetFile) -ne '.ffx' -or -not (Test-Path -LiteralPath $PresetFile -PathType Leaf))) {
+    throw 'Preset phase requires an explicitly approved absolute .ffx fixture; no vendor preset is silently selected.'
+}
 if ($null -eq $selected) { throw 'Real AE runtime unavailable or ambiguous; no software was installed and no fixture was created.' }
 if ($null -eq $cargoCommand) { throw 'Rust toolchain unavailable; no software was installed and no fixture was created.' }
 if (Get-Process AfterFX -ErrorAction SilentlyContinue) { throw 'An AfterFX process is already running. Preserve/close user work before explicitly starting a disposable acceptance session.' }
@@ -74,6 +79,7 @@ $previousRoot = [Environment]::GetEnvironmentVariable('SHUVI_AE_EVIDENCE_ROOT','
 $previousPhase = [Environment]::GetEnvironmentVariable('SHUVI_AE_PHASE','Process')
 $previousTemplate = [Environment]::GetEnvironmentVariable('SHUVI_AE_OUTPUT_TEMPLATE','Process')
 $previousExtension = [Environment]::GetEnvironmentVariable('SHUVI_AE_OUTPUT_EXTENSION','Process')
+$previousPreset = [Environment]::GetEnvironmentVariable('SHUVI_AE_PRESET','Process')
 try {
     $env:SHUVI_AE_ACCEPTANCE = 'disposable-only'
     $env:SHUVI_AE_EXE = $selected
@@ -81,6 +87,7 @@ try {
     $env:SHUVI_AE_PHASE = $Phase
     $env:SHUVI_AE_OUTPUT_TEMPLATE = $OutputModuleTemplate
     $env:SHUVI_AE_OUTPUT_EXTENSION = $OutputExtension
+    $env:SHUVI_AE_PRESET = $PresetFile
     & $cargoCommand.Source test --manifest-path (Join-Path $repoRoot 'src-tauri\Cargo.toml') --lib after_effects_acceptance::tests::real_host_acceptance -- --ignored --exact --nocapture --test-threads=1
     if ($LASTEXITCODE -ne 0) { throw 'Acceptance stopped or failed. Review retained request/receipt evidence; do not retry uncertain mutations.' }
 } finally {
@@ -90,4 +97,5 @@ try {
     [Environment]::SetEnvironmentVariable('SHUVI_AE_PHASE',$previousPhase,'Process')
     [Environment]::SetEnvironmentVariable('SHUVI_AE_OUTPUT_TEMPLATE',$previousTemplate,'Process')
     [Environment]::SetEnvironmentVariable('SHUVI_AE_OUTPUT_EXTENSION',$previousExtension,'Process')
+    [Environment]::SetEnvironmentVariable('SHUVI_AE_PRESET',$previousPreset,'Process')
 }

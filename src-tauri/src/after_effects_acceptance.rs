@@ -353,6 +353,53 @@ async fn during_cancel_case(s:&mut Suite,items:Value)->Result<(),String>{
     if stopped["state"]=="execution_status_unknown"{return Err("Cooperative render outcome unresolved; no process kill or retry.".into());}
     Ok(())
 }
+async fn preset_cases(s:&mut Suite)->Result<(),String>{
+    let source=PathBuf::from(std::env::var_os("SHUVI_AE_PRESET").ok_or("Preset phase requires an explicitly approved absolute .ffx fixture.")?);
+    if !source.is_absolute()||!source.extension().and_then(|v|v.to_str()).is_some_and(|v|v.eq_ignore_ascii_case("ffx")){
+        return Err("Approved preset must be an absolute .ffx path.".into());
+    }
+    reject_links(&source)?;
+    let before=fs::symlink_metadata(&source).map_err(|e|e.to_string())?;
+    if !before.is_file()||before.len()==0||before.len()>16*1024*1024{return Err("Approved preset is not a bounded regular file.".into());}
+    let bytes=crate::read_file_bytes_bounded(&source,16*1024*1024,"Approved acceptance preset")?;
+    let after=fs::symlink_metadata(&source).map_err(|e|e.to_string())?;
+    if before.len()!=after.len()||before.modified().ok()!=after.modified().ok()||bytes.len() as u64!=before.len(){
+        return Err("Approved preset changed during fixture preparation.".into());
+    }
+    let assets=s.root.join("Shuvi Assets/Presets");fs::create_dir_all(&assets).map_err(|e|e.to_string())?;
+    let preset=assets.join("controlled.ffx");write_new(&preset,&bytes)?;
+    let comp=s.step("create_comp",json!({"name":"Acceptance Preset","width":320,"height":180,"duration_seconds":1.0,"frame_rate":24.0})).await?;let comp=id(&comp,"comp_id")?;
+    let layer=s.step("add_text",json!({"comp_id":comp,"name":"Preset Target","text":"Controlled preset fixture"})).await?;let layer=id(&layer,"layer_id")?;
+    let before_properties=s.inspect("inspect_layer_properties",json!({"comp_id":comp,"layer_id":layer})).await?;
+    let before_effects=s.inspect("inspect_effects",json!({"comp_id":comp,"layer_id":layer})).await?;
+    let context=s.context().await?;
+    let applied=s.dispatch("preset_observation","apply_preset",json!({"comp_id":comp,"layer_id":layer,"preset_file":preset}),context["project_revision"].as_u64()).await?;
+    if applied["result"]["native_accepted"]!=true||applied["result"]["selection_restored"]!=true
+        ||applied["preset_file_evidence"]["staged_bytes_verified"]!=true||!applied["result"]["property_delta"].is_object(){
+        return Err("Preset staging/selection/observational delta not verified; no replay.".into());
+    }
+    let after_properties=s.inspect("inspect_layer_properties",json!({"comp_id":comp,"layer_id":layer})).await?;
+    let after_effects=s.inspect("inspect_effects",json!({"comp_id":comp,"layer_id":layer})).await?;
+    s.events.push(json!({"case":"preset_independent_observations","approved_source":source,"fixture_copy":preset,
+        "before_properties":before_properties,"after_properties":after_properties,"before_effects":before_effects,"after_effects":after_effects,
+        "preset_semantic_result_verified":false,"visual_semantics_verified":false,"retry_safe":false}));
+    s.step("save_project",json!({})).await?;
+    let context=s.context().await?;let checkpoint_id=s.id();
+    let checkpoint=crate::after_effects_checkpoint::create_for_request(&s.project,crate::now_ms(),&checkpoint_id,
+        context["project_revision"].as_u64().ok_or("Revision missing.")?)?;
+    crate::after_effects_checkpoint::verify(Path::new(checkpoint["backup_path"].as_str().ok_or("Backup missing.")?),&s.project)?;
+    let meta=fs::metadata(&s.project).map_err(|e|e.to_string())?;
+    let modified=meta.modified().map_err(|e|e.to_string())?.duration_since(SystemTime::UNIX_EPOCH).map_err(|e|e.to_string())?.as_millis();
+    s.lifecycle("reopen",json!({"expected_project_revision":context["project_revision"],"saved_file_verified":true,
+        "checkpoint_verified":true,"expected_size_bytes":meta.len(),"expected_modified_ms":modified}))?;
+    let persisted_properties=s.inspect("inspect_layer_properties",json!({"comp_id":comp,"layer_id":layer})).await?;
+    let persisted_effects=s.inspect("inspect_effects",json!({"comp_id":comp,"layer_id":layer})).await?;
+    let observed_persisted=after_properties==persisted_properties&&after_effects==persisted_effects;
+    s.events.push(json!({"case":"preset_observation_persistence","post_reopen_properties":persisted_properties,
+        "post_reopen_effects":persisted_effects,"observed_inventory_persistence_verified":observed_persisted,
+        "complete_preset_semantics_verified":false,"truncated_or_unreadable_values_excluded":true}));
+    if !observed_persisted{return Err("Observed preset inventory changed after reopen.".into());}Ok(())
+}
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -369,13 +416,13 @@ mod tests{
     #[ignore="Requires an existing compatible trusted After Effects install, explicit disposable-only opt-in and clean source checkout"]
     fn real_host_acceptance(){
         let phase=std::env::var("SHUVI_AE_PHASE").unwrap_or_else(|_|"core".into());
-        assert!(matches!(phase.as_str(),"core"|"render"|"cancel"),"Unsupported acceptance phase");
+        assert!(matches!(phase.as_str(),"core"|"render"|"cancel"|"preset"),"Unsupported acceptance phase");
         let mut suite=Suite::new().expect("Real After Effects acceptance unavailable or not explicitly enabled");
         let bootstrap=suite.lifecycle("bootstrap",json!({}));
         let outcome=bootstrap.and_then(|_|{
             let runtime=tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e|e.to_string())?;
             runtime.block_on(async{match phase.as_str(){"render"=>render_cases(&mut suite,false).await,
-                "cancel"=>render_cases(&mut suite,true).await,_=>core_cases(&mut suite).await}})
+                "cancel"=>render_cases(&mut suite,true).await,"preset"=>preset_cases(&mut suite).await,_=>core_cases(&mut suite).await}})
         });
         let report=suite.report(outcome.as_ref().err().map(String::as_str));
         let bytes=serde_json::to_vec_pretty(&report).expect("Report serialization");
