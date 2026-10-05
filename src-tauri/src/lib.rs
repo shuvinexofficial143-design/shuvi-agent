@@ -8598,12 +8598,12 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 return Err("Exact Audition command is not present in the current live discovery results for the requested audio feature. Re-discover before invoking.".into());
             }
             let enabled=state.audition_bridge.request("command_enabled",
-                json!({"property":command.property,"value":command.value}),Duration::from_secs(8)).await?;
+                json!({"property":command.property.clone(),"value":command.value.clone()}),Duration::from_secs(8)).await?;
             if enabled.get("enabled").and_then(Value::as_bool)!=Some(true) {
                 return Err("Audition reports that the exact discovered feature command is currently disabled.".into());
             }
             let value=state.audition_bridge.request("invoke_command",
-                json!({"property":command.property,"value":command.value,
+                json!({"property":command.property.clone(),"value":command.value.clone(),
                     "expectedDocumentSignature":expected_document_signature}),Duration::from_secs(20)).await?;
             let accepted=value.get("accepted").and_then(Value::as_bool)==Some(true)
                 && value.get("expectedDocumentSignature")==value.get("observedDocumentSignature");
