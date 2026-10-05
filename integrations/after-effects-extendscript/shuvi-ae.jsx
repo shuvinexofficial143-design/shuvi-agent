@@ -2762,9 +2762,12 @@
         if(!finiteNumber(moduleIndex)||Math.floor(moduleIndex)!==moduleIndex||moduleIndex<1||moduleIndex>item.numOutputModules)
             fail("inspect_output_module requires an exact existing output_module_index.");
         var om=item.outputModule(moduleIndex);
-        if(!om||typeof om.getSettings!=="function"||typeof GetSettingsFormat==="undefined")
+        if(!om||typeof GetSettingsFormat==="undefined")
             fail("After Effects output-module settings inspection is unavailable.");
-        var raw=om.getSettings(GetSettingsFormat.STRING),state={nodes:0,truncated:false};
+        var raw;
+        try{raw=om.getSettings(GetSettingsFormat.STRING);}
+        catch(settingsError){fail("After Effects output-module settings readback failed: "+String(settingsError.message||settingsError).slice(0,500));}
+        var state={nodes:0,truncated:false};
         var settings=boundedSettingsSnapshot(raw,0,state),templates=[],templateCount=0,t,i;
         try{
             t=om.templates;
