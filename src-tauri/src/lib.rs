@@ -158,6 +158,7 @@ Available tools:
 - audition_list_commands: {}
 - audition_search_commands: {"query":"noise|normalize|loudness|compressor|eq|export etc"}
 - audition_discover_feature: {"feature":"noise_reduction|eq|compressor|loudness|export|multitrack|voice_cleanup"}
+- audition_invoke_feature_command: {"feature":"noise_reduction|eq|compressor|loudness|export|multitrack|voice_cleanup","command":{"property":"exact discovered COMMAND_* property","value":"exact discovered command value"},"expected_document_signature":"copy documentSignature from audition_context"}
 - audition_script_dictionary: {"query":"optional class/member/help substring","max_classes":64}
 - audition_command_enabled: {"command":{"property":"exact inspected COMMAND_* property","value":"exact inspected command value"}}
 - audition_set_playhead: {"percent":0.5,"expected_document_signature":"copy documentSignature from audition_context"}
@@ -533,6 +534,7 @@ enum ToolAction {
     AuditionListCommands,
     AuditionSearchCommands { query: String },
     AuditionDiscoverFeature { feature: String },
+    AuditionInvokeFeatureCommand { feature: String, command: audition::InspectedCommand, expected_document_signature: String },
     AuditionScriptDictionary { query: Option<String>, max_classes: u32 },
     AuditionCommandEnabled { command: audition::InspectedCommand },
     AuditionSetPlayhead { percent: f64, expected_document_signature: String },
@@ -1152,6 +1154,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "audition_list_commands"
         | "audition_search_commands"
         | "audition_discover_feature"
+        | "audition_invoke_feature_command"
         | "audition_script_dictionary"
         | "audition_command_enabled"
         | "audition_set_playhead"
@@ -2854,6 +2857,22 @@ fn stage_tool(
                 "Discover Audition audio feature".into(),
                 format!("Read-only search of live Audition commands and Script Dictionary for '{feature}'. Discovery does not prove edit support."),
                 RiskLevel::Low)
+        }
+        "audition_invoke_feature_command" => {
+            let feature=arg_string(&proposal.arguments,"feature")?;
+            audition::feature_queries(&feature)?;
+            let command:audition::InspectedCommand=serde_json::from_value(
+                proposal.arguments.get("command").cloned().unwrap_or(Value::Null)
+            ).map_err(|e|format!("Invalid Audition feature command identity: {e}"))?;
+            command.validate()?;
+            let expected_document_signature=arg_string(&proposal.arguments,"expected_document_signature")?;
+            audition::validate_document_signature(&expected_document_signature)?;
+            (ToolAction::AuditionInvokeFeatureCommand {
+                    feature:feature.clone(),command:command.clone(),expected_document_signature
+                },
+                "Invoke discovered Audition feature command".into(),
+                format!("High risk: re-discover '{feature}', require exact live command {}={} to match that feature, recheck current document identity and command enabled state, then invoke once. Side effects remain accepted-unverified and are never blindly retried.",command.property,command.value),
+                RiskLevel::High)
         }
         "audition_script_dictionary" => {
             let query=proposal.arguments.get("query").and_then(Value::as_str).map(str::to_string);
@@ -8561,6 +8580,46 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             });
             Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionInvokeFeatureCommand {feature,command,expected_document_signature} => {
+            command.validate()?;
+            audition::validate_document_signature(&expected_document_signature)?;
+            let queries=audition::feature_queries(&feature)?;
+            let mut matched_queries=Vec::<String>::new();
+            for query in queries.iter().take(4) {
+                let result=state.audition_bridge.request("search_commands",json!({"query":query}),Duration::from_secs(12)).await?;
+                let exact=result.get("commands").and_then(Value::as_array).is_some_and(|rows|rows.iter().any(|row|
+                    row.get("property").and_then(Value::as_str)==Some(command.property.as_str())
+                    && row.get("value").and_then(Value::as_str)==Some(command.value.as_str())
+                ));
+                if exact {matched_queries.push((*query).to_string());}
+            }
+            if matched_queries.is_empty() {
+                return Err("Exact Audition command is not present in the current live discovery results for the requested audio feature. Re-discover before invoking.".into());
+            }
+            let enabled=state.audition_bridge.request("command_enabled",
+                json!({"property":command.property,"value":command.value}),Duration::from_secs(8)).await?;
+            if enabled.get("enabled").and_then(Value::as_bool)!=Some(true) {
+                return Err("Audition reports that the exact discovered feature command is currently disabled.".into());
+            }
+            let value=state.audition_bridge.request("invoke_command",
+                json!({"property":command.property,"value":command.value,
+                    "expectedDocumentSignature":expected_document_signature}),Duration::from_secs(20)).await?;
+            let accepted=value.get("accepted").and_then(Value::as_bool)==Some(true)
+                && value.get("expectedDocumentSignature")==value.get("observedDocumentSignature");
+            Ok(ActionResult{success:accepted,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "feature":feature,
+                    "matched_queries":matched_queries,
+                    "accepted":accepted,
+                    "native":value,
+                    "document_identity_guarded":true,
+                    "feature_membership_rechecked":true,
+                    "command_enabled_rechecked":true,
+                    "semantic_audio_effect_verified":false,
+                    "retry_automatically":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(if accepted{0}else{1})})
         }
         ToolAction::AuditionScriptDictionary {query,max_classes} => {
             let value=state.audition_bridge.request("script_dictionary",
