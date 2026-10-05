@@ -476,6 +476,115 @@ impl AfterEffectsOutputPlanRequest {
     }
 }
 
+
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemotionPlanRequest {
+    pub plan:Plan,
+    #[serde(default)]
+    pub asset_paths:BTreeMap<String,String>,
+}
+
+impl RemotionPlanRequest {
+    pub fn plan(&self)->Result<Value,String>{
+        self.plan.validate()?;
+        if self.plan.renderer==Renderer::AfterEffects {
+            return Err("An After Effects-only motion-graphics plan cannot be routed through the Remotion adapter.".into());
+        }
+        for (asset_id,path) in &self.asset_paths {
+            validate_id(asset_id,"Remotion asset binding id")?;
+            validate_label(path,"Remotion asset path",4_096)?;
+            if !Path::new(path).is_absolute() {
+                return Err(format!("Remotion asset path for '{asset_id}' must be absolute."));
+            }
+        }
+
+        let mut scenes=Vec::<Value>::new();
+        for scene in &self.plan.scenes {
+            let mut layers=Vec::<Value>::new();
+            for layer in &scene.layers {
+                let asset_path=match layer.kind {
+                    LayerKind::Image|LayerKind::Video=>{
+                        let asset_id=layer.asset_id.as_deref()
+                            .ok_or_else(||format!("Layer '{}' lost its required asset_id.",layer.id))?;
+                        Some(self.asset_paths.get(asset_id).cloned()
+                            .ok_or_else(||format!("Remotion layer '{}' requires an explicit absolute asset path for asset_id '{}'.",layer.id,asset_id))?)
+                    },
+                    LayerKind::Text|LayerKind::Shape|LayerKind::Group=>None,
+                };
+                let tracks=layer.tracks.iter().map(|track|{
+                    let keys=track.keyframes.iter().map(|keyframe|json!({
+                        "time_seconds":keyframe.time_seconds,
+                        "absolute_time_seconds":scene.start_seconds+keyframe.time_seconds,
+                        "frame_position":(scene.start_seconds+keyframe.time_seconds)*self.plan.canvas.fps,
+                        "value":keyframe.value,
+                        "easing":keyframe.easing
+                    })).collect::<Vec<_>>();
+                    json!({"property":track.property,"keyframes":keys})
+                }).collect::<Vec<_>>();
+                layers.push(json!({
+                    "id":layer.id,
+                    "kind":layer.kind,
+                    "name":layer.name,
+                    "text":layer.text,
+                    "shape":layer.shape,
+                    "asset_id":layer.asset_id,
+                    "asset_path":asset_path,
+                    "asset_existence_runtime_verified":false,
+                    "tracks":tracks
+                }));
+            }
+            scenes.push(json!({
+                "id":scene.id,
+                "start_seconds":scene.start_seconds,
+                "duration_seconds":scene.duration_seconds,
+                "start_frame_position":scene.start_seconds*self.plan.canvas.fps,
+                "duration_frame_span":scene.duration_seconds*self.plan.canvas.fps,
+                "layers":layers
+            }));
+        }
+
+        let duration_in_frames=(self.plan.duration_seconds*self.plan.canvas.fps).ceil() as u64;
+        let mut blockers=vec![json!({
+            "code":"remotion_runtime_renderer_not_implemented",
+            "required":"This adapter produces a deterministic bounded render manifest only. A fixed reviewed Remotion runtime must consume the manifest before renderer execution can be claimed."
+        })];
+        if self.plan.delivery==DeliveryKind::TransparentOverlay {
+            blockers.push(json!({
+                "code":"remotion_alpha_output_runtime_not_verified",
+                "required":"Transparent canvas intent is preserved in the manifest, but no Remotion codec/output alpha capability has been runtime-attested."
+            }));
+        }
+        Ok(json!({
+            "schema_version":1,
+            "adapter":"remotion",
+            "source_plan_valid":true,
+            "renderer_request":self.plan.renderer,
+            "renderer_candidate":"remotion",
+            "composition":{
+                "id":"ShuviMotion",
+                "width":self.plan.canvas.width,
+                "height":self.plan.canvas.height,
+                "fps":self.plan.canvas.fps,
+                "duration_seconds":self.plan.duration_seconds,
+                "duration_in_frames":duration_in_frames,
+                "transparent_background":self.plan.canvas.transparent_background
+            },
+            "delivery":self.plan.delivery,
+            "scenes":scenes,
+            "asset_binding_count":self.asset_paths.len(),
+            "blockers":blockers,
+            "blocker_count":blockers.len(),
+            "frame_mapping_contract":"Frame positions are exact floating-point seconds*fps values; the adapter does not round keyframe times or invent extra keyframes.",
+            "code_generation_performed":false,
+            "filesystem_write_performed":false,
+            "renderer_execution_performed":false,
+            "render_output_verified":false,
+            "production_ready":false
+        }))
+    }
+}
+
 fn verified_receipt_ref(step_id:&str,field:&str)->Value{
     json!({"$verified_receipt":{"step_id":step_id,"field":field}})
 }
@@ -1302,6 +1411,49 @@ mod tests{
             tracks:vec![]
         });
         assert!(plan.validate().is_err());
+    }
+
+    #[test]
+    fn remotion_adapter_builds_deterministic_manifest_without_execution(){
+        let mut plan=valid_plan();
+        plan.renderer=Renderer::Remotion;
+        plan.delivery=DeliveryKind::StandaloneVideo;
+        plan.canvas.transparent_background=false;
+        plan.scenes[0].layers.push(Layer{
+            id:"photo".into(),kind:LayerKind::Image,name:"Photo".into(),text:None,asset_id:Some("hero".into()),shape:None,
+            tracks:vec![Track{property:Property::X,keyframes:vec![
+                Keyframe{time_seconds:0.5,value:100.0,easing:Easing::EaseOut},
+                Keyframe{time_seconds:1.0,value:200.0,easing:Easing::EaseIn},
+            ]}]
+        });
+        let mut assets=BTreeMap::new();
+        assets.insert("hero".into(),if cfg!(windows){r"C:\Assets\hero.png".into()}else{"/tmp/hero.png".into()});
+        let request=RemotionPlanRequest{plan,asset_paths:assets};
+        let value=request.plan().unwrap();
+        assert_eq!(value["adapter"],"remotion");
+        assert_eq!(value["composition"]["duration_in_frames"],120);
+        assert_eq!(value["renderer_execution_performed"],false);
+        assert_eq!(value["code_generation_performed"],false);
+        let photo=value["scenes"][0]["layers"].as_array().unwrap().iter()
+            .find(|layer|layer["id"]=="photo").unwrap();
+        assert_eq!(photo["tracks"][0]["keyframes"][0]["frame_position"],15.0);
+        assert_eq!(photo["asset_existence_runtime_verified"],false);
+        assert!(value["blockers"].as_array().unwrap().iter().any(|b|b["code"]=="remotion_runtime_renderer_not_implemented"));
+    }
+
+    #[test]
+    fn remotion_adapter_requires_grounded_assets_and_rejects_ae_only_plan(){
+        let mut plan=valid_plan();
+        plan.renderer=Renderer::Remotion;
+        plan.delivery=DeliveryKind::StandaloneVideo;
+        plan.canvas.transparent_background=false;
+        plan.scenes[0].layers.push(Layer{
+            id:"clip".into(),kind:LayerKind::Video,name:"Clip".into(),text:None,asset_id:Some("clip1".into()),shape:None,tracks:vec![]
+        });
+        let request=RemotionPlanRequest{plan,asset_paths:BTreeMap::new()};
+        assert!(request.plan().unwrap_err().contains("explicit absolute asset path"));
+        let mut ae=valid_plan();ae.renderer=Renderer::AfterEffects;
+        assert!(RemotionPlanRequest{plan:ae,asset_paths:BTreeMap::new()}.plan().unwrap_err().contains("After Effects-only"));
     }
 
     #[test]
