@@ -2708,6 +2708,97 @@
             comp_id:after.resolved.comp.id,layer_id:after.resolved.layer.id,source_layer_id:after.source_layer_id,
             before_stage:snap.stage,after_stage:after.stage,cycle_safe_limit_after:after.cycle_safe_limit};
     }
+    function boundedSettingsSnapshot(value,depth,state) {
+        if(state.nodes>=512){state.truncated=true;return null;}
+        state.nodes++;
+        if(value===null||value===undefined)return null;
+        var type=typeof value;
+        if(type==="boolean")return value;
+        if(type==="number"){if(!finiteNumber(value))fail("Output-module setting contains a non-finite number.");return value;}
+        if(type==="string"){
+            if(value.length>4096){state.truncated=true;return value.slice(0,4096);}
+            return value;
+        }
+        if(value instanceof Array){
+            var arr=[],limit=Math.min(value.length,64),i;
+            if(value.length>limit)state.truncated=true;
+            for(i=0;i<limit;i++){
+                if(state.nodes>=512){state.truncated=true;break;}
+                arr.push(boundedSettingsSnapshot(value[i],depth+1,state));
+            }
+            return arr;
+        }
+        if(type==="object"){
+            if(depth>=6){state.truncated=true;return "[object settings truncated]";}
+            var out={},key,count=0;
+            for(key in value){
+                if(count>=128||state.nodes>=512){state.truncated=true;break;}
+                var safeKey=String(key);
+                if(safeKey.length===0)continue;
+                if(safeKey.length>240){safeKey=safeKey.slice(0,240);state.truncated=true;}
+                try{out[safeKey]=boundedSettingsSnapshot(value[key],depth+1,state);}
+                catch(ignoreSetting){out[safeKey]="[unreadable setting]";}
+                count++;
+            }
+            return out;
+        }
+        var text=String(value);
+        if(text.length>4096){state.truncated=true;text=text.slice(0,4096);}
+        return text;
+    }
+    function outputSettingHint(settings,key) {
+        try{
+            if(settings&&settings[key]!==undefined&&settings[key]!==null){
+                var value=String(settings[key]);
+                return value.length>1000?value.slice(0,1000):value;
+            }
+        }catch(ignore){}
+        return null;
+    }
+    function inspectOutputModule(args) {
+        var queue=requireProject().renderQueue,index=args.queue_index,moduleIndex=args.output_module_index===undefined?1:args.output_module_index;
+        if(!finiteNumber(index)||Math.floor(index)!==index||index<1||index>queue.numItems)fail("inspect_output_module requires an exact existing queue_index.");
+        var item=queue.item(index);
+        if(!finiteNumber(moduleIndex)||Math.floor(moduleIndex)!==moduleIndex||moduleIndex<1||moduleIndex>item.numOutputModules)
+            fail("inspect_output_module requires an exact existing output_module_index.");
+        var om=item.outputModule(moduleIndex);
+        if(!om||typeof om.getSettings!=="function"||typeof GetSettingsFormat==="undefined")
+            fail("After Effects output-module settings inspection is unavailable.");
+        var raw=om.getSettings(GetSettingsFormat.STRING),state={nodes:0,truncated:false};
+        var settings=boundedSettingsSnapshot(raw,0,state),templates=[],templateCount=0,t,i;
+        try{
+            t=om.templates;
+            templateCount=t&&t.length?t.length:0;
+            var templateLimit=Math.min(templateCount,128);
+            for(i=0;i<templateLimit;i++){
+                var name=String(t[i]);templates.push(name.length>240?name.slice(0,240):name);
+            }
+            if(templateCount>templateLimit)state.truncated=true;
+        }catch(ignoreTemplates){}
+        return {
+            verification_status:"verified_output_module_readback",
+            queue_index:index,
+            output_module_index:moduleIndex,
+            comp_id:item.comp?item.comp.id:null,
+            queue_status:String(item.status),
+            render_enabled:!!item.render,
+            output_module_name:String(om.name).slice(0,240),
+            output_file:om.file?om.file.fsName:null,
+            settings_format:"string",
+            settings:settings,
+            settings_node_count:state.nodes,
+            settings_truncated:state.truncated,
+            raw_setting_hints:{
+                format:outputSettingHint(raw,"Format"),
+                channels:outputSettingHint(raw,"Channels"),
+                depth:outputSettingHint(raw,"Depth")
+            },
+            template_count:templateCount,
+            templates:templates,
+            alpha_semantics_verified:false,
+            note:"Raw output-module settings are host evidence only; localized/display strings are not converted into an alpha-capability claim."
+        };
+    }
     function inspectRenderQueue() {
         var queue = requireProject().renderQueue;
         var items = [], i, limit = Math.min(queue.numItems, 256);
@@ -3110,6 +3201,7 @@
         if (action === "add_marker") return addMarker(args);
         if (action === "remove_marker") return removeMarker(args);
         if (action === "inspect_render_queue") return inspectRenderQueue();
+        if (action === "inspect_output_module") return inspectOutputModule(args);
         if (action === "add_render_queue_item") return addRenderQueueItem(args);
         if (action === "render_queue") return renderQueue(args);
         if (action === "save_project") return saveProject();
