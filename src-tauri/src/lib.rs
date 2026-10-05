@@ -287,6 +287,8 @@ Cross-track clone computes native vertical offsets from inspected source/destina
 - premiere_add_marker: {"name":"marker name","marker_type":"Comment|Chapter|Segmentation|WebLink","seconds":10.0,"duration_seconds":0.0,"comments":"optional notes"}
 - premiere_remove_marker: {"marker_index":0}
 - premiere_export_sequence: {"output":"absolute output media path","preset":"optional absolute .epr preset path","queue_to_ame":false}
+- media_encoder_detect: {}
+- media_encoder_readiness_report: {}
 - media_encoder_status: {}
 - media_encoder_events: {"limit":20}
 - media_encoder_launch: {}
@@ -641,6 +643,8 @@ enum ToolAction {
     PremiereOrganizeTracks { request: premiere_layering::TrackOrganization },
     PremiereDeleteClip { kind: String, track: u32, clip_index: u32, ripple: bool },
     PremierePlanExport { output: String, preset: Option<String>, queue_to_ame: bool, overwrite: bool },
+    MediaEncoderDetect,
+    MediaEncoderReadinessReport,
     MediaEncoderStatus,
     MediaEncoderEvents { limit: u32 },
     MediaEncoderLaunch,
@@ -1249,6 +1253,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_organize_tracks"
         | "premiere_delete_clip"
         | "premiere_export_sequence"
+        | "media_encoder_detect"
+        | "media_encoder_readiness_report"
         | "media_encoder_status"
         | "media_encoder_events"
         | "media_encoder_launch"
@@ -5571,6 +5577,18 @@ fn stage_tool(
         }
         "premiere_readiness_report" => (ToolAction::PremiereReadinessReport,
             "Read Premiere production readiness gates".into(),"Report code, mock, Rust, native runtime, recovery and export completion separately.".into(),RiskLevel::Low),
+        "media_encoder_detect" => (
+            ToolAction::MediaEncoderDetect,
+            "Detect Adobe Media Encoder".into(),
+            "Read-only bounded Program Files/Adobe scan; does not launch Media Encoder.".into(),
+            RiskLevel::Low,
+        ),
+        "media_encoder_readiness_report" => (
+            ToolAction::MediaEncoderReadinessReport,
+            "Read Media Encoder readiness".into(),
+            "Report source capabilities and independent runtime/production gates without claiming unexecuted host tests.".into(),
+            RiskLevel::Low,
+        ),
         "media_encoder_status" => (
             ToolAction::MediaEncoderStatus,
             "Inspect Adobe Media Encoder capability".into(),
@@ -12383,6 +12401,16 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 "unique_output_reserved":false,
                 "note":"Adobe's boolean export result does not prove finished media encoding."});
             Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MediaEncoderDetect => {
+            let value=media_encoder::detect_installs()?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MediaEncoderReadinessReport => {
+            let value=media_encoder::readiness_report();
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::MediaEncoderStatus => {
