@@ -73,7 +73,15 @@ for (const path of [
   "src-tauri/src/premiere_edit_session.rs",
   "src-tauri/src/premiere_edit_job.rs",
   "integrations/premiere-uxp/recipe-plans.js",
-  "integrations/premiere-uxp/caption-workflows.js"
+  "integrations/premiere-uxp/caption-workflows.js",
+  "src-tauri/src/audition.rs",
+  "src-tauri/src/audition_bridge.rs",
+  "src-tauri/src/audition_bridge_queue.rs",
+  "integrations/audition-cep/CSXS/manifest.xml",
+  "integrations/audition-cep/index.html",
+  "integrations/audition-cep/main.js",
+  "integrations/audition-cep/jsx/ShuviAudition.jsx",
+  "scripts/audition-source-safety.test.mjs"
 ]) {
   try {
     statSync(join(root, path));
@@ -125,11 +133,37 @@ if (!Array.isArray(tauri?.bundle?.targets) || !tauri.bundle.targets.includes("ns
 const main = read("src/main.ts");
 const rust = read("src-tauri/src/lib.rs");
 const premiereBridgeRust = read("src-tauri/src/premiere_bridge.rs");
+const auditionBridgeRust = read("src-tauri/src/audition_bridge.rs");
+const auditionPanel = read("integrations/audition-cep/main.js");
+const auditionHost = read("integrations/audition-cep/jsx/ShuviAudition.jsx");
+const auditionManifest = read("integrations/audition-cep/CSXS/manifest.xml");
 if (!premiereBridgeRust.includes("127.0.0.1") ||
     !premiereBridgeRust.includes("X-Shuvi-Token") && !premiereBridgeRust.includes("x-shuvi-token")) {
   fail("Premiere bridge must stay localhost-only and token-authenticated.");
 } else {
   ok("Premiere bridge localhost/token safety checked.");
+}
+
+if (!auditionManifest.includes('Host Name="AUDT"') ||
+    !auditionManifest.includes("Shuvi Audition Bridge")) {
+  fail("Audition CEP manifest must target AUDT and expose the Shuvi bridge panel.");
+} else {
+  ok("Audition CEP manifest checked.");
+}
+if (!auditionBridgeRust.includes("127.0.0.1") ||
+    !auditionBridgeRust.includes("17362") ||
+    !auditionBridgeRust.includes("X-Shuvi-Token") && !auditionBridgeRust.includes("x-shuvi-token") ||
+    !auditionPanel.includes("http://127.0.0.1:17362")) {
+  fail("Audition bridge must stay localhost-only on 17362 and token-authenticated.");
+} else {
+  ok("Audition bridge localhost/token safety checked.");
+}
+if (!auditionHost.includes("Application.reflect.properties") ||
+    !auditionHost.includes("$.dictionary") ||
+    !auditionHost.includes("documentSignature")) {
+  fail("Audition host adapter must retain live command, Script Dictionary and document-signature inspection.");
+} else {
+  ok("Audition live host discovery guards checked.");
 }
 
 const invokes = [...main.matchAll(/invoke(?:<[^>]+>)?\("([a-z0-9_]+)"/g)]
@@ -179,6 +213,17 @@ for (const action of new Set(premiereBridgeActions)) {
   }
 }
 ok("Premiere desktop/UXP bridge action routing checked.");
+
+const auditionBridgeActions = [
+  ...rust.matchAll(/\.audition_bridge\s*\.request\(\s*"([a-z0-9_]+)"/g)
+].map((match) => match[1]);
+
+for (const action of new Set(auditionBridgeActions)) {
+  if (!auditionPanel.includes('case "' + action + '":')) {
+    fail("Audition bridge action has no CEP command route: " + action);
+  }
+}
+ok("Audition desktop/CEP bridge action routing checked.");
 
 const secretPatterns = [
   /sk-[A-Za-z0-9_-]{20,}/g,
