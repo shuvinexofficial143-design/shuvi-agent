@@ -321,6 +321,7 @@ pub fn capability_report()->Value {
             "effect_inspection":"source_supported_bounded_256_effects",
             "keyframe_inspection":"source_supported_bounded_512_keys",
             "layer_property_tree":"source_supported_depth_6_nodes_1024",
+            "output_module_inspection":"source_supported_bounded_raw_string_settings_templates_file_identity_alpha_semantics_unverified",
             "render_queue_execute":"source_supported_exact_queued_set_host_done_desktop_files_optional_trusted_probe_parse_separate_completion_evidence",
             "render_media_parse_validation":"source_supported_optional_trusted_ffprobe_bounded_stream_duration_metadata_structural_checks_separate",
             "render_media_decode_validation":"intentional_separate_decoder_runtime_boundary",
