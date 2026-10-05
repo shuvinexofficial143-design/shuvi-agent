@@ -141,7 +141,22 @@ export function execute(scope=parseScope()){
     clean_worktree_after:cleanWorktreeAfter,
     clean_worktree:cleanWorktree
   },null,2));
-  if(!passed) process.exitCode=1;
+  if(!passed){
+    for(const command of commands){
+      if(command.exit_code!==0 || command.launch_error){
+        console.error(JSON.stringify({
+          failed_command:command.name,
+          command:command.command,
+          exit_code:command.exit_code,
+          signal:command.signal,
+          launch_error:command.launch_error,
+          stdout_tail:command.stdout_tail,
+          stderr_tail:command.stderr_tail
+        },null,2));
+      }
+    }
+    process.exitCode=1;
+  }
   return attestation;
 }
 
