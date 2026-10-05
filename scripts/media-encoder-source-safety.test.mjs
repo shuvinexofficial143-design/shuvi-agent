@@ -65,3 +65,16 @@ test("Media Encoder encode receipts keep job ownership conservative",()=>{
   assert.match(rust,/retry_automatically/);
   assert.match(rust,/Project-item encoding requires inspected project expectation/);
 });
+
+
+test("Media Encoder readiness keeps runtime claims separate",()=>{
+  for(const token of ["media_encoder_detect","media_encoder_readiness_report"]){
+    assert.match(rust,new RegExp('"' + token + '"'));
+  }
+  assert.match(local,/source_coding_status/);
+  assert.match(local,/source_runtime_verified":false/);
+  assert.match(local,/production_ready":false/);
+  assert.match(local,/Adobe Media Encoder\.exe/);
+  assert.match(local,/exact_native_job_ownership/);
+  assert.match(local,/not_proven_premiere_boolean_encode_returns/);
+});
