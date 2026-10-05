@@ -11,7 +11,7 @@ const MAX_REVIEW_SAMPLES:usize=32;
 const MAX_REVIEW_CRITERIA:usize=24;
 const MAX_LABEL_CHARS:usize=240;
 
-#[derive(Debug,Clone,Serialize,Deserialize,PartialEq,Eq)]
+#[derive(Debug,Clone,Copy,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="snake_case")]
 pub enum Renderer {
     Auto,
@@ -19,14 +19,14 @@ pub enum Renderer {
     Remotion,
 }
 
-#[derive(Debug,Clone,Serialize,Deserialize,PartialEq,Eq)]
+#[derive(Debug,Clone,Copy,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="snake_case")]
 pub enum DeliveryKind {
     StandaloneVideo,
     TransparentOverlay,
 }
 
-#[derive(Debug,Clone,Serialize,Deserialize,PartialEq,Eq)]
+#[derive(Debug,Clone,Copy,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="snake_case")]
 pub enum LayerKind {
     Text,
@@ -36,7 +36,7 @@ pub enum LayerKind {
     Group,
 }
 
-#[derive(Debug,Clone,Serialize,Deserialize,PartialEq,Eq)]
+#[derive(Debug,Clone,Copy,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="snake_case")]
 pub enum Property {
     X,
@@ -47,7 +47,7 @@ pub enum Property {
     Opacity,
 }
 
-#[derive(Debug,Clone,Serialize,Deserialize,PartialEq,Eq)]
+#[derive(Debug,Clone,Copy,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="snake_case")]
 pub enum Easing {
     Linear,
