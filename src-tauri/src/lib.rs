@@ -8554,8 +8554,10 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
         ToolAction::AuditionDiscoverFeature {feature} => {
             let queries=audition::feature_queries(&feature)?;
             let mut evidence=Vec::<Value>::new();
+            let mut command_inventories=Vec::<Value>::new();
             for query in queries.iter().take(4) {
                 let commands=state.audition_bridge.request("search_commands",json!({"query":query}),Duration::from_secs(12)).await?;
+                command_inventories.push(commands.clone());
                 let dictionary=state.audition_bridge.request("script_dictionary",
                     json!({"query":query,"maxClasses":16}),Duration::from_secs(20)).await?;
                 let command_rows=commands.get("commands").and_then(Value::as_array)
@@ -8570,9 +8572,12 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "dictionary_truncated":dictionary.get("returnedClasses").and_then(Value::as_u64).is_some_and(|count|count>8)
                 }));
             }
+            let candidate_commands=audition::rank_feature_commands(&feature,&command_inventories)?;
             let value=json!({
                 "feature":feature,
                 "queries":queries,
+                "candidate_commands":candidate_commands,
+                "candidate_ranking_status":"keyword_evidence_only_not_semantic_verification",
                 "evidence":evidence,
                 "support_status":"discovery_only_not_verified",
                 "mutation_performed":false,
