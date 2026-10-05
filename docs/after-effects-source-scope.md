@@ -5,6 +5,8 @@ Declared source coding completion covers the existing bounded action set and the
 It does not attest Windows/Adobe runtime acceptance, visual semantics, persistence, successful rendering,
 media parsing on real outputs, or production readiness. Runtime reports retain independent evidence dimensions.
 CI execution evidence must be checked against the exact current Git commit, outside these static declarations.
+The opt-in disposable [runtime acceptance harness](after-effects-runtime-acceptance.md) is prepared. The current
+machine has no compatible trusted After Effects install; preparation/model tests do not establish real host acceptance.
 
 ## Completed source priorities
 

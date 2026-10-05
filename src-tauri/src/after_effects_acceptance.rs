@@ -144,8 +144,8 @@ fn fixture_args(name:&str)->Result<Value,String>{
 async fn core_cases(s:&mut Suite)->Result<(),String>{
     let comp=s.step("create_comp",fixture_args("composition")?).await?;
     let comp=id(&comp,"comp_id")?;
-    let null=s.step("add_null",json!({"comp_id":comp,"name":"Acceptance Control"})).await?;let null=id(&null,"layer_id")?;
-    let opacity=property(comp,null,"ADBE Transform Group","ADBE Opacity");
+    let control=s.step("add_null",json!({"comp_id":comp,"name":"Acceptance Control"})).await?;let control=id(&control,"layer_id")?;
+    let opacity=property(comp,control,"ADBE Transform Group","ADBE Opacity");
     s.step("set_property",json!({"property":opacity,"value":75})).await?;
     let before=s.inspect("inspect_property",json!({"property":opacity})).await?;
     if before["value"]!=75{return Err("Independent opacity inspection mismatch.".into());}
@@ -157,19 +157,19 @@ async fn core_cases(s:&mut Suite)->Result<(),String>{
     let guard_ok=rejected["host_receipt_ok"]==false&&rejected["host_error"].as_str().is_some_and(|v|v.contains("revision changed"))&&after["value"]==75;
     s.events.push(json!({"case":"stale_revision_rejected_without_write","request":stale,"execution":rejected,"independent_readback":after,"verified":guard_ok}));
     if !guard_ok{return Err("Stale revision guard failed or outcome uncertain.".into());}
-    let position=property(comp,null,"ADBE Transform Group","ADBE Position");
+    let position=property(comp,control,"ADBE Transform Group","ADBE Position");
     s.step("set_values_at_times",json!({"property":position,"times":[0.0,0.5],"values":[[80,90],[240,90]]})).await?;
     s.inspect("inspect_keyframes",json!({"property":position})).await?;
     s.step("set_expression",json!({"property":opacity,"expression":"75"})).await?;
     s.inspect("inspect_property",json!({"property":opacity})).await?;
-    let mut effect_args=fixture_args("slider_effect")?;effect_args["comp_id"]=json!(comp);effect_args["layer_id"]=json!(null);
+    let mut effect_args=fixture_args("slider_effect")?;effect_args["comp_id"]=json!(comp);effect_args["layer_id"]=json!(control);
     s.step("add_effect",effect_args).await?;
-    s.inspect("inspect_effects",json!({"comp_id":comp,"layer_id":null})).await?;
+    s.inspect("inspect_effects",json!({"comp_id":comp,"layer_id":control})).await?;
     let text=s.step("add_text",json!({"comp_id":comp,"text":"Shuvi Acceptance","name":"Acceptance Title"})).await?;let text=id(&text,"layer_id")?;
     s.step("set_text_style",json!({"comp_id":comp,"layer_id":text,"font_size":28})).await?;
     let shape=s.step("add_shape",json!({"comp_id":comp,"name":"Acceptance Shape"})).await?;let shape=id(&shape,"layer_id")?;
     s.step("add_shape_primitive",json!({"comp_id":comp,"layer_id":shape,"kind":"rectangle","size":[80,40],"fill_color":[0.1,0.5,1,1]})).await?;
-    s.step("set_layer_parent",json!({"comp_id":comp,"layer_id":shape,"parent_layer_id":null,"preserve_visual":true})).await?;
+    s.step("set_layer_parent",json!({"comp_id":comp,"layer_id":shape,"parent_layer_id":control,"preserve_visual":true})).await?;
     s.step("add_mask",json!({"comp_id":comp,"layer_id":text,"vertices":[[0,0],[320,0],[320,180],[0,180]],"closed":true})).await?;
     let duplicate=s.step("duplicate_layer",json!({"comp_id":comp,"layer_id":text})).await?;
     s.step("remove_layer",json!({"comp_id":comp,"layer_id":id(&duplicate,"created_layer_id")?})).await?;
@@ -222,7 +222,7 @@ async fn core_cases(s:&mut Suite)->Result<(),String>{
         s.step(step["host_action"].as_str().ok_or("Action missing.")?,step["host_args"].clone()).await?;
     }
     // Controlled numeric controller; media replacement remains a separately approved asset case.
-    let slider=json!({"target":{"comp_id":comp,"layer_id":null},"path":[{"match_name":"ADBE Effect Parade"},
+    let slider=json!({"target":{"comp_id":comp,"layer_id":control},"path":[{"match_name":"ADBE Effect Parade"},
         {"match_name":"ADBE Slider Control"},{"match_name":"ADBE Slider Control-0001"}]});
     s.inspect("inspect_mogrt",json!({"comp_id":comp})).await?;
     s.step("add_mogrt_property",json!({"property":slider,"controller_name":"Acceptance Slider"})).await?;
