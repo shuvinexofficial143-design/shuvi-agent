@@ -96,6 +96,21 @@ test("After Effects output planner stages host evidence without alpha or render 
 });
 
 
+test("Remotion adapter is deterministic manifest-only and grounded",()=>{
+  assert.match(rust,/motion_graphics_plan_remotion/);
+  assert.match(rust,/MotionGraphicsPlanRemotion/);
+  assert.match(motion,/RemotionPlanRequest/);
+  assert.match(motion,/Remotion asset path/);
+  assert.match(motion,/frame_position/);
+  assert.match(motion,/remotion_runtime_renderer_not_implemented/);
+  assert.match(motion,/remotion_alpha_output_runtime_not_verified/);
+  assert.match(motion,/code_generation_performed":false/);
+  assert.match(motion,/filesystem_write_performed":false/);
+  assert.match(motion,/renderer_execution_performed":false/);
+  assert.match(motion,/does not round keyframe times or invent extra keyframes/);
+});
+
+
 test("provider-generated motion plans are strict and fail closed",()=>{
   assert.match(rust,/motion_graphics_generate_plan/);
   assert.match(rust,/MotionGraphicsGeneratePlan/);
