@@ -97,7 +97,7 @@ impl AuditionBridgeShared {
                             |count| (count < 16).then_some(count + 1)).is_err() { continue; }
                         let guard = ClientGuard(Arc::clone(&shared));
                         let _ = thread::Builder::new()
-                            .name("shuvi-premiere-client".into())
+                            .name("shuvi-audition-client".into())
                             .spawn(move || { let _guard = guard; handle_client(stream, shared); });
                     }
                 })
