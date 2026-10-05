@@ -159,12 +159,15 @@ impl Session {
         if prior_plan_snapshot!=self.current_plan_snapshot{
             return Err("Motion correction proposal is based on a stale prior plan snapshot.".into());
         }
-        if !valid_snapshot(&revised_plan_snapshot)||revised_plan_snapshot==prior_plan_snapshot{
-            return Err("Motion correction proposal must produce a different valid fnv1a64 revised snapshot.".into());
+        if !valid_snapshot(&revised_plan_snapshot){
+            return Err("Motion correction proposal must produce a valid fnv1a64 revised snapshot.".into());
         }
         if self.corrections.iter().any(|row|row.revised_plan_snapshot==revised_plan_snapshot){
             self.status=SessionStatus::Stagnated;
             return Err("The same motion correction snapshot was already attempted; blind retry is blocked.".into());
+        }
+        if revised_plan_snapshot==prior_plan_snapshot{
+            return Err("Motion correction proposal must differ from the current plan snapshot.".into());
         }
         self.corrections.push(CorrectionCheckpoint{
             correction_iteration:iteration,
