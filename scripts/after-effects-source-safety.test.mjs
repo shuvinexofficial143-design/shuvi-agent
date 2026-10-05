@@ -98,13 +98,19 @@ test("non-idempotent AE creation workflows do not advertise automatic retry safe
 
 test("AE temporal easing and timing require exact host readback",()=>{
   assert.match(transport,/"set_keyframe_temporal_ease"/);
+  assert.match(transport,/"set_keyframe_temporal_ease_uniform"/);
   assert.match(transport,/"set_layer_timing"/);
   assert.match(rust,/"keyframe_temporal_ease":"source_supported_with_dimension_bound_speed_influence_readback"/);
+  assert.match(rust,/"keyframe_temporal_ease_uniform":"source_supported_host_dimension_readback_with_inactive_side_preservation_and_time_stale_guard"/);
   assert.match(rust,/"layer_timing":"source_supported_with_start_in_out_stretch_readback"/);
   assert.match(jsx,/new KeyframeEase\(item\.speed,item\.influence\)/);
   assert.match(jsx,/setTemporalEaseAtKey\(index,inEase,outEase\)/);
   assert.match(jsx,/keyInTemporalEase\(index\)/);
   assert.match(jsx,/keyOutTemporalEase\(index\)/);
+  assert.match(jsx,/Uniform temporal ease keyframe time stale guard changed/);
+  assert.match(jsx,/verified_uniform_temporal_ease_readback/);
+  assert.match(jsx,/inactive_in_preserved/);
+  assert.match(jsx,/inactive_out_preserved/);
   assert.match(jsx,/Layer out_point must remain greater than in_point/);
   assert.match(jsx,/verified_timing_readback/);
 });
