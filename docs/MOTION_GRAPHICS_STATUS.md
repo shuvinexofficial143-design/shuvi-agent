@@ -34,7 +34,8 @@
 - Aligned paired X+Y or ScaleX+ScaleY tracks are source-coalesced as two guarded component writes on the same exact host key timeline: the first requires no existing keys, the second requires the first write's exact absolute key times, and interpolation is staged only after both components are present.
 - Paired tracks with mismatched keyframe times or easing remain fail-closed rather than synthesizing an unproven shared curve.
 - Keyframe easing semantics are now explicit and local: ease-in affects the incoming/arrival side, ease-out the outgoing/departure side, ease-in-out both sides, while linear/hold apply to both.
-- The AE adapter now stages the correct directional interpolation types for those sides; exact temporal speed/influence values are still intentionally unclaimed until bounded temporal-ease synthesis/readback is added.
+- The AE adapter now stages the correct directional interpolation types for those sides and follows each eased key with the guarded host-dimension-aware `set_keyframe_temporal_ease_uniform` action.
+- The current renderer mapping defines a deterministic default eased side as speed `0.0` with influence `33.333333`; the host reads its actual temporal-ease array length, preserves inactive sides, verifies exact key time, and readbacks the applied ease rather than letting the planner guess dimensionality.
 - Component vector writes fail closed on separated dimensions, expression-enabled properties, stale existing-key timelines, dimension changes, or failed untouched-component readback.
 - Dynamic comp/layer IDs may be resolved only from matching verified prior `after_effects_run` receipts.
 - Every future AE mutation still requires a fresh `inspect_context`, exact saved-project path/revision, a unique request ID, the existing checkpoint boundary, and normal Shuvi approval.
@@ -55,7 +56,7 @@
 - Shape support is intentionally limited to rectangle/ellipse primitives already exposed by the verified AE bridge; arbitrary Bézier/path synthesis is not claimed.
 - Shape geometry/style is immutable during provider correction proposals; correction may change only animation tracks.
 - Image/video layers require an `asset_id -> item_id` binding grounded in fresh `inspect_project_items` evidence.
-- `ease_in`, `ease_out`, and `ease_in_out` now map to the correct incoming/outgoing AE interpolation sides, but exact temporal speed/influence curve strength is not claimed until bounded temporal-ease synthesis/readback is added.
+- `ease_in`, `ease_out`, and `ease_in_out` now have a deterministic source-planned AE mapping: directional interpolation plus a fixed zero-speed / 33.333333-influence eased side using host-dimension-aware readback. This is a Shuvi default curve contract, not a claim that it is the ideal creative curve for every animation.
 - Transparent-overlay delivery is not claimed until an alpha-capable output-module/render plan is implemented and verified.
 - No Remotion project/code is generated or executed by the current planner.
 - Provider plan generation has not yet been verified with a real API request in the packaged Shuvi runtime.
@@ -67,11 +68,11 @@
 
 ## Next source phase
 
-1. Add bounded temporal-ease synthesis/readback for directional easing.
-2. Add alpha-capable AE render/output-module planning and evidence without auto-rendering.
-3. Build the Remotion adapter as a separate renderer implementation.
-4. Add preview render evidence and bounded frame extraction so reviewed PNGs can be tied to a verified renderer output.
-5. Add bounded multi-frame continuity review on top of the single-frame strict review contract.
-6. Add a persistent correction session that carries the existing snapshot/iteration rules across review → proposal → approved renderer action → re-render → re-review, with no blind retries.
-7. Add final output evidence and optional Premiere transparent-overlay insertion.
-8. Extend shape support only if a future requirement needs arbitrary path/Bézier geometry; rectangle/ellipse primitives are already source-planned.
+1. Add alpha-capable AE render/output-module planning and evidence without auto-rendering.
+2. Build the Remotion adapter as a separate renderer implementation.
+3. Add preview render evidence and bounded frame extraction so reviewed PNGs can be tied to a verified renderer output.
+4. Add bounded multi-frame continuity review on top of the single-frame strict review contract.
+5. Add a persistent correction session that carries the existing snapshot/iteration rules across review → proposal → approved renderer action → re-render → re-review, with no blind retries.
+6. Add final output evidence and optional Premiere transparent-overlay insertion.
+7. Extend shape support only if a future requirement needs arbitrary path/Bézier geometry; rectangle/ellipse primitives are already source-planned.
+8. Make the default temporal-ease strength configurable only if a future product requirement needs renderer-neutral curve-strength controls; do not infer them from prose.
