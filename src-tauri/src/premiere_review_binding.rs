@@ -138,7 +138,7 @@ pub fn bind(session:&Session,issue:&Issue,seconds:f64,timeline:&Value,kind:&str,
 #[cfg(test)] mod tests {
     use super::*;
     fn fixture()->(Session,Value){
-        let mut s=Session::new("id".into(),"p".into(),"s".into(),"grade".into(),"".into(),vec![2.0],4).unwrap();
+        let mut s=Session::new("id".into(),"p".into(),"s".into(),"grade".into(),"".into(),vec![2.0],4,1).unwrap();
         s.status="awaiting_approval".into();
         s.reviews.push(crate::premiere_review::Review {iteration:1,overall_confidence:0.9,stop_recommended:false,
             issues:vec![Issue{id:"i".into(),category:"color".into(),severity:"medium".into(),confidence:0.9,
