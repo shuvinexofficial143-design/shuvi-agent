@@ -209,7 +209,7 @@ test("bounded correction session blocks stale snapshots and blind retries",()=>{
   assert.match(correctionSession,/Motion correction review snapshot is stale or belongs to another plan/);
   assert.match(correctionSession,/blind retry is blocked/);
   assert.match(correctionSession,/AwaitingRendererApproval/);
-  assert.match(correctionSession,/Re-render evidence cannot be recorded before renderer approval/);
+  assert.match(correctionSession,/Re-render evidence action_id does not match the approved renderer action/);
   assert.match(correctionSession,/SessionStatus::Stagnated/);
   assert.doesNotMatch(correctionSession,/Command::new/);
 });
