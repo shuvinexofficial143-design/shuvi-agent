@@ -82,6 +82,7 @@ mod audition;
 mod audition_acceptance;
 mod motion_graphics;
 mod motion_graphics_provider;
+mod motion_graphics_review;
 mod audition_bridge_queue;
 mod audition_bridge;
 use audition_bridge::{AuditionBridgeShared, AuditionBridgeStatus};
@@ -153,6 +154,7 @@ Available tools:
 - motion_graphics_validate_plan: {"plan":{"schema_version":1,"objective":"short goal","renderer":"auto|after_effects|remotion","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":true},"delivery":"standalone_video|transparent_overlay","scenes":[{"id":"scene_1","start_seconds":0,"duration_seconds":4,"layers":[{"id":"title","kind":"text|shape|image|video|group","name":"Title","text":"optional text","asset_id":"optional_asset_id","tracks":[{"property":"x|y|scale_x|scale_y|rotation_degrees|opacity","keyframes":[{"time_seconds":0,"value":0,"easing":"linear|ease_in|ease_out|ease_in_out|hold"}]}]}]}],"review":{"sample_times_seconds":[1,2,3],"criteria":["readability"]}}}
 - motion_graphics_plan_after_effects: {"request":{"project_file":"absolute saved .aep/.aepx","composition_name":"Shuvi Motion","plan":{"schema_version":1,"objective":"...","renderer":"auto|after_effects","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":true},"delivery":"standalone_video|transparent_overlay","scenes":[...],"review":{"sample_times_seconds":[],"criteria":[]}},"asset_item_ids":{"asset_1":123}}} — read-only adapter planner; every emitted AE mutation still requires fresh inspect_context, exact project revision and normal after_effects_run approval
 - motion_graphics_generate_plan: {"request":{"objective":"motion goal","renderer":"auto|after_effects|remotion","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":true},"delivery":"standalone_video|transparent_overlay","available_asset_ids":["optional_asset_1"],"review_criteria":["readability"]}} — call the active provider once for strict raw JSON, then fail-closed validate fixed constraints/assets; does not run a renderer
+- motion_graphics_review_preview: {"preview_png":"absolute .png path","sample_time_seconds":1.0,"plan":{"schema_version":1,"objective":"...","renderer":"auto|after_effects|remotion","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":true},"delivery":"standalone_video|transparent_overlay","scenes":[...],"review":{"sample_times_seconds":[1],"criteria":["readability"]}}} — stage exact bounded PNG bytes, send only those approved bytes to the active vision provider, strict-parse visible-frame critique, and never auto-apply fixes
 - audition_detect: {}
 - audition_launch: {}
 - audition_readiness_report: {}
@@ -536,6 +538,7 @@ enum ToolAction {
     MotionGraphicsValidatePlan { plan: motion_graphics::Plan },
     MotionGraphicsPlanAfterEffects { request: motion_graphics::AfterEffectsPlanRequest },
     MotionGraphicsGeneratePlan { request: motion_graphics_provider::ProviderPlanRequest, provider: ProviderContext },
+    MotionGraphicsReviewPreview { preview_path: String, preview_bytes: Vec<u8>, sample_time_seconds: f64, plan: motion_graphics::Plan, provider: ProviderContext },
     AuditionDetect,
     AuditionLaunch,
     AuditionReadinessReport,
@@ -1163,6 +1166,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "motion_graphics_validate_plan"
         | "motion_graphics_plan_after_effects"
         | "motion_graphics_generate_plan"
+        | "motion_graphics_review_preview"
         | "audition_detect"
         | "audition_launch"
         | "audition_readiness_report"
@@ -2846,6 +2850,39 @@ fn stage_tool(
             );
             (ToolAction::MotionGraphicsGeneratePlan {request,provider},
                 "Generate motion-graphics plan".into(),
+                detail,
+                RiskLevel::Medium)
+        }
+        "motion_graphics_review_preview" => {
+            let preview_path=absolute_path(arg_string(&proposal.arguments,"preview_png")?)?;
+            let path=Path::new(&preview_path);
+            if path.extension().and_then(|value|value.to_str()).is_none_or(|value|!value.eq_ignore_ascii_case("png")) {
+                return Err("motion_graphics_review_preview requires an absolute .png preview path.".into());
+            }
+            let preview_bytes=read_file_bytes_bounded(path,8*1024*1024,"motion preview PNG")?;
+            if preview_bytes.len()<8 || &preview_bytes[..8]!=b"\x89PNG\r\n\x1a\n" {
+                return Err("Motion preview file is not a valid PNG signature.".into());
+            }
+            let plan_value=proposal.arguments.get("plan").cloned()
+                .ok_or_else(||"motion_graphics_review_preview requires plan.".to_string())?;
+            let plan:motion_graphics::Plan=serde_json::from_value(plan_value)
+                .map_err(|e|format!("Invalid motion-graphics preview review plan: {e}"))?;
+            let sample_time_seconds=proposal.arguments.get("sample_time_seconds").and_then(Value::as_f64)
+                .ok_or_else(||"motion_graphics_review_preview requires numeric sample_time_seconds.".to_string())?;
+            motion_graphics_review::review_prompt(&plan,sample_time_seconds)?;
+            let provider=provider_context
+                .ok_or_else(||"Motion preview review requires the active provider context.".to_string())?;
+            if provider.provider=="deepseek" {
+                return Err("The selected DeepSeek text endpoint is not configured for motion preview vision review.".into());
+            }
+            let detail=format!(
+                "Review approved motion preview bytes with {}/{} | {} | {} bytes | sample_time_seconds={}",
+                provider.provider,provider.model,preview_path,preview_bytes.len(),sample_time_seconds
+            );
+            (ToolAction::MotionGraphicsReviewPreview {
+                preview_path,preview_bytes,sample_time_seconds,plan,provider
+            },
+                "Review motion preview with AI vision".into(),
                 detail,
                 RiskLevel::Medium)
         }
@@ -6583,7 +6620,20 @@ async fn analyze_png_with_provider(
         12 * 1024 * 1024,
         "captured screenshot",
     )?;
+    analyze_png_bytes_with_provider(context,prompt,&bytes).await
+}
 
+async fn analyze_png_bytes_with_provider(
+    context: &ProviderContext,
+    prompt: &str,
+    bytes: &[u8],
+) -> Result<String, String> {
+    if bytes.is_empty() || bytes.len()>12*1024*1024 {
+        return Err("Vision image bytes are empty or exceed Shuvi's 12 MB safety limit.".into());
+    }
+    if bytes.len()<8 || &bytes[..8]!=b"\x89PNG\r\n\x1a\n" {
+        return Err("Vision image bytes do not have a valid PNG signature.".into());
+    }
     let encoded = BASE64.encode(bytes);
     let key = load_api_key(&context.provider)?;
 
@@ -8601,6 +8651,26 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 "renderer_execution_performed":false,
                 "preview_render_verified":false,
                 "visual_review_verified":false,
+                "production_ready":false
+            });
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MotionGraphicsReviewPreview {preview_path,preview_bytes,sample_time_seconds,plan,provider} => {
+            let prompt=motion_graphics_review::review_prompt(&plan,sample_time_seconds)?;
+            let analysis=analyze_png_bytes_with_provider(&provider,&prompt,&preview_bytes).await?;
+            let review=motion_graphics_review::parse_review(&plan,&analysis)?;
+            let value=json!({
+                "review":review,
+                "sample_time_seconds":sample_time_seconds,
+                "preview_path":preview_path,
+                "preview_size_bytes":preview_bytes.len(),
+                "preview_bytes_bound_at_approval":true,
+                "preview_image_reviewed":true,
+                "visual_review_completed":true,
+                "renderer_provenance_verified":false,
+                "render_output_verified":false,
+                "automatic_correction_performed":false,
                 "production_ready":false
             });
             Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
