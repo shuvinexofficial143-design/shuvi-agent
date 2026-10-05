@@ -174,3 +174,12 @@ test("Audition feature discovery returns bounded ranked candidates without seman
   assert.match(rust,/candidate_ranking_status":"keyword_evidence_only_not_semantic_verification"/);
   assert.match(rust,/audition::rank_feature_commands/);
 });
+
+
+test("Audition runtime probe returns bounded ranked candidates without claiming semantics",()=>{
+  assert.match(rust,/top_command_candidates/);
+  assert.match(rust,/candidate_semantics_verified":false/);
+  assert.match(rust,/audition::rank_feature_commands/);
+  assert.match(rust,/into_iter\(\)\.take\(5\)/);
+  assert.match(rust,/support_proven":false/);
+});
