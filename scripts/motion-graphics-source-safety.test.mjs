@@ -6,6 +6,7 @@ const rust=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8
 const motion=readFileSync(new URL("../src-tauri/src/motion_graphics.rs",import.meta.url),"utf8");
 const provider=readFileSync(new URL("../src-tauri/src/motion_graphics_provider.rs",import.meta.url),"utf8");
 const review=readFileSync(new URL("../src-tauri/src/motion_graphics_review.rs",import.meta.url),"utf8");
+const correction=readFileSync(new URL("../src-tauri/src/motion_graphics_correction.rs",import.meta.url),"utf8");
 const status=readFileSync(new URL("../docs/MOTION_GRAPHICS_STATUS.md",import.meta.url),"utf8");
 
 test("motion graphics keeps a renderer-neutral bounded schema",()=>{
@@ -97,4 +98,25 @@ test("motion preview review sends only approved bytes and never auto-fixes",()=>
   assert.match(review,/invented unknown layer id/);
   assert.match(review,/A passing motion visual review must not contain issues/);
   assert.doesNotMatch(review,/Command::new/);
+});
+
+
+test("motion correction stays snapshot-bound and proposal-only",()=>{
+  assert.match(rust,/motion_graphics_generate_correction/);
+  assert.match(rust,/MotionGraphicsGenerateCorrection/);
+  assert.match(rust,/motion_graphics_correction::system_prompt/);
+  assert.match(rust,/request\.parse_revision\(&response\.content\)\?/);
+  assert.match(rust,/snapshot_match_verified":true/);
+  assert.match(rust,/immutable_topology_preserved":true/);
+  assert.match(rust,/automatic_correction_performed":false/);
+  assert.match(motion,/pub fn fingerprint\(&self\)/);
+  assert.match(motion,/fnv1a64:/);
+  assert.match(correction,/plan_snapshot does not match the exact supplied plan/);
+  assert.match(correction,/MAX_CORRECTION_ITERATIONS:u8=3/);
+  assert.match(correction,/MAX_CORRECTION_CONTEXT_BYTES:usize=384\*1024/);
+  assert.match(correction,/You may change only layer animation tracks/);
+  assert.match(correction,/changed immutable layer identity\/content/);
+  assert.match(correction,/returned the unchanged plan/);
+  assert.match(review,/MAX_REVIEW_ACTIVE_LAYERS:usize=512/);
+  assert.doesNotMatch(correction,/Command::new/);
 });
