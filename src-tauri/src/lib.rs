@@ -9358,7 +9358,10 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let value=json!({
                 "session":session,
                 "persisted":true,
-                "review_recording_wired":false,
+                "review_recording_wired":true,
+                "correction_recording_wired":true,
+                "renderer_receipt_recording_wired":true,
+                "rerender_recording_wired":true,
                 "automatic_execution":false,
                 "status_tool":"motion_graphics_correction_session_status"
             });
