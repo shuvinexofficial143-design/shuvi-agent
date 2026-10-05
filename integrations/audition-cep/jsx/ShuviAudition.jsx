@@ -51,7 +51,8 @@ function shuviAuditionInspectContext()
     }
 
     out.documentSignature = shuviAuditionBoundString(
-        [out.documentType || "", out.documentName || "", out.sampleRate == null ? "" : out.sampleRate,
+        [out.hostVersion || "", out.documentType || "", out.documentName || "",
+         out.sampleRate == null ? "" : out.sampleRate,
          out.durationSamples == null ? "" : out.durationSamples].join("|"),
         1200
     );
