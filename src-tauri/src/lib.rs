@@ -156,7 +156,8 @@ Available tools:
 - audition_context: {}
 - audition_list_commands: {}
 - audition_search_commands: {"query":"noise|normalize|loudness|compressor|eq|export etc"}
-- audition_script_dictionary: {"query":"optional class-name substring","max_classes":64}
+- audition_discover_feature: {"feature":"noise_reduction|eq|compressor|loudness|export|multitrack|voice_cleanup"}
+- audition_script_dictionary: {"query":"optional class/member/help substring","max_classes":64}
 - audition_command_enabled: {"command":{"property":"exact inspected COMMAND_* property","value":"exact inspected command value"}}
 - audition_set_playhead: {"percent":0.5,"expected_document_signature":"copy documentSignature from audition_context"}
 - audition_invoke_command: {"command":{"property":"exact inspected COMMAND_* property","value":"exact inspected command value"},"expected_document_signature":"copy documentSignature from audition_context"}
@@ -529,6 +530,7 @@ enum ToolAction {
     AuditionContext,
     AuditionListCommands,
     AuditionSearchCommands { query: String },
+    AuditionDiscoverFeature { feature: String },
     AuditionScriptDictionary { query: Option<String>, max_classes: u32 },
     AuditionCommandEnabled { command: audition::InspectedCommand },
     AuditionSetPlayhead { percent: f64, expected_document_signature: String },
@@ -1146,6 +1148,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "audition_context"
         | "audition_list_commands"
         | "audition_search_commands"
+        | "audition_discover_feature"
         | "audition_script_dictionary"
         | "audition_command_enabled"
         | "audition_set_playhead"
@@ -2833,6 +2836,14 @@ fn stage_tool(
             (ToolAction::AuditionSearchCommands {query:query.clone()},
                 "Search Audition commands".into(),
                 format!("Search the live Audition COMMAND_* inventory for '{query}' and cache exact matching command identities."),
+                RiskLevel::Low)
+        }
+        "audition_discover_feature" => {
+            let feature=arg_string(&proposal.arguments,"feature")?;
+            audition::feature_queries(&feature)?;
+            (ToolAction::AuditionDiscoverFeature {feature:feature.clone()},
+                "Discover Audition audio feature".into(),
+                format!("Read-only search of live Audition commands and Script Dictionary for '{feature}'. Discovery does not prove edit support."),
                 RiskLevel::Low)
         }
         "audition_script_dictionary" => {
@@ -8472,6 +8483,36 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
         }
         ToolAction::AuditionSearchCommands {query} => {
             let value=state.audition_bridge.request("search_commands",json!({"query":query}),Duration::from_secs(12)).await?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionDiscoverFeature {feature} => {
+            let queries=audition::feature_queries(&feature)?;
+            let mut evidence=Vec::<Value>::new();
+            for query in queries.iter().take(4) {
+                let commands=state.audition_bridge.request("search_commands",json!({"query":query}),Duration::from_secs(12)).await?;
+                let dictionary=state.audition_bridge.request("script_dictionary",
+                    json!({"query":query,"maxClasses":16}),Duration::from_secs(20)).await?;
+                let command_rows=commands.get("commands").and_then(Value::as_array)
+                    .map(|rows|rows.iter().take(20).cloned().collect::<Vec<_>>()).unwrap_or_default();
+                let class_rows=dictionary.get("classes").and_then(Value::as_array)
+                    .map(|rows|rows.iter().take(8).cloned().collect::<Vec<_>>()).unwrap_or_default();
+                evidence.push(json!({
+                    "query":query,
+                    "command_matches":command_rows,
+                    "dictionary_classes":class_rows,
+                    "commands_truncated":commands.get("count").and_then(Value::as_u64).is_some_and(|count|count>20),
+                    "dictionary_truncated":dictionary.get("returnedClasses").and_then(Value::as_u64).is_some_and(|count|count>8)
+                }));
+            }
+            let value=json!({
+                "feature":feature,
+                "queries":queries,
+                "evidence":evidence,
+                "support_status":"discovery_only_not_verified",
+                "mutation_performed":false,
+                "runtime_verified":false
+            });
             Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)})
         }
