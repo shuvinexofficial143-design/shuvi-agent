@@ -150,6 +150,7 @@ Available tools:
 - audition_detect: {}
 - audition_launch: {}
 - audition_readiness_report: {}
+- audition_runtime_probe: {}
 - audition_bridge_start: {}
 - audition_bridge_status: {}
 - audition_bridge_stop: {}
@@ -524,6 +525,7 @@ enum ToolAction {
     AuditionDetect,
     AuditionLaunch,
     AuditionReadinessReport,
+    AuditionRuntimeProbe,
     AuditionBridgeStart,
     AuditionBridgeStatus,
     AuditionBridgeStop,
@@ -1142,6 +1144,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "audition_detect"
         | "audition_launch"
         | "audition_readiness_report"
+        | "audition_runtime_probe"
         | "audition_bridge_start"
         | "audition_bridge_status"
         | "audition_bridge_stop"
@@ -2796,6 +2799,12 @@ fn stage_tool(
             ToolAction::AuditionReadinessReport,
             "Read Audition readiness".into(),
             "Report implemented CEP/ExtendScript scope and unverified runtime boundaries without claiming live host acceptance.".into(),
+            RiskLevel::Low,
+        ),
+        "audition_runtime_probe" => (
+            ToolAction::AuditionRuntimeProbe,
+            "Probe live Audition runtime".into(),
+            "Run bounded read-only host checks through the paired Audition bridge. This proves observation only and performs no audio edit.".into(),
             RiskLevel::Low,
         ),
         "audition_bridge_start" => (
@@ -8450,6 +8459,43 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
         }
         ToolAction::AuditionReadinessReport => {
             let value=audition::readiness_report();
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionRuntimeProbe => {
+            let context=state.audition_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let commands=state.audition_bridge.request("list_commands",json!({}),Duration::from_secs(15)).await?;
+            let wave_dictionary=state.audition_bridge.request("script_dictionary",
+                json!({"query":"WaveDocument","maxClasses":16}),Duration::from_secs(20)).await?;
+            let mut features=serde_json::Map::new();
+            for feature in ["noise_reduction","eq","compressor","loudness","export","multitrack","voice_cleanup"] {
+                let queries=audition::feature_queries(feature)?;
+                let mut command_hits=0_u64;
+                let mut class_hits=0_u64;
+                for query in queries.iter().take(2) {
+                    let command_result=state.audition_bridge.request("search_commands",json!({"query":query}),Duration::from_secs(12)).await?;
+                    let dictionary_result=state.audition_bridge.request("script_dictionary",
+                        json!({"query":query,"maxClasses":8}),Duration::from_secs(20)).await?;
+                    command_hits=command_hits.saturating_add(command_result.get("count").and_then(Value::as_u64).unwrap_or(0));
+                    class_hits=class_hits.saturating_add(dictionary_result.get("returnedClasses").and_then(Value::as_u64).unwrap_or(0));
+                }
+                features.insert(feature.into(),json!({
+                    "command_hits":command_hits,
+                    "dictionary_class_hits":class_hits,
+                    "support_proven":false
+                }));
+            }
+            let value=json!({
+                "runtime_probe_completed":true,
+                "mutation_performed":false,
+                "bridge_observed":true,
+                "context":context,
+                "command_count":commands.get("count").cloned().unwrap_or(Value::Null),
+                "wave_dictionary_classes":wave_dictionary.get("returnedClasses").cloned().unwrap_or(Value::Null),
+                "feature_discovery_counts":features,
+                "edit_runtime_verified":false,
+                "production_ready":false
+            });
             Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)})
         }
