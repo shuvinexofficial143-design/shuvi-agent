@@ -212,3 +212,17 @@ test("Audition acceptance plan remains read only before future execution support
   assert.match(rust,/mutation_enabled_automatically":false/);
   assert.doesNotMatch(rust,/AuditionAcceptanceExecute/);
 });
+
+
+test("Audition acceptance preflight is read only and exact-identity guarded",()=>{
+  assert.match(rust,/"audition_acceptance_preflight"/);
+  assert.match(rust,/AuditionAcceptancePreflight/);
+  assert.match(rust,/Register an explicitly disposable Audition document before acceptance preflight/);
+  assert.match(rust,/registration\.check\(&context\)/);
+  assert.match(rust,/identity_rechecked_after_discovery":true/);
+  assert.match(rust,/enabled_candidate_count/);
+  assert.match(rust,/candidate_semantics_verified":false/);
+  assert.match(rust,/mutation_authorized":false/);
+  assert.match(rust,/mutation_performed":false/);
+  assert.match(model,/acceptance_read_only_preflight":true/);
+});
