@@ -105,3 +105,24 @@ test("Audition generic mutation still requires live inventory and unchanged docu
   assert.match(host,/observedDocumentSignature: context\.documentSignature/);
   assert.match(host,/accepted_unverified_command_side_effect/);
 });
+
+
+test("Audition feature discovery remains read only and bounded",()=>{
+  assert.match(rust,/"audition_discover_feature"/);
+  assert.match(rust,/support_status":"discovery_only_not_verified"/);
+  assert.match(rust,/mutation_performed":false/);
+  assert.match(rust,/take\(20\)/);
+  assert.match(rust,/take\(8\)/);
+  assert.match(model,/feature_queries/);
+  for(const feature of ["noise_reduction","eq","compressor","loudness","export","multitrack","voice_cleanup"]){
+    assert.match(model,new RegExp('"' + feature + '"'));
+  }
+});
+
+test("Script Dictionary query also searches bounded members and help",()=>{
+  assert.match(host,/function shuviAuditionDictionaryClassMatches/);
+  assert.match(host,/ref\.staticProperties, ref\.staticMethods, ref\.properties, ref\.methods/);
+  assert.match(host,/Math\.min\(items\.length, 64\)/);
+  assert.match(host,/member\.description/);
+  assert.match(host,/shuviAuditionDictionaryClassMatches\(ref, className, query\)/);
+});
