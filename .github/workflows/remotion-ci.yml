@@ -1,0 +1,32 @@
+name: Remotion Source CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "remotion-runtime/**"
+      - "src-tauri/src/motion_graphics.rs"
+      - "scripts/remotion-runtime-source.test.mjs"
+      - ".github/workflows/remotion-ci.yml"
+  pull_request:
+    paths:
+      - "remotion-runtime/**"
+      - "src-tauri/src/motion_graphics.rs"
+      - "scripts/remotion-runtime-source.test.mjs"
+      - ".github/workflows/remotion-ci.yml"
+
+jobs:
+  remotion-static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Node syntax checks
+        run: |
+          node --check remotion-runtime/render.mjs
+          node --check remotion-runtime/src/index.mjs
+          node --check remotion-runtime/src/runtime.mjs
+      - name: Remotion source contract tests
+        run: node --test scripts/remotion-runtime-source.test.mjs
