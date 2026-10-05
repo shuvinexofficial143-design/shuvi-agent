@@ -1070,6 +1070,283 @@
         return {native_accepted:true,verification_status:verified?"verified_creation_identity":"accepted_unverified",retry_safe:false,
             comp_id:comp.id,layer_id:layer?layer.id:null,before_count:before,after_count:comp.numLayers};
     }
+    function staticPropertyRead(p) {
+        return {value:cloneValue(p.value),num_keys:p.numKeys===undefined?null:p.numKeys,match_name:String(p.matchName||""),name:String(p.name||"")};
+    }
+    function requireStaticProperty(group,name,label) {
+        var p=group?group.property(name):null;
+        if(!p||typeof p.setValue!=="function")fail(label+" property is unavailable.");
+        if(p.numKeys!==undefined&&p.numKeys>0)fail(label+" static write refused because keyframes already exist.");
+        return p;
+    }
+    function setBoundedProperty(p,value,label) {
+        if(typeof value==="number"){
+            if(!finiteNumber(value)||Math.abs(value)>1000000)fail(label+" must be finite and bounded.");
+            try{if(p.hasMin&&value<p.minValue-EPSILON)fail(label+" is below host minimum.");}catch(ignoreMin){}
+            try{if(p.hasMax&&value>p.maxValue+EPSILON)fail(label+" is above host maximum.");}catch(ignoreMax){}
+        }
+        p.setValue(value);
+    }
+    function cameraOptionsSnapshot(layer) {
+        if(!(layer instanceof CameraLayer))fail("Target layer is not a CameraLayer.");
+        var g=layer.property("ADBE Camera Options Group");
+        if(!g)fail("Camera Options group is unavailable.");
+        function read(name){var p=g.property(name);return p?staticPropertyRead(p):null;}
+        return {
+            zoom:read("ADBE Camera Zoom"),
+            depth_of_field:read("ADBE Camera Depth of Field"),
+            focus_distance:read("ADBE Camera Focus Distance"),
+            aperture:read("ADBE Camera Aperture"),
+            blur_level:read("ADBE Camera Blur Level"),
+            focus_area_width:read("FocusAreaWidth"),
+            near_far_blur_multiplier:read("NearFarBlurMultiplier")
+        };
+    }
+    function inspectCameraOptions(args) {
+        var comp=resolveComp(args.comp_id),layer=resolveLayer(comp,args.layer_id);
+        return {verification_status:"verified_readback",comp_id:comp.id,layer_id:layer.id,options:cameraOptionsSnapshot(layer)};
+    }
+    function setCameraOptions(args) {
+        var comp=resolveComp(args.comp_id),layer=resolveLayer(comp,args.layer_id);
+        if(!(layer instanceof CameraLayer))fail("Target layer is not a CameraLayer.");
+        if(layer.locked)fail("Camera layer is locked.");
+        var g=layer.property("ADBE Camera Options Group"),requested=[],i;
+        if(!g)fail("Camera Options group is unavailable.");
+        function add(argKey,propName,label){
+            if(args[argKey]===undefined)return;
+            var p=requireStaticProperty(g,propName,label),value=args[argKey];
+            if(argKey==="depth_of_field"){
+                if(typeof value!=="boolean")fail("depth_of_field must be boolean.");
+                value=value?1:0;
+            }else if(!finiteNumber(value))fail(argKey+" must be finite.");
+            requested.push({arg:argKey,propName:propName,label:label,value:value,before:cloneValue(p.value)});
+        }
+        add("zoom","ADBE Camera Zoom","Camera Zoom");
+        add("depth_of_field","ADBE Camera Depth of Field","Camera Depth of Field");
+        add("focus_distance","ADBE Camera Focus Distance","Camera Focus Distance");
+        add("aperture","ADBE Camera Aperture","Camera Aperture");
+        add("blur_level","ADBE Camera Blur Level","Camera Blur Level");
+        add("focus_area_width","FocusAreaWidth","Camera Focus Area Width");
+        add("near_far_blur_multiplier","NearFarBlurMultiplier","Camera Near/Far Blur Multiplier");
+        if(requested.length===0)fail("set_camera_options requires at least one option.");
+        app.beginUndoGroup("Shuvi: Set camera options");
+        try{
+            for(i=0;i<requested.length;i++){
+                var p=g.property(requested[i].propName);
+                setBoundedProperty(p,requested[i].value,requested[i].label);
+            }
+        }finally{app.endUndoGroup();}
+        layer=resolveLayer(comp,args.layer_id);g=layer.property("ADBE Camera Options Group");
+        var results=[],verified=true;
+        for(i=0;i<requested.length;i++){
+            var rp=g.property(requested[i].propName),after=rp?cloneValue(rp.value):null,ok=sameValue(after,requested[i].value);
+            if(!ok)verified=false;
+            results.push({field:requested[i].arg,before:requested[i].before,requested:requested[i].value,after:after,verified:ok});
+        }
+        return {native_accepted:true,verification_status:verified?"verified_camera_options_readback":"accepted_unverified",retry_safe:verified,
+            comp_id:comp.id,layer_id:layer.id,results:results};
+    }
+    function lightTypeName(value) {
+        if(value===LightType.PARALLEL)return "parallel";
+        if(value===LightType.SPOT)return "spot";
+        if(value===LightType.POINT)return "point";
+        if(value===LightType.AMBIENT)return "ambient";
+        if(typeof LightType.ENVIRONMENT!=="undefined"&&value===LightType.ENVIRONMENT)return "environment";
+        return "unknown";
+    }
+    function lightTypeValue(name) {
+        if(name==="parallel")return LightType.PARALLEL;
+        if(name==="spot")return LightType.SPOT;
+        if(name==="point")return LightType.POINT;
+        if(name==="ambient")return LightType.AMBIENT;
+        if(name==="environment"&&typeof LightType.ENVIRONMENT!=="undefined")return LightType.ENVIRONMENT;
+        fail("Unsupported light_type for this After Effects host.");
+    }
+    function lightOptionsSnapshot(layer) {
+        if(!(layer instanceof LightLayer))fail("Target layer is not a LightLayer.");
+        var g=layer.property("ADBE Light Options Group");
+        if(!g)fail("Light Options group is unavailable.");
+        function read(name){var p=g.property(name);return p?staticPropertyRead(p):null;}
+        var source=null;try{source=layer.lightSource;}catch(ignoreSource){}
+        return {
+            light_type:lightTypeName(layer.lightType),
+            light_source_layer_id:source?source.id:null,
+            intensity:read("ADBE Light Intensity"),
+            color:read("ADBE Light Color"),
+            cone_angle:read("ADBE Light Cone Angle"),
+            cone_feather:read("ADBE Light Cone Feather 2"),
+            casts_shadows:read("Casts Shadows"),
+            shadow_darkness:read("ADBE Light Shadow Darkness"),
+            shadow_diffusion:read("ADBE Light Shadow Diffusion")
+        };
+    }
+    function inspectLightOptions(args) {
+        var comp=resolveComp(args.comp_id),layer=resolveLayer(comp,args.layer_id);
+        return {verification_status:"verified_readback",comp_id:comp.id,layer_id:layer.id,options:lightOptionsSnapshot(layer)};
+    }
+    function setLightOptions(args) {
+        var comp=resolveComp(args.comp_id),layer=resolveLayer(comp,args.layer_id);
+        if(!(layer instanceof LightLayer))fail("Target layer is not a LightLayer.");
+        if(layer.locked)fail("Light layer is locked.");
+        var g=layer.property("ADBE Light Options Group"),requested=[],i,newType=null,newSourceMarker=false,newSource=null;
+        if(!g)fail("Light Options group is unavailable.");
+        if(args.light_type!==undefined)newType=lightTypeValue(boundedString(args.light_type,24,"light_type"));
+        if(args.hasOwnProperty("light_source_layer_id")){
+            newSourceMarker=true;
+            if(args.light_source_layer_id!==null){
+                newSource=resolveLayer(comp,args.light_source_layer_id);
+                if(newSource.threeDLayer)fail("Environment light source must be a 2D layer.");
+            }
+        }
+        function add(argKey,propName,label){
+            if(args[argKey]===undefined)return;
+            var p=requireStaticProperty(g,propName,label),value=args[argKey];
+            if(argKey==="casts_shadows"){
+                if(typeof value!=="boolean")fail("casts_shadows must be boolean.");
+                value=value?1:0;
+            }else if(argKey==="color"){
+                if(!(value instanceof Array)||value.length!==3)fail("Light color must be [r,g,b].");
+                var k;for(k=0;k<3;k++)if(!finiteNumber(value[k])||value[k]<0||value[k]>1)fail("Light color values must be 0..1.");
+                value=[value[0],value[1],value[2]];
+            }else if(!finiteNumber(value))fail(argKey+" must be finite.");
+            requested.push({arg:argKey,propName:propName,label:label,value:value,before:cloneValue(p.value)});
+        }
+        add("intensity","ADBE Light Intensity","Light Intensity");
+        add("color","ADBE Light Color","Light Color");
+        add("cone_angle","ADBE Light Cone Angle","Light Cone Angle");
+        add("cone_feather","ADBE Light Cone Feather 2","Light Cone Feather");
+        add("casts_shadows","Casts Shadows","Light Casts Shadows");
+        add("shadow_darkness","ADBE Light Shadow Darkness","Light Shadow Darkness");
+        add("shadow_diffusion","ADBE Light Shadow Diffusion","Light Shadow Diffusion");
+        if(newType===null&&!newSourceMarker&&requested.length===0)fail("set_light_options requires at least one option.");
+        var beforeType=lightTypeName(layer.lightType),beforeSource=null;try{beforeSource=layer.lightSource;}catch(ignoreBeforeSource){}
+        app.beginUndoGroup("Shuvi: Set light options");
+        try{
+            if(newType!==null)layer.lightType=newType;
+            if(newSourceMarker)layer.lightSource=newSource;
+            for(i=0;i<requested.length;i++)setBoundedProperty(g.property(requested[i].propName),requested[i].value,requested[i].label);
+        }finally{app.endUndoGroup();}
+        layer=resolveLayer(comp,args.layer_id);g=layer.property("ADBE Light Options Group");
+        var afterType=lightTypeName(layer.lightType),afterSource=null;try{afterSource=layer.lightSource;}catch(ignoreAfterSource){}
+        var verified=true,results=[];
+        if(newType!==null&&layer.lightType!==newType)verified=false;
+        if(newSourceMarker&&((afterSource?afterSource.id:null)!==(newSource?newSource.id:null)))verified=false;
+        for(i=0;i<requested.length;i++){
+            var rp=g.property(requested[i].propName),after=rp?cloneValue(rp.value):null,ok=sameValue(after,requested[i].value);
+            if(!ok)verified=false;
+            results.push({field:requested[i].arg,before:requested[i].before,requested:requested[i].value,after:after,verified:ok});
+        }
+        return {native_accepted:true,verification_status:verified?"verified_light_options_readback":"accepted_unverified",retry_safe:verified,
+            comp_id:comp.id,layer_id:layer.id,before_light_type:beforeType,after_light_type:afterType,
+            before_light_source_layer_id:beforeSource?beforeSource.id:null,after_light_source_layer_id:afterSource?afterSource.id:null,results:results};
+    }
+    function materialProperty(layer,name) {
+        var p=layer.property(name);
+        if(!p)fail("3D Material property unavailable: "+name);
+        return p;
+    }
+    function inspect3DMaterial(args) {
+        var comp=resolveComp(args.comp_id),layer=resolveLayer(comp,args.layer_id);
+        if(!layer.threeDLayer)fail("Target layer is not 3D.");
+        var names=["Accepts Lights","Accepts Shadows","Casts Shadows","Ambient","Diffuse","Specular","Shininess","Light Transmission","Metal"],out={},i;
+        for(i=0;i<names.length;i++){var p=layer.property(names[i]);if(p)out[names[i]]=staticPropertyRead(p);}
+        return {verification_status:"verified_readback",comp_id:comp.id,layer_id:layer.id,material:out};
+    }
+    function set3DMaterial(args) {
+        var comp=resolveComp(args.comp_id),layer=resolveLayer(comp,args.layer_id);
+        if(!layer.threeDLayer)fail("Target layer is not 3D.");
+        if(layer.locked)fail("3D layer is locked.");
+        var map=[
+            ["accepts_lights","Accepts Lights",true],["accepts_shadows","Accepts Shadows",true],["casts_shadows","Casts Shadows",true],
+            ["ambient","Ambient",false],["diffuse","Diffuse",false],["specular","Specular",false],["shininess","Shininess",false],
+            ["light_transmission","Light Transmission",false],["metal","Metal",false]
+        ],requested=[],i;
+        for(i=0;i<map.length;i++){
+            if(args[map[i][0]]===undefined)continue;
+            var p=requireStaticProperty(layer,map[i][1],"3D Material "+map[i][1]),value=args[map[i][0]];
+            if(map[i][2]){
+                if(typeof value!=="boolean")fail(map[i][0]+" must be boolean.");
+                value=value?1:0;
+            }else if(!finiteNumber(value))fail(map[i][0]+" must be finite.");
+            requested.push({arg:map[i][0],name:map[i][1],value:value,before:cloneValue(p.value)});
+        }
+        if(requested.length===0)fail("set_3d_material requires at least one property.");
+        app.beginUndoGroup("Shuvi: Set 3D material");
+        try{for(i=0;i<requested.length;i++)setBoundedProperty(layer.property(requested[i].name),requested[i].value,requested[i].name);}
+        finally{app.endUndoGroup();}
+        layer=resolveLayer(comp,args.layer_id);var verified=true,results=[];
+        for(i=0;i<requested.length;i++){
+            var after=cloneValue(materialProperty(layer,requested[i].name).value),ok=sameValue(after,requested[i].value);
+            if(!ok)verified=false;
+            results.push({field:requested[i].arg,before:requested[i].before,requested:requested[i].value,after:after,verified:ok});
+        }
+        return {native_accepted:true,verification_status:verified?"verified_3d_material_readback":"accepted_unverified",retry_safe:verified,
+            comp_id:comp.id,layer_id:layer.id,results:results};
+    }
+    function meshTypeValue(name) {
+        if(typeof ParametricMeshType==="undefined")fail("Parametric Mesh requires After Effects 26.3 or later.");
+        if(name==="sphere")return ParametricMeshType.SPHERE;
+        if(name==="plane")return ParametricMeshType.PLANE;
+        if(name==="cylinder")return ParametricMeshType.CYLINDER;
+        if(name==="cone")return ParametricMeshType.CONE;
+        if(name==="torus")return ParametricMeshType.TORUS;
+        if(name==="cube")return ParametricMeshType.CUBE;
+        fail("Unsupported parametric mesh type.");
+    }
+    function meshTypeName(value) {
+        if(value===ParametricMeshType.SPHERE)return "sphere";
+        if(value===ParametricMeshType.PLANE)return "plane";
+        if(value===ParametricMeshType.CYLINDER)return "cylinder";
+        if(value===ParametricMeshType.CONE)return "cone";
+        if(value===ParametricMeshType.TORUS)return "torus";
+        if(value===ParametricMeshType.CUBE)return "cube";
+        return "unknown";
+    }
+    function addParametricMesh(args) {
+        var comp=resolveComp(args.comp_id);
+        if(typeof comp.layers.addParametricMesh!=="function")fail("Parametric Mesh requires After Effects 26.3 or later.");
+        var name=args.name===undefined?"Shuvi Mesh":boundedString(args.name,120,"mesh name"),type=meshTypeValue(boundedString(args.mesh_type,24,"mesh_type"));
+        var before=comp.numLayers;
+        app.beginUndoGroup("Shuvi: Add parametric mesh");
+        var layer;try{layer=comp.layers.addParametricMesh(name,type);}finally{app.endUndoGroup();}
+        var read=layer?resolveLayer(comp,layer.id):null;
+        var verified=comp.numLayers===before+1&&read&&typeof ParametricMeshLayer!=="undefined"&&read instanceof ParametricMeshLayer&&read.parametricMeshType===type;
+        return {native_accepted:true,verification_status:verified?"verified_parametric_mesh_creation":"accepted_unverified",retry_safe:false,
+            comp_id:comp.id,layer_id:read?read.id:null,mesh_type:read?meshTypeName(read.parametricMeshType):null,before_count:before,after_count:comp.numLayers};
+    }
+    function inspectParametricMesh(args) {
+        var comp=resolveComp(args.comp_id),layer=resolveLayer(comp,args.layer_id);
+        if(typeof ParametricMeshLayer==="undefined"||!(layer instanceof ParametricMeshLayer))fail("Target layer is not a ParametricMeshLayer.");
+        return {verification_status:"verified_readback",comp_id:comp.id,layer_id:layer.id,mesh_type:meshTypeName(layer.parametricMeshType),
+            options:cloneValue(layer.parametricMeshOptions),bevel_options:(function(){try{return cloneValue(layer.parametricBevelOptions);}catch(ignore){return null;}})()};
+    }
+    function applyPresetSafe(args) {
+        var comp=resolveComp(args.comp_id),layer=resolveLayer(comp,args.layer_id),path=boundedString(args.preset_file,4096,"preset_file");
+        if(!/^([A-Za-z]:[\\\/]|\\\\|\/)/.test(path)||!/\.ffx$/i.test(path))fail("preset_file must be an absolute .ffx path.");
+        var file=new File(path);if(!file.exists)fail("Animation preset file does not exist.");
+        var selected=[],i;for(i=1;i<=comp.numLayers;i++)if(comp.layer(i).selected)selected.push(comp.layer(i).id);
+        var beforeRevision=requireProject().revision,beforeEffects=0,parade=layer.property("ADBE Effect Parade");
+        if(parade)beforeEffects=parade.numProperties;
+        app.beginUndoGroup("Shuvi: Apply animation preset");
+        var selectionRestored=false;
+        try{
+            for(i=1;i<=comp.numLayers;i++)comp.layer(i).selected=false;
+            layer.selected=true;
+            layer.applyPreset(file);
+        }finally{
+            for(i=1;i<=comp.numLayers;i++)comp.layer(i).selected=false;
+            for(i=0;i<selected.length;i++){var restored=findLayerById(comp,selected[i]);if(restored)restored.selected=true;}
+            selectionRestored=true;
+            app.endUndoGroup();
+        }
+        layer=resolveLayer(comp,args.layer_id);parade=layer.property("ADBE Effect Parade");
+        var afterEffects=parade?parade.numProperties:0,afterRevision=requireProject().revision;
+        var observed=afterRevision>beforeRevision||afterEffects!==beforeEffects;
+        return {native_accepted:true,verification_status:observed&&selectionRestored?"accepted_unverified":"uncertain",retry_safe:false,
+            comp_id:comp.id,layer_id:layer.id,preset_file:file.fsName,project_revision_before:beforeRevision,project_revision_after:afterRevision,
+            effect_count_before:beforeEffects,effect_count_after:afterEffects,selection_restored:selectionRestored,
+            semantic_result_verified:false,visual_review_required:true};
+    }
     function setLayerState(args) {
         var comp=resolveComp(args.comp_id), layer=resolveLayer(comp,args.layer_id);
         var requested={};
@@ -2371,7 +2648,9 @@
     function mutationAction(action) {
         return action === "set_property" || action === "set_values_at_times" || action === "set_expression"
             || action === "add_effect" || action === "remove_effect" || action === "add_null" || action === "add_text" || action === "add_shape" || action === "add_solid"
-            || action === "add_camera" || action === "add_light" || action === "create_comp" || action === "set_comp_settings" || action === "import_footage" || action === "add_item_layer"
+            || action === "add_camera" || action === "add_light" || action === "set_camera_options" || action === "set_light_options" || action === "set_3d_material"
+            || action === "add_parametric_mesh" || action === "apply_preset"
+            || action === "create_comp" || action === "set_comp_settings" || action === "import_footage" || action === "add_item_layer"
             || action === "create_project_folder" || action === "set_project_item_state" || action === "remove_project_item"
             || action === "set_layer_state" || action === "set_layer_parent"
             || action === "move_layer" || action === "set_track_matte" || action === "remove_track_matte"
@@ -2413,6 +2692,10 @@
         if (action === "inspect_context") return inspectContext();
         if (action === "inspect_project_items") return inspectProjectItems();
         if (action === "inspect_comp") return inspectComp(args);
+        if (action === "inspect_camera_options") return inspectCameraOptions(args);
+        if (action === "inspect_light_options") return inspectLightOptions(args);
+        if (action === "inspect_3d_material") return inspect3DMaterial(args);
+        if (action === "inspect_parametric_mesh") return inspectParametricMesh(args);
         if (action === "inspect_effects") return inspectEffects(args);
         if (action === "inspect_property") return inspectProperty(args);
         if (action === "inspect_keyframes") return inspectKeyframes(args);
@@ -2433,6 +2716,11 @@
         if (action === "add_solid") return addSolid(args);
         if (action === "add_camera") return addCamera(args);
         if (action === "add_light") return addLight(args);
+        if (action === "set_camera_options") return setCameraOptions(args);
+        if (action === "set_light_options") return setLightOptions(args);
+        if (action === "set_3d_material") return set3DMaterial(args);
+        if (action === "add_parametric_mesh") return addParametricMesh(args);
+        if (action === "apply_preset") return applyPresetSafe(args);
         if (action === "create_comp") return createComp(args);
         if (action === "set_comp_settings") return setCompSettings(args);
         if (action === "import_footage") return importFootage(args);
