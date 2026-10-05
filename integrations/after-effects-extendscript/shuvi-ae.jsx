@@ -2580,7 +2580,7 @@
         boundedString(path,4096,"render output file");
         if(path.indexOf("[")>=0||path.indexOf("]")>=0)fail("Image-sequence output patterns are not supported by verified render_queue.");
         var lower=path.toLowerCase();
-        var allowed=[".mov",".mp4",".m4v",".avi",".wav",".aif",".aiff",".mxf"],i;
+        var allowed=[".mov",".mp4",".m4v",".m4a",".avi",".wav",".png",".jpg",".jpeg"],i;
         for(i=0;i<allowed.length;i++)if(lower.length>allowed[i].length&&lower.slice(-allowed[i].length)===allowed[i])return new File(path);
         fail("Verified render_queue currently requires a supported single-file media extension.");
     }
@@ -2609,20 +2609,71 @@
             queuedCount++;if(!expected[i])fail("An unlisted render-enabled queue item would also render; mutation refused.");
         }
         if(queuedCount!==args.items.length)fail("Exact render-enabled queue set does not match expectation.");
-        queue.render();
-        var outputs=[],verified=!queue.rendering;
+
+        var cancelPath=$.global.ShuviAECancelPath;
+        if(typeof cancelPath!=="string"||cancelPath.length===0)fail("Render cancellation marker path was not bound by Shuvi transport.");
+        var cancelFile=new File(cancelPath);
+        if(cancelFile.exists){
+            return {native_accepted:false,verification_status:"verified_render_cancelled_before_start",retry_safe:false,
+                render_started:false,render_completion_verified:false,render_cancel_verified:true,cancel_requested:true,
+                cancellation_boundary:"before_render_start",media_parse_verified:false,queue_rendering_after:!!queue.rendering,outputs:[]};
+        }
+
+        var callbackName="ShuviAEOnRenderStatusChanged",callbackInstalled=false,callbacksRestored=false,j;
+        for(i=0;i<before.length;i++){
+            var callbackItem=queue.item(before[i].queue_index);
+            if(callbackItem.onStatusChanged!==null&&callbackItem.onStatusChanged!=="")
+                fail("Render queue item already has onStatusChanged callback; cooperative cancellation refused.");
+        }
+        $.global.ShuviAERenderCancelObserved=false;
+        $.global.ShuviAERenderCancelRequested=false;
+        $.global.ShuviAEOnRenderStatusChanged=function(){
+            try{
+                var marker=new File($.global.ShuviAECancelPath);
+                if(marker.exists){
+                    $.global.ShuviAERenderCancelRequested=true;
+                    if(app.project&&app.project.renderQueue&&app.project.renderQueue.rendering){
+                        app.project.renderQueue.stopRendering();
+                        $.global.ShuviAERenderCancelObserved=true;
+                    }
+                }
+            }catch(ignoreCancel){}
+        };
+
+        try{
+            for(i=0;i<before.length;i++)queue.item(before[i].queue_index).onStatusChanged=callbackName;
+            callbackInstalled=true;
+            queue.render();
+        }finally{
+            if(!queue.rendering){
+                callbacksRestored=true;
+                for(j=0;j<before.length;j++){
+                    try{queue.item(before[j].queue_index).onStatusChanged=null;}
+                    catch(ignoreRestore){callbacksRestored=false;}
+                }
+            }
+            $.global.ShuviAEOnRenderStatusChanged=null;
+        }
+
+        var outputs=[],verified=!queue.rendering&&callbacksRestored,userStopped=false;
         for(i=0;i<before.length;i++){
             var b=before[i],item=queue.item(b.queue_index),om=item.outputModule(1),file=om.file;
             var exists=!!file&&file.exists,size=exists?file.length:null,modified=exists&&file.modified?file.modified.getTime():null;
             var changed=!b.existed||(size!==b.size_bytes)||(modified!==null&&b.modified_ms!==null&&modified>b.modified_ms);
-            var done=item.status===RQItemStatus.DONE;
+            var done=item.status===RQItemStatus.DONE,stopped=item.status===RQItemStatus.USER_STOPPED;
+            if(stopped)userStopped=true;
             if(!done||!exists||!(size>0)||!changed)verified=false;
             outputs.push({queue_index:b.queue_index,comp_id:item.comp?item.comp.id:null,status:String(item.status),
-                done:done,output_file:file?file.fsName:null,size_bytes:size,modified_ms:modified,
+                done:done,user_stopped:stopped,output_file:file?file.fsName:null,size_bytes:size,modified_ms:modified,
                 preexisting_output:b.existed,output_changed:changed});
         }
-        return {native_accepted:true,verification_status:verified?"verified_render_completion":"accepted_unverified",retry_safe:false,
-            render_completion_verified:verified,media_parse_verified:false,queue_rendering_after:!!queue.rendering,outputs:outputs};
+        var cancelRequested=!!$.global.ShuviAERenderCancelRequested||cancelFile.exists;
+        var cancelVerified=cancelRequested&&userStopped&&!!$.global.ShuviAERenderCancelObserved&&!queue.rendering&&callbacksRestored;
+        var status=cancelVerified?"verified_render_cancelled":(verified?"verified_render_completion":"accepted_unverified");
+        return {native_accepted:true,verification_status:status,retry_safe:false,render_started:true,
+            render_completion_verified:verified&&!cancelVerified,render_cancel_verified:cancelVerified,cancel_requested:cancelRequested,
+            cancellation_boundary:cancelVerified?"render_status_callback":null,callback_installed:callbackInstalled,
+            callbacks_restored:callbacksRestored,media_parse_verified:false,queue_rendering_after:!!queue.rendering,outputs:outputs};
     }
     function saveProject() {
         var project = requireProject();
