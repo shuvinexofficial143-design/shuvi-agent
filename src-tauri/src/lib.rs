@@ -85,6 +85,7 @@ mod motion_graphics_provider;
 mod motion_graphics_review;
 mod motion_graphics_correction;
 mod motion_graphics_correction_session;
+mod motion_graphics_delivery;
 mod motion_graphics_remotion;
 mod motion_graphics_remotion_runtime;
 mod audition_bridge_queue;
@@ -171,6 +172,9 @@ Available tools:
 - motion_graphics_correction_session_record_correction: {"request":{"session_id":"UUID","prior_plan":"exact current Plan","revised_plan":"exact proposed revised Plan"}} — revalidate immutable correction constraints and exact snapshots, then record only the proposal; no renderer action is executed
 - motion_graphics_correction_session_record_renderer_approval: {"session_id":"UUID","action_id":"successful motion_graphics_run_remotion action UUID","evidence":{"plan":"exact revised Plan","asset_paths":{},"manifest_path":"absolute manifest","evidence_path":"absolute evidence"}} — freeze verified render evidence and bind it to the exact successful approved Remotion action before advancing the session
 - motion_graphics_correction_session_record_rerender: {"session_id":"UUID","action_id":"same approved render action UUID","evidence":{"plan":"exact revised Plan","asset_paths":{},"manifest_path":"absolute manifest","evidence_path":"absolute evidence"}} — reverify the same action/manifest/output hashes and move the session back to awaiting_review
+- motion_graphics_probe_remotion_alpha: {"request":{"evidence":{"plan":"exact transparent-overlay Plan","asset_paths":{},"manifest_path":"absolute manifest","evidence_path":"absolute evidence"},"ffprobe_executable":"absolute ffprobe executable"}} — approved read-only media probe; verifies the exact accepted MOV reports ProRes + yuva* pixel format and persists an action-bound alpha attestation
+- motion_graphics_accept_final_remotion: {"request":{"render_action_id":"successful exact render action UUID","evidence":{"plan":"exact Plan","asset_paths":{},"manifest_path":"absolute manifest","evidence_path":"absolute evidence"},"review":"exact passing MultiFrameReview","frame_times_seconds":[1,2],"alpha_probe_action_id":"required only for transparent overlay"}} — combine exact process audit binding, file hashes, passing multi-frame review, and alpha attestation when required
+- motion_graphics_plan_premiere_insertion: {"request":{"final_acceptance_action_id":"UUID from final acceptance","seconds":0,"video_track":0,"audio_track":0,"mode":"insert|overwrite"}} — return a normal permission-gated premiere_insert_media proposal from persisted final acceptance; never inserts automatically
 - audition_detect: {}
 - audition_launch: {}
 - audition_readiness_report: {}
@@ -567,6 +571,9 @@ enum ToolAction {
     MotionGraphicsCorrectionSessionRecordCorrection { request:motion_graphics_correction_session::CorrectionRecordRequest },
     MotionGraphicsCorrectionSessionRecordRendererApproval { session_id:String, action_id:String, evidence:motion_graphics_remotion::EvidenceRequest, accepted:motion_graphics_remotion::AcceptedEvidence },
     MotionGraphicsCorrectionSessionRecordRerender { session_id:String, action_id:String, evidence:motion_graphics_remotion::EvidenceRequest, accepted:motion_graphics_remotion::AcceptedEvidence },
+    MotionGraphicsProbeRemotionAlpha { request:motion_graphics_delivery::AlphaProbeRequest, accepted:motion_graphics_remotion::AcceptedEvidence },
+    MotionGraphicsAcceptFinalRemotion { request:motion_graphics_delivery::FinalAcceptanceRequest, validated:motion_graphics_delivery::ValidatedFinalRequest },
+    MotionGraphicsPlanPremiereInsertion { request:motion_graphics_delivery::PremiereInsertionPlanRequest },
     AuditionDetect,
     AuditionLaunch,
     AuditionReadinessReport,
@@ -1207,6 +1214,9 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "motion_graphics_correction_session_record_correction"
         | "motion_graphics_correction_session_record_renderer_approval"
         | "motion_graphics_correction_session_record_rerender"
+        | "motion_graphics_probe_remotion_alpha"
+        | "motion_graphics_accept_final_remotion"
+        | "motion_graphics_plan_premiere_insertion"
         | "audition_detect"
         | "audition_launch"
         | "audition_readiness_report"
@@ -3109,6 +3119,45 @@ fn stage_tool(
             );
             (ToolAction::MotionGraphicsCorrectionSessionRecordRerender {session_id,action_id,evidence,accepted},
                 "Record verified Remotion re-render evidence".into(),detail,RiskLevel::Medium)
+        }
+        "motion_graphics_probe_remotion_alpha" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"motion_graphics_probe_remotion_alpha requires request.".to_string())?;
+            let request:motion_graphics_delivery::AlphaProbeRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Remotion alpha probe request: {e}"))?;
+            let accepted=request.validate()?;
+            let final_render=accepted.final_render.as_ref().ok_or("Alpha probe requires final render evidence.")?;
+            let detail=format!(
+                "Probe exact transparent Remotion output alpha | manifest_sha256={} | output_sha256={} | output={} | ffprobe={}",
+                accepted.manifest_sha256,final_render.sha256,final_render.file,request.ffprobe_executable
+            );
+            (ToolAction::MotionGraphicsProbeRemotionAlpha {request,accepted},
+                "Probe Remotion alpha channel".into(),detail,RiskLevel::High)
+        }
+        "motion_graphics_accept_final_remotion" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"motion_graphics_accept_final_remotion requires request.".to_string())?;
+            let request:motion_graphics_delivery::FinalAcceptanceRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid final Remotion acceptance request: {e}"))?;
+            let validated=request.validate()?;
+            let final_render=validated.accepted.final_render.as_ref().ok_or("Final acceptance requires final render evidence.")?;
+            let detail=format!(
+                "Accept exact Remotion delivery | render_action_id={} | plan_snapshot={} | manifest_sha256={} | output_sha256={} | output={}",
+                request.render_action_id,validated.plan_snapshot,validated.accepted.manifest_sha256,final_render.sha256,final_render.file
+            );
+            (ToolAction::MotionGraphicsAcceptFinalRemotion {request,validated},
+                "Accept verified Remotion delivery".into(),detail,RiskLevel::Low)
+        }
+        "motion_graphics_plan_premiere_insertion" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"motion_graphics_plan_premiere_insertion requires request.".to_string())?;
+            let request:motion_graphics_delivery::PremiereInsertionPlanRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Premiere insertion plan request: {e}"))?;
+            request.validate()?;
+            (ToolAction::MotionGraphicsPlanPremiereInsertion {request},
+                "Plan Premiere insertion for verified motion output".into(),
+                "Read persisted final motion acceptance and return a normal premiere_insert_media proposal. No Premiere mutation.".into(),
+                RiskLevel::Low)
         }
         "audition_detect" => (
             ToolAction::AuditionDetect,
@@ -6593,6 +6642,20 @@ fn motion_graphics_correction_session_path(app:&AppHandle,session_id:&str)->Resu
     let dir=app.path().app_data_dir().map_err(|e|e.to_string())?.join("motion-correction-sessions");
     fs::create_dir_all(&dir).map_err(|e|e.to_string())?;
     Ok(dir.join(format!("{session_id}.json")))
+}
+
+fn motion_graphics_alpha_probe_path(app:&AppHandle,action_id:&str)->Result<std::path::PathBuf,String>{
+    Uuid::parse_str(action_id).map_err(|_|"Invalid alpha probe action ID.")?;
+    let dir=app.path().app_data_dir().map_err(|e|e.to_string())?.join("motion-alpha-probes");
+    fs::create_dir_all(&dir).map_err(|e|e.to_string())?;
+    Ok(dir.join(format!("{action_id}.json")))
+}
+
+fn motion_graphics_final_acceptance_path(app:&AppHandle,action_id:&str)->Result<std::path::PathBuf,String>{
+    Uuid::parse_str(action_id).map_err(|_|"Invalid final acceptance action ID.")?;
+    let dir=app.path().app_data_dir().map_err(|e|e.to_string())?.join("motion-final-acceptance");
+    fs::create_dir_all(&dir).map_err(|e|e.to_string())?;
+    Ok(dir.join(format!("{action_id}.json")))
 }
 
 fn premiere_edit_session_path(app:&AppHandle,id:&str)->Result<std::path::PathBuf,String>{
