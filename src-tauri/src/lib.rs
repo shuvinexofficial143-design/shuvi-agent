@@ -9177,6 +9177,27 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)})
         }
+        ToolAction::MotionGraphicsCorrectionSessionStart {plan_snapshot,max_corrections} => {
+            let session_id=Uuid::new_v4().to_string();
+            let session=motion_graphics_correction_session::Session::new(session_id.clone(),plan_snapshot,max_corrections)?;
+            let path=motion_graphics_correction_session_path(app,&session_id)?;
+            motion_graphics_correction_session::save(&path,&session)?;
+            let value=json!({
+                "session":session,
+                "persisted":true,
+                "review_recording_wired":false,
+                "automatic_execution":false,
+                "status_tool":"motion_graphics_correction_session_status"
+            });
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MotionGraphicsCorrectionSessionStatus {session_id} => {
+            let path=motion_graphics_correction_session_path(app,&session_id)?;
+            let session=motion_graphics_correction_session::load(&path)?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&session).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
         ToolAction::AuditionDetect => {
             let value=audition::detect_installs()?;
             Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
