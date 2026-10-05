@@ -165,3 +165,12 @@ test("Audition feature command route preserves stale-document protection",()=>{
   assert.match(panel,/requireInspectedCommand\(args\)/);
   assert.match(host,/context\.documentSignature != expectedSignature/);
 });
+
+
+test("Audition feature discovery returns bounded ranked candidates without semantic promotion",()=>{
+  assert.match(model,/pub fn rank_feature_commands/);
+  assert.match(model,/ranked\.truncate\(32\)/);
+  assert.match(rust,/candidate_commands/);
+  assert.match(rust,/candidate_ranking_status":"keyword_evidence_only_not_semantic_verification"/);
+  assert.match(rust,/audition::rank_feature_commands/);
+});
