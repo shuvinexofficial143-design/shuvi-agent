@@ -55,6 +55,19 @@ $availability = [ordered]@{
     rust_toolchain_available=($null -ne $cargoCommand)
     media_probe_candidate_present=(Test-Path -LiteralPath $probePath -PathType Leaf)
     real_host_tests_completed=0; runtime_verified=$false; production_ready=$false
+    probe_only=$true
+    evidence_dimensions=[ordered]@{
+        source_implementation='complete_for_declared_extendscript_scope'
+        static_model_tests='current_source_CI_evidence_required'
+        windows_compile='current_source_CI_evidence_required'
+        real_after_effects_host_execution=$(if ($null -eq $selected) { 'unavailable_or_unselected' } else { 'not_executed_by_this_probe' })
+        extendscript_acceptance='not_executed_by_this_probe'
+        mutation_semantics='not_executed_by_this_probe'
+        save_persistence='not_executed_by_this_probe'
+        render_completion='not_executed_by_this_probe'
+        media_parse='not_executed_by_this_probe'
+        production_ready=$false
+    }
 }
 $availability | ConvertTo-Json -Depth 6
 if (-not $Run) { return }

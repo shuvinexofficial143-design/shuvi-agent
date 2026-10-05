@@ -1,11 +1,13 @@
 # After Effects runtime handoff — 2026-10-05
 
 - Branch/remote: `shuvinexofficial143-design/shuvi-agent`, `main`.
-- Last verified remote snapshot before this status edit: `6dd6885f4f4f6d859d04e5bbb83b1349f256c8f8`.
+- Last verified remote snapshot before this status edit: `0a3544890cba38e96a0cd14f9dc1a8e0fe1d62bb`.
   This is an observation, not a permanently current SHA. Resolve actual `main` with `git ls-remote origin refs/heads/main`
   before continuing. The discovery script prints exact checkout SHA in each generated availability report.
 - Source: complete for declared bounded ExtendScript scope; production adapter semantics remain intact.
 - Local current source/model checks: **63 passed, 0 failed**. Typecheck/build and repository validation passed.
+- Current local whole-repository Node suite: **645/717 passed, 72 failed**, with failure names identical to the
+  previous `963c410` baseline. No new Node regression observed.
 - Windows compile/unit evidence: harness commit `e4316501d334bd13b01cc97b41520f738159316d` AE CI succeeded;
   later revisions require their own current-SHA CI check. The real-host test is intentionally ignored by ordinary CI.
 - Real AE tests completed: **0**. Compatible trusted AfterFX executable/process not available; local Rust and trusted
