@@ -135,3 +135,13 @@ test("Audition generic command records before-after context without semantic pro
   assert.match(host,/verificationStatus: "accepted_unverified_command_side_effect"/);
   assert.match(host,/runtimeVerified: false/);
 });
+
+
+test("Audition runtime probe is read only and does not promote edit readiness",()=>{
+  assert.match(rust,/"audition_runtime_probe"/);
+  assert.match(rust,/"runtime_probe_completed":true/);
+  assert.match(rust,/"mutation_performed":false/);
+  assert.match(rust,/"edit_runtime_verified":false/);
+  assert.match(rust,/"production_ready":false/);
+  assert.match(rust,/"support_proven":false/);
+});
