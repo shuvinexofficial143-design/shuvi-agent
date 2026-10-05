@@ -158,6 +158,7 @@ Available tools:
 - motion_graphics_plan_after_effects_output: {"request":{"project_file":"absolute saved .aep/.aepx","comp_id":123,"output_file":"absolute single-file output path","output_module_template":"caller-selected template","render_settings_template":"optional caller-selected template","transparent_required":true}} — read-only queue/evidence planner; stages add_render_queue_item then inspect_output_module, never renders, and never infers alpha from a template name
 - motion_graphics_plan_remotion: {"request":{"plan":{"schema_version":1,"objective":"...","renderer":"auto|remotion","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":false},"delivery":"standalone_video|transparent_overlay","scenes":[...],"review":{"sample_times_seconds":[],"criteria":[]}},"asset_paths":{"asset_1":"absolute local asset path"}}} — read-only deterministic Remotion manifest planner; does not generate arbitrary code, write files, or execute a renderer
 - motion_graphics_accept_remotion_evidence: {"request":{"plan":"exact renderer-neutral Plan","asset_paths":{"asset_1":"absolute local asset path"},"manifest_path":"absolute deterministic manifest JSON path","evidence_path":"absolute shuvi-remotion evidence JSON path"}} — read-only receipt-binding verifier; checks exact manifest equality plus SHA-256-bound preview/final files without claiming that Shuvi itself launched the renderer process
+- motion_graphics_review_remotion_frames: {"request":{"plan":"exact renderer-neutral Plan","asset_paths":{"asset_1":"absolute local asset path"},"manifest_path":"absolute deterministic manifest JSON path","evidence_path":"absolute shuvi-remotion evidence JSON path"}} — verify and stage 2–8 exact receipt-bound PNG bytes, then send them together to the active vision provider for strict ordered multi-frame review; never auto-apply fixes
 - motion_graphics_generate_plan: {"request":{"objective":"motion goal","renderer":"auto|after_effects|remotion","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":true},"delivery":"standalone_video|transparent_overlay","available_asset_ids":["optional_asset_1"],"review_criteria":["readability"]}} — call the active provider once for strict raw JSON, then fail-closed validate fixed constraints/assets; does not run a renderer
 - motion_graphics_review_preview: {"preview_png":"absolute .png path","sample_time_seconds":1.0,"plan":{"schema_version":1,"objective":"...","renderer":"auto|after_effects|remotion","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":true},"delivery":"standalone_video|transparent_overlay","scenes":[...],"review":{"sample_times_seconds":[1],"criteria":["readability"]}}} — stage exact bounded PNG bytes, send only those approved bytes to the active vision provider, strict-parse visible-frame critique, and never auto-apply fixes
 - motion_graphics_generate_correction: {"request":{"plan":"exact reviewed Plan object","plan_snapshot":"exact fnv1a64 snapshot from motion_graphics_review_preview","review":"exact revise VisualReview object","iteration":1,"max_iterations":3}} — ask the active provider once for a snapshot-bound full Plan revision; only animation tracks may change, never auto-run renderer mutations
@@ -546,6 +547,7 @@ enum ToolAction {
     MotionGraphicsPlanAfterEffectsOutput { request: motion_graphics::AfterEffectsOutputPlanRequest },
     MotionGraphicsPlanRemotion { request: motion_graphics::RemotionPlanRequest },
     MotionGraphicsAcceptRemotionEvidence { request: motion_graphics_remotion::EvidenceRequest },
+    MotionGraphicsReviewRemotionFrames { request: motion_graphics_remotion::EvidenceRequest, accepted: motion_graphics_remotion::AcceptedEvidence, frames: Vec<motion_graphics_remotion::StagedPreviewFrame>, provider: ProviderContext },
     MotionGraphicsGeneratePlan { request: motion_graphics_provider::ProviderPlanRequest, provider: ProviderContext },
     MotionGraphicsReviewPreview { preview_path: String, preview_bytes: Vec<u8>, sample_time_seconds: f64, plan: motion_graphics::Plan, provider: ProviderContext },
     MotionGraphicsGenerateCorrection { request: motion_graphics_correction::CorrectionRequest, provider: ProviderContext },
@@ -1178,6 +1180,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "motion_graphics_plan_after_effects_output"
         | "motion_graphics_plan_remotion"
         | "motion_graphics_accept_remotion_evidence"
+        | "motion_graphics_review_remotion_frames"
         | "motion_graphics_generate_plan"
         | "motion_graphics_review_preview"
         | "motion_graphics_generate_correction"
@@ -2886,6 +2889,29 @@ fn stage_tool(
                 "Verify Remotion runtime evidence bindings".into(),
                 detail,
                 RiskLevel::Low)
+        }
+        "motion_graphics_review_remotion_frames" => {
+            let request_value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"motion_graphics_review_remotion_frames requires request.".to_string())?;
+            let request:motion_graphics_remotion::EvidenceRequest=serde_json::from_value(request_value)
+                .map_err(|e|format!("Invalid Remotion multi-frame review request: {e}"))?;
+            let (accepted,frames)=motion_graphics_remotion::verify_and_stage_review(&request)?;
+            let frame_times=frames.iter().map(|frame|frame.requested_time_seconds).collect::<Vec<_>>();
+            motion_graphics_review::multi_frame_prompt(&request.plan,&frame_times)?;
+            let provider=provider_context
+                .ok_or_else(||"Remotion multi-frame review requires the active provider context.".to_string())?;
+            if provider.provider=="deepseek" {
+                return Err("The selected DeepSeek text endpoint is not configured for Remotion multi-frame vision review.".into());
+            }
+            let total_bytes=frames.iter().map(|frame|frame.bytes.len()).sum::<usize>();
+            let detail=format!(
+                "Review {} verified Remotion preview frames together with {}/{} | manifest_sha256={} | {} staged bytes",
+                frames.len(),provider.provider,provider.model,accepted.manifest_sha256,total_bytes
+            );
+            (ToolAction::MotionGraphicsReviewRemotionFrames {request,accepted,frames,provider},
+                "Review verified Remotion frames with AI vision".into(),
+                detail,
+                RiskLevel::Medium)
         }
         "motion_graphics_generate_plan" => {
             let request_value=proposal.arguments.get("request").cloned()
@@ -6880,6 +6906,146 @@ async fn analyze_png_bytes_with_provider(
     }
 }
 
+async fn analyze_png_frames_with_provider(
+    context:&ProviderContext,
+    prompt:&str,
+    frames:&[motion_graphics_remotion::StagedPreviewFrame],
+)->Result<String,String>{
+    const MAX_FRAMES:usize=8;
+    const MAX_FRAME_BYTES:usize=8*1024*1024;
+    const MAX_TOTAL_BYTES:usize=32*1024*1024;
+    if frames.len()<2||frames.len()>MAX_FRAMES{
+        return Err(format!("Multi-frame vision requires 2..={MAX_FRAMES} PNG frames."));
+    }
+    let mut total=0usize;
+    let mut encoded=Vec::with_capacity(frames.len());
+    for (index,frame) in frames.iter().enumerate(){
+        if frame.bytes.is_empty()||frame.bytes.len()>MAX_FRAME_BYTES{
+            return Err(format!("Multi-frame vision image {index} is empty or exceeds 8 MB."));
+        }
+        if frame.bytes.len()<8||&frame.bytes[..8]!=b"\x89PNG\r\n\x1a\n"{
+            return Err(format!("Multi-frame vision image {index} is not a PNG."));
+        }
+        total=total.checked_add(frame.bytes.len())
+            .ok_or_else(||"Multi-frame vision byte count overflowed.".to_string())?;
+        if total>MAX_TOTAL_BYTES{
+            return Err("Multi-frame vision payload exceeds Shuvi's 32 MB image safety limit.".into());
+        }
+        encoded.push((
+            format!(
+                "Frame {} | requested_time_seconds={} | rendered_time_seconds={} | sha256={}",
+                index,frame.requested_time_seconds,frame.rendered_time_seconds,frame.sha256
+            ),
+            BASE64.encode(&frame.bytes)
+        ));
+    }
+    let key=load_api_key(&context.provider)?;
+    match context.provider.as_str(){
+        "gemini"=>{
+            let api_key=key.filter(|value|!value.is_empty())
+                .ok_or_else(||"No Gemini API key saved.".to_string())?;
+            let url=format!(
+                "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+                context.model,api_key
+            );
+            let mut parts=vec![json!({"text":prompt})];
+            for (label,data) in &encoded{
+                parts.push(json!({"text":label}));
+                parts.push(json!({"inlineData":{"mimeType":"image/png","data":data}}));
+            }
+            let response=http_client()?.post(url).json(&json!({
+                "contents":[{"role":"user","parts":parts}]
+            })).send().await.map_err(|error|format!("Gemini multi-frame vision request failed: {error}"))?;
+            let (status,body)=bounded_provider_json(response,"Gemini multi-frame vision").await?;
+            if !status.is_success(){
+                return Err(format!("Gemini multi-frame vision returned {status}: {}",compact_error(&body)));
+            }
+            let parts=body.pointer("/candidates/0/content/parts").and_then(Value::as_array)
+                .ok_or_else(||"Gemini multi-frame vision returned no candidate text.".to_string())?;
+            let text=collect_provider_text(
+                parts.iter().filter_map(|part|part.get("text").and_then(Value::as_str)),
+                "Gemini multi-frame vision",
+            )?;
+            if text.is_empty(){return Err("Gemini multi-frame vision returned an empty response.".into());}
+            Ok(text)
+        }
+        "anthropic"=>{
+            let api_key=key.filter(|value|!value.is_empty())
+                .ok_or_else(||"No Anthropic API key saved.".to_string())?;
+            let mut content=vec![json!({"type":"text","text":prompt})];
+            for (label,data) in &encoded{
+                content.push(json!({"type":"text","text":label}));
+                content.push(json!({
+                    "type":"image",
+                    "source":{"type":"base64","media_type":"image/png","data":data}
+                }));
+            }
+            let response=http_client()?.post("https://api.anthropic.com/v1/messages")
+                .header("x-api-key",api_key)
+                .header("anthropic-version","2023-06-01")
+                .json(&json!({
+                    "model":context.model,
+                    "max_tokens":2400,
+                    "messages":[{"role":"user","content":content}]
+                }))
+                .send().await.map_err(|error|format!("Anthropic multi-frame vision request failed: {error}"))?;
+            let (status,body)=bounded_provider_json(response,"Anthropic multi-frame vision").await?;
+            if !status.is_success(){
+                return Err(format!("Anthropic multi-frame vision returned {status}: {}",compact_error(&body)));
+            }
+            let text=collect_provider_text(
+                body.get("content").and_then(Value::as_array).into_iter().flatten().filter_map(|part|{
+                    if part.get("type").and_then(Value::as_str)==Some("text"){
+                        part.get("text").and_then(Value::as_str)
+                    }else{None}
+                }),
+                "Anthropic multi-frame vision",
+            )?;
+            if text.is_empty(){return Err("Anthropic multi-frame vision returned an empty response.".into());}
+            Ok(text)
+        }
+        "deepseek"=>Err("The selected DeepSeek text endpoint is not configured for multi-frame vision.".into()),
+        "openai"|"openrouter"|"ollama"|"custom"=>{
+            let url=match context.provider.as_str(){
+                "openai"=>"https://api.openai.com/v1/chat/completions".to_string(),
+                "openrouter"=>"https://openrouter.ai/api/v1/chat/completions".to_string(),
+                "ollama"=>context.base_url.clone().filter(|value|!value.trim().is_empty())
+                    .unwrap_or_else(||"http://localhost:11434/v1/chat/completions".into()),
+                "custom"=>context.base_url.clone().filter(|value|!value.trim().is_empty())
+                    .ok_or_else(||"Custom multi-frame vision provider requires a base URL.".to_string())?,
+                _=>unreachable!(),
+            };
+            let mut content=vec![json!({"type":"text","text":prompt})];
+            for (label,data) in &encoded{
+                content.push(json!({"type":"text","text":label}));
+                content.push(json!({
+                    "type":"image_url",
+                    "image_url":{"url":format!("data:image/png;base64,{data}")}
+                }));
+            }
+            let mut request=http_client()?.post(url).json(&json!({
+                "model":context.model,
+                "messages":[{"role":"user","content":content}]
+            }));
+            if let Some(api_key)=key.filter(|value|!value.is_empty()){
+                request=request.bearer_auth(api_key);
+            }else if context.provider!="ollama"{
+                return Err("No API key saved for the selected multi-frame vision provider.".into());
+            }
+            let response=request.send().await
+                .map_err(|error|format!("Multi-frame vision request failed: {error}"))?;
+            let (status,body)=bounded_provider_json(response,"Multi-frame vision provider").await?;
+            if !status.is_success(){
+                return Err(format!("Multi-frame vision provider returned {status}: {}",compact_error(&body)));
+            }
+            let text=body.pointer("/choices/0/message/content").and_then(Value::as_str)
+                .ok_or_else(||"Multi-frame vision provider returned no assistant text.".to_string())?;
+            bounded_provider_text(text,"Multi-frame vision provider")
+        }
+        other=>Err(format!("Provider '{other}' is not supported for multi-frame vision.")),
+    }
+}
+
 fn is_ignored_workspace_dir(name: &str) -> bool {
     matches!(
         name,
@@ -8755,6 +8921,42 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 "visual_review_completed":true,
                 "renderer_provenance_verified":false,
                 "render_output_verified":false,
+                "automatic_correction_performed":false,
+                "production_ready":false
+            });
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MotionGraphicsReviewRemotionFrames {request,accepted,frames,provider} => {
+            let frame_times=frames.iter().map(|frame|frame.requested_time_seconds).collect::<Vec<_>>();
+            let review_prompt=motion_graphics_review::multi_frame_prompt(&request.plan,&frame_times)?;
+            let prompt=format!("{}\n{}",motion_graphics_review::multi_frame_system_prompt(),review_prompt);
+            let analysis=analyze_png_frames_with_provider(&provider,&prompt,&frames).await?;
+            let review=motion_graphics_review::parse_multi_frame_review(&request.plan,&frame_times,&analysis)?;
+            let plan_snapshot=request.plan.fingerprint()?;
+            let frame_bindings=frames.iter().map(|frame|json!({
+                "requested_time_seconds":frame.requested_time_seconds,
+                "rendered_time_seconds":frame.rendered_time_seconds,
+                "file":frame.file,
+                "sha256":frame.sha256,
+                "bytes":frame.bytes.len()
+            })).collect::<Vec<_>>();
+            let value=json!({
+                "plan_snapshot":plan_snapshot,
+                "manifest_sha256":accepted.manifest_sha256,
+                "receipt_binding_verified":accepted.receipt_binding_verified,
+                "preview_files_sha256_verified":accepted.preview_files_sha256_verified,
+                "preview_bytes_bound_at_approval":true,
+                "frame_bindings":frame_bindings,
+                "review":review,
+                "provider":provider.provider,
+                "model":provider.model,
+                "multi_frame_review_completed":true,
+                "visual_review_completed":true,
+                "renderer_execution_reported_by_receipt":accepted.renderer_execution_reported_by_receipt,
+                "renderer_provenance_verified":accepted.runtime_process_provenance_verified,
+                "final_output_sha256_verified":accepted.final_output_sha256_verified,
+                "alpha_channel_probe_verified":accepted.alpha_channel_probe_verified,
                 "automatic_correction_performed":false,
                 "production_ready":false
             });
