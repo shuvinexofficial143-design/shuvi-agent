@@ -9540,7 +9540,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 return Err("Remotion re-render evidence belongs to a stale correction-session plan.".into());
             }
             let _audit=verify_remotion_action_receipt_binding(
-                app,&action_id,&plan_snapshot,&current.manifest_sha256,&current_final.file
+                app,&action_id,&plan_snapshot,&current.manifest_sha256,&current_final.file,&current_final.sha256
             )?;
             session.record_rerender(action_id.clone(),current.manifest_sha256.clone(),current_final.sha256.clone())?;
             motion_graphics_correction_session::save(&path,&session)?;
