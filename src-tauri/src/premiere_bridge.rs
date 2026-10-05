@@ -94,6 +94,11 @@ pub const ALLOWED_ACTIONS: &[&str] = &[
     "move_clip",
     "clone_clip",
     "delete_clip",
+    "media_encoder_status",
+    "media_encoder_events",
+    "media_encoder_launch",
+    "media_encoder_start_batch",
+    "media_encoder_set_xmp",
     "export_sequence",
     "inspect_export",
 ];
