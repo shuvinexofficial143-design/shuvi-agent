@@ -1,6 +1,7 @@
 # Adobe Media Encoder status
 
 - Current source transport: Shuvi -> paired Premiere UXP -> Premiere EncoderManager -> Adobe Media Encoder.
+- Added local Windows Program Files detection plus a separate readiness report; neither claims a working AME runtime.
 - Source runtime verification: **not verified**.
 - Production ready: **false**.
 - Existing Premiere sequence export can already queue to AME with exact project/sequence guards and durable uncertain-export state.
