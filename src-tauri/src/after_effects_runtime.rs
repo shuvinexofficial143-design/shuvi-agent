@@ -108,6 +108,43 @@ fn cleanup_job_files(request_path:&Path,runner_path:&Path){
 fn job_path(workspace:&Path,request_id:&str,suffix:&str)->std::path::PathBuf{
     workspace.join(format!("shuvi-ae-{request_id}.{suffix}"))
 }
+fn valid_request_id(value:&str)->bool{
+    !value.is_empty()&&value.len()<=80&&value.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'||b==b'_')
+}
+
+pub fn cancel_render(workspace:&Path,request_id:&str)->Result<Value,String>{
+    if !workspace.is_absolute()||!workspace.is_dir(){return Err("After Effects job workspace is unavailable.".into());}
+    if !valid_request_id(request_id){return Err("Invalid After Effects request_id.".into());}
+    let request_path=job_path(workspace,request_id,"request.json");
+    if !request_path.is_file(){return Err("No unresolved After Effects request exists for this request_id.".into());}
+    let raw=crate::read_file_bytes_bounded(&request_path,512*1024,"After Effects cancellation request")?;
+    let request:Request=serde_json::from_slice(&raw).map_err(|_|"After Effects request JSON is corrupt.")?;
+    request.validate()?;
+    if request.request_id!=request_id{return Err("After Effects cancellation request identity mismatch.".into());}
+    if request.action!="render_queue"{return Err("Only After Effects render_queue supports cooperative native cancellation.".into());}
+    let receipt_path=job_path(workspace,request_id,"receipt.json");
+    if receipt_path.is_file(){
+        return Ok(json!({"request_id":request_id,"state":"already_finished","cancel_request_written":false,
+            "native_stop_verified":false,"retry_safe":false,"automatic_rollback_performed":false}));
+    }
+    let cancel_path=job_path(workspace,request_id,"cancel");
+    if cancel_path.exists(){
+        let meta=fs::symlink_metadata(&cancel_path).map_err(|e|e.to_string())?;
+        if !meta.is_file()||meta.file_type().is_symlink(){return Err("Existing After Effects cancel marker is not a regular file.".into());}
+        let bytes=crate::read_file_bytes_bounded(&cancel_path,16*1024,"After Effects cancel marker")?;
+        let marker:Value=serde_json::from_slice(&bytes).map_err(|_|"Existing After Effects cancel marker is corrupt.")?;
+        if marker.get("request_id").and_then(Value::as_str)!=Some(request_id){return Err("Existing After Effects cancel marker identity mismatch.".into());}
+        return Ok(json!({"request_id":request_id,"state":"cancel_already_requested","cancel_request_written":true,
+            "native_stop_verified":false,"retry_safe":false,"automatic_rollback_performed":false,"cancel_path":cancel_path}));
+    }
+    let marker=json!({"schema_version":1,"request_id":request_id,"requested_at_ms":crate::now_ms(),
+        "scope":"render_queue_status_boundary_cooperative_stop"});
+    let bytes=serde_json::to_vec_pretty(&marker).map_err(|e|e.to_string())?;
+    write_new(&cancel_path,&bytes,"After Effects cancel marker")?;
+    Ok(json!({"request_id":request_id,"state":"cancel_requested","cancel_request_written":true,
+        "native_stop_verified":false,"retry_safe":false,"automatic_rollback_performed":false,"cancel_path":cancel_path,
+        "note":"The marker requests cooperative stop at an After Effects render status callback. It is not proof the native render has stopped."}))
+}
 
 pub fn pending_jobs(workspace:&Path,reconcile_receipts:bool)->Result<Value,String>{
     if !workspace.is_absolute(){return Err("After Effects workspace must be absolute.".into());}
@@ -141,16 +178,24 @@ pub fn pending_jobs(workspace:&Path,reconcile_receipts:bool)->Result<Value,Strin
         }
         let receipt_path=job_path(workspace,&request.request_id,"receipt.json");
         let runner_path=job_path(workspace,&request.request_id,"runner.jsx");
+        let cancel_path=job_path(workspace,&request.request_id,"cancel");
+        let cancel_requested=cancel_path.is_file();
         if !receipt_path.is_file(){
             blocking+=1;jobs.push(json!({"request_id":request.request_id,"action":request.action,
-                "mutation":request.is_mutating(),"state":"receipt_missing","retry_safe":false,"reconciled":false}));continue;
+                "mutation":request.is_mutating(),
+                "state":if cancel_requested&&request.action=="render_queue"{"cancel_requested_waiting_for_receipt"}else{"receipt_missing"},
+                "cancel_requested":cancel_requested,"native_stop_verified":false,
+                "retry_safe":false,"reconciled":false}));continue;
         }
         let receipt_bytes=crate::read_file_bytes_bounded(&receipt_path,512*1024,"After Effects late receipt")?;
         match after_effects_transport::parse_receipt(&receipt_bytes,&request){
             Ok(receipt)=>{
                 let verification=receipt.result.as_ref().and_then(|v|v.get("verification_status")).and_then(Value::as_str)
                     .unwrap_or(if receipt.ok{"accepted_unverified"}else{"host_error"});
-                let render_evidence=if request.action=="render_queue" {
+                let cancel_verified=request.action=="render_queue"
+                    && matches!(verification,"verified_render_cancelled"|"verified_render_cancelled_before_start")
+                    && receipt.result.as_ref().and_then(|v|v.get("render_cancel_verified")).and_then(Value::as_bool)==Some(true);
+                let render_evidence=if request.action=="render_queue"&&!cancel_verified&&verification=="verified_render_completion" {
                     receipt.result.as_ref().map(render_output_evidence)
                 }else{None};
                 let render_verified=render_evidence.as_ref().is_some_and(|v|
@@ -161,18 +206,19 @@ pub fn pending_jobs(workspace:&Path,reconcile_receipts:bool)->Result<Value,Strin
                 }else{None};
                 let mogrt_verified=mogrt_evidence.as_ref().and_then(|v|v.get("desktop_mogrt_verified")).and_then(Value::as_bool)==Some(true);
                 let post_verified=if request.action=="render_queue" {
-                    verification=="verified_render_completion"&&render_verified
+                    !cancel_verified&&verification=="verified_render_completion"&&render_verified
                 }else if request.action=="export_mogrt" {
                     verification=="verified_mogrt_file_readback"&&mogrt_verified
                 }else{verification.starts_with("verified_")};
                 let host_retry_safe=receipt.result.as_ref().and_then(|v|v.get("retry_safe")).and_then(Value::as_bool)
                     .unwrap_or(!request.is_mutating());
                 if reconcile_receipts{
-                    cleanup_job_files(&request_path,&runner_path);reconciled+=1;
+                    cleanup_job_files(&request_path,&runner_path);let _=fs::remove_file(&cancel_path);reconciled+=1;
                 }else{blocking+=1;}
                 jobs.push(json!({"request_id":request.request_id,"action":request.action,"mutation":request.is_mutating(),
-                    "state":"receipt_available","host_receipt_ok":receipt.ok,"host_version":receipt.host_version,
-                    "verification_status":verification,"post_state_verified":post_verified,"host_retry_safe":host_retry_safe,
+                    "state":if cancel_verified{"cancelled"}else{"receipt_available"},"host_receipt_ok":receipt.ok,"host_version":receipt.host_version,
+                    "verification_status":verification,"post_state_verified":post_verified,"cancel_requested":cancel_requested,
+                    "native_stop_verified":cancel_verified,"automatic_rollback_performed":false,"host_retry_safe":host_retry_safe,
                     "render_output_evidence":render_evidence,
                     "mogrt_output_evidence":mogrt_evidence,
                     "result":receipt.result,"host_error":receipt.error,"retry_safe":false,
@@ -220,8 +266,8 @@ pub async fn execute(
     }else{None};
 
     let plan=after_effects_transport::runner_plan(afterfx_exe,core_script,workspace,request)?;
-    if plan.request_path.exists()||plan.runner_path.exists()||plan.receipt_path.exists(){
-        return Err("After Effects job identity collides with an existing request/runner/receipt; use a fresh request_id.".into());
+    if plan.request_path.exists()||plan.runner_path.exists()||plan.receipt_path.exists()||plan.cancel_path.exists(){
+        return Err("After Effects job identity collides with an existing request/runner/receipt/cancel marker; use a fresh request_id.".into());
     }
     let request_bytes=serde_json::to_vec_pretty(request).map_err(|e|e.to_string())?;
     write_new(&plan.request_path,&request_bytes,"After Effects request")?;
@@ -233,7 +279,7 @@ pub async fn execute(
     let child=match Command::new(afterfx_exe).args(&plan.afterfx_arguments).spawn(){
         Ok(child)=>child,
         Err(error)=>{
-            cleanup_job_files(&plan.request_path,&plan.runner_path);
+            cleanup_job_files(&plan.request_path,&plan.runner_path);let _=fs::remove_file(&plan.cancel_path);
             return Err(format!("After Effects dispatch did not start: {error}"));
         }
     };
@@ -250,6 +296,8 @@ pub async fn execute(
             {
                 Ok(receipt)=>{
                     cleanup_job_files(&plan.request_path,&plan.runner_path);
+                    let cancel_requested=plan.cancel_path.is_file();
+                    let _=fs::remove_file(&plan.cancel_path);
                     let mut verification=receipt.result.as_ref()
                         .and_then(|v|v.get("verification_status")).and_then(Value::as_str)
                         .unwrap_or(if receipt.ok{"accepted_unverified"}else{"host_error"}).to_string();
@@ -270,18 +318,21 @@ pub async fn execute(
                         persistence_evidence=Some(evidence);
                         verified
                     }else{false};
-                    let render_evidence=if request.action=="render_queue" {
+                    let cancel_verified=request.action=="render_queue"
+                        && matches!(verification.as_str(),"verified_render_cancelled"|"verified_render_cancelled_before_start")
+                        && receipt.result.as_ref().and_then(|v|v.get("render_cancel_verified")).and_then(Value::as_bool)==Some(true);
+                    let render_evidence=if request.action=="render_queue"&&!cancel_verified&&verification=="verified_render_completion" {
                         receipt.result.as_ref().map(render_output_evidence)
                     }else{None};
                     let render_verified=render_evidence.as_ref().is_some_and(|v|
-                    v.get("desktop_outputs_verified").and_then(Value::as_bool)==Some(true)
-                    && v.get("media_parse_verified").and_then(Value::as_bool)==Some(true));
+                        v.get("desktop_outputs_verified").and_then(Value::as_bool)==Some(true)
+                        && v.get("media_parse_verified").and_then(Value::as_bool)==Some(true));
                     let mogrt_evidence=if request.action=="export_mogrt" {
                         receipt.result.as_ref().map(mogrt_output_evidence)
                     }else{None};
                     let mogrt_verified=mogrt_evidence.as_ref().and_then(|v|v.get("desktop_mogrt_verified")).and_then(Value::as_bool)==Some(true);
                     let post_verified=if request.action=="save_project"{save_persistence_verified}
-                        else if request.action=="render_queue"{verification=="verified_render_completion"&&render_verified}
+                        else if request.action=="render_queue"{!cancel_verified&&verification=="verified_render_completion"&&render_verified}
                         else if request.action=="export_mogrt"{verification=="verified_mogrt_file_readback"&&mogrt_verified}
                         else{verification.starts_with("verified_")};
                     let host_retry_safe=receipt.result.as_ref()
@@ -290,7 +341,7 @@ pub async fn execute(
                     let success=receipt.ok && (!request.is_mutating() || post_verified);
                     let retry_safe=if request.is_mutating(){receipt.ok&&post_verified&&host_retry_safe}else{true};
                     return Ok(json!({
-                        "state":if success{"verified"}else if receipt.ok{"accepted_unverified"}else if request.is_mutating(){"uncertain"}else{"failed_read_only"},
+                        "state":if cancel_verified{"cancelled"}else if success{"verified"}else if receipt.ok{"accepted_unverified"}else if request.is_mutating(){"uncertain"}else{"failed_read_only"},
                         "request_id":request.request_id,
                         "action":request.action,
                         "afterfx_pid":pid,
@@ -300,6 +351,9 @@ pub async fn execute(
                         "host_error":receipt.error,
                         "verification_status":verification,
                         "post_state_verified":post_verified,
+                        "cancel_requested":cancel_requested,
+                        "native_stop_verified":cancel_verified,
+                        "automatic_rollback_performed":false,
                         "project_persistence_evidence":persistence_evidence,
                         "render_output_evidence":render_evidence,
                         "mogrt_output_evidence":mogrt_evidence,
