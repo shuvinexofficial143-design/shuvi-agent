@@ -73,6 +73,9 @@ function mediaEncoderCapabilities() {
     embeddedXmpSetterSupported: Boolean(manager && typeof manager.setEmbeddedXMPEnabled === "function"),
     sidecarXmpSetterSupported: Boolean(manager && typeof manager.setSidecarXMPEnabled === "function"),
     xmpApiSince: "26.3",
+    presetExtensionInspectionSupported: typeof premiere.EncoderManager?.getExportFileExtension === "function",
+    encodeFileSupported: Boolean(manager && typeof manager.encodeFile === "function"),
+    encodeProjectItemSupported: Boolean(manager && typeof manager.encodeProjectItem === "function"),
     encoderEventsSupported: Boolean(premiere.EventManager?.addEventListener && manager),
     directMediaEncoderUxp: {
       state: "future_adapter_public_beta_not_current_transport",
@@ -111,6 +114,26 @@ function mediaEncoderRangeCode(range, allowWorkArea) {
     : "Range must be entire or in_out.");
 }
 
+function mediaEncoderOutputExtension(path) {
+  const name = String(path || "").replaceAll("\\","/").split("/").pop() || "";
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0 || dot === name.length - 1) return "";
+  return name.slice(dot + 1).toLowerCase();
+}
+
+async function mediaEncoderPresetExtensionIfAvailable(preset) {
+  try {
+    const project = await premiere.Project.getActiveProject();
+    const sequence = project ? await project.getActiveSequence() : null;
+    if (!sequence || typeof premiere.EncoderManager?.getExportFileExtension !== "function") return null;
+    const extension = await premiere.EncoderManager.getExportFileExtension(sequence, preset);
+    const normalized = typeof extension === "string" ? extension.replace(/^\./, "").toLowerCase() : "";
+    return normalized && normalized.length <= 32 && /^[a-z0-9]+$/i.test(normalized) ? normalized : null;
+  } catch {
+    return null;
+  }
+}
+
 function mediaEncoderEventCandidates(afterSequence) {
   return mediaEncoderEvents
     .filter(row => row.sequence > afterSequence && row.kind === "queued")
@@ -126,8 +149,7 @@ async function inspectMediaEncoderPreset(argumentsValue) {
   const project = await requireProject();
   const sequence = await project.getActiveSequence();
   if (!sequence) throw new Error("Preset extension inspection requires an active Premiere sequence.");
-  const extension = await premiere.EncoderManager.getExportFileExtension(sequence, preset);
-  const normalized = typeof extension === "string" ? extension.replace(/^\./, "").toLowerCase() : "";
+  const normalized = await mediaEncoderPresetExtensionIfAvailable(preset);
   if (!normalized || normalized.length > 32 || !/^[a-z0-9]+$/i.test(normalized)) {
     throw new Error("Premiere did not return a usable export extension for this preset.");
   }
@@ -162,6 +184,11 @@ async function encodeMediaFile(argumentsValue) {
       throw new Error("File in/out range is invalid.");
     }
   }
+  const presetExtension = await mediaEncoderPresetExtensionIfAvailable(preset);
+  const outputExtension = mediaEncoderOutputExtension(output);
+  if (presetExtension && outputExtension !== presetExtension) {
+    throw new Error("Output extension does not match the inspected .epr preset export extension.");
+  }
   bindMediaEncoderListeners();
   const beforeEventSequence = mediaEncoderEventSequence;
   const accepted = Boolean(await manager.encodeFile(
@@ -185,6 +212,9 @@ async function encodeMediaFile(argumentsValue) {
     preset,
     range,
     workAreaCode: workArea,
+    presetExportExtension: presetExtension,
+    outputExtension,
+    outputExtensionVerified: Boolean(presetExtension),
     removeUponCompletion,
     startQueueImmediately,
     completionVerified: false,
@@ -220,6 +250,11 @@ async function encodeMediaProjectItem(argumentsValue) {
   if (!manager?.isAMEInstalled) throw new Error("Adobe Media Encoder is not installed.");
   if (typeof manager.encodeProjectItem !== "function") throw new Error("EncoderManager.encodeProjectItem is unavailable.");
 
+  const presetExtension = await mediaEncoderPresetExtensionIfAvailable(preset);
+  const outputExtension = mediaEncoderOutputExtension(output);
+  if (presetExtension && outputExtension !== presetExtension) {
+    throw new Error("Output extension does not match the inspected .epr preset export extension.");
+  }
   bindMediaEncoderListeners();
   const beforeEventSequence = mediaEncoderEventSequence;
   const accepted = Boolean(await manager.encodeProjectItem(
@@ -242,6 +277,9 @@ async function encodeMediaProjectItem(argumentsValue) {
     preset,
     range,
     workAreaCode: workArea,
+    presetExportExtension: presetExtension,
+    outputExtension,
+    outputExtensionVerified: Boolean(presetExtension),
     removeUponCompletion,
     startQueueImmediately,
     completionVerified: false,
