@@ -99,6 +99,9 @@ pub const ALLOWED_ACTIONS: &[&str] = &[
     "media_encoder_launch",
     "media_encoder_start_batch",
     "media_encoder_set_xmp",
+    "media_encoder_inspect_preset",
+    "media_encoder_encode_file",
+    "media_encoder_encode_project_item",
     "export_sequence",
     "inspect_export",
 ];
