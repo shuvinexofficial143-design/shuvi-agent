@@ -33,8 +33,8 @@
 
 ## Next source phase
 
-1. Run Script Dictionary inspection on a compatible Audition host and capture the real current WaveDocument/Multitrack/effect objects and methods.
-2. Add safe typed operations only for methods actually observed in that live dictionary.
+1. Run the implemented Script Dictionary inspection on a compatible Audition host and capture the real current WaveDocument/Multitrack/effect objects and methods.
+2. Review those live results, then add safe typed operations only for methods actually observed there.
 3. Prefer specific typed cleanup/favorite/export actions over generic command invocation.
 4. Add checkpoint/output validation where a mutation can change or overwrite audio.
 5. Run a disposable real-host acceptance suite before setting runtime_verified or production_ready.
