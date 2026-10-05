@@ -327,6 +327,7 @@ function shuviAuditionInvokeCommand(args)
 
     app.invokeCommand(commandValue);
 
+    var afterContext = shuviAuditionInspectContext();
     return {
         accepted: true,
         property: args.property,
@@ -334,6 +335,9 @@ function shuviAuditionInvokeCommand(args)
         enabledBefore: true,
         expectedDocumentSignature: expectedSignature,
         observedDocumentSignature: context.documentSignature,
+        beforeContext: context,
+        afterContext: afterContext,
+        documentIdentityStableAfter: afterContext.documentSignature == expectedSignature,
         verificationStatus: "accepted_unverified_command_side_effect",
         retrySafe: false,
         runtimeVerified: false
