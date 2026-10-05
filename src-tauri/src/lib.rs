@@ -6764,6 +6764,30 @@ fn read_action_audit_receipt(
     }
     Ok(matched)
 }
+fn verify_remotion_action_receipt_binding(
+    app:&AppHandle,
+    action_id:&str,
+    plan_snapshot:&str,
+    manifest_sha256:&str,
+    output_file:&str,
+)->Result<AuditEntry,String>{
+    let receipt=read_action_audit_receipt(app,action_id)?
+        .ok_or_else(||"No audit receipt exists for the supplied Remotion action ID.".to_string())?;
+    if receipt.event!="executed"||!receipt.success||receipt.tool!="motion_graphics_run_remotion"{
+        return Err("Renderer approval requires a successful executed motion_graphics_run_remotion audit receipt.".into());
+    }
+    for token in [
+        format!("plan_snapshot={plan_snapshot}"),
+        format!("manifest_sha256={manifest_sha256}"),
+        format!("output={output_file}"),
+    ]{
+        if !receipt.detail.contains(&token){
+            return Err("Remotion action audit receipt does not bind the exact approved plan, manifest, and output path.".into());
+        }
+    }
+    Ok(receipt)
+}
+
 
 fn prune_screenshot_dir(dir: &Path, keep_existing: usize) -> Result<(), String> {
     let mut screenshots = fs::read_dir(dir)
@@ -9331,6 +9355,76 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 "revised_plan_snapshot":summary.revised_plan_snapshot,
                 "renderer_approval_recorded":false,
                 "renderer_execution_performed":false
+            });
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MotionGraphicsCorrectionSessionRecordRendererApproval {session_id,action_id,evidence,accepted} => {
+            let current=motion_graphics_remotion::verify(&evidence)?;
+            let staged_final=accepted.final_render.as_ref().ok_or("Staged renderer approval lost final render evidence.")?;
+            let current_final=current.final_render.as_ref().ok_or("Renderer approval lost final render evidence.")?;
+            if current.manifest_sha256!=accepted.manifest_sha256
+                ||current_final.sha256!=staged_final.sha256
+                ||current_final.file!=staged_final.file
+                ||!current.final_output_sha256_verified {
+                return Err("Remotion renderer evidence changed after approval staging.".into());
+            }
+            let plan_snapshot=evidence.plan.fingerprint()?;
+            let path=motion_graphics_correction_session_path(app,&session_id)?;
+            let mut session=motion_graphics_correction_session::load(&path)?;
+            if session.current_plan_snapshot!=plan_snapshot {
+                return Err("Approved Remotion renderer evidence belongs to a stale correction-session plan.".into());
+            }
+            let _audit=verify_remotion_action_receipt_binding(
+                app,&action_id,&plan_snapshot,&current.manifest_sha256,&current_final.file
+            )?;
+            session.record_renderer_approval(action_id.clone())?;
+            motion_graphics_correction_session::save(&path,&session)?;
+            let value=json!({
+                "session_id":session.session_id,
+                "status":session.status,
+                "action_id":action_id,
+                "plan_snapshot":plan_snapshot,
+                "manifest_sha256":current.manifest_sha256,
+                "output_sha256":current_final.sha256,
+                "renderer_action_audit_binding_verified":true,
+                "final_output_sha256_verified":true,
+                "next":"motion_graphics_correction_session_record_rerender"
+            });
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MotionGraphicsCorrectionSessionRecordRerender {session_id,action_id,evidence,accepted} => {
+            let current=motion_graphics_remotion::verify(&evidence)?;
+            let staged_final=accepted.final_render.as_ref().ok_or("Staged re-render record lost final render evidence.")?;
+            let current_final=current.final_render.as_ref().ok_or("Re-render record lost final render evidence.")?;
+            if current.manifest_sha256!=accepted.manifest_sha256
+                ||current_final.sha256!=staged_final.sha256
+                ||current_final.file!=staged_final.file
+                ||!current.final_output_sha256_verified {
+                return Err("Remotion re-render evidence changed after approval staging.".into());
+            }
+            let plan_snapshot=evidence.plan.fingerprint()?;
+            let path=motion_graphics_correction_session_path(app,&session_id)?;
+            let mut session=motion_graphics_correction_session::load(&path)?;
+            if session.current_plan_snapshot!=plan_snapshot {
+                return Err("Remotion re-render evidence belongs to a stale correction-session plan.".into());
+            }
+            let _audit=verify_remotion_action_receipt_binding(
+                app,&action_id,&plan_snapshot,&current.manifest_sha256,&current_final.file
+            )?;
+            session.record_rerender(action_id.clone(),current.manifest_sha256.clone(),current_final.sha256.clone())?;
+            motion_graphics_correction_session::save(&path,&session)?;
+            let value=json!({
+                "session_id":session.session_id,
+                "status":session.status,
+                "action_id":action_id,
+                "plan_snapshot":plan_snapshot,
+                "manifest_sha256":current.manifest_sha256,
+                "output_sha256":current_final.sha256,
+                "renderer_action_audit_binding_verified":true,
+                "rerender_evidence_verified":true,
+                "next":"motion_graphics_review_remotion_frames"
             });
             Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)})
