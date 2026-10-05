@@ -65,6 +65,7 @@
 - `ease_in`, `ease_out`, and `ease_in_out` now have a deterministic source-planned AE mapping: directional interpolation plus a fixed zero-speed / 33.333333-influence eased side using host-dimension-aware readback. This is a Shuvi default curve contract, not a claim that it is the ideal creative curve for every animation.
 - Transparent-overlay queue setup and output-module evidence are now source-planned, but delivery is still not claimed until runtime alpha attestation maps exact host output settings to an accepted alpha-capable configuration and final render evidence is verified.
 - The deterministic Remotion manifest now includes its bounded review sample specification and can be consumed by the fixed `remotion-runtime/` source. Runtime execution is still permission-bound and has not been verified in packaged Shuvi on a real render yet.
+- Read-only `motion_graphics_accept_remotion_evidence` now verifies an exact regenerated manifest against the saved manifest, binds the runtime receipt to the manifest SHA-256, and re-hashes every referenced preview/final output file. It deliberately reports `runtime_process_provenance_verified=false`: receipt/file consistency is not proof that Shuvi launched the renderer process.
 - Provider plan generation has not yet been verified with a real API request in the packaged Shuvi runtime.
 - A valid plan does not prove visual quality, renderer compatibility, output persistence, or final export correctness.
 - Dedicated single-frame image review is now wired through the existing provider vision transport; multi-frame continuity review is not yet implemented.
@@ -76,7 +77,7 @@
 
 1. Add a runtime-bound alpha acceptance/attestation contract that consumes exact `inspect_output_module` evidence without trusting template names or localized strings by themselves.
 2. Wire the fixed reviewed `remotion-runtime/` into Shuvi's permission/action layer and runtime acceptance; arbitrary provider-generated renderer code remains forbidden.
-3. Bind the runtime's bounded preview-frame evidence receipts to Claude multi-frame review so approved PNGs are tied to the exact manifest and renderer output.
+3. Use the receipt-binding verifier as the gate for Claude multi-frame review so approved PNG bytes are tied to the exact manifest and evidence receipt; process provenance remains a separate execution-layer attestation.
 4. Add bounded multi-frame continuity review on top of the single-frame strict review contract.
 5. Add a persistent correction session that carries the existing snapshot/iteration rules across review → proposal → approved renderer action → re-render → re-review, with no blind retries.
 6. Add final output evidence and optional Premiere transparent-overlay insertion.
