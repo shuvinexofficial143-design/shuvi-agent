@@ -183,3 +183,10 @@ test("Audition runtime probe returns bounded ranked candidates without claiming 
   assert.match(rust,/into_iter\(\)\.take\(5\)/);
   assert.match(rust,/support_proven":false/);
 });
+
+
+test("Audition document signature includes host version",()=>{
+  assert.match(host,/\[out\.hostVersion \|\| "", out\.documentType/);
+  assert.match(host,/documentSignature/);
+  assert.match(host,/Audition document changed; inspect context again/);
+});
