@@ -143,6 +143,7 @@ pub struct FinalAcceptance{
     pub schema_version:u8,
     pub acceptance_action_id:String,
     pub render_action_id:String,
+    pub review_action_id:String,
     pub plan_snapshot:String,
     pub manifest_sha256:String,
     pub output_file:String,
@@ -161,6 +162,7 @@ impl FinalAcceptance{
     pub fn validate(&self)->Result<(),String>{
         Uuid::parse_str(&self.acceptance_action_id).map_err(|_|"Invalid final acceptance action ID.".to_string())?;
         Uuid::parse_str(&self.render_action_id).map_err(|_|"Invalid final render action ID.".to_string())?;
+        Uuid::parse_str(&self.review_action_id).map_err(|_|"Invalid final review action ID.".to_string())?;
         path_text(&self.output_file,"final acceptance output_file")?;
         let snapshot=self.plan_snapshot.strip_prefix("fnv1a64:").unwrap_or_default();
         if self.schema_version!=1||snapshot.len()!=16||!snapshot.bytes().all(|b|b.is_ascii_hexdigit())
@@ -277,6 +279,7 @@ mod tests{
             schema_version:1,
             acceptance_action_id:Uuid::new_v4().to_string(),
             render_action_id:Uuid::new_v4().to_string(),
+            review_action_id:Uuid::new_v4().to_string(),
             plan_snapshot:"fnv1a64:1111111111111111".into(),
             manifest_sha256:"a".repeat(64),
             output_file:std::env::temp_dir().join("overlay.mov").display().to_string(),
