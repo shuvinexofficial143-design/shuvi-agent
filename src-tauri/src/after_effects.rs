@@ -314,6 +314,7 @@ pub fn capability_report()->Value {
             "marker_remove":"source_supported_with_time_comment_stale_guard",
             "project_save_persistence":"source_supported_with_independent_file_fingerprint",
             "shape_primitive":"source_supported_rectangle_ellipse_with_fill_stroke_readback",
+            "component_vector_keyframes":"source_supported_position_scale_xy_component_preservation_with_existing_time_stale_guard_and_exact_readback",
             "text_animator":"source_supported_allowlisted_property_with_range_selector_readback",
             "project_item_inspection":"source_supported_bounded_512_items",
             "effect_inspection":"source_supported_bounded_256_effects",
