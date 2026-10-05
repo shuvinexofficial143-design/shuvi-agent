@@ -88,7 +88,7 @@ impl ProviderPlanRequest {
             "required_review_criteria":self.review_criteria
         })).map_err(|e|e.to_string())?;
         Ok(format!(
-            "Create exactly one renderer-neutral motion-graphics Plan JSON object. Return raw JSON only: no markdown, comments, prose, code fences, tool calls, or extra keys. Use schema_version=1 and copy objective, renderer, duration_seconds, canvas, and delivery exactly from FIXED_CONSTRAINTS. Use 1..64 scenes; each scene has id, start_seconds, duration_seconds, and 1..128 layers. Layer kind is text, image, video, or group. Do not use shape in this schema version because visible shape geometry/style is not yet expressible. Text layers require text. Image/video asset_id must be chosen only from available_asset_ids; if that list is empty, do not create image/video layers. Tracks may use x, y, scale_x, scale_y, rotation_degrees, opacity. x/y are composition-space pixel coordinates; scale_x/scale_y are factors where 1.0 means 100%; opacity is 0..1; rotation_degrees is Z rotation in degrees. Keyframe time_seconds is relative to its scene and must be strictly increasing. Easing is linear, ease_in, ease_out, ease_in_out, or hold. review.sample_times_seconds must be strictly increasing within the full plan duration. review.criteria must include every required_review_criteria string exactly; you may add bounded useful criteria. Do not invent assets, renderer capabilities, fonts, colors, effects, paths, APIs, or fields outside the schema. FIXED_CONSTRAINTS={fixed}"
+            "Create exactly one renderer-neutral motion-graphics Plan JSON object. Return raw JSON only: no markdown, comments, prose, code fences, tool calls, or extra keys. Use schema_version=1 and copy objective, renderer, duration_seconds, canvas, and delivery exactly from FIXED_CONSTRAINTS. Use 1..64 scenes; each scene has id, start_seconds, duration_seconds, and 1..128 layers. Layer kind is text, shape, image, video, or group. Text layers require text. Image/video asset_id must be chosen only from available_asset_ids; if that list is empty, do not create image/video layers. Shape layers require shape={kind:'rectangle'|'ellipse',size:[width,height],position:[x,y],roundness,fill_color?,stroke_color?,stroke_width}; size must be positive, colors are RGBA arrays with each channel 0..1, at least one of fill_color/stroke_color is required, and ellipse roundness must be 0. Do not attach shape to non-shape layers. Tracks may use x, y, scale_x, scale_y, rotation_degrees, opacity. x/y are composition-space pixel coordinates; scale_x/scale_y are factors where 1.0 means 100%; opacity is 0..1; rotation_degrees is Z rotation in degrees. Keyframe time_seconds is relative to its scene and must be strictly increasing. Easing is linear, ease_in, ease_out, ease_in_out, or hold. review.sample_times_seconds must be strictly increasing within the full plan duration. review.criteria must include every required_review_criteria string exactly; you may add bounded useful criteria. Do not invent assets, renderer capabilities, fonts, effects, paths, APIs, or fields outside the schema. FIXED_CONSTRAINTS={fixed}"
         ))
     }
 
@@ -115,9 +115,6 @@ impl ProviderPlanRequest {
         let available=self.available_asset_ids.iter().map(String::as_str).collect::<HashSet<_>>();
         for scene in &plan.scenes {
             for layer in &scene.layers {
-                if layer.kind==LayerKind::Shape {
-                    return Err("Provider-generated shape layers are disabled until visible shape geometry/style is represented in the neutral schema.".into());
-                }
                 if matches!(layer.kind,LayerKind::Image|LayerKind::Video) {
                     let asset=layer.asset_id.as_deref().ok_or("Generated media layer is missing asset_id.")?;
                     if !available.contains(asset) {
@@ -157,7 +154,7 @@ pub fn system_prompt()->&'static str{
 #[cfg(test)]
 mod tests{
     use super::*;
-    use crate::motion_graphics::{Easing,Keyframe,Layer,Property,ReviewSpec,Scene,Track};
+    use crate::motion_graphics::{Easing,Keyframe,Layer,Property,ReviewSpec,Scene,ShapeKind,ShapeSpec,Track};
 
     fn request()->ProviderPlanRequest{
         ProviderPlanRequest{
@@ -180,7 +177,7 @@ mod tests{
             canvas:Canvas{width:1920,height:1080,fps:30.0,transparent_background:true},
             delivery:DeliveryKind::TransparentOverlay,
             scenes:vec![Scene{id:"intro".into(),start_seconds:0.0,duration_seconds:4.0,layers:vec![
-                Layer{id:"title".into(),kind:LayerKind::Text,name:"Title".into(),text:Some("Hello".into()),asset_id:None,
+                Layer{id:"title".into(),kind:LayerKind::Text,name:"Title".into(),text:Some("Hello".into()),asset_id:None,shape:None,
                     tracks:vec![Track{property:Property::Opacity,keyframes:vec![
                         Keyframe{time_seconds:0.0,value:0.0,easing:Easing::EaseOut},
                         Keyframe{time_seconds:0.5,value:1.0,easing:Easing::EaseOut},
@@ -211,16 +208,21 @@ mod tests{
 
         let mut invented=plan();
         invented.scenes[0].layers.push(Layer{id:"photo".into(),kind:LayerKind::Image,name:"Photo".into(),
-            text:None,asset_id:Some("not_available".into()),tracks:vec![]});
+            text:None,asset_id:Some("not_available".into()),shape:None,tracks:vec![]});
         assert!(req.validate_generated(&invented).is_err());
     }
 
     #[test]
-    fn provider_plan_rejects_shape_until_geometry_schema_exists(){
+    fn provider_plan_accepts_explicit_bounded_shape_geometry(){
         let req=request();
         let mut generated=plan();
-        generated.scenes[0].layers[0].kind=LayerKind::Shape;
-        generated.scenes[0].layers[0].text=None;
-        assert!(req.validate_generated(&generated).is_err());
+        generated.scenes[0].layers.push(Layer{
+            id:"badge".into(),kind:LayerKind::Shape,name:"Badge".into(),text:None,asset_id:None,
+            shape:Some(ShapeSpec{kind:ShapeKind::Rectangle,size:[480.0,120.0],position:[0.0,0.0],roundness:18.0,
+                fill_color:Some([0.05,0.1,0.2,0.9]),stroke_color:None,stroke_width:1.0}),
+            tracks:vec![]
+        });
+        assert!(req.validate_generated(&generated).is_ok());
+        assert!(req.prompt().unwrap().contains("fill_color"));
     }
 }
