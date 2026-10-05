@@ -81,6 +81,7 @@ use premiere_bridge::{PremiereBridgeShared, PremiereBridgeStatus};
 mod audition;
 mod audition_acceptance;
 mod motion_graphics;
+mod motion_graphics_provider;
 mod audition_bridge_queue;
 mod audition_bridge;
 use audition_bridge::{AuditionBridgeShared, AuditionBridgeStatus};
@@ -151,6 +152,7 @@ Available tools:
 - pointer_click: {"x":123,"y":456,"button":"left|right|middle","clicks":1}
 - motion_graphics_validate_plan: {"plan":{"schema_version":1,"objective":"short goal","renderer":"auto|after_effects|remotion","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":true},"delivery":"standalone_video|transparent_overlay","scenes":[{"id":"scene_1","start_seconds":0,"duration_seconds":4,"layers":[{"id":"title","kind":"text|shape|image|video|group","name":"Title","text":"optional text","asset_id":"optional_asset_id","tracks":[{"property":"x|y|scale_x|scale_y|rotation_degrees|opacity","keyframes":[{"time_seconds":0,"value":0,"easing":"linear|ease_in|ease_out|ease_in_out|hold"}]}]}]}],"review":{"sample_times_seconds":[1,2,3],"criteria":["readability"]}}}
 - motion_graphics_plan_after_effects: {"request":{"project_file":"absolute saved .aep/.aepx","composition_name":"Shuvi Motion","plan":{"schema_version":1,"objective":"...","renderer":"auto|after_effects","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":true},"delivery":"standalone_video|transparent_overlay","scenes":[...],"review":{"sample_times_seconds":[],"criteria":[]}},"asset_item_ids":{"asset_1":123}}} — read-only adapter planner; every emitted AE mutation still requires fresh inspect_context, exact project revision and normal after_effects_run approval
+- motion_graphics_generate_plan: {"request":{"objective":"motion goal","renderer":"auto|after_effects|remotion","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":true},"delivery":"standalone_video|transparent_overlay","available_asset_ids":["optional_asset_1"],"review_criteria":["readability"]}} — call the active provider once for strict raw JSON, then fail-closed validate fixed constraints/assets; does not run a renderer
 - audition_detect: {}
 - audition_launch: {}
 - audition_readiness_report: {}
@@ -533,6 +535,7 @@ enum ToolAction {
     PointerClick { x: i32, y: i32, button: String, clicks: u32 },
     MotionGraphicsValidatePlan { plan: motion_graphics::Plan },
     MotionGraphicsPlanAfterEffects { request: motion_graphics::AfterEffectsPlanRequest },
+    MotionGraphicsGeneratePlan { request: motion_graphics_provider::ProviderPlanRequest, provider: ProviderContext },
     AuditionDetect,
     AuditionLaunch,
     AuditionReadinessReport,
@@ -1159,6 +1162,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "pointer_click"
         | "motion_graphics_validate_plan"
         | "motion_graphics_plan_after_effects"
+        | "motion_graphics_generate_plan"
         | "audition_detect"
         | "audition_launch"
         | "audition_readiness_report"
@@ -2827,6 +2831,23 @@ fn stage_tool(
                 "Plan motion graphics for After Effects".into(),
                 "Read-only adapter plan that composes existing typed After Effects actions. It performs no host mutation and every future step keeps fresh project/revision guards and normal approval.".into(),
                 RiskLevel::Low)
+        }
+        "motion_graphics_generate_plan" => {
+            let request_value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"motion_graphics_generate_plan requires request.".to_string())?;
+            let request:motion_graphics_provider::ProviderPlanRequest=serde_json::from_value(request_value)
+                .map_err(|e|format!("Invalid motion-graphics provider planning request: {e}"))?;
+            request.validate()?;
+            let provider=provider_context
+                .ok_or_else(||"Motion-graphics provider planning requires the active provider context.".to_string())?;
+            let detail=format!(
+                "Generate and strict-validate one motion-graphics plan with {}/{} | objective_chars={} | no renderer execution",
+                provider.provider,provider.model,request.objective.chars().count()
+            );
+            (ToolAction::MotionGraphicsGeneratePlan {request,provider},
+                "Generate motion-graphics plan".into(),
+                detail,
+                RiskLevel::Medium)
         }
         "audition_detect" => (
             ToolAction::AuditionDetect,
@@ -8545,6 +8566,43 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
         }
         ToolAction::MotionGraphicsPlanAfterEffects {request} => {
             let value=request.plan()?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MotionGraphicsGeneratePlan {request,provider} => {
+            let prompt=request.prompt()?;
+            let key=load_api_key(&provider.provider)?;
+            let response=send_chat(
+                ChatInput{
+                    provider:provider.provider.clone(),
+                    model:provider.model.clone(),
+                    base_url:provider.base_url.clone(),
+                    messages:vec![
+                        ChatMessage{role:"system".into(),content:motion_graphics_provider::system_prompt().into()},
+                        ChatMessage{role:"user".into(),content:prompt},
+                    ],
+                    orchestration_context:None,
+                },
+                key
+            ).await?;
+            if response.tool_proposal.is_some() {
+                return Err("Motion-graphics planning provider returned a tool proposal instead of the required raw Plan JSON.".into());
+            }
+            let plan=request.parse_generated(&response.content)?;
+            let summary=plan.summary()?;
+            let value=json!({
+                "plan":plan,
+                "validation_summary":summary,
+                "provider":response.provider,
+                "model":response.model,
+                "usage":response.usage,
+                "strict_json_validated":true,
+                "fixed_constraints_preserved":true,
+                "renderer_execution_performed":false,
+                "preview_render_verified":false,
+                "visual_review_verified":false,
+                "production_ready":false
+            });
             Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)})
         }
