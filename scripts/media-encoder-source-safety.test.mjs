@@ -23,6 +23,8 @@ test("Media Encoder controls stay on documented Premiere EncoderManager surfaces
   assert.match(main,/getExportFileExtension/);
   assert.match(main,/encodeFile/);
   assert.match(main,/encodeProjectItem/);
+  assert.match(main,/Output extension does not match the inspected \.epr preset export extension/);
+  assert.match(main,/outputExtensionVerified: Boolean\(presetExtension\)/);
 });
 
 test("Media Encoder event evidence is bounded and never promoted to exact Shuvi job correlation",()=>{
