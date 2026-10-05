@@ -137,16 +137,35 @@ pub fn save(path:&Path,registration:&Registration)->Result<(),String>{
     let backup=path.with_extension("json.bak");
     if tmp.exists(){return Err("Interrupted Audition acceptance write exists; inspect it before retrying.".into());}
 
+    let read_valid=|candidate:&Path|->Result<(),String>{
+        let existing=crate::read_file_bytes_bounded(candidate,MAX_BYTES,"Audition acceptance registration")?;
+        let value:Registration=serde_json::from_slice(&existing)
+            .map_err(|_|"Corrupt Audition acceptance registration.".to_string())?;
+        value.validate()
+    };
+    let primary_present=path.try_exists().map_err(|e|e.to_string())?;
+    let backup_present=backup.try_exists().map_err(|e|e.to_string())?;
+    let primary_valid=primary_present && read_valid(path).is_ok();
+
+    if !primary_valid && primary_present {
+        if !backup_present || read_valid(&backup).is_err() {
+            return Err("Existing Audition acceptance registration is corrupt and no valid backup exists; preserve it for inspection instead of overwriting.".into());
+        }
+    }
+
     let mut file=fs::OpenOptions::new().write(true).create_new(true).open(&tmp)
         .map_err(|e|format!("Could not create Audition acceptance temporary file: {e}"))?;
     file.write_all(&bytes).and_then(|_|file.flush()).and_then(|_|file.sync_all())
         .map_err(|e|format!("Could not persist Audition acceptance registration: {e}"))?;
     drop(file);
 
-    if path.exists(){
-        if backup.exists(){fs::remove_file(&backup).map_err(|e|e.to_string())?;}
+    if primary_valid {
+        if backup_present {fs::remove_file(&backup).map_err(|e|e.to_string())?;}
         fs::rename(path,&backup).map_err(|e|format!("Could not rotate Audition acceptance registration: {e}"))?;
+    } else if primary_present {
+        fs::remove_file(path).map_err(|e|format!("Could not remove corrupt Audition acceptance primary after validating its backup: {e}"))?;
     }
+
     fs::rename(&tmp,path).map_err(|e|format!("Could not publish Audition acceptance registration: {e}"))?;
     Ok(())
 }
@@ -178,5 +197,39 @@ mod tests{
         assert_eq!(value["mutation_enabled_automatically"],false);
         assert_eq!(value["steps"][6]["implemented"],false);
         assert!(plan(Some(&registration),Some("unknown")).is_err());
+    }
+
+    #[test]fn persistence_preserves_last_good_backup_and_refuses_stale_tmp(){
+        let dir=std::env::temp_dir().join(format!("shuvi-audition-acceptance-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let path=dir.join("disposable-v1.json");
+        let backup=path.with_extension("json.bak");
+        let tmp=path.with_extension("json.tmp");
+
+        let first=Registration::from_context(&context(),true).unwrap();
+        save(&path,&first).unwrap();
+        let mut second_context=context();
+        second_context["documentName"]=json!("fixture-2.wav");
+        second_context["documentSignature"]=json!("26.0|WaveDocument|fixture-2.wav|48000|96000");
+        let second=Registration::from_context(&second_context,true).unwrap();
+        save(&path,&second).unwrap();
+        assert!(backup.exists());
+
+        fs::write(&tmp,b"interrupted").unwrap();
+        assert!(save(&path,&first).is_err());
+        fs::remove_file(&tmp).unwrap();
+
+        fs::write(&path,b"corrupt").unwrap();
+        save(&path,&first).unwrap();
+        assert!(load(&path).unwrap().is_some());
+
+        fs::write(&path,b"corrupt").unwrap();
+        fs::write(&backup,b"corrupt").unwrap();
+        assert!(save(&path,&second).is_err());
+
+        let _=fs::remove_file(&path);
+        let _=fs::remove_file(&backup);
+        let _=fs::remove_file(&tmp);
+        let _=fs::remove_dir(&dir);
     }
 }
