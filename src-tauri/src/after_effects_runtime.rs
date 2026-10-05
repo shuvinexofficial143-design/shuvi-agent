@@ -300,7 +300,8 @@ pub async fn execute(
     }
     let checkpoint=if request.is_mutating(){
         let path=request.expected_project_file.as_deref().ok_or("Mutating AE request missing project expectation.")?;
-        Some(crate::after_effects_checkpoint::create(Path::new(path),crate::now_ms())?)
+        Some(crate::after_effects_checkpoint::create_for_request(Path::new(path),crate::now_ms(),&request.request_id,
+            request.expected_project_revision.ok_or("Checkpoint requires project revision.")?)?)
     }else{None};
     let save_before=if request.action=="save_project" {
         let path=request.expected_project_file.as_deref().ok_or("After Effects save requires expected project file.")?;

@@ -307,6 +307,7 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - after_effects_pending_jobs: {}
 - after_effects_cancel_render: {"request_id":"exact unresolved render_queue request ID"} — writes a request-scoped cooperative cancel marker; native stop is verified only by a later AE USER_STOPPED receipt
 - after_effects_verify_checkpoint: {"backup_path":"absolute Shuvi Backups .aep/.aepx path","expected_project_path":"absolute original .aep/.aepx path"} — verifies backup fingerprint/path binding only; never restores or opens a project automatically
+- after_effects_plan_recovery: {"backup_path":"absolute Shuvi Backups .aep/.aepx path","expected_project_path":"absolute original project path","expected_request_id":"optional exact mutation request ID"} — verifies the saved-file checkpoint and returns an approval-required recovery plan; unsaved host edits are not checkpointed
 - after_effects_run: {"afterfx_exe":"absolute path to AfterFX.exe","timeout_ms":30000,"request":{"schema_version":1,"request_id":"fresh-id","action":"inspect_context","expected_project_file":null,"expected_project_revision":null,"args":{}}} — for every mutating action copy exact expected_project_file + expected_project_revision from the latest inspect_context receipt
 - after_effects_plan_hand_track: {"plan":{"property":{"target":{"comp_id":1,"layer_id":2},"path":[{"match_name":"ADBE Transform Group","property_index":1},{"match_name":"ADBE Position","property_index":2}]},"samples":[{"time_seconds":0.0,"point":[100,200],"confidence":0.9}],"coordinate_space":"comp_pixels"}}
 - after_effects_plan_hand_track_rig: {"plan":{"comp_id":1,"target_layer_id":2,"samples":[{"time_seconds":0.0,"point":[100,200],"confidence":0.95}],"coordinate_space":"comp_pixels","name":"Shuvi Hand Track","preserve_visual":true,"min_confidence":0.5,"smoothing_alpha":0.35,"max_gap_seconds":0.25}}
@@ -652,6 +653,7 @@ enum ToolAction {
     AfterEffectsPendingJobs,
     AfterEffectsCancelRender { request_id:String },
     AfterEffectsVerifyCheckpoint { backup_path:String, expected_project_path:String },
+    AfterEffectsPlanRecovery { backup_path:String, expected_project_path:String, expected_request_id:Option<String> },
     AfterEffectsRun { afterfx_exe:String, timeout_ms:u64, request:after_effects_transport::Request },
     AfterEffectsPlanHandTrack { plan: after_effects::HandTrackPlan },
     AfterEffectsPlanHandTrackRig { plan: after_effects::HandTrackRigPlan },
@@ -1252,6 +1254,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "after_effects_pending_jobs"
         | "after_effects_cancel_render"
         | "after_effects_verify_checkpoint"
+        | "after_effects_plan_recovery"
         | "after_effects_run"
         | "after_effects_plan_hand_track"
         | "after_effects_plan_hand_track_rig"
@@ -5596,6 +5599,16 @@ fn stage_tool(
             (ToolAction::AfterEffectsVerifyCheckpoint {backup_path:backup_path.clone(),expected_project_path:expected_project_path.clone()},
                 "Verify After Effects checkpoint".into(),
                 format!("Read-only verification of backup fingerprint and exact source-path binding. backup={backup_path}; expected_project={expected_project_path}. Does not restore, overwrite or open a project."),
+                RiskLevel::Low)
+        }
+        "after_effects_plan_recovery" => {
+            let backup_path=absolute_path(arg_string(&proposal.arguments,"backup_path")?)?;
+            let expected_project_path=absolute_path(arg_string(&proposal.arguments,"expected_project_path")?)?;
+            let expected_request_id=proposal.arguments.get("expected_request_id")
+                .map(|_|arg_string(&proposal.arguments,"expected_request_id")).transpose()?;
+            (ToolAction::AfterEffectsPlanRecovery {backup_path:backup_path.clone(),expected_project_path:expected_project_path.clone(),expected_request_id},
+                "Plan After Effects recovery".into(),
+                format!("Read-only checkpoint verification and recovery plan. backup={backup_path}; original={expected_project_path}. Any project opening/restoration requires a separate explicit approval."),
                 RiskLevel::Low)
         }
         "after_effects_run" => {
@@ -12421,6 +12434,11 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 "automatic_restore_performed":false,"project_opened_automatically":false,
                 "recovery_of_host_state_verified":false,"manual_open_required":true,
                 "note":"This proves checkpoint bytes/path binding only. Open the checkpoint manually in After Effects before separately verifying recovered host state."});
+            Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AfterEffectsPlanRecovery {backup_path,expected_project_path,expected_request_id} => {
+            let value=after_effects_checkpoint::recovery_plan(Path::new(&backup_path),Path::new(&expected_project_path),expected_request_id.as_deref())?;
             Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)})
         }
