@@ -8491,16 +8491,22 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 let queries=audition::feature_queries(feature)?;
                 let mut command_hits=0_u64;
                 let mut class_hits=0_u64;
-                for query in queries.iter().take(2) {
+                let mut inventories=Vec::<Value>::new();
+                for query in queries.iter().take(3) {
                     let command_result=state.audition_bridge.request("search_commands",json!({"query":query}),Duration::from_secs(12)).await?;
+                    inventories.push(command_result.clone());
                     let dictionary_result=state.audition_bridge.request("script_dictionary",
                         json!({"query":query,"maxClasses":8}),Duration::from_secs(20)).await?;
                     command_hits=command_hits.saturating_add(command_result.get("count").and_then(Value::as_u64).unwrap_or(0));
                     class_hits=class_hits.saturating_add(dictionary_result.get("returnedClasses").and_then(Value::as_u64).unwrap_or(0));
                 }
+                let candidates=audition::rank_feature_commands(feature,&inventories)?
+                    .into_iter().take(5).collect::<Vec<_>>();
                 features.insert(feature.into(),json!({
                     "command_hits":command_hits,
                     "dictionary_class_hits":class_hits,
+                    "top_command_candidates":candidates,
+                    "candidate_semantics_verified":false,
                     "support_proven":false
                 }));
             }
