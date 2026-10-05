@@ -1,4 +1,4 @@
-use crate::motion_graphics::{Plan,LayerKind};
+use crate::motion_graphics::Plan;
 use crate::motion_graphics_review::{self,VisualReview,Verdict};
 use serde::{Deserialize,Serialize};
 
@@ -44,7 +44,7 @@ impl CorrectionRequest {
         let plan=serde_json::to_string(&self.plan).map_err(|e|e.to_string())?;
         let review=serde_json::to_string(&self.review).map_err(|e|e.to_string())?;
         Ok(format!(
-            "Return exactly one raw JSON motion-graphics Plan revision for correction iteration {}/{}. No markdown, prose, code fences, tool calls, or extra wrapper object. ORIGINAL_PLAN={plan} VISUAL_REVIEW={review}. Preserve schema_version, objective, renderer, duration_seconds, canvas, delivery, scene count/order/ids/start_seconds/duration_seconds, layer count/order/ids/kind/name/text/asset_id, and the entire review specification exactly. You may change only layer animation tracks/keyframes/easing, and only when the visible review issues justify that change. Do not add/remove/reorder scenes or layers. Do not rewrite text. Do not change assets. Do not invent effects, fonts, colors, APIs, renderer code, or hidden properties. The revised plan must differ from ORIGINAL_PLAN and remain valid under the same renderer-neutral schema.",
+            "Return exactly one raw JSON motion-graphics Plan revision for correction iteration {}/{}. No markdown, prose, code fences, tool calls, or extra wrapper object. ORIGINAL_PLAN={plan} VISUAL_REVIEW={review}. Preserve schema_version, objective, renderer, duration_seconds, canvas, delivery, scene count/order/ids/start_seconds/duration_seconds, layer count/order/ids/kind/name/text/asset_id/shape, and the entire review specification exactly. You may change only layer animation tracks/keyframes/easing, and only when the visible review issues justify that change. Do not add/remove/reorder scenes or layers. Do not rewrite text. Do not change assets. Do not invent effects, fonts, colors, APIs, renderer code, or hidden properties. The revised plan must differ from ORIGINAL_PLAN and remain valid under the same renderer-neutral schema.",
             self.iteration,self.max_iterations
         ))
     }
@@ -94,11 +94,8 @@ impl CorrectionRequest {
             }
             for (old,new) in before.layers.iter().zip(&after.layers) {
                 if old.id!=new.id || old.kind!=new.kind || old.name!=new.name
-                    || old.text!=new.text || old.asset_id!=new.asset_id {
+                    || old.text!=new.text || old.asset_id!=new.asset_id || old.shape!=new.shape {
                     return Err(format!("Motion correction changed immutable layer identity/content for '{}'.",old.id));
-                }
-                if matches!(new.kind,LayerKind::Shape) {
-                    return Err("Motion correction cannot synthesize shape appearance until geometry/style is represented in the neutral schema.".into());
                 }
             }
         }
@@ -125,7 +122,7 @@ mod tests{
             canvas:Canvas{width:1920,height:1080,fps:30.0,transparent_background:true},
             delivery:DeliveryKind::TransparentOverlay,
             scenes:vec![Scene{id:"intro".into(),start_seconds:0.0,duration_seconds:3.0,layers:vec![
-                Layer{id:"title".into(),kind:LayerKind::Text,name:"Title".into(),text:Some("Hello".into()),asset_id:None,
+                Layer{id:"title".into(),kind:LayerKind::Text,name:"Title".into(),text:Some("Hello".into()),asset_id:None,shape:None,
                     tracks:vec![Track{property:Property::Opacity,keyframes:vec![
                         Keyframe{time_seconds:0.0,value:0.0,easing:Easing::EaseOut},
                         Keyframe{time_seconds:0.5,value:1.0,easing:Easing::EaseOut},
