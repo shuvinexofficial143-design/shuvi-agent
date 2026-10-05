@@ -255,6 +255,17 @@ impl Plan {
         Ok(())
     }
 
+    pub fn fingerprint(&self)->Result<String,String>{
+        self.validate()?;
+        let bytes=serde_json::to_vec(self).map_err(|e|format!("Could not encode motion-graphics plan snapshot: {e}"))?;
+        let mut hash=0xcbf29ce484222325u64;
+        for byte in bytes {
+            hash^=byte as u64;
+            hash=hash.wrapping_mul(0x100000001b3);
+        }
+        Ok(format!("fnv1a64:{hash:016x}"))
+    }
+
     pub fn summary(&self)->Result<Value,String>{
         self.validate()?;
         let layer_count=self.scenes.iter().map(|scene|scene.layers.len()).sum::<usize>();
@@ -601,6 +612,18 @@ mod tests{
         assert_eq!(summary["scene_count"],1);
         assert_eq!(summary["renderer_execution_performed"],false);
         assert_eq!(summary["production_ready"],false);
+    }
+
+    #[test]
+    fn plan_snapshot_changes_when_validated_plan_changes(){
+        let plan=valid_plan();
+        let first=plan.fingerprint().unwrap();
+        assert_eq!(first.len(),24);
+        assert!(first.starts_with("fnv1a64:"));
+        let mut changed=valid_plan();
+        changed.scenes[0].layers[0].tracks[0].keyframes[1].value=0.75;
+        let second=changed.fingerprint().unwrap();
+        assert_ne!(first,second);
     }
 
     #[test]
