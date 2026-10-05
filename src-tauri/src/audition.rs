@@ -31,6 +31,7 @@ pub fn readiness_report()->serde_json::Value{
             "read_only_runtime_probe":true,
             "disposable_acceptance_registration":true,
             "acceptance_read_only_plan":true,
+            "acceptance_read_only_preflight":true,
             "acceptance_destructive_execution":"not_implemented",
             "command_enabled_probe":true,
             "inspected_command_invoke":true,
@@ -46,6 +47,7 @@ pub fn readiness_report()->serde_json::Value{
             "host acceptance does not prove persisted audio output",
             "ranked command candidates are keyword evidence only and do not establish semantic effect behavior",
             "disposable acceptance registration never enables mutation automatically",
+            "acceptance preflight only rechecks exact disposable identity, live discovery and command enabled state; it never invokes a command",
             "no effect parameter API is claimed until observed from the live Audition Script Dictionary"
         ]
     })
