@@ -85,6 +85,7 @@ mod motion_graphics_provider;
 mod motion_graphics_review;
 mod motion_graphics_correction;
 mod motion_graphics_remotion;
+mod motion_graphics_remotion_runtime;
 mod audition_bridge_queue;
 mod audition_bridge;
 use audition_bridge::{AuditionBridgeShared, AuditionBridgeStatus};
@@ -158,6 +159,7 @@ Available tools:
 - motion_graphics_plan_after_effects_output: {"request":{"project_file":"absolute saved .aep/.aepx","comp_id":123,"output_file":"absolute single-file output path","output_module_template":"caller-selected template","render_settings_template":"optional caller-selected template","transparent_required":true}} — read-only queue/evidence planner; stages add_render_queue_item then inspect_output_module, never renders, and never infers alpha from a template name
 - motion_graphics_plan_remotion: {"request":{"plan":{"schema_version":1,"objective":"...","renderer":"auto|remotion","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":false},"delivery":"standalone_video|transparent_overlay","scenes":[...],"review":{"sample_times_seconds":[],"criteria":[]}},"asset_paths":{"asset_1":"absolute local asset path"}}} — read-only deterministic Remotion manifest planner; does not generate arbitrary code, write files, or execute a renderer
 - motion_graphics_accept_remotion_evidence: {"request":{"plan":"exact renderer-neutral Plan","asset_paths":{"asset_1":"absolute local asset path"},"manifest_path":"absolute deterministic manifest JSON path","evidence_path":"absolute shuvi-remotion evidence JSON path"}} — read-only receipt-binding verifier; checks exact manifest equality plus SHA-256-bound preview/final files without claiming that Shuvi itself launched the renderer process
+- motion_graphics_run_remotion: {"request":{"plan":"exact renderer-neutral Plan","asset_paths":{"asset_1":"absolute local asset path"},"runtime_dir":"absolute isolated remotion-runtime directory with exact installed package versions","node_executable":"optional absolute node executable; omit to use fixed node command","output_file":"absolute new .mp4 or .mov path","timeout_ms":900000}} — high-risk approved render action; materializes only Shuvi-embedded fixed renderer source, refuses overwrite, enforces managed-process RAM/timeout guards, and verifies the emitted evidence before claiming output
 - motion_graphics_review_remotion_frames: {"request":{"plan":"exact renderer-neutral Plan","asset_paths":{"asset_1":"absolute local asset path"},"manifest_path":"absolute deterministic manifest JSON path","evidence_path":"absolute shuvi-remotion evidence JSON path"}} — verify and stage 2–8 exact receipt-bound PNG bytes, then send them together to the active vision provider for strict ordered multi-frame review; never auto-apply fixes
 - motion_graphics_generate_plan: {"request":{"objective":"motion goal","renderer":"auto|after_effects|remotion","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":true},"delivery":"standalone_video|transparent_overlay","available_asset_ids":["optional_asset_1"],"review_criteria":["readability"]}} — call the active provider once for strict raw JSON, then fail-closed validate fixed constraints/assets; does not run a renderer
 - motion_graphics_review_preview: {"preview_png":"absolute .png path","sample_time_seconds":1.0,"plan":{"schema_version":1,"objective":"...","renderer":"auto|after_effects|remotion","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":true},"delivery":"standalone_video|transparent_overlay","scenes":[...],"review":{"sample_times_seconds":[1],"criteria":["readability"]}}} — stage exact bounded PNG bytes, send only those approved bytes to the active vision provider, strict-parse visible-frame critique, and never auto-apply fixes
@@ -547,6 +549,7 @@ enum ToolAction {
     MotionGraphicsPlanAfterEffectsOutput { request: motion_graphics::AfterEffectsOutputPlanRequest },
     MotionGraphicsPlanRemotion { request: motion_graphics::RemotionPlanRequest },
     MotionGraphicsAcceptRemotionEvidence { request: motion_graphics_remotion::EvidenceRequest },
+    MotionGraphicsRunRemotion { request: motion_graphics_remotion_runtime::ExecutionRequest },
     MotionGraphicsReviewRemotionFrames { request: motion_graphics_remotion::EvidenceRequest, accepted: motion_graphics_remotion::AcceptedEvidence, frames: Vec<motion_graphics_remotion::StagedPreviewFrame>, provider: ProviderContext },
     MotionGraphicsGeneratePlan { request: motion_graphics_provider::ProviderPlanRequest, provider: ProviderContext },
     MotionGraphicsReviewPreview { preview_path: String, preview_bytes: Vec<u8>, sample_time_seconds: f64, plan: motion_graphics::Plan, provider: ProviderContext },
@@ -1180,6 +1183,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "motion_graphics_plan_after_effects_output"
         | "motion_graphics_plan_remotion"
         | "motion_graphics_accept_remotion_evidence"
+        | "motion_graphics_run_remotion"
         | "motion_graphics_review_remotion_frames"
         | "motion_graphics_generate_plan"
         | "motion_graphics_review_preview"
@@ -2889,6 +2893,21 @@ fn stage_tool(
                 "Verify Remotion runtime evidence bindings".into(),
                 detail,
                 RiskLevel::Low)
+        }
+        "motion_graphics_run_remotion" => {
+            let request_value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"motion_graphics_run_remotion requires request.".to_string())?;
+            let request:motion_graphics_remotion_runtime::ExecutionRequest=serde_json::from_value(request_value)
+                .map_err(|e|format!("Invalid Remotion execution request: {e}"))?;
+            request.validate()?;
+            let detail=format!(
+                "Run Shuvi's embedded fixed Remotion renderer | runtime_dir={} | output={} | timeout_ms={} | writes media and evidence",
+                request.runtime_dir,request.output_file,request.timeout_ms
+            );
+            (ToolAction::MotionGraphicsRunRemotion {request},
+                "Render motion graphics with fixed Remotion runtime".into(),
+                detail,
+                RiskLevel::High)
         }
         "motion_graphics_review_remotion_frames" => {
             let request_value=proposal.arguments.get("request").cloned()
@@ -8867,6 +8886,128 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let value=motion_graphics_remotion::verify(&request)?;
             Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MotionGraphicsRunRemotion {request} => {
+            let prepared=motion_graphics_remotion_runtime::prepare(&request)?;
+            let mut child=Command::new(&prepared.node_program)
+                .arg(&prepared.render_script)
+                .arg(&prepared.manifest_path)
+                .arg(&prepared.output_file)
+                .arg(&prepared.evidence_path)
+                .arg(&prepared.preview_dir)
+                .current_dir(&prepared.job_dir)
+                .env("CI","1")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|error|format!("Could not launch fixed Remotion runtime: {error}"))?;
+            let child_pid=child.id();
+            if let Err(error)=register_managed_process(state,child_pid){
+                let _=terminate_managed_process_tree(child_pid);
+                let _=child.kill();
+                let _=child.wait();
+                return Err(format!("Remotion render was stopped before execution could continue safely: {error}"));
+            }
+            if let Some(action_id)=execution_action_id{
+                match state.running_action_children.lock(){
+                    Ok(mut running)=>{running.insert(action_id.to_string(),child_pid);}
+                    Err(_)=>{
+                        let _=terminate_registered_process_tree(state,child_pid);
+                        unregister_managed_process(state,child_pid);
+                        let _=child.kill();
+                        let _=child.wait();
+                        return Err("Running-action state is unavailable; Remotion render was stopped safely.".into());
+                    }
+                }
+            }
+            let hard_limit_triggered=AtomicBool::new(false);
+            let hard_limit_terminated=AtomicBool::new(false);
+            let timeout_triggered=AtomicBool::new(false);
+            let timeout_terminated=AtomicBool::new(false);
+            let timeout=Duration::from_millis(prepared.timeout_ms);
+            let started=std::time::Instant::now();
+            let output_result=std::thread::scope(|scope|{
+                let monitor=scope.spawn(||{
+                    while managed_process_identity_matches(state,child_pid).unwrap_or(false){
+                        if started.elapsed()>=timeout{
+                            timeout_triggered.store(true,Ordering::Release);
+                            let stopped=terminate_registered_process_tree(state,child_pid).unwrap_or(false);
+                            timeout_terminated.store(stopped,Ordering::Release);
+                            break;
+                        }
+                        match current_runtime_status(state){
+                            Ok(status) if status.over_hard_limit=>{
+                                hard_limit_triggered.store(true,Ordering::Release);
+                                let stopped=terminate_registered_process_tree(state,child_pid).unwrap_or(false);
+                                hard_limit_terminated.store(stopped,Ordering::Release);
+                                break;
+                            }
+                            Ok(_)=>{}
+                            Err(_)=>break,
+                        }
+                        std::thread::sleep(Duration::from_millis(250));
+                    }
+                });
+                let output=child.wait_with_output();
+                let _=monitor.join();
+                output
+            });
+            if let Some(action_id)=execution_action_id{
+                if let Ok(mut running)=state.running_action_children.lock(){running.remove(action_id);}
+            }
+            unregister_managed_process(state,child_pid);
+            let output=output_result.map_err(|error|format!("Could not wait for fixed Remotion runtime: {error}"))?;
+            let timed_out=timeout_triggered.load(Ordering::Acquire);
+            let over_ram=hard_limit_triggered.load(Ordering::Acquire);
+            if timed_out||over_ram||!output.status.success(){
+                let guard=if timed_out{
+                    if timeout_terminated.load(Ordering::Acquire){"Remotion render exceeded its approved timeout and the managed process tree was stopped."}
+                    else{"Remotion render exceeded its approved timeout; process-tree termination could not be confirmed."}
+                }else if over_ram{
+                    if hard_limit_terminated.load(Ordering::Acquire){"Remotion render exceeded Shuvi's 4 GB hard RAM ceiling and the managed process tree was stopped."}
+                    else{"Remotion render exceeded Shuvi's 4 GB hard RAM ceiling; process-tree termination could not be confirmed."}
+                }else{"Fixed Remotion runtime exited unsuccessfully."};
+                return Ok(ActionResult{
+                    success:false,tool,
+                    stdout:serde_json::to_string_pretty(&json!({
+                        "job_id":prepared.job_id,
+                        "job_dir":prepared.job_dir,
+                        "output_file":prepared.output_file,
+                        "evidence_path":prepared.evidence_path,
+                        "fixed_runtime_source_materialized":true,
+                        "managed_process_registered":true,
+                        "render_verified":false,
+                        "production_ready":false
+                    })).unwrap_or_default(),
+                    stderr:truncate_output(format!("{}\n{}",guard,String::from_utf8_lossy(&output.stderr))),
+                    exit_code:output.status.code().or(Some(1)),
+                });
+            }
+            let accepted=motion_graphics_remotion::verify(&prepared.evidence_request)?;
+            if !accepted.final_output_sha256_verified{
+                return Err("Fixed Remotion process exited successfully but final output evidence was not SHA-256 verified.".into());
+            }
+            let value=json!({
+                "job_id":prepared.job_id,
+                "job_dir":prepared.job_dir,
+                "output_file":prepared.output_file,
+                "evidence_path":prepared.evidence_path,
+                "preview_dir":prepared.preview_dir,
+                "dependency_versions":prepared.dependency_versions,
+                "dependency_versions_verified":true,
+                "dependency_source_integrity_verified":false,
+                "fixed_runtime_source_materialized":true,
+                "shuvi_managed_runtime_launch_verified":true,
+                "managed_process_registered":true,
+                "receipt_evidence":accepted,
+                "render_output_sha256_verified":true,
+                "alpha_channel_probe_verified":false,
+                "visual_review_verified":false,
+                "production_ready":false,
+                "renderer_stdout":truncate_output(String::from_utf8_lossy(&output.stdout).to_string())
+            });
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:truncate_output(String::from_utf8_lossy(&output.stderr).to_string()),exit_code:output.status.code()})
         }
         ToolAction::MotionGraphicsGeneratePlan {request,provider} => {
             let prompt=request.prompt()?;
