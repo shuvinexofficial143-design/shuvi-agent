@@ -97,7 +97,7 @@ pub fn observation(output: &str, existed_before: bool) -> serde_json::Value {
 mod tests {
     use super::*;
     #[test] fn normal_collision_and_no_delete() {
-        let dir=std::env::temp_dir().join(format!("shuvi-export-{}",std::process::id()));
+        let dir=std::env::temp_dir().join(format!("shuvi-export-{}",uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         let out=dir.join("final.mp4");let s=out.to_str().unwrap();
         assert!(inspect(s,None,false,None).unwrap().executable);
@@ -111,7 +111,7 @@ mod tests {
         fs::remove_file(out).unwrap();fs::remove_dir(dir).unwrap();
     }
     #[test] fn rejects_directory_missing_parent_preset_and_reserved_names() {
-        let dir=std::env::temp_dir().join(format!("shuvi-export-{}",std::process::id()));
+        let dir=std::env::temp_dir().join(format!("shuvi-export-{}",uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         let s=dir.join("missing").join("final.mp4");assert!(!inspect(s.to_str().unwrap(),None,false,None).unwrap().executable);
         let dir_as_file=dir.join("folder.mp4");fs::create_dir_all(&dir_as_file).unwrap();
