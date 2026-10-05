@@ -3130,8 +3130,8 @@ fn stage_tool(
             let accepted=request.validate()?;
             let final_render=accepted.final_render.as_ref().ok_or("Alpha probe requires final render evidence.")?;
             let detail=format!(
-                "Probe exact transparent Remotion output alpha | manifest_sha256={} | output_sha256={} | output={} | ffprobe={}",
-                accepted.manifest_sha256,final_render.sha256,final_render.file,request.ffprobe_executable
+                "Probe exact transparent Remotion output alpha | manifest_sha256={} | output_sha256={} | output_path_sha256={} | ffprobe_path_sha256={}",
+                accepted.manifest_sha256,final_render.sha256,motion_path_sha256(&final_render.file),motion_path_sha256(&request.ffprobe_executable)
             );
             (ToolAction::MotionGraphicsProbeRemotionAlpha {request,accepted},
                 "Probe Remotion alpha channel".into(),detail,RiskLevel::High)
@@ -3144,8 +3144,8 @@ fn stage_tool(
             let validated=request.validate()?;
             let final_render=validated.accepted.final_render.as_ref().ok_or("Final acceptance requires final render evidence.")?;
             let detail=format!(
-                "Accept exact Remotion delivery | render_action_id={} | plan_snapshot={} | manifest_sha256={} | output_sha256={} | output={}",
-                request.render_action_id,validated.plan_snapshot,validated.accepted.manifest_sha256,final_render.sha256,final_render.file
+                "Accept exact Remotion delivery | render_action_id={} | plan_snapshot={} | manifest_sha256={} | output_sha256={} | output_path_sha256={}",
+                request.render_action_id,validated.plan_snapshot,validated.accepted.manifest_sha256,final_render.sha256,motion_path_sha256(&final_render.file)
             );
             (ToolAction::MotionGraphicsAcceptFinalRemotion {request,validated},
                 "Accept verified Remotion delivery".into(),detail,RiskLevel::Low)
@@ -6859,6 +6859,23 @@ fn verify_remotion_action_receipt_binding(
     Ok(receipt)
 }
 
+fn verify_motion_action_receipt_tokens(
+    app:&AppHandle,
+    action_id:&str,
+    expected_tool:&str,
+    tokens:&[String],
+)->Result<AuditEntry,String>{
+    let receipt=read_action_audit_receipt(app,action_id)?
+        .ok_or_else(||"No audit receipt exists for the supplied motion action ID.".to_string())?;
+    if receipt.event!="executed"||!receipt.success||receipt.tool!=expected_tool{
+        return Err(format!("Motion attestation requires a successful executed {expected_tool} audit receipt."));
+    }
+    if tokens.iter().any(|token|!receipt.detail.contains(token)){
+        return Err("Motion action audit receipt does not bind the exact persisted attestation evidence.".into());
+    }
+    Ok(receipt)
+}
+
 
 fn prune_screenshot_dir(dir: &Path, keep_existing: usize) -> Result<(), String> {
     let mut screenshots = fs::read_dir(dir)
@@ -9614,6 +9631,13 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 let alpha_id=request.alpha_probe_action_id.as_deref().ok_or("Transparent final acceptance requires alpha probe action ID.")?;
                 let alpha=motion_graphics_delivery::load_alpha(&motion_graphics_alpha_probe_path(app,alpha_id)?)?;
                 alpha.matches(&current.accepted)?;
+                let _alpha_audit=verify_motion_action_receipt_tokens(
+                    app,alpha_id,"motion_graphics_probe_remotion_alpha",&[
+                        format!("manifest_sha256={}",alpha.manifest_sha256),
+                        format!("output_sha256={}",alpha.output_sha256),
+                        format!("output_path_sha256={}",motion_path_sha256(&alpha.output_file)),
+                    ]
+                )?;
                 true
             }else{false};
             let acceptance_action_id=execution_action_id.ok_or("Final acceptance requires an approved action identity.")?.to_string();
@@ -9645,6 +9669,15 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
         ToolAction::MotionGraphicsPlanPremiereInsertion {request} => {
             let acceptance=motion_graphics_delivery::load_final(
                 &motion_graphics_final_acceptance_path(app,&request.final_acceptance_action_id)?
+            )?;
+            let _acceptance_audit=verify_motion_action_receipt_tokens(
+                app,&request.final_acceptance_action_id,"motion_graphics_accept_final_remotion",&[
+                    format!("render_action_id={}",acceptance.render_action_id),
+                    format!("plan_snapshot={}",acceptance.plan_snapshot),
+                    format!("manifest_sha256={}",acceptance.manifest_sha256),
+                    format!("output_sha256={}",acceptance.output_sha256),
+                    format!("output_path_sha256={}",motion_path_sha256(&acceptance.output_file)),
+                ]
             )?;
             let value=request.plan(&acceptance)?;
             Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
