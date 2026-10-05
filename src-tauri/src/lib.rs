@@ -169,6 +169,8 @@ Available tools:
 - motion_graphics_correction_session_status: {"session_id":"UUID returned by start"} — read the exact persisted correction-session state only
 - motion_graphics_correction_session_record_review: {"request":{"session_id":"UUID","plan":"exact reviewed Plan","kind":"single_frame|multi_frame","review":"exact strict review object","frame_times_seconds":[1,2]}} — revalidate the exact Plan/review evidence, then advance only the persisted correction-session state
 - motion_graphics_correction_session_record_correction: {"request":{"session_id":"UUID","prior_plan":"exact current Plan","revised_plan":"exact proposed revised Plan"}} — revalidate immutable correction constraints and exact snapshots, then record only the proposal; no renderer action is executed
+- motion_graphics_correction_session_record_renderer_approval: {"session_id":"UUID","action_id":"successful motion_graphics_run_remotion action UUID","evidence":{"plan":"exact revised Plan","asset_paths":{},"manifest_path":"absolute manifest","evidence_path":"absolute evidence"}} — freeze verified render evidence and bind it to the exact successful approved Remotion action before advancing the session
+- motion_graphics_correction_session_record_rerender: {"session_id":"UUID","action_id":"same approved render action UUID","evidence":{"plan":"exact revised Plan","asset_paths":{},"manifest_path":"absolute manifest","evidence_path":"absolute evidence"}} — reverify the same action/manifest/output hashes and move the session back to awaiting_review
 - audition_detect: {}
 - audition_launch: {}
 - audition_readiness_report: {}
@@ -563,6 +565,8 @@ enum ToolAction {
     MotionGraphicsCorrectionSessionStatus { session_id:String },
     MotionGraphicsCorrectionSessionRecordReview { request:motion_graphics_correction_session::ReviewRecordRequest },
     MotionGraphicsCorrectionSessionRecordCorrection { request:motion_graphics_correction_session::CorrectionRecordRequest },
+    MotionGraphicsCorrectionSessionRecordRendererApproval { session_id:String, action_id:String, evidence:motion_graphics_remotion::EvidenceRequest, accepted:motion_graphics_remotion::AcceptedEvidence },
+    MotionGraphicsCorrectionSessionRecordRerender { session_id:String, action_id:String, evidence:motion_graphics_remotion::EvidenceRequest, accepted:motion_graphics_remotion::AcceptedEvidence },
     AuditionDetect,
     AuditionLaunch,
     AuditionReadinessReport,
@@ -1201,6 +1205,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "motion_graphics_correction_session_status"
         | "motion_graphics_correction_session_record_review"
         | "motion_graphics_correction_session_record_correction"
+        | "motion_graphics_correction_session_record_renderer_approval"
+        | "motion_graphics_correction_session_record_rerender"
         | "audition_detect"
         | "audition_launch"
         | "audition_readiness_report"
@@ -3061,6 +3067,48 @@ fn stage_tool(
                 "Record motion correction proposal".into(),
                 detail,
                 RiskLevel::Medium)
+        }
+        "motion_graphics_correction_session_record_renderer_approval" => {
+            let session_id=arg_string(&proposal.arguments,"session_id")?;
+            Uuid::parse_str(&session_id).map_err(|_|"Invalid motion correction session ID.")?;
+            let action_id=arg_string(&proposal.arguments,"action_id")?;
+            Uuid::parse_str(&action_id).map_err(|_|"Invalid approved Remotion action ID.")?;
+            let value=proposal.arguments.get("evidence").cloned()
+                .ok_or_else(||"motion_graphics_correction_session_record_renderer_approval requires evidence.".to_string())?;
+            let evidence:motion_graphics_remotion::EvidenceRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Remotion renderer-approval evidence: {e}"))?;
+            let accepted=motion_graphics_remotion::verify(&evidence)?;
+            let final_render=accepted.final_render.as_ref().ok_or("Renderer approval requires verified final render evidence.")?;
+            if !accepted.final_output_sha256_verified {
+                return Err("Renderer approval requires SHA-256 verified final output.".into());
+            }
+            let detail=format!(
+                "Bind renderer approval | session={} | action_id={} | manifest_sha256={} | output_sha256={} | output={}",
+                session_id,action_id,accepted.manifest_sha256,final_render.sha256,final_render.file
+            );
+            (ToolAction::MotionGraphicsCorrectionSessionRecordRendererApproval {session_id,action_id,evidence,accepted},
+                "Record approved Remotion renderer action".into(),detail,RiskLevel::Medium)
+        }
+        "motion_graphics_correction_session_record_rerender" => {
+            let session_id=arg_string(&proposal.arguments,"session_id")?;
+            Uuid::parse_str(&session_id).map_err(|_|"Invalid motion correction session ID.")?;
+            let action_id=arg_string(&proposal.arguments,"action_id")?;
+            Uuid::parse_str(&action_id).map_err(|_|"Invalid approved Remotion action ID.")?;
+            let value=proposal.arguments.get("evidence").cloned()
+                .ok_or_else(||"motion_graphics_correction_session_record_rerender requires evidence.".to_string())?;
+            let evidence:motion_graphics_remotion::EvidenceRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Remotion rerender evidence: {e}"))?;
+            let accepted=motion_graphics_remotion::verify(&evidence)?;
+            let final_render=accepted.final_render.as_ref().ok_or("Re-render record requires verified final render evidence.")?;
+            if !accepted.final_output_sha256_verified {
+                return Err("Re-render record requires SHA-256 verified final output.".into());
+            }
+            let detail=format!(
+                "Record re-render evidence | session={} | action_id={} | manifest_sha256={} | output_sha256={} | output={}",
+                session_id,action_id,accepted.manifest_sha256,final_render.sha256,final_render.file
+            );
+            (ToolAction::MotionGraphicsCorrectionSessionRecordRerender {session_id,action_id,evidence,accepted},
+                "Record verified Remotion re-render evidence".into(),detail,RiskLevel::Medium)
         }
         "audition_detect" => (
             ToolAction::AuditionDetect,
