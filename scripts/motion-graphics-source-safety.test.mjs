@@ -43,7 +43,9 @@ test("motion graphics docs do not overclaim renderer or visual review readiness"
   assert.match(status,/Source runtime verification: \*\*not verified\*\*/);
   assert.match(status,/Production ready: \*\*false\*\*/);
   assert.match(status,/No renderer is launched/);
-  assert.match(status,/Image\/frame review is not yet wired/);
+  assert.match(status,/single-frame image review is now wired/);
+  assert.match(status,/does not prove that After Effects\/Remotion produced it/);
+  assert.match(status,/persistent multi-iteration correction session is not yet implemented/);
 });
 
 
