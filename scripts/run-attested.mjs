@@ -32,12 +32,15 @@ export function commandPlan(scope){
 function run(command,args){
   const started=Date.now();
   const result=spawnSync(command,args,{cwd:process.cwd(),encoding:"utf8",stdio:["ignore","pipe","pipe"],shell:false,maxBuffer:32*1024*1024});
+  const stdout=result.stdout??"";
+  const failing_tests=[...stdout.matchAll(/^not ok \d+ - (.+)$/gm)].map(match=>match[1]).slice(0,250);
   return {
     exit_code:typeof result.status==="number"?result.status:null,
     signal:result.signal??null,
     duration_ms:Date.now()-started,
-    stdout_tail:(result.stdout??"").slice(-4000),
+    stdout_tail:stdout.slice(-4000),
     stderr_tail:(result.stderr??"").slice(-4000),
+    failing_tests,
     launch_error:result.error?.message??null,
   };
 }
@@ -150,6 +153,7 @@ export function execute(scope=parseScope()){
           exit_code:command.exit_code,
           signal:command.signal,
           launch_error:command.launch_error,
+          failing_tests:command.failing_tests,
           stdout_tail:command.stdout_tail,
           stderr_tail:command.stderr_tail
         },null,2));
