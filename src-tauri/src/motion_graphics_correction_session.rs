@@ -1,10 +1,12 @@
 use crate::motion_graphics_review::Verdict;
 use serde::{Deserialize,Serialize};
+use std::{fs,path::Path};
 use uuid::Uuid;
 
 const MAX_CORRECTIONS:u8=3;
 const MAX_REVIEW_ISSUES:usize=24;
 const MAX_HISTORY:usize=8;
+const MAX_SESSION_BYTES:usize=64*1024;
 
 #[derive(Debug,Clone,Copy,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="snake_case")]
@@ -228,6 +230,42 @@ impl Session {
     }
 }
 
+pub fn save(path:&Path,session:&Session)->Result<(),String>{
+    session.validate()?;
+    let bytes=serde_json::to_vec(session).map_err(|e|format!("Could not encode motion correction session: {e}"))?;
+    if bytes.len()>MAX_SESSION_BYTES{
+        return Err("Motion correction session exceeds the 64 KiB persistence limit.".into());
+    }
+    crate::premiere_store::replace(path,&bytes,MAX_SESSION_BYTES,|candidate|{
+        let decoded:Session=serde_json::from_slice(candidate)
+            .map_err(|e|format!("Invalid persisted motion correction session: {e}"))?;
+        decoded.validate()
+    }).map_err(|e|format!("Motion correction session persistence failed: {e}"))
+}
+
+pub fn load(path:&Path)->Result<Session,String>{
+    let decode=|candidate:&Path|->Result<Session,String>{
+        let bytes=crate::read_file_bytes_bounded(candidate,MAX_SESSION_BYTES,"motion correction session")?;
+        let session:Session=serde_json::from_slice(&bytes)
+            .map_err(|e|format!("Corrupt motion correction session: {e}"))?;
+        session.validate()?;
+        Ok(session)
+    };
+    match decode(path){
+        Ok(session)=>Ok(session),
+        Err(primary_error)=>{
+            let backup=path.with_extension("json.bak");
+            if backup.exists(){
+                let mut recovered=decode(&backup)?;
+                recovered.status=SessionStatus::Failed;
+                Ok(recovered)
+            }else{
+                Err(primary_error)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -235,6 +273,20 @@ mod tests{
     fn snapshot(hex:&str)->String{format!("fnv1a64:{hex}")}
     fn session()->Session{
         Session::new(Uuid::new_v4().to_string(),snapshot("1111111111111111"),3).unwrap()
+    }
+
+    #[test]
+    fn persistence_round_trip_is_bounded_and_validated(){
+        let dir=std::env::temp_dir().join(format!("shuvi-motion-session-{}",Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let path=dir.join("session.json");
+        let s=session();
+        save(&path,&s).unwrap();
+        let loaded=load(&path).unwrap();
+        assert_eq!(loaded.session_id,s.session_id);
+        assert_eq!(loaded.status,SessionStatus::AwaitingReview);
+        fs::remove_file(&path).unwrap();
+        fs::remove_dir(&dir).unwrap();
     }
 
     #[test]
