@@ -298,7 +298,7 @@ impl Session {
 
     pub fn cancel(&mut self)->Result<(),String>{
         self.validate()?;
-        if matches!(self.status,SessionStatus::Completed|SessionStatus::Cancelled){
+        if matches!(self.status,SessionStatus::Completed|SessionStatus::Stagnated|SessionStatus::Cancelled|SessionStatus::Failed){
             return Err("Motion correction session is already terminal.".into());
         }
         self.status=SessionStatus::Cancelled;
@@ -363,6 +363,17 @@ mod tests{
         assert_eq!(loaded.status,SessionStatus::AwaitingReview);
         fs::remove_file(&path).unwrap();
         fs::remove_dir(&dir).unwrap();
+    }
+
+    #[test]
+    fn terminal_sessions_cannot_be_cancelled(){
+        let mut s=session();
+        s.record_review(ReviewKind::MultiFrame,s.current_plan_snapshot.clone(),Verdict::Pass,0).unwrap();
+        assert!(s.cancel().is_err());
+        let mut failed=session();failed.status=SessionStatus::Failed;
+        assert!(failed.cancel().is_err());
+        let mut stagnated=session();stagnated.status=SessionStatus::Stagnated;
+        assert!(stagnated.cancel().is_err());
     }
 
     #[test]
