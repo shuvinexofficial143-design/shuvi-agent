@@ -19,6 +19,8 @@
 - Generic command invocation remains accepted-unverified, high-risk and non-retry-safe.
 - WaveDocument playhead movement by normalized percent with native playhead sample readback.
 - Separate readiness report that keeps source coding, host runtime evidence and production readiness distinct.
+- Read-only live runtime probe that checks bridge connectivity, document context, command inventory, WaveDocument dictionary visibility and discovery counts for the main audio feature groups without editing audio.
+- Generic command receipts now retain bounded before/after document context while still refusing to call semantic audio changes verified.
 
 ## Intentional safety limits
 
@@ -31,7 +33,8 @@
 - No direct effect-parameter API is claimed yet.
 - Noise reduction, EQ/compressor parameter writes, diagnostics repair, Favorites execution semantics and multitrack mix writes are not yet source-complete.
 - No saved/output audio is considered valid only because a host command returned.
-- Real Audition runtime tests remain separate from source/model tests.
+- The runtime probe does not edit audio and cannot by itself promote edit runtime verification or production readiness.
+- Real Audition mutation tests remain separate from source/model and read-only runtime-probe tests.
 
 ## Next source phase
 
