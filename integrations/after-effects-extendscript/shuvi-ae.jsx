@@ -1360,10 +1360,54 @@
         return {verification_status:"verified_readback",comp_id:comp.id,layer_id:layer.id,mesh_type:meshTypeName(layer.parametricMeshType),
             options:cloneValue(layer.parametricMeshOptions),bevel_options:(function(){try{return cloneValue(layer.parametricBevelOptions);}catch(ignore){return null;}})()};
     }
+    function presetPropertyInventory(layer) {
+        var state={nodes:[],truncated:false};
+        function walk(group,path,depth){
+            if(depth>4){state.truncated=true;return;}
+            var count=group.numProperties||0;
+            for(var i=1;i<=count;i++){
+                if(state.nodes.length>=512){state.truncated=true;return;}
+                var p=group.property(i),match=String(p.matchName).slice(0,160),key=path+"/"+i+":"+match;
+                var node={path:key,match_name:match,property_index:i,name:String(p.name).slice(0,120)};
+                if(p.propertyType===PropertyType.PROPERTY){
+                    node.num_keys=p.numKeys;node.expression_enabled=!!p.expressionEnabled;
+                    try{
+                        var value=p.value;
+                        if(typeof value==="number"&&finiteNumber(value)||typeof value==="boolean")node.value=value;
+                        else if(typeof value==="string"){node.value=value.slice(0,240);node.value_truncated=value.length>240;}
+                        else if(value instanceof Array&&value.length<=4){node.value=cloneValue(value);}
+                        else node.value_omitted=true;
+                    }catch(unreadable){node.value_omitted=true;}
+                }
+                state.nodes.push(node);
+                if(p.propertyType!==PropertyType.PROPERTY)walk(p,key,depth+1);
+            }
+        }
+        walk(layer,"$",0);return state;
+    }
+    function presetPropertyDelta(before,after) {
+        var old={},next={},added=[],removed=[],changed=[],i;
+        for(i=0;i<before.nodes.length;i++)old[before.nodes[i].path]=before.nodes[i];
+        for(i=0;i<after.nodes.length;i++)next[after.nodes[i].path]=after.nodes[i];
+        for(i=0;i<after.nodes.length;i++){
+            var node=after.nodes[i],prior=old[node.path];
+            if(!prior)added.push(node.path);
+            else if(JSON.stringify(prior)!==JSON.stringify(node))changed.push(node.path);
+        }
+        for(i=0;i<before.nodes.length;i++)if(!next[before.nodes[i].path])removed.push(before.nodes[i].path);
+        return {added:added,removed:removed,changed:changed,inventory_complete:!before.truncated&&!after.truncated,
+            note:"Paths are matchName/index observations; shifts and omitted values limit semantic interpretation."};
+    }
     function applyPresetSafe(args) {
         var comp=resolveComp(args.comp_id),layer=resolveLayer(comp,args.layer_id),path=boundedString(args.preset_file,4096,"preset_file");
         if(!/^([A-Za-z]:[\\\/]|\\\\|\/)/.test(path)||!/\.ffx$/i.test(path))fail("preset_file must be an absolute .ffx path.");
-        var file=new File(path);if(!file.exists)fail("Animation preset file does not exist.");
+        if(layer.locked)fail("Animation preset target layer is locked.");
+        if(comp.numLayers>MAX_LAYERS)fail("Preset selection inventory exceeds the layer safety bound.");
+        if($.global.ShuviAEPresetOriginalPath!==path||typeof $.global.ShuviAEPresetPath!=="string")
+            fail("Preset file was not staged and bound by trusted Shuvi transport.");
+        var file=new File($.global.ShuviAEPresetPath);
+        if(!file.exists||file.alias||!(file.length>0)||file.length>16777216)fail("Staged animation preset file is unavailable, aliased or oversized.");
+        var propertyBefore=presetPropertyInventory(layer),effectsBefore=inspectEffects(args);
         var selected=[],i;for(i=1;i<=comp.numLayers;i++)if(comp.layer(i).selected)selected.push(comp.layer(i).id);
         var beforeRevision=requireProject().revision,beforeEffects=0,parade=layer.property("ADBE Effect Parade");
         if(parade)beforeEffects=parade.numProperties;
@@ -1374,17 +1418,26 @@
             layer.selected=true;
             layer.applyPreset(file);
         }finally{
-            for(i=1;i<=comp.numLayers;i++)comp.layer(i).selected=false;
+            for(i=1;i<=Math.min(comp.numLayers,MAX_LAYERS);i++)comp.layer(i).selected=false;
             for(i=0;i<selected.length;i++){var restored=findLayerById(comp,selected[i]);if(restored)restored.selected=true;}
-            selectionRestored=true;
+            selectionRestored=comp.numLayers<=MAX_LAYERS;
+            for(i=1;i<=Math.min(comp.numLayers,MAX_LAYERS);i++){
+                var expectedSelected=false;
+                for(var s=0;s<selected.length;s++)if(comp.layer(i).id===selected[s])expectedSelected=true;
+                if(!!comp.layer(i).selected!==expectedSelected)selectionRestored=false;
+            }
             app.endUndoGroup();
         }
         layer=resolveLayer(comp,args.layer_id);parade=layer.property("ADBE Effect Parade");
         var afterEffects=parade?parade.numProperties:0,afterRevision=requireProject().revision;
+        var propertyAfter=presetPropertyInventory(layer),effectsAfter=inspectEffects(args);
+        var delta=presetPropertyDelta(propertyBefore,propertyAfter);
         var observed=afterRevision>beforeRevision||afterEffects!==beforeEffects;
         return {native_accepted:true,verification_status:observed&&selectionRestored?"accepted_unverified":"uncertain",retry_safe:false,
-            comp_id:comp.id,layer_id:layer.id,preset_file:file.fsName,project_revision_before:beforeRevision,project_revision_after:afterRevision,
+            comp_id:comp.id,layer_id:layer.id,preset_file:path,staged_preset_file:file.fsName,project_revision_before:beforeRevision,project_revision_after:afterRevision,
             effect_count_before:beforeEffects,effect_count_after:afterEffects,selection_restored:selectionRestored,
+            effects_before:effectsBefore,effects_after:effectsAfter,properties_before:propertyBefore,properties_after:propertyAfter,
+            effect_count_delta:afterEffects-beforeEffects,property_delta:delta,observable_delta_reported:true,
             semantic_result_verified:false,visual_review_required:true};
     }
     function setLayerState(args) {

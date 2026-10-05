@@ -127,3 +127,23 @@ test("AE light type changes are separate from edits to type-specific properties"
   assert.equal(host.context.calls.writes.length,0);
   assert.equal(host.run("set_light_options",{intensity:50}).verification_status,"verified_light_options_readback");
 });
+test("AE presets require staged files, isolate selection and report observable deltas",()=>{
+  const host=propertyHost("av",{"ADBE Position":{value:[1,2,3]}});
+  assert.throws(()=>host.run("apply_preset",{preset_file:"C:/asset.ffx"}),/not staged/);
+  vm.runInContext(`
+    File.prototype.exists=true;File.prototype.length=16;File.prototype.alias=false;
+    $.global.ShuviAEPresetOriginalPath="C:/asset.ffx";$.global.ShuviAEPresetPath="C:/job.preset.ffx";
+    var PropertyType={PROPERTY:1};props["ADBE Position"].propertyType=1;
+    layer.numProperties=1;layer.selected=false;
+    layer.property=function(name){return typeof name==="number"?props["ADBE Position"]:/Group$/.test(name)?group:null;};
+    var other={id:35,selected:true};comp.numLayers=2;comp.layer=function(i){return i===1?layer:other;};
+    layer.applyPreset=function(file){calls.applied=file.fsName;calls.target_selected=layer.selected;calls.other_selected=other.selected;
+      props["ADBE Position"].value=[3,4,5];app.project.revision++;};
+  `,host.context);
+  const result=host.run("apply_preset",{preset_file:"C:/asset.ffx"});
+  assert.equal(host.context.calls.applied,"C:/job.preset.ffx");
+  assert.equal(host.context.calls.target_selected,true);assert.equal(host.context.calls.other_selected,false);
+  assert.equal(host.context.layer.selected,false);assert.equal(host.context.other.selected,true);
+  assert.equal(result.selection_restored,true);assert.equal(result.property_delta.changed.length,1);
+  assert.equal(result.semantic_result_verified,false);assert.equal(result.retry_safe,false);
+});

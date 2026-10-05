@@ -60,6 +60,13 @@ impl Request {
         if let Some(path)=&self.expected_project_file {
             crate::after_effects::validate_project_path(path)?;
         }
+        if self.action=="apply_preset"{
+            let path=self.args.get("preset_file").and_then(Value::as_str).ok_or("apply_preset requires preset_file.")?;
+            if path.len()>MAX_PATH_BYTES||!Path::new(path).is_absolute()
+                ||!Path::new(path).extension().and_then(|v|v.to_str()).is_some_and(|v|v.eq_ignore_ascii_case("ffx")){
+                return Err("Animation preset must be an absolute .ffx path.".into());
+            }
+        }
         let bytes=serde_json::to_vec(self).map_err(|e|e.to_string())?;
         if bytes.len()>MAX_REQUEST_BYTES{return Err("After Effects request exceeds 512 KiB.".into());}
         Ok(())
@@ -149,6 +156,7 @@ pub fn runner_plan(
     let receipt=js_string(&receipt_path.to_string_lossy())?;
     let cancel=js_string(&cancel_path.to_string_lossy())?;
     let request_id=js_string(&request.request_id)?;
+    let preset=js_string(&workspace.join(format!("{prefix}.preset.ffx")).to_string_lossy())?;
     let runner_script=format!(r#"(function(){{
 var corePath={core};
 var requestPath={req};
@@ -178,6 +186,8 @@ try{{
     $.global.ShuviAERequestId=expectedRequestId;
     $.global.ShuviAEExpectedProjectFile=request.expected_project_file;
     $.global.ShuviAEExpectedProjectRevision=request.expected_project_revision;
+    $.global.ShuviAEPresetPath=request.action==="apply_preset"?{preset}:null;
+    $.global.ShuviAEPresetOriginalPath=request.action==="apply_preset"?request.args.preset_file:null;
     receipt.result=ShuviAE.dispatch(request);
     receipt.host_version=String(app.version);
     receipt.ok=true;

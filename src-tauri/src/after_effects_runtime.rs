@@ -40,6 +40,31 @@ fn trusted_afterfx_exe(_path:&Path)->Result<(),String>{
     Err("After Effects execution is currently restricted to trusted Windows Adobe installs.".into())
 }
 
+fn trusted_preset_bytes(request:&Request)->Result<(Vec<u8>,Value),String>{
+    let project=Path::new(request.expected_project_file.as_deref().ok_or("Preset requires exact project path.")?);
+    let source=Path::new(request.args.get("preset_file").and_then(Value::as_str).ok_or("Preset path missing.")?);
+    regular_file(source,"Animation preset")?;
+    let root=project.parent().ok_or("Project parent unavailable.")?.join("Shuvi Assets").join("Presets");
+    for path in source.ancestors(){
+        let meta=fs::symlink_metadata(path).map_err(|e|e.to_string())?;
+        if meta.file_type().is_symlink(){return Err("Animation preset path contains a symlink.".into());}
+        #[cfg(target_os="windows")]
+        {use std::os::windows::fs::MetadataExt;
+            if meta.file_attributes()&0x400!=0{return Err("Animation preset path contains a reparse point.".into());}}
+    }
+    let canonical_root=fs::canonicalize(&root).map_err(|_|"Trusted project preset root is unavailable: use <project folder>/Shuvi Assets/Presets.")?;
+    let canonical=fs::canonicalize(source).map_err(|e|e.to_string())?;
+    if !canonical.starts_with(&canonical_root){return Err("Animation preset is outside the trusted project asset root.".into());}
+    let before=fs::symlink_metadata(source).map_err(|e|e.to_string())?;
+    if before.len()==0||before.len()>16*1024*1024{return Err("Animation preset must be non-empty and at most 16 MiB.".into());}
+    let bytes=crate::read_file_bytes_bounded(source,16*1024*1024,"Animation preset")?;
+    let after=fs::symlink_metadata(source).map_err(|e|e.to_string())?;
+    if bytes.len() as u64!=before.len()||before.len()!=after.len()||before.modified().ok()!=after.modified().ok(){
+        return Err("Animation preset changed while staging; no host mutation dispatched.".into());
+    }
+    Ok((bytes,json!({"original_file":source,"trusted_asset_root":canonical_root,"size_bytes":before.len(),
+        "regular_non_symlink":true,"preset_semantics_verified":false})))
+}
 fn render_output_evidence(result:&Value)->Value{
     let Some(outputs)=result.get("outputs").and_then(Value::as_array) else {
         return json!({"desktop_outputs_verified":false,"reason":"Host render result has no output inventory.","media_parse_verified":false,"media_decode_verified":false});
@@ -298,6 +323,12 @@ pub async fn execute(
     if pending.get("blocking_count").and_then(Value::as_u64).unwrap_or(0)>0{
         return Err("An earlier After Effects request is unresolved or has an unacknowledged late receipt; run after_effects_pending_jobs before dispatching another action.".into());
     }
+    let plan=after_effects_transport::runner_plan(afterfx_exe,core_script,workspace,request)?;
+    let preset_path=job_path(workspace,&request.request_id,"preset.ffx");
+    if plan.request_path.exists()||plan.runner_path.exists()||plan.receipt_path.exists()||plan.cancel_path.exists()||preset_path.exists(){
+        return Err("After Effects job identity collides with an existing request/runner/receipt/cancel marker; use a fresh request_id.".into());
+    }
+    let preset_source=if request.action=="apply_preset"{Some(trusted_preset_bytes(request)?)}else{None};
     let checkpoint=if request.is_mutating(){
         let path=request.expected_project_file.as_deref().ok_or("Mutating AE request missing project expectation.")?;
         Some(crate::after_effects_checkpoint::create_for_request(Path::new(path),crate::now_ms(),&request.request_id,
@@ -308,11 +339,15 @@ pub async fn execute(
         Some(crate::after_effects_project_persistence::fingerprint(path)?)
     }else{None};
 
-    let plan=after_effects_transport::runner_plan(afterfx_exe,core_script,workspace,request)?;
-    if plan.request_path.exists()||plan.runner_path.exists()||plan.receipt_path.exists()||plan.cancel_path.exists(){
-        return Err("After Effects job identity collides with an existing request/runner/receipt/cancel marker; use a fresh request_id.".into());
-    }
     let request_bytes=serde_json::to_vec_pretty(request).map_err(|e|e.to_string())?;
+    let preset_evidence=if let Some((bytes,mut evidence))=preset_source{
+        write_new(&preset_path,&bytes,"staged animation preset")?;
+        if crate::read_file_bytes_bounded(&preset_path,16*1024*1024,"staged preset")?!=bytes{
+            return Err("Staged preset bytes failed independent readback; no host mutation dispatched.".into());
+        }
+        evidence["staged_file"]=json!(preset_path);evidence["staged_bytes_verified"]=json!(true);
+        Some(evidence)
+    }else{None};
     write_new(&plan.request_path,&request_bytes,"After Effects request")?;
     if let Err(error)=write_new(&plan.runner_path,plan.runner_script.as_bytes(),"After Effects runner"){
         let _=fs::remove_file(&plan.request_path);
@@ -400,6 +435,7 @@ pub async fn execute(
                         "mogrt_output_evidence":mogrt_evidence,
                         "host_retry_safe":host_retry_safe,
                         "checkpoint":checkpoint,
+                        "preset_file_evidence":preset_evidence,
                         "checkpoint_recovery_verified":false,
                         "retry_safe":retry_safe,
                         "runtime_verified":false,
@@ -417,6 +453,7 @@ pub async fn execute(
                 "afterfx_pid":pid,
                 "receipt_path":plan.receipt_path,
                 "checkpoint":checkpoint,
+                "preset_file_evidence":preset_evidence,
                 "checkpoint_recovery_verified":false,
                 "retry_safe":false,
                 "runtime_verified":false,
@@ -454,6 +491,21 @@ pub fn detect_installs()->Result<Value,String>{
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]fn presets_require_project_asset_root_and_bounded_regular_files(){
+        let root=std::env::temp_dir().join(format!("shuvi-ae-preset-{}",uuid::Uuid::new_v4()));
+        let assets=root.join("Shuvi Assets/Presets");fs::create_dir_all(&assets).unwrap();
+        let preset=assets.join("title.ffx");fs::write(&preset,b"test-preset-bytes").unwrap();
+        let mut request=render_request(&root);request.action="apply_preset".into();
+        request.args=json!({"preset_file":preset,"comp_id":12,"layer_id":34});
+        request.validate().unwrap();
+        assert_eq!(trusted_preset_bytes(&request).unwrap().0,b"test-preset-bytes");
+        let outside=root.join("arbitrary.ffx");fs::write(&outside,b"other").unwrap();
+        request.args["preset_file"]=json!(outside);assert!(trusted_preset_bytes(&request).is_err());
+        fs::write(&preset,b"").unwrap();request.args["preset_file"]=json!(preset);
+        assert!(trusted_preset_bytes(&request).is_err());
+        request.args["preset_file"]=json!(root.join("wrong.jsx"));assert!(request.validate().is_err());
+        let _=fs::remove_dir_all(root);
+    }
     fn render_request(root:&Path)->Request{
         Request{schema_version:1,request_id:"render-1".into(),action:"render_queue".into(),
             expected_project_file:Some(root.join("edit.aep").to_string_lossy().into_owned()),expected_project_revision:Some(5),
