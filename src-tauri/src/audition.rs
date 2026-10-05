@@ -22,6 +22,7 @@ pub fn readiness_report()->serde_json::Value{
             "wave_playhead_readback":true,
             "wave_playhead_write":true,
             "application_command_inventory":true,
+            "live_script_dictionary_inspection":true,
             "command_enabled_probe":true,
             "inspected_command_invoke":true,
             "effect_parameter_dom":"not_claimed",
