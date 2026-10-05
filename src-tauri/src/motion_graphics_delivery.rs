@@ -94,6 +94,7 @@ impl AlphaAttestation{
 #[serde(deny_unknown_fields)]
 pub struct FinalAcceptanceRequest{
     pub render_action_id:String,
+    pub review_action_id:String,
     pub evidence:EvidenceRequest,
     pub review:MultiFrameReview,
     pub frame_times_seconds:Vec<f64>,
@@ -110,6 +111,7 @@ pub struct ValidatedFinalRequest{
 impl FinalAcceptanceRequest{
     pub fn validate(&self)->Result<ValidatedFinalRequest,String>{
         Uuid::parse_str(&self.render_action_id).map_err(|_|"Invalid Remotion render action ID.".to_string())?;
+        Uuid::parse_str(&self.review_action_id).map_err(|_|"Invalid Remotion multi-frame review action ID.".to_string())?;
         if let Some(id)=self.alpha_probe_action_id.as_deref(){
             Uuid::parse_str(id).map_err(|_|"Invalid alpha probe action ID.".to_string())?;
         }
