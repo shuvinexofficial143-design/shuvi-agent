@@ -7,6 +7,7 @@ const MAX_REVIEW_TEXT_CHARS:usize=1_200;
 const MAX_REVIEW_ID_CHARS:usize=80;
 const MAX_REVIEW_JSON_BYTES:usize=128*1024;
 const MAX_REVIEW_ACTIVE_LAYERS:usize=512;
+const MAX_MULTI_REVIEW_FRAMES:usize=8;
 
 #[derive(Debug,Clone,Copy,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="snake_case")]
@@ -42,6 +43,27 @@ pub struct VisualReview {
     pub schema_version:u8,
     pub verdict:Verdict,
     pub issues:Vec<ReviewIssue>,
+}
+
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MultiFrameIssue {
+    pub id:String,
+    pub severity:Severity,
+    pub criterion:String,
+    #[serde(default)]
+    pub target_layer_id:Option<String>,
+    pub frame_times_seconds:Vec<f64>,
+    pub observation:String,
+    pub suggested_correction:String,
+}
+
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MultiFrameReview {
+    pub schema_version:u8,
+    pub verdict:Verdict,
+    pub issues:Vec<MultiFrameIssue>,
 }
 
 fn bounded_text(value:&str,label:&str,max:usize)->Result<(),String>{
@@ -144,6 +166,124 @@ pub fn system_prompt()->&'static str{
     "You are Shuvi's visual quality reviewer for one preview image. Judge only visible evidence. Return exactly one raw JSON object matching the requested review schema. Never emit markdown, prose, code, tool calls, hidden reasoning, or claims about unseen frames."
 }
 
+fn time_in_set(value:f64,frames:&[f64])->bool{
+    frames.iter().any(|candidate|(candidate-value).abs()<=1e-9_f64.max(candidate.abs().max(value.abs())*1e-9))
+}
+
+fn layer_active_at(plan:&Plan,layer_id:&str,time:f64)->bool{
+    plan.scenes.iter().any(|scene|
+        time>=scene.start_seconds
+        &&time<=scene.start_seconds+scene.duration_seconds+0.000_001
+        &&scene.layers.iter().any(|layer|layer.id==layer_id)
+    )
+}
+
+pub fn multi_frame_prompt(plan:&Plan,frame_times_seconds:&[f64])->Result<String,String>{
+    plan.validate()?;
+    if frame_times_seconds.len()<2||frame_times_seconds.len()>MAX_MULTI_REVIEW_FRAMES{
+        return Err(format!("Motion multi-frame review requires 2..={MAX_MULTI_REVIEW_FRAMES} ordered frames."));
+    }
+    if plan.review.criteria.is_empty(){
+        return Err("Motion multi-frame review requires at least one explicit review criterion in the plan.".into());
+    }
+    for (index,time) in frame_times_seconds.iter().enumerate(){
+        if !time.is_finite()||!time_in_set(*time,&plan.review.sample_times_seconds){
+            return Err(format!("Motion multi-frame review frame {index} is not an exact approved plan review sample."));
+        }
+        if index>0&&*time<=frame_times_seconds[index-1]{
+            return Err("Motion multi-frame review frame times must be strictly increasing.".into());
+        }
+    }
+    let criteria=serde_json::to_string(&plan.review.criteria).map_err(|e|e.to_string())?;
+    let mut frames=Vec::with_capacity(frame_times_seconds.len());
+    for (index,time) in frame_times_seconds.iter().enumerate(){
+        let ids=plan.scenes.iter()
+            .filter(|scene|*time>=scene.start_seconds&&*time<=scene.start_seconds+scene.duration_seconds+0.000_001)
+            .flat_map(|scene|scene.layers.iter().map(|layer|layer.id.as_str()))
+            .collect::<Vec<_>>();
+        if ids.len()>MAX_REVIEW_ACTIVE_LAYERS{
+            return Err(format!("Motion multi-frame review exceeds {MAX_REVIEW_ACTIVE_LAYERS} active layer IDs at sample {index}."));
+        }
+        frames.push(serde_json::json!({
+            "index":index,
+            "sample_time_seconds":time,
+            "active_layer_ids":ids
+        }));
+    }
+    let frames=serde_json::to_string(&frames).map_err(|e|e.to_string())?;
+    Ok(format!(
+        "Review these ordered motion-graphics preview frames together. Objective: {}. Review criteria are exactly {criteria}. Frame context in image order is exactly {frames}. Return exactly one raw JSON object with no markdown, prose, tool calls, or extra keys. Schema: {{"schema_version":1,"verdict":"pass|revise","issues":[{{"id":"short_ascii_id","severity":"info|minor|major|blocking","criterion":"exact criterion from the supplied list","target_layer_id":"optional exact active layer id or null","frame_times_seconds":["one or more exact supplied sample times"],"observation":"visible cross-frame or frame-local issue","suggested_correction":"bounded high-level correction, not code or a tool call"}}]}}. If verdict is pass, issues must be empty. If verdict is revise, issues must be non-empty. Use the ordered samples to judge readability, composition, clipping, sampled movement, timing progression, continuity, and awkward transitions only when supported by the supplied images. Do not claim audio, renderer process provenance, export correctness, alpha correctness, or unsampled motion between these frames.",
+        plan.objective
+    ))
+}
+
+pub fn parse_multi_frame_review(plan:&Plan,frame_times_seconds:&[f64],text:&str)->Result<MultiFrameReview,String>{
+    let candidate=text.trim();
+    if candidate.is_empty()||candidate.len()>MAX_REVIEW_JSON_BYTES{
+        return Err("Motion multi-frame review response is empty or exceeds the 128 KiB safety limit.".into());
+    }
+    if candidate.starts_with("~~~")||candidate.starts_with(char::from(96)){
+        return Err("Motion multi-frame review provider must return raw JSON without markdown fences.".into());
+    }
+    let review:MultiFrameReview=serde_json::from_str(candidate)
+        .map_err(|e|format!("Motion multi-frame review provider returned invalid strict JSON: {e}"))?;
+    validate_multi_frame_review(plan,frame_times_seconds,&review)?;
+    Ok(review)
+}
+
+pub fn validate_multi_frame_review(plan:&Plan,frame_times_seconds:&[f64],review:&MultiFrameReview)->Result<(),String>{
+    multi_frame_prompt(plan,frame_times_seconds)?;
+    if review.schema_version!=1{return Err("Motion multi-frame review schema_version must be 1.".into());}
+    if review.issues.len()>MAX_REVIEW_ISSUES{
+        return Err(format!("Motion multi-frame review exceeds {MAX_REVIEW_ISSUES} issues."));
+    }
+    match review.verdict{
+        Verdict::Pass if !review.issues.is_empty()=>return Err("A passing motion multi-frame review must not contain issues.".into()),
+        Verdict::Revise if review.issues.is_empty()=>return Err("A revise motion multi-frame review must contain at least one issue.".into()),
+        _=>{}
+    }
+    let criteria=plan.review.criteria.iter().map(String::as_str).collect::<HashSet<_>>();
+    let layer_ids=plan.scenes.iter().flat_map(|scene|scene.layers.iter()).map(|layer|layer.id.as_str()).collect::<HashSet<_>>();
+    let mut issue_ids=HashSet::new();
+    for issue in &review.issues{
+        bounded_id(&issue.id,"Motion multi-frame review issue id")?;
+        if !issue_ids.insert(issue.id.as_str()){
+            return Err(format!("Duplicate motion multi-frame review issue id: {}.",issue.id));
+        }
+        bounded_text(&issue.criterion,"Motion multi-frame review criterion",240)?;
+        if !criteria.contains(issue.criterion.as_str()){
+            return Err(format!("Motion multi-frame review issue '{}' used a criterion outside the plan allowlist.",issue.id));
+        }
+        if issue.frame_times_seconds.is_empty()||issue.frame_times_seconds.len()>MAX_MULTI_REVIEW_FRAMES{
+            return Err(format!("Motion multi-frame review issue '{}' has an invalid frame-time count.",issue.id));
+        }
+        for (index,time) in issue.frame_times_seconds.iter().enumerate(){
+            if !time.is_finite()||!time_in_set(*time,frame_times_seconds){
+                return Err(format!("Motion multi-frame review issue '{}' cited an unsupplied frame time.",issue.id));
+            }
+            if index>0&&*time<=issue.frame_times_seconds[index-1]{
+                return Err(format!("Motion multi-frame review issue '{}' frame times must be strictly increasing.",issue.id));
+            }
+        }
+        if let Some(layer_id)=issue.target_layer_id.as_deref(){
+            bounded_id(layer_id,"Motion multi-frame review target layer id")?;
+            if !layer_ids.contains(layer_id){
+                return Err(format!("Motion multi-frame review issue '{}' invented unknown layer id '{}'.",issue.id,layer_id));
+            }
+            if !issue.frame_times_seconds.iter().any(|time|layer_active_at(plan,layer_id,*time)){
+                return Err(format!("Motion multi-frame review issue '{}' targeted layer '{}' outside its cited active frames.",issue.id,layer_id));
+            }
+        }
+        bounded_text(&issue.observation,"Motion multi-frame review observation",MAX_REVIEW_TEXT_CHARS)?;
+        bounded_text(&issue.suggested_correction,"Motion multi-frame review suggested correction",MAX_REVIEW_TEXT_CHARS)?;
+    }
+    Ok(())
+}
+
+pub fn multi_frame_system_prompt()->&'static str{
+    "You are Shuvi's bounded motion continuity reviewer. Compare only the supplied ordered preview images and exact sample metadata. Return exactly one raw JSON object matching the requested schema. Never emit markdown, prose, code, tool calls, hidden reasoning, or claims about unsupplied frames, audio, renderer provenance, export correctness, or alpha correctness."
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -182,6 +322,22 @@ mod tests{
         let review=parse_review(&plan(),raw).unwrap();
         assert_eq!(review.verdict,Verdict::Revise);
         assert_eq!(review.issues.len(),1);
+    }
+
+    #[test]
+    fn multi_frame_review_is_ordered_bounded_and_strict(){
+        let mut p=plan();
+        p.review.sample_times_seconds=vec![0.5,1.0,2.0];
+        let times=vec![0.5,1.0,2.0];
+        let prompt=multi_frame_prompt(&p,&times).unwrap();
+        assert!(prompt.contains("ordered motion-graphics preview frames"));
+        assert!(prompt.contains("continuity"));
+        let raw=r#"{"schema_version":1,"verdict":"revise","issues":[{"id":"motion_jump","severity":"major","criterion":"composition","target_layer_id":"title","frame_times_seconds":[0.5,1.0],"observation":"Title position jumps between adjacent supplied frames.","suggested_correction":"Smooth the title movement between these sampled positions."}]}"#;
+        let review=parse_multi_frame_review(&p,&times,raw).unwrap();
+        assert_eq!(review.verdict,Verdict::Revise);
+        assert_eq!(review.issues[0].frame_times_seconds,vec![0.5,1.0]);
+        let invented=r#"{"schema_version":1,"verdict":"revise","issues":[{"id":"bad","severity":"minor","criterion":"composition","target_layer_id":"title","frame_times_seconds":[0.75],"observation":"Unsupported.","suggested_correction":"Change it."}]}"#;
+        assert!(parse_multi_frame_review(&p,&times,invented).is_err());
     }
 
     #[test]
