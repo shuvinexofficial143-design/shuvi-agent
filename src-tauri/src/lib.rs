@@ -155,6 +155,7 @@ Available tools:
 - audition_acceptance_status: {}
 - audition_acceptance_register_disposable: {"explicitly_disposable":true}
 - audition_acceptance_plan: {"feature":"optional noise_reduction|eq|compressor|loudness|export|multitrack|voice_cleanup"}
+- audition_acceptance_preflight: {"feature":"noise_reduction|eq|compressor|loudness|export|multitrack|voice_cleanup"}
 - audition_bridge_start: {}
 - audition_bridge_status: {}
 - audition_bridge_stop: {}
@@ -534,6 +535,7 @@ enum ToolAction {
     AuditionAcceptanceStatus,
     AuditionAcceptanceRegisterDisposable,
     AuditionAcceptancePlan { feature: Option<String> },
+    AuditionAcceptancePreflight { feature: String },
     AuditionBridgeStart,
     AuditionBridgeStatus,
     AuditionBridgeStop,
@@ -1157,6 +1159,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "audition_acceptance_status"
         | "audition_acceptance_register_disposable"
         | "audition_acceptance_plan"
+        | "audition_acceptance_preflight"
         | "audition_bridge_start"
         | "audition_bridge_status"
         | "audition_bridge_stop"
@@ -2842,6 +2845,14 @@ fn stage_tool(
                 "Plan Audition acceptance".into(),
                 feature.as_deref().map(|value|format!("Read-only acceptance plan for Audition feature '{value}'. No mutation is enabled."))
                     .unwrap_or_else(||"Read-only Audition acceptance plan. No mutation is enabled.".into()),
+                RiskLevel::Low)
+        }
+        "audition_acceptance_preflight" => {
+            let feature=arg_string(&proposal.arguments,"feature")?;
+            audition::feature_queries(&feature)?;
+            (ToolAction::AuditionAcceptancePreflight {feature:feature.clone()},
+                "Preflight Audition acceptance".into(),
+                format!("Read-only acceptance preflight for Audition feature '{feature}': verify the registered disposable document, refresh live discovery, rank candidates, and recheck enabled state without invoking any command."),
                 RiskLevel::Low)
         }
         "audition_bridge_start" => (
@@ -8612,6 +8623,83 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     }
                 }
             }
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionAcceptancePreflight {feature} => {
+            if !state.audition_bridge.status()?.paired {
+                return Err("A paired live Audition host is required for acceptance preflight.".into());
+            }
+            let registration=audition_acceptance::load(&audition_acceptance_path(app)?)?
+                .ok_or_else(||"Register an explicitly disposable Audition document before acceptance preflight.".to_string())?;
+            let context=state.audition_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            registration.check(&context)?;
+
+            let queries=audition::feature_queries(&feature)?;
+            let mut command_inventories=Vec::<Value>::new();
+            let mut evidence=Vec::<Value>::new();
+            for query in queries.iter().take(4) {
+                let commands=state.audition_bridge.request("search_commands",
+                    json!({"query":query}),Duration::from_secs(12)).await?;
+                command_inventories.push(commands.clone());
+                let dictionary=state.audition_bridge.request("script_dictionary",
+                    json!({"query":query,"maxClasses":16}),Duration::from_secs(20)).await?;
+                let command_rows=commands.get("commands").and_then(Value::as_array)
+                    .map(|rows|rows.iter().take(20).cloned().collect::<Vec<_>>()).unwrap_or_default();
+                let class_rows=dictionary.get("classes").and_then(Value::as_array)
+                    .map(|rows|rows.iter().take(8).cloned().collect::<Vec<_>>()).unwrap_or_default();
+                evidence.push(json!({
+                    "query":query,
+                    "command_matches":command_rows,
+                    "dictionary_classes":class_rows,
+                    "commands_truncated":commands.get("count").and_then(Value::as_u64).is_some_and(|count|count>20),
+                    "dictionary_truncated":dictionary.get("returnedClasses").and_then(Value::as_u64).is_some_and(|count|count>8)
+                }));
+            }
+
+            let mut candidates=Vec::<Value>::new();
+            for candidate in audition::rank_feature_commands(&feature,&command_inventories)?.into_iter().take(5) {
+                let property=candidate.get("property").and_then(Value::as_str)
+                    .ok_or_else(||"Ranked Audition command candidate is missing its property.".to_string())?.to_string();
+                let value=candidate.get("value").and_then(Value::as_str)
+                    .ok_or_else(||"Ranked Audition command candidate is missing its value.".to_string())?.to_string();
+                let enabled_probe=state.audition_bridge.request("command_enabled",
+                    json!({"property":property.clone(),"value":value.clone()}),Duration::from_secs(8)).await?;
+                candidates.push(json!({
+                    "property":property,
+                    "value":value,
+                    "score":candidate.get("score").cloned().unwrap_or(Value::Null),
+                    "query_hits":candidate.get("query_hits").cloned().unwrap_or_else(||json!([])),
+                    "help":candidate.get("help").cloned().unwrap_or(Value::Null),
+                    "enabled":enabled_probe.get("enabled").and_then(Value::as_bool).unwrap_or(false),
+                    "enabled_probe":enabled_probe
+                }));
+            }
+
+            let final_context=state.audition_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            registration.check(&final_context)?;
+            let enabled_candidate_count=candidates.iter()
+                .filter(|candidate|candidate.get("enabled").and_then(Value::as_bool)==Some(true))
+                .count();
+            let value=json!({
+                "acceptance_preflight_completed":true,
+                "feature":feature,
+                "registered_disposable_document":true,
+                "verified_current_host_identity":true,
+                "identity_rechecked_after_discovery":true,
+                "registered_document_signature":registration.document_signature,
+                "queries":queries,
+                "candidate_commands":candidates,
+                "enabled_candidate_count":enabled_candidate_count,
+                "candidate_ranking_status":"keyword_evidence_only_not_semantic_verification",
+                "evidence":evidence,
+                "candidate_semantics_verified":false,
+                "mutation_authorized":false,
+                "mutation_performed":false,
+                "edit_runtime_verified":false,
+                "production_ready":false,
+                "next":"Review live evidence. Destructive acceptance execution remains unimplemented."
+            });
             Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)})
         }
