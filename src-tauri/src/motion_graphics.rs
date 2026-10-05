@@ -416,6 +416,12 @@ fn ae_interpolation(easing:Easing)->(&'static str,bool){
     }
 }
 
+fn ae_tracks_can_coalesce(first:&Track,second:&Track)->bool{
+    first.keyframes.len()==second.keyframes.len()
+        && first.keyframes.iter().zip(second.keyframes.iter()).all(|(a,b)|
+            a.time_seconds.to_bits()==b.time_seconds.to_bits() && a.easing==b.easing)
+}
+
 impl AfterEffectsPlanRequest {
     pub fn plan(&self)->Result<Value,String>{
         self.plan.validate()?;
@@ -560,38 +566,145 @@ impl AfterEffectsPlanRequest {
                     "automatic_execution":false
                 }))?;
 
-                let has_x=layer.tracks.iter().any(|track|track.property==Property::X);
-                let has_y=layer.tracks.iter().any(|track|track.property==Property::Y);
-                let has_scale_x=layer.tracks.iter().any(|track|track.property==Property::ScaleX);
-                let has_scale_y=layer.tracks.iter().any(|track|track.property==Property::ScaleY);
-                let position_component_conflict=has_x&&has_y;
-                let scale_component_conflict=has_scale_x&&has_scale_y;
-                if position_component_conflict {
-                    blockers.push(json!({
-                        "code":"combined_vector_component_tracks_need_coalescing",
-                        "scene_id":scene.id,
-                        "layer_id":layer.id,
-                        "property":"position",
-                        "required":"X and Y share one After Effects Position property. Independent component timelines are refused until they are coalesced into one exact combined-property timeline with deterministic easing."
-                    }));
-                }
-                if scale_component_conflict {
-                    blockers.push(json!({
-                        "code":"combined_vector_component_tracks_need_coalescing",
-                        "scene_id":scene.id,
-                        "layer_id":layer.id,
-                        "property":"scale",
-                        "required":"ScaleX and ScaleY share one After Effects Scale property. Independent component timelines are refused until they are coalesced into one exact combined-property timeline with deterministic easing."
-                    }));
-                }
-
+                let mut handled_track_indices=HashSet::<usize>::new();
                 for (track_index,track) in layer.tracks.iter().enumerate() {
-                    let component_index=ae_component_index(track.property);
-                    if component_index.is_some()
-                        && ((matches!(track.property,Property::X|Property::Y)&&position_component_conflict)
-                            || (matches!(track.property,Property::ScaleX|Property::ScaleY)&&scale_component_conflict)) {
+                    if handled_track_indices.contains(&track_index) {
                         continue;
                     }
+
+                    let paired_index=match track.property {
+                        Property::X=>layer.tracks.iter().position(|candidate|candidate.property==Property::Y),
+                        Property::Y=>layer.tracks.iter().position(|candidate|candidate.property==Property::X),
+                        Property::ScaleX=>layer.tracks.iter().position(|candidate|candidate.property==Property::ScaleY),
+                        Property::ScaleY=>layer.tracks.iter().position(|candidate|candidate.property==Property::ScaleX),
+                        Property::RotationDegrees|Property::Opacity=>None,
+                    };
+
+                    if let Some(other_index)=paired_index {
+                        let other=&layer.tracks[other_index];
+                        handled_track_indices.insert(track_index);
+                        handled_track_indices.insert(other_index);
+                        let pair_label=if matches!(track.property,Property::X|Property::Y) {"position"} else {"scale"};
+                        if !ae_tracks_can_coalesce(track,other) {
+                            blockers.push(json!({
+                                "code":"combined_vector_component_tracks_need_coalescing",
+                                "scene_id":scene.id,
+                                "layer_id":layer.id,
+                                "property":pair_label,
+                                "required":"Paired After Effects vector components can be coalesced only when both component tracks have exactly aligned keyframe times and easing. Mismatched timelines remain fail-closed."
+                            }));
+                            continue;
+                        }
+
+                        let match_name=ae_track_match_name(track.property);
+                        let property=json!({
+                            "target":{
+                                "comp_id":verified_receipt_ref(create_comp_id,"comp_id"),
+                                "layer_id":verified_receipt_ref(&create_id,"layer_id")
+                            },
+                            "path":[
+                                {"match_name":"ADBE Transform Group","property_index":null},
+                                {"match_name":match_name,"property_index":null}
+                            ]
+                        });
+                        let times=track.keyframes.iter()
+                            .map(|keyframe|scene.start_seconds+keyframe.time_seconds).collect::<Vec<_>>();
+                        let first_values=track.keyframes.iter()
+                            .map(|keyframe|ae_keyframe_value(track.property,keyframe.value)).collect::<Vec<_>>();
+                        let second_values=other.keyframes.iter()
+                            .map(|keyframe|ae_keyframe_value(other.property,keyframe.value)).collect::<Vec<_>>();
+                        let first_keys_id=format!("{prefix}_t{track_index}_keys");
+                        let second_keys_id=format!("{prefix}_t{other_index}_keys");
+                        let first_component=ae_component_index(track.property)
+                            .ok_or_else(||"Internal AE pair planner lost its first component index.".to_string())?;
+                        let second_component=ae_component_index(other.property)
+                            .ok_or_else(||"Internal AE pair planner lost its second component index.".to_string())?;
+
+                        push_ae_step(&mut steps,json!({
+                            "step_id":first_keys_id,
+                            "scene_id":scene.id,
+                            "layer_id":layer.id,
+                            "property":track.property,
+                            "coalesced_with":other.property,
+                            "host_action":"set_component_values_at_times",
+                            "host_args":{
+                                "property":property.clone(),
+                                "times":times.clone(),
+                                "values":first_values,
+                                "component_index":first_component,
+                                "expected_existing_key_times":[]
+                            },
+                            "depends_on":[create_id,timing_id],
+                            "coalesced_component_pair":true,
+                            "preserves_unmodified_vector_components":true,
+                            "requires_unseparated_dimensions":true,
+                            "requires_verified_dependency_receipts":true,
+                            "requires_fresh_inspection":true,
+                            "requires_fresh_project_revision":true,
+                            "requires_unique_request_id":true,
+                            "checkpoint_required":true,
+                            "automatic_execution":false
+                        }))?;
+                        push_ae_step(&mut steps,json!({
+                            "step_id":second_keys_id,
+                            "scene_id":scene.id,
+                            "layer_id":layer.id,
+                            "property":other.property,
+                            "coalesced_with":track.property,
+                            "host_action":"set_component_values_at_times",
+                            "host_args":{
+                                "property":property.clone(),
+                                "times":times.clone(),
+                                "values":second_values,
+                                "component_index":second_component,
+                                "expected_existing_key_times":times
+                            },
+                            "depends_on":[first_keys_id],
+                            "coalesced_component_pair":true,
+                            "preserves_unmodified_vector_components":true,
+                            "requires_unseparated_dimensions":true,
+                            "requires_verified_dependency_receipts":true,
+                            "requires_fresh_inspection":true,
+                            "requires_fresh_project_revision":true,
+                            "requires_unique_request_id":true,
+                            "checkpoint_required":true,
+                            "automatic_execution":false
+                        }))?;
+
+                        for (key_index,keyframe) in track.keyframes.iter().enumerate() {
+                            let (interpolation,exact)=ae_interpolation(keyframe.easing);
+                            if !exact { approximate_curves+=1; }
+                            let interpolation_id=format!("{prefix}_pair_t{track_index}_{other_index}_k{key_index}_interp");
+                            push_ae_step(&mut steps,json!({
+                                "step_id":interpolation_id,
+                                "scene_id":scene.id,
+                                "layer_id":layer.id,
+                                "property":pair_label,
+                                "keyframe_index":key_index+1,
+                                "host_action":"set_keyframe_interpolation",
+                                "host_args":{
+                                    "property":property.clone(),
+                                    "key_index":key_index+1,
+                                    "in_type":interpolation,
+                                    "out_type":interpolation
+                                },
+                                "depends_on":[second_keys_id],
+                                "coalesced_component_pair":true,
+                                "curve_semantics_exact":exact,
+                                "requires_temporal_ease_tuning":!exact,
+                                "requires_verified_dependency_receipts":true,
+                                "requires_fresh_inspection":true,
+                                "requires_fresh_project_revision":true,
+                                "requires_unique_request_id":true,
+                                "checkpoint_required":true,
+                                "automatic_execution":false
+                            }))?;
+                        }
+                        continue;
+                    }
+
+                    handled_track_indices.insert(track_index);
+                    let component_index=ae_component_index(track.property);
                     let match_name=ae_track_match_name(track.property);
                     let property=json!({
                         "target":{
@@ -842,7 +955,7 @@ mod tests{
     }
 
     #[test]
-    fn after_effects_adapter_blocks_conflicting_component_timelines_until_coalesced(){
+    fn after_effects_adapter_coalesces_aligned_component_timelines(){
         let mut plan=valid_plan();
         plan.renderer=Renderer::AfterEffects;
         plan.delivery=DeliveryKind::StandaloneVideo;
@@ -855,6 +968,42 @@ mod tests{
             Track{property:Property::Y,keyframes:vec![
                 Keyframe{time_seconds:0.0,value:30.0,easing:Easing::Linear},
                 Keyframe{time_seconds:1.0,value:40.0,easing:Easing::Linear},
+            ]}
+        ];
+        let request=AfterEffectsPlanRequest{
+            project_file:if cfg!(windows){r"C:\Work\motion.aep".into()}else{"/tmp/motion.aep".into()},
+            composition_name:"Shuvi Motion".into(),
+            plan,
+            asset_item_ids:BTreeMap::new(),
+        };
+        let value=request.plan().unwrap();
+        assert!(!value["blockers"].as_array().unwrap().iter()
+            .any(|b|b["code"]=="combined_vector_component_tracks_need_coalescing" && b["property"]=="position"));
+        let component_steps=value["steps"].as_array().unwrap().iter()
+            .filter(|step|step["host_action"]=="set_component_values_at_times").collect::<Vec<_>>();
+        assert_eq!(component_steps.len(),2);
+        assert_eq!(component_steps[0]["coalesced_component_pair"],true);
+        assert_eq!(component_steps[0]["host_args"]["expected_existing_key_times"],json!([]));
+        assert_eq!(component_steps[1]["host_args"]["expected_existing_key_times"],json!([0.0,1.0]));
+        assert_eq!(component_steps[1]["depends_on"],json!([component_steps[0]["step_id"].as_str().unwrap()]));
+        assert_eq!(value["steps"].as_array().unwrap().iter()
+            .filter(|step|step["host_action"]=="set_keyframe_interpolation" && step["coalesced_component_pair"]==true).count(),2);
+    }
+
+    #[test]
+    fn after_effects_adapter_blocks_misaligned_component_timelines(){
+        let mut plan=valid_plan();
+        plan.renderer=Renderer::AfterEffects;
+        plan.delivery=DeliveryKind::StandaloneVideo;
+        plan.canvas.transparent_background=false;
+        plan.scenes[0].layers[0].tracks=vec![
+            Track{property:Property::X,keyframes:vec![
+                Keyframe{time_seconds:0.0,value:10.0,easing:Easing::Linear},
+                Keyframe{time_seconds:1.0,value:20.0,easing:Easing::Linear},
+            ]},
+            Track{property:Property::Y,keyframes:vec![
+                Keyframe{time_seconds:0.0,value:30.0,easing:Easing::Linear},
+                Keyframe{time_seconds:1.5,value:40.0,easing:Easing::Linear},
             ]}
         ];
         let request=AfterEffectsPlanRequest{
