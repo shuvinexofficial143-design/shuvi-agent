@@ -311,6 +311,8 @@ pub fn capability_report()->Value {
             "render_queue_execute":"source_supported_exact_queued_set_with_host_done_desktop_file_and_structural_parse_evidence",
             "render_media_parse_validation":"source_supported_mp4_mov_m4v_m4a_wav_avi_png_jpeg_bounded_structural_parse",
             "render_media_decode_validation":"not_implemented_decode_remains_separate",
+            "render_cancellation":"source_supported_request_scoped_marker_before_start_or_on_status_changed_stopRendering_runtime_unverified",
+            "checkpoint_recovery_verifier":"source_supported_exact_backup_fingerprint_and_source_path_binding_manual_open_required",
             "footage_relink":"source_supported_with_exact_old_new_file_readback",
             "proxy_set_remove":"source_supported_with_proxy_state_file_readback",
             "av_layer_flags":"source_supported_with_boolean_readback",
@@ -350,10 +352,10 @@ pub fn readiness_report()->Value {
             "windows_after_effects_runtime":{"state":"not_verified"},
             "extendscript_host_acceptance":{"state":"not_verified"},
             "checkpoint_creation":{"state":"source_implemented_runtime_unverified"},
-            "checkpoint_recovery":{"state":"not_verified","automatic_rollback":false},
+            "checkpoint_recovery":{"state":"source_verifier_implemented_runtime_unverified","automatic_rollback":false,"manual_open_required":true},
             "project_save_persistence":{"state":"source_implemented_runtime_unverified"},
             "render_completion":{"state":"source_implemented_runtime_unverified","media_parse_source_implemented":true,"media_decode_verified":false},
-            "native_inflight_cancellation":{"state":"not_verified"},
+            "native_inflight_cancellation":{"state":"render_only_cooperative_source_implemented_runtime_unverified","process_kill_used":false,"general_mutation_abort_supported":false},
             "production_ready":false
         },
         "known_boundaries":{
@@ -361,6 +363,10 @@ pub fn readiness_report()->Value {
             "native_hand_detection":{"state":"not_provided_by_after_effects_scripting","fallback":"external detector required"},
             "project_revision_counter":{"state":"documented_and_required_for_mutation","guard":"latest inspect_context project_revision must exactly match app.project.revision before dispatch; exact saved project path and persistent item/layer/property identity remain additional guards"},
             "long_running_render_execution":{"state":"source_implemented_timeout_becomes_execution_status_unknown","late_receipt_reconciliation":true},
+            "render_cancellation":{"state":"cooperative_status_boundary_only","before_start_marker_supported":true,"on_status_changed_stopRendering_supported":true,"instant_abort_guaranteed":false,"native_stop_requires_user_stopped_receipt":true},
+            "non_render_mutation_cancellation":{"state":"unsupported_no_documented_safe_abort","timeout_outcome":"uncertain_no_blind_retry"},
+            "checkpoint_recovery":{"state":"backup_integrity_verification_only","automatic_restore":false,"manual_open_then_host_state_verification_required":true},
+            "media_decode_validation":{"state":"not_implemented","structural_parse_is_not_decode_proof":true},
             "uxp_transport":{"state":"reserved_not_current_transport"},
             "uncertain_dispatch":{"state":"durably_blocks_new_dispatch_until_valid_late_receipt_reconciliation"}
         },
