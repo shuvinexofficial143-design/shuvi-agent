@@ -4,6 +4,7 @@ import {readFileSync} from "node:fs";
 
 const rust=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
 const model=readFileSync(new URL("../src-tauri/src/audition.rs",import.meta.url),"utf8");
+const auditionAcceptance=readFileSync(new URL("../src-tauri/src/audition_acceptance.rs",import.meta.url),"utf8");
 const bridge=readFileSync(new URL("../src-tauri/src/audition_bridge.rs",import.meta.url),"utf8");
 const panel=readFileSync(new URL("../integrations/audition-cep/main.js",import.meta.url),"utf8");
 const host=readFileSync(new URL("../integrations/audition-cep/jsx/ShuviAudition.jsx",import.meta.url),"utf8");
@@ -189,4 +190,25 @@ test("Audition document signature includes host version",()=>{
   assert.match(host,/\[out\.hostVersion \|\| "", out\.documentType/);
   assert.match(host,/documentSignature/);
   assert.match(host,/Audition document changed; inspect context again/);
+});
+
+
+test("Audition disposable acceptance registration never enables mutation automatically",()=>{
+  assert.match(auditionAcceptance,/explicitly_disposable/);
+  assert.match(auditionAcceptance,/Explicit disposable Audition document authorization is required/);
+  assert.match(auditionAcceptance,/document_signature/);
+  assert.match(auditionAcceptance,/Current Audition host\/document does not match/);
+  assert.match(auditionAcceptance,/mutation_enabled_automatically":false/);
+  assert.match(auditionAcceptance,/execute_one_approved_candidate/);
+  assert.match(auditionAcceptance,/implemented":false/);
+  assert.match(rust,/"audition_acceptance_register_disposable"/);
+  assert.match(rust,/audition_acceptance::Registration::from_context/);
+});
+
+test("Audition acceptance plan remains read only before future execution support",()=>{
+  assert.match(rust,/"audition_acceptance_plan"/);
+  assert.match(rust,/"audition_acceptance_status"/);
+  assert.match(rust,/verified_current_host_identity":true/);
+  assert.match(rust,/mutation_enabled_automatically":false/);
+  assert.doesNotMatch(rust,/AuditionAcceptanceExecute/);
 });
