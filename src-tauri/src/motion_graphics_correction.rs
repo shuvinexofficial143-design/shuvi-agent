@@ -113,7 +113,7 @@ pub fn system_prompt()->&'static str{
 #[cfg(test)]
 mod tests{
     use super::*;
-    use crate::motion_graphics::{Canvas,DeliveryKind,Easing,Keyframe,Layer,Property,Renderer,ReviewSpec,Scene,Track};
+    use crate::motion_graphics::{Canvas,DeliveryKind,Easing,Keyframe,Layer,LayerKind,Property,Renderer,ReviewSpec,Scene,Track};
     use crate::motion_graphics_review::{ReviewIssue,Severity};
 
     fn plan()->Plan{
