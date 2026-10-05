@@ -1,5 +1,5 @@
 use crate::motion_graphics::Plan;
-use crate::motion_graphics_review::{self,VisualReview,Verdict};
+use crate::motion_graphics_review::{self,MultiFrameReview,VisualReview,Verdict};
 use serde::{Deserialize,Serialize};
 
 const MAX_CORRECTION_JSON_BYTES:usize=256*1024;
@@ -11,27 +11,49 @@ const MAX_CORRECTION_ITERATIONS:u8=3;
 pub struct CorrectionRequest {
     pub plan:Plan,
     pub plan_snapshot:String,
-    pub review:VisualReview,
+    #[serde(default)]
+    pub review:Option<VisualReview>,
+    #[serde(default)]
+    pub multi_frame_review:Option<MultiFrameReview>,
+    #[serde(default)]
+    pub frame_times_seconds:Vec<f64>,
     pub iteration:u8,
     pub max_iterations:u8,
 }
 
 impl CorrectionRequest {
+    fn review_context(&self)->Result<(&'static str,serde_json::Value,Verdict),String>{
+        match (&self.review,&self.multi_frame_review){
+            (Some(review),None)=>{
+                if !self.frame_times_seconds.is_empty(){
+                    return Err("Single-frame correction review must not include frame_times_seconds.".into());
+                }
+                motion_graphics_review::validate_review(&self.plan,review)?;
+                Ok(("single_frame",serde_json::to_value(review).map_err(|e|e.to_string())?,review.verdict))
+            }
+            (None,Some(review))=>{
+                motion_graphics_review::validate_multi_frame_review(&self.plan,&self.frame_times_seconds,review)?;
+                Ok(("multi_frame",serde_json::to_value(review).map_err(|e|e.to_string())?,review.verdict))
+            }
+            _=>Err("Motion correction request requires exactly one of review or multi_frame_review.".into()),
+        }
+    }
+
     pub fn validate(&self)->Result<(),String>{
         self.plan.validate()?;
-        motion_graphics_review::validate_review(&self.plan,&self.review)?;
+        let (_kind,review,verdict)=self.review_context()?;
         let actual=self.plan.fingerprint()?;
         if self.plan_snapshot!=actual {
             return Err("Motion correction request plan_snapshot does not match the exact supplied plan.".into());
         }
-        if self.review.verdict!=Verdict::Revise {
+        if verdict!=Verdict::Revise {
             return Err("Motion correction proposal requires a revise visual-review verdict.".into());
         }
         if self.max_iterations==0 || self.max_iterations>MAX_CORRECTION_ITERATIONS
             || self.iteration==0 || self.iteration>self.max_iterations {
             return Err(format!("Motion correction iteration must be 1..max_iterations and max_iterations must be 1..{MAX_CORRECTION_ITERATIONS}."));
         }
-        let encoded=serde_json::to_vec(&(&self.plan,&self.review))
+        let encoded=serde_json::to_vec(&(&self.plan,&review,&self.frame_times_seconds))
             .map_err(|e|format!("Could not encode motion correction context: {e}"))?;
         if encoded.len()>MAX_CORRECTION_CONTEXT_BYTES {
             return Err("Motion correction plan+review context exceeds the 384 KiB safety limit.".into());
@@ -42,9 +64,11 @@ impl CorrectionRequest {
     pub fn prompt(&self)->Result<String,String>{
         self.validate()?;
         let plan=serde_json::to_string(&self.plan).map_err(|e|e.to_string())?;
-        let review=serde_json::to_string(&self.review).map_err(|e|e.to_string())?;
+        let (review_kind,review,_verdict)=self.review_context()?;
+        let review=serde_json::to_string(&review).map_err(|e|e.to_string())?;
+        let frame_times=serde_json::to_string(&self.frame_times_seconds).map_err(|e|e.to_string())?;
         Ok(format!(
-            "Return exactly one raw JSON motion-graphics Plan revision for correction iteration {}/{}. No markdown, prose, code fences, tool calls, or extra wrapper object. ORIGINAL_PLAN={plan} VISUAL_REVIEW={review}. Preserve schema_version, objective, renderer, duration_seconds, canvas, delivery, scene count/order/ids/start_seconds/duration_seconds, layer count/order/ids/kind/name/text/asset_id/shape, and the entire review specification exactly. You may change only layer animation tracks/keyframes/easing, and only when the visible review issues justify that change. Do not add/remove/reorder scenes or layers. Do not rewrite text. Do not change assets. Do not invent effects, fonts, colors, APIs, renderer code, or hidden properties. Interpret easing locally at each keyframe: ease_in affects only arrival, ease_out only departure, ease_in_out both sides, and linear/hold both sides. The revised plan must differ from ORIGINAL_PLAN and remain valid under the same renderer-neutral schema.",
+            "Return exactly one raw JSON motion-graphics Plan revision for correction iteration {}/{}. No markdown, prose, code fences, tool calls, or extra wrapper object. ORIGINAL_PLAN={plan} REVIEW_KIND={review_kind} VISUAL_REVIEW={review} FRAME_TIMES_SECONDS={frame_times}. Preserve schema_version, objective, renderer, duration_seconds, canvas, delivery, scene count/order/ids/start_seconds/duration_seconds, layer count/order/ids/kind/name/text/asset_id/shape, and the entire review specification exactly. You may change only layer animation tracks/keyframes/easing, and only when the supplied visible review issues justify that change. For multi-frame review, use only the supplied exact frame times and do not infer unsampled motion. Do not add/remove/reorder scenes or layers. Do not rewrite text. Do not change assets. Do not invent effects, fonts, colors, APIs, renderer code, or hidden properties. Interpret easing locally at each keyframe: ease_in affects only arrival, ease_out only departure, ease_in_out both sides, and linear/hold both sides. The revised plan must differ from ORIGINAL_PLAN and remain valid under the same renderer-neutral schema.",
             self.iteration,self.max_iterations
         ))
     }
@@ -119,7 +143,7 @@ pub fn system_prompt()->&'static str{
 mod tests{
     use super::*;
     use crate::motion_graphics::{Canvas,DeliveryKind,Easing,Keyframe,Layer,LayerKind,Property,Renderer,ReviewSpec,Scene,Track};
-    use crate::motion_graphics_review::{ReviewIssue,Severity};
+    use crate::motion_graphics_review::{MultiFrameIssue,MultiFrameReview,ReviewIssue,Severity};
 
     fn plan()->Plan{
         Plan{
@@ -133,7 +157,7 @@ mod tests{
                         Keyframe{time_seconds:0.5,value:1.0,easing:Easing::EaseOut},
                     ]}]}
             ]}],
-            review:ReviewSpec{sample_times_seconds:vec![1.0],criteria:vec!["readability".into()]},
+            review:ReviewSpec{sample_times_seconds:vec![1.0,2.0],criteria:vec!["readability".into()]},
         }
     }
     fn request()->CorrectionRequest{
@@ -141,11 +165,13 @@ mod tests{
         let snapshot=plan.fingerprint().unwrap();
         CorrectionRequest{
             plan,plan_snapshot:snapshot,
-            review:VisualReview{schema_version:1,verdict:Verdict::Revise,issues:vec![
+            review:Some(VisualReview{schema_version:1,verdict:Verdict::Revise,issues:vec![
                 ReviewIssue{id:"title_faint".into(),severity:Severity::Major,criterion:"readability".into(),
                     target_layer_id:Some("title".into()),observation:"Title is faint.".into(),
                     suggested_correction:"Increase visible opacity sooner.".into()}
-            ]},
+            ]}),
+            multi_frame_review:None,
+            frame_times_seconds:vec![],
             iteration:1,max_iterations:3,
         }
     }
@@ -158,6 +184,27 @@ mod tests{
         assert!(stale.validate().is_err());
         let mut too_many=request();too_many.max_iterations=4;
         assert!(too_many.validate().is_err());
+    }
+
+    #[test]
+    fn multi_frame_review_can_drive_bounded_correction(){
+        let mut req=request();
+        req.review=None;
+        req.frame_times_seconds=vec![1.0,2.0];
+        req.multi_frame_review=Some(MultiFrameReview{
+            schema_version:1,
+            verdict:Verdict::Revise,
+            issues:vec![MultiFrameIssue{
+                id:"timing_drag".into(),severity:Severity::Major,criterion:"readability".into(),
+                target_layer_id:Some("title".into()),frame_times_seconds:vec![1.0,2.0],
+                observation:"Title progression feels too slow across the supplied samples.".into(),
+                suggested_correction:"Advance the opacity progression within the sampled interval.".into(),
+            }],
+        });
+        req.validate().unwrap();
+        let prompt=req.prompt().unwrap();
+        assert!(prompt.contains("REVIEW_KIND=multi_frame"));
+        assert!(prompt.contains("FRAME_TIMES_SECONDS=[1.0,2.0]"));
     }
 
     #[test]
