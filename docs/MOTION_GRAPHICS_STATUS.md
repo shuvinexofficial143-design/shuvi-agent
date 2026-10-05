@@ -29,7 +29,9 @@
 - Provider planning preserves fixed objective, renderer, duration, canvas, delivery, allowed asset IDs, and required review criteria; markdown/tool proposals, constraint drift, invented assets, and provider-generated shape layers fail closed.
 - Read-only `motion_graphics_plan_after_effects` adapter planner.
 - The AE adapter composes only existing typed host actions and never dispatches them automatically.
-- It currently plans composition creation; text/group/image/video layer creation when enough inspected identity exists; scene in/out timing; opacity and Z-rotation keyframes; and interpolation-type writes.
+- It currently plans composition creation; text/group/image/video/rectangle/ellipse layer content when enough inspected identity exists; scene in/out timing; opacity, Z-rotation, and single-axis Position/Scale component keyframes; and interpolation-type writes.
+- A single X or Y track preserves the other After Effects Position components from exact host readback; a single ScaleX or ScaleY track does the same for Scale, with neutral scale factors converted to AE percent values.
+- Component vector writes fail closed on separated dimensions, expression-enabled properties, stale existing-key timelines, dimension changes, or failed untouched-component readback.
 - Dynamic comp/layer IDs may be resolved only from matching verified prior `after_effects_run` receipts.
 - Every future AE mutation still requires a fresh `inspect_context`, exact saved-project path/revision, a unique request ID, the existing checkpoint boundary, and normal Shuvi approval.
 - Dedicated `motion_graphics_review_preview` stages the exact bounded PNG bytes before approval and sends only those approved bytes to the selected vision provider.
@@ -44,7 +46,8 @@
 
 - Claude does not directly render an MP4 in this foundation.
 - No After Effects project/comp is created by the validator or AE adapter planner.
-- The adapter refuses to guess X/Y or per-axis scale values because AE transform properties may be combined or separated; exact vector synthesis needs fresh property readback first.
+- The adapter no longer guesses X/Y or per-axis scale values: one component track per combined Position/Scale property is source-planned through exact host readback and untouched-component preservation.
+- Paired X+Y or ScaleX+ScaleY tracks remain blocked until their shared After Effects property timelines can be deterministically coalesced; separated dimensions also fail closed.
 - Shape support is intentionally limited to rectangle/ellipse primitives already exposed by the verified AE bridge; arbitrary Bézier/path synthesis is not claimed.
 - Shape geometry/style is immutable during provider correction proposals; correction may change only animation tracks.
 - Image/video layers require an `asset_id -> item_id` binding grounded in fresh `inspect_project_items` evidence.
@@ -60,7 +63,7 @@
 
 ## Next source phase
 
-1. Add exact vector transform synthesis after fresh AE property readback, preserving untouched vector components and refusing separated-dimension ambiguity.
+1. Coalesce paired X+Y and ScaleX+ScaleY tracks into one deterministic shared-property timeline while preserving exact host readback and easing semantics.
 2. Extend shape support only if a future requirement needs arbitrary path/Bézier geometry; rectangle/ellipse primitives are now source-planned.
 3. Add bounded temporal-ease synthesis/readback for directional easing.
 4. Add alpha-capable AE render/output-module planning and evidence without auto-rendering.
