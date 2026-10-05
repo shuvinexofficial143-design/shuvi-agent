@@ -91,6 +91,7 @@ pub fn plan(registration:Option<&Registration>,feature:Option<&str>)->Result<Val
             {"id":"discover_feature","kind":"read_only","required":feature.is_some()},
             {"id":"register_disposable","kind":"local_registration","required":true},
             {"id":"recheck_disposable_identity","kind":"read_only","required":true},
+            {"id":"acceptance_preflight","kind":"read_only","required":feature.is_some(),"implemented":true},
             {"id":"execute_one_approved_candidate","kind":"high_risk_mutation","implemented":false},
             {"id":"verify_audio_result","kind":"independent_evidence","implemented":false},
             {"id":"verify_recovery","kind":"independent_evidence","implemented":false}
@@ -98,6 +99,7 @@ pub fn plan(registration:Option<&Registration>,feature:Option<&str>)->Result<Val
         "boundaries":[
             "Registration never edits audio.",
             "A registered disposable document must match exact host version and document signature before any future mutation test.",
+            "The read-only acceptance preflight may rank and recheck discovered candidates, but it never authorizes or performs mutation.",
             "No destructive acceptance execution is enabled by this planner.",
             "Command acceptance alone will never prove semantic audio quality or persisted output."
         ]
@@ -195,7 +197,9 @@ mod tests{
         let registration=Registration::from_context(&context(),true).unwrap();
         let value=plan(Some(&registration),Some("noise_reduction")).unwrap();
         assert_eq!(value["mutation_enabled_automatically"],false);
-        assert_eq!(value["steps"][6]["implemented"],false);
+        assert_eq!(value["steps"][6]["id"],"acceptance_preflight");
+        assert_eq!(value["steps"][6]["implemented"],true);
+        assert_eq!(value["steps"][7]["implemented"],false);
         assert!(plan(Some(&registration),Some("unknown")).is_err());
     }
 
