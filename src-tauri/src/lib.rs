@@ -84,6 +84,7 @@ mod motion_graphics;
 mod motion_graphics_provider;
 mod motion_graphics_review;
 mod motion_graphics_correction;
+mod motion_graphics_correction_session;
 mod motion_graphics_remotion;
 mod motion_graphics_remotion_runtime;
 mod audition_bridge_queue;
