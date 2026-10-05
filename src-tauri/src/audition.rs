@@ -26,7 +26,12 @@ pub fn readiness_report()->serde_json::Value{
             "live_script_dictionary_inspection":true,
             "stale_document_signature_guard":true,
             "feature_discovery_planner":true,
+            "ranked_feature_command_candidates":true,
+            "guarded_feature_command_invoke":true,
             "read_only_runtime_probe":true,
+            "disposable_acceptance_registration":true,
+            "acceptance_read_only_plan":true,
+            "acceptance_destructive_execution":"not_implemented",
             "command_enabled_probe":true,
             "inspected_command_invoke":true,
             "effect_parameter_dom":"not_claimed",
@@ -39,6 +44,8 @@ pub fn readiness_report()->serde_json::Value{
             "application commands are discovered from the live host rather than guessed",
             "generic command invocation requires a prior inspected command identity and enabled-state recheck",
             "host acceptance does not prove persisted audio output",
+            "ranked command candidates are keyword evidence only and do not establish semantic effect behavior",
+            "disposable acceptance registration never enables mutation automatically",
             "no effect parameter API is claimed until observed from the live Audition Script Dictionary"
         ]
     })
