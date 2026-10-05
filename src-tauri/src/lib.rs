@@ -4,6 +4,7 @@ mod after_effects;
 mod after_effects_transport;
 mod after_effects_checkpoint;
 mod after_effects_project_persistence;
+mod after_effects_media_validation;
 mod after_effects_runtime;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
