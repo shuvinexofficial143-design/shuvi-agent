@@ -118,6 +118,74 @@ pub struct ProjectItemEncodeRequest{
     pub overwrite:bool,
 }
 
+pub fn readiness_report()->serde_json::Value{
+    serde_json::json!({
+        "schema_version":1,
+        "source_coding_status":"implemented_for_current_premiere_encodermanager_scope",
+        "source_runtime_verified":false,
+        "production_ready":false,
+        "transport":{
+            "current":"premiere_uxp_encoder_manager",
+            "direct_media_encoder_uxp":"public_beta_future_adapter"
+        },
+        "features":{
+            "detect_desktop_install":"source_supported_windows_programfiles_scan",
+            "inspect_ame_availability":"source_supported_via_premiere_encoder_manager",
+            "inspect_epr_preset":"source_supported_local_regular_file_plus_host_extension_when_sequence_available",
+            "encode_sequence":"source_supported_via_existing_premiere_export_queue_to_ame",
+            "encode_file":"source_supported_typed_entire_or_in_out",
+            "encode_project_item":"source_supported_typed_entire_in_out_or_work_area",
+            "launch_ame":"source_supported_when_premiere_26_3_plus_exposes_launch_encoder",
+            "start_batch":"source_supported_when_premiere_26_3_plus_exposes_start_batch_encode",
+            "xmp_flags":"source_supported_when_premiere_26_3_plus_exposes_setters",
+            "queue_progress_events":"source_supported_bounded_observational_journal",
+            "exact_native_job_ownership":"not_proven_premiere_boolean_encode_returns",
+            "real_host_acceptance":"not_verified"
+        },
+        "boundaries":[
+            "host acceptance does not prove encode completion",
+            "single new queue event is only an unverified job candidate because external writers can race",
+            "no documented stable Premiere EncoderManager cancel method is used",
+            "direct Media Encoder UXP exact job IDs remain beta-only future adapter",
+            "output existence or size alone does not prove playable media"
+        ]
+    })
+}
+
+#[cfg(target_os="windows")]
+pub fn detect_installs()->Result<serde_json::Value,String>{
+    let program_files=std::env::var_os("ProgramFiles").ok_or("ProgramFiles environment variable unavailable.")?;
+    let adobe=Path::new(&program_files).join("Adobe");
+    if !adobe.is_dir(){
+        return Ok(serde_json::json!({"candidates":[],"runtime_verified":false}));
+    }
+    let mut candidates=Vec::new();
+    for entry in fs::read_dir(&adobe).map_err(|e|format!("Could not inspect Adobe install folder: {e}"))?.take(128){
+        let entry=entry.map_err(|e|e.to_string())?;
+        let name=entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("Adobe Media Encoder"){continue;}
+        let exe=entry.path().join("Adobe Media Encoder.exe");
+        if exe.is_file(){
+            candidates.push(serde_json::json!({
+                "name":name,
+                "media_encoder_exe":exe,
+                "source":"ProgramFiles/Adobe",
+                "runtime_verified":false
+            }));
+        }
+    }
+    Ok(serde_json::json!({"candidates":candidates,"runtime_verified":false}))
+}
+
+#[cfg(not(target_os="windows"))]
+pub fn detect_installs()->Result<serde_json::Value,String>{
+    Ok(serde_json::json!({
+        "candidates":[],
+        "runtime_verified":false,
+        "reason":"Adobe Media Encoder desktop detection is Windows-targeted in Shuvi."
+    }))
+}
+
 impl ProjectItemEncodeRequest{
     pub fn work_area_code(&self)->Result<u32,String>{
         match self.range.as_str(){
