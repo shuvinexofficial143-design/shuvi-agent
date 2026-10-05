@@ -3,6 +3,7 @@ use crate::motion_graphics_review::{self,VisualReview,Verdict};
 use serde::{Deserialize,Serialize};
 
 const MAX_CORRECTION_JSON_BYTES:usize=256*1024;
+const MAX_CORRECTION_CONTEXT_BYTES:usize=384*1024;
 const MAX_CORRECTION_ITERATIONS:u8=3;
 
 #[derive(Debug,Clone,Serialize,Deserialize)]
@@ -29,6 +30,11 @@ impl CorrectionRequest {
         if self.max_iterations==0 || self.max_iterations>MAX_CORRECTION_ITERATIONS
             || self.iteration==0 || self.iteration>self.max_iterations {
             return Err(format!("Motion correction iteration must be 1..max_iterations and max_iterations must be 1..{MAX_CORRECTION_ITERATIONS}."));
+        }
+        let encoded=serde_json::to_vec(&(&self.plan,&self.review))
+            .map_err(|e|format!("Could not encode motion correction context: {e}"))?;
+        if encoded.len()>MAX_CORRECTION_CONTEXT_BYTES {
+            return Err("Motion correction plan+review context exceeds the 384 KiB safety limit.".into());
         }
         Ok(())
     }
