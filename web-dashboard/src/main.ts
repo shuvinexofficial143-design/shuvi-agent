@@ -3,6 +3,7 @@ import {
   creativeModules,
   modelProviders,
   navItems,
+  routingPresets,
   toolModules,
   type FeatureModule
 } from "./dashboard-data";
@@ -55,13 +56,26 @@ const globalSearch = byId<HTMLInputElement>("globalSearch");
 const toast = byId<HTMLElement>("toast");
 const moduleDrawer = byId<HTMLElement>("moduleDrawer");
 const moduleDrawerBackdrop = byId<HTMLElement>("moduleDrawerBackdrop");
+const commandPalette = byId<HTMLElement>("commandPalette");
+const commandPaletteBackdrop = byId<HTMLElement>("commandPaletteBackdrop");
+const commandPaletteInput = byId<HTMLInputElement>("commandPaletteInput");
+const commandPaletteResults = byId<HTMLElement>("commandPaletteResults");
 const allModules = [...creativeModules, ...toolModules];
 
 interface DraftTask {
   id: string;
   title: string;
   type: string;
+  priority?: string;
   createdAt: number;
+}
+
+interface PaletteItem {
+  kind: "Page" | "Module" | "Action";
+  label: string;
+  description: string;
+  keywords: string;
+  run: () => void;
 }
 
 let toastTimer: number | undefined;
@@ -249,6 +263,21 @@ function openModuleDrawer(module: FeatureModule): void {
   byId<HTMLElement>("drawerModuleDescription").textContent = module.description;
   byId<HTMLElement>("drawerExecutionState").textContent =
     module.state === "development" ? "Development in progress" : "Local runtime required";
+  byId<HTMLElement>("drawerRequirement").textContent = module.requirement;
+
+  const capabilities = byId<HTMLElement>("drawerCapabilities");
+  capabilities.replaceChildren(
+    ...module.capabilities.map((capability) => make("span", "drawer-chip", capability))
+  );
+
+  const workflows = byId<HTMLElement>("drawerWorkflows");
+  workflows.replaceChildren(
+    ...module.workflows.map((workflow, index) => {
+      const row = make("div", "drawer-workflow-row");
+      row.append(make("span", "", String(index + 1).padStart(2, "0")), make("strong", "", workflow));
+      return row;
+    })
+  );
   byId<HTMLElement>("drawerNextStep").textContent =
     module.state === "development"
       ? module.name + " is still being developed. You can prepare a task draft now and connect it when the module is integrated."
@@ -264,6 +293,105 @@ function closeModuleDrawer(): void {
   moduleDrawerBackdrop.classList.remove("show");
   moduleDrawer.setAttribute("aria-hidden", "true");
   activeDrawerModule = null;
+}
+
+function paletteItems(): PaletteItem[] {
+  const pages: PaletteItem[] = navItems.map((item) => ({
+    kind: "Page",
+    label: item.label,
+    description: item.hint,
+    keywords: [item.label, item.hint, item.id].join(" ").toLowerCase(),
+    run: () => setView(item.id)
+  }));
+
+  const modules: PaletteItem[] = allModules.map((module) => ({
+    kind: "Module",
+    label: module.name,
+    description: module.category + " · " + module.stateLabel,
+    keywords: [module.name, module.category, module.description, ...module.capabilities].join(" ").toLowerCase(),
+    run: () => {
+      setView(creativeModules.some((item) => item.id === module.id) ? "studio" : "tools");
+      openModuleDrawer(module);
+    }
+  }));
+
+  const actions: PaletteItem[] = [
+    {
+      kind: "Action",
+      label: "Create task draft",
+      description: "Open Tasks and focus the draft field",
+      keywords: "new task draft create planning",
+      run: () => {
+        setView("tasks");
+        window.setTimeout(() => byId<HTMLInputElement>("taskDraftInput").focus(), 0);
+      }
+    },
+    {
+      kind: "Action",
+      label: "Configure local runtime",
+      description: "Open local bridge settings",
+      keywords: "runtime bridge localhost connect settings",
+      run: () => setView("settings")
+    },
+    {
+      kind: "Action",
+      label: "Choose AI model",
+      description: "Open provider and routing preferences",
+      keywords: "ai model provider routing openai anthropic gemini",
+      run: () => setView("models")
+    }
+  ];
+
+  return [...pages, ...modules, ...actions];
+}
+
+function renderCommandPalette(query = ""): void {
+  const normalized = query.trim().toLowerCase();
+  const matches = paletteItems()
+    .filter((item) => !normalized || (item.label + " " + item.description + " " + item.keywords).toLowerCase().includes(normalized))
+    .slice(0, 12);
+
+  commandPaletteResults.replaceChildren();
+
+  if (!matches.length) {
+    const empty = make("div", "command-empty");
+    empty.append(make("strong", "", "No matching Shuvi surface"), make("span", "", "Try a page, module, tool or action."));
+    commandPaletteResults.append(empty);
+    return;
+  }
+
+  matches.forEach((item, index) => {
+    const button = make("button", "command-result");
+    button.type = "button";
+    if (index === 0) button.dataset.firstResult = "true";
+
+    const kind = make("span", "command-kind", item.kind);
+    const copy = make("span", "command-copy");
+    copy.append(make("strong", "", item.label), make("small", "", item.description));
+    const arrow = make("b", "", "↵");
+    button.append(kind, copy, arrow);
+    button.addEventListener("click", () => {
+      closeCommandPalette();
+      item.run();
+    });
+    commandPaletteResults.append(button);
+  });
+}
+
+function openCommandPalette(initialQuery = ""): void {
+  commandPalette.classList.add("open");
+  commandPaletteBackdrop.classList.add("show");
+  commandPalette.setAttribute("aria-hidden", "false");
+  commandPaletteInput.value = initialQuery;
+  renderCommandPalette(initialQuery);
+  window.setTimeout(() => commandPaletteInput.focus(), 0);
+}
+
+function closeCommandPalette(): void {
+  commandPalette.classList.remove("open");
+  commandPaletteBackdrop.classList.remove("show");
+  commandPalette.setAttribute("aria-hidden", "true");
+  commandPaletteInput.value = "";
 }
 
 function setView(viewName: string): void {
@@ -352,7 +480,11 @@ function readDraftTasks(): DraftTask[] {
   try {
     const raw = localStorage.getItem("shuvi.web.draftTasks");
     const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((task) => ({
+      ...task,
+      priority: task.priority || "Normal"
+    }));
   } catch {
     return [];
   }
@@ -384,7 +516,10 @@ function renderDraftTasks(): void {
   tasks.forEach((task) => {
     const row = make("div", "draft-task-row");
     const copy = make("div", "draft-task-copy");
-    copy.append(make("strong", "", task.title), make("span", "", task.type + " · planning only"));
+    copy.append(
+      make("strong", "", task.title),
+      make("span", "", task.type + " · " + (task.priority || "Normal") + " priority · planning only")
+    );
 
     const remove = make("button", "draft-remove", "×");
     remove.type = "button";
@@ -400,7 +535,7 @@ function renderDraftTasks(): void {
 
     const stageItem = make("button", "stage-draft-item");
     stageItem.type = "button";
-    stageItem.textContent = task.title;
+    stageItem.textContent = "[" + (task.priority || "Normal") + "] " + task.title;
     stageItem.addEventListener("click", () => {
       setView("chat");
       byId<HTMLTextAreaElement>("chatInput").value = task.title;
@@ -414,12 +549,13 @@ function renderDraftTasks(): void {
   renderDashboardPlanningQueue();
 }
 
-function addDraftTask(title: string, type: string): void {
+function addDraftTask(title: string, type: string, priority = "Normal"): void {
   const tasks = readDraftTasks();
   tasks.unshift({
     id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
     title,
     type,
+    priority,
     createdAt: Date.now()
   });
   saveDraftTasks(tasks);
@@ -472,12 +608,48 @@ function renderDashboardPlanningQueue(): void {
     });
 
     const copy = make("div");
-    copy.append(make("strong", "", task.title), make("span", "", task.type + " · draft"));
+    copy.append(
+      make("strong", "", task.title),
+      make("span", "", task.type + " · " + (task.priority || "Normal") + " · draft")
+    );
     row.append(copy, make("b", "", "→"));
     list.append(row);
   });
 
   target.append(list);
+}
+
+function renderRoutingPresets(): void {
+  const target = byId<HTMLElement>("routingPresetGrid");
+  const activePreset = localStorage.getItem("shuvi.web.routingPreset");
+  target.replaceChildren();
+
+  routingPresets.forEach((preset) => {
+    const button = make("button", "routing-preset");
+    button.type = "button";
+    button.classList.toggle("active", activePreset === preset.id);
+
+    const top = make("div", "routing-preset-top");
+    top.append(make("strong", "", preset.name), make("span", "", preset.provider));
+    button.append(top, make("p", "", preset.description), make("small", "", preset.workload + " · " + preset.modelHint));
+
+    button.addEventListener("click", () => {
+      localStorage.setItem("shuvi.web.routingPreset", preset.id);
+      localStorage.setItem("shuvi.web.provider", preset.provider);
+      localStorage.setItem("shuvi.web.workload", preset.workload);
+      byId<HTMLInputElement>("preferredModelInput").value = "";
+      byId<HTMLInputElement>("preferredModelInput").placeholder = preset.modelHint;
+      localStorage.removeItem("shuvi.web.preferredModel");
+      renderProviders();
+      restoreProviderPreference();
+      restoreRoutingPreference();
+      renderRoutingPresets();
+      renderDashboardPlanningQueue();
+      showToast(preset.name + " routing preset selected.");
+    });
+
+    target.append(button);
+  });
 }
 
 function restoreRoutingPreference(): void {
@@ -487,6 +659,10 @@ function restoreRoutingPreference(): void {
 
   byId<HTMLInputElement>("preferredModelInput").value = model;
   byId<HTMLSelectElement>("workloadSelect").value = workload;
+
+  const presetId = localStorage.getItem("shuvi.web.routingPreset");
+  const preset = routingPresets.find((item) => item.id === presetId);
+  if (!model && preset) byId<HTMLInputElement>("preferredModelInput").placeholder = preset.modelHint;
 
   const summary = byId<HTMLElement>("routingPreferenceSummary");
   summary.textContent = provider || model
@@ -502,6 +678,8 @@ function saveRoutingPreference(): void {
   else localStorage.removeItem("shuvi.web.preferredModel");
 
   localStorage.setItem("shuvi.web.workload", workload);
+  localStorage.removeItem("shuvi.web.routingPreset");
+  renderRoutingPresets();
   restoreRoutingPreference();
   renderDashboardPlanningQueue();
   showToast("Model routing preference saved for planning.");
@@ -555,19 +733,31 @@ function bindInteractions(): void {
     setView("settings");
   });
 
-  globalSearch.addEventListener("input", () => {
-    filterVisibleCards(globalSearch.value);
+  globalSearch.addEventListener("focus", () => {
+    globalSearch.blur();
+    openCommandPalette();
+  });
+
+  globalSearch.addEventListener("click", () => openCommandPalette());
+
+  commandPaletteBackdrop.addEventListener("click", closeCommandPalette);
+  commandPaletteInput.addEventListener("input", () => renderCommandPalette(commandPaletteInput.value));
+  commandPaletteInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      commandPaletteResults.querySelector<HTMLButtonElement>("[data-first-result='true']")?.click();
+    }
   });
 
   document.addEventListener("keydown", (event) => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
       event.preventDefault();
-      globalSearch.focus();
-      globalSearch.select();
+      openCommandPalette();
     }
 
     if (event.key === "Escape") {
       closeModuleDrawer();
+      closeCommandPalette();
       sidebar.classList.remove("open");
       sidebarBackdrop.classList.remove("show");
     }
@@ -590,10 +780,11 @@ function bindInteractions(): void {
     event.preventDefault();
     const input = byId<HTMLInputElement>("taskDraftInput");
     const type = byId<HTMLSelectElement>("taskDraftType").value;
+    const priority = byId<HTMLSelectElement>("taskDraftPriority").value;
     const title = input.value.trim();
     if (!title) return;
 
-    addDraftTask(title, type);
+    addDraftTask(title, type, priority);
     input.value = "";
     showToast("Task draft saved in this browser.");
   });
@@ -641,10 +832,12 @@ renderDashboardStudioModules();
 renderModuleGrid("creativeModuleGrid", creativeModules);
 renderModuleGrid("toolModuleGrid", toolModules);
 renderProviders();
+renderRoutingPresets();
 hydrateMetrics();
 restoreBridgePreference();
 restoreProviderPreference();
 restoreRoutingPreference();
+renderRoutingPresets();
 renderDraftTasks();
 renderDashboardPlanningQueue();
 bindInteractions();
