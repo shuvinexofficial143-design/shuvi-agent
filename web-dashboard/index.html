@@ -284,8 +284,36 @@
               <div><span class="section-kicker">TASK MANAGER</span><h2>Runs, checkpoints and progress</h2><p>Real task state will appear here after the secure local bridge is connected.</p></div>
               <button class="primary-button" type="button" data-view-jump="chat">New task</button>
             </div>
+            <article class="panel task-draft-panel">
+              <div class="card-heading">
+                <div>
+                  <span class="section-kicker">BROWSER PLANNING</span>
+                  <h3>Draft a task before local execution</h3>
+                </div>
+                <span class="badge badge-neutral">Saved in this browser</span>
+              </div>
+              <form id="taskDraftForm" class="task-draft-form">
+                <label class="field">
+                  <span>Task</span>
+                  <input id="taskDraftInput" placeholder="Example: Edit a 6 minute talking-head video" autocomplete="off" required />
+                </label>
+                <label class="field">
+                  <span>Workspace</span>
+                  <select id="taskDraftType">
+                    <option value="General">General</option>
+                    <option value="Premiere Pro">Premiere Pro</option>
+                    <option value="After Effects">After Effects</option>
+                    <option value="Blender">Blender</option>
+                    <option value="Coding">Coding</option>
+                    <option value="Computer">Computer</option>
+                  </select>
+                </label>
+                <button class="primary-button" type="submit">Add draft</button>
+              </form>
+              <div id="draftTaskList" class="draft-task-list"></div>
+            </article>
             <div class="task-board">
-              <article class="panel task-stage"><div class="stage-head"><span>01</span><strong>Queued</strong><b>0</b></div><div class="stage-empty">No queued tasks</div></article>
+              <article class="panel task-stage"><div class="stage-head"><span>01</span><strong>Drafts</strong><b id="draftTaskCount">0</b></div><div id="draftTaskStage" class="stage-empty">No browser drafts</div></article>
               <article class="panel task-stage"><div class="stage-head"><span>02</span><strong>Running</strong><b>0</b></div><div class="stage-empty">No active runtime</div></article>
               <article class="panel task-stage"><div class="stage-head"><span>03</span><strong>Approval</strong><b>0</b></div><div class="stage-empty">No pending permissions</div></article>
               <article class="panel task-stage"><div class="stage-head"><span>04</span><strong>Complete</strong><b>0</b></div><div class="stage-empty">No synced history</div></article>
@@ -296,6 +324,14 @@
             <div class="section-intro">
               <div><span class="section-kicker">AI ROUTING</span><h2>Models & providers</h2><p>Provider credentials remain in the local Shuvi credential store, not in this web UI.</p></div>
               <span class="badge badge-neutral">No secrets stored here</span>
+            </div>
+            <div class="provider-summary panel">
+              <div>
+                <span class="section-kicker">WEB PLANNING PREFERENCE</span>
+                <h3 id="selectedProviderName">No provider selected</h3>
+                <p id="selectedProviderNote">Choose a provider card below. This does not change the Windows runtime yet.</p>
+              </div>
+              <span class="badge badge-neutral">Browser preference</span>
             </div>
             <div id="providerGrid" class="provider-grid"></div>
             <article class="panel model-routing-panel">
@@ -345,6 +381,37 @@
           </section>
         </div>
       </main>
+
+      <div id="moduleDrawerBackdrop" class="drawer-backdrop"></div>
+      <aside id="moduleDrawer" class="module-drawer" aria-hidden="true">
+        <div class="drawer-head">
+          <div id="drawerModuleIcon" class="module-icon">S</div>
+          <button id="closeModuleDrawer" class="icon-button" type="button" aria-label="Close module details">×</button>
+        </div>
+        <span id="drawerModuleCategory" class="section-kicker">MODULE</span>
+        <h2 id="drawerModuleName">Shuvi module</h2>
+        <span id="drawerModuleStatus" class="module-status status-local">Local runtime required</span>
+        <p id="drawerModuleDescription" class="drawer-description"></p>
+
+        <div class="drawer-section">
+          <span class="section-kicker">AVAILABILITY</span>
+          <div class="drawer-facts">
+            <div><span>Dashboard surface</span><strong>Ready</strong></div>
+            <div><span>Local execution</span><strong id="drawerExecutionState">Runtime required</strong></div>
+            <div><span>Permission boundary</span><strong>Shuvi.exe</strong></div>
+          </div>
+        </div>
+
+        <div class="drawer-section">
+          <span class="section-kicker">NEXT STEP</span>
+          <p id="drawerNextStep">Connect the local Shuvi runtime before executing this module.</p>
+        </div>
+
+        <div class="drawer-actions">
+          <button id="drawerPrepareTask" class="primary-button" type="button">Prepare task</button>
+          <button id="drawerOpenSettings" class="secondary-button" type="button">Runtime settings</button>
+        </div>
+      </aside>
 
       <div id="toast" class="toast" role="status" aria-live="polite"></div>
     </div>
