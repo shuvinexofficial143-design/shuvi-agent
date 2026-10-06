@@ -7186,7 +7186,8 @@ async function insertMappedGraphic(args) {
     const verified = mappedPlan(mapping, event, inspected);
     for (const s of verified.settings) {
       const c = inspected.components.find(c => c.matchName === s.component_match_name && c.displayName === s.component_display_name);
-      if (c.params.find(p => p.displayName === s.param_display_name).value !== s.value) throw Error("Native graphics value readback mismatch.");
+      const observedParam = c.params.find(p => p.displayName === s.param_display_name);
+      if (!observedParam || !equivalentStaticEffectValue(s.value, observedParam.value)) throw Error("Native graphics value readback mismatch.");
     }
     result.field_count = verified.settings.length;
     result.status = "applied"; result.uncertain = false; result.stop_batch = false;
