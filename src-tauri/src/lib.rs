@@ -81,6 +81,7 @@ use premiere_bridge::{PremiereBridgeShared, PremiereBridgeStatus};
 
 mod audition;
 mod audition_acceptance;
+mod animate;
 mod photoshop;
 mod photoshop_checkpoint;
 mod motion_graphics;
@@ -623,6 +624,10 @@ enum ToolAction {
     AuditionCommandEnabled { command: audition::InspectedCommand },
     AuditionSetPlayhead { percent: f64, expected_document_signature: String },
     AuditionInvokeCommand { command: audition::InspectedCommand, expected_document_signature: String },
+    AnimateCapabilityReport,
+    AnimateReadinessReport,
+    AnimateDetect,
+    AnimateLaunch { animate_exe:String },
     PremiereDetect,
     PremiereLaunch { project: Option<String> },
     PremiereBridgeStart,
@@ -3240,6 +3245,32 @@ fn stage_tool(
                 "Plan Premiere insertion for verified motion output".into(),
                 "Read persisted final motion acceptance and return a normal premiere_insert_media proposal. No Premiere mutation.".into(),
                 RiskLevel::Low)
+        }
+        "animate_capability_report" => (
+            ToolAction::AnimateCapabilityReport,
+            "Read Animate source capability report".into(),
+            "Source milestone declaration only; does not claim a live Adobe Animate host or document automation capability.".into(),
+            RiskLevel::Low,
+        ),
+        "animate_readiness_report" => (
+            ToolAction::AnimateReadinessReport,
+            "Read Animate readiness report".into(),
+            "Report the current 20% Animate source foundation and explicit runtime gaps without promoting untested capabilities.".into(),
+            RiskLevel::Low,
+        ),
+        "animate_detect" => (
+            ToolAction::AnimateDetect,
+            "Detect installed Adobe Animate".into(),
+            "Read-only bounded Program Files/Adobe inspection; does not launch Animate.".into(),
+            RiskLevel::Low,
+        ),
+        "animate_launch" => {
+            let animate_exe=arg_string(&proposal.arguments,"animate_exe")?;
+            animate::validate_requested_executable(&animate_exe)?;
+            (ToolAction::AnimateLaunch {animate_exe:animate_exe.clone()},
+                "Launch detected Adobe Animate".into(),
+                format!("Launch exact freshly detected Adobe Animate executable {animate_exe}; no document open, script execution, or host mutation."),
+                RiskLevel::Medium)
         }
         "audition_detect" => (
             ToolAction::AuditionDetect,
@@ -9991,6 +10022,53 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let value=request.plan(&acceptance)?;
             Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AnimateCapabilityReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&animate::capability_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateReadinessReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&animate::readiness_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateDetect => {
+            let value=animate::detect_installs()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateLaunch {animate_exe} => {
+            let detection=animate::detect_installs()?;
+            let exact=animate::exact_detected_executable(&detection,&animate_exe)?;
+            let mut child=Command::new(&exact).spawn()
+                .map_err(|e|format!("Could not launch detected Adobe Animate: {e}"))?;
+            let pid=child.id();
+            if let Err(error)=register_managed_process(state,pid){
+                let _=child.kill();
+                let _=child.wait();
+                return Err(format!("Adobe Animate was stopped before Shuvi could register the managed process: {error}"));
+            }
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "animate_exe":exact,
+                    "pid":pid,
+                    "launch_dispatched":true,
+                    "host_ready_verified":false,
+                    "host_transport":"not_implemented",
+                    "runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
         }
         ToolAction::AuditionDetect => {
             let value=audition::detect_installs()?;
