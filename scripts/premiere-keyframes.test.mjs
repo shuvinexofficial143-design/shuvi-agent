@@ -8,6 +8,7 @@ vm.runInContext(readFileSync(new URL("../integrations/premiere-uxp/recipe-plans.
 
 const audioPlans = {module: {exports: {}}}; vm.createContext(audioPlans);
 vm.runInContext(readFileSync(new URL("../integrations/premiere-uxp/audio-plans.js", import.meta.url), "utf8"), audioPlans);
+const uxp = readFileSync(new URL("../integrations/premiere-uxp/main.js", import.meta.url), "utf8");
 
 function fixture(kind = "video") {
   const actions = [];
@@ -33,6 +34,7 @@ function fixture(kind = "video") {
   const track = { getTrackItems: async () => [item] };
   const sequence = { guid: { toString: () => "sequence-id" }, getVideoTrack: async () => track, getAudioTrack: async () => track };
   const project = { guid: { toString: () => "project-id" }, getActiveSequence: async () => sequence,
+    getSequences: async () => [sequence],
     lockedAccess: callback => callback(), executeTransaction: callback => { callback({ addAction: action => actions.push(action) }); return true; } };
   const premiere = { Project: { getActiveProject: async () => project }, ProjectItem: { cast: item => item },
     Constants: { TrackItemType: { CLIP: 1 }, InterpolationMode: { LINEAR: 0, HOLD: 1, BEZIER: 2 }, TransitionPosition: { START: 0, END: 1 } } };
@@ -214,12 +216,16 @@ test("timeline produces inspectable signatures and plain project/sequence expect
   assert.equal(timeline.videoTracks[0].items[0].targetSignature, (await expectedTarget(f)).clips[0].signature);
 });
 
-test("timeline capability report refuses to infer vertical move, links, nesting or multicam", async () => {
+test("timeline capability report distinguishes unavailable writes from observational link audit", async () => {
   const f = fixture(); const report = await f.panel.executeCommand({action: "timeline_capabilities", arguments: {}});
-  for (const name of ["verticalMove", "nativeLinkInspection", "replacementNesting", "multicam"]) {
-    assert.equal(report[name].supported, false); assert.equal(report[name].fallbackImplemented, false);
-  }
   assert.equal(report.verticalClone.supported, false);
+  assert.equal(report.verticalMove.supported, false);
+  assert.equal(report.replacementNesting.supported, false);
+  assert.equal(report.nativeLinkInspection.supported, true);
+  assert.equal(report.nativeLinkInspection.membershipVerified, false);
+  assert.equal(report.nativeLinkInspection.nativeGetterAvailable, false);
+  assert.equal(report.multicam.supported, false);
+  assert.equal(report.multicam.fallbackImplemented, false);
   assert.equal(f.actions.length, 0);
 });
 
@@ -271,7 +277,7 @@ for (const kind of ["video", "audio"]) test(kind + ": inspected component remova
 });
 test("component lifecycle rejects ambiguity and changed chain before edits", async () => {
   const f = effectFixture(); const inspected = await f.panel.inspectEffectLifecycle(f.args);
-  f.components.unshift({getMatchName: () => "different", getDisplayName: () => "Different"});
+  f.components.unshift({getMatchName: () => "different", getDisplayName: () => "Different", getParamCount: () => 0});
   await assert.rejects(f.panel.removeEffect({...f.args, expectedSignature: inspected.targetSignature}), /chain changed/);
   f.components.push(f.components[1]);
   await assert.rejects(f.panel.inspectEffectLifecycle(f.args), /2 components/);

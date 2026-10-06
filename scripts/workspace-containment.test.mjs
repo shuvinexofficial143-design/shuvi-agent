@@ -36,5 +36,5 @@ test("workspace and search entry points canonicalize roots before recursion",()=
   assert.match(scanExec,/let canonical_root = root\.canonicalize\(\)/);
   assert.match(scanExec,/workspace_scan_recursive\(&canonical_root, &canonical_root/);
   assert.match(searchExec,/let canonical_root = root\.canonicalize\(\)/);
-  assert.match(searchExec,/search_text_recursive\(&canonical_root, &canonical_root/);
+  assert.match(searchExec,/search_text_recursive\(\s*&canonical_root,\s*&canonical_root/);
 });
