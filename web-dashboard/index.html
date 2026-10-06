@@ -302,6 +302,14 @@
                     <option value="Computer">Computer</option>
                   </select>
                 </label>
+                <label class="field">
+                  <span>Priority</span>
+                  <select id="taskDraftPriority">
+                    <option value="Normal">Normal</option>
+                    <option value="High">High</option>
+                    <option value="Low">Low</option>
+                  </select>
+                </label>
                 <button class="primary-button" type="submit">Add draft</button>
               </form>
               <div id="draftTaskList" class="draft-task-list"></div>
@@ -331,6 +339,7 @@
             <div class="routing-grid">
               <article class="panel model-routing-panel">
                 <div class="card-heading"><div><span class="section-kicker">ROUTING PROFILE</span><h3>Prepare a model preference</h3></div><span class="badge badge-neutral">Planning only</span></div>
+                <div id="routingPresetGrid" class="routing-preset-grid"></div>
                 <div class="routing-form">
                   <label class="field">
                     <span>Preferred model</span>
@@ -427,6 +436,21 @@
         </div>
 
         <div class="drawer-section">
+          <span class="section-kicker">CAPABILITIES</span>
+          <div id="drawerCapabilities" class="drawer-chip-list"></div>
+        </div>
+
+        <div class="drawer-section">
+          <span class="section-kicker">EXAMPLE WORKFLOWS</span>
+          <div id="drawerWorkflows" class="drawer-workflow-list"></div>
+        </div>
+
+        <div class="drawer-section">
+          <span class="section-kicker">REQUIREMENT</span>
+          <p id="drawerRequirement"></p>
+        </div>
+
+        <div class="drawer-section">
           <span class="section-kicker">NEXT STEP</span>
           <p id="drawerNextStep">Connect the local Shuvi runtime before executing this module.</p>
         </div>
@@ -436,6 +460,20 @@
           <button id="drawerOpenSettings" class="secondary-button" type="button">Runtime settings</button>
         </div>
       </aside>
+
+      <div id="commandPaletteBackdrop" class="command-palette-backdrop"></div>
+      <section id="commandPalette" class="command-palette" aria-hidden="true" aria-label="Shuvi command palette">
+        <div class="command-palette-head">
+          <span>⌕</span>
+          <input id="commandPaletteInput" type="search" placeholder="Jump to a page, module or action…" autocomplete="off" />
+          <kbd>Esc</kbd>
+        </div>
+        <div class="command-palette-meta">
+          <span>Quick navigation</span>
+          <small>Enter to open first result</small>
+        </div>
+        <div id="commandPaletteResults" class="command-palette-results"></div>
+      </section>
 
       <div id="toast" class="toast" role="status" aria-live="polite"></div>
     </div>
