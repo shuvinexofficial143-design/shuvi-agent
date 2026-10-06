@@ -60,14 +60,16 @@ test("playhead movement and vision review require exact native position readback
 });
 
 
-test("Premiere transitions stay accepted-unverified without independent presence readback",()=>{
+test("Premiere transition mutations require exact enumerated boundary readback",()=>{
   const add=uxp.slice(uxp.indexOf("async function addVideoTransition"),uxp.indexOf("function plainEffectValue"));
-  assert.match(add,/verificationStatus: "accepted_unverified"/);
-  assert.match(add,/uncertain: true/);
+  assert.match(add,/snapshotVideoTransitions/);
+  assert.match(add,/verificationStatus: verified \? "verified_transition" : "accepted_unverified"/);
+  assert.match(add,/uncertain: !verified/);
   assert.match(add,/retrySafe: false/);
   const remove=uxp.slice(uxp.indexOf("async function removeVideoTransition"),uxp.indexOf("async function editKeyframe"));
-  assert.match(remove,/verificationStatus: "accepted_unverified"/);
-  assert.match(remove,/uncertain: true/);
+  assert.match(remove,/snapshotVideoTransitions/);
+  assert.match(remove,/verificationStatus: verified \? "verified_transition" : "accepted_unverified"/);
+  assert.match(remove,/uncertain: !verified/);
   assert.match(remove,/retrySafe: false/);
 
   for(const [name,next] of [["PremiereRemoveVideoTransition","PremiereInspectKeyframes"],["PremiereAddVideoTransition","PremiereListVideoEffects"]]){
@@ -101,10 +103,12 @@ test("direct MOGRT insertion is success only after bounded before/after creation
 });
 
 
-test("source in/out mutations never claim success without independent source-bound readback",()=>{
+test("source in/out set requires independent bound readback while clear remains conservative",()=>{
   const set=uxp.slice(uxp.indexOf("async function setSourceInOut"),uxp.indexOf("async function clearSourceInOut"));
-  assert.match(set,/verificationStatus: "accepted_unverified"/);
-  assert.match(set,/uncertain: true/);
+  assert.match(set,/const before=await readSourceInOut\(clip\)/);
+  assert.match(set,/const after=await readSourceInOut\(fresh\.clip\)/);
+  assert.match(set,/verificationStatus: verified \? "verified_source_inout" : "accepted_unverified"/);
+  assert.match(set,/uncertain: !verified/);
   assert.match(set,/retrySafe: false/);
   const clear=uxp.slice(uxp.indexOf("async function clearSourceInOut"),uxp.indexOf("async function collectProjectItemsForCorrelation"));
   assert.match(clear,/verificationStatus: "accepted_unverified"/);
@@ -131,8 +135,8 @@ test("Premiere project save does not promote host acceptance to verified persist
   const start=rust.lastIndexOf("ToolAction::PremiereSaveProject");
   const end=rust.indexOf("\n        ToolAction::WorkspaceScan",start);
   const arm=rust.slice(start,end);
-  assert.match(arm,/verified_persistence/);
-  assert.match(arm,/persistenceVerified/);
+  assert.match(arm,/persistence_verified/);
+  assert.match(arm,/verified_file_persistence/);
   assert.match(arm,/success: verified/);
   assert.match(arm,/"retry_safe": false/);
   assert.doesNotMatch(arm,/success: true/);

@@ -154,18 +154,25 @@ test("sequence-from-media requires a new stable GUID and active-sequence readbac
   assert.match(arm,/success: verified/);
 });
 
-test("subclip success proves new project-item identity without claiming boundary semantics",()=>{
+test("subclip success requires new identity plus source-bound and media-selection readback",()=>{
   const subclip=uxp.slice(uxp.indexOf("async function createSubclip"),uxp.indexOf("async function transcribeItem"));
   assert.match(subclip,/correlationVerified/);
+  assert.match(subclip,/sourceReadback=await readSourceInOut\(createdClip\)/);
+  assert.match(subclip,/sourceBoundsVerified/);
+  assert.match(subclip,/mediaSelectionVerified/);
+  assert.match(subclip,/boundarySemanticsVerified=correlationVerified&&sourceBoundsVerified&&mediaSelectionVerified/);
+  assert.match(subclip,/hardBoundaryModeVerified:false/);
   assert.match(subclip,/verified_creation_identity/);
-  assert.match(subclip,/boundarySemanticsVerified: false/);
   assert.match(subclip,/retrySafe: false/);
 
   const start=rust.lastIndexOf("ToolAction::PremiereCreateSubclip");
   const end=rust.indexOf("\n        ToolAction::PremiereTranscribeItem",start);
   const arm=rust.slice(start,end);
-  assert.match(arm,/verified_creation_identity/);
-  assert.match(arm,/boundary_semantics_verified":false/);
+  assert.match(arm,/bounds_verified/);
+  assert.match(arm,/media_verified/);
+  assert.match(arm,/&&bounds_verified&&media_verified/);
+  assert.match(arm,/"hard_boundary_mode_verified":false/);
+  assert.match(arm,/success: verified/);
 });
 
 
