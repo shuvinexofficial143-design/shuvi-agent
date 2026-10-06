@@ -306,15 +306,13 @@ mod tests{
     use super::*;
 
     #[test]
-    fn allowlist_is_read_only(){
+    fn allowlist_is_bounded_and_explicit(){
         assert_eq!(READ_ONLY_ACTIONS,&["inspect_context","list_layers"]);
         assert_eq!(MUTATING_ACTIONS,&["set_layer_property","set_text_layer","transform_layer","set_layer_mask","save_document"]);
-        assert!(ALLOWED_ACTIONS.contains(&"set_layer_property"));
-        assert!(ALLOWED_ACTIONS.contains(&"set_text_layer"));
-        assert!(ALLOWED_ACTIONS.contains(&"transform_layer"));
-        assert!(ALLOWED_ACTIONS.contains(&"set_layer_mask"));
-        assert!(ALLOWED_ACTIONS.contains(&"save_document"));
-        for forbidden in ["delete_layer","merge_layers","rasterize_layer","save_document","batch_play"]{
+        assert_eq!(ALLOWED_ACTIONS,&[
+            "inspect_context","list_layers","set_layer_property","set_text_layer","transform_layer","set_layer_mask","save_document"
+        ]);
+        for forbidden in ["delete_layer","merge_layers","rasterize_layer","flatten_document","generative_fill","batch_play"]{
             assert!(!ALLOWED_ACTIONS.contains(&forbidden));
         }
     }
