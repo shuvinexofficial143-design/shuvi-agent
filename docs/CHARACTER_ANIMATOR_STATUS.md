@@ -2,40 +2,67 @@
 
 ## Source milestone
 
-Current declared source milestone: **20%**
+Current declared source milestone: **40%**
 
-This milestone establishes only Shuvi's bounded Windows desktop foundation for Adobe Character Animator. It does **not** claim a working Character Animator host bridge, project automation, runtime acceptance, or production readiness.
+This milestone extends Shuvi's 20% Windows desktop foundation with a bounded **planning-only control and interchange contract** based on Character Animator workflows Adobe documents publicly. It still does not claim a Character Animator scripting/host API.
 
 ## Implemented source scope
 
+Desktop foundation:
 - bounded Windows detection under standard `Program Files/Adobe` roots,
-- support for the normal Windows executable layout under `Support Files/Character Animator.exe`,
-- fallback detection for a directly nested `Character Animator.exe` without broad filesystem searching,
-- exact freshly detected executable validation before launch,
-- Shuvi managed-process registration after launch,
-- source capability report,
-- source readiness report.
+- `Support Files/Character Animator.exe` detection,
+- exact freshly detected executable validation,
+- managed process registration after launch.
 
-Adobe's current Character Animator system requirements confirm the current desktop product line. Historical Adobe crash diagnostics also show the Windows executable as `Character Animator.exe` under the application's `Support Files` directory. The 20% source milestone uses only that bounded desktop evidence; no host scripting surface is assumed.
+Planning-only supported control contract:
+- documented Windows application shortcut plan:
+  - Record Take for Work Area → `Ctrl+3`
+  - Export PNG Sequence and WAV → `Ctrl+Alt+M`
+  - Export Frame → `Ctrl+Alt+S`
+- user-project trigger-key planning,
+- user-project MIDI-note planning,
+- project-mapping acknowledgement for trigger/MIDI plans,
+- no keyboard/MIDI input execution.
 
-## Automation transport boundary
+Planning-only interchange contract:
+- Dynamic Link to After Effects,
+- Dynamic Link to Premiere Pro,
+- Character Animator → Adobe Media Encoder export handoff,
+- bounded absolute `.chproj` path and scene-name validation,
+- no Dynamic Link/import/export execution.
 
-No current public Character Animator automation surface is claimed here.
+## Automation boundary
 
-`future_host_transport=research_required`
+No public Character Animator host scripting API is claimed.
 
-Before any 40% host integration is written, Shuvi must verify an authoritative supported automation/control surface. If none is available, the integration stays fail-closed rather than inventing CEP, UXP, ExtendScript, or another transport.
+`host_transport=not_implemented`
 
-## Explicitly not implemented at 20%
+`future_host_transport=no_public_host_api_claimed`
 
+The 40% source milestone intentionally uses only a planning contract over documented control and interchange surfaces. It does not invent CEP, UXP, ExtendScript, project parsing, or hidden host commands.
+
+## Execution boundary
+
+Every 40% control/interchange plan reports:
+
+- `execution_supported=false`
+- `mutation_performed=false`
+- `source_runtime_verified=false`
+- `production_ready=false`
+
+A trigger key or MIDI note is project-specific. Shuvi requires explicit acknowledgement that the user/project mapping exists but does not claim that mapping has been runtime verified.
+
+## Explicitly not implemented at 40%
+
+- keyboard injection,
+- MIDI injection,
+- focused-window verification,
 - host bridge,
 - active project inspection,
-- scene inspection,
-- puppet inspection,
-- timeline/take inspection,
-- recording control,
+- scene/puppet/timeline/take inspection,
+- recording execution,
 - project mutation,
-- export automation,
+- export execution,
 - runtime acceptance.
 
 ## Runtime status
@@ -44,8 +71,8 @@ Before any 40% host integration is written, Shuvi must verify an authoritative s
 
 `production_ready=false`
 
-Green source tests or CI must not change either flag. A real Windows Character Animator runtime phase is separate.
+Green CI does not change these flags.
 
 ## Next source phase
 
-The 40% milestone may begin only after an authoritative Character Animator automation surface is verified. Until then, project/scene/puppet automation remains blocked.
+The 60% milestone may add a permission-first runtime adapter for documented Character Animator keyboard/trigger/MIDI control only if reliable focused-window and input-delivery verification can be represented safely. Project/scene/puppet host inspection remains blocked unless Adobe exposes an authoritative supported API.

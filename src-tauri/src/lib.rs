@@ -673,6 +673,9 @@ enum ToolAction {
     CharacterAnimatorReadinessReport,
     CharacterAnimatorDetect,
     CharacterAnimatorLaunch { character_animator_exe:String },
+    CharacterAnimatorControlCatalog,
+    CharacterAnimatorPlanControl { request:character_animator::ControlPlanRequest },
+    CharacterAnimatorPlanInterchange { request:character_animator::InterchangePlanRequest },
     PremiereDetect,
     PremiereLaunch { project: Option<String> },
     PremiereBridgeStart,
@@ -3302,7 +3305,7 @@ fn stage_tool(
         "character_animator_readiness_report" => (
             ToolAction::CharacterAnimatorReadinessReport,
             "Read Character Animator readiness report".into(),
-            "Report the current 20% Character Animator desktop foundation and explicit runtime gaps.".into(),
+            "Report the current Character Animator bounded source milestone and explicit runtime gaps.".into(),
             RiskLevel::Low,
         ),
         "character_animator_detect" => (
@@ -3318,6 +3321,34 @@ fn stage_tool(
                 "Launch detected Adobe Character Animator".into(),
                 format!("Launch exact freshly detected Adobe Character Animator executable {character_animator_exe}; no project open, recording, script execution, or host mutation."),
                 RiskLevel::Medium)
+        }
+        "character_animator_control_catalog" => (
+            ToolAction::CharacterAnimatorControlCatalog,
+            "Read Character Animator supported control catalog".into(),
+            "Read the bounded source contract for documented Character Animator keyboard shortcuts, project trigger keys, MIDI notes, Dynamic Link and Media Encoder handoff. No input is sent.".into(),
+            RiskLevel::Low,
+        ),
+        "character_animator_plan_control" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"character_animator_plan_control requires request.".to_string())?;
+            let request:character_animator::ControlPlanRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Character Animator control plan request: {e}"))?;
+            request.validate()?;
+            (ToolAction::CharacterAnimatorPlanControl {request},
+                "Plan Character Animator control input".into(),
+                "Build a bounded plan for a documented Character Animator application shortcut, user-mapped trigger key, or user-mapped MIDI note. Planning only; no key/MIDI input is sent.".into(),
+                RiskLevel::Low)
+        }
+        "character_animator_plan_interchange" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"character_animator_plan_interchange requires request.".to_string())?;
+            let request:character_animator::InterchangePlanRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Character Animator interchange plan request: {e}"))?;
+            request.validate()?;
+            (ToolAction::CharacterAnimatorPlanInterchange {request},
+                "Plan Character Animator interchange workflow".into(),
+                "Build a bounded planning-only workflow for Dynamic Link to After Effects/Premiere or Character Animator to Adobe Media Encoder handoff. No project or export mutation.".into(),
+                RiskLevel::Low)
         }
         "illustrator_capability_report" => (
             ToolAction::IllustratorCapabilityReport,
@@ -10393,6 +10424,29 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "source_runtime_verified":false,
                     "production_ready":false
                 })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::CharacterAnimatorControlCatalog => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&character_animator::control_catalog()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::CharacterAnimatorPlanControl {request} => {
+            let value=character_animator::plan_control(&request)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::CharacterAnimatorPlanInterchange {request} => {
+            let value=character_animator::plan_interchange(&request)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)
             })
         }
