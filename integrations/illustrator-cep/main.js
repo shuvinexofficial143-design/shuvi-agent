@@ -55,7 +55,31 @@
         return Promise.reject(new Error("Exact Illustrator document signature is required."));
       return evalHost("verify_identity",{expectedDocumentSignature:args.expectedDocumentSignature});
     }
-    return Promise.reject(new Error("Unsupported read-only Shuvi Illustrator command: "+command.action));
+    if(command.action==="set_layer_property"){
+      var operation=String(args.operation||"");
+      if(operation!=="rename"&&operation!=="visible"&&operation!=="locked")
+        return Promise.reject(new Error("Illustrator layer operation must be rename, visible, or locked."));
+      var layerIndex=boundedInteger(args.layerIndex,0,100000,"layerIndex");
+      if(typeof args.expectedDocumentSignature!=="string"||!args.expectedDocumentSignature.length||args.expectedDocumentSignature.length>2000)
+        return Promise.reject(new Error("Exact Illustrator document signature is required."));
+      if(typeof args.expectedDocumentPath!=="string"||!args.expectedDocumentPath.length||args.expectedDocumentPath.length>32000)
+        return Promise.reject(new Error("Exact local Illustrator document path is required."));
+      if(typeof args.expectedLayerName!=="string"||!args.expectedLayerName.length||args.expectedLayerName.length>512)
+        return Promise.reject(new Error("Exact inspected Illustrator layer name is required."));
+      if(typeof args.expectedLayerSignature!=="string"||!args.expectedLayerSignature.length||args.expectedLayerSignature.length>2000)
+        return Promise.reject(new Error("Exact inspected Illustrator layer signature is required."));
+      return evalHost("set_layer_property",{
+        expectedDocumentSignature:args.expectedDocumentSignature,
+        expectedDocumentPath:args.expectedDocumentPath,
+        layerIndex:layerIndex,
+        expectedLayerName:args.expectedLayerName,
+        expectedLayerSignature:args.expectedLayerSignature,
+        operation:operation,
+        expectedValue:args.expectedValue,
+        value:args.value
+      });
+    }
+    return Promise.reject(new Error("Unsupported Shuvi Illustrator command: "+command.action));
   }
   function bounded(command,success,data,error){
     var e={id:command.id,action:command.action,success:success,data:success?data:null,error:success?null:String(error||"Unknown Illustrator bridge error").slice(0,4000)};

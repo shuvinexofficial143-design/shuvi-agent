@@ -2,40 +2,57 @@
 
 ## Source milestone
 
-Current declared source milestone: **60%**
+Current declared source milestone: **80%**
 
-The 60% milestone extends the bounded read-only CEP + ExtendScript bridge with layer, page-item and selection inspection plus fresh document identity rechecks. It still does **not** authorize Illustrator mutation.
+The 80% milestone adds a deliberately small guarded layer-metadata mutation surface on top of the 60% bounded inspection and identity layer. It does not expose arbitrary ExtendScript or destructive Illustrator editing.
 
 ## Implemented source scope
 
-Desktop foundation:
-- bounded Windows detection,
-- exact detected Illustrator executable launch,
-- managed-process tracking.
-
-Authenticated host transport:
-- localhost bridge on `127.0.0.1:17365`,
-- rotating pairing token,
-- bounded request/result queue,
-- CEP host ID `ILST`,
-- CEP `evalScript` to ExtendScript adapter.
+Desktop and transport:
+- bounded Windows detection and exact detected executable launch,
+- managed-process tracking,
+- authenticated CEP + ExtendScript localhost bridge on `127.0.0.1:17365`,
+- rotating pairing token and bounded command/result queue,
+- explicit read-only and mutating action allowlists.
 
 Read-only inspection:
-- active document context,
-- document path and saved state where exposed,
-- artboard inventory and active artboard,
-- bounded top-level layer inventory (maximum 256),
-- layer name, visibility, lock state, opacity, nested-layer/page-item counts,
-- bounded document page-item inventory (maximum 256),
-- page-item type/name/layer, lock/hidden state, opacity and geometric bounds,
-- bounded current selection inventory (maximum 64),
-- observational per-layer and per-item signatures,
-- observational selection snapshot signature,
-- fresh exact document-signature recheck through `verify_identity`,
-- independent Rust-side receipt validation.
+- document, artboard, layer, page-item and selection inspection,
+- observational document/layer/item/selection signatures,
+- fresh document identity recheck.
 
-## Read-only allowlist
+Guarded layer writes:
+- rename,
+- visibility,
+- locked state.
 
+Every write requires:
+- separate high-risk approval,
+- exact saved local `.ai` document path,
+- exact fresh document signature,
+- exact top-level layer index/name/signature,
+- exact expected current property value,
+- complete non-truncated fresh layer inventory,
+- document `saved=true` before write,
+- local checkpoint creation before host dispatch,
+- exact host receipt validation,
+- independent fresh document + layer post-write readback,
+- no blind retry when execution status is uncertain.
+
+## Checkpoint boundary
+
+Before a guarded write, Shuvi copies the existing local `.ai` file into a sibling `Shuvi Illustrator Backups` directory and records source/backup fingerprints plus sidecar evidence.
+
+The checkpoint explicitly reports:
+
+- `checkpoint_scope=last_saved_disk_ai_only`
+- `unsaved_in_memory_edits_protected=false`
+- `automatic_restore=false`
+
+In addition, the write precondition requires Illustrator to report the document as saved before the mutation. Shuvi does not automatically restore a backup.
+
+## Native bridge allowlists
+
+Read-only:
 - `inspect_context`
 - `inspect_artboards`
 - `inspect_layers`
@@ -43,23 +60,24 @@ Read-only inspection:
 - `inspect_selection`
 - `verify_identity`
 
-The native bridge has an empty mutation allowlist at this milestone.
+Mutation:
+- `set_layer_property`
 
-## Identity boundary
+Within `set_layer_property`, the only operations are:
+- `rename`
+- `visible`
+- `locked`
 
-The document, layer, item and selection signatures in the 60% milestone are bounded observational snapshots. They are intended for stale-target detection and future write preconditions; they are **not** represented as permanent Illustrator object IDs.
+## Explicitly not implemented at 80%
 
-A successful `verify_identity` result reports `mutationAuthorized=false`. Identity confirmation alone never grants write permission.
-
-## Explicitly not implemented at 60%
-
-- layer/object mutation,
-- create/delete/reorder operations,
-- text/path/appearance mutation,
-- save or Save As,
+- layer create/delete/reorder,
+- page-item mutation,
+- path/text/appearance mutation,
+- artboard mutation,
+- save or Save As automation,
 - export automation,
 - arbitrary ExtendScript execution,
-- automatic rollback,
+- automatic checkpoint restore,
 - runtime acceptance.
 
 ## Runtime status
@@ -68,8 +86,8 @@ A successful `verify_identity` result reports `mutationAuthorized=false`. Identi
 
 `production_ready=false`
 
-Green source tests and CI do not change these flags. Real Windows Illustrator acceptance remains pending.
+Source tests and CI do not establish real Illustrator host behavior. Real Windows Illustrator acceptance remains pending.
 
 ## Next source phase
 
-The 80% milestone should introduce only a very small typed guarded mutation surface, with exact fresh document/target-state preconditions, checkpoint/recovery strategy, independent readback, and no arbitrary ExtendScript.
+The 100% source milestone should add a canonical bounded completion summary, checkpoint recovery handoff, and export preflight planning without expanding arbitrary ExtendScript or claiming live runtime acceptance.

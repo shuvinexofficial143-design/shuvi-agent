@@ -1,4 +1,4 @@
-/* Shuvi Illustrator CEP host adapter. 60% milestone: bounded read-only ExtendScript only. */
+/* Shuvi Illustrator CEP host adapter. 80% milestone: bounded inspection plus typed guarded layer metadata writes. */
 function shuviIllustratorBoundString(value,maxLength)
 {
     var text="";
@@ -153,6 +153,70 @@ function shuviIllustratorVerifyIdentity(args)
     return {schemaVersion:1,expectedDocumentSignature:expected,observedDocumentSignature:context.documentSignature,
         documentPath:context.documentPath,documentIdentityMatched:true,readOnly:true,mutationAuthorized:false,runtimeVerified:false};
 }
+
+function shuviIllustratorSamePrimitive(a,b)
+{
+    if(typeof a=="number"&&typeof b=="number")return Math.abs(a-b)<=0.000000001;
+    return a===b;
+}
+function shuviIllustratorSetLayerProperty(args)
+{
+    var expectedDocument=args&&typeof args.expectedDocumentSignature=="string"?args.expectedDocumentSignature:"";
+    var expectedPath=args&&typeof args.expectedDocumentPath=="string"?args.expectedDocumentPath:"";
+    var expectedLayerSignature=args&&typeof args.expectedLayerSignature=="string"?args.expectedLayerSignature:"";
+    if(!expectedDocument.length||expectedDocument.length>2000||!expectedPath.length||expectedPath.length>32000||
+        !expectedLayerSignature.length||expectedLayerSignature.length>2000)
+        throw new Error("Exact Illustrator document/path/layer identity is required.");
+    var context=shuviIllustratorContext();
+    if(!context.hasDocument)throw new Error("Illustrator has no active document.");
+    if(context.documentSignature!=expectedDocument)throw new Error("Illustrator document identity changed; inspect again before writing.");
+    if(context.documentPath!=expectedPath)throw new Error("Illustrator document path changed; inspect again before writing.");
+    if(context.saved!==true)throw new Error("Illustrator guarded layer writes require a fully saved document.");
+    var doc=app.activeDocument,index=Number(args.layerIndex);
+    if(isNaN(index)||Math.floor(index)!=index||index<0||index>=doc.layers.length||index>100000)
+        throw new Error("Illustrator target layer index is invalid.");
+    var layer=doc.layers[index];
+    var beforeRow=shuviIllustratorLayerRow(layer,index,context.documentSignature);
+    if(beforeRow.name!=String(args.expectedLayerName||"")||beforeRow.layerSignature!=expectedLayerSignature)
+        throw new Error("Illustrator target layer identity changed; inspect layers again.");
+    var operation=String(args.operation||""),before=null,after=null;
+    if(operation=="rename")
+    {
+        before=beforeRow.name;
+        if(typeof args.expectedValue!="string"||before!=args.expectedValue)
+            throw new Error("Illustrator layer name changed before mutation.");
+        if(typeof args.value!="string"||!args.value.length||args.value.length>512)
+            throw new Error("Illustrator layer rename value is invalid.");
+        layer.name=args.value;
+        try{after=String(layer.name);}catch(e0){after=null;}
+    }
+    else if(operation=="visible")
+    {
+        before=beforeRow.visible;
+        if(typeof args.expectedValue!="boolean"||before!==args.expectedValue||typeof args.value!="boolean")
+            throw new Error("Illustrator layer visibility changed or requested value is invalid.");
+        layer.visible=args.value;
+        try{after=Boolean(layer.visible);}catch(e1){after=null;}
+    }
+    else if(operation=="locked")
+    {
+        before=beforeRow.locked;
+        if(typeof args.expectedValue!="boolean"||before!==args.expectedValue||typeof args.value!="boolean")
+            throw new Error("Illustrator layer lock state changed or requested value is invalid.");
+        layer.locked=args.value;
+        try{after=Boolean(layer.locked);}catch(e2){after=null;}
+    }
+    else throw new Error("Unsupported Illustrator layer mutation operation.");
+    if(!shuviIllustratorSamePrimitive(after,args.value))
+        throw new Error("Illustrator layer mutation readback mismatch; execution status is uncertain.");
+    var afterContext=shuviIllustratorContext();
+    if(afterContext.documentSignature!=expectedDocument||afterContext.documentPath!=expectedPath)
+        throw new Error("Illustrator document identity changed after mutation; execution status is uncertain.");
+    return {schemaVersion:1,mutationPerformed:true,documentSignature:expectedDocument,documentPath:expectedPath,
+        layerIndex:index,expectedLayerName:String(args.expectedLayerName||""),expectedLayerSignature:expectedLayerSignature,
+        operation:operation,before:before,after:after,retrySafe:false,runtimeVerified:false};
+}
+
 function shuviIllustratorDispatch(action,encodedArgs)
 {
     try
@@ -166,7 +230,8 @@ function shuviIllustratorDispatch(action,encodedArgs)
         else if(action=="inspect_page_items")data=shuviIllustratorInspectPageItems(args);
         else if(action=="inspect_selection")data=shuviIllustratorInspectSelection(args);
         else if(action=="verify_identity")data=shuviIllustratorVerifyIdentity(args);
-        else throw new Error("Unsupported Shuvi Illustrator read-only action: "+action);
+        else if(action=="set_layer_property")data=shuviIllustratorSetLayerProperty(args);
+        else throw new Error("Unsupported Shuvi Illustrator action: "+action);
         return ({ok:true,data:data}).toSource();
     }
     catch(error){return ({ok:false,error:shuviIllustratorBoundString(error,2000)}).toSource();}

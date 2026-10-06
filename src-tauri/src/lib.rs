@@ -84,6 +84,7 @@ mod audition_acceptance;
 mod animate;
 mod animate_checkpoint;
 mod illustrator;
+mod illustrator_checkpoint;
 mod illustrator_bridge_queue;
 mod illustrator_bridge;
 use illustrator_bridge::{IllustratorBridgeShared,IllustratorBridgeStatus};
@@ -662,6 +663,8 @@ enum ToolAction {
     IllustratorPageItems,
     IllustratorSelection,
     IllustratorIdentityCheck { expected_document_signature:String },
+    IllustratorSetLayerProperty { request:illustrator::LayerWriteRequest },
+    IllustratorVerifyCheckpoint { backup_path:String, expected_source_path:String, expected_document_signature:String },
     PremiereDetect,
     PremiereLaunch { project: Option<String> },
     PremiereBridgeStart,
@@ -3291,7 +3294,7 @@ fn stage_tool(
         "illustrator_readiness_report" => (
             ToolAction::IllustratorReadinessReport,
             "Read Illustrator readiness report".into(),
-            "Report the current 20% Illustrator desktop foundation and explicit runtime gaps without promoting untested capabilities.".into(),
+            "Report the current Illustrator bounded source milestone and explicit runtime gaps without promoting untested capabilities.".into(),
             RiskLevel::Low,
         ),
         "illustrator_detect" => (
@@ -3311,7 +3314,7 @@ fn stage_tool(
         "illustrator_bridge_start" => (
             ToolAction::IllustratorBridgeStart,
             "Start Illustrator read-only bridge".into(),
-            "Start Shuvi's authenticated localhost CEP/ExtendScript bridge for Adobe Illustrator. The 40% allowlist is read-only only.".into(),
+            "Start Shuvi's authenticated localhost CEP/ExtendScript bridge for Adobe Illustrator. The bridge exposes bounded inspection plus a separately approved typed layer-metadata mutation action.".into(),
             RiskLevel::Medium,
         ),
         "illustrator_bridge_status" => (
@@ -3362,6 +3365,33 @@ fn stage_tool(
             (ToolAction::IllustratorIdentityCheck {expected_document_signature:expected_document_signature.clone()},
                 "Recheck Illustrator document identity".into(),
                 "Read-only fresh host recheck of the exact inspected document signature. It does not authorize mutation.".into(),
+                RiskLevel::Low)
+        }
+        "illustrator_set_layer_property" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"illustrator_set_layer_property requires request.".to_string())?;
+            let request:illustrator::LayerWriteRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Illustrator layer-write request: {e}"))?;
+            request.validate()?;
+            let operation=request.operation.clone();
+            let layer_index=request.layer_index;
+            (ToolAction::IllustratorSetLayerProperty {request},
+                "Modify guarded Illustrator layer property".into(),
+                format!("High-risk typed Illustrator layer {operation} on exact layer index {layer_index}. Requires fresh saved document/layer state, a verified local AI checkpoint, separate approval, and independent post-write readback. No arbitrary ExtendScript."),
+                RiskLevel::High)
+        }
+        "illustrator_verify_checkpoint" => {
+            let backup_path=arg_string(&proposal.arguments,"backup_path")?;
+            let expected_source_path=arg_string(&proposal.arguments,"expected_source_path")?;
+            let expected_document_signature=arg_string(&proposal.arguments,"expected_document_signature")?;
+            illustrator::validate_identity_signature(&expected_document_signature)?;
+            (ToolAction::IllustratorVerifyCheckpoint {
+                    backup_path:backup_path.clone(),
+                    expected_source_path:expected_source_path.clone(),
+                    expected_document_signature:expected_document_signature.clone()
+                },
+                "Verify Illustrator checkpoint".into(),
+                "Read-only integrity verification for a Shuvi Illustrator AI checkpoint. Does not restore or overwrite the document.".into(),
                 RiskLevel::Low)
         }
         "animate_capability_report" => (
@@ -10306,7 +10336,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&json!({
                 "enabled":status.enabled,"server_started":status.server_started,"paired":status.paired,
                 "port":status.port,"pairing_token":status.token,
-                "read_only_allowlist":["inspect_context","inspect_artboards"],
+                "read_only_allowlist":["inspect_context","inspect_artboards","inspect_layers","inspect_page_items","inspect_selection","verify_identity"],
+                "mutating_allowlist":["set_layer_property"],
                 "source_runtime_verified":false,"production_ready":false
             })).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
         }
@@ -10357,6 +10388,60 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let validated=illustrator::validate_identity_receipt(&value)?;
             Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::IllustratorSetLayerProperty {request} => {
+            request.validate()?;
+            let raw_context=state.illustrator_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let context=illustrator::validate_context_receipt(&raw_context)?;
+            let raw_layers=state.illustrator_bridge.request("inspect_layers",json!({"maxLayers":256}),Duration::from_secs(10)).await?;
+            let layers=illustrator::validate_layer_receipt(&raw_layers)?;
+            illustrator::validate_layer_write_precondition(&request,&context,&layers)?;
+            let checkpoint=illustrator_checkpoint::create(
+                &request.expected_document_path,
+                &request.expected_document_signature,
+                &format!("layer_{}",request.operation)
+            )?;
+            let host_result=state.illustrator_bridge.request(
+                "set_layer_property",
+                request.bridge_arguments()?,
+                Duration::from_secs(12)
+            ).await;
+            let host_result=match host_result {
+                Ok(value)=>value,
+                Err(error)=>{
+                    return Err(format!(
+                        "execution_status_unknown: Illustrator layer write did not return a trusted receipt. Checkpoint backup: {}. Do not blindly retry. {error}",
+                        checkpoint.get("backup_path").and_then(Value::as_str).unwrap_or("unavailable")
+                    ));
+                }
+            };
+            let receipt=illustrator::validate_layer_write_receipt(&request,&host_result)?;
+            let post_raw_context=state.illustrator_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let post_context=illustrator::validate_context_receipt(&post_raw_context)?;
+            let post_raw_layers=state.illustrator_bridge.request("inspect_layers",json!({"maxLayers":256}),Duration::from_secs(10)).await?;
+            let post_layers=illustrator::validate_layer_receipt(&post_raw_layers)?;
+            let post=illustrator::validate_layer_write_post_readback(&request,&post_context,&post_layers)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "checkpoint":checkpoint,
+                    "host_receipt":receipt,
+                    "post_readback":post,
+                    "automatic_retry_allowed":false,
+                    "automatic_restore":false,
+                    "source_runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::IllustratorVerifyCheckpoint {backup_path,expected_source_path,expected_document_signature} => {
+            let value=illustrator_checkpoint::verify(&backup_path,&expected_source_path,&expected_document_signature)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
         }
         ToolAction::AnimateCapabilityReport => {
             Ok(ActionResult {

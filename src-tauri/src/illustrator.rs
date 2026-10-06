@@ -1,3 +1,4 @@
+use serde::{Deserialize,Serialize};
 use serde_json::{json,Value};
 use std::{collections::HashSet,fs,path::{Path,PathBuf}};
 
@@ -129,7 +130,7 @@ pub fn capability_report()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_illustrator",
-        "source_milestone_percent":60,
+        "source_milestone_percent":80,
         "source_scope_complete":false,
         "implemented":{
             "bounded_windows_detection":true,
@@ -143,7 +144,10 @@ pub fn capability_report()->Value{
             "layer_inspection":true,
             "page_item_inspection":true,
             "selection_inspection":true,
-            "fresh_document_identity_recheck":true
+            "fresh_document_identity_recheck":true,
+            "guarded_layer_property_writes":["rename","visible","locked"],
+            "local_ai_checkpoint_integrity":true,
+            "independent_post_write_readback":true
         },
         "planned_transport":{
             "kind":"cep_plus_extendscript",
@@ -151,7 +155,10 @@ pub fn capability_report()->Value{
             "implemented":true
         },
         "not_implemented":{
-            "document_mutation":true,
+            "layer_create_delete_reorder":true,
+            "page_item_mutation":true,
+            "path_text_appearance_mutation":true,
+            "save_automation":true,
             "export":true,
             "runtime_acceptance":true
         },
@@ -164,19 +171,19 @@ pub fn readiness_report()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_illustrator",
-        "source_milestone_percent":60,
-        "source_coding_status":"read_only_target_inspection_complete",
+        "source_milestone_percent":80,
+        "source_coding_status":"guarded_layer_metadata_writes_complete",
         "desktop_detection":true,
         "exact_detected_launch":true,
         "host_transport":"cep_plus_extendscript",
         "planned_host_transport":"bounded_cep_plus_extendscript",
         "planned_cep_host_id":"ILST",
         "host_ready_verified":false,
-        "bridge_scope":"read_only_document_artboards_layers_pageitems_selection_identity",
-        "document_automation_ready":"read_only_only",
+        "bridge_scope":"bounded_inspection_plus_guarded_layer_metadata_writes",
+        "document_automation_ready":"guarded_layer_metadata_only",
         "source_runtime_verified":false,
         "production_ready":false,
-        "next_source_phase":"add a tiny typed guarded mutation surface with exact target-state preconditions, checkpoint strategy, and independent readback"
+        "next_source_phase":"add canonical bounded source completion summary, checkpoint recovery handoff, and export preflight planning without arbitrary ExtendScript"
     })
 }
 
@@ -377,6 +384,185 @@ pub fn validate_identity_receipt(value:&Value)->Result<Value,String>{
     Ok(value.clone())
 }
 
+
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LayerWriteRequest{
+    pub expected_document_signature:String,
+    pub expected_document_path:String,
+    pub layer_index:u32,
+    pub expected_layer_name:String,
+    pub expected_layer_signature:String,
+    pub operation:String,
+    pub expected_value:Value,
+    pub value:Value,
+    pub acknowledge_last_saved_disk_checkpoint:bool,
+}
+
+impl LayerWriteRequest{
+    pub fn validate(&self)->Result<(),String>{
+        validate_identity_signature(&self.expected_document_signature)?;
+        validate_identity_signature(&self.expected_layer_signature)?;
+        if self.expected_document_path.trim().is_empty()||self.expected_document_path.len()>MAX_PATH_BYTES
+            ||self.expected_document_path.chars().any(char::is_control)||!Path::new(&self.expected_document_path).is_absolute(){
+            return Err("Illustrator guarded write requires an exact absolute saved AI path.".into());
+        }
+        if Path::new(&self.expected_document_path).extension().and_then(|v|v.to_str()).unwrap_or("").to_ascii_lowercase()!="ai"{
+            return Err("Illustrator guarded write is currently limited to existing local .ai documents.".into());
+        }
+        if self.layer_index>100_000{return Err("Illustrator layer index exceeds supported bounds.".into());}
+        if !bounded_text(Some(&self.expected_layer_name),512){
+            return Err("Illustrator expected layer name is missing, oversized, or invalid.".into());
+        }
+        if !self.acknowledge_last_saved_disk_checkpoint{
+            return Err("Illustrator guarded write requires acknowledge_last_saved_disk_checkpoint=true.".into());
+        }
+        match self.operation.as_str(){
+            "rename"=>{
+                let before=self.expected_value.as_str().ok_or("Illustrator rename expected_value must be a string.")?;
+                let after=self.value.as_str().ok_or("Illustrator rename value must be a string.")?;
+                if before!=self.expected_layer_name{
+                    return Err("Illustrator rename expected_value must equal the inspected layer name.".into());
+                }
+                if after.trim().is_empty()||after.len()>512||after.chars().any(char::is_control){
+                    return Err("Illustrator layer name must be 1..512 characters without control characters.".into());
+                }
+                if before==after{return Err("Illustrator guarded write refuses a no-op rename.".into());}
+            }
+            "visible"|"locked"=>{
+                let before=self.expected_value.as_bool().ok_or("Illustrator visible/locked expected_value must be boolean.")?;
+                let after=self.value.as_bool().ok_or("Illustrator visible/locked value must be boolean.")?;
+                if before==after{return Err("Illustrator guarded write refuses a no-op boolean change.".into());}
+            }
+            _=>return Err("Illustrator layer operation must be rename, visible, or locked.".into())
+        }
+        Ok(())
+    }
+
+    pub fn bridge_arguments(&self)->Result<Value,String>{
+        self.validate()?;
+        Ok(json!({
+            "expectedDocumentSignature":self.expected_document_signature,
+            "expectedDocumentPath":self.expected_document_path,
+            "layerIndex":self.layer_index,
+            "expectedLayerName":self.expected_layer_name,
+            "expectedLayerSignature":self.expected_layer_signature,
+            "operation":self.operation,
+            "expectedValue":self.expected_value,
+            "value":self.value
+        }))
+    }
+}
+
+fn exact_json_value(a:&Value,b:&Value)->bool{
+    match (a,b){
+        (Value::Number(x),Value::Number(y))=>x.as_f64().zip(y.as_f64()).is_some_and(|(a,b)|(a-b).abs()<=1e-9),
+        _=>a==b
+    }
+}
+
+fn layer_property(row:&Value,operation:&str)->Option<Value>{
+    match operation{
+        "rename"=>row.get("name").cloned(),
+        "visible"=>row.get("visible").cloned(),
+        "locked"=>row.get("locked").cloned(),
+        _=>None
+    }
+}
+
+pub fn validate_layer_write_precondition(request:&LayerWriteRequest,context:&Value,layers:&Value)->Result<Value,String>{
+    request.validate()?;
+    if context.get("hasDocument").and_then(Value::as_bool)!=Some(true)
+        ||context.get("documentSignature").and_then(Value::as_str)!=Some(request.expected_document_signature.as_str())
+        ||context.get("documentPath").and_then(Value::as_str)!=Some(request.expected_document_path.as_str())
+        ||context.get("saved").and_then(Value::as_bool)!=Some(true){
+        return Err("Illustrator guarded write requires the exact freshly inspected saved local document.".into());
+    }
+    if layers.get("documentSignature").and_then(Value::as_str)!=Some(request.expected_document_signature.as_str())
+        ||layers.get("truncated").and_then(Value::as_bool)==Some(true){
+        return Err("Illustrator guarded write requires a complete fresh top-level layer inventory with matching document identity.".into());
+    }
+    let rows=layers.get("layers").and_then(Value::as_array).ok_or("Illustrator layer inventory is missing.")?;
+    let row=rows.iter().find(|row|row.get("index").and_then(Value::as_u64)==Some(request.layer_index as u64))
+        .ok_or("Illustrator target layer index is not present in the fresh layer inventory.")?;
+    if row.get("name").and_then(Value::as_str)!=Some(request.expected_layer_name.as_str())
+        ||row.get("layerSignature").and_then(Value::as_str)!=Some(request.expected_layer_signature.as_str()){
+        return Err("Illustrator target layer identity changed; inspect layers again.".into());
+    }
+    let observed=layer_property(row,&request.operation).ok_or("Illustrator target layer property is unavailable.")?;
+    if !exact_json_value(&observed,&request.expected_value){
+        return Err("Illustrator target layer property changed; inspect layers again before writing.".into());
+    }
+    Ok(json!({
+        "fresh_identity_verified":true,
+        "saved_document_verified":true,
+        "layer_index":request.layer_index,
+        "operation":request.operation,
+        "checkpoint_scope":"last_saved_disk_ai_only"
+    }))
+}
+
+pub fn validate_layer_write_receipt(request:&LayerWriteRequest,value:&Value)->Result<Value,String>{
+    request.validate()?;
+    if value.get("mutationPerformed").and_then(Value::as_bool)!=Some(true)
+        ||value.get("documentSignature").and_then(Value::as_str)!=Some(request.expected_document_signature.as_str())
+        ||value.get("documentPath").and_then(Value::as_str)!=Some(request.expected_document_path.as_str())
+        ||value.get("layerIndex").and_then(Value::as_u64)!=Some(request.layer_index as u64)
+        ||value.get("expectedLayerSignature").and_then(Value::as_str)!=Some(request.expected_layer_signature.as_str())
+        ||value.get("operation").and_then(Value::as_str)!=Some(request.operation.as_str()){
+        return Err("Illustrator host mutation receipt does not match the approved target.".into());
+    }
+    let before=value.get("before").ok_or("Illustrator host mutation receipt is missing before state.")?;
+    let after=value.get("after").ok_or("Illustrator host mutation receipt is missing after state.")?;
+    if !exact_json_value(before,&request.expected_value)||!exact_json_value(after,&request.value){
+        return Err("Illustrator host mutation receipt values do not match the approved request.".into());
+    }
+    if value.get("retrySafe").and_then(Value::as_bool)!=Some(false){
+        return Err("Illustrator mutation receipt must explicitly disable blind retry.".into());
+    }
+    Ok(json!({
+        "host_receipt_validated":true,
+        "layer_index":request.layer_index,
+        "operation":request.operation,
+        "before":before,
+        "after":after,
+        "retry_safe":false
+    }))
+}
+
+pub fn validate_layer_write_post_readback(request:&LayerWriteRequest,context:&Value,layers:&Value)->Result<Value,String>{
+    request.validate()?;
+    if context.get("hasDocument").and_then(Value::as_bool)!=Some(true)
+        ||context.get("documentSignature").and_then(Value::as_str)!=Some(request.expected_document_signature.as_str())
+        ||context.get("documentPath").and_then(Value::as_str)!=Some(request.expected_document_path.as_str()){
+        return Err("Illustrator post-write document identity changed or is unavailable.".into());
+    }
+    if layers.get("documentSignature").and_then(Value::as_str)!=Some(request.expected_document_signature.as_str())
+        ||layers.get("truncated").and_then(Value::as_bool)==Some(true){
+        return Err("Illustrator post-write layer readback is incomplete or stale.".into());
+    }
+    let rows=layers.get("layers").and_then(Value::as_array).ok_or("Illustrator post-write layer inventory is missing.")?;
+    let row=rows.iter().find(|row|row.get("index").and_then(Value::as_u64)==Some(request.layer_index as u64))
+        .ok_or("Illustrator post-write target layer is missing.")?;
+    if request.operation!="rename" && row.get("name").and_then(Value::as_str)!=Some(request.expected_layer_name.as_str()){
+        return Err("Illustrator post-write layer identity changed unexpectedly.".into());
+    }
+    if request.operation=="rename" && row.get("name").and_then(Value::as_str)!=request.value.as_str(){
+        return Err("Illustrator post-write rename readback does not match the approved value.".into());
+    }
+    let observed=layer_property(row,&request.operation).ok_or("Illustrator post-write property is unavailable.")?;
+    if !exact_json_value(&observed,&request.value){
+        return Err("Illustrator post-write readback does not match the approved value.".into());
+    }
+    Ok(json!({
+        "post_state_verified":true,
+        "layer_index":request.layer_index,
+        "operation":request.operation,
+        "observed":observed,
+        "document_identity_stable":true
+    }))
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -424,14 +610,14 @@ mod tests{
     #[test]
     fn reports_never_promote_unimplemented_host_or_runtime(){
         let capability=capability_report();
-        assert_eq!(capability["source_milestone_percent"],60);
+        assert_eq!(capability["source_milestone_percent"],80);
         assert_eq!(capability["planned_transport"]["illustrator_cep_host_id"],"ILST");
         assert_eq!(capability["planned_transport"]["implemented"],true);
         assert_eq!(capability["source_runtime_verified"],false);
         assert_eq!(capability["production_ready"],false);
         let readiness=readiness_report();
         assert_eq!(readiness["host_transport"],"cep_plus_extendscript");
-        assert_eq!(readiness["document_automation_ready"],"read_only_only");
+        assert_eq!(readiness["document_automation_ready"],"guarded_layer_metadata_only");
     }
 
     #[test]
@@ -445,5 +631,32 @@ mod tests{
             "observedDocumentSignature":"doc|1"
         });
         assert_eq!(validate_identity_receipt(&receipt).unwrap()["mutationAuthorized"],false);
+    }
+
+    #[test]
+    fn guarded_layer_write_requires_saved_exact_document_and_target_state(){
+        let path=std::env::temp_dir().join("illustrator-test.ai").to_string_lossy().into_owned();
+        let request=LayerWriteRequest{
+            expected_document_signature:"doc|1".into(),
+            expected_document_path:path.clone(),
+            layer_index:0,
+            expected_layer_name:"Artwork".into(),
+            expected_layer_signature:"layer|1".into(),
+            operation:"visible".into(),
+            expected_value:json!(true),
+            value:json!(false),
+            acknowledge_last_saved_disk_checkpoint:true,
+        };
+        request.validate().unwrap();
+        let context=json!({"hasDocument":true,"documentSignature":"doc|1","documentPath":path,"saved":true});
+        let layers=json!({"documentSignature":"doc|1","truncated":false,
+            "layers":[{"index":0,"name":"Artwork","visible":true,"locked":false,"layerSignature":"layer|1"}]});
+        assert_eq!(validate_layer_write_precondition(&request,&context,&layers).unwrap()["fresh_identity_verified"],true);
+        let receipt=json!({"mutationPerformed":true,"documentSignature":"doc|1","documentPath":context["documentPath"],
+            "layerIndex":0,"expectedLayerSignature":"layer|1","operation":"visible","before":true,"after":false,"retrySafe":false});
+        assert_eq!(validate_layer_write_receipt(&request,&receipt).unwrap()["host_receipt_validated"],true);
+        let post=json!({"documentSignature":"doc|1","truncated":false,
+            "layers":[{"index":0,"name":"Artwork","visible":false,"locked":false,"layerSignature":"layer|2"}]});
+        assert_eq!(validate_layer_write_post_readback(&request,&context,&post).unwrap()["post_state_verified"],true);
     }
 }

@@ -19,7 +19,9 @@ pub const READ_ONLY_ACTIONS: &[&str] = &[
     "inspect_selection",
     "verify_identity",
 ];
-pub const MUTATING_ACTIONS: &[&str] = &[];
+pub const MUTATING_ACTIONS: &[&str] = &[
+    "set_layer_property",
+];
 pub const ALLOWED_ACTIONS: &[&str] = &[
     "inspect_context",
     "inspect_artboards",
@@ -27,6 +29,7 @@ pub const ALLOWED_ACTIONS: &[&str] = &[
     "inspect_page_items",
     "inspect_selection",
     "verify_identity",
+    "set_layer_property",
 ];
 
 pub const ILLUSTRATOR_BRIDGE_PORT: u16 = 17_365;
