@@ -256,6 +256,7 @@ Available tools:
 - premiere_edit_job_status: {"job_id":"exact returned UUID"}
 - premiere_edit_job_next: {"job_id":"exact returned UUID"}
 - premiere_edit_job_record_action: {"job_id":"UUID","phase_id":"exact current phase id","action_id":"exact executed Shuvi audit action UUID"}
+- premiere_edit_job_record_review: {"job_id":"UUID","phase_id":"review","review_session_id":"completed bounded review session UUID"}
 - premiere_edit_job_cancel: {"job_id":"exact returned UUID"}
 - premiere_list_items: {}
 - premiere_project_tree: {}
@@ -648,6 +649,7 @@ enum ToolAction {
     PremiereEditJobStatus { job_id: String },
     PremiereEditJobNext { job_id: String },
     PremiereEditJobRecordAction { job_id: String, phase_id: String, action_id: String },
+    PremiereEditJobRecordReview { job_id:String, phase_id:String, review_session_id:String },
     PremiereEditJobCancel { job_id: String },
     PremiereSetTrackMute { kind: String, track: u32, muted: bool },
     PremiereSetClipEnabled { kind: String, track: u32, clip_index: u32, enabled: bool },
@@ -1312,6 +1314,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_edit_job_status"
         | "premiere_edit_job_next"
         | "premiere_edit_job_record_action"
+        | "premiere_edit_job_record_review"
         | "premiere_edit_job_cancel"
         | "premiere_set_track_mute"
         | "premiere_set_clip_enabled"
@@ -4046,6 +4049,16 @@ fn stage_tool(
             (ToolAction::PremierePlanReviewCorrection{session_id,issue_id,frame_seconds,kind,track,clip_index,target_signature,component_match_name,param_display_name,desired_value},
                 "Plan exact Premiere review correction".into(),
                 "Reinspect the exact target and native parameter, preserve its fresh expectation, and return one separately approved typed correction proposal; no edit.".into(),RiskLevel::Low)
+        }
+        "premiere_edit_job_record_review" => {
+            let job_id=arg_string(&proposal.arguments,"job_id")?;
+            Uuid::parse_str(&job_id).map_err(|_|"Invalid edit job ID.")?;
+            let phase_id=arg_string(&proposal.arguments,"phase_id")?;
+            let review_session_id=arg_string(&proposal.arguments,"review_session_id")?;
+            Uuid::parse_str(&review_session_id).map_err(|_|"Invalid review session ID.")?;
+            (ToolAction::PremiereEditJobRecordReview{job_id,phase_id,review_session_id},
+                "Record completed iterative Premiere review".into(),
+                "Advance the edit job only from acceptable bounded review-session evidence on the same project/sequence.".into(),RiskLevel::Low)
         }
         "premiere_edit_session_start" => {
             let request:premiere_editorial::Request=serde_json::from_value(proposal.arguments.clone())
@@ -11679,8 +11692,18 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }
                 "review" => {
                     let review=job.request.review.clone().ok_or("Edit job review payload is missing.")?;
-                    (json!({"seconds":review.seconds,"prompt":review.prompt}),
-                        "Run the existing bounded multi-frame Premiere vision review; this does not auto-fix or guarantee artistic quality.".to_string())
+                    if review.iterative {
+                        (json!({
+                            "objective":review.prompt,
+                            "sample_times":review.seconds,
+                            "reference":review.reference.unwrap_or_default(),
+                            "max_iterations":review.iteration_limit()
+                        }),
+                        "Start the bounded iterative edit-review-correction session. Every correction still requires its own typed approval and the edit job advances only after acceptable completed review evidence.".to_string())
+                    } else {
+                        (json!({"seconds":review.seconds,"prompt":review.prompt}),
+                            "Run the existing bounded multi-frame Premiere vision review; this does not auto-fix or guarantee artistic quality.".to_string())
+                    }
                 }
                 "frame_delivery" => {
                     let batch=job.request.frame_delivery.clone().ok_or("Edit job frame_delivery payload is missing.")?;
@@ -11712,6 +11735,22 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 _=>return Err("Unknown edit-job phase.".into()),
             };
 
+            let iterative_review=phase.id=="review" && phase.tool=="premiere_review_session_start";
+            let after_execution=if iterative_review {
+                json!({
+                    "first":"Run the returned premiere_review_session_start proposal and copy its review session ID.",
+                    "then":"Call premiere_review_session_continue until the review session reaches an acceptable completed state; execute any correction proposals only through normal separate approvals.",
+                    "record":{
+                        "tool":"premiere_edit_job_record_review",
+                        "arguments":{"job_id":job_id,"phase_id":phase.id,"review_session_id":"COPY_COMPLETED_REVIEW_SESSION_ID"}
+                    }
+                })
+            } else {
+                json!({
+                    "tool":"premiere_edit_job_record_action",
+                    "arguments":{"job_id":job_id,"phase_id":phase.id,"action_id":"COPY_EXECUTED_ACTION_ID"}
+                })
+            };
             Ok(ActionResult{
                 success:true,tool,
                 stdout:json!({
@@ -11724,10 +11763,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                         "reason":reason
                     },
                     "requires_separate_approval":true,
-                    "after_execution":{
-                        "tool":"premiere_edit_job_record_action",
-                        "arguments":{"job_id":job_id,"phase_id":phase.id,"action_id":"COPY_EXECUTED_ACTION_ID"}
-                    },
+                    "after_execution":after_execution,
+                    "iterative_review":iterative_review,
                     "no_hidden_mutation":true
                 }).to_string(),
                 stderr:String::new(),exit_code:Some(0)
@@ -11740,6 +11777,9 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             job.identity(&context)?;
             let pending=job.pending().cloned().ok_or("Edit job has no pending phase.")?;
             if pending.id!=phase_id{return Err("Receipt phase is not the current edit-job phase.".into());}
+            if pending.id=="review" && pending.tool=="premiere_review_session_start" {
+                return Err("Iterative review cannot be completed from the start-action receipt; finish the bounded review loop and use premiere_edit_job_record_review.".into());
+            }
             let receipt=read_action_audit_receipt(app,&action_id)?
                 .filter(|entry|
                     entry.timestamp_ms>=job.created_at_ms
@@ -11818,6 +11858,47 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "then":"premiere_review_session_continue",
                     "automatic_mutation":false,
                     "runtime_verified":false
+                }).to_string(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PremiereEditJobRecordReview {job_id,phase_id,review_session_id} => {
+            let path=premiere_edit_job_path(app,&job_id)?;
+            let mut job=premiere_edit_job::load(&path)?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            job.identity(&context)?;
+            let pending=job.pending().cloned().ok_or("Edit job has no pending phase.")?;
+            if pending.id!=phase_id || pending.tool!="premiere_review_session_start" {
+                return Err("Completed review does not match the current iterative edit-job phase.".into());
+            }
+            let spec=job.request.review.as_ref().filter(|review|review.iterative)
+                .ok_or("Edit job has no iterative review specification.")?;
+            let review=premiere_review::load(&premiere_review_path(app,&review_session_id)?)?;
+            if review.created_at_ms<job.created_at_ms || review.project_guid!=job.project_guid
+                || review.sequence_guid!=job.sequence_guid || review.objective!=spec.prompt
+                || review.reference!=spec.reference.clone().unwrap_or_default()
+                || review.sample_times!=spec.seconds || review.max_iterations!=spec.iteration_limit()
+                || review.status!="completed" {
+                return Err("Review session is incomplete or does not exactly match this edit job review phase.".into());
+            }
+            let last=review.reviews.last().ok_or("Completed review session has no review evidence.")?;
+            let acceptable=last.overall_confidence>=0.65
+                && !last.issues.iter().any(|issue|issue.confidence>=0.65&&matches!(issue.severity.as_str(),"medium"|"high"));
+            if !acceptable {
+                return Err("Review session completed without acceptable high-confidence correction evidence; start a fresh bounded review session before advancing.".into());
+            }
+            job.record_review(&phase_id,&review_session_id,now_ms())?;
+            premiere_edit_job::save(&path,&job)?;
+            Ok(ActionResult{
+                success:true,tool,
+                stdout:json!({
+                    "job_id":job_id,
+                    "phase_id":phase_id,
+                    "review_session_id":review_session_id,
+                    "acceptable":true,
+                    "job_status":job.status,
+                    "next_tool":if job.status=="running"{Some("premiere_edit_job_next")}else{None},
+                    "production_ready":false
                 }).to_string(),
                 stderr:String::new(),exit_code:Some(0)
             })

@@ -53,3 +53,16 @@ test("auto review phase 3 builds only separately approved exact correction propo
   assert.match(rust, /COPY_EXECUTED_ACTION_ID/);
   assert.match(rust, /automatic_mutation/);
 });
+
+
+test("iterative auto review is integrated into professional edit jobs", () => {
+  const job = fs.readFileSync("src-tauri/src/premiere_edit_job.rs", "utf8");
+  const rust = fs.readFileSync("src-tauri/src/lib.rs", "utf8");
+  assert.match(job, /pub iterative:bool/);
+  assert.match(job, /premiere_review_session_start/);
+  assert.match(job, /record_review/);
+  assert.match(job, /Iterative review phase completes only from bounded completed review-session evidence/);
+  assert.match(rust, /premiere_edit_job_record_review/);
+  assert.match(rust, /Iterative review cannot be completed from the start-action receipt/);
+  assert.match(rust, /last\.overall_confidence>=0\.65/);
+});

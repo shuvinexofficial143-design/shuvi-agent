@@ -44,3 +44,8 @@ Audio discovery exposes numeric candidates only because the existing audio autom
 Before returning anything executable it refreshes the timeline, reinspects the native component chain, reruns the review binding checks, rejects animated/stale/ambiguous parameters, enforces primitive type equality, and preserves the exact project/sequence/clip expectation. It then returns exactly one normal high-risk `premiere_apply_video_recipe` or `premiere_apply_audio_recipe` proposal with `requires_separate_approval=true`.
 
 The planner does not execute that proposal. After the approved action succeeds, its response includes the exact `premiere_review_session_record_fix` handoff and then returns to `premiere_review_session_continue` for the next bounded re-review.
+
+
+## Phase 4 — professional edit-job integration
+
+Professional edit jobs can opt into the same loop with `review.iterative=true`. A job cannot advance from the review-session start audit receipt. It requires `premiere_edit_job_record_review` with an exactly matching, acceptable, completed review session on the same project and sequence. This keeps the long-form edit coordinator from treating “review started” as “review passed.”

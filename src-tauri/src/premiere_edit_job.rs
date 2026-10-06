@@ -20,6 +20,9 @@ const MAX_REVIEW_FRAMES: usize = 8;
 pub struct ReviewSpec {
     pub seconds:Vec<f64>,
     pub prompt:String,
+    #[serde(default)] pub iterative:bool,
+    #[serde(default)] pub max_iterations:Option<u8>,
+    #[serde(default)] pub reference:Option<String>,
 }
 
 #[derive(Debug,Clone,Deserialize,Serialize)]
@@ -59,6 +62,7 @@ pub struct Phase {
     pub tool:String,
     pub state:String,
     #[serde(default)] pub action_id:Option<String>,
+    #[serde(default)] pub review_session_id:Option<String>,
     #[serde(default)] pub error:Option<String>,
 }
 
@@ -97,8 +101,17 @@ impl ReviewSpec {
         {
             return Err("Edit-job review requires 1–8 bounded timestamps and a non-empty prompt.".into());
         }
+        if self.iterative {
+            if self.seconds.len()>4 || !(1..=8).contains(&self.max_iterations.unwrap_or(4))
+                || self.reference.as_ref().is_some_and(|value|value.chars().count()>2000) {
+                return Err("Iterative edit-job review requires 1–4 samples, 1–8 iterations, and a bounded reference.".into());
+            }
+        } else if self.max_iterations.is_some() || self.reference.is_some() {
+            return Err("max_iterations/reference are only valid when review.iterative=true.".into());
+        }
         Ok(())
     }
+    pub fn iteration_limit(&self)->u8{self.max_iterations.unwrap_or(4)}
 }
 impl ExportSpec {
     fn validate(&self)->Result<(),String>{
@@ -176,7 +189,7 @@ impl Job {
         }
         let mut phases=Vec::new();
         let mut push=|id:&str,tool:&str|phases.push(Phase{
-            id:id.into(),tool:tool.into(),state:"pending".into(),action_id:None,error:None
+            id:id.into(),tool:tool.into(),state:"pending".into(),action_id:None,review_session_id:None,error:None
         });
         if request.media_prep.is_some(){push("media_prep","premiere_prepare_media_batch");}
         if request.scene_detection.is_some(){
@@ -192,7 +205,9 @@ impl Job {
         if request.layering.is_some(){push("layering","premiere_layer_clips");}
         if request.finishing.is_some(){push("finishing","premiere_finish_media_batch");}
         if request.work_area.is_some(){push("work_area","premiere_set_work_area");}
-        if request.review.is_some(){push("review","premiere_review_frames");}
+        if let Some(review)=&request.review{
+            push("review",if review.iterative{"premiere_review_session_start"}else{"premiere_review_frames"});
+        }
         if request.frame_delivery.is_some(){push("frame_delivery","premiere_export_review_frames");}
         if request.interchange_export.is_some(){
             let tool=match request.interchange_export.as_ref().map(|value|value.format.as_str()){
@@ -239,6 +254,9 @@ impl Job {
         if self.status!="running"{return Err("Edit job is not running.".into());}
         let expected=self.pending().ok_or("Edit job has no pending phase.")?;
         if expected.id!=phase_id||expected.tool!=tool{return Err("Audit receipt does not match the next edit-job phase.".into());}
+        if expected.id=="review" && expected.tool=="premiere_review_session_start" {
+            return Err("Iterative review phase completes only from bounded completed review-session evidence.".into());
+        }
         let phase=self.pending_mut().ok_or("Edit job phase disappeared.")?;
         phase.action_id=Some(action_id.into());
         phase.state=if success{"completed".into()}else{"failed".into()};
@@ -246,6 +264,29 @@ impl Job {
             phase.error=Some("Typed phase action failed; edit job stopped.".into());
             self.status="failed".into();
         } else if self.pending().is_none() {
+            self.status=if self.request.export.is_some(){"export_dispatched".into()}
+                else if self.request.interchange_export.is_some(){"interchange_delivered".into()}
+                else if self.request.frame_delivery.is_some(){"frames_delivered".into()}
+                else{"complete".into()};
+        }
+        self.updated_at_ms=now_ms;
+        bounded(self)?;
+        Ok(())
+    }
+
+    pub fn record_review(&mut self,phase_id:&str,review_session_id:&str,now_ms:u64)->Result<(),String>{
+        if self.status!="running"{return Err("Edit job is not running.".into());}
+        let expected=self.pending().ok_or("Edit job has no pending phase.")?;
+        if expected.id!=phase_id || expected.tool!="premiere_review_session_start" {
+            return Err("Completed review evidence does not match the next iterative review phase.".into());
+        }
+        if review_session_id.is_empty()||review_session_id.len()>80 {
+            return Err("Invalid bounded review session ID.".into());
+        }
+        let phase=self.pending_mut().ok_or("Edit job phase disappeared.")?;
+        phase.review_session_id=Some(review_session_id.into());
+        phase.state="completed".into();
+        if self.pending().is_none() {
             self.status=if self.request.export.is_some(){"export_dispatched".into()}
                 else if self.request.interchange_export.is_some(){"interchange_delivered".into()}
                 else if self.request.frame_delivery.is_some(){"frames_delivered".into()}
@@ -435,6 +476,27 @@ mod tests{
                 "destination":{"mode":"explicit_empty_target_sequence","sequence_guid":"dest","video_track":0,"audio_track":0},
                 "take_video":true,"take_audio":false
             }
+        });
+        let request:Request=serde_json::from_value(value).unwrap();
+        assert!(request.validate().is_err());
+    }
+    #[test]fn iterative_review_uses_bounded_session_and_not_one_shot_receipt(){
+        let value=json!({
+            "schema_version":1,"job_type":"social_reel",
+            "review":{"seconds":[1,2,3],"prompt":"Check framing and graphics","iterative":true,"max_iterations":4,"reference":"brand brief"}
+        });
+        let request:Request=serde_json::from_value(value).unwrap();
+        let mut job=Job::new("job".into(),request,"p",Some("C:/test.prproj"),"s",1).unwrap();
+        assert_eq!(job.phases[0].tool,"premiere_review_session_start");
+        assert!(job.record("review","premiere_review_session_start","action",true,2).is_err());
+        job.record_review("review","review-session",2).unwrap();
+        assert_eq!(job.status,"complete");
+        assert_eq!(job.phases[0].review_session_id.as_deref(),Some("review-session"));
+    }
+    #[test]fn iterative_review_rejects_too_many_samples(){
+        let value=json!({
+            "schema_version":1,"job_type":"social_reel",
+            "review":{"seconds":[1,2,3,4,5],"prompt":"Check edit","iterative":true}
         });
         let request:Request=serde_json::from_value(value).unwrap();
         assert!(request.validate().is_err());
