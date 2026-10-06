@@ -1439,7 +1439,7 @@ mod tests{
             .find(|layer|layer["id"]=="photo").unwrap();
         assert_eq!(photo["tracks"][0]["keyframes"][0]["frame_position"],15.0);
         assert_eq!(photo["asset_existence_runtime_verified"],false);
-        assert_eq!(value["review"]["sample_times_seconds"],json!([0.5,1.5]));
+        assert_eq!(value["review"]["sample_times_seconds"],json!([0.4,2.0,3.6]));
         assert!(value["blockers"].as_array().unwrap().iter().any(|b|b["code"]=="remotion_runtime_execution_required"));
     }
 
