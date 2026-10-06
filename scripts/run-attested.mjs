@@ -33,7 +33,14 @@ function run(command,args){
   const started=Date.now();
   const result=spawnSync(command,args,{cwd:process.cwd(),encoding:"utf8",stdio:["ignore","pipe","pipe"],shell:false,maxBuffer:32*1024*1024});
   const stdout=result.stdout??"";
-  const failing_tests=[...stdout.matchAll(/^not ok \d+ - (.+)$/gm)].map(match=>match[1]).slice(0,250);
+  const failureMatches=[...stdout.matchAll(/^not ok \\d+ - (.+)$/gm)];
+  const failing_tests=failureMatches.map(match=>match[1]).slice(0,250);
+  const failure_details=failureMatches.slice(0,50).map(match=>{
+    const start=Math.max(0,(match.index??0)-1800);
+    const next=stdout.indexOf("\n# Subtest:",(match.index??0)+match[0].length);
+    const end=next>=0?Math.min(stdout.length,next+1400):Math.min(stdout.length,(match.index??0)+7000);
+    return stdout.slice(start,end);
+  });
   return {
     exit_code:typeof result.status==="number"?result.status:null,
     signal:result.signal??null,
@@ -41,6 +48,7 @@ function run(command,args){
     stdout_tail:stdout.slice(-65536),
     stderr_tail:(result.stderr??"").slice(-16384),
     failing_tests,
+    failure_details,
     launch_error:result.error?.message??null,
   };
 }
@@ -160,6 +168,7 @@ export function execute(scope=parseScope()){
           signal:command.signal,
           launch_error:command.launch_error,
           failing_tests:command.failing_tests,
+          failure_details:command.failure_details,
           stdout_tail:command.stdout_tail,
           stderr_tail:command.stderr_tail
         },null,2));
