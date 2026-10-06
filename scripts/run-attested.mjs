@@ -33,7 +33,7 @@ function run(command,args){
   const started=Date.now();
   const result=spawnSync(command,args,{cwd:process.cwd(),encoding:"utf8",stdio:["ignore","pipe","pipe"],shell:false,maxBuffer:32*1024*1024});
   const stdout=result.stdout??"";
-  const failureMatches=[...stdout.matchAll(/^not ok \\d+ - (.+)$/gm)];
+  const failureMatches=[...stdout.matchAll(/^not ok \d+ - (.+)$/gm)];
   const failing_tests=failureMatches.map(match=>match[1]).slice(0,250);
   const failure_details=failureMatches.slice(0,50).map(match=>{
     const start=Math.max(0,(match.index??0)-1800);
