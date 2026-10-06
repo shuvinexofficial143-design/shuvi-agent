@@ -18,7 +18,7 @@ test("decoded session checkpoints are revalidated before use",()=>{
 test("workspace persistence rejects oversized, injected, or stale paths",()=>{
   assert.match(rust,/const MAX_WORKSPACE_PATH_BYTES: u64 = 32 \* 1024/);
   const read=rust.slice(rust.indexOf("fn read_workspace"),rust.indexOf("fn write_workspace"));
-  assert.match(read,/\.len\(\) > MAX_WORKSPACE_PATH_BYTES/);
+  assert.match(read,/read_utf8_file_bounded\([\s\S]*MAX_WORKSPACE_PATH_BYTES as usize[\s\S]*"workspace setting"/);
   assert.match(read,/value\.chars\(\)\.any\(char::is_control\)/);
   assert.match(read,/!Path::new\(&value\)\.is_absolute\(\)/);
   assert.match(read,/!Path::new\(&value\)\.is_dir\(\)/);

@@ -12,9 +12,8 @@ test("manual shell is registered as a Shuvi-managed process",()=>{
   assert.match(block,/\.stderr\(Stdio::piped\(\)\)/);
   assert.match(block,/\.spawn\(\)/);
   assert.match(block,/let child_pid = child\.id\(\)/);
-  assert.match(block,/state\.managed_children\.lock\(\)/);
-  assert.match(block,/managed\.insert\(child_pid\)/);
-  assert.match(block,/managed\.remove\(&child_pid\)/);
+  assert.match(block,/register_managed_process\(state, child_pid\)/);
+  assert.match(block,/unregister_managed_process\(state, child_pid\)/);
   assert.doesNotMatch(block,/\.output\(\)/);
 });
 
@@ -29,7 +28,7 @@ test("manual shell is stopped if tracking registration fails",()=>{
 test("manual shell watchdog fails closed above the 4 GB RAM ceiling",()=>{
   const start=rust.indexOf("ToolAction::PowerShell { command } =>");
   const block=rust.slice(start,start+7000);
-  assert.match(block,/while process_is_alive\(child_pid\)/);
+  assert.match(block,/while managed_process_identity_matches\(state, child_pid\)\.unwrap_or\(false\)/);
   assert.match(block,/current_runtime_status\(state\)/);
   assert.match(block,/status\.over_hard_limit/);
   assert.match(block,/Duration::from_millis\(250\)/);

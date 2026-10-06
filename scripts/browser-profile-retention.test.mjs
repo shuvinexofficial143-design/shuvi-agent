@@ -9,7 +9,7 @@ test("dead managed browser roots are removed from session state",()=>{
   const end=rust.indexOf("fn ensure_memory_budget",start);
   const block=rust.slice(start,end);
   assert.match(block,/state\.browser_sessions\.lock\(\)/);
-  assert.match(block,/sessions\.retain\(\|root_pid, _\| system\.process\(Pid::from_u32\(\*root_pid\)\)\.is_some\(\)\)/);
+  assert.match(block,/sessions\.retain\(\|root_pid, _\| live_roots\.contains\(root_pid\)\)/);
 });
 
 test("inactive browser profiles are bounded without deleting active session profiles",()=>{

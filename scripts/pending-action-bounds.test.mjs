@@ -21,7 +21,7 @@ test("execute_action refuses an expired exact prepared action UUID",()=>{
   const start=rust.indexOf("async fn execute_action(");
   const end=rust.indexOf("async fn execute_powershell",start);
   const block=rust.slice(start,end);
-  assert.match(block,/now_ms\(\)\.saturating_sub\(action\.created_at_ms\) > PENDING_ACTION_TTL_MS/);
+  assert.match(block,/now_ms\(\)\.saturating_sub\(prepared\.created_at_ms\) > PENDING_ACTION_TTL_MS/);
   assert.match(block,/pending\.remove\(&action_id\)/);
   assert.match(block,/event: "denied"\.into\(\)/);
   assert.match(block,/Prepared action expired before execution/);
