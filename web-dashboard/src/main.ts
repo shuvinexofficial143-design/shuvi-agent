@@ -216,6 +216,8 @@ function setProviderPreference(name: string): void {
   byId<HTMLElement>("selectedProviderNote").textContent =
     provider.note + " · web planning preference only; Windows runtime remains the source of truth.";
   renderProviders();
+  restoreRoutingPreference();
+  renderDashboardPlanningQueue();
   showToast(provider.name + " selected for dashboard planning.");
 }
 
@@ -365,6 +367,7 @@ function renderDraftTasks(): void {
   const list = byId<HTMLElement>("draftTaskList");
   const stage = byId<HTMLElement>("draftTaskStage");
   byId<HTMLElement>("draftTaskCount").textContent = String(tasks.length);
+  byId<HTMLElement>("draftMetric").textContent = String(tasks.length);
 
   list.replaceChildren();
 
@@ -372,6 +375,7 @@ function renderDraftTasks(): void {
     list.append(make("p", "draft-empty", "No browser task drafts yet."));
     stage.className = "stage-empty";
     stage.textContent = "No browser drafts";
+    renderDashboardPlanningQueue();
     return;
   }
 
@@ -407,6 +411,7 @@ function renderDraftTasks(): void {
 
   stage.className = "stage-draft-container";
   stage.replaceChildren(stageList);
+  renderDashboardPlanningQueue();
 }
 
 function addDraftTask(title: string, type: string): void {
@@ -419,6 +424,87 @@ function addDraftTask(title: string, type: string): void {
   });
   saveDraftTasks(tasks);
   renderDraftTasks();
+}
+
+function renderDashboardPlanningQueue(): void {
+  const target = byId<HTMLElement>("dashboardPlanningQueue");
+  const tasks = readDraftTasks();
+  const provider = localStorage.getItem("shuvi.web.provider");
+  const model = localStorage.getItem("shuvi.web.preferredModel");
+  const workload = localStorage.getItem("shuvi.web.workload");
+
+  target.replaceChildren();
+
+  const summary = make("div", "planning-summary");
+  const modelLine = make("div", "planning-summary-item");
+  modelLine.append(
+    make("span", "", "AI route"),
+    make("strong", "", provider ? provider + (model ? " · " + model : "") : "Not selected")
+  );
+
+  const workloadLine = make("div", "planning-summary-item");
+  workloadLine.append(
+    make("span", "", "Workload"),
+    make("strong", "", workload || "General")
+  );
+
+  summary.append(modelLine, workloadLine);
+  target.append(summary);
+
+  if (!tasks.length) {
+    const empty = make("div", "planning-empty");
+    empty.append(
+      make("strong", "", "No task drafts yet"),
+      make("p", "", "Create a draft in Tasks or prepare one from any Creative Studio module.")
+    );
+    target.append(empty);
+    return;
+  }
+
+  const list = make("div", "planning-preview-list");
+  tasks.slice(0, 3).forEach((task) => {
+    const row = make("button", "planning-preview-row");
+    row.type = "button";
+    row.addEventListener("click", () => {
+      setView("chat");
+      byId<HTMLTextAreaElement>("chatInput").value = task.title;
+      byId<HTMLTextAreaElement>("chatInput").focus();
+    });
+
+    const copy = make("div");
+    copy.append(make("strong", "", task.title), make("span", "", task.type + " · draft"));
+    row.append(copy, make("b", "", "→"));
+    list.append(row);
+  });
+
+  target.append(list);
+}
+
+function restoreRoutingPreference(): void {
+  const model = localStorage.getItem("shuvi.web.preferredModel") ?? "";
+  const workload = localStorage.getItem("shuvi.web.workload") ?? "General";
+  const provider = localStorage.getItem("shuvi.web.provider");
+
+  byId<HTMLInputElement>("preferredModelInput").value = model;
+  byId<HTMLSelectElement>("workloadSelect").value = workload;
+
+  const summary = byId<HTMLElement>("routingPreferenceSummary");
+  summary.textContent = provider || model
+    ? "Planned route: " + (provider ?? "No provider") + (model ? " · " + model : "") + " · " + workload
+    : "No model routing preference saved yet.";
+}
+
+function saveRoutingPreference(): void {
+  const model = byId<HTMLInputElement>("preferredModelInput").value.trim();
+  const workload = byId<HTMLSelectElement>("workloadSelect").value;
+
+  if (model) localStorage.setItem("shuvi.web.preferredModel", model);
+  else localStorage.removeItem("shuvi.web.preferredModel");
+
+  localStorage.setItem("shuvi.web.workload", workload);
+  restoreRoutingPreference();
+  renderDashboardPlanningQueue();
+  showToast("Model routing preference saved for planning.");
 }
 
 function bindInteractions(): void {
@@ -529,6 +615,8 @@ function bindInteractions(): void {
     }, 280);
   });
 
+  byId<HTMLButtonElement>("saveRoutingPreference").addEventListener("click", saveRoutingPreference);
+
   byId<HTMLButtonElement>("saveBridgeSettings").addEventListener("click", () => {
     const endpoint = byId<HTMLInputElement>("bridgeEndpoint").value.trim();
 
@@ -556,6 +644,8 @@ renderProviders();
 hydrateMetrics();
 restoreBridgePreference();
 restoreProviderPreference();
+restoreRoutingPreference();
 renderDraftTasks();
+renderDashboardPlanningQueue();
 bindInteractions();
 setView("dashboard");
