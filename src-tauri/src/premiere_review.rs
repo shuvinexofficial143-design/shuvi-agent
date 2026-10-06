@@ -34,6 +34,16 @@ pub struct Attempt {
     pub outcome: String,
     pub before: String,
     pub after: Option<String>,
+    #[serde(default)]
+    pub category: String,
+    #[serde(default)]
+    pub before_severity: String,
+    #[serde(default)]
+    pub before_confidence: f64,
+    #[serde(default)]
+    pub frame_seconds: Vec<f64>,
+    #[serde(default)]
+    pub after_issue_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +69,42 @@ pub struct Session {
 fn short(s: &str, max: usize) -> bool { !s.trim().is_empty() && s.chars().count() <= max }
 fn samples_ok(times: &[f64]) -> bool {
     !times.is_empty() && times.len() <= 4 && times.iter().all(|t| t.is_finite() && (0.0..=86_400.0).contains(t))
+}
+
+fn shared_sample(a:&[f64],b:&[f64])->bool{
+    a.iter().any(|left|b.iter().any(|right|left==right))
+}
+
+fn evaluate_attempt(attempt:&Attempt,review:&Review)->(String,String,Option<String>){
+    if review.overall_confidence<0.65 || attempt.category.is_empty() || attempt.frame_seconds.is_empty()
+        || !matches!(attempt.before_severity.as_str(),"low"|"medium"|"high")
+        || !attempt.before_confidence.is_finite() || !(0.0..=1.0).contains(&attempt.before_confidence) {
+        let after=review.issues.iter().map(|i|i.observation.as_str()).take(4)
+            .collect::<Vec<_>>().join("; ").chars().take(800).collect();
+        return ("uncertain".into(),after,None);
+    }
+    let mut candidates=review.issues.iter().filter(|issue|
+        issue.category==attempt.category && shared_sample(&issue.frame_seconds,&attempt.frame_seconds)
+    ).collect::<Vec<_>>();
+    if candidates.is_empty(){
+        return ("resolved".into(),"No matching issue remained at the grounded review sample.".into(),None);
+    }
+    candidates.sort_by(|a,b|{
+        severity_rank(&b.severity).cmp(&severity_rank(&a.severity))
+            .then_with(||b.confidence.partial_cmp(&a.confidence).unwrap_or(Ordering::Equal))
+            .then_with(||a.id.cmp(&b.id))
+    });
+    let after=candidates[0];
+    let before_rank=severity_rank(&attempt.before_severity);
+    let after_rank=severity_rank(&after.severity);
+    let outcome=if after_rank<before_rank || (after_rank==before_rank && after.confidence<=attempt.before_confidence-0.15){
+        "improved"
+    }else if after_rank>before_rank || (after_rank==before_rank && after.confidence>=attempt.before_confidence+0.15){
+        "regressed"
+    }else{
+        "unchanged"
+    };
+    (outcome.into(),after.observation.chars().take(800).collect(),Some(after.id.clone()))
 }
 
 impl Session {
@@ -95,32 +141,45 @@ impl Session {
             else if count(&review) > count(before) { "regressed" }
             else { "unchanged" }
         } else { "uncertain" };
-        if let Some(attempt) = self.attempted_fixes.last_mut() {
-            if attempt.after.is_none() {
-                attempt.after = Some(review.issues.iter().map(|i| i.observation.as_str()).take(4).collect::<Vec<_>>().join("; ").chars().take(800).collect());
-                attempt.outcome = comparison.into();
+        let fix_evaluation=if self.attempted_fixes.last().is_some_and(|attempt|attempt.after.is_none()){
+            let baseline=self.attempted_fixes.last().cloned().expect("checked above");
+            let (outcome,after,after_issue_id)=evaluate_attempt(&baseline,&review);
+            if let Some(attempt)=self.attempted_fixes.last_mut(){
+                attempt.after=Some(after);
+                attempt.after_issue_id=after_issue_id.clone();
+                attempt.outcome=outcome.clone();
             }
-        }
+            Some(json!({
+                "issue_id":baseline.issue_id,
+                "category":baseline.category,
+                "grounded_frames":baseline.frame_seconds,
+                "before_severity":baseline.before_severity,
+                "before_confidence":baseline.before_confidence,
+                "after_issue_id":after_issue_id,
+                "outcome":outcome
+            }))
+        }else{None};
         let low_confidence = review.overall_confidence < 0.65;
         let stop = review.stop_recommended || !actionable || low_confidence;
         self.reviews.push(review);
         self.status = if stop { "completed" } else if self.iteration >= self.max_iterations { "stagnated" } else { "awaiting_approval" }.into();
-        Ok(json!({"comparison": comparison, "status": self.status, "iteration": self.iteration}))
+        Ok(json!({"comparison": comparison, "fix_evaluation":fix_evaluation, "status": self.status, "iteration": self.iteration}))
     }
 
     pub fn record_fix(&mut self, issue_id: &str, fingerprint: &str, before: &str) -> Result<(), String> {
         if self.status != "awaiting_approval" || !short(issue_id, 80) || !short(fingerprint, 300) || !short(before, 800) {
             return Err("Review session is not ready for an approved fix.".into());
         }
-        if !self.reviews.last().is_some_and(|r| r.issues.iter().any(|i| i.id == issue_id)) {
-            return Err("Fix references an unknown issue.".into());
-        }
-        if self.attempted_fixes.iter().any(|a| a.fingerprint == fingerprint && a.outcome != "improved") {
+        let issue=self.reviews.last().and_then(|r|r.issues.iter().find(|i|i.id==issue_id)).cloned()
+            .ok_or("Fix references an unknown issue.")?;
+        if self.attempted_fixes.iter().any(|a| a.fingerprint == fingerprint && !matches!(a.outcome.as_str(),"improved"|"resolved")) {
             self.status = "stagnated".into();
             return Err("Same unsuccessful fix already attempted.".into());
         }
         self.attempted_fixes.push(Attempt { fingerprint: fingerprint.into(), issue_id: issue_id.into(),
-            outcome: "uncertain".into(), before: before.into(), after: None });
+            outcome: "uncertain".into(), before: before.into(), after: None, category:issue.category,
+            before_severity:issue.severity,before_confidence:issue.confidence,frame_seconds:issue.frame_seconds,
+            after_issue_id:None });
         self.iteration += 1;
         self.status = "reviewing".into();
         Ok(())
@@ -293,6 +352,35 @@ mod tests {
         s.record_fix("i",&fp,"too warm").unwrap();
         assert_eq!(s.add_review(review(2,vec![])).unwrap()["comparison"],"improved");
         assert_eq!(s.status,"completed");
+    }
+    #[test] fn fix_evaluation_tracks_same_issue_not_global_count() {
+        let mut s=session();
+        let mut fixed=issue();fixed.id="fixed".into();fixed.frame_seconds=vec![1.0];
+        let mut unrelated=issue();unrelated.id="other".into();unrelated.category="graphics".into();
+        s.add_review(review(1,vec![fixed.clone(),unrelated.clone()])).unwrap();
+        s.record_fix("fixed","fp","too warm").unwrap();
+        let mut still=fixed.clone();still.id="fixed-after".into();still.confidence=0.88;
+        let result=s.add_review(review(2,vec![still,unrelated])).unwrap();
+        assert_eq!(result["fix_evaluation"]["outcome"],"unchanged");
+        assert_eq!(s.attempted_fixes[0].after_issue_id.as_deref(),Some("fixed-after"));
+    }
+    #[test] fn fix_evaluation_detects_resolved_improved_and_regressed() {
+        let mut resolved=session();resolved.add_review(review(1,vec![issue()])).unwrap();
+        resolved.record_fix("i","a","too warm").unwrap();
+        let r=resolved.add_review(review(2,vec![])).unwrap();
+        assert_eq!(r["fix_evaluation"]["outcome"],"resolved");
+
+        let mut improved=session();improved.add_review(review(1,vec![issue()])).unwrap();
+        improved.record_fix("i","b","too warm").unwrap();
+        let mut lower=issue();lower.id="i2".into();lower.severity="low".into();
+        let r=improved.add_review(review(2,vec![lower])).unwrap();
+        assert_eq!(r["fix_evaluation"]["outcome"],"improved");
+
+        let mut regressed=session();regressed.add_review(review(1,vec![issue()])).unwrap();
+        regressed.record_fix("i","c","too warm").unwrap();
+        let mut worse=issue();worse.id="i3".into();worse.severity="high".into();
+        let r=regressed.add_review(review(2,vec![worse])).unwrap();
+        assert_eq!(r["fix_evaluation"]["outcome"],"regressed");
     }
     #[test] fn prioritizes_grounded_actionable_issue() {
         let mut s = session();

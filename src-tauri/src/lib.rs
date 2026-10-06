@@ -12187,7 +12187,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let proposals=issues.iter().map(premiere_review::proposal).collect::<Vec<_>>();
             let result=session.add_review(premiere_review::Review {iteration:session.iteration,issues,overall_confidence:confidence,stop_recommended:stop})?;
             premiere_review::save(&path,&session)?;
-            Ok(ActionResult {success:true,tool,stdout:json!({"result":result,"review":session.reviews.last(),"proposals":proposals,"next_tool":if session.status=="awaiting_approval"{Some("premiere_review_session_continue")}else{None},"note":"Use premiere_review_session_continue to prioritize and resolve the next grounded issue. Corrections still require exact native binding, normal approval/checkpoint, an audit receipt, then re-review; vision never executes edits."}).to_string(),stderr:String::new(),exit_code:Some(0)})
+            Ok(ActionResult {success:true,tool,stdout:json!({"result":result,"review":session.reviews.last(),"latest_fix_evaluation":session.attempted_fixes.last().filter(|attempt|attempt.after.is_some()),"proposals":proposals,"next_tool":if session.status=="awaiting_approval"{Some("premiere_review_session_continue")}else{None},"note":"Use premiere_review_session_continue to prioritize and resolve the next grounded issue. Re-review now evaluates the same category at the same grounded sample as resolved/improved/unchanged/regressed/uncertain; corrections still require exact native binding, normal approval/checkpoint and an audit receipt."}).to_string(),stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::PremiereSetTrackMute { kind, track, muted } => {
             let checkpoint = backup_premiere_project(&premiere_bridge).await?;

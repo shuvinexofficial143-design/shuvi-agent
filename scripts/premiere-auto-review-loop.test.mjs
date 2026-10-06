@@ -66,3 +66,16 @@ test("iterative auto review is integrated into professional edit jobs", () => {
   assert.match(rust, /Iterative review cannot be completed from the start-action receipt/);
   assert.match(rust, /last\.overall_confidence>=0\.65/);
 });
+
+
+test("40 percent milestone tracks issue-specific before and after correction evidence", () => {
+  const review = fs.readFileSync("src-tauri/src/premiere_review.rs", "utf8");
+  const rust = fs.readFileSync("src-tauri/src/lib.rs", "utf8");
+  assert.match(review, /fn evaluate_attempt/);
+  assert.match(review, /shared_sample/);
+  assert.match(review, /"resolved"/);
+  assert.match(review, /"regressed"/);
+  assert.match(review, /after_issue_id/);
+  assert.match(review, /before_confidence/);
+  assert.match(rust, /latest_fix_evaluation/);
+});

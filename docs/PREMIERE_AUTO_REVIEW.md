@@ -49,3 +49,18 @@ The planner does not execute that proposal. After the approved action succeeds, 
 ## Phase 4 — professional edit-job integration
 
 Professional edit jobs can opt into the same loop with `review.iterative=true`. A job cannot advance from the review-session start audit receipt. It requires `premiere_edit_job_record_review` with an exactly matching, acceptable, completed review session on the same project and sequence. This keeps the long-form edit coordinator from treating “review started” as “review passed.”
+
+
+## 40% milestone — issue-specific before/after evidence
+
+The correction loop no longer decides improvement only from the total count of medium/high issues. Every approved fix now persists a bounded baseline snapshot of the exact reviewed issue: category, severity, confidence, grounded sample times, and observation.
+
+On the next review Shuvi compares that fix only against issues from the same category at the same grounded sample. The outcome is one of:
+
+- `resolved`: no matching issue remains,
+- `improved`: severity drops or same-severity confidence falls materially,
+- `unchanged`: the grounded issue remains materially similar,
+- `regressed`: severity rises or same-severity confidence rises materially,
+- `uncertain`: review confidence/baseline evidence is insufficient.
+
+The matching post-review issue ID is persisted when present. This prevents an unrelated issue disappearing elsewhere in the timeline from falsely marking the applied correction as successful.
