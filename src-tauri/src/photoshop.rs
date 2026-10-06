@@ -137,6 +137,18 @@ pub fn validate_context_receipt(value:&Value)->Result<Value,String>{
     if active.len()>32||active.iter().any(|id|id.as_u64().is_none_or(|v|v==0||v>u32::MAX as u64)){
         return Err("Photoshop active layer identity list is invalid or oversized.".into());
     }
+    let saved=value.get("saved").and_then(Value::as_bool).ok_or("Photoshop context saved flag is required.")?;
+    let cloud_document=value.get("cloud_document").and_then(Value::as_bool).ok_or("Photoshop context cloud_document flag is required.")?;
+    let document_path=value.get("document_path").cloned().unwrap_or(Value::Null);
+    if !document_path.is_null(){
+        let path=document_path.as_str().ok_or("Photoshop document_path must be string or null.")?;
+        if path.is_empty()||path.len()>MAX_PATH_BYTES||path.chars().any(char::is_control){
+            return Err("Photoshop document_path is invalid or oversized.".into());
+        }
+    }
+    if saved&&!cloud_document&&document_path.as_str().is_none_or(|path|!Path::new(path).is_absolute()){
+        return Err("Saved local Photoshop document requires an absolute document_path.".into());
+    }
     Ok(json!({
         "validated":true,
         "document_open":true,
@@ -147,6 +159,9 @@ pub fn validate_context_receipt(value:&Value)->Result<Value,String>{
         "resolution":value.get("resolution"),
         "mode":value.get("mode"),
         "active_layer_ids":active,
+        "saved":saved,
+        "cloud_document":cloud_document,
+        "document_path":document_path,
         "read_only":true
     }))
 }
@@ -178,8 +193,26 @@ pub fn validate_layer_inventory(value:&Value)->Result<Value,String>{
         if layer.get("parent_id").is_some_and(|parent|!parent.is_null()&&parent.as_u64().is_none_or(|id|id==0||id>u32::MAX as u64)){
             return Err("Photoshop layer parent ID is invalid.".into());
         }
-        if layer.get("visible").and_then(Value::as_bool).is_none()||layer.get("has_children").and_then(Value::as_bool).is_none(){
+        if layer.get("visible").and_then(Value::as_bool).is_none()||layer.get("has_children").and_then(Value::as_bool).is_none()
+            ||layer.get("locked").and_then(Value::as_bool).is_none()||layer.get("position_locked").and_then(Value::as_bool).is_none(){
             return Err("Photoshop layer boolean metadata is incomplete.".into());
+        }
+        let bounds=layer.get("bounds").and_then(Value::as_object).ok_or("Photoshop layer bounds are missing.")?;
+        for key in ["left","top","right","bottom"]{
+            if bounds.get(key).and_then(Value::as_f64).is_none_or(|v|!v.is_finite()||v.abs()>1.0e8){
+                return Err("Photoshop layer bounds are invalid or unbounded.".into());
+            }
+        }
+        if let Some(text)=layer.get("text").filter(|v|!v.is_null()){
+            let object=text.as_object().ok_or("Photoshop text metadata must be object or null.")?;
+            let contents=object.get("contents").and_then(Value::as_str).ok_or("Photoshop text contents are missing.")?;
+            if contents.len()>16_384||contents.chars().any(|ch|ch=='\0'){
+                return Err("Photoshop text contents exceed the 16 KiB source bound.".into());
+            }
+            let size=object.get("size").and_then(Value::as_f64)
+                .filter(|v|v.is_finite()&&*v>0.0&&*v<=20_000.0)
+                .ok_or("Photoshop text size is invalid.")?;
+            let _=size;
         }
     }
     let reported=value.get("layer_count").and_then(Value::as_u64).ok_or("Photoshop layer_count is missing.")? as usize;
@@ -351,14 +384,223 @@ pub fn validate_post_write_readback(request:&LayerWriteRequest,inventory:&Value)
     }))
 }
 
+fn bounds_value(layer:&Value)->Result<Value,String>{
+    layer.get("bounds").cloned().ok_or("Photoshop layer bounds are unavailable.".into())
+}
+
+fn bounds_match(a:&Value,b:&Value)->bool{
+    ["left","top","right","bottom"].iter().all(|key|{
+        a.get(*key).and_then(Value::as_f64).zip(b.get(*key).and_then(Value::as_f64))
+            .is_some_and(|(left,right)|(left-right).abs()<=0.05)
+    })
+}
+
+#[derive(Debug,Clone,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TextWriteRequest{
+    pub expected_document_id:u32,
+    pub layer_id:u32,
+    pub expected_contents:String,
+    pub expected_size:f64,
+    pub contents:Option<String>,
+    pub size:Option<f64>,
+}
+
+impl TextWriteRequest{
+    pub fn validate(&self)->Result<(),String>{
+        if self.expected_document_id==0||self.layer_id==0{return Err("Photoshop text edit requires non-zero document and layer IDs.".into());}
+        if self.expected_contents.len()>16_384||self.expected_contents.chars().any(|ch|ch=='\0'){
+            return Err("Photoshop expected text exceeds 16 KiB or contains NUL.".into());
+        }
+        if !self.expected_size.is_finite()||self.expected_size<=0.0||self.expected_size>20_000.0{
+            return Err("Photoshop expected font size is invalid.".into());
+        }
+        if self.contents.is_none()&&self.size.is_none(){return Err("Photoshop text edit requires contents and/or size.".into());}
+        if let Some(contents)=&self.contents{
+            if contents.is_empty()||contents.len()>16_384||contents.chars().any(|ch|ch=='\0'){
+                return Err("Photoshop text contents must be 1..16384 bytes and contain no NUL.".into());
+            }
+            if contents==&self.expected_contents&&self.size.is_none(){return Err("Photoshop text contents already match the requested value.".into());}
+        }
+        if let Some(size)=self.size{
+            if !size.is_finite()||size<=0.0||size>20_000.0{return Err("Photoshop font size is outside the bounded source range.".into());}
+            if (size-self.expected_size).abs()<0.001&&self.contents.is_none(){return Err("Photoshop font size already matches the requested value.".into());}
+        }
+        Ok(())
+    }
+    pub fn bridge_arguments(&self)->Result<Value,String>{
+        self.validate()?;
+        Ok(json!({
+            "expected_document_id":self.expected_document_id,
+            "layer_id":self.layer_id,
+            "expected_contents":self.expected_contents,
+            "expected_size":self.expected_size,
+            "contents":self.contents,
+            "size":self.size
+        }))
+    }
+}
+
+pub fn validate_text_precondition(request:&TextWriteRequest,context:&Value,inventory:&Value)->Result<Value,String>{
+    request.validate()?;
+    if context.get("document_id").and_then(Value::as_u64)!=Some(request.expected_document_id as u64)
+        ||inventory.get("document_id").and_then(Value::as_u64)!=Some(request.expected_document_id as u64)
+        ||inventory.get("truncated").and_then(Value::as_bool)!=Some(false){
+        return Err("Photoshop text edit identity is stale or inventory is truncated.".into());
+    }
+    let layer=layer_by_id(inventory,request.layer_id)?;
+    if layer.get("locked").and_then(Value::as_bool)!=Some(false){
+        return Err("Photoshop text layer is locked.".into());
+    }
+    let text=layer.get("text").and_then(Value::as_object).ok_or("Target Photoshop layer is not an inspected text layer.")?;
+    if text.get("contents").and_then(Value::as_str)!=Some(request.expected_contents.as_str()){
+        return Err("Photoshop text contents changed since inspection.".into());
+    }
+    let current_size=text.get("size").and_then(Value::as_f64).ok_or("Photoshop text size is unavailable.")?;
+    if (current_size-request.expected_size).abs()>0.01{return Err("Photoshop text size changed since inspection.".into());}
+    Ok(json!({"document_id":request.expected_document_id,"layer_id":request.layer_id,"text_identity_verified":true}))
+}
+
+pub fn validate_text_receipt(request:&TextWriteRequest,value:&Value)->Result<Value,String>{
+    request.validate()?;
+    if value.get("mutation_performed").and_then(Value::as_bool)!=Some(true)
+        ||value.get("document_id").and_then(Value::as_u64)!=Some(request.expected_document_id as u64)
+        ||value.get("layer_id").and_then(Value::as_u64)!=Some(request.layer_id as u64)
+        ||value.get("history_guard").and_then(Value::as_str)!=Some("suspend_resume_commit"){
+        return Err("Photoshop text mutation receipt identity/history evidence is invalid.".into());
+    }
+    let before=value.get("before").and_then(Value::as_object).ok_or("Photoshop text receipt before state is missing.")?;
+    let after=value.get("after").and_then(Value::as_object).ok_or("Photoshop text receipt after state is missing.")?;
+    if before.get("contents").and_then(Value::as_str)!=Some(request.expected_contents.as_str())
+        ||before.get("size").and_then(Value::as_f64).is_none_or(|v|(v-request.expected_size).abs()>0.01){
+        return Err("Photoshop text receipt before state does not match approved expectation.".into());
+    }
+    let expected_contents=request.contents.as_deref().unwrap_or(&request.expected_contents);
+    let expected_size=request.size.unwrap_or(request.expected_size);
+    if after.get("contents").and_then(Value::as_str)!=Some(expected_contents)
+        ||after.get("size").and_then(Value::as_f64).is_none_or(|v|(v-expected_size).abs()>0.01){
+        return Err("Photoshop text receipt after state does not match approved values.".into());
+    }
+    Ok(json!({"host_receipt_validated":true,"before":before,"after":after,"history_guard":"suspend_resume_commit"}))
+}
+
+pub fn validate_text_post_readback(request:&TextWriteRequest,inventory:&Value)->Result<Value,String>{
+    let layer=layer_by_id(inventory,request.layer_id)?;
+    let text=layer.get("text").and_then(Value::as_object).ok_or("Photoshop post-write text metadata is unavailable.")?;
+    let expected_contents=request.contents.as_deref().unwrap_or(&request.expected_contents);
+    let expected_size=request.size.unwrap_or(request.expected_size);
+    if text.get("contents").and_then(Value::as_str)!=Some(expected_contents)
+        ||text.get("size").and_then(Value::as_f64).is_none_or(|v|(v-expected_size).abs()>0.01){
+        return Err("Photoshop post-write text readback does not match approved values.".into());
+    }
+    Ok(json!({"post_state_verified":true,"document_id":request.expected_document_id,"layer_id":request.layer_id,
+        "contents":expected_contents,"size":expected_size}))
+}
+
+#[derive(Debug,Clone,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TransformRequest{
+    pub expected_document_id:u32,
+    pub layer_id:u32,
+    pub operation:String,
+    pub expected_bounds:Value,
+    pub x:Option<f64>,
+    pub y:Option<f64>,
+    pub width_percent:Option<f64>,
+    pub height_percent:Option<f64>,
+    pub angle_degrees:Option<f64>,
+}
+
+impl TransformRequest{
+    pub fn validate(&self)->Result<(),String>{
+        if self.expected_document_id==0||self.layer_id==0{return Err("Photoshop transform requires non-zero document and layer IDs.".into());}
+        for key in ["left","top","right","bottom"]{
+            if self.expected_bounds.get(key).and_then(Value::as_f64).is_none_or(|v|!v.is_finite()||v.abs()>1.0e8){
+                return Err("Photoshop transform expected_bounds are invalid.".into());
+            }
+        }
+        match self.operation.as_str(){
+            "translate"=>{
+                let x=self.x.filter(|v|v.is_finite()&&v.abs()<=10_000.0).ok_or("Photoshop translate x must be within ±10000 px.")?;
+                let y=self.y.filter(|v|v.is_finite()&&v.abs()<=10_000.0).ok_or("Photoshop translate y must be within ±10000 px.")?;
+                if x.abs()<0.0001&&y.abs()<0.0001{return Err("Photoshop translate cannot be a no-op.".into());}
+                if self.width_percent.is_some()||self.height_percent.is_some()||self.angle_degrees.is_some(){return Err("Photoshop translate received unrelated transform arguments.".into());}
+            }
+            "scale"=>{
+                let w=self.width_percent.filter(|v|v.is_finite()&&*v>=1.0&&*v<=1000.0).ok_or("Photoshop scale width_percent must be 1..1000.")?;
+                let h=self.height_percent.filter(|v|v.is_finite()&&*v>=1.0&&*v<=1000.0).ok_or("Photoshop scale height_percent must be 1..1000.")?;
+                if (w-100.0).abs()<0.0001&&(h-100.0).abs()<0.0001{return Err("Photoshop scale cannot be a no-op.".into());}
+                if self.x.is_some()||self.y.is_some()||self.angle_degrees.is_some(){return Err("Photoshop scale received unrelated transform arguments.".into());}
+            }
+            "rotate"=>{
+                let angle=self.angle_degrees.filter(|v|v.is_finite()&&v.abs()<=360.0).ok_or("Photoshop rotate angle must be within ±360 degrees.")?;
+                if angle.abs()<0.0001{return Err("Photoshop rotate cannot be a no-op.".into());}
+                if self.x.is_some()||self.y.is_some()||self.width_percent.is_some()||self.height_percent.is_some(){return Err("Photoshop rotate received unrelated transform arguments.".into());}
+            }
+            _=>return Err("Photoshop transform operation must be translate, scale, or rotate.".into())
+        }
+        Ok(())
+    }
+    pub fn bridge_arguments(&self)->Result<Value,String>{
+        self.validate()?;
+        Ok(json!({
+            "expected_document_id":self.expected_document_id,"layer_id":self.layer_id,"operation":self.operation,
+            "expected_bounds":self.expected_bounds,"x":self.x,"y":self.y,
+            "width_percent":self.width_percent,"height_percent":self.height_percent,"angle_degrees":self.angle_degrees
+        }))
+    }
+}
+
+pub fn validate_transform_precondition(request:&TransformRequest,context:&Value,inventory:&Value)->Result<Value,String>{
+    request.validate()?;
+    if context.get("document_id").and_then(Value::as_u64)!=Some(request.expected_document_id as u64)
+        ||inventory.get("document_id").and_then(Value::as_u64)!=Some(request.expected_document_id as u64)
+        ||inventory.get("truncated").and_then(Value::as_bool)!=Some(false){
+        return Err("Photoshop transform identity is stale or inventory is truncated.".into());
+    }
+    let layer=layer_by_id(inventory,request.layer_id)?;
+    if layer.get("locked").and_then(Value::as_bool)!=Some(false)||layer.get("position_locked").and_then(Value::as_bool)!=Some(false){
+        return Err("Photoshop target layer is locked for transforms.".into());
+    }
+    let current=bounds_value(layer)?;
+    if !bounds_match(&current,&request.expected_bounds){return Err("Photoshop layer bounds changed since inspection.".into());}
+    Ok(json!({"document_id":request.expected_document_id,"layer_id":request.layer_id,"expected_bounds":current,"transform_identity_verified":true}))
+}
+
+pub fn validate_transform_receipt(request:&TransformRequest,value:&Value)->Result<Value,String>{
+    request.validate()?;
+    if value.get("mutation_performed").and_then(Value::as_bool)!=Some(true)
+        ||value.get("document_id").and_then(Value::as_u64)!=Some(request.expected_document_id as u64)
+        ||value.get("layer_id").and_then(Value::as_u64)!=Some(request.layer_id as u64)
+        ||value.get("operation").and_then(Value::as_str)!=Some(request.operation.as_str())
+        ||value.get("history_guard").and_then(Value::as_str)!=Some("suspend_resume_commit"){
+        return Err("Photoshop transform receipt identity/history evidence is invalid.".into());
+    }
+    let before=value.get("before_bounds").ok_or("Photoshop transform receipt before_bounds missing.")?;
+    let after=value.get("after_bounds").ok_or("Photoshop transform receipt after_bounds missing.")?;
+    if !bounds_match(before,&request.expected_bounds){return Err("Photoshop transform receipt before bounds do not match approved expectation.".into());}
+    if bounds_match(after,before){return Err("Photoshop transform receipt reports no geometric change.".into());}
+    Ok(json!({"host_receipt_validated":true,"before_bounds":before,"after_bounds":after,"history_guard":"suspend_resume_commit"}))
+}
+
+pub fn validate_transform_post_readback(request:&TransformRequest,receipt:&Value,inventory:&Value)->Result<Value,String>{
+    let layer=layer_by_id(inventory,request.layer_id)?;
+    let current=bounds_value(layer)?;
+    let after=receipt.get("after_bounds").ok_or("Photoshop transform receipt after_bounds unavailable.")?;
+    if !bounds_match(&current,after){return Err("Photoshop independent transform readback does not match mutation receipt.".into());}
+    Ok(json!({"post_state_verified":true,"document_id":request.expected_document_id,"layer_id":request.layer_id,"bounds":current}))
+}
+
 pub fn capability_report()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_photoshop",
-        "milestone_percent":60,
+        "milestone_percent":80,
         "source_foundation_complete":true,
         "read_only_bridge_source_complete":true,
         "guarded_layer_write_source_complete":true,
+        "advanced_text_transform_source_complete":true,
+        "saved_checkpoint_source_complete":true,
         "source_runtime_verified":false,
         "production_ready":false,
         "transport":{
@@ -367,8 +609,8 @@ pub fn capability_report()->Value{
             "localhost":"127.0.0.1:17363",
             "token_paired":true,
             "read_only_actions":["inspect_context","list_layers"],
-            "guarded_mutation_actions":["set_layer_property"],
-            "note":"60% milestone adds only exact rename/visible/opacity layer writes with fresh identity and post-write readback."
+            "guarded_mutation_actions":["set_layer_property","set_text_layer","transform_layer"],
+            "note":"80% milestone adds checkpoint-bound text contents/font-size edits and bounded translate/scale/rotate transforms."
         },
         "features":{
             "detect_install":"source_supported_bounded_program_files_scan",
@@ -378,6 +620,9 @@ pub fn capability_report()->Value{
             "document_inspection":"source_supported_read_only_bounded_receipt_validated",
             "layer_inspection":"source_supported_read_only_256_layers_depth_8_receipt_validated",
             "layer_property_mutation":"source_supported_guarded_rename_visible_opacity",
+            "text_layer_editing":"source_supported_checkpointed_contents_font_size",
+            "layer_transforms":"source_supported_checkpointed_translate_scale_rotate",
+            "checkpoint_recovery_evidence":"source_supported_saved_psd_psb_copy_sidecar_verify",
             "destructive_layer_mutation":"not_implemented",
             "pixel_or_layer_mutation":"limited_non_pixel_metadata_only",
             "generative_fill":"not_implemented",
@@ -390,6 +635,7 @@ pub fn capability_report()->Value{
             "fresh document/layer identity and exact expected property are required before mutation",
             "writes use executeAsModal with a Photoshop history suspension and explicit commit",
             "host mutation receipts and an independent post-write layer inventory are validated in Rust",
+            "text/transform writes require a saved local PSD/PSB checkpoint before host mutation",
             "delete/merge/rasterize/pixel writes remain unavailable",
             "no runtime acceptance claim without a real Windows Photoshop host"
         ]
@@ -400,7 +646,7 @@ pub fn readiness_report()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_photoshop",
-        "milestone_percent":60,
+        "milestone_percent":80,
         "source_foundation_complete":true,
         "read_only_bridge_source_complete":true,
         "runtime_acceptance":{
@@ -413,12 +659,12 @@ pub fn readiness_report()->Value{
             "history_guard_runtime_verified":false
         },
         "next_milestone":{
-            "target_percent":80,
+            "target_percent":100,
             "scope":[
-                "text-layer content/style editing",
-                "bounded transforms and adjustment controls",
-                "saved-document checkpoint evidence before higher-risk operations",
-                "recovery planning and richer post-write verification"
+                "bounded selections/masks and adjustment-layer controls",
+                "smart-object replacement/export workflows where exact host APIs are available",
+                "canonical Photoshop acceptance summary",
+                "final source safety audit without generative-fill or arbitrary pixel mutation claims"
             ]
         },
         "source_runtime_verified":false,
@@ -472,10 +718,13 @@ mod tests{
     #[test]
     fn validates_read_only_context_and_bounded_layer_inventory(){
         let context=json!({"document_open":true,"document_id":7,"title":"demo.psd","width":1000,
-            "height":800,"resolution":72,"mode":"RGB","active_layer_ids":[3],"read_only":true});
+            "height":800,"resolution":72,"mode":"RGB","active_layer_ids":[3],
+            "saved":true,"cloud_document":false,"document_path":std::env::temp_dir().join("demo.psd"),"read_only":true});
         assert_eq!(validate_context_receipt(&context).unwrap()["document_id"],7);
         let inventory=json!({"document_open":true,"document_id":7,"layers":[
-            {"id":3,"name":"Title","kind":"text","visible":true,"opacity":100,"depth":0,"parent_id":null,"has_children":false}
+            {"id":3,"name":"Title","kind":"text","visible":true,"opacity":100,"depth":0,"parent_id":null,"has_children":false,
+             "locked":false,"position_locked":false,"bounds":{"left":0.0,"top":0.0,"right":200.0,"bottom":50.0},
+             "text":{"contents":"Hello","size":24.0}}
         ],"layer_count":1,"truncated":false,"read_only":true});
         assert_eq!(validate_layer_inventory(&inventory).unwrap()["layer_count"],1);
         let mut bad=inventory.clone();
@@ -526,13 +775,47 @@ mod tests{
     }
 
     #[test]
+    fn text_edit_requires_exact_text_identity(){
+        let request=TextWriteRequest{expected_document_id:7,layer_id:3,expected_contents:"Hello".into(),expected_size:24.0,
+            contents:Some("World".into()),size:Some(30.0)};
+        let context=json!({"document_id":7});
+        let inventory=json!({"document_id":7,"truncated":false,"layers":[
+            {"id":3,"locked":false,"text":{"contents":"Hello","size":24.0}}
+        ]});
+        assert_eq!(validate_text_precondition(&request,&context,&inventory).unwrap()["text_identity_verified"],true);
+        let receipt=json!({"mutation_performed":true,"document_id":7,"layer_id":3,"history_guard":"suspend_resume_commit",
+            "before":{"contents":"Hello","size":24.0},"after":{"contents":"World","size":30.0}});
+        assert_eq!(validate_text_receipt(&request,&receipt).unwrap()["host_receipt_validated"],true);
+        let post=json!({"layers":[{"id":3,"text":{"contents":"World","size":30.0}}]});
+        assert_eq!(validate_text_post_readback(&request,&post).unwrap()["post_state_verified"],true);
+    }
+
+    #[test]
+    fn transform_requires_exact_unlocked_bounds_and_post_readback(){
+        let request=TransformRequest{expected_document_id:7,layer_id:3,operation:"translate".into(),
+            expected_bounds:json!({"left":0.0,"top":0.0,"right":100.0,"bottom":100.0}),
+            x:Some(10.0),y:Some(20.0),width_percent:None,height_percent:None,angle_degrees:None};
+        let context=json!({"document_id":7});
+        let inventory=json!({"document_id":7,"truncated":false,"layers":[
+            {"id":3,"locked":false,"position_locked":false,"bounds":{"left":0.0,"top":0.0,"right":100.0,"bottom":100.0}}
+        ]});
+        assert!(validate_transform_precondition(&request,&context,&inventory).is_ok());
+        let receipt=json!({"mutation_performed":true,"document_id":7,"layer_id":3,"operation":"translate",
+            "history_guard":"suspend_resume_commit","before_bounds":{"left":0.0,"top":0.0,"right":100.0,"bottom":100.0},
+            "after_bounds":{"left":10.0,"top":20.0,"right":110.0,"bottom":120.0}});
+        let validated=validate_transform_receipt(&request,&receipt).unwrap();
+        let post=json!({"layers":[{"id":3,"bounds":{"left":10.0,"top":20.0,"right":110.0,"bottom":120.0}}]});
+        assert_eq!(validate_transform_post_readback(&request,&validated, &post).unwrap()["post_state_verified"],true);
+    }
+
+    #[test]
     fn reports_do_not_claim_runtime_or_mutation(){
         let capability=capability_report();
-        assert_eq!(capability["milestone_percent"],60);
+        assert_eq!(capability["milestone_percent"],80);
         assert_eq!(capability["source_runtime_verified"],false);
         assert_eq!(capability["features"]["destructive_layer_mutation"],"not_implemented");
         let readiness=readiness_report();
         assert_eq!(readiness["production_ready"],false);
-        assert_eq!(readiness["next_milestone"]["target_percent"],80);
+        assert_eq!(readiness["next_milestone"]["target_percent"],100);
     }
 }

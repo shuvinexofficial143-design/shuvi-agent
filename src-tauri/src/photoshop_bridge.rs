@@ -12,8 +12,8 @@ use super::photoshop_bridge_queue::CommandQueue;
 
 pub const PHOTOSHOP_BRIDGE_PORT:u16=17_363;
 pub const READ_ONLY_ACTIONS:&[&str]=&["inspect_context","list_layers"];
-pub const MUTATING_ACTIONS:&[&str]=&["set_layer_property"];
-pub const ALLOWED_ACTIONS:&[&str]=&["inspect_context","list_layers","set_layer_property"];
+pub const MUTATING_ACTIONS:&[&str]=&["set_layer_property","set_text_layer","transform_layer"];
+pub const ALLOWED_ACTIONS:&[&str]=&["inspect_context","list_layers","set_layer_property","set_text_layer","transform_layer"];
 
 const MAX_BODY_BYTES:usize=256*1024;
 const MAX_HEADER_BYTES:usize=16*1024;
@@ -308,8 +308,10 @@ mod tests{
     #[test]
     fn allowlist_is_read_only(){
         assert_eq!(READ_ONLY_ACTIONS,&["inspect_context","list_layers"]);
-        assert_eq!(MUTATING_ACTIONS,&["set_layer_property"]);
+        assert_eq!(MUTATING_ACTIONS,&["set_layer_property","set_text_layer","transform_layer"]);
         assert!(ALLOWED_ACTIONS.contains(&"set_layer_property"));
+        assert!(ALLOWED_ACTIONS.contains(&"set_text_layer"));
+        assert!(ALLOWED_ACTIONS.contains(&"transform_layer"));
         for forbidden in ["delete_layer","merge_layers","rasterize_layer","save_document","batch_play"]{
             assert!(!ALLOWED_ACTIONS.contains(&forbidden));
         }

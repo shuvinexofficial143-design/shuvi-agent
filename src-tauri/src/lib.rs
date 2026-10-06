@@ -82,6 +82,7 @@ use premiere_bridge::{PremiereBridgeShared, PremiereBridgeStatus};
 mod audition;
 mod audition_acceptance;
 mod photoshop;
+mod photoshop_checkpoint;
 mod motion_graphics;
 mod motion_graphics_provider;
 mod motion_graphics_review;
@@ -400,6 +401,9 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - photoshop_context: {} — paired UXP read-only active document identity
 - photoshop_layers: {} — paired UXP bounded layer inventory
 - photoshop_set_layer_property: {"expected_document_id":123,"layer_id":456,"operation":"rename|visible|opacity","expected_value":"exact value from latest photoshop_layers","value":"new primitive value"} — guarded high-risk write; fresh pre-inspection + modal history guard + independent post-write readback
+- photoshop_set_text_layer: {"expected_document_id":123,"layer_id":456,"expected_contents":"exact latest text","expected_size":24,"contents":"optional replacement","size":30} — high-risk checkpointed text content/font-size edit
+- photoshop_transform_layer: {"expected_document_id":123,"layer_id":456,"operation":"translate|scale|rotate","expected_bounds":{"left":0,"top":0,"right":100,"bottom":100},"x":10,"y":20,"width_percent":80,"height_percent":80,"angle_degrees":15} — high-risk checkpointed bounded transform; include only fields relevant to the chosen operation
+- photoshop_verify_checkpoint: {"backup_path":"exact Shuvi checkpoint backup","expected_source_path":"exact saved PSD/PSB path","expected_document_id":123} — read-only checkpoint integrity/recovery evidence; never restores automatically
 - workspace_scan: {"path":"absolute workspace path"}
 - search_text: {"path":"absolute workspace path","query":"text to find"}
 - replace_text: {"path":"absolute file path","old":"exact old text","new":"replacement text"}
@@ -814,6 +818,9 @@ enum ToolAction {
     PhotoshopContext,
     PhotoshopLayers,
     PhotoshopSetLayerProperty { request:photoshop::LayerWriteRequest },
+    PhotoshopSetTextLayer { request:photoshop::TextWriteRequest },
+    PhotoshopTransformLayer { request:photoshop::TransformRequest },
+    PhotoshopVerifyCheckpoint { backup_path:String, expected_source_path:String, expected_document_id:u32 },
     WorkspaceScan { path: String },
     SearchText { path: String, query: String },
     ReplaceText { path: String, old: String, new_value: String },
@@ -1483,6 +1490,9 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "photoshop_context"
         | "photoshop_layers"
         | "photoshop_set_layer_property"
+        | "photoshop_set_text_layer"
+        | "photoshop_transform_layer"
+        | "photoshop_verify_checkpoint"
         | "workspace_scan"
         | "search_text"
         | "replace_text"
@@ -6529,6 +6539,34 @@ fn stage_tool(
                 "Edit exact Photoshop layer property".into(),
                 format!("High risk guarded Photoshop write: document_id={}, layer_id={}, operation={}. Shuvi will refresh context/layers, require the exact expected current value, execute one modal history-guarded property write, then independently read back the layer inventory. Never blindly retry execution_status_unknown.",request.expected_document_id,request.layer_id,request.operation),
                 RiskLevel::High)
+        }
+        "photoshop_set_text_layer" => {
+            let request:photoshop::TextWriteRequest=serde_json::from_value(proposal.arguments.clone())
+                .map_err(|e|format!("Invalid Photoshop text write request: {e}"))?;
+            request.validate()?;
+            (ToolAction::PhotoshopSetTextLayer {request:request.clone()},
+                "Edit exact Photoshop text layer".into(),
+                format!("High risk checkpointed Photoshop text edit: document_id={}, layer_id={}. Shuvi requires saved local PSD/PSB state, creates an integrity-verified checkpoint, refreshes exact text identity, executes one modal history-guarded write, and independently reads text back.",request.expected_document_id,request.layer_id),
+                RiskLevel::High)
+        }
+        "photoshop_transform_layer" => {
+            let request:photoshop::TransformRequest=serde_json::from_value(proposal.arguments.clone())
+                .map_err(|e|format!("Invalid Photoshop transform request: {e}"))?;
+            request.validate()?;
+            (ToolAction::PhotoshopTransformLayer {request:request.clone()},
+                "Transform exact Photoshop layer".into(),
+                format!("High risk checkpointed Photoshop transform: document_id={}, layer_id={}, operation={}. Requires saved local PSD/PSB checkpoint, exact fresh bounds, modal history guard and independent geometry readback.",request.expected_document_id,request.layer_id,request.operation),
+                RiskLevel::High)
+        }
+        "photoshop_verify_checkpoint" => {
+            let backup_path=arg_string(&proposal.arguments,"backup_path")?;
+            let expected_source_path=arg_string(&proposal.arguments,"expected_source_path")?;
+            let expected_document_id=proposal.arguments.get("expected_document_id").and_then(Value::as_u64)
+                .filter(|v|*v>0&&*v<=u32::MAX as u64).ok_or("Invalid Photoshop expected_document_id.")? as u32;
+            (ToolAction::PhotoshopVerifyCheckpoint {backup_path,expected_source_path,expected_document_id},
+                "Verify Photoshop checkpoint".into(),
+                "Read-only integrity verification of an exact Shuvi PSD/PSB checkpoint and sidecar; no automatic restore.".into(),
+                RiskLevel::Low)
         }
         "workspace_scan" => {
             let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
@@ -15135,6 +15173,88 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "runtime_verified":false,
                     "production_ready":false
                 })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopSetTextLayer {request} => {
+            let raw_context=state.photoshop_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let context=photoshop::validate_context_receipt(&raw_context)?;
+            let raw_inventory=state.photoshop_bridge.request("list_layers",json!({}),Duration::from_secs(8)).await?;
+            let inventory=photoshop::validate_layer_inventory(&raw_inventory)?;
+            let precondition=photoshop::validate_text_precondition(&request,&context,&inventory)?;
+            let source_path=context.get("document_path").and_then(Value::as_str).ok_or("Photoshop text edit requires a saved local document path.")?;
+            let checkpoint=photoshop_checkpoint::create(
+                request.expected_document_id,source_path,
+                context.get("saved").and_then(Value::as_bool)==Some(true),
+                context.get("cloud_document").and_then(Value::as_bool)==Some(true),
+                "text_layer_edit"
+            )?;
+
+            let raw_receipt=state.photoshop_bridge.request("set_text_layer",request.bridge_arguments()?,Duration::from_secs(20)).await?;
+            let mutation_receipt=photoshop::validate_text_receipt(&request,&raw_receipt)?;
+            let post_raw=state.photoshop_bridge.request("list_layers",json!({}),Duration::from_secs(8)).await?;
+            let post_inventory=photoshop::validate_layer_inventory(&post_raw)?;
+            let post_readback=photoshop::validate_text_post_readback(&request,&post_inventory)?;
+
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "checkpoint":checkpoint,
+                    "precondition":precondition,
+                    "mutation_receipt":mutation_receipt,
+                    "post_readback":post_readback,
+                    "post_state_verified":true,
+                    "checkpoint_bound":true,
+                    "automatic_restore":false,
+                    "automatic_retry_allowed":false,
+                    "runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopTransformLayer {request} => {
+            let raw_context=state.photoshop_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let context=photoshop::validate_context_receipt(&raw_context)?;
+            let raw_inventory=state.photoshop_bridge.request("list_layers",json!({}),Duration::from_secs(8)).await?;
+            let inventory=photoshop::validate_layer_inventory(&raw_inventory)?;
+            let precondition=photoshop::validate_transform_precondition(&request,&context,&inventory)?;
+            let source_path=context.get("document_path").and_then(Value::as_str).ok_or("Photoshop transform requires a saved local document path.")?;
+            let checkpoint=photoshop_checkpoint::create(
+                request.expected_document_id,source_path,
+                context.get("saved").and_then(Value::as_bool)==Some(true),
+                context.get("cloud_document").and_then(Value::as_bool)==Some(true),
+                "layer_transform"
+            )?;
+
+            let raw_receipt=state.photoshop_bridge.request("transform_layer",request.bridge_arguments()?,Duration::from_secs(25)).await?;
+            let mutation_receipt=photoshop::validate_transform_receipt(&request,&raw_receipt)?;
+            let post_raw=state.photoshop_bridge.request("list_layers",json!({}),Duration::from_secs(8)).await?;
+            let post_inventory=photoshop::validate_layer_inventory(&post_raw)?;
+            let post_readback=photoshop::validate_transform_post_readback(&request,&mutation_receipt,&post_inventory)?;
+
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "checkpoint":checkpoint,
+                    "precondition":precondition,
+                    "mutation_receipt":mutation_receipt,
+                    "post_readback":post_readback,
+                    "post_state_verified":true,
+                    "checkpoint_bound":true,
+                    "automatic_restore":false,
+                    "automatic_retry_allowed":false,
+                    "runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopVerifyCheckpoint {backup_path,expected_source_path,expected_document_id} => {
+            let evidence=photoshop_checkpoint::verify(&backup_path,&expected_source_path,expected_document_id)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&evidence).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)
             })
         }

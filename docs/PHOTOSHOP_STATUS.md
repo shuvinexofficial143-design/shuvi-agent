@@ -2,72 +2,88 @@
 
 ## Milestone
 
-Current declared source milestone: **60%**
+Current declared source milestone: **80%**
 
-The 60% milestone adds the first permission-gated Photoshop writes on top of the 40% read-only UXP bridge.
+The 80% milestone extends the guarded Photoshop bridge with checkpoint-bound text editing and bounded layer transforms.
 
 ## Source-supported foundation
 
-- bounded Windows Program Files Photoshop detection,
-- exact detected `Photoshop.exe` launch only,
-- Photoshop UXP manifest v5 targeting host `PS` with Photoshop API v2,
-- localhost pairing at `127.0.0.1:17363`,
-- token-authenticated request/result bridge,
-- read-only `inspect_context` and `list_layers`,
-- exact request ID/action correlation,
-- bounded 32-command queue,
-- bounded document/layer receipt validation in Rust,
-- high-risk `photoshop_set_layer_property` tool,
-- allowed write properties only:
-  - layer rename,
-  - layer visibility,
-  - layer opacity,
-- exact expected document ID,
-- exact layer ID,
-- exact expected current property value,
-- fresh pre-write context + layer inventory,
-- Photoshop `executeAsModal`,
-- history suspension around the mutation,
-- history rollback on UXP-side exception,
-- mutation receipt validation,
-- independent post-write `list_layers` readback.
+- bounded Windows Photoshop detection and exact launch,
+- Photoshop UXP manifest v5 / API v2,
+- localhost token-paired bridge,
+- bounded request/result correlation,
+- document context with saved/cloud/path evidence,
+- bounded layer inventory with IDs, locks, bounds and text metadata,
+- guarded layer rename / visibility / opacity,
+- text-layer content editing,
+- text font-size editing,
+- bounded layer translate / scale / rotate,
+- fresh exact document/layer preconditions,
+- `executeAsModal`,
+- Photoshop history suspension + cancel-on-error,
+- host mutation receipt validation,
+- independent post-write layer readback,
+- saved local PSD/PSB checkpoint copy before text/transform writes,
+- checkpoint sidecar binding source path, document ID, file size and FNV-1a integrity fingerprint,
+- read-only checkpoint verification / recovery evidence,
+- no automatic restore.
 
-## Mutation safety boundary
+Adobe documents text editing through `TextItem.contents` and `TextItem.characterStyle.size`, and exposes `Layer.translate`, `Layer.scale`, and `Layer.rotate` as layer transform APIs. Photoshop state-changing operations remain wrapped in `executeAsModal`.
 
-A write is rejected when:
+## Checkpoint boundary
 
-- the active document ID changed,
-- the target layer no longer exists,
-- the layer inventory is truncated,
-- the inspected current property no longer equals `expected_value`,
-- the requested value is the same as the current value,
-- the operation is outside `rename | visible | opacity`,
-- the host receipt does not exactly match the approved document/layer/operation/value,
-- independent post-write readback does not show the approved final value.
+Text and transform operations require:
 
-A mutation timeout or pairing loss after dispatch is treated as `execution_status_unknown`; Shuvi must inspect the exact document/layer state before any retry.
+1. the active document is saved,
+2. it is a local PSD/PSB (not cloud-only),
+3. its absolute path is available,
+4. a byte-for-byte backup copy is created in `Shuvi Photoshop Backups`,
+5. source and backup fingerprints match,
+6. a sidecar binds checkpoint evidence to the document ID and source path.
 
-## Still blocked at 60%
+If any checkpoint step fails, the Photoshop host mutation is not sent.
 
-- delete layer,
-- merge/flatten/rasterize,
+`photoshop_verify_checkpoint` verifies the backup and its sidecar but never restores automatically.
+
+## Text edit safety
+
+Text writes require the exact latest:
+
+- document ID,
+- layer ID,
+- text contents,
+- font size.
+
+Only replacement contents and font size are supported in this milestone. If the target is not an inspected text layer, is locked, or the expected text state changed, the write is rejected.
+
+## Transform safety
+
+Supported transforms:
+
+- translate: each axis bounded to ±10,000 px,
+- scale: 1%..1000% per axis,
+- rotate: ±360°.
+
+The layer must be unlocked and position-unlocked. Exact pre-transform bounds must match the fresh inventory. The mutation receipt must show geometric change, and a separate post-write inventory must match the receipt's final bounds.
+
+## Still blocked at 80%
+
+- layer deletion,
+- merge / flatten / rasterize,
 - arbitrary `batchPlay`,
-- pixel editing,
-- selections and masks,
-- text content/style editing,
-- transforms,
-- smart-object replacement,
-- filters and adjustments,
+- arbitrary pixel editing,
+- unrestricted filters,
 - generative fill,
-- save/export,
-- destructive checkpoint/restore.
+- automatic checkpoint restore,
+- live runtime acceptance.
 
-## Planned 80% milestone
+## Planned 100% source milestone
 
-1. Text-layer content/style editing.
-2. Bounded layer transforms and adjustment controls.
-3. Saved-document checkpoint evidence before higher-risk operations.
-4. Recovery planning and richer post-write verification.
+1. bounded selection/mask and adjustment-layer controls where host APIs are explicit,
+2. bounded smart-object replacement/export workflows where exact APIs and readback are available,
+3. canonical Photoshop acceptance summary,
+4. final source safety audit,
+5. keep generative fill / arbitrary pixel mutation unclaimed unless a later verified scope explicitly adds them.
 
 ## Readiness
 
@@ -75,4 +91,4 @@ A mutation timeout or pairing loss after dispatch is treated as `execution_statu
 
 `production_ready=false`
 
-Real Photoshop runtime verification remains pending until a suitable Windows creative-app machine/server is available.
+Real Photoshop runtime verification remains pending until a suitable Windows Photoshop environment is available.
