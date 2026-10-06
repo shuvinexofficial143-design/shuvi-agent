@@ -81,6 +81,7 @@ use premiere_bridge::{PremiereBridgeShared, PremiereBridgeStatus};
 
 mod audition;
 mod audition_acceptance;
+mod photoshop;
 mod motion_graphics;
 mod motion_graphics_provider;
 mod motion_graphics_review;
@@ -386,6 +387,10 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - after_effects_run: {"afterfx_exe":"absolute path to AfterFX.exe","timeout_ms":30000,"request":{"schema_version":1,"request_id":"fresh-id","action":"inspect_context","expected_project_file":null,"expected_project_revision":null,"args":{}}} — for every mutating action copy exact expected_project_file + expected_project_revision from the latest inspect_context receipt
 - after_effects_plan_hand_track: {"plan":{"property":{"target":{"comp_id":1,"layer_id":2},"path":[{"match_name":"ADBE Transform Group","property_index":1},{"match_name":"ADBE Position","property_index":2}]},"samples":[{"time_seconds":0.0,"point":[100,200],"confidence":0.9}],"coordinate_space":"comp_pixels"}}
 - after_effects_plan_hand_track_rig: {"plan":{"comp_id":1,"target_layer_id":2,"samples":[{"time_seconds":0.0,"point":[100,200],"confidence":0.95}],"coordinate_space":"comp_pixels","name":"Shuvi Hand Track","preserve_visual":true,"min_confidence":0.5,"smoothing_alpha":0.35,"max_gap_seconds":0.25}}
+- photoshop_capability_report: {}
+- photoshop_readiness_report: {}
+- photoshop_detect: {}
+- photoshop_launch: {"photoshop_exe":"exact absolute Photoshop.exe path returned by photoshop_detect"} — launch only; no document edit or host bridge is claimed in the 20% foundation milestone
 - workspace_scan: {"path":"absolute workspace path"}
 - search_text: {"path":"absolute workspace path","query":"text to find"}
 - replace_text: {"path":"absolute file path","old":"exact old text","new":"replacement text"}
@@ -790,6 +795,10 @@ enum ToolAction {
     AfterEffectsRun { afterfx_exe:String, timeout_ms:u64, request:after_effects_transport::Request },
     AfterEffectsPlanHandTrack { plan: after_effects::HandTrackPlan },
     AfterEffectsPlanHandTrackRig { plan: after_effects::HandTrackRigPlan },
+    PhotoshopCapabilityReport,
+    PhotoshopReadinessReport,
+    PhotoshopDetect,
+    PhotoshopLaunch { photoshop_exe:String },
     WorkspaceScan { path: String },
     SearchText { path: String, query: String },
     ReplaceText { path: String, old: String, new_value: String },
@@ -1448,6 +1457,10 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "after_effects_run"
         | "after_effects_plan_hand_track"
         | "after_effects_plan_hand_track_rig"
+        | "photoshop_capability_report"
+        | "photoshop_readiness_report"
+        | "photoshop_detect"
+        | "photoshop_launch"
         | "workspace_scan"
         | "search_text"
         | "replace_text"
@@ -6429,6 +6442,32 @@ fn stage_tool(
                 "Prepare After Effects hand-track rig".into(),
                 "Filter grounded detector samples by confidence, apply deterministic EMA smoothing, reject oversized gaps, and return apply_hand_track_rig args without mutating After Effects.".into(),
                 RiskLevel::Low)
+        }
+        "photoshop_capability_report" => (
+            ToolAction::PhotoshopCapabilityReport,
+            "Read Photoshop source capability report".into(),
+            "Source milestone declaration only; does not claim a live Photoshop host or editing capability.".into(),
+            RiskLevel::Low,
+        ),
+        "photoshop_readiness_report" => (
+            ToolAction::PhotoshopReadinessReport,
+            "Read Photoshop readiness report".into(),
+            "Report the current 20% source foundation and explicit runtime gaps without promoting untested capabilities.".into(),
+            RiskLevel::Low,
+        ),
+        "photoshop_detect" => (
+            ToolAction::PhotoshopDetect,
+            "Detect installed Photoshop".into(),
+            "Read-only bounded Program Files/Adobe inspection; does not launch Photoshop.".into(),
+            RiskLevel::Low,
+        ),
+        "photoshop_launch" => {
+            let photoshop_exe=arg_string(&proposal.arguments,"photoshop_exe")?;
+            photoshop::validate_requested_executable(&photoshop_exe)?;
+            (ToolAction::PhotoshopLaunch {photoshop_exe:photoshop_exe.clone()},
+                "Launch detected Photoshop".into(),
+                format!("Launch exact freshly detected Photoshop executable {photoshop_exe}; no command-line arguments, document mutation or host bridge action."),
+                RiskLevel::Medium)
         }
         "workspace_scan" => {
             let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
@@ -14892,6 +14931,53 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 stdout:serde_json::to_string_pretty(&prepared).unwrap_or_default(),
                 stderr:String::new(),
                 exit_code:Some(0),
+            })
+        }
+        ToolAction::PhotoshopCapabilityReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&photoshop::capability_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopReadinessReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&photoshop::readiness_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopDetect => {
+            let value=photoshop::detect_installs()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopLaunch {photoshop_exe} => {
+            let detection=photoshop::detect_installs()?;
+            let exact=photoshop::exact_detected_executable(&detection,&photoshop_exe)?;
+            let mut child=Command::new(&exact).spawn()
+                .map_err(|e|format!("Could not launch detected Photoshop: {e}"))?;
+            let pid=child.id();
+            if let Err(error)=register_managed_process(state,pid){
+                let _=child.kill();
+                let _=child.wait();
+                return Err(format!("Photoshop was stopped before Shuvi could register the managed process: {error}"));
+            }
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "photoshop_exe":exact,
+                    "pid":pid,
+                    "launch_dispatched":true,
+                    "host_ready_verified":false,
+                    "uxp_bridge_available":false,
+                    "runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
             })
         }
         ToolAction::WorkspaceScan { path } => {
