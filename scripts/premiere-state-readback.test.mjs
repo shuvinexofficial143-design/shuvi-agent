@@ -78,7 +78,7 @@ test("Premiere transition mutations require exact enumerated boundary readback",
     const arm=rust.slice(start,end);
     assert.match(arm,/verified_transition/);
     assert.match(arm,/success: verified/);
-    assert.match(arm,/"retry_safe": false/);
+    assert.match(arm,/"retry_safe":\s*false/);
   }
 });
 
@@ -133,7 +133,7 @@ test("Premiere project save does not promote host acceptance to verified persist
   assert.match(save,/retrySafe: false/);
 
   const start=rust.lastIndexOf("ToolAction::PremiereSaveProject");
-  const end=rust.indexOf("\n        ToolAction::WorkspaceScan",start);
+  const end=rust.indexOf("\n        ToolAction::AfterEffectsCapabilityReport",start);
   const arm=rust.slice(start,end);
   assert.match(arm,/persistence_verified/);
   assert.match(arm,/verified_file_persistence/);

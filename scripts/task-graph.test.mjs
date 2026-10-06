@@ -422,7 +422,7 @@ test("frontend correlates execution with exact Rust audit receipt before evidenc
   assert.ok(outcomeCall>receiptCall);
   assert.match(execute,/exactActionReceipt\([\s\S]{0,180}"executed"/);
   assert.match(execute,/evidence_verification_failed: true/);
-  assert.match(execute,/execution_failure_audit_confirmed: confirmedFailure/);
+  assert.match(execute,/execution_failure_audit_confirmed: cancelledByUser \? false : confirmedFailure/);
   assert.match(main,/action_audit_receipt/);
 });
 
