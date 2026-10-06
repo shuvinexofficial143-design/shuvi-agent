@@ -21,7 +21,7 @@ test("manual shell is stopped if tracking registration fails",()=>{
   const start=rust.indexOf("ToolAction::PowerShell { command } =>");
   const block=rust.slice(start,start+7000);
   assert.match(block,/terminate_managed_process_tree\(child_pid\)/);
-  assert.match(block,/manual shell was stopped before it could remain untracked/);
+  assert.match(block,/Manual shell was stopped before it could remain untracked/);
   assert.match(block,/child\.wait\(\)/);
 });
 

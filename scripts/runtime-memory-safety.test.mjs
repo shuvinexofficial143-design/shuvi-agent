@@ -11,10 +11,10 @@ test("project validation watchdog enforces the managed 4 GB hard ceiling",()=>{
   const block=rust.slice(start,end);
   assert.match(block,/let hard_limit_triggered = AtomicBool::new\(false\)/);
   assert.match(block,/std::thread::scope\(\|scope\|/);
-  assert.match(block,/while process_is_alive\(child_pid\)/);
+  assert.match(block,/while managed_process_identity_matches\(state, child_pid\)\.unwrap_or\(false\)/);
   assert.match(block,/current_runtime_status\(state\)/);
   assert.match(block,/status\.over_hard_limit/);
-  assert.match(block,/terminate_managed_process_tree\(child_pid\)/);
+  assert.match(block,/terminate_registered_process_tree\(state, child_pid\)/);
   assert.match(block,/Duration::from_millis\(250\)/);
   assert.match(block,/output\.status\.success\(\) && !exceeded_hard_limit/);
   assert.match(block,/4 GB hard RAM ceiling/);
@@ -31,7 +31,7 @@ test("hard-ceiling termination remains scoped to the Shuvi-managed validation ro
     rust.indexOf("ToolAction::RunProjectTask { path, task }"),
     rust.indexOf("ToolAction::GitStatus { path }")
   );
-  assert.match(run,/managed\.insert\(child_pid\)/);
-  assert.match(run,/terminate_managed_process_tree\(child_pid\)/);
+  assert.match(run,/register_managed_process\(state, child_pid\)/);
+  assert.match(run,/terminate_registered_process_tree\(state, child_pid\)/);
   assert.doesNotMatch(run,/list_processes/);
 });
