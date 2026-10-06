@@ -21,3 +21,17 @@ If multiple clips overlap the reviewed frame, the coordinator returns the candid
 ## Runtime status
 
 Source implementation only. Real Premiere/UXP host acceptance remains pending, and this feature does not change `production_ready=false`.
+
+
+## Phase 2 — native correction candidate discovery
+
+When the coordinator resolves exactly one video/audio clip, the prefilled `premiere_bind_review_fix` call can now run without a component selector first. That read-only pass inspects the exact clip and returns at most 32 bounded primitive native parameter candidates with:
+
+- exact component match/display name,
+- exact parameter display name,
+- current primitive value and type,
+- time-varying state,
+- keyframe support,
+- whether it is a static-edit candidate.
+
+Audio discovery exposes numeric candidates only because the existing audio automation planner requires numeric native values. The discovery pass still does not infer which native parameter means exposure, scale, gain, framing, or another semantic role. An exact selector and exact correction request remain separate before any write.

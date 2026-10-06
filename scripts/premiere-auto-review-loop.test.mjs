@@ -29,3 +29,14 @@ test("automatic loop preserves explicit correction approval boundary", () => {
   assert.match(docs, /never chooses a correction value/);
   assert.match(docs, /production_ready=false/);
 });
+
+
+test("auto review phase 2 exposes bounded native correction candidates", () => {
+  const binding = fs.readFileSync("src-tauri/src/premiere_review_binding.rs", "utf8");
+  assert.match(binding, /inspection_candidates/);
+  assert.match(binding, /candidate_count/);
+  assert.match(binding, /static_edit_candidate/);
+  assert.match(binding, /candidates\.len\(\)>=32/);
+  assert.match(binding, /kind=="audio" && !value\.is_number\(\)/);
+  assert.match(binding, /Vision evidence does not choose a native parameter or correction value/);
+});

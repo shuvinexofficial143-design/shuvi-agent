@@ -105,9 +105,6 @@ pub fn bind(session:&Session,issue:&Issue,seconds:f64,timeline:&Value,kind:&str,
                 else {"Select one unique inspected primitive property by exact native component and parameter names"},
             "reason":"Generic native parameters do not prove MOGRT identity or semantic text roles; no edit was sent."}));
     }
-    let Some((component,param))=selector else {return Ok(json!({"supported":false,"planner":planner,"expected":expected,
-        "reason":"Select an exact inspected component match name and parameter display name; no vision-inferred binding."}));};
-    if component.is_empty()||component.len()>240||param.is_empty()||param.len()>240{return Err("Invalid native selector.".into());}
     if inspection.get("componentsTruncated").and_then(Value::as_bool)!=Some(false)
         || inspection.get("track").and_then(Value::as_u64)!=Some(track as u64)
         || inspection.get("clipIndex").and_then(Value::as_u64)!=Some(clip as u64)
@@ -115,6 +112,55 @@ pub fn bind(session:&Session,issue:&Issue,seconds:f64,timeline:&Value,kind:&str,
         return Err("Native component inspection is incomplete or targets another clip.".into());
     }
     let components=inspection.get("components").and_then(Value::as_array).ok_or("No native components returned.")?;
+    if selector.is_none() {
+        let mut candidates=Vec::new();
+        for component in components {
+            let Some(match_name)=component.get("matchName").and_then(Value::as_str)
+                .filter(|value|!value.is_empty()&&value.len()<=240) else {continue};
+            let display_name=component.get("displayName").and_then(Value::as_str)
+                .filter(|value|!value.is_empty()&&value.len()<=240);
+            let Some(params)=component.get("params").and_then(Value::as_array) else {continue};
+            for param in params {
+                let Some(param_name)=param.get("displayName").and_then(Value::as_str)
+                    .filter(|value|!value.is_empty()&&value.len()<=240) else {continue};
+                let value=&param["startValue"];
+                let value_type=if value.is_number(){"number"}else if value.is_string(){"string"}else if value.is_boolean(){"boolean"}else{continue};
+                let time_varying=param.get("timeVarying").and_then(Value::as_bool).unwrap_or(true);
+                let keyframes_supported=param.get("keyframesSupported").and_then(Value::as_bool).unwrap_or(false);
+                if kind=="audio" && !value.is_number() {continue;}
+                if candidates.len()>=32 {return Err("More than 32 primitive native parameters; select a narrower exact component first.".into());}
+                candidates.push(json!({
+                    "component_match_name":match_name,
+                    "component_display_name":display_name,
+                    "param_display_name":param_name,
+                    "current_value":value,
+                    "value_type":value_type,
+                    "time_varying":time_varying,
+                    "keyframes_supported":keyframes_supported,
+                    "static_edit_candidate":!time_varying,
+                    "planner_compatible":if kind=="audio"{value.is_number()}else{true}
+                }));
+            }
+        }
+        let static_count=candidates.iter().filter(|candidate|candidate["static_edit_candidate"]==true).count();
+        return Ok(json!({
+            "supported":false,
+            "planner":planner,
+            "operation_family":if kind=="audio"{"premiere_plan_audio_automation"}else{"premiere_plan_video_recipe"},
+            "expected":expected,
+            "inspection_candidates":candidates,
+            "candidate_count":candidates.len(),
+            "static_candidate_count":static_count,
+            "requires_exact_selector":true,
+            "reason":if candidates.is_empty(){
+                "No bounded primitive native parameter is available on this exact clip; no correction was proposed."
+            }else{
+                "Select one exact inspected native component/parameter. Vision evidence does not choose a native parameter or correction value."
+            }
+        }));
+    }
+    let Some((component,param))=selector else {unreachable!("selector presence checked above")};
+    if component.is_empty()||component.len()>240||param.is_empty()||param.len()>240{return Err("Invalid native selector.".into());}
     let matching=components.iter().filter(|c|c.get("matchName").and_then(Value::as_str)==Some(component)).collect::<Vec<_>>();
     if matching.len()!=1 {return Ok(json!({"supported":false,"planner":planner,"expected":expected,
         "reason":"Native component identity is missing or ambiguous."}));}
@@ -154,6 +200,11 @@ pub fn bind(session:&Session,issue:&Issue,seconds:f64,timeline:&Value,kind:&str,
     #[test] fn exact_primitive_requires_unique_native_binding(){let (s,t)=fixture();let i=issue(&s,"i",2.0).unwrap();
         let mut native=json!({"track":0,"clipIndex":0,"componentsTruncated":false,"components":[{"matchName":"color.native",
             "paramsTruncated":false,"params":[{"displayName":"Exposure","startValue":1.0,"timeVarying":false,"keyframesSupported":true}]}]});
+        let discovery=bind(&s,i,2.0,&t,"video",0,0,"sig",None,&native).unwrap();
+        assert_eq!(discovery["supported"],false);
+        assert_eq!(discovery["candidate_count"],1);
+        assert_eq!(discovery["inspection_candidates"][0]["param_display_name"],"Exposure");
+        assert_eq!(discovery["inspection_candidates"][0]["static_edit_candidate"],true);
         let b=bind(&s,i,2.0,&t,"video",0,0,"sig",Some(("color.native","Exposure")),&native).unwrap();assert_eq!(b["supported"],true);
         assert_eq!(b["expected"]["clips"][0]["signature"],"sig");
         native["components"][0]["params"][0]["timeVarying"]=json!(true);
@@ -162,6 +213,21 @@ pub fn bind(session:&Session,issue:&Issue,seconds:f64,timeline:&Value,kind:&str,
         let duplicate=native["components"][0]["params"][0].clone();
         native["components"][0]["params"].as_array_mut().unwrap().push(duplicate);
         assert_eq!(bind(&s,i,2.0,&t,"video",0,0,"sig",Some(("color.native","Exposure")),&native).unwrap()["supported"],false);
+    }
+    #[test] fn audio_discovery_filters_non_numeric_parameters(){
+        let (mut s,t)=fixture();s.reviews[0].issues[0].category="audio_visual".into();
+        let mut audio_t=t.clone();
+        audio_t["videoTracks"]=json!([]);
+        audio_t["audioTracks"]=json!([{"index":0,"items":[{"clipIndex":0,"name":"audio","startSeconds":0.0,"endSeconds":4.0,"targetSignature":"sig"}]}]);
+        let i=issue(&s,"i",2.0).unwrap();
+        let native=json!({"track":0,"clipIndex":0,"componentsTruncated":false,"components":[{"matchName":"audio.native",
+            "paramsTruncated":false,"params":[
+                {"displayName":"Level","startValue":1.0,"timeVarying":false,"keyframesSupported":true},
+                {"displayName":"Mode","startValue":"auto","timeVarying":false,"keyframesSupported":false}
+            ]}]});
+        let discovery=bind(&s,i,2.0,&audio_t,"audio",0,0,"sig",None,&native).unwrap();
+        assert_eq!(discovery["candidate_count"],1);
+        assert_eq!(discovery["inspection_candidates"][0]["param_display_name"],"Level");
     }
     #[test] fn graphics_property_requires_native_identity_and_exact_selector(){
         let (mut s,t)=fixture();s.reviews[0].issues[0].category="graphics".into();let i=issue(&s,"i",2.0).unwrap();
