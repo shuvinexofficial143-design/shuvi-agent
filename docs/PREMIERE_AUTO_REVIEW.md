@@ -64,3 +64,17 @@ On the next review Shuvi compares that fix only against issues from the same cat
 - `uncertain`: review confidence/baseline evidence is insufficient.
 
 The matching post-review issue ID is persisted when present. This prevents an unrelated issue disappearing elsewhere in the timeline from falsely marking the applied correction as successful.
+
+
+## 60% milestone — regression and stagnation safety
+
+The loop now applies an explicit no-blind-retry policy to grounded correction outcomes.
+
+- One `regressed` correction immediately moves the session to `stagnated`.
+- One `unchanged` correction may be followed by one different approved correction.
+- Two non-improving corrections against the same issue category and overlapping grounded sample stop the loop with `repeated_grounded_no_gain`.
+- Reusing the exact same unsuccessful fix fingerprint stops with `duplicate_unsuccessful_fix`.
+- Reaching the iteration budget stops with `max_iterations_reached`.
+- Terminal coordinator responses expose `stop_reason` plus the latest grounded fix evaluation.
+
+This policy does not automatically rollback a real Premiere mutation because rollback itself is a separate high-risk operation that requires runtime-proven host behavior. It stops further mutation instead of hiding or compounding a regression.

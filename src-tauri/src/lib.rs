@@ -12113,6 +12113,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "session_id":session_id,
                     "status":state,
                     "iteration":session.iteration,
+                    "stop_reason":session.stop_reason,
+                    "latest_fix_evaluation":session.attempted_fixes.last().filter(|attempt|attempt.after.is_some()),
                     "terminal":matches!(state.as_str(),"completed"|"stagnated"|"cancelled"|"failed"),
                     "next_proposal":Value::Null,
                     "automatic_mutation":false

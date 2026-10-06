@@ -79,3 +79,16 @@ test("40 percent milestone tracks issue-specific before and after correction evi
   assert.match(review, /before_confidence/);
   assert.match(rust, /latest_fix_evaluation/);
 });
+
+
+test("60 percent milestone stops regression and repeated grounded no-gain retries", () => {
+  const review = fs.readFileSync("src-tauri/src/premiere_review.rs", "utf8");
+  const rust = fs.readFileSync("src-tauri/src/lib.rs", "utf8");
+  assert.match(review, /grounded_non_improving_attempts/);
+  assert.match(review, /correction_regressed/);
+  assert.match(review, /repeated_grounded_no_gain/);
+  assert.match(review, /duplicate_unsuccessful_fix/);
+  assert.match(review, /max_iterations_reached/);
+  assert.match(review, /blind_retry_allowed/);
+  assert.match(rust, /stop_reason/);
+});

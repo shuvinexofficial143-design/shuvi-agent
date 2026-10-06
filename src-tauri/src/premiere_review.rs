@@ -62,6 +62,8 @@ pub struct Session {
     #[serde(default)]
     pub model_calls: u8,
     pub status: String,
+    #[serde(default)]
+    pub stop_reason: Option<String>,
     pub reviews: Vec<Review>,
     pub attempted_fixes: Vec<Attempt>,
 }
@@ -107,6 +109,15 @@ fn evaluate_attempt(attempt:&Attempt,review:&Review)->(String,String,Option<Stri
     (outcome.into(),after.observation.chars().take(800).collect(),Some(after.id.clone()))
 }
 
+fn grounded_non_improving_attempts(attempts: &[Attempt], baseline: &Attempt) -> usize {
+    if baseline.category.is_empty() || baseline.frame_seconds.is_empty() { return 0; }
+    attempts.iter().filter(|attempt| {
+        attempt.category == baseline.category
+            && shared_sample(&attempt.frame_seconds, &baseline.frame_seconds)
+            && matches!(attempt.outcome.as_str(), "unchanged" | "regressed")
+    }).count()
+}
+
 impl Session {
     pub fn new(id: String, project: String, sequence: String, objective: String, reference: String, samples: Vec<f64>, max: u8, created_at_ms: u64) -> Result<Self, String> {
         if !short(&id, 80) || !short(&project, 240) || !short(&sequence, 240)
@@ -116,12 +127,13 @@ impl Session {
         }
         Ok(Self { schema_version: 2, created_at_ms, session_id: id, project_guid: project, sequence_guid: sequence,
             objective, reference, sample_times: samples, iteration: 1, max_iterations: max, model_calls: 0, status: "reviewing".into(),
-            reviews: vec![], attempted_fixes: vec![] })
+            stop_reason: None, reviews: vec![], attempted_fixes: vec![] })
     }
 
     pub fn check_identity(&mut self, project: &str, sequence: &str) -> Result<(), String> {
         if self.project_guid != project || self.sequence_guid != sequence {
             self.status = "stagnated".into();
+            self.stop_reason = Some("project_or_sequence_changed".into());
             return Err("Premiere project or active sequence changed; review session stopped.".into());
         }
         Ok(())
@@ -160,10 +172,42 @@ impl Session {
             }))
         }else{None};
         let low_confidence = review.overall_confidence < 0.65;
-        let stop = review.stop_recommended || !actionable || low_confidence;
+        let latest_attempt = self.attempted_fixes.last().filter(|attempt| attempt.after.is_some());
+        let latest_outcome = latest_attempt.map(|attempt| attempt.outcome.as_str());
+        let non_improving_count = latest_attempt
+            .map(|attempt| grounded_non_improving_attempts(&self.attempted_fixes, attempt))
+            .unwrap_or(0);
+        let regression_stop = latest_outcome == Some("regressed");
+        let repeated_no_gain = latest_outcome == Some("unchanged") && non_improving_count >= 2;
+        let completed = review.stop_recommended || !actionable || low_confidence;
+        let stop_recommended = review.stop_recommended;
         self.reviews.push(review);
-        self.status = if stop { "completed" } else if self.iteration >= self.max_iterations { "stagnated" } else { "awaiting_approval" }.into();
-        Ok(json!({"comparison": comparison, "fix_evaluation":fix_evaluation, "status": self.status, "iteration": self.iteration}))
+        let (status, reason) = if regression_stop {
+            ("stagnated", Some("correction_regressed"))
+        } else if repeated_no_gain {
+            ("stagnated", Some("repeated_grounded_no_gain"))
+        } else if completed {
+            ("completed", Some(if stop_recommended { "review_stop_recommended" } else if !actionable { "no_actionable_issues" } else { "review_confidence_too_low" }))
+        } else if self.iteration >= self.max_iterations {
+            ("stagnated", Some("max_iterations_reached"))
+        } else {
+            ("awaiting_approval", None)
+        };
+        self.status = status.into();
+        self.stop_reason = reason.map(str::to_string);
+        Ok(json!({
+            "comparison": comparison,
+            "fix_evaluation": fix_evaluation,
+            "retry_policy": {
+                "regression_stop": regression_stop,
+                "grounded_non_improving_attempts": non_improving_count,
+                "max_grounded_non_improving_attempts": 2,
+                "blind_retry_allowed": false
+            },
+            "status": self.status,
+            "stop_reason": self.stop_reason,
+            "iteration": self.iteration
+        }))
     }
 
     pub fn record_fix(&mut self, issue_id: &str, fingerprint: &str, before: &str) -> Result<(), String> {
@@ -174,6 +218,7 @@ impl Session {
             .ok_or("Fix references an unknown issue.")?;
         if self.attempted_fixes.iter().any(|a| a.fingerprint == fingerprint && !matches!(a.outcome.as_str(),"improved"|"resolved")) {
             self.status = "stagnated".into();
+            self.stop_reason = Some("duplicate_unsuccessful_fix".into());
             return Err("Same unsuccessful fix already attempted.".into());
         }
         self.attempted_fixes.push(Attempt { fingerprint: fingerprint.into(), issue_id: issue_id.into(),
@@ -185,7 +230,7 @@ impl Session {
         Ok(())
     }
 
-    pub fn cancel(&mut self) { self.status = "cancelled".into(); }
+    pub fn cancel(&mut self) { self.status = "cancelled".into(); self.stop_reason = Some("cancelled_by_user".into()); }
 }
 
 impl Review {
@@ -317,6 +362,7 @@ fn validate_session(session:&Session)->Result<(),String>{
         || session.model_calls > 32
         || !samples_ok(&session.sample_times) || !(1..=8).contains(&session.max_iterations)
         || session.iteration == 0 || session.iteration > session.max_iterations
+        || session.stop_reason.as_ref().is_some_and(|reason| reason.is_empty() || reason.len() > 240)
         || !matches!(session.status.as_str(), "reviewing" | "awaiting_approval" | "completed" | "cancelled" | "stagnated" | "failed") {
         return Err("Invalid persisted Premiere review session.".into());
     }
@@ -382,6 +428,40 @@ mod tests {
         let r=regressed.add_review(review(2,vec![worse])).unwrap();
         assert_eq!(r["fix_evaluation"]["outcome"],"regressed");
     }
+    #[test] fn regression_immediately_stagnates_loop() {
+        let mut s = session();
+        s.add_review(review(1, vec![issue()])).unwrap();
+        s.record_fix("i", "regress-a", "too warm").unwrap();
+        let mut worse = issue();
+        worse.id = "worse".into();
+        worse.severity = "high".into();
+        let result = s.add_review(review(2, vec![worse])).unwrap();
+        assert_eq!(result["retry_policy"]["regression_stop"], true);
+        assert_eq!(s.status, "stagnated");
+        assert_eq!(s.stop_reason.as_deref(), Some("correction_regressed"));
+    }
+
+    #[test] fn two_grounded_unchanged_attempts_stop_blind_retry() {
+        let mut s = Session::new("id".into(), "p".into(), "s".into(), "clean edit".into(), "".into(), vec![1.0], 6, 1).unwrap();
+        s.add_review(review(1, vec![issue()])).unwrap();
+        s.record_fix("i", "try-1", "too warm").unwrap();
+        let mut same1 = issue();
+        same1.id = "same-1".into();
+        same1.confidence = 0.88;
+        let first = s.add_review(review(2, vec![same1])).unwrap();
+        assert_eq!(first["retry_policy"]["grounded_non_improving_attempts"], 1);
+        assert_eq!(s.status, "awaiting_approval");
+
+        s.record_fix("same-1", "try-2", "still warm").unwrap();
+        let mut same2 = issue();
+        same2.id = "same-2".into();
+        same2.confidence = 0.87;
+        let second = s.add_review(review(3, vec![same2])).unwrap();
+        assert_eq!(second["retry_policy"]["grounded_non_improving_attempts"], 2);
+        assert_eq!(s.status, "stagnated");
+        assert_eq!(s.stop_reason.as_deref(), Some("repeated_grounded_no_gain"));
+    }
+
     #[test] fn prioritizes_grounded_actionable_issue() {
         let mut s = session();
         let mut medium = issue();
