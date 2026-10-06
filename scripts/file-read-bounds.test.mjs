@@ -5,7 +5,7 @@ import {readFileSync} from "node:fs";
 const rust=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
 
 test("bounded UTF-8 reader caps actual bytes read from the open handle",()=>{
-  assert.match(rust,/io::\{BufRead, BufReader, Read, Write\}/);
+  assert.match(rust,/io::\{BufRead, BufReader, Read, Seek, SeekFrom, Write\}/);
   const start=rust.indexOf("fn read_utf8_file_bounded");
   const end=rust.indexOf("fn safe_web_url",start);
   const block=rust.slice(start,end);

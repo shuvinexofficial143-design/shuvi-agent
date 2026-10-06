@@ -31,6 +31,7 @@ test("deny expiry and execution audit use safe detail",()=>{
   const execute=rust.slice(rust.indexOf("async fn execute_action("),rust.indexOf("async fn execute_powershell"));
   assert.match(execute,/let safe_detail = audit_safe_action_detail\(&action\.tool, &action\.detail\)/);
   assert.match(execute,/let audit_detail = audit_safe_action_detail\(&tool, &detail\)/);
-  assert.match(execute,/detail: audit_detail\.clone\(\)/);
+  assert.match(execute,/successful_execution_audit_detail\(&tool,&audit_detail,&result\)/);
+  assert.match(execute,/detail: executed_audit_detail,/);
   assert.match(execute,/detail: audit_detail,/);
 });

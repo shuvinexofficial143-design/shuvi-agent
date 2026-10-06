@@ -11,7 +11,8 @@ test("frontend provider context is bounded separately from visible chat history"
   assert.match(main,/const MAX_PROVIDER_CONTEXT_BYTES = 1_500_000/);
   assert.match(main,/function providerMessageWindow\(source: ChatMessage\[\]\)/);
   assert.match(main,/selected\.length < MAX_PROVIDER_MESSAGES/);
-  assert.match(main,/encoder\.encode\(message\.content\)\.byteLength/);
+  assert.match(main,/boundedMessageBytes\(message\.content, encoder\)/);
+  assert.match(main,/encoder\.encode\(content\)\.byteLength/);
   assert.match(main,/messages: providerMessageWindow\(messages\)/);
   assert.doesNotMatch(main,/messages = providerMessageWindow/);
 });

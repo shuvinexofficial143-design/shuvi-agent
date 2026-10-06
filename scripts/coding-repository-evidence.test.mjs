@@ -11,6 +11,7 @@ const agent=await import("data:text/javascript;base64,"+Buffer.from(executable).
 const HEAD_A="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const HEAD_B="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const HEAD_C="cccccccccccccccccccccccccccccccccccccccc";
+const WORKTREE_A="dddddddddddddddddddddddddddddddddddddddd";
 
 function proposal(tool,args={}) {
   return {tool,arguments:{path:"/repo",...args}};
@@ -21,7 +22,7 @@ function result(tool,stdout="",success=true) {
 function gitResult(tool,head,branch="main",body="observed",worktree_clean=false) {
   const receipt={
     schema:1,repo_root:"/repo",branch,head,upstream:"origin/main",
-    upstream_head:HEAD_A,worktree_clean
+    upstream_head:HEAD_A,worktree_clean,worktree_fingerprint:WORKTREE_A
   };
   return result(tool,"[SHUVI_GIT_CONTEXT_V1]"+JSON.stringify(receipt)+"\n"+body);
 }
@@ -32,29 +33,29 @@ function done(state,p,r) {
 test("commit requires status and diff from the same repository branch and HEAD",()=>{
   let s=agent.createAgentOrchestrationState();
   s=done(s,proposal("git_status"),gitResult("git_status",HEAD_A));
-  assert.equal(agent.evaluateProposal(s,proposal("apply_patch")).allowed,true);
-  s=done(s,proposal("apply_patch"),result("apply_patch","patched"));
+  assert.equal(agent.evaluateProposal(s,proposal("apply_patch",{expected_worktree_fingerprint:WORKTREE_A})).allowed,true);
+  s=done(s,proposal("apply_patch",{expected_worktree_fingerprint:WORKTREE_A}),result("apply_patch","patched"));
   s=done(s,proposal("git_status"),gitResult("git_status",HEAD_A));
   s=done(s,proposal("git_diff"),gitResult("git_diff",HEAD_B));
-  let decision=agent.evaluateProposal(s,proposal("git_commit",{message:"x",files:["a.ts"],expected_head:HEAD_A}));
+  let decision=agent.evaluateProposal(s,proposal("git_commit",{message:"x",files:["a.ts"],expected_head:HEAD_A,expected_worktree_fingerprint:WORKTREE_A}));
   assert.equal(decision.allowed,false);
   assert.match(decision.reason,/same repository branch\/HEAD/);
 
   s=done(s,proposal("git_diff"),gitResult("git_diff",HEAD_A));
-  decision=agent.evaluateProposal(s,proposal("git_commit",{message:"x",files:["a.ts"],expected_head:HEAD_B}));
+  decision=agent.evaluateProposal(s,proposal("git_commit",{message:"x",files:["a.ts"],expected_head:HEAD_B,expected_worktree_fingerprint:WORKTREE_A}));
   assert.equal(decision.allowed,false);
   assert.match(decision.reason,/expected_head/);
-  assert.equal(agent.evaluateProposal(s,proposal("git_commit",{message:"x",files:["a.ts"],expected_head:HEAD_A})).allowed,true);
+  assert.equal(agent.evaluateProposal(s,proposal("git_commit",{message:"x",files:["a.ts"],expected_head:HEAD_A,expected_worktree_fingerprint:WORKTREE_A})).allowed,true);
 });
 
 test("successful commit invalidates pre-commit validation and can bind validation to committed HEAD",()=>{
   let s=agent.createAgentOrchestrationState();
   s=done(s,proposal("git_status"),gitResult("git_status",HEAD_A));
-  s=done(s,proposal("apply_patch"),result("apply_patch","patched"));
+  s=done(s,proposal("apply_patch",{expected_worktree_fingerprint:WORKTREE_A}),result("apply_patch","patched"));
   s=done(s,proposal("run_project_task",{task:"test"}),gitResult("run_project_task",HEAD_A));
   s=done(s,proposal("git_status"),gitResult("git_status",HEAD_A));
   s=done(s,proposal("git_diff"),gitResult("git_diff",HEAD_A));
-  const commit=proposal("git_commit",{message:"x",files:["a.ts"],expected_head:HEAD_A});
+  const commit=proposal("git_commit",{message:"x",files:["a.ts"],expected_head:HEAD_A,expected_worktree_fingerprint:WORKTREE_A});
   assert.equal(agent.evaluateProposal(s,commit).allowed,true);
   s=done(s,commit,gitResult("git_commit",HEAD_C));
   assert.equal(s.coding.last_validation_step,0);
@@ -65,7 +66,7 @@ test("successful commit invalidates pre-commit validation and can bind validatio
   let pushDecision=agent.evaluateProposal(s,push);
   assert.equal(pushDecision.allowed,false);
   assert.match(pushDecision.reason,/exact committed HEAD before git_push/);
-  assert.equal(agent.evaluateProposal(s,proposal("git_push",{expected_head:HEAD_A})).allowed,false);
+  assert.equal(agent.evaluateProposal(s,proposal("git_push",{expected_head:HEAD_A,expected_worktree_fingerprint:WORKTREE_A})).allowed,false);
 
   s=done(s,proposal("run_project_task",{task:"test"}),gitResult("run_project_task",HEAD_C,"main","observed",true));
   assert.equal(s.coding.last_validation_git.head,HEAD_C);
@@ -89,17 +90,17 @@ test("legacy checkpoint Git steps without identity receipts fail closed to fresh
   assert.equal(s.coding.last_git_diff_step,0);
   assert.equal(s.coding.last_git_status_git,null);
   assert.equal(s.coding.last_git_diff_git,null);
-  assert.equal(agent.evaluateProposal(s,proposal("git_commit",{message:"x",files:["a.ts"],expected_head:HEAD_A})).allowed,false);
+  assert.equal(agent.evaluateProposal(s,proposal("git_commit",{message:"x",files:["a.ts"],expected_head:HEAD_A,expected_worktree_fingerprint:WORKTREE_A})).allowed,false);
 });
 
 
 test("push remains allowed when no pre-commit validation evidence was claimed",()=>{
   let s=agent.createAgentOrchestrationState();
   s=done(s,proposal("git_status"),gitResult("git_status",HEAD_A));
-  s=done(s,proposal("apply_patch"),result("apply_patch","patched"));
+  s=done(s,proposal("apply_patch",{expected_worktree_fingerprint:WORKTREE_A}),result("apply_patch","patched"));
   s=done(s,proposal("git_status"),gitResult("git_status",HEAD_A));
   s=done(s,proposal("git_diff"),gitResult("git_diff",HEAD_A));
-  const commit=proposal("git_commit",{message:"x",files:["a.ts"],expected_head:HEAD_A});
+  const commit=proposal("git_commit",{message:"x",files:["a.ts"],expected_head:HEAD_A,expected_worktree_fingerprint:WORKTREE_A});
   s=done(s,commit,gitResult("git_commit",HEAD_C));
   assert.equal(s.coding.post_commit_validation_required,false);
   assert.equal(agent.evaluateProposal(s,proposal("git_push",{expected_head:HEAD_C})).allowed,true);
@@ -111,7 +112,7 @@ test("untracked commit files require exact post-mutation read evidence",()=>{
   s=done(s,{tool:"write_file",arguments:{path:"/repo/new.ts"}},result("write_file","written"));
   s=done(s,proposal("git_status"),gitResult("git_status",HEAD_A,"main","## main\n?? new.ts"));
   s=done(s,proposal("git_diff"),gitResult("git_diff",HEAD_A));
-  const commit=proposal("git_commit",{message:"new",files:["new.ts"],expected_head:HEAD_A});
+  const commit=proposal("git_commit",{message:"new",files:["new.ts"],expected_head:HEAD_A,expected_worktree_fingerprint:WORKTREE_A});
   let decision=agent.evaluateProposal(s,commit);
   assert.equal(decision.allowed,false);
   assert.match(decision.reason,/read each untracked commit file/);
@@ -126,11 +127,11 @@ test("untracked commit files require exact post-mutation read evidence",()=>{
 test("dirty post-commit validation cannot unlock push",()=>{
   let s=agent.createAgentOrchestrationState();
   s=done(s,proposal("git_status"),gitResult("git_status",HEAD_A));
-  s=done(s,proposal("apply_patch"),result("apply_patch","patched"));
+  s=done(s,proposal("apply_patch",{expected_worktree_fingerprint:WORKTREE_A}),result("apply_patch","patched"));
   s=done(s,proposal("run_project_task",{task:"test"}),gitResult("run_project_task",HEAD_A));
   s=done(s,proposal("git_status"),gitResult("git_status",HEAD_A));
   s=done(s,proposal("git_diff"),gitResult("git_diff",HEAD_A));
-  const commit=proposal("git_commit",{message:"x",files:["a.ts"],expected_head:HEAD_A});
+  const commit=proposal("git_commit",{message:"x",files:["a.ts"],expected_head:HEAD_A,expected_worktree_fingerprint:WORKTREE_A});
   s=done(s,commit,gitResult("git_commit",HEAD_C));
   const push=proposal("git_push",{expected_head:HEAD_C});
   s=done(s,proposal("run_project_task",{task:"test"}),gitResult("run_project_task",HEAD_C,"main","observed",false));

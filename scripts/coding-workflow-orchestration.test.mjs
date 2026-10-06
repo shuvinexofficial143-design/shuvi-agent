@@ -1,11 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
+import {stripTypeScriptTypes} from "node:module";
 
 const orchestrator=readFileSync(new URL("../src/agent-orchestrator.ts",import.meta.url),"utf8");
 const main=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
 const types=readFileSync(new URL("../src/types.ts",import.meta.url),"utf8");
 const rust=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
+const executable=stripTypeScriptTypes(orchestrator).replace('"./task-graph.mjs"',
+  JSON.stringify(new URL("../src/task-graph.mjs",import.meta.url).href));
+const agent=await import("data:text/javascript;base64,"+Buffer.from(executable).toString("base64"));
 
 test("replace_text requires fresh exact file inspection and mutations invalidate stale reads",()=>{
   assert.match(orchestrator,/proposal\.tool === "replace_text"/);
@@ -32,7 +36,7 @@ test("git commit requires fresh status and diff after latest mutation",()=>{
   assert.match(orchestrator,/proposal\.tool === "git_commit"/);
   assert.match(orchestrator,/coding\.last_git_status_step > coding\.last_mutation_step/);
   assert.match(orchestrator,/coding\.last_git_diff_step > coding\.last_mutation_step/);
-  assert.match(orchestrator,/same repository branch\/HEAD after the latest edit before git_commit/);
+  assert.match(orchestrator,/same repository branch\/HEAD\/worktree snapshot after the latest edit before git_commit/);
   assert.match(orchestrator,/git_commit expected_head must exactly match the reviewed git_status\/git_diff HEAD/);
   assert.match(orchestrator,/CODE_MUTATION_TOOLS\.has\(proposal\.tool\)/);
 });
@@ -155,10 +159,9 @@ test("project validation child process is included in managed RAM accounting",()
   assert.match(block,/\.stderr\(Stdio::piped\(\)\)/);
   assert.match(block,/\.spawn\(\)/);
   assert.match(block,/let child_pid = child\.id\(\)/);
-  assert.match(block,/state\.managed_children\.lock\(\)/);
-  assert.match(block,/managed\.insert\(child_pid\)/);
+  assert.match(block,/register_managed_process\(state, child_pid\)/);
   assert.match(block,/child\.wait_with_output\(\)/);
-  assert.match(block,/managed\.remove\(&child_pid\)/);
+  assert.match(block,/unregister_managed_process\(state, child_pid\)/);
   assert.doesNotMatch(block,/\.output\(\)/);
   assert.match(block,/project task was stopped before execution could continue safely/);
 });
@@ -210,6 +213,7 @@ test("untracked and commit-file arrays are bounded before normalization work",()
 
 test("post-commit validation requires a clean resulting worktree",()=>{
   assert.match(types,/worktree_clean\?: boolean \| null/);
+  assert.match(types,/worktree_fingerprint: string/);
   assert.match(orchestrator,/worktree_clean: boolean \| null/);
   assert.match(orchestrator,/coding\.last_validation_git\.worktree_clean === true/);
   assert.match(orchestrator,/clean resulting worktree before git_push/);
@@ -227,8 +231,8 @@ test("project validation fails if branch HEAD or worktree changes during the tas
   const start=rust.indexOf("ToolAction::RunProjectTask { path, task } =>");
   const end=rust.indexOf("ToolAction::GitStatus",start);
   const block=rust.slice(start,end);
-  assert.match(block,/let before = git_before/);
-  assert.match(block,/git_same_local_snapshot\(&before, &after\)/);
+  assert.match(block,/if let Some\(before\) = git_before/);
+  assert.match(block,/!git_same_local_snapshot\(&before, &after\)/);
   assert.match(block,/Git branch, HEAD, or worktree changed while the validation task was running/);
   assert.match(block,/validation evidence is not bound to one repository snapshot/);
 });

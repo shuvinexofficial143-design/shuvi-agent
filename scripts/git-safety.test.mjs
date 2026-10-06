@@ -5,10 +5,10 @@ import {readFileSync} from "node:fs";
 const rust=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
 
 test("git_commit stages only exact reviewed files",()=>{
-  assert.match(rust,/GitCommit \{ path: String, message: String, files: Vec<String>, expected_head: String \}/);
+  assert.match(rust,/GitCommit \{ path: String, message: String, files: Vec<String>, expected_head: String, expected_worktree_fingerprint: String \}/);
   assert.match(rust,/git_commit requires between 1 and 64 exact reviewed relative file paths/);
   assert.match(rust,/files must name exact files, not directories/);
-  const execution=rust.slice(rust.indexOf("ToolAction::GitCommit { path, message, files, expected_head }"),rust.indexOf("ToolAction::GitPush { path, expected_head }"));
+  const execution=rust.slice(rust.indexOf("ToolAction::GitCommit { path, message, files, expected_head, expected_worktree_fingerprint }"),rust.indexOf("ToolAction::GitPush { path, expected_head }"));
   assert.doesNotMatch(execution,/\["add", "-A"\]/);
   assert.match(execution,/format!\("\:\(literal\)\{file\}"\)/);
   assert.match(execution,/unrelated files are already staged/);
@@ -20,7 +20,7 @@ test("git writes recheck refreshed upstream ancestry immediately inside typed to
   assert.match(helper,/\["fetch", "--prune", remote\.as_str\(\)\]/);
   assert.match(helper,/\["merge-base", "--is-ancestor", "@\{u\}", "HEAD"\]/);
   assert.match(helper,/Remote branch advanced or diverged; refusing Git write/);
-  const commit=rust.slice(rust.indexOf("ToolAction::GitCommit { path, message, files, expected_head }"),rust.indexOf("ToolAction::GitPush { path, expected_head }"));
+  const commit=rust.slice(rust.indexOf("ToolAction::GitCommit { path, message, files, expected_head, expected_worktree_fingerprint }"),rust.indexOf("ToolAction::GitPush { path, expected_head }"));
   const pushStart=rust.indexOf("ToolAction::GitPush { path, expected_head }");
   const push=rust.slice(pushStart,rust.indexOf("ToolAction::PowerShell",pushStart));
   assert.ok(commit.indexOf("git_remote_freshness(&path, false)") < commit.indexOf("git_staged_files(&path)"));
@@ -49,12 +49,12 @@ test("typed Git results carry bounded repository identity receipts",()=>{
   );
   const diff=rust.slice(
     rust.indexOf("ToolAction::GitDiff { path }"),
-    rust.indexOf("ToolAction::GitCommit { path, message, files, expected_head }")
+    rust.indexOf("ToolAction::GitCommit { path, message, files, expected_head, expected_worktree_fingerprint }")
   );
   assert.match(status,/\[SHUVI_GIT_CONTEXT_V1\]/);
   assert.match(diff,/\[SHUVI_GIT_CONTEXT_V1\]/);
   for(const arm of [
-    "ToolAction::GitCommit { path, message, files, expected_head }",
+    "ToolAction::GitCommit { path, message, files, expected_head, expected_worktree_fingerprint }",
     "ToolAction::GitPush { path, expected_head }"
   ]) {
     const start=rust.indexOf(arm);
@@ -68,8 +68,8 @@ test("project validation refuses commit-bound evidence if HEAD changes mid-task"
   const end=rust.indexOf("ToolAction::GitStatus { path }",start);
   const block=rust.slice(start,end);
   assert.match(block,/let git_before = if Path::new\(&path\)\.join\("\.git"\)\.exists\(\)/);
-  assert.match(block,/before\.get\("head"\) != after\.get\("head"\)/);
-  assert.match(block,/Git HEAD changed while the validation task was running/);
+  assert.match(block,/!git_same_local_snapshot\(&before, &after\)/);
+  assert.match(block,/Git branch, HEAD, or worktree changed while the validation task was running/);
   assert.match(block,/\[SHUVI_GIT_CONTEXT_V1\]/);
 });
 
@@ -80,7 +80,7 @@ test("git writes require the exact reviewed local HEAD",()=>{
   assert.match(rust,/expected_head":"exact committed HEAD copied from the successful git_commit receipt/);
   assert.match(rust,/fn require_expected_git_head\(path: &str, expected_head: &str, action: &str\)/);
   const commit=rust.slice(
-    rust.indexOf("ToolAction::GitCommit { path, message, files, expected_head }"),
+    rust.indexOf("ToolAction::GitCommit { path, message, files, expected_head, expected_worktree_fingerprint }"),
     rust.indexOf("ToolAction::GitPush { path, expected_head }")
   );
   assert.match(commit,/require_expected_git_head\(&path, &expected_head, "git_commit"\)/);
@@ -107,7 +107,7 @@ test("git_push refuses to write without a configured upstream",()=>{
   assert.match(helper,/require_upstream: bool/);
   assert.match(helper,/git_push requires a configured upstream branch so remote freshness can be verified/);
   const commit=rust.slice(
-    rust.indexOf("ToolAction::GitCommit { path, message, files, expected_head }"),
+    rust.indexOf("ToolAction::GitCommit { path, message, files, expected_head, expected_worktree_fingerprint }"),
     rust.indexOf("ToolAction::GitPush { path, expected_head }")
   );
   const push=rust.slice(
@@ -135,7 +135,7 @@ test("Git inspection receipts require a stable local HEAD and branch",()=>{
   );
   const diff=rust.slice(
     rust.indexOf("ToolAction::GitDiff { path }"),
-    rust.indexOf("ToolAction::GitCommit { path, message, files, expected_head }")
+    rust.indexOf("ToolAction::GitCommit { path, message, files, expected_head, expected_worktree_fingerprint }")
   );
   for(const block of [status,diff]){
     assert.match(block,/let before = git_local_context\(&path\)\?/);
@@ -149,7 +149,7 @@ test("Git inspection receipts require a stable local HEAD and branch",()=>{
 test("Git writes recheck reviewed HEAD after freshness and staging boundaries",()=>{
   assert.match(rust,/fn require_expected_git_head\(path: &str, expected_head: &str, action: &str\)/);
   const commit=rust.slice(
-    rust.indexOf("ToolAction::GitCommit { path, message, files, expected_head }"),
+    rust.indexOf("ToolAction::GitCommit { path, message, files, expected_head, expected_worktree_fingerprint }"),
     rust.indexOf("ToolAction::GitPush { path, expected_head }")
   );
   assert.match(commit,/require_expected_git_head\(&path, &expected_head, "git_commit"\)/);
