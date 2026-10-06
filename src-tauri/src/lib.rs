@@ -12130,7 +12130,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "session_id":session_id,
                     "status":state,
                     "iteration":session.iteration,
-                    "stop_reason":session.stop_reason,
+                    "stop_reason":session.stop_reason.clone(),
                     "latest_fix_evaluation":session.attempted_fixes.last().filter(|attempt|attempt.after.is_some()),
                     "terminal":matches!(state.as_str(),"completed"|"stagnated"|"cancelled"|"failed"),
                     "recovery_tool":if state=="stagnated"&&session.stop_reason.as_deref()==Some("correction_regressed")
@@ -12171,8 +12171,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 success:true,tool,
                 stdout:json!({
                     "session_id":session_id,
-                    "status":session.status,
-                    "stop_reason":session.stop_reason,
+                    "status":session.status.clone(),
+                    "stop_reason":session.stop_reason.clone(),
                     "regressed_attempt":attempt,
                     "approved_action_id":action_id,
                     "checkpoint_evidence":checkpoint_evidence,
