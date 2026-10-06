@@ -146,7 +146,7 @@
               </article>
               <article class="metric-card">
                 <div class="metric-icon amber">●</div>
-                <div><span>Active tasks</span><strong>0</strong><small>no runtime connected</small></div>
+                <div><span>Task drafts</span><strong id="draftMetric">0</strong><small>saved in this browser</small></div>
               </article>
             </div>
 
@@ -184,18 +184,12 @@
               <article class="panel span-two">
                 <div class="card-heading">
                   <div>
-                    <span class="section-kicker">RECENT ACTIVITY</span>
-                    <h3>Nothing running yet</h3>
+                    <span class="section-kicker">PLANNING QUEUE</span>
+                    <h3>Ready before runtime</h3>
                   </div>
-                  <button class="text-button" type="button" data-view-jump="activity">Open log →</button>
+                  <button class="text-button" type="button" data-view-jump="tasks">Manage drafts →</button>
                 </div>
-                <div class="empty-inline">
-                  <div class="empty-icon">↗</div>
-                  <div>
-                    <strong>Connect local Shuvi to stream real activity.</strong>
-                    <p>The web dashboard deliberately does not invent tool runs, token usage or computer events.</p>
-                  </div>
-                </div>
+                <div id="dashboardPlanningQueue" class="planning-queue"></div>
               </article>
 
               <article class="panel">
@@ -334,10 +328,40 @@
               <span class="badge badge-neutral">Browser preference</span>
             </div>
             <div id="providerGrid" class="provider-grid"></div>
-            <article class="panel model-routing-panel">
-              <div class="card-heading"><div><span class="section-kicker">ROUTING POLICY</span><h3>Local source of truth</h3></div></div>
-              <p>This dashboard will display the active provider and model after synchronization. API keys should continue to live in the operating-system credential store used by the Windows app.</p>
-            </article>
+            <div class="routing-grid">
+              <article class="panel model-routing-panel">
+                <div class="card-heading"><div><span class="section-kicker">ROUTING PROFILE</span><h3>Prepare a model preference</h3></div><span class="badge badge-neutral">Planning only</span></div>
+                <div class="routing-form">
+                  <label class="field">
+                    <span>Preferred model</span>
+                    <input id="preferredModelInput" placeholder="Example: gpt-5.6-sol" autocomplete="off" />
+                  </label>
+                  <label class="field">
+                    <span>Workload</span>
+                    <select id="workloadSelect">
+                      <option value="General">General assistant</option>
+                      <option value="Coding">Coding</option>
+                      <option value="Video Editing">Video editing</option>
+                      <option value="Motion & VFX">Motion & VFX</option>
+                      <option value="3D">3D / Blender</option>
+                      <option value="Research">Research</option>
+                    </select>
+                  </label>
+                  <button id="saveRoutingPreference" class="primary-button" type="button">Save routing preference</button>
+                </div>
+                <div id="routingPreferenceSummary" class="routing-summary">No model routing preference saved yet.</div>
+              </article>
+
+              <article class="panel model-routing-panel">
+                <div class="card-heading"><div><span class="section-kicker">RUNTIME POLICY</span><h3>Local source of truth</h3></div></div>
+                <p>This web preference is only a plan. After synchronization, Shuvi.exe decides the actual provider/model and keeps API keys in the operating-system credential store.</p>
+                <div class="policy-points">
+                  <div><span>Web dashboard</span><strong>Plans preference</strong></div>
+                  <div><span>Shuvi.exe</span><strong>Executes model call</strong></div>
+                  <div><span>Credentials</span><strong>Stay local</strong></div>
+                </div>
+              </article>
+            </div>
           </section>
 
           <section id="view-activity" class="view" data-view="activity">
