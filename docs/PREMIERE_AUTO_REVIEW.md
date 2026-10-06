@@ -1,0 +1,23 @@
+# Premiere bounded automatic review/correction loop
+
+This source layer coordinates the existing Premiere review and correction primitives without creating a hidden editing engine.
+
+## Tool
+
+`premiere_review_session_continue` advances a persisted review session by current state:
+
+- `reviewing`: returns one proposal for `premiere_review_session_next`.
+- `awaiting_approval`: ranks grounded medium/high-confidence issues, preferring high severity and then higher confidence, refreshes the live timeline, and resolves exact overlapping native targets.
+- when exactly one target overlaps the grounded frame, it returns a prefilled `premiere_bind_review_fix` proposal.
+- after a separately approved typed edit is recorded with `premiere_review_session_record_fix`, the existing session advances its iteration and the coordinator schedules re-review of the same bounded samples.
+- `completed`, `stagnated`, `cancelled`, and `failed` are terminal.
+
+## Safety boundary
+
+The coordinator never chooses a correction value, guesses a native parameter, or executes a mutation. Vision evidence cannot authorize a write. Exact native parameter binding, the normal Premiere checkpoint/permission flow, successful action audit evidence, stale-target checks, and post-fix re-review remain mandatory.
+
+If multiple clips overlap the reviewed frame, the coordinator returns the candidates and requires an explicit exact target selection. Unsupported review categories do not get converted into guessed edits. Repeating the same unsuccessful fix fingerprint remains blocked by the existing review session logic.
+
+## Runtime status
+
+Source implementation only. Real Premiere/UXP host acceptance remains pending, and this feature does not change `production_ready=false`.

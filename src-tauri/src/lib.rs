@@ -247,6 +247,7 @@ Available tools:
 - premiere_review_session_start: {"objective":"clean talking-head edit","sample_times":[0,5],"reference":"optional brief","max_iterations":4}
 - premiere_review_session_status: {"session_id":"exact returned ID"}
 - premiere_review_session_next: {"session_id":"exact returned ID"}
+- premiere_review_session_continue: {"session_id":"exact returned ID"}
 - premiere_review_session_record_fix: {"session_id":"ID","issue_id":"inspected issue ID","target":"exact inspected clip target","planner":"premiere_plan_video_recipe","settings":{"exact":"approved typed settings"},"approved_action_id":"exact successful Shuvi audit action ID"}
 - premiere_review_session_cancel: {"session_id":"exact returned ID"}
 - premiere_plan_edit_recipe: {"preset":"social_reel|cinematic_reel|talking_head|product_ad|wedding_highlight|long_form_youtube|story_explainer|clean_corporate","targets":{},"inputs":{},"options":{}}
@@ -629,6 +630,7 @@ enum ToolAction {
     PremiereReviewSessionStart { objective: String, reference: String, sample_times: Vec<f64>, max_iterations: u8 },
     PremiereReviewSessionStatus { session_id: String },
     PremiereReviewSessionNext { session_id: String, provider: ProviderContext },
+    PremiereReviewSessionContinue { session_id: String },
     PremiereReviewSessionRecordFix { session_id: String, issue_id: String, target: String, planner: String, settings: Value, approved_action_id: String },
     PremiereReviewSessionCancel { session_id: String },
     PremierePlanEditRecipe { request: premiere_editorial::Request },
@@ -1291,6 +1293,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_review_session_start"
         | "premiere_review_session_status"
         | "premiere_review_session_next"
+        | "premiere_review_session_continue"
         | "premiere_review_session_record_fix"
         | "premiere_review_session_cancel"
         | "premiere_plan_edit_recipe"
@@ -4084,15 +4087,16 @@ fn stage_tool(
             (ToolAction::PremiereReviewSessionStart {objective,reference,sample_times,max_iterations},
                 "Start bounded Premiere review session".into(), "Inspect active project and sequence before storing bounded session.".into(), RiskLevel::Low)
         }
-        "premiere_review_session_status" | "premiere_review_session_cancel" | "premiere_review_session_next" => {
+        "premiere_review_session_status" | "premiere_review_session_cancel" | "premiere_review_session_next" | "premiere_review_session_continue" => {
             let session_id = arg_string(&proposal.arguments,"session_id")?;
             Uuid::parse_str(&session_id).map_err(|_| "Invalid Premiere review session ID.")?;
             let (action, risk) = match proposal.tool.as_str() {
                 "premiere_review_session_status" => (ToolAction::PremiereReviewSessionStatus {session_id},RiskLevel::Low),
                 "premiere_review_session_cancel" => (ToolAction::PremiereReviewSessionCancel {session_id},RiskLevel::Low),
+                "premiere_review_session_continue" => (ToolAction::PremiereReviewSessionContinue {session_id},RiskLevel::Low),
                 _ => (ToolAction::PremiereReviewSessionNext {session_id,provider:provider_context.ok_or("Review requires active vision provider.")?},RiskLevel::Medium),
             };
-            (action,"Advance Premiere review session".into(),"Read-only review; does not launch an edit.".into(),risk)
+            (action,"Advance Premiere review session".into(),"Bounded review/correction orchestration; no correction is auto-executed and every mutating fix keeps its normal approval.".into(),risk)
         }
         "premiere_review_session_record_fix" => {
             let session_id=arg_string(&proposal.arguments,"session_id")?;
@@ -11845,7 +11849,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let id=Uuid::new_v4().to_string();
             let session=premiere_review::Session::new(id.clone(),project.into(),sequence.into(),objective,reference,sample_times,max_iterations,now_ms().max(1))?;
             premiere_review::save(&premiere_review_path(app,&id)?,&session)?;
-            Ok(ActionResult {success:true,tool,stdout:json!({"session":session,"next":"premiere_review_session_next"}).to_string(),stderr:String::new(),exit_code:Some(0)})
+            Ok(ActionResult {success:true,tool,stdout:json!({"session":session,"next":"premiere_review_session_continue","execution_model":"bounded review -> exact target resolution -> separately approved correction -> re-review"}).to_string(),stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::PremiereReviewSessionStatus {session_id} => {
             let session=premiere_review::load(&premiere_review_path(app,&session_id)?)?;
@@ -11857,6 +11861,104 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             session.cancel();
             premiere_review::save(&path,&session)?;
             Ok(ActionResult {success:true,tool,stdout:json!({"status":"cancelled","session_id":session_id}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereReviewSessionContinue {session_id} => {
+            let path=premiere_review_path(app,&session_id)?;
+            let mut session=premiere_review::load(&path)?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            if let Err(error)=session.check_identity(
+                context.get("projectGuid").and_then(Value::as_str).unwrap_or(""),
+                context.pointer("/activeSequence/guid").and_then(Value::as_str).unwrap_or("")
+            ) {
+                premiere_review::save(&path,&session)?;
+                return Err(error);
+            }
+
+            let state=session.status.clone();
+            if state=="reviewing" {
+                return Ok(ActionResult {
+                    success:true,tool,
+                    stdout:json!({
+                        "session_id":session_id,
+                        "status":state,
+                        "iteration":session.iteration,
+                        "next_proposal":{
+                            "tool":"premiere_review_session_next",
+                            "arguments":{"session_id":session_id},
+                            "reason":"Capture the bounded review samples and obtain grounded structured vision evidence for the current iteration."
+                        },
+                        "requires_separate_approval":true,
+                        "automatic_mutation":false
+                    }).to_string(),
+                    stderr:String::new(),exit_code:Some(0)
+                });
+            }
+
+            if state=="awaiting_approval" {
+                let Some(issue)=premiere_review::next_actionable_issue(&session)? else {
+                    session.status="stagnated".into();
+                    premiere_review::save(&path,&session)?;
+                    return Ok(ActionResult {
+                        success:true,tool,
+                        stdout:json!({
+                            "session_id":session_id,
+                            "status":"stagnated",
+                            "reason":"No medium/high-confidence issue maps to a currently supported typed correction family.",
+                            "automatic_mutation":false
+                        }).to_string(),
+                        stderr:String::new(),exit_code:Some(0)
+                    });
+                };
+                let seconds=*issue.frame_seconds.first().ok_or("Selected review issue has no grounded sample time.")?;
+                let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+                let resolved=premiere_review_binding::resolve(&session,&issue,seconds,&timeline)?;
+                let candidates=resolved.get("candidates").and_then(Value::as_array).cloned().unwrap_or_default();
+                let proposal=if candidates.len()==1 {
+                    let candidate=&candidates[0];
+                    Some(json!({
+                        "tool":"premiere_bind_review_fix",
+                        "arguments":{
+                            "session_id":session_id,
+                            "issue_id":issue.id,
+                            "frame_seconds":seconds,
+                            "kind":candidate.get("kind"),
+                            "track":candidate.get("track"),
+                            "clip_index":candidate.get("clip_index"),
+                            "target_signature":candidate.get("target_signature")
+                        },
+                        "reason":"The reviewed frame overlaps one exact fresh native target. Inspect/bind the editable native parameter before proposing any correction value."
+                    }))
+                } else { None };
+                return Ok(ActionResult {
+                    success:true,tool,
+                    stdout:json!({
+                        "session_id":session_id,
+                        "status":state,
+                        "iteration":session.iteration,
+                        "selected_issue":issue,
+                        "target_resolution":resolved,
+                        "next_proposal":proposal,
+                        "requires_target_selection":candidates.len()!=1,
+                        "requires_separate_approval":true,
+                        "correction_execution":"Use only the returned exact target with premiere_bind_review_fix, then a normal typed planner/edit approval. After a successful edit call premiere_review_session_record_fix; the coordinator will schedule re-review.",
+                        "automatic_mutation":false
+                    }).to_string(),
+                    stderr:String::new(),exit_code:Some(0)
+                });
+            }
+
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:json!({
+                    "session_id":session_id,
+                    "status":state,
+                    "iteration":session.iteration,
+                    "terminal":matches!(state.as_str(),"completed"|"stagnated"|"cancelled"|"failed"),
+                    "next_proposal":Value::Null,
+                    "automatic_mutation":false
+                }).to_string(),
+                stderr:String::new(),exit_code:Some(0)
+            })
         }
         ToolAction::PremiereReviewSessionRecordFix {session_id,issue_id,target,planner,settings,approved_action_id} => {
             let path=premiere_review_path(app,&session_id)?;
@@ -11878,7 +11980,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let before=issue.observation.clone();
             session.record_fix(&issue_id,&fingerprint,&before)?;
             premiere_review::save(&path,&session)?;
-            Ok(ActionResult {success:true,tool,stdout:json!({"status":session.status,"fingerprint":fingerprint,"iteration":session.iteration}).to_string(),stderr:String::new(),exit_code:Some(0)})
+            Ok(ActionResult {success:true,tool,stdout:json!({"status":session.status,"fingerprint":fingerprint,"iteration":session.iteration,"next_tool":"premiere_review_session_continue","next_reason":"Re-review the exact same bounded samples after the approved correction; repeated unsuccessful fix fingerprints remain blocked."}).to_string(),stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::PremiereReviewSessionNext {session_id,provider} => {
             let path=premiere_review_path(app,&session_id)?;
@@ -11925,7 +12027,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let proposals=issues.iter().map(premiere_review::proposal).collect::<Vec<_>>();
             let result=session.add_review(premiere_review::Review {iteration:session.iteration,issues,overall_confidence:confidence,stop_recommended:stop})?;
             premiere_review::save(&path,&session)?;
-            Ok(ActionResult {success:true,tool,stdout:json!({"result":result,"review":session.reviews.last(),"proposals":proposals,"note":"Use inspected typed tools through normal approval and checkpoint; vision never executes edits."}).to_string(),stderr:String::new(),exit_code:Some(0)})
+            Ok(ActionResult {success:true,tool,stdout:json!({"result":result,"review":session.reviews.last(),"proposals":proposals,"next_tool":if session.status=="awaiting_approval"{Some("premiere_review_session_continue")}else{None},"note":"Use premiere_review_session_continue to prioritize and resolve the next grounded issue. Corrections still require exact native binding, normal approval/checkpoint, an audit receipt, then re-review; vision never executes edits."}).to_string(),stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::PremiereSetTrackMute { kind, track, muted } => {
             let checkpoint = backup_premiere_project(&premiere_bridge).await?;

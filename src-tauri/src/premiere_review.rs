@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{collections::HashSet, fs, path::Path};
+use std::{cmp::Ordering, collections::HashSet, fs, path::Path};
 
 const MAX_BYTES: usize = 96 * 1024;
 const CATEGORIES: &[&str] = &["exposure", "color", "framing", "continuity", "motion", "transition", "graphics", "caption", "audio_visual", "other"];
@@ -185,6 +185,45 @@ pub fn proposal(issue: &Issue) -> Value {
                   else { "Inspect an exact target and parameters, then invoke the normal permission-gated typed tool." }})
 }
 
+fn severity_rank(value: &str) -> u8 {
+    match value {
+        "high" => 2,
+        "medium" => 1,
+        _ => 0,
+    }
+}
+
+pub fn next_actionable_issue(session: &Session) -> Result<Option<Issue>, String> {
+    if session.status != "awaiting_approval" {
+        return Err("Premiere review session is not awaiting a correction.".into());
+    }
+    let review = session.reviews.last().ok_or("Premiere review has no completed iteration.")?;
+    let mut issues = review.issues.iter()
+        .filter(|issue| {
+            issue.confidence >= 0.65
+                && matches!(issue.severity.as_str(), "medium" | "high")
+                && matches!(
+                    issue.category.as_str(),
+                    "exposure" | "color" | "framing" | "motion" | "transition" | "graphics" | "audio_visual"
+                )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    issues.sort_by(|a, b| {
+        severity_rank(&b.severity)
+            .cmp(&severity_rank(&a.severity))
+            .then_with(|| b.confidence.partial_cmp(&a.confidence).unwrap_or(Ordering::Equal))
+            .then_with(|| {
+                let a_time = a.frame_seconds.first().copied().unwrap_or(f64::MAX);
+                let b_time = b.frame_seconds.first().copied().unwrap_or(f64::MAX);
+                a_time.partial_cmp(&b_time).unwrap_or(Ordering::Equal)
+            })
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    Ok(issues.into_iter().next())
+}
+
 pub fn save(path: &Path, session: &Session) -> Result<(), String> {
     validate_session(session)?;
     let data = serde_json::to_vec(session).map_err(|e| e.to_string())?;
@@ -255,6 +294,28 @@ mod tests {
         assert_eq!(s.add_review(review(2,vec![])).unwrap()["comparison"],"improved");
         assert_eq!(s.status,"completed");
     }
+    #[test] fn prioritizes_grounded_actionable_issue() {
+        let mut s = session();
+        let mut medium = issue();
+        medium.id = "medium".into();
+        medium.severity = "medium".into();
+        medium.confidence = 0.99;
+        let mut high = issue();
+        high.id = "high".into();
+        high.severity = "high".into();
+        high.confidence = 0.70;
+        let mut unsupported = issue();
+        unsupported.id = "caption".into();
+        unsupported.category = "caption".into();
+        unsupported.severity = "high".into();
+        unsupported.confidence = 1.0;
+        s.add_review(review(1, vec![medium, high, unsupported])).unwrap();
+        let selected = next_actionable_issue(&s).unwrap().unwrap();
+        assert_eq!(selected.id, "high");
+        s.status = "reviewing".into();
+        assert!(next_actionable_issue(&s).is_err());
+    }
+
     #[test] fn cancellation_duplicate_and_persistence() {
         let mut s=session(); s.add_review(review(1,vec![issue()])).unwrap();
         s.record_fix("i","same","before").unwrap();
