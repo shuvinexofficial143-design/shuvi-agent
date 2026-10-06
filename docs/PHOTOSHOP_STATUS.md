@@ -2,44 +2,57 @@
 
 ## Milestone
 
-Current declared source milestone: **20%**
+Current declared source milestone: **40%**
 
-This milestone intentionally implements only the safe Windows desktop foundation. It does not claim Photoshop document editing, a UXP host bridge, or runtime acceptance.
+The 40% milestone keeps Photoshop read-only. It adds the bounded UXP host-observation path on top of the 20% detect/launch foundation.
 
 ## Source-supported foundation
 
-- bounded detection under Windows Program Files Adobe folders,
-- exact `Adobe Photoshop*` candidate filtering,
-- exact `Photoshop.exe` inventory,
-- duplicate candidate suppression,
-- permission-gated launch of a freshly detected executable,
-- no arbitrary command-line arguments,
-- capability report,
-- readiness report,
-- managed-process registration after launch.
+- bounded Windows Program Files Photoshop detection,
+- exact detected `Photoshop.exe` launch only,
+- Photoshop UXP manifest v5 targeting host `PS`,
+- network permission limited to `http://127.0.0.1:17363`,
+- authenticated localhost pairing token,
+- read-only bridge actions: `inspect_context` and `list_layers`,
+- exact request ID/action correlation,
+- bounded outstanding command queue,
+- active document ID/title/dimensions/resolution/mode readback,
+- active layer IDs,
+- bounded layer inventory: maximum 256 layers and depth 8,
+- duplicate layer ID rejection,
+- Rust-side validation of UXP receipts,
+- bridge start/status/stop,
+- capability and readiness reports.
 
-## Not implemented in the 20% milestone
+## Safety boundary
 
-- UXP plugin/bridge transport,
-- active document identity/readback,
-- layer inventory/readback,
+No document or layer mutation is implemented at 40%.
+
+The UXP panel cannot request arbitrary host actions through Shuvi. Its native command allowlist contains only `inspect_context` and `list_layers`. Rust validates every returned document/layer receipt before exposing it as evidence.
+
+Pairing is localhost-only, token-authenticated, time-bounded, queue-bounded, and invalidated by stop/token rotation.
+
+## Not implemented yet
+
+- layer rename/visibility/opacity writes,
+- text editing,
 - selections/masks,
-- text or smart-object editing,
-- pixel/layer mutations,
+- transforms,
+- smart objects,
+- filters/adjustments,
+- pixel mutations,
 - generative fill,
-- export/save workflows,
+- save/export,
 - checkpoint/recovery,
 - live Windows Photoshop acceptance.
 
-## Planned 40% milestone
+## Planned 60% milestone
 
-The next source milestone is the bounded read-only host bridge:
-
-1. UXP bridge foundation.
-2. Active document identity and dimensions.
-3. Bounded layer inventory with stable host IDs where available.
-4. Fresh request/receipt correlation.
-5. No mutation until read-only identity and receipt safety are source-complete.
+1. Exact expected document identity for mutations.
+2. Small permission-gated layer/document write allowlist.
+3. Fresh pre-write inspection.
+4. Post-write readback.
+5. Safe checkpoint/duplicate-document boundary before destructive operations.
 
 ## Readiness
 
@@ -47,4 +60,4 @@ The next source milestone is the bounded read-only host bridge:
 
 `production_ready=false`
 
-Real Photoshop runtime verification remains blocked until an appropriate Windows creative-app machine/server is available.
+Real Photoshop runtime verification remains pending until a suitable Windows creative-app machine/server is available.

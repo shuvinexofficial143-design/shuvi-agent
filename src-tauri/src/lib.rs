@@ -93,6 +93,9 @@ mod motion_graphics_remotion_runtime;
 mod audition_bridge_queue;
 mod audition_bridge;
 use audition_bridge::{AuditionBridgeShared, AuditionBridgeStatus};
+mod photoshop_bridge_queue;
+mod photoshop_bridge;
+use photoshop_bridge::{PhotoshopBridgeShared,PhotoshopBridgeStatus};
 
 const KEYRING_SERVICE: &str = "Shuvi";
 const SOFT_LIMIT_MB: f64 = 3584.0;
@@ -390,7 +393,12 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - photoshop_capability_report: {}
 - photoshop_readiness_report: {}
 - photoshop_detect: {}
-- photoshop_launch: {"photoshop_exe":"exact absolute Photoshop.exe path returned by photoshop_detect"} — launch only; no document edit or host bridge is claimed in the 20% foundation milestone
+- photoshop_launch: {"photoshop_exe":"exact absolute Photoshop.exe path returned by photoshop_detect"}
+- photoshop_bridge_start: {}
+- photoshop_bridge_status: {}
+- photoshop_bridge_stop: {}
+- photoshop_context: {} — paired UXP read-only active document identity
+- photoshop_layers: {} — paired UXP read-only bounded layer inventory
 - workspace_scan: {"path":"absolute workspace path"}
 - search_text: {"path":"absolute workspace path","query":"text to find"}
 - replace_text: {"path":"absolute file path","old":"exact old text","new":"replacement text"}
@@ -799,6 +807,11 @@ enum ToolAction {
     PhotoshopReadinessReport,
     PhotoshopDetect,
     PhotoshopLaunch { photoshop_exe:String },
+    PhotoshopBridgeStart,
+    PhotoshopBridgeStatus,
+    PhotoshopBridgeStop,
+    PhotoshopContext,
+    PhotoshopLayers,
     WorkspaceScan { path: String },
     SearchText { path: String, query: String },
     ReplaceText { path: String, old: String, new_value: String },
@@ -878,6 +891,7 @@ struct ActionState {
     browser_sessions: Mutex<HashMap<u32, BrowserSession>>,
     premiere_bridge: Arc<PremiereBridgeShared>,
     audition_bridge: Arc<AuditionBridgeShared>,
+    photoshop_bridge: Arc<PhotoshopBridgeShared>,
     premiere_export_jobs_io: Mutex<()>,
     acceptance_probe_running: AtomicBool,
     finishing_running: premiere_execution::Execution,
@@ -1461,6 +1475,11 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "photoshop_readiness_report"
         | "photoshop_detect"
         | "photoshop_launch"
+        | "photoshop_bridge_start"
+        | "photoshop_bridge_status"
+        | "photoshop_bridge_stop"
+        | "photoshop_context"
+        | "photoshop_layers"
         | "workspace_scan"
         | "search_text"
         | "replace_text"
@@ -6469,6 +6488,36 @@ fn stage_tool(
                 format!("Launch exact freshly detected Photoshop executable {photoshop_exe}; no command-line arguments, document mutation or host bridge action."),
                 RiskLevel::Medium)
         }
+        "photoshop_bridge_start" => (
+            ToolAction::PhotoshopBridgeStart,
+            "Start Photoshop read-only bridge".into(),
+            "Start Shuvi's authenticated localhost bridge for the Photoshop UXP panel; current allowlist is read-only only.".into(),
+            RiskLevel::Medium,
+        ),
+        "photoshop_bridge_status" => (
+            ToolAction::PhotoshopBridgeStatus,
+            "Read Photoshop bridge status".into(),
+            "Check whether the Photoshop UXP read-only bridge is enabled and paired.".into(),
+            RiskLevel::Low,
+        ),
+        "photoshop_bridge_stop" => (
+            ToolAction::PhotoshopBridgeStop,
+            "Stop Photoshop bridge".into(),
+            "Disable the pairing token and clear queued read-only Photoshop commands.".into(),
+            RiskLevel::Low,
+        ),
+        "photoshop_context" => (
+            ToolAction::PhotoshopContext,
+            "Inspect Photoshop active document".into(),
+            "Read-only active-document identity and bounded metadata through the paired UXP bridge.".into(),
+            RiskLevel::Low,
+        ),
+        "photoshop_layers" => (
+            ToolAction::PhotoshopLayers,
+            "Inspect Photoshop layers".into(),
+            "Read-only bounded layer inventory (max 256 layers, depth 8) through the paired UXP bridge.".into(),
+            RiskLevel::Low,
+        ),
         "workspace_scan" => {
             let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
             (
@@ -14980,6 +15029,68 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 stderr:String::new(),exit_code:Some(0)
             })
         }
+        ToolAction::PhotoshopBridgeStart => {
+            let status=state.photoshop_bridge.start()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "enabled":status.enabled,
+                    "server_started":status.server_started,
+                    "paired":status.paired,
+                    "port":status.port,
+                    "pairing_token":status.token,
+                    "queued_commands":status.queued_commands,
+                    "read_only":true,
+                    "allowed_actions":photoshop_bridge::ALLOWED_ACTIONS,
+                    "runtime_verified":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopBridgeStatus => {
+            let status=state.photoshop_bridge.status()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&status).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopBridgeStop => {
+            let status=state.photoshop_bridge.stop()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&status).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopContext => {
+            let raw=state.photoshop_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let value=photoshop::validate_context_receipt(&raw)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "context":value,
+                    "host_receipt_validated":true,
+                    "mutation_performed":false,
+                    "runtime_verified":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopLayers => {
+            let raw=state.photoshop_bridge.request("list_layers",json!({}),Duration::from_secs(8)).await?;
+            let value=photoshop::validate_layer_inventory(&raw)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "inventory":value,
+                    "host_receipt_validated":true,
+                    "mutation_performed":false,
+                    "runtime_verified":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
         ToolAction::WorkspaceScan { path } => {
             let root = Path::new(&path);
             if !root.is_dir() {
@@ -15853,6 +15964,27 @@ fn clear_session_checkpoint(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn photoshop_bridge_start(
+    state: State<'_, ActionState>,
+) -> Result<PhotoshopBridgeStatus,String> {
+    state.photoshop_bridge.start()
+}
+
+#[tauri::command]
+fn photoshop_bridge_status(
+    state: State<'_, ActionState>,
+) -> Result<PhotoshopBridgeStatus,String> {
+    state.photoshop_bridge.status()
+}
+
+#[tauri::command]
+fn photoshop_bridge_stop(
+    state: State<'_, ActionState>,
+) -> Result<PhotoshopBridgeStatus,String> {
+    state.photoshop_bridge.stop()
+}
+
+#[tauri::command]
 fn audition_bridge_start(
     state: State<'_, ActionState>,
 ) -> Result<AuditionBridgeStatus, String> {
@@ -16037,6 +16169,9 @@ pub fn run() {
             audition_bridge_start,
             audition_bridge_status,
             audition_bridge_stop,
+            photoshop_bridge_start,
+            photoshop_bridge_status,
+            photoshop_bridge_stop,
             export_diagnostics,
         ])
         .run(tauri::generate_context!())
