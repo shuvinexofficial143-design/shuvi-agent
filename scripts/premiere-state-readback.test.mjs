@@ -138,7 +138,7 @@ test("Premiere project save does not promote host acceptance to verified persist
   assert.match(arm,/persistence_verified/);
   assert.match(arm,/verified_file_persistence/);
   assert.match(arm,/success: verified/);
-  assert.match(arm,/"retry_safe": false/);
+  assert.match(arm,/"retry_safe":\s*false/);
   assert.doesNotMatch(arm,/success: true/);
 });
 
