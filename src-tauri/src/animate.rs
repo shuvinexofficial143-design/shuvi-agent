@@ -127,8 +127,8 @@ pub fn capability_report()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_animate",
-        "source_milestone_percent":80,
-        "source_scope_complete":false,
+        "source_milestone_percent":100,
+        "source_scope_complete":true,
         "implemented":{
             "bounded_windows_detection":true,
             "exact_detected_executable_launch":true,
@@ -144,14 +144,18 @@ pub fn capability_report()->Value{
             "fresh_document_timeline_identity_recheck":true,
             "guarded_layer_property_writes":["rename","visible","locked"],
             "local_fla_checkpoint_integrity":true,
-            "independent_post_write_readback":true
+            "independent_post_write_readback":true,
+            "checkpoint_recovery_handoff":true,
+            "publish_export_preflight_planning":true,
+            "canonical_acceptance_summary":true
         },
         "not_implemented":{
             "stable_element_object_ids":true,
             "layer_create_delete_reorder":true,
             "frame_content_mutation":true,
             "drawing_mutation":true,
-            "publish_export":true,
+            "publish_export_execution":true,
+            "automatic_checkpoint_restore":true,
             "runtime_acceptance":true
         },
         "source_runtime_verified":false,
@@ -163,17 +167,18 @@ pub fn readiness_report()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_animate",
-        "source_milestone_percent":80,
-        "source_coding_status":"guarded_layer_writes_complete",
+        "source_milestone_percent":100,
+        "source_coding_status":"declared_source_scope_complete",
         "desktop_detection":true,
         "exact_detected_launch":true,
         "host_transport":"cep_plus_jsfl",
         "bridge_scope":"bounded_inspection_plus_guarded_layer_metadata_writes",
         "host_ready_verified":false,
-        "document_automation_ready":"guarded_layer_metadata_only",
+        "document_automation_ready":"declared_bounded_source_scope_complete",
+        "source_completion":{"declared_scope_complete":true,"canonical_summary_tool":"animate_acceptance_summary","runtime_acceptance_pending":true},
         "source_runtime_verified":false,
         "production_ready":false,
-        "next_source_phase":"add canonical source acceptance summary, checkpoint recovery handoff, and bounded publish/export planning without broadening arbitrary JSFL"
+        "next_source_phase":"real Windows Animate acceptance testing; do not expand source scope unless a new milestone is explicitly defined"
     })
 }
 
@@ -535,6 +540,126 @@ pub fn validate_layer_write_post_readback(request:&LayerWriteRequest,context:&Va
     }))
 }
 
+
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublishPlanRequest{
+    pub expected_document_signature:String,
+    pub expected_timeline_signature:String,
+    pub expected_document_path:String,
+    pub intent:String,
+    pub expected_output_directory:String,
+    pub overwrite_existing:bool,
+}
+
+impl PublishPlanRequest{
+    pub fn validate(&self)->Result<(),String>{
+        validate_identity_signature(&self.expected_document_signature,"document")?;
+        validate_identity_signature(&self.expected_timeline_signature,"timeline")?;
+        if self.expected_document_path.trim().is_empty()||self.expected_document_path.len()>MAX_PATH_BYTES
+            ||self.expected_document_path.chars().any(char::is_control)||!Path::new(&self.expected_document_path).is_absolute(){
+            return Err("Animate publish plan requires an exact absolute local FLA path.".into());
+        }
+        if Path::new(&self.expected_document_path).extension().and_then(|v|v.to_str()).unwrap_or("").to_ascii_lowercase()!="fla"{
+            return Err("Animate publish plan is limited to an existing local .fla document.".into());
+        }
+        if self.intent!="current_document_publish"{
+            return Err("Animate publish intent must be current_document_publish.".into());
+        }
+        if self.expected_output_directory.trim().is_empty()||self.expected_output_directory.len()>MAX_PATH_BYTES
+            ||self.expected_output_directory.chars().any(char::is_control)||!Path::new(&self.expected_output_directory).is_absolute(){
+            return Err("Animate publish plan requires an exact absolute expected output directory.".into());
+        }
+        if self.overwrite_existing{
+            return Err("Animate 100% source publish planner refuses overwrite_existing=true.".into());
+        }
+        Ok(())
+    }
+}
+
+pub fn plan_publish(request:&PublishPlanRequest,context:&Value,timeline:&Value)->Result<Value,String>{
+    request.validate()?;
+    if context.get("hasDocument").and_then(Value::as_bool)!=Some(true)
+        ||context.get("documentSignature").and_then(Value::as_str)!=Some(request.expected_document_signature.as_str())
+        ||context.get("timelineSignature").and_then(Value::as_str)!=Some(request.expected_timeline_signature.as_str())
+        ||context.get("documentPath").and_then(Value::as_str)!=Some(request.expected_document_path.as_str()){
+        return Err("Animate publish plan requires the exact freshly inspected local document and timeline.".into());
+    }
+    if timeline.get("documentSignature").and_then(Value::as_str)!=Some(request.expected_document_signature.as_str())
+        ||timeline.get("timelineSignature").and_then(Value::as_str)!=Some(request.expected_timeline_signature.as_str())
+        ||timeline.get("truncated").and_then(Value::as_bool)==Some(true){
+        return Err("Animate publish plan requires a complete fresh timeline inventory with matching identity.".into());
+    }
+    Ok(json!({
+        "plan_type":"animate_current_document_publish_preflight",
+        "intent":request.intent,
+        "document_path":request.expected_document_path,
+        "expected_output_directory":request.expected_output_directory,
+        "overwrite_existing":false,
+        "document_identity_verified":true,
+        "timeline_identity_verified":true,
+        "mutation_performed":false,
+        "publish_execution_supported":false,
+        "export_execution_supported":false,
+        "requires_real_host_acceptance_before_execution":true,
+        "next_required_evidence":[
+            "current Animate publish settings/profile inspection",
+            "exact expected output artifact inventory",
+            "host publish completion signal",
+            "post-publish filesystem artifact verification"
+        ],
+        "source_runtime_verified":false,
+        "production_ready":false
+    }))
+}
+
+pub fn completion_summary()->Value{
+    json!({
+        "integration":"adobe_animate",
+        "source_milestone_percent":100,
+        "source_scope_complete":true,
+        "implemented_scope":{
+            "detect_launch":true,
+            "authenticated_cep_jsfl_bridge":true,
+            "read_only_document_timeline_library_selection_inspection":true,
+            "document_timeline_identity_guards":true,
+            "guarded_layer_property_writes":["rename","visible","locked"],
+            "last_saved_local_fla_checkpoint_integrity":true,
+            "checkpoint_verification":true,
+            "checkpoint_recovery_handoff":true,
+            "independent_post_write_readback":true,
+            "bounded_publish_export_preflight_planning":true,
+            "canonical_source_acceptance_summary":true
+        },
+        "intentionally_unclaimed":[
+            "arbitrary_jsfl_execution",
+            "stable_persistent_stage_element_ids",
+            "layer_create_delete_reorder",
+            "frame_content_mutation",
+            "drawing_or_stage_content_mutation",
+            "library_or_symbol_mutation",
+            "actionscript_mutation",
+            "automatic_checkpoint_restore",
+            "publish_or_export_execution",
+            "save_or_save_as_automation",
+            "runtime_acceptance"
+        ],
+        "safety_gates":[
+            "permission-first typed high-risk layer mutations",
+            "fresh exact document and timeline signatures",
+            "exact layer index name type and expected value",
+            "last-saved local FLA checkpoint before mutation",
+            "checkpoint scope explicitly excludes unsaved in-memory edits",
+            "no blind retry after uncertain mutation dispatch",
+            "independent post-write readback",
+            "recovery handoff is planning-only",
+            "publish/export is preflight planning-only"
+        ],
+        "source_runtime_verified":false,
+        "production_ready":false
+    })
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -549,12 +674,12 @@ mod tests{
     #[test]
     fn reports_do_not_promote_runtime(){
         let capability=capability_report();
-        assert_eq!(capability["source_milestone_percent"],80);
+        assert_eq!(capability["source_milestone_percent"],100);
         assert_eq!(capability["source_runtime_verified"],false);
         assert_eq!(capability["production_ready"],false);
         let readiness=readiness_report();
         assert_eq!(readiness["host_transport"],"cep_plus_jsfl");
-        assert_eq!(readiness["document_automation_ready"],"guarded_layer_metadata_only");
+        assert_eq!(readiness["document_automation_ready"],"declared_bounded_source_scope_complete");
     }
 
     #[test]
@@ -599,5 +724,33 @@ mod tests{
         let post=json!({"documentSignature":"doc|1","timelineSignature":"timeline|1","truncated":false,
             "layers":[{"index":0,"name":"Artwork","layerType":"normal","visible":false,"locked":false}]});
         assert_eq!(validate_layer_write_post_readback(&request,&context,&post).unwrap()["post_state_verified"],true);
+    }
+
+    #[test]
+    fn publish_planner_is_identity_guarded_and_execution_free(){
+        let path=std::env::temp_dir().join("animate-publish.fla").to_string_lossy().into_owned();
+        let out=std::env::temp_dir().join("animate-output").to_string_lossy().into_owned();
+        let request=PublishPlanRequest{
+            expected_document_signature:"doc|1".into(),
+            expected_timeline_signature:"timeline|1".into(),
+            expected_document_path:path.clone(),
+            intent:"current_document_publish".into(),
+            expected_output_directory:out,
+            overwrite_existing:false,
+        };
+        let context=json!({"hasDocument":true,"documentSignature":"doc|1","timelineSignature":"timeline|1","documentPath":path});
+        let timeline=json!({"documentSignature":"doc|1","timelineSignature":"timeline|1","truncated":false,"layers":[]});
+        let plan=plan_publish(&request,&context,&timeline).unwrap();
+        assert_eq!(plan["publish_execution_supported"],false);
+        assert_eq!(plan["mutation_performed"],false);
+    }
+
+    #[test]
+    fn completion_summary_never_promotes_runtime(){
+        let summary=completion_summary();
+        assert_eq!(summary["source_milestone_percent"],100);
+        assert_eq!(summary["source_scope_complete"],true);
+        assert_eq!(summary["source_runtime_verified"],false);
+        assert_eq!(summary["production_ready"],false);
     }
 }

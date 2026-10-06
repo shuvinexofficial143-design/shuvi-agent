@@ -642,6 +642,9 @@ enum ToolAction {
     AnimateIdentityCheck { expected_document_signature:String, expected_timeline_signature:String },
     AnimateSetLayerProperty { request:animate::LayerWriteRequest },
     AnimateVerifyCheckpoint { backup_path:String, expected_source_path:String, expected_document_signature:String },
+    AnimatePlanRecovery { backup_path:String, expected_source_path:String, expected_document_signature:String },
+    AnimatePlanPublish { request:animate::PublishPlanRequest },
+    AnimateAcceptanceSummary,
     PremiereDetect,
     PremiereLaunch { project: Option<String> },
     PremiereBridgeStart,
@@ -3369,6 +3372,37 @@ fn stage_tool(
                 "Read-only integrity verification for a Shuvi Animate FLA checkpoint. Does not restore or overwrite the project.".into(),
                 RiskLevel::Low)
         }
+        "animate_plan_recovery" => {
+            let backup_path=arg_string(&proposal.arguments,"backup_path")?;
+            let expected_source_path=arg_string(&proposal.arguments,"expected_source_path")?;
+            let expected_document_signature=arg_string(&proposal.arguments,"expected_document_signature")?;
+            animate::validate_identity_signature(&expected_document_signature,"document")?;
+            (ToolAction::AnimatePlanRecovery {
+                    backup_path:backup_path.clone(),
+                    expected_source_path:expected_source_path.clone(),
+                    expected_document_signature:expected_document_signature.clone()
+                },
+                "Plan Animate checkpoint recovery".into(),
+                "Read-only recovery handoff: verify exact checkpoint evidence and return a manual restore plan. It never overwrites the current FLA automatically.".into(),
+                RiskLevel::Low)
+        }
+        "animate_plan_publish" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"animate_plan_publish requires request.".to_string())?;
+            let request:animate::PublishPlanRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Animate publish-plan request: {e}"))?;
+            request.validate()?;
+            (ToolAction::AnimatePlanPublish {request},
+                "Plan Animate publish/export".into(),
+                "Read-only bounded publish/export preflight. It validates exact document identity and output intent but deliberately does not call Animate publish/export in the source-complete milestone.".into(),
+                RiskLevel::Low)
+        }
+        "animate_acceptance_summary" => (
+            ToolAction::AnimateAcceptanceSummary,
+            "Read canonical Animate source completion summary".into(),
+            "Report the declared 100% bounded source scope, explicit unclaimed capabilities, runtime gaps and production-readiness boundary.".into(),
+            RiskLevel::Low,
+        ),
         "audition_detect" => (
             ToolAction::AuditionDetect,
             "Detect Adobe Audition".into(),
@@ -10300,6 +10334,33 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             Ok(ActionResult {
                 success:true,tool,
                 stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimatePlanRecovery {backup_path,expected_source_path,expected_document_signature} => {
+            let value=animate_checkpoint::plan_recovery(&backup_path,&expected_source_path,&expected_document_signature)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimatePlanPublish {request} => {
+            let raw_context=state.animate_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let context=animate::validate_context_receipt(&raw_context)?;
+            let raw_timeline=state.animate_bridge.request("inspect_timeline",json!({"maxLayers":256}),Duration::from_secs(10)).await?;
+            let timeline=animate::validate_timeline_receipt(&raw_timeline)?;
+            let value=animate::plan_publish(&request,&context,&timeline)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateAcceptanceSummary => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&animate::completion_summary()).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)
             })
         }

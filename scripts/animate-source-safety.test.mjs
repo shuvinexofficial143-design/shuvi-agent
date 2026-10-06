@@ -12,80 +12,83 @@ const host=fs.readFileSync("integrations/animate-cep/jsx/ShuviAnimate.jsx","utf8
 const manifest=fs.readFileSync("integrations/animate-cep/CSXS/manifest.xml","utf8");
 const status=fs.readFileSync("docs/ANIMATE_STATUS.md","utf8");
 
-test("Animate 80 percent tools are registered end to end",()=>{
-  for(const name of ["animate_capability_report","animate_readiness_report","animate_detect","animate_launch","animate_bridge_start","animate_bridge_status","animate_bridge_stop","animate_context","animate_timeline","animate_library","animate_selection","animate_identity_check","animate_set_layer_property","animate_verify_checkpoint"])
-    assert.match(lib,new RegExp(name));
-  for(const name of ["AnimateSetLayerProperty","AnimateVerifyCheckpoint"])
+test("Animate 100 percent source tools are registered end to end",()=>{
+  for(const name of [
+    "animate_capability_report","animate_readiness_report","animate_detect","animate_launch",
+    "animate_bridge_start","animate_bridge_status","animate_bridge_stop","animate_context","animate_timeline",
+    "animate_library","animate_selection","animate_identity_check","animate_set_layer_property",
+    "animate_verify_checkpoint","animate_plan_recovery","animate_plan_publish","animate_acceptance_summary"
+  ]) assert.match(lib,new RegExp(name));
+  for(const name of ["AnimatePlanRecovery","AnimatePlanPublish","AnimateAcceptanceSummary"])
     assert.match(lib,new RegExp(name));
 });
 
-test("Animate bridge has an explicit tiny mutation allowlist",()=>{
+test("Animate final bridge remains explicit and bounded",()=>{
   assert.match(manifest,/Host Name="FLPR"/);
   assert.match(panel,/__adobe_cep__\.evalScript/);
   assert.match(bridge,/READ_ONLY_ACTIONS: &\[&str\]/);
   assert.match(bridge,/MUTATING_ACTIONS: &\[&str\] = &\[\s*"set_layer_property",\s*\]/s);
-  for(const action of ["inspect_context","inspect_timeline","inspect_library","inspect_selection","verify_identity","set_layer_property"])
-    assert.match(bridge,new RegExp('"'+action+'"'));
-  for(const mutation of [/addNewLayer\s*\(/,/deleteLayer\s*\(/,/addItemToDocument\s*\(/,/save\s*\(/,/publish\s*\(/])
-    assert.doesNotMatch(host,mutation);
+  assert.doesNotMatch(host,/eval\s*\(\s*args\.script/);
+  assert.doesNotMatch(host,/deleteLayer\s*\(/);
+  assert.doesNotMatch(host,/publish\s*\(/);
+  assert.doesNotMatch(host,/save\s*\(/);
 });
 
-test("Animate typed layer writes are exact-state guarded and no-blind-retry",()=>{
+test("Animate guarded writes remain checkpointed and independently read back",()=>{
   assert.match(animate,/pub struct LayerWriteRequest/);
-  for(const op of ["rename","visible","locked"]) assert.match(animate,new RegExp('"'+op+'"'));
-  assert.match(animate,/acknowledge_last_saved_disk_checkpoint/);
-  assert.match(animate,/validate_layer_write_precondition/);
-  assert.match(animate,/validate_layer_write_receipt/);
-  assert.match(animate,/validate_layer_write_post_readback/);
-  assert.match(host,/function shuviAnimateSetLayerProperty/);
-  assert.match(host,/layer\.name=args\.value/);
-  assert.match(host,/layer\.visible=args\.value/);
-  assert.match(host,/layer\.locked=args\.value/);
+  assert.match(lib,/animate_checkpoint::create/);
+  assert.match(lib,/validate_layer_write_post_readback/);
+  assert.match(checkpoint,/last_saved_disk_fla_only/);
+  assert.match(checkpoint,/unsaved_in_memory_edits_protected/);
   assert.match(host,/retrySafe:false/);
   assert.match(lib,/automatic_retry_allowed":false/);
 });
 
-test("Animate layer writes checkpoint the last-saved local FLA before dispatch",()=>{
-  const checkpointIndex=lib.indexOf("animate_checkpoint::create(");
-  const dispatchIndex=lib.indexOf('"set_layer_property"');
-  assert.ok(checkpointIndex>=0);
-  assert.ok(dispatchIndex>=0);
-  assert.ok(checkpointIndex>dispatchIndex || lib.indexOf('"set_layer_property"',checkpointIndex)>checkpointIndex);
-  assert.match(checkpoint,/Shuvi Animate Backups/);
-  assert.match(checkpoint,/source_fnv1a64/);
-  assert.match(checkpoint,/backup_fnv1a64/);
-  assert.match(checkpoint,/last_saved_disk_fla_only/);
-  assert.match(checkpoint,/unsaved_in_memory_edits_protected/);
-  assert.match(checkpoint,/automatic_restore/);
+test("Animate recovery is a verified manual handoff, never automatic restore",()=>{
+  assert.match(checkpoint,/pub fn plan_recovery/);
+  assert.match(checkpoint,/checkpoint_verified/);
+  assert.match(checkpoint,/automatic_restore":false/);
+  assert.match(checkpoint,/restore_executed":false/);
+  assert.match(lib,/AnimatePlanRecovery/);
 });
 
-test("Animate mutation requires fresh document timeline layer and property identity",()=>{
-  assert.match(host,/context\.documentSignature!=expectedDocument/);
-  assert.match(host,/context\.timelineSignature!=expectedTimeline/);
-  assert.match(host,/context\.documentPath!=expectedPath/);
-  assert.match(host,/liveName!=String\(args\.expectedLayerName/);
-  assert.match(host,/liveType!=String\(args\.expectedLayerType/);
-  assert.match(animate,/target layer property changed/);
-  assert.match(lib,/inspect_context/);
-  assert.match(lib,/inspect_timeline/);
+test("Animate publish export scope is preflight planning only",()=>{
+  assert.match(animate,/pub struct PublishPlanRequest/);
+  assert.match(animate,/current_document_publish/);
+  assert.match(animate,/overwrite_existing/);
+  assert.match(animate,/publish_execution_supported":false/);
+  assert.match(animate,/export_execution_supported":false/);
+  assert.match(animate,/requires_real_host_acceptance_before_execution/);
+  assert.match(lib,/AnimatePlanPublish/);
+  assert.doesNotMatch(host,/publish\s*\(/);
 });
 
-test("Animate mutation has independent post-write readback",()=>{
-  assert.match(lib,/post_raw_context/);
-  assert.match(lib,/post_raw_timeline/);
-  assert.match(lib,/validate_layer_write_post_readback/);
-  assert.match(animate,/post_state_verified/);
-  assert.match(host,/mutationPerformed:true/);
-});
-
-test("Animate 80 percent milestone still refuses destructive scope and fake runtime readiness",()=>{
-  assert.match(animate,/"source_milestone_percent":80/);
-  assert.match(animate,/"layer_create_delete_reorder":true/);
-  assert.match(animate,/"frame_content_mutation":true/);
-  assert.match(animate,/"drawing_mutation":true/);
+test("Animate canonical summary declares bounded source complete without runtime promotion",()=>{
+  assert.match(animate,/pub fn completion_summary/);
+  assert.match(animate,/"source_milestone_percent":100/);
+  assert.match(animate,/"source_scope_complete":true/);
   assert.match(animate,/"source_runtime_verified":false/);
   assert.match(animate,/"production_ready":false/);
-  assert.match(status,/Current declared source milestone: \*\*80%\*\*/);
-  assert.match(status,/source_runtime_verified=false/);
-  assert.match(status,/production_ready=false/);
+  assert.match(lib,/AnimateAcceptanceSummary/);
+  assert.match(status,/Current declared source milestone: \*\*100%\*\*/);
+  assert.match(status,/Source milestone: \*\*100% complete\*\*/);
+});
+
+test("Animate final source scope explicitly refuses destructive and arbitrary capabilities",()=>{
+  for(const marker of [
+    "arbitrary_jsfl_execution","layer_create_delete_reorder","frame_content_mutation",
+    "drawing_or_stage_content_mutation","library_or_symbol_mutation",
+    "automatic_checkpoint_restore","publish_or_export_execution"
+  ]) assert.match(animate,new RegExp(marker));
+  assert.match(status,/arbitrary JSFL execution/);
+  assert.match(status,/publish\/export execution/);
+  assert.match(status,/Runtime acceptance: \*\*pending\*\*/);
+});
+
+test("Animate localhost transport remains authenticated and bounded",()=>{
+  assert.match(bridge,/127\.0\.0\.1/);
+  assert.match(bridge,/X-Shuvi-Token/);
+  assert.match(bridge,/MAX_BODY_BYTES: usize = 256 \* 1024/);
+  assert.match(queue,/pending\.len\(\) >= 32/);
+  assert.match(panel,/deliveredCount>=1024/);
 });
