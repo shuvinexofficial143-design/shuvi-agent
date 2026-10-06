@@ -2,9 +2,9 @@
 
 ## Source milestone
 
-Current declared source milestone: **60%**
+Current declared source milestone: **80%**
 
-The 60% milestone extends the bounded read-only CEP + JSFL bridge with library/symbol metadata, stage-selection inspection, and fresh document/timeline identity rechecks. It still does **not** authorize any Animate mutation.
+The 80% milestone adds a deliberately small guarded mutation surface on top of the 60% read-only CEP + JSFL inspection layer. It does **not** expose arbitrary JSFL or destructive timeline editing.
 
 ## Implemented source scope
 
@@ -12,48 +12,65 @@ The 60% milestone extends the bounded read-only CEP + JSFL bridge with library/s
 - managed-process tracking,
 - authenticated localhost bridge on `127.0.0.1:17364`,
 - rotating pairing token and bounded request/result queue,
-- CEP panel targeted at Animate host ID `FLPR`,
 - CEP `evalScript` → JSFL host adapter,
-- read-only active document context,
-- read-only current timeline/layer/frame summary,
-- bounded layer inventory (maximum 256),
-- bounded library inventory (maximum 256) with item type, symbol metadata, linkage metadata and nested symbol-timeline counts where exposed,
-- bounded selected-stage-element inspection (maximum 64) with instance/library references where exposed,
-- observational library/selection snapshot signatures that are explicitly **not** treated as stable object IDs or full content fingerprints,
-- document signature and timeline signature,
-- fresh exact document/timeline signature recheck through `verify_identity`,
-- independent Rust-side receipt validation,
-- source capability/readiness reporting.
+- document/timeline/layer/frame/library/symbol/selection inspection,
+- exact document and timeline signatures,
+- fresh identity recheck,
+- guarded layer property writes:
+  - rename,
+  - visibility,
+  - locked state,
+- exact expected layer index/name/type and expected property state before every write,
+- local existing `.fla` disk checkpoint copied before every write,
+- source/backup integrity fingerprints plus sidecar evidence,
+- independent post-write context + timeline readback,
+- no blind automatic retry after a mutation dispatch,
+- read-only checkpoint verification,
+- no automatic checkpoint restore.
 
-Animate's authoring model includes timelines, library items/symbols, and reusable symbol instances. Shuvi uses those surfaces only for bounded inspection in this milestone.
+Adobe Animate supports layer naming, hiding/showing and locking in its authoring workflow. Shuvi limits the first mutation scope to those layer metadata/state operations rather than broader frame, drawing, symbol or publish changes.
 
-## Read-only allowlist
+## Checkpoint boundary
 
-- `inspect_context`
-- `inspect_timeline`
-- `inspect_library`
-- `inspect_selection`
-- `verify_identity`
+The 80% checkpoint is a byte-for-byte copy of the **last saved local FLA on disk**.
 
-No native mutation action is accepted by the bridge at 60%.
+It deliberately reports:
 
-## Identity boundary
+- `checkpoint_scope=last_saved_disk_fla_only`
+- `unsaved_in_memory_edits_protected=false`
+- `automatic_restore=false`
 
-`verify_identity` re-inspects the live host and requires exact equality with the previously inspected document and timeline signatures. A successful identity recheck is only a stale-target guard. It does not authorize a future edit by itself.
+A caller must explicitly acknowledge this boundary in the typed write request. Shuvi does not pretend the disk backup preserves unsaved in-memory Animate edits.
 
-Selection and library signatures are observational snapshots because Animate stage elements do not expose a Shuvi-defined persistent object ID in this source scope. Shuvi therefore does not represent them as permanent identities.
+## Mutation allowlist
 
-## Explicitly not implemented at 60%
+Only:
 
-- timeline/layer/frame mutation,
-- stage/drawing mutation,
-- symbol/instance mutation,
-- library mutation,
-- ActionScript edits,
-- publish/export automation,
-- save/Save As,
-- automatic rollback,
-- runtime acceptance.
+- `set_layer_property` with operation `rename`
+- `set_layer_property` with operation `visible`
+- `set_layer_property` with operation `locked`
+
+are added.
+
+No layer creation/deletion/reordering, frame-content mutation, drawing mutation, library mutation, symbol mutation, ActionScript mutation, save, publish, export or arbitrary JSFL execution is claimed.
+
+## Safety sequence
+
+Every guarded layer write requires:
+
+1. separate high-risk approval,
+2. exact previously inspected document signature,
+3. exact timeline signature,
+4. exact local `.fla` path,
+5. exact layer index/name/type,
+6. exact expected current property value,
+7. fresh read-only context and timeline inspection,
+8. verified local disk checkpoint,
+9. one typed host mutation,
+10. exact host receipt validation,
+11. independent fresh post-write context/timeline readback.
+
+If the host result becomes uncertain, Shuvi reports the checkpoint path and blocks blind retry.
 
 ## Runtime status
 
@@ -61,8 +78,8 @@ Selection and library signatures are observational snapshots because Animate sta
 
 `production_ready=false`
 
-CI/source completion does not promote either flag. A real Windows Animate host acceptance run is still required later.
+Source tests and CI do not establish real Animate host behavior. Real Windows Animate acceptance remains pending.
 
 ## Next source phase
 
-The 80% milestone should introduce a small set of typed, low-risk guarded mutations only after fresh document/timeline identity checks, with checkpoint/recovery planning and independent post-write readback. No arbitrary JSFL execution should be exposed.
+The 100% source milestone should add a canonical Animate acceptance summary, recovery handoff around checkpoint evidence, and a tightly bounded publish/export plan only where host behavior can be represented safely. Runtime verification remains a separate phase.

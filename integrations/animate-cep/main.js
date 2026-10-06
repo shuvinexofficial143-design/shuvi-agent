@@ -57,7 +57,30 @@
       expectedDocumentSignature:boundedSignature(args.expectedDocumentSignature,"document"),
       expectedTimelineSignature:boundedSignature(args.expectedTimelineSignature,"timeline")
     });
-    return Promise.reject(new Error("Unsupported read-only Shuvi Animate command: "+command.action));
+    if(command.action==="set_layer_property"){
+      var operation=String(args.operation||"");
+      if(operation!=="rename"&&operation!=="visible"&&operation!=="locked")
+        return Promise.reject(new Error("Animate layer operation must be rename, visible, or locked."));
+      var layerIndex=boundedInteger(args.layerIndex,0,100000,"layerIndex");
+      var expectedLayerName=String(args.expectedLayerName||"");
+      var expectedLayerType=String(args.expectedLayerType||"");
+      if(!expectedLayerName.length||expectedLayerName.length>512||!expectedLayerType.length||expectedLayerType.length>160)
+        return Promise.reject(new Error("Exact inspected Animate layer name/type are required."));
+      if(typeof args.expectedDocumentPath!=="string"||!args.expectedDocumentPath.length||args.expectedDocumentPath.length>32000)
+        return Promise.reject(new Error("Exact local Animate document path is required."));
+      return evalHost("set_layer_property",{
+        expectedDocumentSignature:boundedSignature(args.expectedDocumentSignature,"document"),
+        expectedTimelineSignature:boundedSignature(args.expectedTimelineSignature,"timeline"),
+        expectedDocumentPath:args.expectedDocumentPath,
+        layerIndex:layerIndex,
+        expectedLayerName:expectedLayerName,
+        expectedLayerType:expectedLayerType,
+        operation:operation,
+        expectedValue:args.expectedValue,
+        value:args.value
+      });
+    }
+    return Promise.reject(new Error("Unsupported Shuvi Animate command: "+command.action));
   }
   function bounded(command,success,data,error){
     var e={id:command.id,action:command.action,success:success,data:success?data:null,error:success?null:String(error||"Unknown Animate bridge error").slice(0,4000)};

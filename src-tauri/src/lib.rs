@@ -82,6 +82,7 @@ use premiere_bridge::{PremiereBridgeShared, PremiereBridgeStatus};
 mod audition;
 mod audition_acceptance;
 mod animate;
+mod animate_checkpoint;
 mod photoshop;
 mod photoshop_checkpoint;
 mod motion_graphics;
@@ -639,6 +640,8 @@ enum ToolAction {
     AnimateLibrary,
     AnimateSelection,
     AnimateIdentityCheck { expected_document_signature:String, expected_timeline_signature:String },
+    AnimateSetLayerProperty { request:animate::LayerWriteRequest },
+    AnimateVerifyCheckpoint { backup_path:String, expected_source_path:String, expected_document_signature:String },
     PremiereDetect,
     PremiereLaunch { project: Option<String> },
     PremiereBridgeStart,
@@ -3337,6 +3340,33 @@ fn stage_tool(
                 },
                 "Recheck Animate document/timeline identity".into(),
                 "Read-only fresh host recheck of exact inspected document and timeline signatures. It does not authorize mutation.".into(),
+                RiskLevel::Low)
+        }
+        "animate_set_layer_property" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"animate_set_layer_property requires request.".to_string())?;
+            let request:animate::LayerWriteRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Animate layer-write request: {e}"))?;
+            request.validate()?;
+            let operation=request.operation.clone();
+            let layer_index=request.layer_index;
+            (ToolAction::AnimateSetLayerProperty {request},
+                "Modify guarded Animate layer property".into(),
+                format!("High-risk typed Animate layer {operation} on exact layer index {layer_index}. Requires fresh document/timeline/layer state, a verified local FLA checkpoint, separate approval, and independent post-write readback. No arbitrary JSFL."),
+                RiskLevel::High)
+        }
+        "animate_verify_checkpoint" => {
+            let backup_path=arg_string(&proposal.arguments,"backup_path")?;
+            let expected_source_path=arg_string(&proposal.arguments,"expected_source_path")?;
+            let expected_document_signature=arg_string(&proposal.arguments,"expected_document_signature")?;
+            animate::validate_identity_signature(&expected_document_signature,"document")?;
+            (ToolAction::AnimateVerifyCheckpoint {
+                    backup_path:backup_path.clone(),
+                    expected_source_path:expected_source_path.clone(),
+                    expected_document_signature:expected_document_signature.clone()
+                },
+                "Verify Animate checkpoint".into(),
+                "Read-only integrity verification for a Shuvi Animate FLA checkpoint. Does not restore or overwrite the project.".into(),
                 RiskLevel::Low)
         }
         "audition_detect" => (
@@ -10215,6 +10245,61 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             Ok(ActionResult {
                 success:true,tool,
                 stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateSetLayerProperty {request} => {
+            request.validate()?;
+            let raw_context=state.animate_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let context=animate::validate_context_receipt(&raw_context)?;
+            let raw_timeline=state.animate_bridge.request("inspect_timeline",json!({"maxLayers":256}),Duration::from_secs(10)).await?;
+            let timeline=animate::validate_timeline_receipt(&raw_timeline)?;
+            animate::validate_layer_write_precondition(&request,&context,&timeline)?;
+            let checkpoint=animate_checkpoint::create(
+                &request.expected_document_path,
+                &request.expected_document_signature,
+                &request.expected_timeline_signature,
+                &format!("layer_{}",request.operation)
+            )?;
+            let host_result=state.animate_bridge.request(
+                "set_layer_property",
+                request.bridge_arguments()?,
+                Duration::from_secs(12)
+            ).await;
+            let host_result=match host_result {
+                Ok(value)=>value,
+                Err(error)=>{
+                    return Err(format!(
+                        "execution_status_unknown: Animate layer write did not return a trusted receipt. Checkpoint backup: {}. Do not blindly retry. {error}",
+                        checkpoint.get("backup_path").and_then(Value::as_str).unwrap_or("unavailable")
+                    ));
+                }
+            };
+            let receipt=animate::validate_layer_write_receipt(&request,&host_result)?;
+            let post_raw_context=state.animate_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let post_context=animate::validate_context_receipt(&post_raw_context)?;
+            let post_raw_timeline=state.animate_bridge.request("inspect_timeline",json!({"maxLayers":256}),Duration::from_secs(10)).await?;
+            let post_timeline=animate::validate_timeline_receipt(&post_raw_timeline)?;
+            let post=animate::validate_layer_write_post_readback(&request,&post_context,&post_timeline)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "checkpoint":checkpoint,
+                    "host_receipt":receipt,
+                    "post_readback":post,
+                    "automatic_retry_allowed":false,
+                    "automatic_restore":false,
+                    "source_runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateVerifyCheckpoint {backup_path,expected_source_path,expected_document_signature} => {
+            let value=animate_checkpoint::verify(&backup_path,&expected_source_path,&expected_document_signature)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)
             })
         }

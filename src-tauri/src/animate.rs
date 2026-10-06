@@ -1,3 +1,4 @@
+use serde::{Deserialize,Serialize};
 use serde_json::{json,Value};
 use std::{collections::HashSet,fs,path::{Path,PathBuf}};
 
@@ -126,7 +127,7 @@ pub fn capability_report()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_animate",
-        "source_milestone_percent":60,
+        "source_milestone_percent":80,
         "source_scope_complete":false,
         "implemented":{
             "bounded_windows_detection":true,
@@ -140,11 +141,15 @@ pub fn capability_report()->Value{
             "library_inspection":true,
             "symbol_metadata_inspection":true,
             "selection_inspection":true,
-            "fresh_document_timeline_identity_recheck":true
+            "fresh_document_timeline_identity_recheck":true,
+            "guarded_layer_property_writes":["rename","visible","locked"],
+            "local_fla_checkpoint_integrity":true,
+            "independent_post_write_readback":true
         },
         "not_implemented":{
             "stable_element_object_ids":true,
-            "timeline_mutation":true,
+            "layer_create_delete_reorder":true,
+            "frame_content_mutation":true,
             "drawing_mutation":true,
             "publish_export":true,
             "runtime_acceptance":true
@@ -158,17 +163,17 @@ pub fn readiness_report()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_animate",
-        "source_milestone_percent":60,
-        "source_coding_status":"read_only_identity_inspection_complete",
+        "source_milestone_percent":80,
+        "source_coding_status":"guarded_layer_writes_complete",
         "desktop_detection":true,
         "exact_detected_launch":true,
         "host_transport":"cep_plus_jsfl",
-        "bridge_scope":"read_only_context_timeline_library_selection_identity",
+        "bridge_scope":"bounded_inspection_plus_guarded_layer_metadata_writes",
         "host_ready_verified":false,
-        "document_automation_ready":"read_only_only",
+        "document_automation_ready":"guarded_layer_metadata_only",
         "source_runtime_verified":false,
         "production_ready":false,
-        "next_source_phase":"add guarded low-risk typed timeline/layer writes with fresh identity preconditions, checkpoint strategy, and independent readback"
+        "next_source_phase":"add canonical source acceptance summary, checkpoint recovery handoff, and bounded publish/export planning without broadening arbitrary JSFL"
     })
 }
 
@@ -343,6 +348,193 @@ pub fn validate_identity_receipt(value:&Value)->Result<Value,String>{
     Ok(value.clone())
 }
 
+
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LayerWriteRequest{
+    pub expected_document_signature:String,
+    pub expected_timeline_signature:String,
+    pub expected_document_path:String,
+    pub layer_index:u32,
+    pub expected_layer_name:String,
+    pub expected_layer_type:String,
+    pub operation:String,
+    pub expected_value:Value,
+    pub value:Value,
+    pub acknowledge_last_saved_disk_checkpoint:bool,
+}
+
+impl LayerWriteRequest{
+    pub fn validate(&self)->Result<(),String>{
+        validate_identity_signature(&self.expected_document_signature,"document")?;
+        validate_identity_signature(&self.expected_timeline_signature,"timeline")?;
+        if self.expected_document_path.trim().is_empty()||self.expected_document_path.len()>MAX_PATH_BYTES
+            ||self.expected_document_path.chars().any(char::is_control)||!Path::new(&self.expected_document_path).is_absolute(){
+            return Err("Animate guarded write requires an exact absolute saved FLA path.".into());
+        }
+        let ext=Path::new(&self.expected_document_path).extension().and_then(|v|v.to_str()).unwrap_or("").to_ascii_lowercase();
+        if ext!="fla"{return Err("Animate guarded write is currently limited to existing local .fla documents.".into());}
+        if self.layer_index>100_000{return Err("Animate layer index exceeds supported bounds.".into());}
+        if !bounded_text(Some(&self.expected_layer_name),512)||!bounded_text(Some(&self.expected_layer_type),160){
+            return Err("Animate expected layer identity is missing, oversized, or invalid.".into());
+        }
+        if !self.acknowledge_last_saved_disk_checkpoint{
+            return Err("Animate guarded write requires acknowledge_last_saved_disk_checkpoint=true because the disk checkpoint protects the last-saved FLA, not unsaved in-memory edits.".into());
+        }
+        match self.operation.as_str(){
+            "rename"=>{
+                let before=self.expected_value.as_str().ok_or("Animate rename expected_value must be a string.")?;
+                let after=self.value.as_str().ok_or("Animate rename value must be a string.")?;
+                if before!=self.expected_layer_name{
+                    return Err("Animate rename expected_value must equal the inspected layer name.".into());
+                }
+                if after.trim().is_empty()||after.len()>512||after.chars().any(char::is_control){
+                    return Err("Animate layer name must be 1..512 characters without control characters.".into());
+                }
+                if before==after{return Err("Animate guarded write refuses a no-op rename.".into());}
+            }
+            "visible"|"locked"=>{
+                let before=self.expected_value.as_bool().ok_or("Animate visible/locked expected_value must be boolean.")?;
+                let after=self.value.as_bool().ok_or("Animate visible/locked value must be boolean.")?;
+                if before==after{return Err("Animate guarded write refuses a no-op boolean change.".into());}
+            }
+            _=>return Err("Animate layer operation must be rename, visible, or locked.".into())
+        }
+        Ok(())
+    }
+
+    pub fn bridge_arguments(&self)->Result<Value,String>{
+        self.validate()?;
+        Ok(json!({
+            "expectedDocumentSignature":self.expected_document_signature,
+            "expectedTimelineSignature":self.expected_timeline_signature,
+            "expectedDocumentPath":self.expected_document_path,
+            "layerIndex":self.layer_index,
+            "expectedLayerName":self.expected_layer_name,
+            "expectedLayerType":self.expected_layer_type,
+            "operation":self.operation,
+            "expectedValue":self.expected_value,
+            "value":self.value
+        }))
+    }
+}
+
+fn exact_json_value(a:&Value,b:&Value)->bool{
+    match (a,b){
+        (Value::Number(x),Value::Number(y))=>x.as_f64().zip(y.as_f64()).is_some_and(|(a,b)|(a-b).abs()<=1e-9),
+        _=>a==b
+    }
+}
+
+fn layer_property(row:&Value,operation:&str)->Option<Value>{
+    match operation{
+        "rename"=>row.get("name").cloned(),
+        "visible"=>row.get("visible").cloned(),
+        "locked"=>row.get("locked").cloned(),
+        _=>None
+    }
+}
+
+pub fn validate_layer_write_precondition(request:&LayerWriteRequest,context:&Value,timeline:&Value)->Result<Value,String>{
+    request.validate()?;
+    if context.get("hasDocument").and_then(Value::as_bool)!=Some(true)
+        ||context.get("documentSignature").and_then(Value::as_str)!=Some(request.expected_document_signature.as_str())
+        ||context.get("timelineSignature").and_then(Value::as_str)!=Some(request.expected_timeline_signature.as_str())
+        ||context.get("documentPath").and_then(Value::as_str)!=Some(request.expected_document_path.as_str()){
+        return Err("Animate guarded write requires the exact freshly inspected local document and timeline.".into());
+    }
+    if timeline.get("documentSignature").and_then(Value::as_str)!=Some(request.expected_document_signature.as_str())
+        ||timeline.get("timelineSignature").and_then(Value::as_str)!=Some(request.expected_timeline_signature.as_str())
+        ||timeline.get("truncated").and_then(Value::as_bool)==Some(true){
+        return Err("Animate guarded write requires a complete fresh timeline inventory with matching identity.".into());
+    }
+    let layers=timeline.get("layers").and_then(Value::as_array).ok_or("Animate timeline layer inventory is missing.")?;
+    let row=layers.iter().find(|row|row.get("index").and_then(Value::as_u64)==Some(request.layer_index as u64))
+        .ok_or("Animate target layer index is not present in the fresh timeline inventory.")?;
+    if row.get("name").and_then(Value::as_str)!=Some(request.expected_layer_name.as_str())
+        ||row.get("layerType").and_then(Value::as_str)!=Some(request.expected_layer_type.as_str()){
+        return Err("Animate target layer identity changed; inspect timeline again.".into());
+    }
+    let observed=layer_property(row,&request.operation).ok_or("Animate target property is unavailable in the fresh timeline inventory.")?;
+    if !exact_json_value(&observed,&request.expected_value){
+        return Err("Animate target layer property changed; inspect timeline again before writing.".into());
+    }
+    Ok(json!({
+        "fresh_identity_verified":true,
+        "layer_index":request.layer_index,
+        "operation":request.operation,
+        "checkpoint_scope":"last_saved_disk_fla_only"
+    }))
+}
+
+pub fn validate_layer_write_receipt(request:&LayerWriteRequest,value:&Value)->Result<Value,String>{
+    request.validate()?;
+    if value.get("mutationPerformed").and_then(Value::as_bool)!=Some(true)
+        ||value.get("documentSignature").and_then(Value::as_str)!=Some(request.expected_document_signature.as_str())
+        ||value.get("timelineSignature").and_then(Value::as_str)!=Some(request.expected_timeline_signature.as_str())
+        ||value.get("layerIndex").and_then(Value::as_u64)!=Some(request.layer_index as u64)
+        ||value.get("operation").and_then(Value::as_str)!=Some(request.operation.as_str())
+        ||value.get("expectedLayerName").and_then(Value::as_str)!=Some(request.expected_layer_name.as_str())
+        ||value.get("expectedLayerType").and_then(Value::as_str)!=Some(request.expected_layer_type.as_str()){
+        return Err("Animate host mutation receipt does not match the approved target.".into());
+    }
+    let before=value.get("before").ok_or("Animate host mutation receipt is missing before state.")?;
+    let after=value.get("after").ok_or("Animate host mutation receipt is missing after state.")?;
+    if !exact_json_value(before,&request.expected_value)||!exact_json_value(after,&request.value){
+        return Err("Animate host mutation receipt values do not match the approved request.".into());
+    }
+    if value.get("retrySafe").and_then(Value::as_bool)!=Some(false){
+        return Err("Animate mutation receipt must explicitly disable blind retry.".into());
+    }
+    Ok(json!({
+        "host_receipt_validated":true,
+        "layer_index":request.layer_index,
+        "operation":request.operation,
+        "before":before,
+        "after":after,
+        "retry_safe":false
+    }))
+}
+
+pub fn validate_layer_write_post_readback(request:&LayerWriteRequest,context:&Value,timeline:&Value)->Result<Value,String>{
+    request.validate()?;
+    if context.get("hasDocument").and_then(Value::as_bool)!=Some(true)
+        ||context.get("documentSignature").and_then(Value::as_str)!=Some(request.expected_document_signature.as_str())
+        ||context.get("timelineSignature").and_then(Value::as_str)!=Some(request.expected_timeline_signature.as_str())
+        ||context.get("documentPath").and_then(Value::as_str)!=Some(request.expected_document_path.as_str()){
+        return Err("Animate post-write document/timeline identity changed or is unavailable.".into());
+    }
+    if timeline.get("truncated").and_then(Value::as_bool)==Some(true)
+        ||timeline.get("documentSignature").and_then(Value::as_str)!=Some(request.expected_document_signature.as_str())
+        ||timeline.get("timelineSignature").and_then(Value::as_str)!=Some(request.expected_timeline_signature.as_str()){
+        return Err("Animate post-write timeline readback is incomplete or stale.".into());
+    }
+    let layers=timeline.get("layers").and_then(Value::as_array).ok_or("Animate post-write layer inventory is missing.")?;
+    let row=layers.iter().find(|row|row.get("index").and_then(Value::as_u64)==Some(request.layer_index as u64))
+        .ok_or("Animate post-write target layer is missing.")?;
+    if row.get("layerType").and_then(Value::as_str)!=Some(request.expected_layer_type.as_str()){
+        return Err("Animate post-write layer type changed unexpectedly.".into());
+    }
+    if request.operation!="rename" && row.get("name").and_then(Value::as_str)!=Some(request.expected_layer_name.as_str()){
+        return Err("Animate post-write layer identity changed unexpectedly.".into());
+    }
+    if request.operation=="rename" && row.get("name").and_then(Value::as_str)!=request.value.as_str(){
+        return Err("Animate post-write rename readback does not match the approved value.".into());
+    }
+    let observed=layer_property(row,&request.operation).ok_or("Animate post-write property is unavailable.")?;
+    if !exact_json_value(&observed,&request.value){
+        return Err("Animate post-write readback does not match the approved value.".into());
+    }
+    Ok(json!({
+        "post_state_verified":true,
+        "layer_index":request.layer_index,
+        "operation":request.operation,
+        "observed":observed,
+        "document_identity_stable":true,
+        "timeline_identity_stable":true
+    }))
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -357,12 +549,12 @@ mod tests{
     #[test]
     fn reports_do_not_promote_runtime(){
         let capability=capability_report();
-        assert_eq!(capability["source_milestone_percent"],60);
+        assert_eq!(capability["source_milestone_percent"],80);
         assert_eq!(capability["source_runtime_verified"],false);
         assert_eq!(capability["production_ready"],false);
         let readiness=readiness_report();
         assert_eq!(readiness["host_transport"],"cep_plus_jsfl");
-        assert_eq!(readiness["document_automation_ready"],"read_only_only");
+        assert_eq!(readiness["document_automation_ready"],"guarded_layer_metadata_only");
     }
 
     #[test]
@@ -378,5 +570,34 @@ mod tests{
             "observedTimelineSignature":"timeline|1"
         });
         validate_identity_receipt(&receipt).unwrap();
+    }
+
+    #[test]
+    fn guarded_layer_write_requires_exact_state_and_acknowledged_checkpoint_scope(){
+        let path=std::env::temp_dir().join("animate-test.fla").to_string_lossy().into_owned();
+        let request=LayerWriteRequest{
+            expected_document_signature:"doc|1".into(),
+            expected_timeline_signature:"timeline|1".into(),
+            expected_document_path:path.clone(),
+            layer_index:0,
+            expected_layer_name:"Artwork".into(),
+            expected_layer_type:"normal".into(),
+            operation:"visible".into(),
+            expected_value:json!(true),
+            value:json!(false),
+            acknowledge_last_saved_disk_checkpoint:true,
+        };
+        request.validate().unwrap();
+        let context=json!({"hasDocument":true,"documentSignature":"doc|1","timelineSignature":"timeline|1","documentPath":path});
+        let timeline=json!({"documentSignature":"doc|1","timelineSignature":"timeline|1","truncated":false,
+            "layers":[{"index":0,"name":"Artwork","layerType":"normal","visible":true,"locked":false}]});
+        assert_eq!(validate_layer_write_precondition(&request,&context,&timeline).unwrap()["fresh_identity_verified"],true);
+        let receipt=json!({"mutationPerformed":true,"documentSignature":"doc|1","timelineSignature":"timeline|1",
+            "layerIndex":0,"operation":"visible","expectedLayerName":"Artwork","expectedLayerType":"normal",
+            "before":true,"after":false,"retrySafe":false});
+        assert_eq!(validate_layer_write_receipt(&request,&receipt).unwrap()["host_receipt_validated"],true);
+        let post=json!({"documentSignature":"doc|1","timelineSignature":"timeline|1","truncated":false,
+            "layers":[{"index":0,"name":"Artwork","layerType":"normal","visible":false,"locked":false}]});
+        assert_eq!(validate_layer_write_post_readback(&request,&context,&post).unwrap()["post_state_verified"],true);
     }
 }

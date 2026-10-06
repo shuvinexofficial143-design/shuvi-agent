@@ -11,12 +11,23 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 use super::animate_bridge_queue::CommandQueue;
 
+pub const READ_ONLY_ACTIONS: &[&str] = &[
+    "inspect_context",
+    "inspect_timeline",
+    "inspect_library",
+    "inspect_selection",
+    "verify_identity",
+];
+pub const MUTATING_ACTIONS: &[&str] = &[
+    "set_layer_property",
+];
 pub const ALLOWED_ACTIONS: &[&str] = &[
     "inspect_context",
     "inspect_timeline",
     "inspect_library",
     "inspect_selection",
     "verify_identity",
+    "set_layer_property",
 ];
 
 pub const ANIMATE_BRIDGE_PORT: u16 = 17_364;

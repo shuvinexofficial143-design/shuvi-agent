@@ -177,6 +177,70 @@ function shuviAnimateVerifyIdentity(args)
         expectedTimelineSignature:expectedTimeline,observedTimelineSignature:context.timelineSignature,
         documentIdentityMatched:true,timelineIdentityMatched:true,readOnly:true,mutationAuthorized:false,runtimeVerified:false};
 }
+
+function shuviAnimateSamePrimitive(a,b)
+{
+    if(typeof a=="number"&&typeof b=="number")return Math.abs(a-b)<=0.000000001;
+    return a===b;
+}
+function shuviAnimateSetLayerProperty(args)
+{
+    var expectedDocument=args&&typeof args.expectedDocumentSignature=="string"?args.expectedDocumentSignature:"";
+    var expectedTimeline=args&&typeof args.expectedTimelineSignature=="string"?args.expectedTimelineSignature:"";
+    var expectedPath=args&&typeof args.expectedDocumentPath=="string"?args.expectedDocumentPath:"";
+    if(!expectedDocument.length||expectedDocument.length>2000||!expectedTimeline.length||expectedTimeline.length>2000||!expectedPath.length||expectedPath.length>32000)
+        throw new Error("Exact Animate document, timeline and path identity are required.");
+    var context=shuviAnimateContext();
+    if(context.documentSignature!=expectedDocument)throw new Error("Animate document identity changed; inspect again before writing.");
+    if(context.timelineSignature!=expectedTimeline)throw new Error("Animate timeline identity changed; inspect again before writing.");
+    if(context.documentPath!=expectedPath)throw new Error("Animate document path changed; inspect again before writing.");
+    var doc=fl.getDocumentDOM(),timeline=doc.getTimeline();
+    var index=Number(args.layerIndex);
+    if(isNaN(index)||Math.floor(index)!=index||index<0||index>=timeline.layers.length||index>100000)
+        throw new Error("Animate target layer index is invalid.");
+    var layer=timeline.layers[index];
+    var liveName="",liveType="";
+    try{liveName=String(layer.name);}catch(e0){liveName="";}
+    try{liveType=String(layer.layerType);}catch(e1){liveType="";}
+    if(liveName!=String(args.expectedLayerName||"")||liveType!=String(args.expectedLayerType||""))
+        throw new Error("Animate target layer identity changed; inspect timeline again.");
+    var operation=String(args.operation||""),before=null,after=null;
+    if(operation=="rename")
+    {
+        before=liveName;
+        if(typeof args.expectedValue!="string"||before!=args.expectedValue)throw new Error("Animate layer name changed before mutation.");
+        if(typeof args.value!="string"||!args.value.length||args.value.length>512)throw new Error("Animate layer rename value is invalid.");
+        layer.name=args.value;
+        try{after=String(layer.name);}catch(e2){after=null;}
+    }
+    else if(operation=="visible")
+    {
+        try{before=Boolean(layer.visible);}catch(e3){throw new Error("Animate layer visibility is unavailable.");}
+        if(typeof args.expectedValue!="boolean"||before!==args.expectedValue||typeof args.value!="boolean")
+            throw new Error("Animate layer visibility changed or requested value is invalid.");
+        layer.visible=args.value;
+        try{after=Boolean(layer.visible);}catch(e4){after=null;}
+    }
+    else if(operation=="locked")
+    {
+        try{before=Boolean(layer.locked);}catch(e5){throw new Error("Animate layer lock state is unavailable.");}
+        if(typeof args.expectedValue!="boolean"||before!==args.expectedValue||typeof args.value!="boolean")
+            throw new Error("Animate layer lock state changed or requested value is invalid.");
+        layer.locked=args.value;
+        try{after=Boolean(layer.locked);}catch(e6){after=null;}
+    }
+    else throw new Error("Unsupported Animate layer mutation operation.");
+    if(!shuviAnimateSamePrimitive(after,args.value))
+        throw new Error("Animate layer mutation readback mismatch; execution status is uncertain.");
+    var afterContext=shuviAnimateContext();
+    if(afterContext.documentSignature!=expectedDocument||afterContext.timelineSignature!=expectedTimeline||afterContext.documentPath!=expectedPath)
+        throw new Error("Animate document/timeline identity changed after mutation; execution status is uncertain.");
+    return {schemaVersion:1,mutationPerformed:true,documentSignature:expectedDocument,timelineSignature:expectedTimeline,
+        documentPath:expectedPath,layerIndex:index,expectedLayerName:String(args.expectedLayerName||""),
+        expectedLayerType:String(args.expectedLayerType||""),operation:operation,before:before,after:after,
+        retrySafe:false,runtimeVerified:false};
+}
+
 function shuviAnimateDispatch(action,encodedArgs)
 {
     try
@@ -189,7 +253,8 @@ function shuviAnimateDispatch(action,encodedArgs)
         else if(action=="inspect_library")data=shuviAnimateInspectLibrary(args);
         else if(action=="inspect_selection")data=shuviAnimateInspectSelection(args);
         else if(action=="verify_identity")data=shuviAnimateVerifyIdentity(args);
-        else throw new Error("Unsupported Shuvi Animate read-only action: "+action);
+        else if(action=="set_layer_property")data=shuviAnimateSetLayerProperty(args);
+        else throw new Error("Unsupported Shuvi Animate action: "+action);
         return ({ok:true,data:data}).toSource();
     }
     catch(error){return ({ok:false,error:shuviAnimateBoundString(error,2000)}).toSource();}
