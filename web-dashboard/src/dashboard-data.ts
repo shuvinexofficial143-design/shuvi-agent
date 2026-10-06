@@ -16,6 +16,18 @@ export interface FeatureModule {
   stateLabel: string;
   accent: string;
   icon: string;
+  capabilities: string[];
+  workflows: string[];
+  requirement: string;
+}
+
+export interface RoutingPreset {
+  id: string;
+  name: string;
+  description: string;
+  workload: string;
+  provider: string;
+  modelHint: string;
 }
 
 export const navItems: NavItem[] = [
@@ -38,7 +50,10 @@ export const creativeModules: FeatureModule[] = [
     state: "ready",
     stateLabel: "Integration code present",
     accent: "violet",
-    icon: "Pr"
+    icon: "Pr",
+    capabilities: ["Project and sequence awareness", "Timeline assembly", "Caption and graphics workflows", "Export-oriented finishing"],
+    workflows: ["Talking-head edit", "Scene rough cut", "Layering and graphics", "Delivery preparation"],
+    requirement: "Premiere Pro + local Shuvi bridge"
   },
   {
     id: "after-effects",
@@ -48,7 +63,10 @@ export const creativeModules: FeatureModule[] = [
     state: "ready",
     stateLabel: "Integration code present",
     accent: "indigo",
-    icon: "Ae"
+    icon: "Ae",
+    capabilities: ["Composition control", "Layer operations", "Keyframe and animation workflows", "Acceptance checks"],
+    workflows: ["Motion graphics", "Tracked overlays", "Hand/VFX augmentation", "Template-driven animation"],
+    requirement: "After Effects + local Shuvi bridge"
   },
   {
     id: "blender",
@@ -58,7 +76,10 @@ export const creativeModules: FeatureModule[] = [
     state: "development",
     stateLabel: "Separate module in development",
     accent: "orange",
-    icon: "Bl"
+    icon: "Bl",
+    capabilities: ["Scene inspection", "Object and transform control", "Material and lighting workflows", "Animation planning"],
+    workflows: ["3D scene build", "Camera and lighting setup", "Animation blocking", "VFX scene preparation"],
+    requirement: "Dedicated Blender module still in development"
   },
   {
     id: "audition",
@@ -68,7 +89,10 @@ export const creativeModules: FeatureModule[] = [
     state: "ready",
     stateLabel: "Integration code present",
     accent: "teal",
-    icon: "Au"
+    icon: "Au",
+    capabilities: ["Dialogue cleanup", "Level balancing", "Noise-oriented workflows", "Round-trip audio finishing"],
+    workflows: ["Voice cleanup", "Podcast/dialogue pass", "Audio polish", "Premiere audio round-trip"],
+    requirement: "Adobe Audition + local Shuvi bridge"
   },
   {
     id: "remotion",
@@ -78,7 +102,10 @@ export const creativeModules: FeatureModule[] = [
     state: "ready",
     stateLabel: "Runtime present",
     accent: "cyan",
-    icon: "Rm"
+    icon: "Rm",
+    capabilities: ["Code-driven compositions", "Reusable motion systems", "Data-bound video", "Render planning"],
+    workflows: ["Automated explainers", "Template videos", "Dynamic motion graphics", "Batch variations"],
+    requirement: "Local Node/Remotion runtime"
   },
   {
     id: "media-encoder",
@@ -88,7 +115,10 @@ export const creativeModules: FeatureModule[] = [
     state: "local",
     stateLabel: "Local runtime required",
     accent: "blue",
-    icon: "Me"
+    icon: "Me",
+    capabilities: ["Export queue planning", "Preset-oriented delivery", "Format handoff", "Encoding status surface"],
+    workflows: ["YouTube delivery", "Social exports", "Master + proxy outputs", "Batch encoding"],
+    requirement: "Media Encoder + local runtime"
   }
 ];
 
@@ -101,7 +131,10 @@ export const toolModules: FeatureModule[] = [
     state: "local",
     stateLabel: "Local runtime only",
     accent: "blue",
-    icon: "PC"
+    icon: "PC",
+    capabilities: ["Window-scoped actions", "Application navigation", "Guarded clicks and typing", "Permission-gated execution"],
+    workflows: ["Open and configure apps", "Repeat UI procedures", "Assist desktop workflows", "Controlled automation"],
+    requirement: "Shuvi.exe on Windows"
   },
   {
     id: "screen-vision",
@@ -111,7 +144,10 @@ export const toolModules: FeatureModule[] = [
     state: "local",
     stateLabel: "Local runtime only",
     accent: "cyan",
-    icon: "Vi"
+    icon: "Vi",
+    capabilities: ["Visible-state understanding", "UI element reasoning", "Pre-action inspection", "Visual task context"],
+    workflows: ["Inspect editing state", "Read dialog context", "Validate visible result", "Guide UI control"],
+    requirement: "Local vision/runtime access"
   },
   {
     id: "coding",
@@ -121,7 +157,10 @@ export const toolModules: FeatureModule[] = [
     state: "local",
     stateLabel: "Local runtime only",
     accent: "green",
-    icon: "</>"
+    icon: "</>",
+    capabilities: ["Workspace reads", "Code edits", "Validation/test planning", "Git-aware task execution"],
+    workflows: ["Feature implementation", "Bug fixing", "Repo audit", "Build and validation"],
+    requirement: "Approved local workspace"
   },
   {
     id: "files",
@@ -131,7 +170,10 @@ export const toolModules: FeatureModule[] = [
     state: "local",
     stateLabel: "Local runtime only",
     accent: "amber",
-    icon: "Fi"
+    icon: "Fi",
+    capabilities: ["Scoped reads", "Controlled writes", "Project file management", "Permission boundary"],
+    workflows: ["Organize project assets", "Read references", "Prepare exports", "Manage local task files"],
+    requirement: "Approved filesystem scope"
   },
   {
     id: "powershell",
@@ -141,7 +183,10 @@ export const toolModules: FeatureModule[] = [
     state: "local",
     stateLabel: "Local runtime only",
     accent: "slate",
-    icon: ">_"
+    icon: ">_",
+    capabilities: ["Command preparation", "Risk display", "Explicit approval", "Audited execution"],
+    workflows: ["Development commands", "Local diagnostics", "Tool setup", "Controlled system tasks"],
+    requirement: "Explicit local approval"
   },
   {
     id: "orchestrator",
@@ -151,7 +196,10 @@ export const toolModules: FeatureModule[] = [
     state: "ready",
     stateLabel: "Core code present",
     accent: "violet",
-    icon: "Or"
+    icon: "Or",
+    capabilities: ["Task graphs", "Step checkpoints", "Recovery state", "Evidence-bound progress"],
+    workflows: ["Long coding tasks", "Multi-app creative work", "Recoverable task runs", "Approval-aware execution"],
+    requirement: "Core Shuvi runtime"
   }
 ];
 
@@ -163,6 +211,41 @@ export const modelProviders = [
   { name: "OpenRouter", short: "OR", note: "Multi-provider routing", state: "Configurable" },
   { name: "Ollama", short: "OL", note: "Local models", state: "Configurable" },
   { name: "Custom", short: "API", note: "OpenAI-compatible endpoint", state: "Configurable" }
+];
+
+export const routingPresets: RoutingPreset[] = [
+  {
+    id: "general",
+    name: "Balanced",
+    description: "General Shuvi planning and everyday tasks.",
+    workload: "General",
+    provider: "OpenAI",
+    modelHint: "general-purpose model"
+  },
+  {
+    id: "coding",
+    name: "Coding focus",
+    description: "Repo work, debugging and implementation planning.",
+    workload: "Coding",
+    provider: "Anthropic",
+    modelHint: "strong coding/reasoning model"
+  },
+  {
+    id: "creative",
+    name: "Creative edit",
+    description: "Video editing, motion graphics and creative decisions.",
+    workload: "Video Editing",
+    provider: "OpenAI",
+    modelHint: "multimodal creative model"
+  },
+  {
+    id: "3d",
+    name: "3D / Blender",
+    description: "Scene planning, technical 3D tasks and Blender workflows.",
+    workload: "3D",
+    provider: "Google",
+    modelHint: "long-context multimodal model"
+  }
 ];
 
 export const stateText: Record<ModuleState, string> = {
