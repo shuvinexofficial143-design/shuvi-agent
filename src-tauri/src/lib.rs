@@ -675,6 +675,7 @@ enum ToolAction {
     CharacterAnimatorLaunch { character_animator_exe:String },
     CharacterAnimatorControlCatalog,
     CharacterAnimatorPlanControl { request:character_animator::ControlPlanRequest },
+    CharacterAnimatorRuntimePreflight { request:character_animator::RuntimeControlPreflightRequest },
     CharacterAnimatorPlanInterchange { request:character_animator::InterchangePlanRequest },
     PremiereDetect,
     PremiereLaunch { project: Option<String> },
@@ -3338,6 +3339,18 @@ fn stage_tool(
                 "Plan Character Animator control input".into(),
                 "Build a bounded plan for a documented Character Animator application shortcut, user-mapped trigger key, or user-mapped MIDI note. Planning only; no key/MIDI input is sent.".into(),
                 RiskLevel::Low)
+        }
+
+        "character_animator_runtime_preflight" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"character_animator_runtime_preflight requires request.".to_string())?;
+            let request:character_animator::RuntimeControlPreflightRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Character Animator runtime preflight request: {e}"))?;
+            request.validate()?;
+            (ToolAction::CharacterAnimatorRuntimePreflight {request},
+                "Verify Character Animator runtime control target".into(),
+                "Permission-first preflight only: require explicit approval, an exact Shuvi-managed process identity, and exact foreground Character Animator executable/PID verification. No keyboard or MIDI input is sent.".into(),
+                RiskLevel::Medium)
         }
         "character_animator_plan_interchange" => {
             let value=proposal.arguments.get("request").cloned()
@@ -10436,6 +10449,20 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
         }
         ToolAction::CharacterAnimatorPlanControl {request} => {
             let value=character_animator::plan_control(&request)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+
+        ToolAction::CharacterAnimatorRuntimePreflight {request} => {
+            if !managed_process_identity_matches(state,request.expected_pid)?{
+                return Err("Character Animator runtime preflight requires the exact live Shuvi-managed process instance.".into());
+            }
+            let detection=character_animator::detect_installs()?;
+            character_animator::exact_detected_executable(&detection,&request.character_animator_exe)?;
+            let value=character_animator::runtime_control_preflight(&request,true)?;
             Ok(ActionResult {
                 success:true,tool,
                 stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),

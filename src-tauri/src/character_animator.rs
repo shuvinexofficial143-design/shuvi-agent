@@ -1,6 +1,6 @@
 use serde::{Deserialize,Serialize};
 use serde_json::{json,Value};
-use std::{collections::HashSet,fs,path::{Path,PathBuf}};
+use std::{collections::HashSet,fs,path::{Path,PathBuf},process::Command};
 
 const MAX_ADOBE_ENTRIES:usize=128;
 const MAX_PATH_BYTES:usize=32*1024;
@@ -132,7 +132,7 @@ pub fn capability_report()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_character_animator",
-        "source_milestone_percent":40,
+        "source_milestone_percent":60,
         "source_scope_complete":false,
         "implemented":{
             "bounded_windows_detection":true,
@@ -143,13 +143,17 @@ pub fn capability_report()->Value{
             "readiness_report":true,
             "control_catalog":true,
             "bounded_control_planning":true,
-            "bounded_interchange_planning":true
+            "bounded_interchange_planning":true,
+            "runtime_control_preflight":true,
+            "foreground_focus_verification":true,
+            "explicit_user_approval_guard":true
         },
         "automation_transport":{
             "status":"no_public_host_api_claimed",
             "implemented":false,
             "supported_control_surfaces":["keyboard_shortcuts","project_trigger_keys","midi_notes","dynamic_link","media_encoder_handoff"],
-            "execution_adapter":"not_implemented"
+            "execution_adapter":"permission_first_preflight",
+            "input_delivery_implemented":false
         },
         "not_implemented":{
             "host_bridge":true,
@@ -158,6 +162,7 @@ pub fn capability_report()->Value{
             "puppet_inspection":true,
             "timeline_take_inspection":true,
             "recording_control_execution":true,
+            "keyboard_input_delivery":true,
             "trigger_input_execution":true,
             "midi_input_execution":true,
             "project_mutation":true,
@@ -174,16 +179,16 @@ pub fn readiness_report()->Value{
         "schema_version":1,
         "integration":"adobe_character_animator",
         "source_milestone_percent":40,
-        "source_coding_status":"supported_control_contract_complete",
+        "source_coding_status":"runtime_preflight_complete",
         "desktop_detection":true,
         "exact_detected_launch":true,
         "host_transport":"not_implemented",
         "future_host_transport":"no_public_host_api_claimed",
         "host_ready_verified":false,
-        "project_automation_ready":"planning_only",
+        "project_automation_ready":"runtime_preflight_only",
         "source_runtime_verified":false,
         "production_ready":false,
-        "next_source_phase":"add a permission-first runtime adapter for documented keyboard/trigger/MIDI control only if reliable focus/input verification can be implemented; keep project/scene/puppet host inspection blocked without an authoritative API"
+        "next_source_phase":"add bounded keyboard input delivery only after immediate pre-send focus revalidation can be kept fail-closed; keep MIDI delivery and project/scene/puppet host inspection blocked until separately supported"
     })
 }
 
@@ -255,7 +260,7 @@ pub fn control_catalog()->Value{
             "midi_note":{"range":[0,127],"mapping":"user_project_defined","requires_project_mapping_acknowledgement":true}
         },
         "host_api_claimed":false,
-        "runtime_input_adapter":"not_implemented",
+        "runtime_input_adapter":"permission_first_preflight",
         "source_runtime_verified":false,
         "production_ready":false
     })
@@ -298,6 +303,108 @@ pub fn plan_control(request:&ControlPlanRequest)->Result<Value,String>{
         "source_runtime_verified":false,
         "production_ready":false
     }))
+}
+
+
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeControlPreflightRequest{
+    pub control:ControlPlanRequest,
+    pub character_animator_exe:String,
+    pub expected_pid:u32,
+    pub explicit_user_approval:bool,
+}
+
+impl RuntimeControlPreflightRequest{
+    pub fn validate(&self)->Result<(),String>{
+        self.control.validate()?;
+        validate_requested_executable(&self.character_animator_exe)?;
+        if self.expected_pid==0{
+            return Err("Character Animator runtime preflight requires a non-zero expected_pid.".into());
+        }
+        if !self.explicit_user_approval{
+            return Err("Character Animator runtime preflight requires explicit_user_approval=true.".into());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os="windows")]
+const FOREGROUND_PROBE_SCRIPT:&str=r#"
+$ErrorActionPreference='Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class ShuviForegroundWindow {
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+}
+'@
+$handle=[ShuviForegroundWindow]::GetForegroundWindow()
+if($handle -eq [IntPtr]::Zero){ throw 'No foreground window is available.' }
+[uint32]$foregroundPid=0
+[void][ShuviForegroundWindow]::GetWindowThreadProcessId($handle,[ref]$foregroundPid)
+$process=Get-Process -Id $foregroundPid -ErrorAction Stop
+[pscustomobject]@{pid=[uint32]$foregroundPid;path=[string]$process.Path} | ConvertTo-Json -Compress
+"#;
+
+pub fn runtime_control_preflight(
+    request:&RuntimeControlPreflightRequest,
+    managed_process_identity_verified:bool,
+)->Result<Value,String>{
+    request.validate()?;
+    if !managed_process_identity_verified{
+        return Err("Character Animator runtime preflight requires the exact live Shuvi-managed process identity.".into());
+    }
+
+    #[cfg(target_os="windows")]
+    {
+        let expected_exe=fs::canonicalize(&request.character_animator_exe)
+            .map_err(|e|format!("Expected Character Animator executable is unavailable: {e}"))?;
+        let output=Command::new("powershell.exe")
+            .args(["-NoLogo","-NoProfile","-NonInteractive","-Command",FOREGROUND_PROBE_SCRIPT])
+            .output()
+            .map_err(|e|format!("Could not inspect the Windows foreground process: {e}"))?;
+        if !output.status.success(){
+            return Err(format!(
+                "Character Animator foreground verification failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        let observed:Value=serde_json::from_slice(&output.stdout)
+            .map_err(|e|format!("Could not parse Character Animator foreground verification: {e}"))?;
+        let observed_pid=observed.get("pid").and_then(Value::as_u64)
+            .and_then(|v|u32::try_from(v).ok())
+            .ok_or("Foreground verification did not return a valid PID.")?;
+        let observed_path=observed.get("path").and_then(Value::as_str)
+            .ok_or("Foreground verification did not return an executable path.")?;
+        let observed_exe=fs::canonicalize(observed_path)
+            .map_err(|e|format!("Foreground executable path could not be verified: {e}"))?;
+        if observed_pid!=request.expected_pid || observed_exe!=expected_exe{
+            return Err("Character Animator is not the exact approved Shuvi-managed foreground process; input delivery remains blocked.".into());
+        }
+        Ok(json!({
+            "preflight_type":"character_animator_runtime_control",
+            "control_kind":request.control.control_kind,
+            "expected_pid":request.expected_pid,
+            "character_animator_exe":expected_exe,
+            "managed_process_identity_verified":true,
+            "foreground_process_verified":true,
+            "explicit_user_approval":true,
+            "input_delivery_implemented":false,
+            "execution_supported":false,
+            "mutation_performed":false,
+            "source_runtime_verified":false,
+            "production_ready":false
+        }))
+    }
+
+    #[cfg(not(target_os="windows"))]
+    {
+        Err("Character Animator runtime preflight is Windows-only.".into())
+    }
 }
 
 #[derive(Debug,Clone,Serialize,Deserialize)]
@@ -410,7 +517,7 @@ mod tests{
     #[test]
     fn foundation_does_not_invent_host_transport_or_runtime(){
         let capability=capability_report();
-        assert_eq!(capability["source_milestone_percent"],40);
+        assert_eq!(capability["source_milestone_percent"],60);
         assert_eq!(capability["automation_transport"]["status"],"no_public_host_api_claimed");
         assert_eq!(capability["automation_transport"]["implemented"],false);
         assert_eq!(capability["source_runtime_verified"],false);
@@ -419,7 +526,7 @@ mod tests{
         let readiness=readiness_report();
         assert_eq!(readiness["host_transport"],"not_implemented");
         assert_eq!(readiness["future_host_transport"],"no_public_host_api_claimed");
-        assert_eq!(readiness["project_automation_ready"],"planning_only");
+        assert_eq!(readiness["project_automation_ready"],"runtime_preflight_only");
     }
 
     #[test]
@@ -443,6 +550,32 @@ mod tests{
             acknowledge_project_mapping:true,
         };
         assert_eq!(plan_control(&trigger).unwrap()["execution_supported"],false);
+    }
+
+
+    #[test]
+    fn runtime_preflight_requires_explicit_approval_and_managed_identity(){
+        let exe=std::env::temp_dir().join("Character Animator.exe");
+        let request=RuntimeControlPreflightRequest{
+            control:ControlPlanRequest{
+                control_kind:"application_shortcut".into(),
+                command:Some("record_take_work_area".into()),
+                key:None,
+                midi_note:None,
+                acknowledge_project_mapping:false,
+            },
+            character_animator_exe:exe.to_string_lossy().into_owned(),
+            expected_pid:42,
+            explicit_user_approval:false,
+        };
+        assert!(request.validate().is_err());
+
+        let approved=RuntimeControlPreflightRequest{
+            explicit_user_approval:true,
+            ..request
+        };
+        assert!(approved.validate().is_ok());
+        assert!(runtime_control_preflight(&approved,false).is_err());
     }
 
     #[test]
