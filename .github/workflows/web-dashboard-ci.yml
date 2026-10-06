@@ -1,0 +1,36 @@
+name: Web Dashboard CI
+
+on:
+  push:
+    branches:
+      - ui-dashboard
+    paths:
+      - "web-dashboard/**"
+      - ".github/workflows/web-dashboard-ci.yml"
+  pull_request:
+    paths:
+      - "web-dashboard/**"
+      - ".github/workflows/web-dashboard-ci.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: web-dashboard
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build dashboard
+        run: npm run build
