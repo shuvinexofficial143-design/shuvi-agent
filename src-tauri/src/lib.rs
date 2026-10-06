@@ -83,6 +83,7 @@ mod audition;
 mod audition_acceptance;
 mod animate;
 mod animate_checkpoint;
+mod illustrator;
 mod photoshop;
 mod photoshop_checkpoint;
 mod motion_graphics;
@@ -645,6 +646,10 @@ enum ToolAction {
     AnimatePlanRecovery { backup_path:String, expected_source_path:String, expected_document_signature:String },
     AnimatePlanPublish { request:animate::PublishPlanRequest },
     AnimateAcceptanceSummary,
+    IllustratorCapabilityReport,
+    IllustratorReadinessReport,
+    IllustratorDetect,
+    IllustratorLaunch { illustrator_exe:String },
     PremiereDetect,
     PremiereLaunch { project: Option<String> },
     PremiereBridgeStart,
@@ -3263,6 +3268,32 @@ fn stage_tool(
                 "Plan Premiere insertion for verified motion output".into(),
                 "Read persisted final motion acceptance and return a normal premiere_insert_media proposal. No Premiere mutation.".into(),
                 RiskLevel::Low)
+        }
+        "illustrator_capability_report" => (
+            ToolAction::IllustratorCapabilityReport,
+            "Read Illustrator source capability report".into(),
+            "Source milestone declaration only; does not claim a live Illustrator host, CEP bridge, or document automation capability.".into(),
+            RiskLevel::Low,
+        ),
+        "illustrator_readiness_report" => (
+            ToolAction::IllustratorReadinessReport,
+            "Read Illustrator readiness report".into(),
+            "Report the current 20% Illustrator desktop foundation and explicit runtime gaps without promoting untested capabilities.".into(),
+            RiskLevel::Low,
+        ),
+        "illustrator_detect" => (
+            ToolAction::IllustratorDetect,
+            "Detect installed Adobe Illustrator".into(),
+            "Read-only bounded Program Files/Adobe inspection; does not launch Illustrator.".into(),
+            RiskLevel::Low,
+        ),
+        "illustrator_launch" => {
+            let illustrator_exe=arg_string(&proposal.arguments,"illustrator_exe")?;
+            illustrator::validate_requested_executable(&illustrator_exe)?;
+            (ToolAction::IllustratorLaunch {illustrator_exe:illustrator_exe.clone()},
+                "Launch detected Adobe Illustrator".into(),
+                format!("Launch exact freshly detected Adobe Illustrator executable {illustrator_exe}; no document open, script execution, or host mutation."),
+                RiskLevel::Medium)
         }
         "animate_capability_report" => (
             ToolAction::AnimateCapabilityReport,
@@ -10153,6 +10184,53 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let value=request.plan(&acceptance)?;
             Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::IllustratorCapabilityReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&illustrator::capability_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::IllustratorReadinessReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&illustrator::readiness_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::IllustratorDetect => {
+            let value=illustrator::detect_installs()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::IllustratorLaunch {illustrator_exe} => {
+            let detection=illustrator::detect_installs()?;
+            let exact=illustrator::exact_detected_executable(&detection,&illustrator_exe)?;
+            let mut child=Command::new(&exact).spawn()
+                .map_err(|e|format!("Could not launch detected Adobe Illustrator: {e}"))?;
+            let pid=child.id();
+            if let Err(error)=register_managed_process(state,pid){
+                let _=child.kill();
+                let _=child.wait();
+                return Err(format!("Adobe Illustrator was stopped before Shuvi could register the managed process: {error}"));
+            }
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "illustrator_exe":exact,
+                    "pid":pid,
+                    "launch_dispatched":true,
+                    "host_ready_verified":false,
+                    "host_transport":"not_implemented",
+                    "source_runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
         }
         ToolAction::AnimateCapabilityReport => {
             Ok(ActionResult {
