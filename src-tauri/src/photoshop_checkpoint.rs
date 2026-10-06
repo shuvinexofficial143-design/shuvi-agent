@@ -71,9 +71,9 @@ fn sidecar_path(backup:&Path)->PathBuf{
     backup.with_file_name(format!("{name}.shuvi.json"))
 }
 
-pub fn create(document_id:u32,source_path:&str,saved:bool,cloud_document:bool,purpose:&str)->Result<Value,String>{
+fn create_internal(document_id:u32,source_path:&str,require_clean_saved:bool,saved:bool,cloud_document:bool,purpose:&str)->Result<Value,String>{
     if document_id==0{return Err("Photoshop checkpoint requires a non-zero document ID.".into());}
-    if !saved{return Err("Photoshop higher-risk edit requires the document to be saved before checkpointing.".into());}
+    if require_clean_saved&&!saved{return Err("Photoshop higher-risk edit requires the document to be saved before checkpointing.".into());}
     if cloud_document{return Err("Photoshop cloud-document checkpoint copy is not supported in this source milestone.".into());}
     if purpose.trim().is_empty()||purpose.len()>120||purpose.chars().any(char::is_control){
         return Err("Photoshop checkpoint purpose is invalid.".into());
@@ -124,6 +124,14 @@ pub fn create(document_id:u32,source_path:&str,saved:bool,cloud_document:bool,pu
         "purpose":purpose,
         "runtime_restore_verified":false
     }))
+}
+
+pub fn create(document_id:u32,source_path:&str,saved:bool,cloud_document:bool,purpose:&str)->Result<Value,String>{
+    create_internal(document_id,source_path,true,saved,cloud_document,purpose)
+}
+
+pub fn create_before_save(document_id:u32,source_path:&str,cloud_document:bool)->Result<Value,String>{
+    create_internal(document_id,source_path,false,false,cloud_document,"document_save")
 }
 
 pub fn verify(backup_path:&str,expected_source_path:&str,expected_document_id:u32)->Result<Value,String>{
@@ -197,6 +205,16 @@ mod tests{
         assert!(create(1,source.to_str().unwrap(),true,true,"transform").is_err());
         let png=fixture.0.join("design.png");fs::write(&png,b"x").unwrap();
         assert!(create(1,png.to_str().unwrap(),true,false,"transform").is_err());
+    }
+
+    #[test]
+    fn pre_save_checkpoint_allows_dirty_existing_psd(){
+        let fixture=Fixture::new();
+        let source=fixture.0.join("dirty.psd");
+        fs::write(&source,b"last-saved-state").unwrap();
+        let created=create_before_save(5,source.to_str().unwrap(),false).unwrap();
+        assert_eq!(created["integrity_verified"],true);
+        assert_eq!(created["purpose"],"document_save");
     }
 
     #[test]

@@ -1,94 +1,120 @@
 # Photoshop Integration Status
 
-## Milestone
+## Source milestone
 
-Current declared source milestone: **80%**
+Current declared source milestone: **100%**
 
-The 80% milestone extends the guarded Photoshop bridge with checkpoint-bound text editing and bounded layer transforms.
+This means the bounded Photoshop integration scope defined for Shuvi is source-complete. It does **not** mean every Photoshop feature is implemented, and it does not claim live Photoshop runtime verification or production readiness.
 
-## Source-supported foundation
+## Implemented source scope
 
-- bounded Windows Photoshop detection and exact launch,
+### Desktop foundation
+- bounded Windows Photoshop detection,
+- exact detected `Photoshop.exe` launch,
+- capability/readiness reports,
+- managed-process tracking.
+
+### UXP bridge
 - Photoshop UXP manifest v5 / API v2,
-- localhost token-paired bridge,
-- bounded request/result correlation,
-- document context with saved/cloud/path evidence,
-- bounded layer inventory with IDs, locks, bounds and text metadata,
-- guarded layer rename / visibility / opacity,
-- text-layer content editing,
-- text font-size editing,
-- bounded layer translate / scale / rotate,
-- fresh exact document/layer preconditions,
-- `executeAsModal`,
-- Photoshop history suspension + cancel-on-error,
-- host mutation receipt validation,
-- independent post-write layer readback,
-- saved local PSD/PSB checkpoint copy before text/transform writes,
-- checkpoint sidecar binding source path, document ID, file size and FNV-1a integrity fingerprint,
-- read-only checkpoint verification / recovery evidence,
+- localhost-only `127.0.0.1:17363`,
+- rotating pairing token,
+- bounded queue and request/result identity,
+- timeout handling,
+- mutation timeout/pairing loss becomes `execution_status_unknown`,
+- blind retry is not allowed.
+
+### Read-only inspection
+- active document ID/title/dimensions/resolution/mode,
+- saved state,
+- cloud/local state,
+- exact document path where available,
+- active layer IDs,
+- bounded layer tree (256 entries, depth 8),
+- layer ID/name/kind/visibility/opacity,
+- lock state,
+- optional bounds,
+- text contents/font size,
+- layer-mask density/feather when available.
+
+### Guarded layer writes
+- rename,
+- visibility,
+- opacity.
+
+### Guarded advanced writes
+- text contents,
+- text font size,
+- translate,
+- scale,
+- rotate,
+- layer-mask density,
+- layer-mask feather.
+
+All advanced writes require fresh exact document/layer identity and post-write readback. Text, transforms, and mask edits additionally require a clean saved local PSD/PSB checkpoint before the host mutation.
+
+### Checkpoints
+- byte-for-byte local PSD/PSB backup,
+- source/backup FNV-1a integrity fingerprints,
+- sidecar bound to source path + Photoshop document ID,
+- read-only checkpoint verification,
 - no automatic restore.
 
-Adobe documents text editing through `TextItem.contents` and `TextItem.characterStyle.size`, and exposes `Layer.translate`, `Layer.scale`, and `Layer.rotate` as layer transform APIs. Photoshop state-changing operations remain wrapped in `executeAsModal`.
+### Guarded document save
+`photoshop_save_document` is limited to an existing local PSD/PSB.
 
-## Checkpoint boundary
+It requires:
+- exact active document ID,
+- exact current document path,
+- latest inspected `saved=false`,
+- non-cloud document,
+- a verified pre-save disk checkpoint.
 
-Text and transform operations require:
+Only then does the UXP host call `Document.save()`. Shuvi independently re-inspects the document afterward and requires the same ID/path with `saved=true`.
 
-1. the active document is saved,
-2. it is a local PSD/PSB (not cloud-only),
-3. its absolute path is available,
-4. a byte-for-byte backup copy is created in `Shuvi Photoshop Backups`,
-5. source and backup fingerprints match,
-6. a sidecar binds checkpoint evidence to the document ID and source path.
+No arbitrary Save As or arbitrary export path is claimed. Standard UXP Save As/export requires a UXP file entry/token or user file-picker boundary; Shuvi does not bypass that security model.
 
-If any checkpoint step fails, the Photoshop host mutation is not sent.
+## Canonical completion summary
 
-`photoshop_verify_checkpoint` verifies the backup and its sidecar but never restores automatically.
+`photoshop_acceptance_summary` exposes the declared source scope, safety gates, and deliberately unclaimed features.
 
-## Text edit safety
+It reports:
+- source milestone 100%,
+- source scope complete,
+- runtime verification false,
+- production ready false.
 
-Text writes require the exact latest:
+## Intentionally unclaimed
 
-- document ID,
-- layer ID,
-- text contents,
-- font size.
+The 100% source milestone does **not** claim:
 
-Only replacement contents and font size are supported in this milestone. If the target is not an inspected text layer, is locked, or the expected text state changed, the write is rejected.
-
-## Transform safety
-
-Supported transforms:
-
-- translate: each axis bounded to ±10,000 px,
-- scale: 1%..1000% per axis,
-- rotate: ±360°.
-
-The layer must be unlocked and position-unlocked. Exact pre-transform bounds must match the fresh inventory. The mutation receipt must show geometric change, and a separate post-write inventory must match the receipt's final bounds.
-
-## Still blocked at 80%
-
-- layer deletion,
-- merge / flatten / rasterize,
 - arbitrary `batchPlay`,
-- arbitrary pixel editing,
+- layer delete / merge / flatten / rasterize,
+- arbitrary pixel mutation,
 - unrestricted filters,
 - generative fill,
 - automatic checkpoint restore,
-- live runtime acceptance.
+- arbitrary-path Save As/export without UXP file-token/user boundary.
 
-## Planned 100% source milestone
+These are excluded deliberately rather than represented as fake capabilities.
 
-1. bounded selection/mask and adjustment-layer controls where host APIs are explicit,
-2. bounded smart-object replacement/export workflows where exact APIs and readback are available,
-3. canonical Photoshop acceptance summary,
-4. final source safety audit,
-5. keep generative fill / arbitrary pixel mutation unclaimed unless a later verified scope explicitly adds them.
+## Safety gates
 
-## Readiness
+- permission-first typed mutation tools,
+- high-risk approval for mutations/disk writes,
+- exact document/layer/path identity,
+- fresh expected-state preconditions,
+- bounded numeric/text limits,
+- modal Photoshop mutation context,
+- Photoshop history suspension for reversible host mutations,
+- local PSD/PSB checkpoints before advanced/disk writes,
+- host receipt validation,
+- independent post-write readback,
+- execution-status-unknown handling with no blind retry.
+
+## Runtime readiness
 
 `source_runtime_verified=false`
 
 `production_ready=false`
 
-Real Photoshop runtime verification remains pending until a suitable Windows Photoshop environment is available.
+A real Windows Photoshop acceptance run is still required before either flag can become true.

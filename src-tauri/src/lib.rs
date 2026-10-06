@@ -404,6 +404,9 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - photoshop_set_text_layer: {"expected_document_id":123,"layer_id":456,"expected_contents":"exact latest text","expected_size":24,"contents":"optional replacement","size":30} — high-risk checkpointed text content/font-size edit
 - photoshop_transform_layer: {"expected_document_id":123,"layer_id":456,"operation":"translate|scale|rotate","expected_bounds":{"left":0,"top":0,"right":100,"bottom":100},"x":10,"y":20,"width_percent":80,"height_percent":80,"angle_degrees":15} — high-risk checkpointed bounded transform; include only fields relevant to the chosen operation
 - photoshop_verify_checkpoint: {"backup_path":"exact Shuvi checkpoint backup","expected_source_path":"exact saved PSD/PSB path","expected_document_id":123} — read-only checkpoint integrity/recovery evidence; never restores automatically
+- photoshop_set_layer_mask: {"expected_document_id":123,"layer_id":456,"operation":"layer_mask_density|layer_mask_feather","expected_value":100,"value":75} — high-risk checkpointed layer-mask control using exact inspected value
+- photoshop_save_document: {"expected_document_id":123,"expected_document_path":"exact current PSD/PSB path","expected_saved":false} — high-risk checkpointed save of the exact existing local PSD/PSB; no Save As dialog/path inference
+- photoshop_acceptance_summary: {} — canonical source-scope completion summary; runtime verification remains false until a real Photoshop host run
 - workspace_scan: {"path":"absolute workspace path"}
 - search_text: {"path":"absolute workspace path","query":"text to find"}
 - replace_text: {"path":"absolute file path","old":"exact old text","new":"replacement text"}
@@ -821,6 +824,9 @@ enum ToolAction {
     PhotoshopSetTextLayer { request:photoshop::TextWriteRequest },
     PhotoshopTransformLayer { request:photoshop::TransformRequest },
     PhotoshopVerifyCheckpoint { backup_path:String, expected_source_path:String, expected_document_id:u32 },
+    PhotoshopSetLayerMask { request:photoshop::MaskWriteRequest },
+    PhotoshopSaveDocument { request:photoshop::SaveRequest },
+    PhotoshopAcceptanceSummary,
     WorkspaceScan { path: String },
     SearchText { path: String, query: String },
     ReplaceText { path: String, old: String, new_value: String },
@@ -1493,6 +1499,9 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "photoshop_set_text_layer"
         | "photoshop_transform_layer"
         | "photoshop_verify_checkpoint"
+        | "photoshop_set_layer_mask"
+        | "photoshop_save_document"
+        | "photoshop_acceptance_summary"
         | "workspace_scan"
         | "search_text"
         | "replace_text"
@@ -6568,6 +6577,30 @@ fn stage_tool(
                 "Read-only integrity verification of an exact Shuvi PSD/PSB checkpoint and sidecar; no automatic restore.".into(),
                 RiskLevel::Low)
         }
+        "photoshop_set_layer_mask" => {
+            let request:photoshop::MaskWriteRequest=serde_json::from_value(proposal.arguments.clone())
+                .map_err(|e|format!("Invalid Photoshop layer-mask request: {e}"))?;
+            request.validate()?;
+            (ToolAction::PhotoshopSetLayerMask {request:request.clone()},
+                "Edit exact Photoshop layer mask property".into(),
+                format!("High risk checkpointed Photoshop layer-mask edit: document_id={}, layer_id={}, operation={}. Requires exact inspected mask value, saved local PSD/PSB checkpoint, modal history guard and independent post-write readback.",request.expected_document_id,request.layer_id,request.operation),
+                RiskLevel::High)
+        }
+        "photoshop_save_document" => {
+            let request:photoshop::SaveRequest=serde_json::from_value(proposal.arguments.clone())
+                .map_err(|e|format!("Invalid Photoshop save request: {e}"))?;
+            request.validate()?;
+            (ToolAction::PhotoshopSaveDocument {request:request.clone()},
+                "Save exact Photoshop document".into(),
+                format!("High risk disk write for document_id={} at exact existing path {}. Shuvi requires expected_saved=false, creates a pre-save PSD/PSB checkpoint, rechecks active document/path, invokes Document.save once, then verifies saved=true.",request.expected_document_id,request.expected_document_path),
+                RiskLevel::High)
+        }
+        "photoshop_acceptance_summary" => (
+            ToolAction::PhotoshopAcceptanceSummary,
+            "Read Photoshop source acceptance summary".into(),
+            "Canonical source-scope completion report. It explicitly keeps runtime_verified and production_ready false until live Photoshop acceptance exists.".into(),
+            RiskLevel::Low,
+        ),
         "workspace_scan" => {
             let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
             (
@@ -15255,6 +15288,88 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             Ok(ActionResult {
                 success:true,tool,
                 stdout:serde_json::to_string_pretty(&evidence).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopSetLayerMask {request} => {
+            let raw_context=state.photoshop_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let context=photoshop::validate_context_receipt(&raw_context)?;
+            let raw_inventory=state.photoshop_bridge.request("list_layers",json!({}),Duration::from_secs(8)).await?;
+            let inventory=photoshop::validate_layer_inventory(&raw_inventory)?;
+            let precondition=photoshop::validate_mask_precondition(&request,&context,&inventory)?;
+            let source_path=context.get("document_path").and_then(Value::as_str)
+                .ok_or("Photoshop layer-mask edit requires a saved local document path.")?;
+            let checkpoint=photoshop_checkpoint::create(
+                request.expected_document_id,source_path,
+                context.get("saved").and_then(Value::as_bool)==Some(true),
+                context.get("cloud_document").and_then(Value::as_bool)==Some(true),
+                "layer_mask_edit"
+            )?;
+
+            let raw_receipt=state.photoshop_bridge.request("set_layer_mask",request.bridge_arguments()?,Duration::from_secs(20)).await?;
+            let mutation_receipt=photoshop::validate_mask_receipt(&request,&raw_receipt)?;
+            let post_raw=state.photoshop_bridge.request("list_layers",json!({}),Duration::from_secs(8)).await?;
+            let post_inventory=photoshop::validate_layer_inventory(&post_raw)?;
+            let post_readback=photoshop::validate_mask_post_readback(&request,&post_inventory)?;
+
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "checkpoint":checkpoint,
+                    "precondition":precondition,
+                    "mutation_receipt":mutation_receipt,
+                    "post_readback":post_readback,
+                    "post_state_verified":true,
+                    "checkpoint_bound":true,
+                    "automatic_restore":false,
+                    "automatic_retry_allowed":false,
+                    "runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopSaveDocument {request} => {
+            let raw_context=state.photoshop_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let context=photoshop::validate_context_receipt(&raw_context)?;
+            let precondition=photoshop::validate_save_precondition(&request,&context)?;
+            let checkpoint=photoshop_checkpoint::create_before_save(
+                request.expected_document_id,
+                &request.expected_document_path,
+                context.get("cloud_document").and_then(Value::as_bool)==Some(true)
+            )?;
+
+            let raw_receipt=state.photoshop_bridge.request("save_document",request.bridge_arguments()?,Duration::from_secs(30)).await?;
+            let save_receipt=photoshop::validate_save_receipt(&request,&raw_receipt)?;
+            let post_raw=state.photoshop_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let post_context=photoshop::validate_context_receipt(&post_raw)?;
+            if post_context.get("document_id").and_then(Value::as_u64)!=Some(request.expected_document_id as u64)
+                ||post_context.get("document_path").and_then(Value::as_str)!=Some(request.expected_document_path.as_str())
+                ||post_context.get("saved").and_then(Value::as_bool)!=Some(true){
+                return Err("Photoshop independent post-save context did not confirm the exact document/path saved state.".into());
+            }
+
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "checkpoint":checkpoint,
+                    "precondition":precondition,
+                    "save_receipt":save_receipt,
+                    "post_context":post_context,
+                    "post_state_verified":true,
+                    "checkpoint_bound":true,
+                    "automatic_restore":false,
+                    "automatic_retry_allowed":false,
+                    "runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopAcceptanceSummary => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&photoshop::completion_summary()).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)
             })
         }

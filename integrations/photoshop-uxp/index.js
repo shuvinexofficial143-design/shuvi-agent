@@ -96,8 +96,11 @@ function textMetadata(layer){
 
 function layerRecord(layer,depth,parentId){
   let locked=false,positionLocked=false;
+  let layerMaskDensity=null,layerMaskFeather=null;
   try{locked=Boolean(layer.locked);}catch(_){}
   try{positionLocked=Boolean(layer.positionLocked);}catch(_){}
+  try{layerMaskDensity=numeric(layer.layerMaskDensity);}catch(_){layerMaskDensity=null;}
+  try{layerMaskFeather=numeric(layer.layerMaskFeather);}catch(_){layerMaskFeather=null;}
   return {
     id:Number(layer.id),
     name:String(layer.name||""),
@@ -108,6 +111,8 @@ function layerRecord(layer,depth,parentId){
     position_locked:positionLocked,
     bounds:layerBounds(layer),
     text:textMetadata(layer),
+    layer_mask_density:Number.isFinite(layerMaskDensity)?layerMaskDensity:null,
+    layer_mask_feather:Number.isFinite(layerMaskFeather)?layerMaskFeather:null,
     depth,
     parent_id:parentId,
     has_children:Boolean(layer.layers&&layer.layers.length)
@@ -373,6 +378,95 @@ async function transformLayer(args){
   return receipt;
 }
 
+function validateMaskArgs(args){
+  if(!args||typeof args!=="object")throw new Error("Mask mutation arguments are required.");
+  const documentId=Number(args.expected_document_id),layerId=Number(args.layer_id);
+  if(!Number.isInteger(documentId)||documentId<=0||!Number.isInteger(layerId)||layerId<=0)throw new Error("Exact mask document/layer IDs are required.");
+  const operation=String(args.operation||"");
+  if(!["layer_mask_density","layer_mask_feather"].includes(operation))throw new Error("Mask operation is not allowed.");
+  const expectedValue=Number(args.expected_value),value=Number(args.value);
+  const max=operation==="layer_mask_density"?100:1000;
+  if(!Number.isFinite(expectedValue)||!Number.isFinite(value)||expectedValue<0||expectedValue>max||value<0||value>max)throw new Error("Mask value is outside documented bounds.");
+  if(Math.abs(expectedValue-value)<=0.0001)throw new Error("Mask mutation cannot be a no-op.");
+  return {documentId,layerId,operation,expectedValue,value};
+}
+function readMaskValue(layer,operation){
+  const value=operation==="layer_mask_density"?numeric(layer.layerMaskDensity):numeric(layer.layerMaskFeather);
+  if(!Number.isFinite(value))throw new Error("Target layer has no compatible inspected layer mask property.");
+  return value;
+}
+async function setLayerMask(args){
+  const request=validateMaskArgs(args);
+  const initialDoc=activeDocument();
+  if(!initialDoc||Number(initialDoc.id)!==request.documentId)throw new Error("Active document identity changed before mask mutation.");
+  const initialLayer=findLayerById(initialDoc,request.layerId);
+  if(!initialLayer)throw new Error("Mask layer ID is not present.");
+  if(Boolean(initialLayer.locked))throw new Error("Mask layer is locked.");
+  const initial=readMaskValue(initialLayer,request.operation);
+  if(Math.abs(initial-request.expectedValue)>0.01)throw new Error("Mask property changed since inspection.");
+
+  let receipt=null;
+  await core.executeAsModal(async(executionContext)=>{
+    const doc=activeDocument();
+    if(!doc||Number(doc.id)!==request.documentId)throw new Error("Active document identity changed inside mask modal.");
+    const layer=findLayerById(doc,request.layerId);
+    if(!layer)throw new Error("Mask layer identity changed inside modal.");
+    if(Boolean(layer.locked))throw new Error("Mask layer is locked.");
+    const before=readMaskValue(layer,request.operation);
+    if(Math.abs(before-request.expectedValue)>0.01)throw new Error("Mask property changed before write.");
+    const suspension=await executionContext.hostControl.suspendHistory({documentID:request.documentId,name:"Shuvi: edit layer mask"});
+    let committed=false;
+    try{
+      if(request.operation==="layer_mask_density")layer.layerMaskDensity=request.value;
+      else layer.layerMaskFeather=request.value;
+      const after=readMaskValue(layer,request.operation);
+      if(Math.abs(after-request.value)>0.01)throw new Error("Photoshop immediate mask readback did not match.");
+      await executionContext.hostControl.resumeHistory(suspension,true);
+      committed=true;
+      receipt={document_id:request.documentId,layer_id:request.layerId,operation:request.operation,
+        before,after,mutation_performed:true,history_guard:"suspend_resume_commit"};
+    }finally{
+      if(!committed){try{await executionContext.hostControl.resumeHistory(suspension,false);}catch(_){}}
+    }
+  },{commandName:"Shuvi edit layer mask"});
+  if(!receipt)throw new Error("Photoshop mask mutation completed without receipt.");
+  return receipt;
+}
+
+function validateSaveArgs(args){
+  if(!args||typeof args!=="object")throw new Error("Save arguments are required.");
+  const documentId=Number(args.expected_document_id);
+  const expectedPath=String(args.expected_document_path||"");
+  if(!Number.isInteger(documentId)||documentId<=0||expectedPath.length<1||expectedPath.length>32768)throw new Error("Exact saved document identity/path are required.");
+  if(typeof args.expected_saved!=="boolean")throw new Error("Expected saved state is required.");
+  return {documentId,expectedPath,expectedSaved:args.expected_saved};
+}
+async function saveDocument(args){
+  const request=validateSaveArgs(args);
+  const initialDoc=activeDocument();
+  if(!initialDoc||Number(initialDoc.id)!==request.documentId)throw new Error("Active document identity changed before save.");
+  let initialPath=null;try{initialPath=String(initialDoc.path||"");}catch(_){}
+  let initialSaved=false;try{initialSaved=Boolean(initialDoc.saved);}catch(_){}
+  let cloud=false;try{cloud=Boolean(initialDoc.cloudDocument);}catch(_){}
+  if(cloud||initialPath!==request.expectedPath||initialSaved!==request.expectedSaved)throw new Error("Document path/saved state changed before save.");
+
+  await core.executeAsModal(async()=>{
+    const doc=activeDocument();
+    if(!doc||Number(doc.id)!==request.documentId)throw new Error("Active document identity changed inside save modal.");
+    let path="";try{path=String(doc.path||"");}catch(_){}
+    let saved=false;try{saved=Boolean(doc.saved);}catch(_){}
+    if(path!==request.expectedPath||saved!==request.expectedSaved)throw new Error("Document path/saved state changed inside save modal.");
+    await doc.save();
+  },{commandName:"Shuvi save Photoshop document"});
+
+  const doc=activeDocument();
+  if(!doc||Number(doc.id)!==request.documentId)throw new Error("Active document identity changed after save.");
+  let documentPath="";try{documentPath=String(doc.path||"");}catch(_){}
+  let saved=false;try{saved=Boolean(doc.saved);}catch(_){}
+  if(documentPath!==request.expectedPath||saved!==true)throw new Error("Photoshop post-save readback did not confirm saved state.");
+  return {document_id:request.documentId,document_path:documentPath,saved:true,mutation_performed:true};
+}
+
 async function send(path,options={}){
   const controller=new AbortController();
   const timeout=setTimeout(()=>controller.abort(),2500);
@@ -412,6 +506,8 @@ async function execute(command){
     else if(command.action==="set_layer_property")data=await setLayerProperty(command.arguments||{});
     else if(command.action==="set_text_layer")data=await setTextLayer(command.arguments||{});
     else if(command.action==="transform_layer")data=await transformLayer(command.arguments||{});
+    else if(command.action==="set_layer_mask")data=await setLayerMask(command.arguments||{});
+    else if(command.action==="save_document")data=await saveDocument(command.arguments||{});
     else throw new Error("Action is not in the bounded Photoshop allowlist.");
     await postResult(command,true,data,null);
   }catch(error){
@@ -425,7 +521,7 @@ async function poll(){
     await send("/health");
     const command=await send("/command");
     if(command)await execute(command);
-    setStatus("Connected — guarded bridge\nPort: "+PORT+"\nWrites: properties / text / bounded transforms");
+    setStatus("Connected — guarded bridge\nPort: "+PORT+"\nWrites: properties / text / transforms / masks / saved-document save");
   }catch(error){
     setStatus("Bridge unavailable: "+(error&&error.message?error.message:error));
   }finally{
