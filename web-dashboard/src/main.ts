@@ -129,7 +129,7 @@ function createModuleCard(module: FeatureModule): HTMLElement {
   const action = make(
     "button",
     "module-action",
-    module.state === "development" ? "View status →" : "Open locally →"
+    module.state === "development" ? "View status →" : "View details →"
   );
   action.type = "button";
   action.addEventListener("click", (event) => {
@@ -285,7 +285,7 @@ function setView(viewName: string): void {
   sidebarBackdrop.classList.remove("show");
   globalSearch.value = "";
   clearSearchFilter();
-  window.scrollTo({ top: 0, behavior: "smooth" });
+  window.scrollTo({ top: 0, behavior: "auto" });
 }
 
 function clearSearchFilter(): void {
