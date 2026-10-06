@@ -2,28 +2,45 @@
 
 ## Source milestone
 
-Current declared source milestone: **20%**
+Current declared source milestone: **40%**
 
-This milestone establishes only the bounded desktop foundation for Shuvi's Adobe Animate integration. It does **not** claim a working Animate scripting bridge, document automation, runtime acceptance, or production readiness.
+The 40% milestone adds a bounded **read-only** Animate host transport on top of the 20% desktop foundation. It does not authorize any Animate document mutation.
 
 ## Implemented source scope
 
-- bounded Windows detection under standard `Program Files/Adobe` roots,
-- support for detected `Animate.exe` / `Adobe Animate.exe`,
-- exact freshly detected executable validation before launch,
-- Shuvi managed-process registration after launch,
-- source capability report,
-- source readiness report.
+- bounded Windows detection and exact detected executable launch,
+- managed-process tracking,
+- authenticated localhost bridge on `127.0.0.1:17364`,
+- rotating pairing token and bounded request/result queue,
+- CEP panel targeted at Animate host ID `FLPR`,
+- CEP `evalScript` → JSFL host adapter,
+- read-only active document context,
+- read-only current timeline/layer/frame summary,
+- bounded layer inventory (maximum 256; Shuvi tool currently requests 128),
+- document signature for later stale-document guards,
+- independent Rust-side receipt validation,
+- source capability/readiness reporting.
 
-## Explicitly not implemented at 20%
+Adobe's Animate documentation exposes the Animate JavaScript API/JSFL for authoring automation, and Adobe's Animate HTML-extension documentation describes CEP `evalScript` as the route for running JSFL from an extension. The bridge therefore uses CEP + JSFL rather than pretending Animate has the same UXP surface as Premiere/Photoshop.
 
-- Animate host bridge / scripting transport,
-- document, scene, timeline, layer or library inspection,
-- symbol/instance inspection,
-- timeline edits,
-- drawing or asset mutation,
+## Read-only allowlist
+
+- `inspect_context`
+- `inspect_timeline`
+
+No other native action is accepted by the bridge at this milestone.
+
+## Explicitly not implemented at 40%
+
+- library/symbol inventory beyond timeline frame summaries,
+- exact selected-element inspection,
+- timeline/layer/frame mutation,
+- drawing/stage mutation,
+- symbol/instance mutation,
+- ActionScript edits,
 - publish/export automation,
-- real-host acceptance.
+- save/Save As,
+- runtime acceptance.
 
 ## Runtime status
 
@@ -31,8 +48,8 @@ This milestone establishes only the bounded desktop foundation for Shuvi's Adobe
 
 `production_ready=false`
 
-A successful source build or CI run must not change either runtime flag. Real Adobe Animate host testing is a later acceptance phase.
+CI/source completion does not promote either flag. A real Windows Animate host acceptance run is still required later.
 
 ## Next source phase
 
-The 40% milestone should first select and implement a bounded Animate host transport and expose read-only document/timeline context. Mutation should remain blocked until exact host/document identity can be inspected and guarded.
+The 60% milestone should add bounded library/symbol/selection inspection and stronger exact document/timeline identity guards while keeping mutation blocked until those identities can be rechecked immediately before writes.

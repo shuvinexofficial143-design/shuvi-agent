@@ -95,6 +95,9 @@ mod motion_graphics_remotion_runtime;
 mod audition_bridge_queue;
 mod audition_bridge;
 use audition_bridge::{AuditionBridgeShared, AuditionBridgeStatus};
+mod animate_bridge_queue;
+mod animate_bridge;
+use animate_bridge::{AnimateBridgeShared, AnimateBridgeStatus};
 mod photoshop_bridge_queue;
 mod photoshop_bridge;
 use photoshop_bridge::{PhotoshopBridgeShared,PhotoshopBridgeStatus};
@@ -628,6 +631,11 @@ enum ToolAction {
     AnimateReadinessReport,
     AnimateDetect,
     AnimateLaunch { animate_exe:String },
+    AnimateBridgeStart,
+    AnimateBridgeStatus,
+    AnimateBridgeStop,
+    AnimateContext,
+    AnimateTimeline,
     PremiereDetect,
     PremiereLaunch { project: Option<String> },
     PremiereBridgeStart,
@@ -911,6 +919,7 @@ struct ActionState {
     browser_sessions: Mutex<HashMap<u32, BrowserSession>>,
     premiere_bridge: Arc<PremiereBridgeShared>,
     audition_bridge: Arc<AuditionBridgeShared>,
+    animate_bridge: Arc<AnimateBridgeShared>,
     photoshop_bridge: Arc<PhotoshopBridgeShared>,
     premiere_export_jobs_io: Mutex<()>,
     acceptance_probe_running: AtomicBool,
@@ -3272,6 +3281,36 @@ fn stage_tool(
                 format!("Launch exact freshly detected Adobe Animate executable {animate_exe}; no document open, script execution, or host mutation."),
                 RiskLevel::Medium)
         }
+        "animate_bridge_start" => (
+            ToolAction::AnimateBridgeStart,
+            "Start Animate read-only bridge".into(),
+            "Start Shuvi's authenticated localhost CEP/JSFL bridge for Adobe Animate. The 40% allowlist is read-only only.".into(),
+            RiskLevel::Medium,
+        ),
+        "animate_bridge_status" => (
+            ToolAction::AnimateBridgeStatus,
+            "Read Animate bridge status".into(),
+            "Check whether the Animate CEP panel is enabled and paired; no host mutation.".into(),
+            RiskLevel::Low,
+        ),
+        "animate_bridge_stop" => (
+            ToolAction::AnimateBridgeStop,
+            "Stop Animate bridge".into(),
+            "Disable the Animate pairing token and clear queued read-only commands.".into(),
+            RiskLevel::Low,
+        ),
+        "animate_context" => (
+            ToolAction::AnimateContext,
+            "Inspect Animate document context".into(),
+            "Read-only active FLA/document and current timeline identity through the paired Animate CEP/JSFL bridge.".into(),
+            RiskLevel::Low,
+        ),
+        "animate_timeline" => (
+            ToolAction::AnimateTimeline,
+            "Inspect Animate timeline".into(),
+            "Read-only bounded current timeline/layer/frame summary through the paired Animate CEP/JSFL bridge.".into(),
+            RiskLevel::Low,
+        ),
         "audition_detect" => (
             ToolAction::AuditionDetect,
             "Detect Adobe Audition".into(),
@@ -10070,6 +10109,57 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 stderr:String::new(),exit_code:Some(0)
             })
         }
+        ToolAction::AnimateBridgeStart => {
+            let status=state.animate_bridge.start()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "enabled":status.enabled,
+                    "server_started":status.server_started,
+                    "paired":status.paired,
+                    "port":status.port,
+                    "pairing_token":status.token,
+                    "read_only_allowlist":["inspect_context","inspect_timeline"],
+                    "source_runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateBridgeStatus => {
+            let status=state.animate_bridge.status()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&status).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateBridgeStop => {
+            let status=state.animate_bridge.stop()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&status).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateContext => {
+            let value=state.animate_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let validated=animate::validate_context_receipt(&value)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateTimeline => {
+            let value=state.animate_bridge.request("inspect_timeline",json!({"maxLayers":128}),Duration::from_secs(10)).await?;
+            let validated=animate::validate_timeline_receipt(&value)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
         ToolAction::AuditionDetect => {
             let value=audition::detect_installs()?;
             Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
@@ -16345,6 +16435,27 @@ fn photoshop_bridge_stop(
 }
 
 #[tauri::command]
+fn animate_bridge_start(
+    state: State<'_, ActionState>,
+) -> Result<AnimateBridgeStatus, String> {
+    state.animate_bridge.start()
+}
+
+#[tauri::command]
+fn animate_bridge_status(
+    state: State<'_, ActionState>,
+) -> Result<AnimateBridgeStatus, String> {
+    state.animate_bridge.status()
+}
+
+#[tauri::command]
+fn animate_bridge_stop(
+    state: State<'_, ActionState>,
+) -> Result<AnimateBridgeStatus, String> {
+    state.animate_bridge.stop()
+}
+
+#[tauri::command]
 fn audition_bridge_start(
     state: State<'_, ActionState>,
 ) -> Result<AuditionBridgeStatus, String> {
@@ -16529,6 +16640,9 @@ pub fn run() {
             audition_bridge_start,
             audition_bridge_status,
             audition_bridge_stop,
+            animate_bridge_start,
+            animate_bridge_status,
+            animate_bridge_stop,
             photoshop_bridge_start,
             photoshop_bridge_status,
             photoshop_bridge_stop,

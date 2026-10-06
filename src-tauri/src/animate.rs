@@ -126,19 +126,19 @@ pub fn capability_report()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_animate",
-        "source_milestone_percent":20,
+        "source_milestone_percent":40,
         "source_scope_complete":false,
         "implemented":{
             "bounded_windows_detection":true,
             "exact_detected_executable_launch":true,
             "managed_process_tracking":true,
             "capability_report":true,
-            "readiness_report":true
+            "readiness_report":true,
+            "authenticated_cep_jsfl_bridge":true,
+            "document_inspection":true,
+            "timeline_inspection":true
         },
         "not_implemented":{
-            "host_bridge":true,
-            "document_inspection":true,
-            "timeline_inspection":true,
             "library_inspection":true,
             "symbol_instance_inspection":true,
             "timeline_mutation":true,
@@ -155,17 +155,103 @@ pub fn readiness_report()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_animate",
-        "source_milestone_percent":20,
-        "source_coding_status":"foundation_complete",
+        "source_milestone_percent":40,
+        "source_coding_status":"read_only_bridge_complete",
         "desktop_detection":true,
         "exact_detected_launch":true,
-        "host_transport":"not_implemented",
+        "host_transport":"cep_plus_jsfl",
+        "bridge_scope":"read_only_context_and_timeline",
         "host_ready_verified":false,
-        "document_automation_ready":false,
+        "document_automation_ready":"read_only_only",
         "source_runtime_verified":false,
         "production_ready":false,
-        "next_source_phase":"select and implement a bounded host transport with read-only document/timeline context before any mutation"
+        "next_source_phase":"add bounded library/symbol/selection inspection and exact document-signature guards before any mutation"
     })
+}
+
+
+fn bounded_text(value:Option<&str>,max:usize)->bool{
+    value.is_some_and(|text|text.len()<=max&&!text.chars().any(char::is_control))
+}
+
+pub fn validate_context_receipt(value:&Value)->Result<Value,String>{
+    if value.get("readOnly").and_then(Value::as_bool)!=Some(true){
+        return Err("Animate context receipt must explicitly be readOnly=true.".into());
+    }
+    let has_document=value.get("hasDocument").and_then(Value::as_bool)
+        .ok_or("Animate context hasDocument is required.")?;
+    let signature=value.get("documentSignature").and_then(Value::as_str)
+        .filter(|v|!v.is_empty()&&v.len()<=1600&&!v.chars().any(char::is_control))
+        .ok_or("Animate document signature is missing or invalid.")?;
+    if !has_document{
+        if signature!="no_document"{return Err("Closed Animate context must use no_document signature.".into());}
+        return Ok(value.clone());
+    }
+    let id=value.get("documentId").and_then(Value::as_i64)
+        .filter(|v|*v>=0).ok_or("Animate documentId is invalid.")?;
+    if id>i32::MAX as i64{return Err("Animate documentId exceeds supported bounds.".into());}
+    if !bounded_text(value.get("documentName").and_then(Value::as_str),512){
+        return Err("Animate documentName is missing or oversized.".into());
+    }
+    let layer_count=value.get("layerCount").and_then(Value::as_u64)
+        .filter(|v|*v<=100_000).ok_or("Animate layerCount is invalid.")?;
+    let current_frame=value.get("currentFrame").and_then(Value::as_i64)
+        .filter(|v|*v>=0).ok_or("Animate currentFrame is invalid.")?;
+    if current_frame>10_000_000{return Err("Animate currentFrame exceeds supported bounds.".into());}
+    Ok(json!({
+        "validated":true,
+        "readOnly":true,
+        "hasDocument":true,
+        "documentId":id,
+        "documentName":value.get("documentName"),
+        "documentPath":value.get("documentPath").cloned().unwrap_or(Value::Null),
+        "documentPathURI":value.get("documentPathURI").cloned().unwrap_or(Value::Null),
+        "width":value.get("width"),
+        "height":value.get("height"),
+        "frameRate":value.get("frameRate"),
+        "currentTimeline":value.get("currentTimeline"),
+        "timelineName":value.get("timelineName"),
+        "currentFrame":current_frame,
+        "currentLayer":value.get("currentLayer"),
+        "layerCount":layer_count,
+        "selectionCount":value.get("selectionCount"),
+        "documentSignature":signature,
+        "runtimeVerified":false
+    }))
+}
+
+pub fn validate_timeline_receipt(value:&Value)->Result<Value,String>{
+    if value.get("readOnly").and_then(Value::as_bool)!=Some(true){
+        return Err("Animate timeline receipt must explicitly be readOnly=true.".into());
+    }
+    let signature=value.get("documentSignature").and_then(Value::as_str)
+        .filter(|v|!v.is_empty()&&v.len()<=1600&&!v.chars().any(char::is_control))
+        .ok_or("Animate timeline document signature is missing or invalid.")?;
+    let layers=value.get("layers").and_then(Value::as_array).ok_or("Animate timeline layers are required.")?;
+    if layers.len()>256{return Err("Animate timeline layer receipt exceeds 256 layers.".into());}
+    for row in layers{
+        let index=row.get("index").and_then(Value::as_u64).ok_or("Animate layer index is invalid.")?;
+        if index>100_000{return Err("Animate layer index exceeds supported bounds.".into());}
+        if !bounded_text(row.get("name").and_then(Value::as_str),512){
+            return Err("Animate layer name is missing or oversized.".into());
+        }
+        if !bounded_text(row.get("layerType").and_then(Value::as_str),120){
+            return Err("Animate layer type is missing or oversized.".into());
+        }
+    }
+    Ok(json!({
+        "validated":true,
+        "readOnly":true,
+        "documentSignature":signature,
+        "timelineName":value.get("timelineName"),
+        "currentFrame":value.get("currentFrame"),
+        "currentLayer":value.get("currentLayer"),
+        "sourceLayerCount":value.get("sourceLayerCount"),
+        "returnedLayerCount":layers.len(),
+        "truncated":value.get("truncated"),
+        "layers":layers,
+        "runtimeVerified":false
+    }))
 }
 
 #[cfg(test)]
@@ -182,11 +268,11 @@ mod tests{
     #[test]
     fn reports_do_not_promote_runtime(){
         let capability=capability_report();
-        assert_eq!(capability["source_milestone_percent"],20);
+        assert_eq!(capability["source_milestone_percent"],40);
         assert_eq!(capability["source_runtime_verified"],false);
         assert_eq!(capability["production_ready"],false);
         let readiness=readiness_report();
-        assert_eq!(readiness["host_transport"],"not_implemented");
-        assert_eq!(readiness["document_automation_ready"],false);
+        assert_eq!(readiness["host_transport"],"cep_plus_jsfl");
+        assert_eq!(readiness["document_automation_ready"],"read_only_only");
     }
 }
