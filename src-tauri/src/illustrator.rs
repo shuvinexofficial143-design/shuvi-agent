@@ -170,7 +170,8 @@ pub fn readiness_report()->Value{
         "planned_host_transport":"bounded_cep_plus_extendscript",
         "planned_cep_host_id":"ILST",
         "host_ready_verified":false,
-        "document_automation_ready":false,
+        "bridge_scope":"read_only_document_and_artboards",
+        "document_automation_ready":"read_only_only",
         "source_runtime_verified":false,
         "production_ready":false,
         "next_source_phase":"add bounded layer/page-item/selection inspection and stronger document identity guards before any mutation"
