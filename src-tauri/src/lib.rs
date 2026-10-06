@@ -83,6 +83,7 @@ mod audition;
 mod audition_acceptance;
 mod animate;
 mod animate_checkpoint;
+mod character_animator;
 mod illustrator;
 mod illustrator_checkpoint;
 mod illustrator_bridge_queue;
@@ -668,6 +669,10 @@ enum ToolAction {
     IllustratorPlanRecovery { backup_path:String, expected_source_path:String, expected_document_signature:String },
     IllustratorPlanExport { request:illustrator::ExportPlanRequest },
     IllustratorAcceptanceSummary,
+    CharacterAnimatorCapabilityReport,
+    CharacterAnimatorReadinessReport,
+    CharacterAnimatorDetect,
+    CharacterAnimatorLaunch { character_animator_exe:String },
     PremiereDetect,
     PremiereLaunch { project: Option<String> },
     PremiereBridgeStart,
@@ -3287,6 +3292,32 @@ fn stage_tool(
                 "Plan Premiere insertion for verified motion output".into(),
                 "Read persisted final motion acceptance and return a normal premiere_insert_media proposal. No Premiere mutation.".into(),
                 RiskLevel::Low)
+        }
+        "character_animator_capability_report" => (
+            ToolAction::CharacterAnimatorCapabilityReport,
+            "Read Character Animator source capability report".into(),
+            "Source milestone declaration only; does not claim a live Character Animator host or project automation capability.".into(),
+            RiskLevel::Low,
+        ),
+        "character_animator_readiness_report" => (
+            ToolAction::CharacterAnimatorReadinessReport,
+            "Read Character Animator readiness report".into(),
+            "Report the current 20% Character Animator desktop foundation and explicit runtime gaps.".into(),
+            RiskLevel::Low,
+        ),
+        "character_animator_detect" => (
+            ToolAction::CharacterAnimatorDetect,
+            "Detect installed Adobe Character Animator".into(),
+            "Read-only bounded Program Files/Adobe inspection; does not launch Character Animator.".into(),
+            RiskLevel::Low,
+        ),
+        "character_animator_launch" => {
+            let character_animator_exe=arg_string(&proposal.arguments,"character_animator_exe")?;
+            character_animator::validate_requested_executable(&character_animator_exe)?;
+            (ToolAction::CharacterAnimatorLaunch {character_animator_exe:character_animator_exe.clone()},
+                "Launch detected Adobe Character Animator".into(),
+                format!("Launch exact freshly detected Adobe Character Animator executable {character_animator_exe}; no project open, recording, script execution, or host mutation."),
+                RiskLevel::Medium)
         }
         "illustrator_capability_report" => (
             ToolAction::IllustratorCapabilityReport,
@@ -10317,6 +10348,53 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let value=request.plan(&acceptance)?;
             Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::CharacterAnimatorCapabilityReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&character_animator::capability_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::CharacterAnimatorReadinessReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&character_animator::readiness_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::CharacterAnimatorDetect => {
+            let value=character_animator::detect_installs()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::CharacterAnimatorLaunch {character_animator_exe} => {
+            let detection=character_animator::detect_installs()?;
+            let exact=character_animator::exact_detected_executable(&detection,&character_animator_exe)?;
+            let mut child=Command::new(&exact).spawn()
+                .map_err(|e|format!("Could not launch detected Adobe Character Animator: {e}"))?;
+            let pid=child.id();
+            if let Err(error)=register_managed_process(state,pid){
+                let _=child.kill();
+                let _=child.wait();
+                return Err(format!("Adobe Character Animator was stopped before Shuvi could register the managed process: {error}"));
+            }
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "character_animator_exe":exact,
+                    "pid":pid,
+                    "launch_dispatched":true,
+                    "host_ready_verified":false,
+                    "host_transport":"not_implemented",
+                    "source_runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
         }
         ToolAction::IllustratorCapabilityReport => {
             Ok(ActionResult {
