@@ -3,11 +3,351 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#090b10" />
-    <title>Shuvi Dashboard</title>
+    <meta name="theme-color" content="#07090d" />
+    <meta name="description" content="Shuvi Control Center — web dashboard for the Shuvi Windows AI agent." />
+    <title>Shuvi Control Center</title>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app" class="app-shell">
+      <aside id="sidebar" class="sidebar">
+        <div class="brand-row">
+          <div class="brand-mark">S</div>
+          <div class="brand-copy">
+            <strong>Shuvi</strong>
+            <span>Control Center</span>
+          </div>
+          <button id="closeSidebar" class="icon-button mobile-only" type="button" aria-label="Close navigation">×</button>
+        </div>
+
+        <div class="workspace-pill">
+          <span class="workspace-dot"></span>
+          <div>
+            <strong>Personal workspace</strong>
+            <span>ui-dashboard</span>
+          </div>
+        </div>
+
+        <nav id="navItems" class="nav-list" aria-label="Primary navigation"></nav>
+
+        <div class="sidebar-bottom">
+          <div class="runtime-mini-card">
+            <div class="runtime-mini-head">
+              <span class="status-dot offline"></span>
+              <div>
+                <strong>Local Shuvi</strong>
+                <span id="sidebarRuntimeState">Not connected</span>
+              </div>
+            </div>
+            <p>Connect the Windows app before running local tools.</p>
+            <button class="ghost-button full" type="button" data-action="connect-local">Connect runtime</button>
+          </div>
+          <div class="profile-row">
+            <div class="avatar">VP</div>
+            <div class="profile-copy">
+              <strong>Shuvi Workspace</strong>
+              <span>Local-first agent</span>
+            </div>
+            <button class="icon-button" type="button" data-view-jump="settings" aria-label="Open settings">•••</button>
+          </div>
+        </div>
+      </aside>
+
+      <div id="sidebarBackdrop" class="sidebar-backdrop"></div>
+
+      <main class="main-area">
+        <header class="topbar">
+          <div class="topbar-left">
+            <button id="openSidebar" class="icon-button mobile-only" type="button" aria-label="Open navigation">☰</button>
+            <div>
+              <p id="pageEyebrow" class="page-eyebrow">CONTROL CENTER</p>
+              <h1 id="pageTitle">Dashboard</h1>
+            </div>
+          </div>
+
+          <div class="topbar-actions">
+            <label class="global-search">
+              <span>⌕</span>
+              <input id="globalSearch" type="search" placeholder="Search tools and modules" autocomplete="off" />
+              <kbd>Ctrl K</kbd>
+            </label>
+            <button class="icon-button" type="button" data-action="notifications" aria-label="Notifications">◌</button>
+            <button class="primary-button compact" type="button" data-view-jump="chat">New task</button>
+          </div>
+        </header>
+
+        <div class="content-wrap">
+          <section id="view-dashboard" class="view active" data-view="dashboard">
+            <div class="hero-grid">
+              <article class="hero-card">
+                <div class="hero-copy">
+                  <div class="hero-kicker">
+                    <span class="status-dot offline"></span>
+                    Web dashboard online · local runtime offline
+                  </div>
+                  <h2>Your AI workstation,<br />one control surface.</h2>
+                  <p>Plan work, inspect creative modules and prepare tasks here. Windows, Adobe, Blender and computer control remain permission-first inside the local Shuvi runtime.</p>
+                  <div class="hero-actions">
+                    <button class="primary-button" type="button" data-view-jump="chat">Start a task</button>
+                    <button class="secondary-button" type="button" data-view-jump="studio">Open Creative Studio</button>
+                  </div>
+                </div>
+                <div class="hero-orbit" aria-hidden="true">
+                  <div class="orbit-ring ring-one"></div>
+                  <div class="orbit-ring ring-two"></div>
+                  <div class="orbit-core">S</div>
+                  <div class="orbit-node node-one">AI</div>
+                  <div class="orbit-node node-two">VFX</div>
+                  <div class="orbit-node node-three">PC</div>
+                </div>
+              </article>
+
+              <article class="connection-card">
+                <div class="card-heading">
+                  <div>
+                    <span class="section-kicker">RUNTIME</span>
+                    <h3>Local connection</h3>
+                  </div>
+                  <span class="badge badge-offline">Offline</span>
+                </div>
+                <div class="connection-visual">
+                  <div class="connection-device">
+                    <span class="device-light"></span>
+                    <strong>Shuvi.exe</strong>
+                    <small>Windows runtime</small>
+                  </div>
+                  <div class="connection-line"><span></span></div>
+                  <div class="connection-cloud">
+                    <span>WEB</span>
+                    <strong>Dashboard</strong>
+                    <small>Vercel surface</small>
+                  </div>
+                </div>
+                <div class="connection-meta">
+                  <div><span>Agent state</span><strong>Awaiting local bridge</strong></div>
+                  <div><span>Active model</span><strong>Not synced</strong></div>
+                  <div><span>Permission mode</span><strong>Local only</strong></div>
+                </div>
+                <button class="secondary-button full" type="button" data-action="connect-local">Configure connection</button>
+              </article>
+            </div>
+
+            <div class="metric-grid">
+              <article class="metric-card">
+                <div class="metric-icon violet">✦</div>
+                <div><span>Creative modules</span><strong id="creativeMetric">6</strong><small>tracked in dashboard</small></div>
+              </article>
+              <article class="metric-card">
+                <div class="metric-icon cyan">⌘</div>
+                <div><span>Computer tools</span><strong id="toolMetric">6</strong><small>local permission layer</small></div>
+              </article>
+              <article class="metric-card">
+                <div class="metric-icon green">AI</div>
+                <div><span>AI providers</span><strong id="providerMetric">7</strong><small>configurable in Shuvi</small></div>
+              </article>
+              <article class="metric-card">
+                <div class="metric-icon amber">●</div>
+                <div><span>Active tasks</span><strong>0</strong><small>no runtime connected</small></div>
+              </article>
+            </div>
+
+            <div class="dashboard-grid">
+              <article class="panel span-two">
+                <div class="card-heading">
+                  <div>
+                    <span class="section-kicker">CREATIVE STACK</span>
+                    <h3>Studio modules</h3>
+                  </div>
+                  <button class="text-button" type="button" data-view-jump="studio">View all →</button>
+                </div>
+                <div id="dashboardStudioModules" class="mini-module-list"></div>
+              </article>
+
+              <article class="panel">
+                <div class="card-heading">
+                  <div>
+                    <span class="section-kicker">TASK ENGINE</span>
+                    <h3>Agent readiness</h3>
+                  </div>
+                  <span class="badge badge-neutral">Local</span>
+                </div>
+                <div class="readiness-list">
+                  <div class="readiness-row"><span>Task orchestration</span><strong>Code present</strong></div>
+                  <div class="progress-track"><span style="width: 92%"></span></div>
+                  <div class="readiness-row"><span>Creative integrations</span><strong>In progress</strong></div>
+                  <div class="progress-track"><span style="width: 74%"></span></div>
+                  <div class="readiness-row"><span>Web ↔ local bridge</span><strong>Not wired</strong></div>
+                  <div class="progress-track"><span style="width: 18%"></span></div>
+                </div>
+                <p class="panel-note">These are product-surface indicators, not runtime test results.</p>
+              </article>
+
+              <article class="panel span-two">
+                <div class="card-heading">
+                  <div>
+                    <span class="section-kicker">RECENT ACTIVITY</span>
+                    <h3>Nothing running yet</h3>
+                  </div>
+                  <button class="text-button" type="button" data-view-jump="activity">Open log →</button>
+                </div>
+                <div class="empty-inline">
+                  <div class="empty-icon">↗</div>
+                  <div>
+                    <strong>Connect local Shuvi to stream real activity.</strong>
+                    <p>The web dashboard deliberately does not invent tool runs, token usage or computer events.</p>
+                  </div>
+                </div>
+              </article>
+
+              <article class="panel">
+                <div class="card-heading">
+                  <div>
+                    <span class="section-kicker">QUICK ACTIONS</span>
+                    <h3>Jump back in</h3>
+                  </div>
+                </div>
+                <div class="quick-list">
+                  <button type="button" data-view-jump="chat"><span>✦</span><div><strong>Ask Shuvi</strong><small>Plan a new task</small></div><b>→</b></button>
+                  <button type="button" data-view-jump="studio"><span>▶</span><div><strong>Creative Studio</strong><small>Adobe + Blender</small></div><b>→</b></button>
+                  <button type="button" data-view-jump="models"><span>AI</span><div><strong>Model routing</strong><small>Providers & models</small></div><b>→</b></button>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <section id="view-chat" class="view" data-view="chat">
+            <div class="chat-layout">
+              <article class="chat-panel">
+                <div class="chat-top">
+                  <div>
+                    <span class="section-kicker">AI COMMAND CENTER</span>
+                    <h2>Ask Shuvi</h2>
+                  </div>
+                  <div class="model-chip"><span class="status-dot offline"></span><strong>Model not synced</strong><small>Local runtime offline</small></div>
+                </div>
+                <div id="chatMessages" class="chat-messages">
+                  <div class="assistant-message">
+                    <div class="message-avatar">S</div>
+                    <div>
+                      <strong>Shuvi</strong>
+                      <p>Tell me what you want to build or edit. This web surface can prepare the task, but local computer actions will require the Windows Shuvi runtime.</p>
+                    </div>
+                  </div>
+                </div>
+                <form id="chatForm" class="chat-composer">
+                  <textarea id="chatInput" rows="3" placeholder="Describe the task — edit a video, build code, create VFX…" required></textarea>
+                  <div class="composer-footer">
+                    <div class="composer-tools"><button type="button" data-action="attachment">＋</button><span>Local tools require connection</span></div>
+                    <button class="primary-button" type="submit">Send ↗</button>
+                  </div>
+                </form>
+              </article>
+
+              <aside class="context-panel">
+                <span class="section-kicker">TASK CONTEXT</span>
+                <h3>Runtime boundary</h3>
+                <div class="context-list">
+                  <div><span>Web planning</span><strong class="ok">Available</strong></div>
+                  <div><span>Local files</span><strong>Disconnected</strong></div>
+                  <div><span>Adobe apps</span><strong>Disconnected</strong></div>
+                  <div><span>Blender</span><strong>Disconnected</strong></div>
+                  <div><span>Screen control</span><strong>Disconnected</strong></div>
+                </div>
+                <div class="security-note"><span>◇</span><p>Sensitive actions stay behind Shuvi's local permission gate.</p></div>
+              </aside>
+            </div>
+          </section>
+
+          <section id="view-studio" class="view" data-view="studio">
+            <div class="section-intro">
+              <div><span class="section-kicker">CREATIVE STUDIO</span><h2>Adobe, 3D and motion workflows</h2><p>One surface for the creative modules being integrated into Shuvi.</p></div>
+              <button class="secondary-button" type="button" data-action="connect-local">Connect local runtime</button>
+            </div>
+            <div class="filter-row">
+              <button class="filter-chip active" type="button" data-filter="all">All modules</button>
+              <button class="filter-chip" type="button" data-filter="Video editing">Video</button>
+              <button class="filter-chip" type="button" data-filter="Motion & VFX">Motion & VFX</button>
+              <button class="filter-chip" type="button" data-filter="3D & VFX">3D</button>
+              <button class="filter-chip" type="button" data-filter="Audio">Audio</button>
+            </div>
+            <div id="creativeModuleGrid" class="module-grid"></div>
+          </section>
+
+          <section id="view-tools" class="view" data-view="tools">
+            <div class="section-intro">
+              <div><span class="section-kicker">CAPABILITIES</span><h2>Computer & agent tools</h2><p>Local-first capabilities guarded by Shuvi's permission and audit layers.</p></div>
+            </div>
+            <div id="toolModuleGrid" class="module-grid"></div>
+          </section>
+
+          <section id="view-tasks" class="view" data-view="tasks">
+            <div class="section-intro">
+              <div><span class="section-kicker">TASK MANAGER</span><h2>Runs, checkpoints and progress</h2><p>Real task state will appear here after the secure local bridge is connected.</p></div>
+              <button class="primary-button" type="button" data-view-jump="chat">New task</button>
+            </div>
+            <div class="task-board">
+              <article class="panel task-stage"><div class="stage-head"><span>01</span><strong>Queued</strong><b>0</b></div><div class="stage-empty">No queued tasks</div></article>
+              <article class="panel task-stage"><div class="stage-head"><span>02</span><strong>Running</strong><b>0</b></div><div class="stage-empty">No active runtime</div></article>
+              <article class="panel task-stage"><div class="stage-head"><span>03</span><strong>Approval</strong><b>0</b></div><div class="stage-empty">No pending permissions</div></article>
+              <article class="panel task-stage"><div class="stage-head"><span>04</span><strong>Complete</strong><b>0</b></div><div class="stage-empty">No synced history</div></article>
+            </div>
+          </section>
+
+          <section id="view-models" class="view" data-view="models">
+            <div class="section-intro">
+              <div><span class="section-kicker">AI ROUTING</span><h2>Models & providers</h2><p>Provider credentials remain in the local Shuvi credential store, not in this web UI.</p></div>
+              <span class="badge badge-neutral">No secrets stored here</span>
+            </div>
+            <div id="providerGrid" class="provider-grid"></div>
+            <article class="panel model-routing-panel">
+              <div class="card-heading"><div><span class="section-kicker">ROUTING POLICY</span><h3>Local source of truth</h3></div></div>
+              <p>This dashboard will display the active provider and model after synchronization. API keys should continue to live in the operating-system credential store used by the Windows app.</p>
+            </article>
+          </section>
+
+          <section id="view-activity" class="view" data-view="activity">
+            <div class="section-intro">
+              <div><span class="section-kicker">AUDIT & ACTIVITY</span><h2>Everything Shuvi does, visible.</h2><p>Tool proposals, approvals, denials, task checkpoints and results can be streamed here later.</p></div>
+              <button class="secondary-button" type="button" data-action="export-log">Export log</button>
+            </div>
+            <article class="panel activity-empty">
+              <div class="empty-icon large">◎</div>
+              <h3>No local activity synced</h3>
+              <p>Connect the Windows runtime to populate the real audit trail. The dashboard will not generate placeholder activity.</p>
+              <button class="secondary-button" type="button" data-action="connect-local">Configure local bridge</button>
+            </article>
+          </section>
+
+          <section id="view-settings" class="view" data-view="settings">
+            <div class="section-intro">
+              <div><span class="section-kicker">SETTINGS</span><h2>Dashboard & runtime connection</h2><p>Web-only preferences can be saved in this browser. Sensitive local permissions stay inside Shuvi.exe.</p></div>
+            </div>
+            <div class="settings-grid">
+              <article class="panel">
+                <div class="settings-heading"><div class="settings-icon">↔</div><div><h3>Local bridge</h3><p>Endpoint reserved for the future secure web-to-local connection.</p></div></div>
+                <label class="field"><span>Local endpoint</span><input id="bridgeEndpoint" value="http://127.0.0.1:47771" autocomplete="off" /></label>
+                <div class="field-row">
+                  <label class="field"><span>Connection mode</span><select id="bridgeMode"><option>Localhost only</option><option disabled>Remote relay — not available</option></select></label>
+                  <label class="field"><span>Status</span><div class="static-field"><span class="status-dot offline"></span>Not connected</div></label>
+                </div>
+                <button id="saveBridgeSettings" class="primary-button" type="button">Save web preference</button>
+              </article>
+
+              <article class="panel">
+                <div class="settings-heading"><div class="settings-icon">◇</div><div><h3>Security boundary</h3><p>Rules this dashboard should never bypass.</p></div></div>
+                <div class="security-list">
+                  <div><span>API keys</span><strong>OS credential store</strong></div>
+                  <div><span>File access</span><strong>Local permission gate</strong></div>
+                  <div><span>Shell commands</span><strong>Explicit approval</strong></div>
+                  <div><span>Adobe / Blender control</span><strong>Local bridge only</strong></div>
+                </div>
+              </article>
+            </div>
+          </section>
+        </div>
+      </main>
+
+      <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
