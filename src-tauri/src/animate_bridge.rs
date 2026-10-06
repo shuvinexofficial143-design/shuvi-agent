@@ -14,6 +14,9 @@ use super::animate_bridge_queue::CommandQueue;
 pub const ALLOWED_ACTIONS: &[&str] = &[
     "inspect_context",
     "inspect_timeline",
+    "inspect_library",
+    "inspect_selection",
+    "verify_identity",
 ];
 
 pub const ANIMATE_BRIDGE_PORT: u16 = 17_364;

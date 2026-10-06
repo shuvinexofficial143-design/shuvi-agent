@@ -32,7 +32,7 @@ fn inspect_adobe_dir(adobe:&Path,source:&str)->Result<Vec<Value>,String>{
             "animate_exe":canonical,
             "source":source,
             "launch_supported":true,
-            "host_transport":"not_implemented",
+            "host_transport":"cep_plus_jsfl",
             "runtime_verified":false
         }));
     }
@@ -62,7 +62,7 @@ pub fn detect_from_roots(roots:&[(PathBuf,&str)])->Result<Value,String>{
         "candidate_count":candidates.len(),
         "detection_scope":"bounded_windows_program_files_adobe",
         "launch_supported":!candidates.is_empty(),
-        "host_transport":"not_implemented",
+        "host_transport":"cep_plus_jsfl",
         "runtime_verified":false,
         "production_ready":false
     }))
@@ -77,7 +77,7 @@ pub fn detect_installs()->Result<Value,String>{
         return Ok(json!({
             "schema_version":1,"candidates":[],"candidate_count":0,
             "detection_scope":"bounded_windows_program_files_adobe",
-            "launch_supported":false,"host_transport":"not_implemented",
+            "launch_supported":false,"host_transport":"cep_plus_jsfl",
             "runtime_verified":false,"production_ready":false,
             "reason":"Windows Program Files environment variables are unavailable."
         }));
@@ -90,7 +90,7 @@ pub fn detect_installs()->Result<Value,String>{
     Ok(json!({
         "schema_version":1,"candidates":[],"candidate_count":0,
         "detection_scope":"windows_only",
-        "launch_supported":false,"host_transport":"not_implemented",
+        "launch_supported":false,"host_transport":"cep_plus_jsfl",
         "runtime_verified":false,"production_ready":false,
         "reason":"Adobe Animate desktop detection is Windows-targeted in Shuvi."
     }))
@@ -126,7 +126,7 @@ pub fn capability_report()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_animate",
-        "source_milestone_percent":40,
+        "source_milestone_percent":60,
         "source_scope_complete":false,
         "implemented":{
             "bounded_windows_detection":true,
@@ -136,11 +136,14 @@ pub fn capability_report()->Value{
             "readiness_report":true,
             "authenticated_cep_jsfl_bridge":true,
             "document_inspection":true,
-            "timeline_inspection":true
+            "timeline_inspection":true,
+            "library_inspection":true,
+            "symbol_metadata_inspection":true,
+            "selection_inspection":true,
+            "fresh_document_timeline_identity_recheck":true
         },
         "not_implemented":{
-            "library_inspection":true,
-            "symbol_instance_inspection":true,
+            "stable_element_object_ids":true,
             "timeline_mutation":true,
             "drawing_mutation":true,
             "publish_export":true,
@@ -155,17 +158,17 @@ pub fn readiness_report()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_animate",
-        "source_milestone_percent":40,
-        "source_coding_status":"read_only_bridge_complete",
+        "source_milestone_percent":60,
+        "source_coding_status":"read_only_identity_inspection_complete",
         "desktop_detection":true,
         "exact_detected_launch":true,
         "host_transport":"cep_plus_jsfl",
-        "bridge_scope":"read_only_context_and_timeline",
+        "bridge_scope":"read_only_context_timeline_library_selection_identity",
         "host_ready_verified":false,
         "document_automation_ready":"read_only_only",
         "source_runtime_verified":false,
         "production_ready":false,
-        "next_source_phase":"add bounded library/symbol/selection inspection and exact document-signature guards before any mutation"
+        "next_source_phase":"add guarded low-risk typed timeline/layer writes with fresh identity preconditions, checkpoint strategy, and independent readback"
     })
 }
 
@@ -183,8 +186,11 @@ pub fn validate_context_receipt(value:&Value)->Result<Value,String>{
     let signature=value.get("documentSignature").and_then(Value::as_str)
         .filter(|v|!v.is_empty()&&v.len()<=1600&&!v.chars().any(char::is_control))
         .ok_or("Animate document signature is missing or invalid.")?;
+    let timeline_signature=value.get("timelineSignature").and_then(Value::as_str)
+        .filter(|v|!v.is_empty()&&v.len()<=2000&&!v.chars().any(char::is_control))
+        .ok_or("Animate timeline signature is missing or invalid.")?;
     if !has_document{
-        if signature!="no_document"{return Err("Closed Animate context must use no_document signature.".into());}
+        if signature!="no_document"||timeline_signature!="no_timeline"{return Err("Closed Animate context must use no_document/no_timeline signatures.".into());}
         return Ok(value.clone());
     }
     let id=value.get("documentId").and_then(Value::as_i64)
@@ -216,6 +222,7 @@ pub fn validate_context_receipt(value:&Value)->Result<Value,String>{
         "layerCount":layer_count,
         "selectionCount":value.get("selectionCount"),
         "documentSignature":signature,
+        "timelineSignature":timeline_signature,
         "runtimeVerified":false
     }))
 }
@@ -227,6 +234,9 @@ pub fn validate_timeline_receipt(value:&Value)->Result<Value,String>{
     let signature=value.get("documentSignature").and_then(Value::as_str)
         .filter(|v|!v.is_empty()&&v.len()<=1600&&!v.chars().any(char::is_control))
         .ok_or("Animate timeline document signature is missing or invalid.")?;
+    let timeline_signature=value.get("timelineSignature").and_then(Value::as_str)
+        .filter(|v|!v.is_empty()&&v.len()<=2000&&!v.chars().any(char::is_control))
+        .ok_or("Animate timeline signature is missing or invalid.")?;
     let layers=value.get("layers").and_then(Value::as_array).ok_or("Animate timeline layers are required.")?;
     if layers.len()>256{return Err("Animate timeline layer receipt exceeds 256 layers.".into());}
     for row in layers{
@@ -243,6 +253,7 @@ pub fn validate_timeline_receipt(value:&Value)->Result<Value,String>{
         "validated":true,
         "readOnly":true,
         "documentSignature":signature,
+        "timelineSignature":timeline_signature,
         "timelineName":value.get("timelineName"),
         "currentFrame":value.get("currentFrame"),
         "currentLayer":value.get("currentLayer"),
@@ -252,6 +263,84 @@ pub fn validate_timeline_receipt(value:&Value)->Result<Value,String>{
         "layers":layers,
         "runtimeVerified":false
     }))
+}
+
+
+pub fn validate_identity_signature<'a>(value:&'a str,label:&str)->Result<&'a str,String>{
+    let trimmed=value.trim();
+    if trimmed.is_empty()||trimmed.len()>2000||trimmed.chars().any(char::is_control){
+        return Err(format!("Animate expected {label} signature must be 1..2000 characters without control characters."));
+    }
+    Ok(trimmed)
+}
+
+pub fn validate_library_receipt(value:&Value)->Result<Value,String>{
+    if value.get("readOnly").and_then(Value::as_bool)!=Some(true){
+        return Err("Animate library receipt must explicitly be readOnly=true.".into());
+    }
+    validate_identity_signature(value.get("documentSignature").and_then(Value::as_str).unwrap_or(""),"document")?;
+    validate_identity_signature(value.get("timelineSignature").and_then(Value::as_str).unwrap_or(""),"timeline")?;
+    let items=value.get("items").and_then(Value::as_array).ok_or("Animate library items are required.")?;
+    if items.len()>256{return Err("Animate library receipt exceeds 256 items.".into());}
+    for item in items{
+        let index=item.get("index").and_then(Value::as_u64).ok_or("Animate library item index is invalid.")?;
+        if index>1_000_000{return Err("Animate library item index exceeds supported bounds.".into());}
+        if !bounded_text(item.get("name").and_then(Value::as_str),1024){
+            return Err("Animate library item name is missing or oversized.".into());
+        }
+        if !bounded_text(item.get("itemType").and_then(Value::as_str),160){
+            return Err("Animate library item type is missing or oversized.".into());
+        }
+        for key in ["linkageClassName","symbolType"]{
+            if let Some(text)=item.get(key).and_then(Value::as_str){
+                if text.len()>512||text.chars().any(char::is_control){
+                    return Err(format!("Animate library {key} is oversized or invalid."));
+                }
+            }
+        }
+    }
+    Ok(value.clone())
+}
+
+pub fn validate_selection_receipt(value:&Value)->Result<Value,String>{
+    if value.get("readOnly").and_then(Value::as_bool)!=Some(true){
+        return Err("Animate selection receipt must explicitly be readOnly=true.".into());
+    }
+    validate_identity_signature(value.get("documentSignature").and_then(Value::as_str).unwrap_or(""),"document")?;
+    validate_identity_signature(value.get("timelineSignature").and_then(Value::as_str).unwrap_or(""),"timeline")?;
+    let signature=value.get("selectionSignature").and_then(Value::as_str).unwrap_or("");
+    validate_identity_signature(signature,"selection snapshot")?;
+    let elements=value.get("elements").and_then(Value::as_array).ok_or("Animate selection elements are required.")?;
+    if elements.len()>64{return Err("Animate selection receipt exceeds 64 elements.".into());}
+    for element in elements{
+        let index=element.get("index").and_then(Value::as_u64).ok_or("Animate selected element index is invalid.")?;
+        if index>100_000{return Err("Animate selected element index exceeds supported bounds.".into());}
+        if !bounded_text(element.get("elementType").and_then(Value::as_str),160){
+            return Err("Animate selected element type is missing or oversized.".into());
+        }
+        for key in ["name","instanceType","symbolType","libraryItemName","libraryItemType"]{
+            if let Some(text)=element.get(key).and_then(Value::as_str){
+                if text.len()>1024||text.chars().any(char::is_control){
+                    return Err(format!("Animate selected element {key} is oversized or invalid."));
+                }
+            }
+        }
+    }
+    Ok(value.clone())
+}
+
+pub fn validate_identity_receipt(value:&Value)->Result<Value,String>{
+    if value.get("readOnly").and_then(Value::as_bool)!=Some(true)
+        || value.get("mutationAuthorized").and_then(Value::as_bool)!=Some(false){
+        return Err("Animate identity receipt must be read-only and must not authorize mutation.".into());
+    }
+    if value.get("documentIdentityMatched").and_then(Value::as_bool)!=Some(true)
+        || value.get("timelineIdentityMatched").and_then(Value::as_bool)!=Some(true){
+        return Err("Animate identity recheck did not confirm the expected document and timeline.".into());
+    }
+    validate_identity_signature(value.get("observedDocumentSignature").and_then(Value::as_str).unwrap_or(""),"observed document")?;
+    validate_identity_signature(value.get("observedTimelineSignature").and_then(Value::as_str).unwrap_or(""),"observed timeline")?;
+    Ok(value.clone())
 }
 
 #[cfg(test)]
@@ -268,11 +357,26 @@ mod tests{
     #[test]
     fn reports_do_not_promote_runtime(){
         let capability=capability_report();
-        assert_eq!(capability["source_milestone_percent"],40);
+        assert_eq!(capability["source_milestone_percent"],60);
         assert_eq!(capability["source_runtime_verified"],false);
         assert_eq!(capability["production_ready"],false);
         let readiness=readiness_report();
         assert_eq!(readiness["host_transport"],"cep_plus_jsfl");
         assert_eq!(readiness["document_automation_ready"],"read_only_only");
+    }
+
+    #[test]
+    fn identity_signatures_are_bounded_and_never_authorize_mutation(){
+        assert_eq!(validate_identity_signature("doc|1","document").unwrap(),"doc|1");
+        assert!(validate_identity_signature("","document").is_err());
+        let receipt=json!({
+            "readOnly":true,
+            "mutationAuthorized":false,
+            "documentIdentityMatched":true,
+            "timelineIdentityMatched":true,
+            "observedDocumentSignature":"doc|1",
+            "observedTimelineSignature":"timeline|1"
+        });
+        validate_identity_receipt(&receipt).unwrap();
     }
 }

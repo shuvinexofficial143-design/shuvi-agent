@@ -38,15 +38,25 @@
     if(deliveredCount>=1024)throw new Error("Pairing delivery budget exhausted; rotate the Shuvi pairing token.");
     delivered[command.id]=true;deliveredCount+=1;
   }
+  function boundedInteger(value,min,max,label){
+    var n=Number(value);
+    if(!isFinite(n)||Math.floor(n)!==n||n<min||n>max)throw new Error(label+" must be an integer from "+min+" to "+max+".");
+    return n;
+  }
+  function boundedSignature(value,label){
+    if(typeof value!=="string"||!value.length||value.length>2000)throw new Error("Exact "+label+" signature is required.");
+    return value;
+  }
   function execute(command){
     var args=command.arguments||{};
     if(command.action==="inspect_context")return evalHost("inspect_context",{});
-    if(command.action==="inspect_timeline"){
-      var maxLayers=args.maxLayers==null?128:Number(args.maxLayers);
-      if(!isFinite(maxLayers)||Math.floor(maxLayers)!==maxLayers||maxLayers<1||maxLayers>256)
-        return Promise.reject(new Error("maxLayers must be an integer from 1 to 256."));
-      return evalHost("inspect_timeline",{maxLayers:maxLayers});
-    }
+    if(command.action==="inspect_timeline")return evalHost("inspect_timeline",{maxLayers:boundedInteger(args.maxLayers==null?128:args.maxLayers,1,256,"maxLayers")});
+    if(command.action==="inspect_library")return evalHost("inspect_library",{maxItems:boundedInteger(args.maxItems==null?256:args.maxItems,1,256,"maxItems")});
+    if(command.action==="inspect_selection")return evalHost("inspect_selection",{maxElements:boundedInteger(args.maxElements==null?64:args.maxElements,1,64,"maxElements")});
+    if(command.action==="verify_identity")return evalHost("verify_identity",{
+      expectedDocumentSignature:boundedSignature(args.expectedDocumentSignature,"document"),
+      expectedTimelineSignature:boundedSignature(args.expectedTimelineSignature,"timeline")
+    });
     return Promise.reject(new Error("Unsupported read-only Shuvi Animate command: "+command.action));
   }
   function bounded(command,success,data,error){
@@ -71,8 +81,11 @@
   function connect(){var token=(el("tokenInput").value||"").trim();if(!token){setStatus("Paste the pairing token from Shuvi.",false);return;}
     bridgeToken=token;delivered=Object.create(null);deliveredCount=0;setStatus("Connecting...",false);startPolling();}
   function disconnect(){bridgeToken="";if(pollTimer)clearInterval(pollTimer);pollTimer=null;setStatus("Disconnected",false);}
-  function inspect(){evalHost("inspect_context",{}).then(function(v){show(JSON.stringify(v,null,2));}).catch(function(e){show("Animate inspection failed: "+String(e));});}
-  function timeline(){evalHost("inspect_timeline",{maxLayers:128}).then(function(v){show(JSON.stringify(v,null,2));}).catch(function(e){show("Timeline inspection failed: "+String(e));});}
-  document.addEventListener("DOMContentLoaded",function(){el("connect").addEventListener("click",connect);el("disconnect").addEventListener("click",disconnect);
-    el("inspect").addEventListener("click",inspect);el("timeline").addEventListener("click",timeline);setStatus("Disconnected",false);});
+  function direct(action,args){evalHost(action,args).then(function(v){show(JSON.stringify(v,null,2));}).catch(function(e){show("Animate inspection failed: "+String(e));});}
+  document.addEventListener("DOMContentLoaded",function(){
+    el("connect").addEventListener("click",connect);el("disconnect").addEventListener("click",disconnect);
+    el("inspect").addEventListener("click",function(){direct("inspect_context",{});});
+    el("timeline").addEventListener("click",function(){direct("inspect_timeline",{maxLayers:128});});
+    setStatus("Disconnected",false);
+  });
 }());

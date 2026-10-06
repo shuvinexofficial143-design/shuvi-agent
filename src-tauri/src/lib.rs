@@ -636,6 +636,9 @@ enum ToolAction {
     AnimateBridgeStop,
     AnimateContext,
     AnimateTimeline,
+    AnimateLibrary,
+    AnimateSelection,
+    AnimateIdentityCheck { expected_document_signature:String, expected_timeline_signature:String },
     PremiereDetect,
     PremiereLaunch { project: Option<String> },
     PremiereBridgeStart,
@@ -3311,6 +3314,31 @@ fn stage_tool(
             "Read-only bounded current timeline/layer/frame summary through the paired Animate CEP/JSFL bridge.".into(),
             RiskLevel::Low,
         ),
+        "animate_library" => (
+            ToolAction::AnimateLibrary,
+            "Inspect Animate library".into(),
+            "Read-only bounded Animate library/symbol metadata through the paired CEP/JSFL bridge; no library mutation.".into(),
+            RiskLevel::Low,
+        ),
+        "animate_selection" => (
+            ToolAction::AnimateSelection,
+            "Inspect Animate selection".into(),
+            "Read-only bounded selected-stage-element metadata; selection signatures are observational snapshots, not stable object IDs.".into(),
+            RiskLevel::Low,
+        ),
+        "animate_identity_check" => {
+            let expected_document_signature=arg_string(&proposal.arguments,"expected_document_signature")?;
+            let expected_timeline_signature=arg_string(&proposal.arguments,"expected_timeline_signature")?;
+            animate::validate_identity_signature(&expected_document_signature,"document")?;
+            animate::validate_identity_signature(&expected_timeline_signature,"timeline")?;
+            (ToolAction::AnimateIdentityCheck {
+                    expected_document_signature:expected_document_signature.clone(),
+                    expected_timeline_signature:expected_timeline_signature.clone()
+                },
+                "Recheck Animate document/timeline identity".into(),
+                "Read-only fresh host recheck of exact inspected document and timeline signatures. It does not authorize mutation.".into(),
+                RiskLevel::Low)
+        }
         "audition_detect" => (
             ToolAction::AuditionDetect,
             "Detect Adobe Audition".into(),
@@ -10154,6 +10182,36 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
         ToolAction::AnimateTimeline => {
             let value=state.animate_bridge.request("inspect_timeline",json!({"maxLayers":128}),Duration::from_secs(10)).await?;
             let validated=animate::validate_timeline_receipt(&value)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateLibrary => {
+            let value=state.animate_bridge.request("inspect_library",json!({"maxItems":256}),Duration::from_secs(12)).await?;
+            let validated=animate::validate_library_receipt(&value)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateSelection => {
+            let value=state.animate_bridge.request("inspect_selection",json!({"maxElements":64}),Duration::from_secs(10)).await?;
+            let validated=animate::validate_selection_receipt(&value)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateIdentityCheck {expected_document_signature,expected_timeline_signature} => {
+            let value=state.animate_bridge.request("verify_identity",json!({
+                "expectedDocumentSignature":expected_document_signature,
+                "expectedTimelineSignature":expected_timeline_signature
+            }),Duration::from_secs(8)).await?;
+            let validated=animate::validate_identity_receipt(&value)?;
             Ok(ActionResult {
                 success:true,tool,
                 stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
