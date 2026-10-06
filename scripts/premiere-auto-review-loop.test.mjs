@@ -40,3 +40,16 @@ test("auto review phase 2 exposes bounded native correction candidates", () => {
   assert.match(binding, /kind=="audio" && !value\.is_number\(\)/);
   assert.match(binding, /Vision evidence does not choose a native parameter or correction value/);
 });
+
+
+test("auto review phase 3 builds only separately approved exact correction proposals", () => {
+  const binding = fs.readFileSync("src-tauri/src/premiere_review_binding.rs", "utf8");
+  const rust = fs.readFileSync("src-tauri/src/lib.rs", "utf8");
+  assert.match(binding, /pub fn static_correction_proposal/);
+  assert.match(binding, /Desired correction value must match the inspected primitive native type/);
+  assert.match(binding, /stale_target_guarded/);
+  assert.match(rust, /premiere_plan_review_correction/);
+  assert.match(rust, /PremierePlanReviewCorrection/);
+  assert.match(rust, /COPY_EXECUTED_ACTION_ID/);
+  assert.match(rust, /automatic_mutation/);
+});

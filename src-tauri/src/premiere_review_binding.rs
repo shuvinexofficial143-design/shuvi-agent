@@ -177,8 +177,68 @@ pub fn bind(session:&Session,issue:&Issue,seconds:f64,timeline:&Value,kind:&str,
         "expected":expected,"binding":{"component_match_name":component,"param_display_name":param,"current_value":value,
             "value_type":if value.is_number(){"number"}else if value.is_string(){"string"}else if value.is_boolean(){"boolean"}else{"unknown"},
             "time_varying":animated,"keyframes_supported":hits[0]["keyframesSupported"]},
-        "missing_information":if supported {vec!["User-approved exact desired value and typed planner settings"]}else{vec!["Static primitive native parameter"]},
-        "reason":if supported {"Exact binding available; invoke typed planner and normal approval separately."}else{"Animated, complex or unreadable value cannot be statically edited."}}))
+        "missing_information":if supported {vec!["Exact desired primitive value for premiere_plan_review_correction"]}else{vec!["Static primitive native parameter"]},
+        "next_tool":if supported {Some("premiere_plan_review_correction")}else{None},
+        "reason":if supported {"Exact binding available; plan one separately approved static correction, then re-review."}else{"Animated, complex or unreadable value cannot be statically edited."}}))
+}
+
+pub fn static_correction_proposal(
+    bound:&Value,
+    kind:&str,
+    track:u32,
+    clip:u32,
+    component_match_name:&str,
+    param_display_name:&str,
+    desired_value:&Value,
+)->Result<Value,String>{
+    if !matches!(kind,"video"|"audio") || track>128 || clip>10000
+        || component_match_name.is_empty() || component_match_name.len()>240
+        || param_display_name.is_empty() || param_display_name.len()>240 {
+        return Err("Invalid static review-correction target.".into());
+    }
+    if bound.get("supported").and_then(Value::as_bool)!=Some(true) {
+        return Err("Review correction requires one exact supported native binding.".into());
+    }
+    let expected=bound.get("expected").cloned().ok_or("Review correction binding has no exact expectation.")?;
+    let native=bound.get("binding").ok_or("Review correction binding metadata missing.")?;
+    if native.get("component_match_name").and_then(Value::as_str)!=Some(component_match_name)
+        || native.get("param_display_name").and_then(Value::as_str)!=Some(param_display_name)
+        || native.get("time_varying").and_then(Value::as_bool)!=Some(false) {
+        return Err("Review correction binding is stale, animated, or points to another native parameter.".into());
+    }
+    let current=native.get("current_value").ok_or("Review correction current value missing.")?;
+    let same_type=(current.is_number()&&desired_value.is_number())
+        ||(current.is_string()&&desired_value.is_string())
+        ||(current.is_boolean()&&desired_value.is_boolean());
+    if !same_type || kind=="audio"&&!desired_value.is_number() {
+        return Err("Desired correction value must match the inspected primitive native type.".into());
+    }
+    if desired_value.as_f64().is_some_and(|value|!value.is_finite())
+        || desired_value.as_str().is_some_and(|value|value.chars().count()>2048) {
+        return Err("Desired correction value exceeds bounded primitive limits.".into());
+    }
+    if current==desired_value {
+        return Err("Desired correction value matches the current native value; no edit proposal is needed.".into());
+    }
+    let apply_tool=if kind=="audio"{"premiere_apply_audio_recipe"}else{"premiere_apply_video_recipe"};
+    let settings=json!([{
+        "component_match_name":component_match_name,
+        "param_display_name":param_display_name,
+        "value":desired_value
+    }]);
+    Ok(json!({
+        "tool":apply_tool,
+        "arguments":{
+            "track":track,
+            "clip_index":clip,
+            "settings":settings,
+            "expected":expected
+        },
+        "requires_separate_approval":true,
+        "checkpoint_required":true,
+        "stale_target_guarded":true,
+        "runtime_verified":false
+    }))
 }
 
 #[cfg(test)] mod tests {
@@ -228,6 +288,18 @@ pub fn bind(session:&Session,issue:&Issue,seconds:f64,timeline:&Value,kind:&str,
         let discovery=bind(&s,i,2.0,&audio_t,"audio",0,0,"sig",None,&native).unwrap();
         assert_eq!(discovery["candidate_count"],1);
         assert_eq!(discovery["inspection_candidates"][0]["param_display_name"],"Level");
+    }
+    #[test] fn static_correction_proposal_preserves_expectation_and_type(){
+        let (s,t)=fixture();let i=issue(&s,"i",2.0).unwrap();
+        let native=json!({"track":0,"clipIndex":0,"componentsTruncated":false,"components":[{"matchName":"color.native",
+            "paramsTruncated":false,"params":[{"displayName":"Exposure","startValue":1.0,"timeVarying":false,"keyframesSupported":true}]}]});
+        let bound=bind(&s,i,2.0,&t,"video",0,0,"sig",Some(("color.native","Exposure")),&native).unwrap();
+        let proposal=static_correction_proposal(&bound,"video",0,0,"color.native","Exposure",&json!(1.2)).unwrap();
+        assert_eq!(proposal["tool"],"premiere_apply_video_recipe");
+        assert_eq!(proposal["arguments"]["expected"]["clips"][0]["signature"],"sig");
+        assert_eq!(proposal["arguments"]["settings"][0]["value"],1.2);
+        assert!(static_correction_proposal(&bound,"video",0,0,"color.native","Exposure",&json!("bad")).is_err());
+        assert!(static_correction_proposal(&bound,"video",0,0,"color.native","Exposure",&json!(1.0)).is_err());
     }
     #[test] fn graphics_property_requires_native_identity_and_exact_selector(){
         let (mut s,t)=fixture();s.reviews[0].issues[0].category="graphics".into();let i=issue(&s,"i",2.0).unwrap();

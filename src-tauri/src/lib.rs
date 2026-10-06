@@ -249,6 +249,7 @@ Available tools:
 - premiere_review_session_next: {"session_id":"exact returned ID"}
 - premiere_review_session_continue: {"session_id":"exact returned ID"}
 - premiere_review_session_record_fix: {"session_id":"ID","issue_id":"inspected issue ID","target":"exact inspected clip target","planner":"premiere_plan_video_recipe","settings":{"exact":"approved typed settings"},"approved_action_id":"exact successful Shuvi audit action ID"}
+- premiere_plan_review_correction: {"session_id":"ID","issue_id":"inspected issue ID","frame_seconds":2,"kind":"video|audio","track":0,"clip_index":0,"target_signature":"exact inspected targetSignature","component_match_name":"exact inspected native component","param_display_name":"exact inspected native parameter","desired_value":"same primitive type as current value"}
 - premiere_review_session_cancel: {"session_id":"exact returned ID"}
 - premiere_plan_edit_recipe: {"preset":"social_reel|cinematic_reel|talking_head|product_ad|wedding_highlight|long_form_youtube|story_explainer|clean_corporate","targets":{},"inputs":{},"options":{}}
 - premiere_edit_job_start: {"schema_version":1,"job_type":"talking_head|social_reel|product_ad|wedding_highlight|corporate|custom","talking_head_strategy":"optional direct_cut|source_rebuild","media_prep":null,"scene_detection":null,"transcript_cuts":null,"transcript_rebuild":null,"assembly":null,"track_organization":null,"layering":null,"finishing":null,"work_area":null,"review":null,"frame_delivery":null,"interchange_export":null,"export":null}
@@ -636,6 +637,7 @@ enum ToolAction {
     PremierePlanEditRecipe { request: premiere_editorial::Request },
     PremiereResolveReviewTarget { session_id: String, issue_id: String, frame_seconds: f64 },
     PremiereBindReviewFix { session_id: String, issue_id: String, frame_seconds: f64, kind: String, track: u32, clip_index: u32, target_signature: String, component_match_name: Option<String>, param_display_name: Option<String> },
+    PremierePlanReviewCorrection { session_id:String, issue_id:String, frame_seconds:f64, kind:String, track:u32, clip_index:u32, target_signature:String, component_match_name:String, param_display_name:String, desired_value:Value },
     PremiereEditSessionStart { request: premiere_editorial::Request },
     PremiereEditSessionStatus { session_id: String },
     PremiereEditSessionNext { session_id: String },
@@ -1299,6 +1301,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_plan_edit_recipe"
         | "premiere_resolve_review_target"
         | "premiere_bind_review_fix"
+        | "premiere_plan_review_correction"
         | "premiere_edit_session_start"
         | "premiere_edit_session_status"
         | "premiere_edit_session_next"
@@ -4021,6 +4024,28 @@ fn stage_tool(
             (ToolAction::PremiereEditJobRecordAction{job_id,phase_id,action_id},
                 "Record professional edit-job phase receipt".into(),
                 "Advance only after a matching recent typed action audit receipt; this command performs no Premiere mutation.".into(),RiskLevel::Low)
+        }
+        "premiere_plan_review_correction" => {
+            let session_id=arg_string(&proposal.arguments,"session_id")?;
+            Uuid::parse_str(&session_id).map_err(|_|"Invalid review session ID.")?;
+            let issue_id=arg_string(&proposal.arguments,"issue_id")?;
+            let frame_seconds=proposal.arguments.get("frame_seconds").and_then(Value::as_f64)
+                .filter(|n|n.is_finite()&&(0.0..=86400.0).contains(n)).ok_or("Exact grounded frame timestamp required.")?;
+            let kind=arg_string(&proposal.arguments,"kind")?;
+            if !matches!(kind.as_str(),"video"|"audio"){return Err("Exact video/audio kind required.".into());}
+            let track=proposal.arguments.get("track").and_then(Value::as_u64).filter(|n|*n<=128).ok_or("Invalid track.")? as u32;
+            let clip_index=proposal.arguments.get("clip_index").and_then(Value::as_u64).filter(|n|*n<=10000).ok_or("Invalid clip index.")? as u32;
+            let target_signature=arg_string(&proposal.arguments,"target_signature")?;
+            if target_signature.is_empty()||target_signature.len()>4096{return Err("Invalid target signature.".into());}
+            let component_match_name=arg_string(&proposal.arguments,"component_match_name")?;
+            let param_display_name=arg_string(&proposal.arguments,"param_display_name")?;
+            let desired_value=proposal.arguments.get("desired_value").cloned().ok_or("desired_value is required.")?;
+            if !(desired_value.is_boolean()||desired_value.is_number()||desired_value.is_string()){
+                return Err("Review correction desired_value must be a primitive boolean, number, or string.".into());
+            }
+            (ToolAction::PremierePlanReviewCorrection{session_id,issue_id,frame_seconds,kind,track,clip_index,target_signature,component_match_name,param_display_name,desired_value},
+                "Plan exact Premiere review correction".into(),
+                "Reinspect the exact target and native parameter, preserve its fresh expectation, and return one separately approved typed correction proposal; no edit.".into(),RiskLevel::Low)
         }
         "premiere_edit_session_start" => {
             let request:premiere_editorial::Request=serde_json::from_value(proposal.arguments.clone())
@@ -11741,6 +11766,60 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }).to_string(),
                 stderr:String::new(),
                 exit_code:Some(if success{0}else{1})
+            })
+        }
+        ToolAction::PremierePlanReviewCorrection {session_id,issue_id,frame_seconds,kind,track,clip_index,target_signature,component_match_name,param_display_name,desired_value} => {
+            let session=premiere_review::load(&premiere_review_path(app,&session_id)?)?;
+            let issue=premiere_review_binding::issue(&session,&issue_id,frame_seconds)?;
+            if !matches!(issue.category.as_str(),"framing"|"motion"|"color"|"exposure"|"audio_visual"){
+                return Err("This review issue does not support a static primitive correction proposal.".into());
+            }
+            if (issue.category=="audio_visual" && kind!="audio") || (issue.category!="audio_visual" && kind!="video") {
+                return Err("Review issue category does not match the requested media kind.".into());
+            }
+            let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+            let inspected=premiere_bridge.request(
+                if kind=="audio"{"inspect_audio_clip_effects"}else{"inspect_clip_effects"},
+                json!({"track":track,"clipIndex":clip_index}),
+                Duration::from_secs(20)
+            ).await?;
+            let bound=premiere_review_binding::bind(
+                &session,issue,frame_seconds,&timeline,&kind,track,clip_index,&target_signature,
+                Some((&component_match_name,&param_display_name)),&inspected
+            )?;
+            let proposal=premiere_review_binding::static_correction_proposal(
+                &bound,&kind,track,clip_index,&component_match_name,&param_display_name,&desired_value
+            )?;
+            let target=format!("{kind}/{track}/{clip_index}/{}/{}",
+                component_match_name.chars().take(80).collect::<String>(),
+                param_display_name.chars().take(80).collect::<String>());
+            let planner=proposal.get("tool").and_then(Value::as_str).unwrap_or("").to_string();
+            let settings=proposal.pointer("/arguments/settings").cloned().unwrap_or(Value::Null);
+            Ok(ActionResult{
+                success:true,tool,
+                stdout:json!({
+                    "session_id":session_id,
+                    "issue_id":issue_id,
+                    "frame_seconds":frame_seconds,
+                    "binding":bound,
+                    "correction_proposal":proposal,
+                    "requires_separate_approval":true,
+                    "after_execution":{
+                        "tool":"premiere_review_session_record_fix",
+                        "arguments":{
+                            "session_id":session_id,
+                            "issue_id":issue_id,
+                            "target":target,
+                            "planner":planner,
+                            "settings":settings,
+                            "approved_action_id":"COPY_EXECUTED_ACTION_ID"
+                        }
+                    },
+                    "then":"premiere_review_session_continue",
+                    "automatic_mutation":false,
+                    "runtime_verified":false
+                }).to_string(),
+                stderr:String::new(),exit_code:Some(0)
             })
         }
         ToolAction::PremiereEditSessionStart {request} => {
