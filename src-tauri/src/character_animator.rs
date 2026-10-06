@@ -178,7 +178,7 @@ pub fn readiness_report()->Value{
         "desktop_detection":true,
         "exact_detected_launch":true,
         "host_transport":"not_implemented",
-        "future_host_transport":"research_required",
+        "future_host_transport":"no_public_host_api_claimed",
         "host_ready_verified":false,
         "project_automation_ready":"planning_only",
         "source_runtime_verified":false,
