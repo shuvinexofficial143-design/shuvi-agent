@@ -246,7 +246,11 @@ test("clone rejects nonexistent vertical destination before creating native acti
 test("subsequence restores selection even if setting the temporary selection fails", async () => {
   const f = fixture(); const sequence = await f.project.getActiveSequence();
   const previous = {name: "previous"}; let selected = [previous]; let calls = 0;
-  sequence.getSelection = async () => ({getTrackItems: async () => [...selected], removeItem: item => {selected = selected.filter(x => x !== item);}, addItem: item => selected.push(item)});
+  sequence.getSelection = async () => ({
+    getTrackItems: async () => [...selected],
+    removeItem: item => { selected = selected.filter(x => x !== item); return true; },
+    addItem: item => { selected.push(item); return true; }
+  });
   sequence.setSelection = () => ++calls > 1;
   await assert.rejects(f.panel.createSubsequence({targets: [{kind: "video", track: 0, clipIndex: 0}]}), /could not set/);
   assert.equal(calls, 2); assert.deepEqual(selected, [previous]);
@@ -254,9 +258,22 @@ test("subsequence restores selection even if setting the temporary selection fai
 
 test("subsequence reports failed restoration without claiming selected-only content", async () => {
   const f = fixture(); const sequence = await f.project.getActiveSequence(); let calls = 0;
-  sequence.getSelection = async () => ({getTrackItems: async () => [], removeItem() {}, addItem() {}});
+  sequence.getSelection = async () => ({
+    getTrackItems: async () => [],
+    removeItem() { return true; },
+    addItem() { return true; }
+  });
   sequence.setSelection = () => ++calls === 1;
-  sequence.createSubsequence = async () => ({guid: "new-sequence", getProjectItem: async () => ({getId: async () => "new-item"})});
+  const nested = {
+    guid: "new-sequence",
+    getProjectItem: async () => ({getId: async () => "new-item"}),
+    getVideoTrackCount: async () => 0,
+    getAudioTrackCount: async () => 0,
+    getVideoTrack: async () => null,
+    getAudioTrack: async () => null
+  };
+  sequence.createSubsequence = async () => nested;
+  f.project.getSequences = async () => [sequence, nested];
   const result = await f.panel.createSubsequence({targets: [{kind: "video", track: 0, clipIndex: 0}]});
   assert.equal(result.created, true); assert.equal(result.selectionRestored, false); assert.equal(result.selectionSemanticsVerified, false);
 });

@@ -16,7 +16,7 @@ test("documented-unsupported native gaps cannot silently promote",()=>{
   ]) assert.match(acceptance,new RegExp(`"${key}":\\{"state":"unsupported_documented"`));
   assert.match(acceptance,/\("linked_clip_membership",2,true,true\)/);
   assert.match(speed,/write_supported: false/);
-  assert.match(speed,/safeAutomaticWrite:\s*false/);
+  assert.doesNotMatch(speed,/executeTransaction|createSetSpeedAction\(/);
   assert.match(uxp,/creationSupported:false,switchingSupported:false/);
 });
 

@@ -98,7 +98,7 @@ test("direct MOGRT insertion is success only after bounded before/after creation
     const arm=rust.slice(start,end);
     assert.match(arm,/verified_creation_identity/);
     assert.match(arm,/success: verified/);
-    assert.match(arm,/"retry_safe": false/);
+    assert.match(arm,/"retry_safe":\s*false/);
   }
 });
 

@@ -78,7 +78,11 @@ test("native route reads the inspected clip and never starts an edit transaction
   const sequence = { guid: "seq", getVideoTrack: async () => ({ getTrackItems: async () => [item] }) };
   const project = { guid: "proj", getActiveSequence: async () => sequence,
     executeTransaction: () => { throw new Error("Planner attempted a write"); } };
-  const premiere = { Project: { getActiveProject: async () => project }, Constants: { TrackItemType: { CLIP: 1 } } };
+  const premiere = {
+    Project: { getActiveProject: async () => project },
+    ProjectItem: { cast: item => item },
+    Constants: { TrackItemType: { CLIP: 1 } }
+  };
   const panel = { require: name => {
     if (name === "./project-diagnostics.js" || name === "./transcript-rebuild.js") return {};
     if (name === "./caption-workflows.js" || name === "./mogrt-workflows.js" || name === "./graphics-batch.js") return {};
