@@ -6202,12 +6202,12 @@ async function createSubsequence(argumentsValue) {
   }
 
   const sequenceGuid = plainGuid(newSequence.guid);
-  let projectItemId = null;
+  let nestedProjectItemId = null;
   try {
     const projectItem = await newSequence.getProjectItem();
-    projectItemId = await projectItem.getId();
+    nestedProjectItemId = await projectItem.getId();
   } catch {
-    projectItemId = null;
+    nestedProjectItemId = null;
   }
 
   const afterSequences = await project.getSequences();
@@ -6215,10 +6215,10 @@ async function createSubsequence(argumentsValue) {
     ? afterSequences.filter(value => plainGuid(value.guid) === sequenceGuid)
     : [];
   let projectItemResolved = false;
-  if (projectItemId) {
+  if (nestedProjectItemId) {
     try {
       const root = await project.getRootItem();
-      projectItemResolved = Boolean(await findProjectItemById(root, projectItemId));
+      projectItemResolved = Boolean(await findProjectItemById(root, nestedProjectItemId));
     } catch {
       projectItemResolved = false;
     }
@@ -6266,7 +6266,7 @@ async function createSubsequence(argumentsValue) {
     warning: verified?null:"Subsequence identity may exist, but exact selected-only clip content semantics were not fully verified.",
     sequenceGuid,
     sequenceName: newSequence.name || null,
-    projectItemId,
+    projectItemId: nestedProjectItemId,
     sequenceIdentityVerified,
     projectItemResolved,
     verificationStatus: verified ? "verified_creation_identity" : "accepted_unverified",

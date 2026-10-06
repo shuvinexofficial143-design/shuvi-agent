@@ -7,6 +7,7 @@ dist/
 !.env.example
 src-tauri/target/
 src-tauri/Cargo.lock
+src-tauri/gen/schemas/
 target/
 .vscode/
 .idea/
