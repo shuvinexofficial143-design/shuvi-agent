@@ -16,7 +16,8 @@ test('bounded batch requires every exact clip guard, checkpoints once, retains p
 });
 
 test('batch finishing stops on accepted but unverified recipe state',()=>{
- const arm=rust.slice(rust.indexOf('ToolAction::PremiereBatchFinish{targets}'),rust.indexOf('ToolAction::PremierePlanVideoRecipe'));
+ const start=rust.indexOf('ToolAction::PremiereBatchFinish{targets}');
+ const arm=rust.slice(start,rust.indexOf('ToolAction::PremierePlanVideoRecipe',start));
  assert.match(arm,/verificationStatus/);
  assert.match(arm,/verified_recipe/);
  assert.match(arm,/if !verified \{ uncertain=true; break; \}/);

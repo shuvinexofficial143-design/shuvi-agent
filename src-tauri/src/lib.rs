@@ -11038,6 +11038,22 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
         ToolAction::PremiereBatchFinish{targets} => {
             let _guard = state.finishing_running.begin(&state.finishing_cancelled)?;
             let expected=premiere_bridge.expected.ok_or("Batch requires inspected Premiere expectation.")?;
+            if targets.is_empty()||targets.len()>32 {
+                return Err("Batch finishing requires 1–32 explicit video targets.".into());
+            }
+            if expected.clips.len()!=targets.len() {
+                return Err("Batch expectation must cover every requested target exactly.".into());
+            }
+            let mut seen_targets=HashSet::new();
+            for target in &targets {
+                let track=target["track"].as_u64().ok_or("Invalid batch track.")? as u32;
+                let index=target["clip_index"].as_u64().ok_or("Invalid batch index.")? as u32;
+                if !seen_targets.insert((track,index))
+                    || !expected.clips.iter().any(|c|c.kind=="video"&&c.track==track&&c.clip_index==index)
+                {
+                    return Err("Duplicate or uninspected video batch target.".into());
+                }
+            }
             let mut results=Vec::new();let mut checkpoint:Option<String>=None;
             let requested = targets.len();
             let mut uncertain = false;

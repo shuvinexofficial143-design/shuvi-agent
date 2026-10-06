@@ -72,6 +72,7 @@ test("native route reads the inspected clip and never starts an edit transaction
     getName: async () => "Example", getStartTime: async () => ({ seconds: 5 }),
     getEndTime: async () => ({ seconds: 15 }), getInPoint: async () => ({ seconds: 2 }),
     getOutPoint: async () => ({ seconds: 12 }), getSpeed: async () => 1,
+    getProjectItem: async () => ({ getId: async () => "media-id" }),
     isSpeedReversed: async () => 0
   };
   const sequence = { guid: "seq", getVideoTrack: async () => ({ getTrackItems: async () => [item] }) };
