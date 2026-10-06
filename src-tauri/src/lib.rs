@@ -412,6 +412,7 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - character_animator_runtime_preflight: {"request":{"control":{"control_kind":"application_shortcut","command":"record_take_work_area","key":null,"midi_note":null,"acknowledge_project_mapping":false},"character_animator_exe":"exact detected Character Animator.exe","expected_pid":1234,"explicit_user_approval":true}} — verifies the exact Shuvi-managed foreground process only; sends no input
 - character_animator_execute_application_shortcut: {"request":{"control":{"control_kind":"application_shortcut","command":"record_take_work_area|export_png_wav|export_frame","key":null,"midi_note":null,"acknowledge_project_mapping":false},"character_animator_exe":"exact detected Character Animator.exe","expected_pid":1234,"explicit_user_approval":true}} — high-risk bounded delivery for only the three documented shortcuts; requires exact managed-process identity and immediate foreground PID/path recheck; effect success is not inferred from input dispatch
 - character_animator_plan_interchange: {"request":{"route":"dynamic_link_after_effects|dynamic_link_premiere|media_encoder_export","project_path":"absolute .chproj path","scene_name":"exact scene name"}} — planning only; no import/export execution
+- character_animator_acceptance_summary: {} — canonical 100% bounded source-scope completion summary; runtime verification remains false until a real Windows Character Animator acceptance run
 - photoshop_capability_report: {}
 - photoshop_readiness_report: {}
 - photoshop_detect: {}
@@ -688,6 +689,7 @@ enum ToolAction {
     CharacterAnimatorRuntimePreflight { request:character_animator::RuntimeControlPreflightRequest },
     CharacterAnimatorExecuteApplicationShortcut { request:character_animator::RuntimeControlPreflightRequest },
     CharacterAnimatorPlanInterchange { request:character_animator::InterchangePlanRequest },
+    CharacterAnimatorAcceptanceSummary,
     PremiereDetect,
     PremiereLaunch { project: Option<String> },
     PremiereBridgeStart,
@@ -1562,6 +1564,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "character_animator_runtime_preflight"
         | "character_animator_execute_application_shortcut"
         | "character_animator_plan_interchange"
+        | "character_animator_acceptance_summary"
         | "photoshop_capability_report"
         | "photoshop_readiness_report"
         | "photoshop_detect"
@@ -3398,6 +3401,12 @@ fn stage_tool(
                 "Build a bounded planning-only workflow for Dynamic Link to After Effects/Premiere or Character Animator to Adobe Media Encoder handoff. No project or export mutation.".into(),
                 RiskLevel::Low)
         }
+        "character_animator_acceptance_summary" => (
+            ToolAction::CharacterAnimatorAcceptanceSummary,
+            "Read canonical Character Animator source completion summary".into(),
+            "Report the declared 100% bounded Character Animator source scope, safety gates, explicit unclaimed capabilities, runtime-acceptance gap and production-readiness boundary.".into(),
+            RiskLevel::Low,
+        ),
         "illustrator_capability_report" => (
             ToolAction::IllustratorCapabilityReport,
             "Read Illustrator source capability report".into(),
@@ -10523,6 +10532,13 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             Ok(ActionResult {
                 success:true,tool,
                 stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::CharacterAnimatorAcceptanceSummary => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&character_animator::completion_summary()).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)
             })
         }

@@ -132,8 +132,8 @@ pub fn capability_report()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_character_animator",
-        "source_milestone_percent":80,
-        "source_scope_complete":false,
+        "source_milestone_percent":100,
+        "source_scope_complete":true,
         "implemented":{
             "bounded_windows_detection":true,
             "support_files_executable_detection":true,
@@ -148,7 +148,8 @@ pub fn capability_report()->Value{
             "foreground_focus_verification":true,
             "explicit_user_approval_guard":true,
             "documented_application_shortcut_execution":true,
-            "immediate_pre_send_focus_recheck":true
+            "immediate_pre_send_focus_recheck":true,
+            "canonical_acceptance_summary":true
         },
         "automation_transport":{
             "status":"no_public_host_api_claimed",
@@ -182,17 +183,18 @@ pub fn readiness_report()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_character_animator",
-        "source_milestone_percent":80,
-        "source_coding_status":"bounded_application_shortcut_delivery_complete",
+        "source_milestone_percent":100,
+        "source_coding_status":"declared_source_scope_complete",
         "desktop_detection":true,
         "exact_detected_launch":true,
         "host_transport":"not_implemented",
         "future_host_transport":"no_public_host_api_claimed",
         "host_ready_verified":false,
-        "project_automation_ready":"documented_application_shortcuts_only",
+        "project_automation_ready":"declared_bounded_source_scope_complete",
+        "source_completion":{"declared_scope_complete":true,"canonical_summary_tool":"character_animator_acceptance_summary","runtime_acceptance_pending":true},
         "source_runtime_verified":false,
         "production_ready":false,
-        "next_source_phase":"finalize the bounded source scope with a canonical acceptance summary and explicit runtime acceptance handoff; keep project trigger delivery, MIDI delivery and project/scene/puppet host inspection blocked unless separately verified"
+        "next_source_phase":"real Windows Character Animator acceptance testing; do not expand source scope unless a new milestone is explicitly defined"
     })
 }
 
@@ -252,7 +254,7 @@ pub fn control_catalog()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_character_animator",
-        "source_milestone_percent":80,
+        "source_milestone_percent":100,
         "execution_supported":true,
         "application_shortcut_execution_supported":true,
         "project_trigger_execution_supported":false,
@@ -596,6 +598,63 @@ pub fn plan_interchange(request:&InterchangePlanRequest)->Result<Value,String>{
     }))
 }
 
+
+pub fn completion_summary()->Value{
+    json!({
+        "integration":"adobe_character_animator",
+        "source_milestone_percent":100,
+        "source_scope_complete":true,
+        "implemented_scope":{
+            "bounded_windows_detection":true,
+            "exact_detected_executable_launch":true,
+            "managed_process_identity_binding":true,
+            "documented_application_shortcut_planning":true,
+            "project_trigger_key_planning":true,
+            "midi_note_planning":true,
+            "dynamic_link_and_media_encoder_handoff_planning":true,
+            "permission_first_runtime_preflight":true,
+            "exact_foreground_pid_and_executable_verification":true,
+            "immediate_pre_send_focus_recheck":true,
+            "bounded_documented_application_shortcut_delivery":["record_take_work_area","export_png_wav","export_frame"],
+            "input_dispatch_vs_effect_verification_separation":true,
+            "canonical_source_acceptance_summary":true
+        },
+        "intentionally_unclaimed":[
+            "public_character_animator_host_api",
+            "cep_uxp_extendscript_host_bridge",
+            "active_project_inspection",
+            "scene_puppet_timeline_take_inspection",
+            "project_trigger_key_runtime_delivery",
+            "midi_runtime_delivery",
+            "recording_effect_verification",
+            "export_effect_verification",
+            "dynamic_link_execution",
+            "media_encoder_export_execution",
+            "project_mutation_api",
+            "runtime_acceptance"
+        ],
+        "safety_gates":[
+            "normal Shuvi permission-first approval",
+            "exact freshly detected Character Animator executable",
+            "exact live Shuvi-managed process identity",
+            "foreground PID and canonical executable preflight",
+            "immediate foreground PID and executable recheck before keyboard dispatch",
+            "fixed internal shortcut mapping with no arbitrary runtime key string",
+            "project trigger and MIDI runtime delivery remain blocked",
+            "input dispatch never promotes Character Animator effect success",
+            "no blind retry after uncertain input dispatch"
+        ],
+        "runtime_handoff":{
+            "required_environment":"real Windows Adobe Character Animator installation",
+            "acceptance_required":true,
+            "source_runtime_verified":false,
+            "production_ready":false
+        },
+        "source_runtime_verified":false,
+        "production_ready":false
+    })
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -646,7 +705,8 @@ mod tests{
     #[test]
     fn foundation_does_not_invent_host_transport_or_runtime(){
         let capability=capability_report();
-        assert_eq!(capability["source_milestone_percent"],80);
+        assert_eq!(capability["source_milestone_percent"],100);
+        assert_eq!(capability["source_scope_complete"],true);
         assert_eq!(capability["automation_transport"]["status"],"no_public_host_api_claimed");
         assert_eq!(capability["automation_transport"]["implemented"],false);
         assert_eq!(capability["source_runtime_verified"],false);
@@ -655,8 +715,10 @@ mod tests{
         let readiness=readiness_report();
         assert_eq!(readiness["host_transport"],"not_implemented");
         assert_eq!(readiness["future_host_transport"],"no_public_host_api_claimed");
-        assert_eq!(readiness["source_milestone_percent"],80);
-        assert_eq!(readiness["project_automation_ready"],"documented_application_shortcuts_only");
+        assert_eq!(readiness["source_milestone_percent"],100);
+        assert_eq!(readiness["project_automation_ready"],"declared_bounded_source_scope_complete");
+        assert_eq!(readiness["source_completion"]["declared_scope_complete"],true);
+        assert_eq!(readiness["source_completion"]["runtime_acceptance_pending"],true);
     }
 
     #[test]
@@ -715,6 +777,17 @@ mod tests{
         assert_eq!(application_shortcut_send_keys("export_png_wav").unwrap(),"^%m");
         assert_eq!(application_shortcut_send_keys("export_frame").unwrap(),"^%s");
         assert!(application_shortcut_send_keys("trigger_key").is_err());
+    }
+
+
+    #[test]
+    fn completion_summary_never_promotes_runtime(){
+        let summary=completion_summary();
+        assert_eq!(summary["source_milestone_percent"],100);
+        assert_eq!(summary["source_scope_complete"],true);
+        assert_eq!(summary["implemented_scope"]["canonical_source_acceptance_summary"],true);
+        assert_eq!(summary["source_runtime_verified"],false);
+        assert_eq!(summary["production_ready"],false);
     }
 
     #[test]

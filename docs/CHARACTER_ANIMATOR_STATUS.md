@@ -2,88 +2,93 @@
 
 ## Source milestone
 
-Current declared source milestone: **80%**
+Current declared source milestone: **100%**
 
-This milestone extends the 60% permission-first runtime preflight with **bounded keyboard delivery for only three documented Character Animator application shortcuts**. It still does not claim a Character Animator scripting/host API, project inspection API, trigger-key delivery, MIDI delivery, effect verification, runtime acceptance, or production readiness.
+Character Animator's **bounded source scope is complete**. This means the agreed source integration has been implemented and closed with a canonical completion summary. It does **not** mean a real Windows Adobe Character Animator runtime has been accepted, and it does not promote production readiness.
 
-## Implemented source scope
+## Implemented bounded source scope
 
 Desktop foundation:
 - bounded Windows detection under standard `Program Files/Adobe` roots,
 - `Support Files/Character Animator.exe` detection,
 - exact freshly detected executable validation,
-- managed process registration after launch.
+- managed process registration and exact live-process identity binding after Shuvi launch.
 
-Planning contract:
+Planning surfaces:
 - documented application shortcut planning:
   - Record Take for Work Area → `Ctrl+3`
   - Export PNG Sequence and WAV → `Ctrl+Alt+M`
   - Export Frame → `Ctrl+Alt+S`
-- project trigger-key planning only,
-- MIDI-note planning only,
+- user-project trigger-key planning,
+- user-project MIDI-note planning,
 - Dynamic Link planning to After Effects and Premiere Pro,
 - Adobe Media Encoder handoff planning.
 
-80% bounded runtime delivery:
-- requires normal Shuvi high-risk approval,
-- requires `explicit_user_approval=true`,
-- requires a non-zero expected Character Animator PID,
-- requires that PID to be the exact live Shuvi-managed process identity,
-- re-runs bounded Character Animator install detection and exact executable validation,
-- performs the 60% foreground PID/path preflight,
-- immediately rechecks foreground PID and executable path again inside the input-delivery process,
-- maps the command to one fixed internal SendKeys sequence; arbitrary key strings are not accepted,
-- supports only `record_take_work_area`, `export_png_wav`, and `export_frame`,
-- fails closed if focus/PID/path changes,
-- reports input dispatch separately from Character Animator effect verification.
+Permission-first runtime target verification:
+- explicit user approval is required,
+- exact Shuvi-managed Character Animator PID is required,
+- freshly detected executable identity is required,
+- foreground window PID and executable path are verified,
+- target mismatch fails closed.
+
+Bounded application-shortcut delivery:
+- only the three fixed documented application shortcuts are executable,
+- arbitrary runtime key strings are not accepted,
+- foreground PID and executable path are rechecked immediately before input dispatch,
+- input dispatch is reported separately from Character Animator effect success,
+- project trigger-key runtime delivery remains blocked,
+- MIDI runtime delivery remains blocked.
+
+Canonical completion:
+- `character_animator_acceptance_summary` reports the final bounded source scope,
+- unsupported/unverified surfaces are explicitly listed,
+- runtime acceptance remains a separate Windows-host phase.
 
 ## Automation boundary
 
-No public Character Animator host scripting API is claimed.
+No public Character Animator scripting/host API is claimed.
 
 `host_transport=not_implemented`
 
 `future_host_transport=no_public_host_api_claimed`
 
-The 80% adapter is deliberately narrow. It sends only the three fixed documented application shortcuts after target verification. It does not invent CEP, UXP, ExtendScript, project parsing, hidden host commands, trigger mapping discovery, or MIDI routing.
+The completed source scope does not invent CEP, UXP, ExtendScript, hidden host commands, project parsing or scene/puppet/timeline APIs.
 
-## Execution boundary
+## Intentionally unclaimed after source completion
 
-A successful 80% shortcut action may report:
-
-- `managed_process_identity_verified=true`,
-- `foreground_rechecked_immediately_before_send=true`,
-- `input_dispatch_completed=true`,
-- `effect_verified=false`,
-- `project_trigger_execution=false`,
-- `midi_execution=false`,
-- `source_runtime_verified=false`,
-- `production_ready=false`.
-
-Input dispatch is **not** proof that Character Animator created a take, opened an export flow, or completed an export. A real Windows acceptance test remains separate.
-
-## Explicitly not implemented at 80%
-
-- project trigger-key input delivery,
-- MIDI injection,
-- host bridge,
 - active project inspection,
 - scene/puppet/timeline/take inspection,
+- project mutation APIs,
+- project trigger-key runtime delivery,
+- MIDI runtime delivery,
 - recording-result verification,
 - export-result verification,
-- project mutation APIs,
 - Dynamic Link execution,
 - Media Encoder export execution,
+- automatic proof that a dispatched shortcut achieved its requested Character Animator effect,
 - runtime acceptance.
+
+## Safety boundary
+
+A shortcut action must pass:
+- normal Shuvi permission approval,
+- exact freshly detected Character Animator executable binding,
+- exact live Shuvi-managed process identity,
+- foreground PID and executable preflight,
+- immediate foreground PID/executable recheck before dispatch.
+
+Any uncertain or mismatched target fails closed. Input dispatch must never be described as verified recording/export success.
 
 ## Runtime status
 
 `source_runtime_verified=false`
 
+`host_ready_verified=false`
+
 `production_ready=false`
 
-Green CI does not change these flags.
+Green CI validates source consistency; it does not change these runtime flags.
 
-## Next source phase
+## Next phase
 
-The 100% bounded source milestone should finalize a canonical Character Animator acceptance/completion summary and explicit runtime acceptance handoff while keeping unsupported host inspection, project trigger execution, MIDI delivery, and effect-success claims blocked unless separately verified.
+Run real Windows Character Animator acceptance testing on an installed Adobe host. Do not expand this source scope unless a new milestone is explicitly defined.
