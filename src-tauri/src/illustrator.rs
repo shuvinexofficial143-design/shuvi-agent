@@ -130,8 +130,8 @@ pub fn capability_report()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_illustrator",
-        "source_milestone_percent":80,
-        "source_scope_complete":false,
+        "source_milestone_percent":100,
+        "source_scope_complete":true,
         "implemented":{
             "bounded_windows_detection":true,
             "exact_detected_executable_launch":true,
@@ -147,7 +147,10 @@ pub fn capability_report()->Value{
             "fresh_document_identity_recheck":true,
             "guarded_layer_property_writes":["rename","visible","locked"],
             "local_ai_checkpoint_integrity":true,
-            "independent_post_write_readback":true
+            "independent_post_write_readback":true,
+            "checkpoint_recovery_handoff":true,
+            "export_preflight_planning":true,
+            "canonical_acceptance_summary":true
         },
         "planned_transport":{
             "kind":"cep_plus_extendscript",
@@ -159,7 +162,8 @@ pub fn capability_report()->Value{
             "page_item_mutation":true,
             "path_text_appearance_mutation":true,
             "save_automation":true,
-            "export":true,
+            "export_execution":true,
+            "automatic_checkpoint_restore":true,
             "runtime_acceptance":true
         },
         "source_runtime_verified":false,
@@ -171,8 +175,8 @@ pub fn readiness_report()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_illustrator",
-        "source_milestone_percent":80,
-        "source_coding_status":"guarded_layer_metadata_writes_complete",
+        "source_milestone_percent":100,
+        "source_coding_status":"declared_source_scope_complete",
         "desktop_detection":true,
         "exact_detected_launch":true,
         "host_transport":"cep_plus_extendscript",
@@ -180,10 +184,10 @@ pub fn readiness_report()->Value{
         "planned_cep_host_id":"ILST",
         "host_ready_verified":false,
         "bridge_scope":"bounded_inspection_plus_guarded_layer_metadata_writes",
-        "document_automation_ready":"guarded_layer_metadata_only",
+        "document_automation_ready":"declared_bounded_source_scope_complete",
         "source_runtime_verified":false,
         "production_ready":false,
-        "next_source_phase":"add canonical bounded source completion summary, checkpoint recovery handoff, and export preflight planning without arbitrary ExtendScript"
+        "next_source_phase":"real Windows Illustrator acceptance testing; do not expand source scope unless a new milestone is explicitly defined"
     })
 }
 
@@ -563,6 +567,122 @@ pub fn validate_layer_write_post_readback(request:&LayerWriteRequest,context:&Va
     }))
 }
 
+
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExportPlanRequest{
+    pub expected_document_signature:String,
+    pub expected_document_path:String,
+    pub expected_output_path:String,
+    pub intent:String,
+    pub overwrite_existing:bool,
+}
+
+impl ExportPlanRequest{
+    pub fn validate(&self)->Result<(),String>{
+        validate_identity_signature(&self.expected_document_signature)?;
+        for (label,path) in [("document",&self.expected_document_path),("output",&self.expected_output_path)]{
+            if path.trim().is_empty()||path.len()>MAX_PATH_BYTES||path.chars().any(char::is_control)||!Path::new(path).is_absolute(){
+                return Err(format!("Illustrator export plan requires an exact absolute {label} path."));
+            }
+        }
+        if Path::new(&self.expected_document_path).extension().and_then(|v|v.to_str()).unwrap_or("").to_ascii_lowercase()!="ai"{
+            return Err("Illustrator export plan is limited to an existing local .ai document.".into());
+        }
+        if self.expected_document_path==self.expected_output_path{
+            return Err("Illustrator export output path must differ from the source AI path.".into());
+        }
+        let ext=Path::new(&self.expected_output_path).extension().and_then(|v|v.to_str()).unwrap_or("");
+        if ext.is_empty()||ext.len()>16||!ext.chars().all(|c|c.is_ascii_alphanumeric()){
+            return Err("Illustrator export output path must have a simple 1..16 character file extension.".into());
+        }
+        if self.intent!="current_document_export"{
+            return Err("Illustrator export intent must be current_document_export.".into());
+        }
+        if self.overwrite_existing{
+            return Err("Illustrator 100% source export planner refuses overwrite_existing=true.".into());
+        }
+        Ok(())
+    }
+}
+
+pub fn plan_export(request:&ExportPlanRequest,context:&Value)->Result<Value,String>{
+    request.validate()?;
+    if context.get("hasDocument").and_then(Value::as_bool)!=Some(true)
+        ||context.get("documentSignature").and_then(Value::as_str)!=Some(request.expected_document_signature.as_str())
+        ||context.get("documentPath").and_then(Value::as_str)!=Some(request.expected_document_path.as_str())
+        ||context.get("saved").and_then(Value::as_bool)!=Some(true){
+        return Err("Illustrator export plan requires the exact freshly inspected saved local document.".into());
+    }
+    Ok(json!({
+        "plan_type":"illustrator_current_document_export_preflight",
+        "intent":request.intent,
+        "document_path":request.expected_document_path,
+        "expected_output_path":request.expected_output_path,
+        "overwrite_existing":false,
+        "document_identity_verified":true,
+        "saved_document_verified":true,
+        "mutation_performed":false,
+        "export_execution_supported":false,
+        "requires_real_host_acceptance_before_execution":true,
+        "next_required_evidence":[
+            "supported Illustrator export format mapping for the requested output extension",
+            "exact export option/profile inspection",
+            "host export completion signal",
+            "post-export filesystem artifact verification"
+        ],
+        "source_runtime_verified":false,
+        "production_ready":false
+    }))
+}
+
+pub fn completion_summary()->Value{
+    json!({
+        "integration":"adobe_illustrator",
+        "source_milestone_percent":100,
+        "source_scope_complete":true,
+        "implemented_scope":{
+            "detect_launch":true,
+            "authenticated_cep_extendscript_bridge":true,
+            "read_only_document_artboard_layer_pageitem_selection_inspection":true,
+            "document_identity_recheck":true,
+            "guarded_layer_property_writes":["rename","visible","locked"],
+            "last_saved_local_ai_checkpoint_integrity":true,
+            "checkpoint_verification":true,
+            "checkpoint_recovery_handoff":true,
+            "independent_post_write_readback":true,
+            "bounded_export_preflight_planning":true,
+            "canonical_source_acceptance_summary":true
+        },
+        "intentionally_unclaimed":[
+            "arbitrary_extendscript_execution",
+            "stable_persistent_page_item_ids",
+            "layer_create_delete_reorder",
+            "page_item_mutation",
+            "path_text_appearance_mutation",
+            "artboard_mutation",
+            "save_or_save_as_automation",
+            "automatic_checkpoint_restore",
+            "export_execution",
+            "runtime_acceptance"
+        ],
+        "safety_gates":[
+            "permission-first typed high-risk layer mutations",
+            "fresh exact document signature and path",
+            "exact layer index name signature and expected value",
+            "saved document required before guarded mutation",
+            "last-saved local AI checkpoint before mutation",
+            "checkpoint scope explicitly excludes unsaved in-memory edits",
+            "no blind retry after uncertain mutation dispatch",
+            "independent post-write readback",
+            "recovery handoff is planning-only",
+            "export is preflight planning-only"
+        ],
+        "source_runtime_verified":false,
+        "production_ready":false
+    })
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -610,14 +730,14 @@ mod tests{
     #[test]
     fn reports_never_promote_unimplemented_host_or_runtime(){
         let capability=capability_report();
-        assert_eq!(capability["source_milestone_percent"],80);
+        assert_eq!(capability["source_milestone_percent"],100);
         assert_eq!(capability["planned_transport"]["illustrator_cep_host_id"],"ILST");
         assert_eq!(capability["planned_transport"]["implemented"],true);
         assert_eq!(capability["source_runtime_verified"],false);
         assert_eq!(capability["production_ready"],false);
         let readiness=readiness_report();
         assert_eq!(readiness["host_transport"],"cep_plus_extendscript");
-        assert_eq!(readiness["document_automation_ready"],"guarded_layer_metadata_only");
+        assert_eq!(readiness["document_automation_ready"],"declared_bounded_source_scope_complete");
     }
 
     #[test]
@@ -658,5 +778,31 @@ mod tests{
         let post=json!({"documentSignature":"doc|1","truncated":false,
             "layers":[{"index":0,"name":"Artwork","visible":false,"locked":false,"layerSignature":"layer|2"}]});
         assert_eq!(validate_layer_write_post_readback(&request,&context,&post).unwrap()["post_state_verified"],true);
+    }
+
+    #[test]
+    fn export_planner_is_identity_guarded_and_execution_free(){
+        let path=std::env::temp_dir().join("illustrator-export.ai").to_string_lossy().into_owned();
+        let output=std::env::temp_dir().join("illustrator-export.svg").to_string_lossy().into_owned();
+        let request=ExportPlanRequest{
+            expected_document_signature:"doc|1".into(),
+            expected_document_path:path.clone(),
+            expected_output_path:output,
+            intent:"current_document_export".into(),
+            overwrite_existing:false,
+        };
+        let context=json!({"hasDocument":true,"documentSignature":"doc|1","documentPath":path,"saved":true});
+        let plan=plan_export(&request,&context).unwrap();
+        assert_eq!(plan["export_execution_supported"],false);
+        assert_eq!(plan["mutation_performed"],false);
+    }
+
+    #[test]
+    fn completion_summary_never_promotes_runtime(){
+        let summary=completion_summary();
+        assert_eq!(summary["source_milestone_percent"],100);
+        assert_eq!(summary["source_scope_complete"],true);
+        assert_eq!(summary["source_runtime_verified"],false);
+        assert_eq!(summary["production_ready"],false);
     }
 }

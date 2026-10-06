@@ -168,6 +168,30 @@ pub fn verify(backup_path:&str,expected_source_path:&str,expected_document_signa
     }))
 }
 
+
+pub fn plan_recovery(backup_path:&str,expected_source_path:&str,expected_document_signature:&str)->Result<Value,String>{
+    let verified=verify(backup_path,expected_source_path,expected_document_signature)?;
+    Ok(json!({
+        "recovery_plan_type":"illustrator_checkpoint_manual_restore_handoff",
+        "checkpoint_verified":true,
+        "source_path":verified.get("source_path"),
+        "backup_path":verified.get("backup_path"),
+        "document_signature":verified.get("document_signature"),
+        "checkpoint_scope":"last_saved_disk_ai_only",
+        "unsaved_in_memory_edits_protected":false,
+        "automatic_restore":false,
+        "restore_executed":false,
+        "required_manual_steps":[
+            "close or preserve the current Illustrator document without overwriting evidence",
+            "review the verified checkpoint sidecar and current source fingerprint",
+            "copy the verified backup to a new recovery path or restore manually only after explicit user approval",
+            "reopen the recovered AI file and run fresh Shuvi context/layer inspection before any further edit"
+        ],
+        "source_runtime_verified":false,
+        "production_ready":false
+    }))
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -205,5 +229,17 @@ mod tests{
         let created=create(source.to_str().unwrap(),"doc|1","layer_visible").unwrap();
         fs::write(created["backup_path"].as_str().unwrap(),b"tampered").unwrap();
         assert!(verify(created["backup_path"].as_str().unwrap(),source.to_str().unwrap(),"doc|1").is_err());
+    }
+
+    #[test]
+    fn illustrator_recovery_plan_never_restores_automatically(){
+        let fixture=Fixture::new();
+        let source=fixture.0.join("scene.ai");
+        fs::write(&source,b"original").unwrap();
+        let created=create(source.to_str().unwrap(),"doc|1","layer_visible").unwrap();
+        let plan=plan_recovery(created["backup_path"].as_str().unwrap(),source.to_str().unwrap(),"doc|1").unwrap();
+        assert_eq!(plan["checkpoint_verified"],true);
+        assert_eq!(plan["automatic_restore"],false);
+        assert_eq!(plan["restore_executed"],false);
     }
 }

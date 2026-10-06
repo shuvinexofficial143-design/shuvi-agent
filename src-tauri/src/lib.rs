@@ -665,6 +665,9 @@ enum ToolAction {
     IllustratorIdentityCheck { expected_document_signature:String },
     IllustratorSetLayerProperty { request:illustrator::LayerWriteRequest },
     IllustratorVerifyCheckpoint { backup_path:String, expected_source_path:String, expected_document_signature:String },
+    IllustratorPlanRecovery { backup_path:String, expected_source_path:String, expected_document_signature:String },
+    IllustratorPlanExport { request:illustrator::ExportPlanRequest },
+    IllustratorAcceptanceSummary,
     PremiereDetect,
     PremiereLaunch { project: Option<String> },
     PremiereBridgeStart,
@@ -3394,6 +3397,37 @@ fn stage_tool(
                 "Read-only integrity verification for a Shuvi Illustrator AI checkpoint. Does not restore or overwrite the document.".into(),
                 RiskLevel::Low)
         }
+        "illustrator_plan_recovery" => {
+            let backup_path=arg_string(&proposal.arguments,"backup_path")?;
+            let expected_source_path=arg_string(&proposal.arguments,"expected_source_path")?;
+            let expected_document_signature=arg_string(&proposal.arguments,"expected_document_signature")?;
+            illustrator::validate_identity_signature(&expected_document_signature)?;
+            (ToolAction::IllustratorPlanRecovery {
+                    backup_path:backup_path.clone(),
+                    expected_source_path:expected_source_path.clone(),
+                    expected_document_signature:expected_document_signature.clone()
+                },
+                "Plan Illustrator checkpoint recovery".into(),
+                "Read-only recovery handoff: verify exact AI checkpoint evidence and return a manual restore plan. It never overwrites the current document automatically.".into(),
+                RiskLevel::Low)
+        }
+        "illustrator_plan_export" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"illustrator_plan_export requires request.".to_string())?;
+            let request:illustrator::ExportPlanRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Illustrator export-plan request: {e}"))?;
+            request.validate()?;
+            (ToolAction::IllustratorPlanExport {request},
+                "Plan Illustrator export".into(),
+                "Read-only bounded export preflight. It validates exact saved-document identity and output intent but deliberately does not execute Illustrator export.".into(),
+                RiskLevel::Low)
+        }
+        "illustrator_acceptance_summary" => (
+            ToolAction::IllustratorAcceptanceSummary,
+            "Read canonical Illustrator source completion summary".into(),
+            "Report the declared 100% bounded source scope, explicit unclaimed capabilities, runtime gaps and production-readiness boundary.".into(),
+            RiskLevel::Low,
+        ),
         "animate_capability_report" => (
             ToolAction::AnimateCapabilityReport,
             "Read Animate source capability report".into(),
@@ -10440,6 +10474,31 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             Ok(ActionResult {
                 success:true,tool,
                 stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::IllustratorPlanRecovery {backup_path,expected_source_path,expected_document_signature} => {
+            let value=illustrator_checkpoint::plan_recovery(&backup_path,&expected_source_path,&expected_document_signature)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::IllustratorPlanExport {request} => {
+            let raw_context=state.illustrator_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let context=illustrator::validate_context_receipt(&raw_context)?;
+            let value=illustrator::plan_export(&request,&context)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::IllustratorAcceptanceSummary => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&illustrator::completion_summary()).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)
             })
         }

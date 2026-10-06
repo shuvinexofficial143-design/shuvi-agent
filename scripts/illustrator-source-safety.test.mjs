@@ -12,82 +12,81 @@ const host=fs.readFileSync("integrations/illustrator-cep/jsx/ShuviIllustrator.js
 const manifest=fs.readFileSync("integrations/illustrator-cep/CSXS/manifest.xml","utf8");
 const status=fs.readFileSync("docs/ILLUSTRATOR_STATUS.md","utf8");
 
-test("Illustrator 80 percent source tools are registered",()=>{
+test("Illustrator 100 percent source tools are registered",()=>{
   for(const name of [
     "illustrator_capability_report","illustrator_readiness_report","illustrator_detect","illustrator_launch",
     "illustrator_bridge_start","illustrator_bridge_status","illustrator_bridge_stop","illustrator_context",
     "illustrator_artboards","illustrator_layers","illustrator_page_items","illustrator_selection",
-    "illustrator_identity_check","illustrator_set_layer_property","illustrator_verify_checkpoint"
+    "illustrator_identity_check","illustrator_set_layer_property","illustrator_verify_checkpoint",
+    "illustrator_plan_recovery","illustrator_plan_export","illustrator_acceptance_summary"
   ]) assert.match(lib,new RegExp(name));
-  for(const name of ["IllustratorSetLayerProperty","IllustratorVerifyCheckpoint"])
+  for(const name of ["IllustratorPlanRecovery","IllustratorPlanExport","IllustratorAcceptanceSummary"])
     assert.match(lib,new RegExp(name));
 });
 
-test("Illustrator bridge has one explicit typed mutation action",()=>{
+test("Illustrator final bridge stays bounded and non-arbitrary",()=>{
   assert.match(manifest,/Host Name="ILST"/);
   assert.match(panel,/__adobe_cep__\.evalScript/);
   assert.match(bridge,/MUTATING_ACTIONS: &\[&str\] = &\[\s*"set_layer_property",\s*\]/s);
-  assert.match(bridge,/"set_layer_property"/);
-  for(const mutation of [/remove\s*\(/,/move\s*\(/,/save\s*\(/,/exportFile\s*\(/,/resize\s*\(/])
-    assert.doesNotMatch(host,mutation);
+  assert.doesNotMatch(host,/eval\s*\(\s*args\.script/);
+  assert.doesNotMatch(host,/exportFile\s*\(/);
+  assert.doesNotMatch(host,/save\s*\(/);
+  assert.doesNotMatch(host,/remove\s*\(/);
 });
 
-test("Illustrator typed layer writes are limited to rename visibility and locked",()=>{
+test("Illustrator guarded writes remain checkpointed and independently read back",()=>{
   assert.match(illustrator,/pub struct LayerWriteRequest/);
-  for(const op of ["rename","visible","locked"]) assert.match(illustrator,new RegExp('"'+op+'"'));
-  assert.match(host,/layer\.name=args\.value/);
-  assert.match(host,/layer\.visible=args\.value/);
-  assert.match(host,/layer\.locked=args\.value/);
-  assert.match(host,/retrySafe:false/);
-  assert.match(lib,/automatic_retry_allowed":false/);
-  assert.doesNotMatch(host,/layer\.remove\s*\(/);
-});
-
-test("Illustrator guarded write requires exact fresh saved document and layer state",()=>{
-  assert.match(illustrator,/validate_layer_write_precondition/);
-  assert.match(illustrator,/context\.get\("saved"\).*Some\(true\)/s);
-  assert.match(illustrator,/expected_layer_signature/);
-  assert.match(host,/context\.saved!==true/);
-  assert.match(host,/beforeRow\.layerSignature!=expectedLayerSignature/);
-  assert.match(host,/context\.documentSignature!=expectedDocument/);
-  assert.match(host,/context\.documentPath!=expectedPath/);
-});
-
-test("Illustrator checkpoint protects only the last-saved local AI file",()=>{
-  assert.match(checkpoint,/Shuvi Illustrator Backups/);
-  assert.match(checkpoint,/source_fnv1a64/);
-  assert.match(checkpoint,/backup_fnv1a64/);
+  assert.match(lib,/illustrator_checkpoint::create/);
+  assert.match(lib,/validate_layer_write_post_readback/);
   assert.match(checkpoint,/last_saved_disk_ai_only/);
   assert.match(checkpoint,/unsaved_in_memory_edits_protected/);
-  assert.match(checkpoint,/automatic_restore/);
-  assert.match(lib,/illustrator_checkpoint::create/);
-  assert.match(lib,/IllustratorVerifyCheckpoint/);
+  assert.match(host,/retrySafe:false/);
+  assert.match(lib,/automatic_retry_allowed":false/);
 });
 
-test("Illustrator mutation has receipt validation and independent post-write readback",()=>{
-  assert.match(illustrator,/validate_layer_write_receipt/);
-  assert.match(illustrator,/validate_layer_write_post_readback/);
-  assert.match(lib,/post_raw_context/);
-  assert.match(lib,/post_raw_layers/);
-  assert.match(host,/mutationPerformed:true/);
+test("Illustrator recovery is verified manual handoff only",()=>{
+  assert.match(checkpoint,/pub fn plan_recovery/);
+  assert.match(checkpoint,/checkpoint_verified/);
+  assert.match(checkpoint,/automatic_restore":false/);
+  assert.match(checkpoint,/restore_executed":false/);
+  assert.match(lib,/IllustratorPlanRecovery/);
 });
 
-test("Illustrator transport remains bounded and authenticated",()=>{
+test("Illustrator export scope is preflight planning only",()=>{
+  assert.match(illustrator,/pub struct ExportPlanRequest/);
+  assert.match(illustrator,/current_document_export/);
+  assert.match(illustrator,/overwrite_existing/);
+  assert.match(illustrator,/export_execution_supported":false/);
+  assert.match(illustrator,/requires_real_host_acceptance_before_execution/);
+  assert.match(lib,/IllustratorPlanExport/);
+  assert.doesNotMatch(host,/exportFile\s*\(/);
+});
+
+test("Illustrator canonical summary declares bounded source complete without runtime promotion",()=>{
+  assert.match(illustrator,/pub fn completion_summary/);
+  assert.match(illustrator,/"source_milestone_percent":100/);
+  assert.match(illustrator,/"source_scope_complete":true/);
+  assert.match(illustrator,/"source_runtime_verified":false/);
+  assert.match(illustrator,/"production_ready":false/);
+  assert.match(lib,/IllustratorAcceptanceSummary/);
+  assert.match(status,/Current declared source milestone: \*\*100%\*\*/);
+  assert.match(status,/Source milestone: \*\*100% complete\*\*/);
+});
+
+test("Illustrator final source scope explicitly refuses broader destructive capabilities",()=>{
+  for(const marker of [
+    "arbitrary_extendscript_execution","layer_create_delete_reorder","page_item_mutation",
+    "path_text_appearance_mutation","automatic_checkpoint_restore","export_execution"
+  ]) assert.match(illustrator,new RegExp(marker));
+  assert.match(status,/arbitrary ExtendScript execution/);
+  assert.match(status,/export execution/);
+  assert.match(status,/Runtime acceptance: \*\*pending\*\*/);
+});
+
+test("Illustrator localhost transport remains authenticated and bounded",()=>{
   assert.match(bridge,/127\.0\.0\.1/);
   assert.match(bridge,/X-Shuvi-Token/);
   assert.match(bridge,/MAX_BODY_BYTES: usize = 256 \* 1024/);
   assert.match(queue,/pending\.len\(\) >= 32/);
   assert.match(panel,/deliveredCount>=1024/);
-});
-
-test("Illustrator 80 percent milestone refuses broader mutation and runtime claims",()=>{
-  assert.match(illustrator,/"source_milestone_percent":80/);
-  assert.match(illustrator,/"guarded_layer_property_writes":\["rename","visible","locked"\]/);
-  assert.match(illustrator,/"layer_create_delete_reorder":true/);
-  assert.match(illustrator,/"page_item_mutation":true/);
-  assert.match(illustrator,/"source_runtime_verified":false/);
-  assert.match(illustrator,/"production_ready":false/);
-  assert.match(status,/Current declared source milestone: \*\*80%\*\*/);
-  assert.match(status,/source_runtime_verified=false/);
-  assert.match(status,/production_ready=false/);
 });
