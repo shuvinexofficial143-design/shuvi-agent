@@ -11,7 +11,9 @@ use uuid::Uuid;
 use super::photoshop_bridge_queue::CommandQueue;
 
 pub const PHOTOSHOP_BRIDGE_PORT:u16=17_363;
-pub const ALLOWED_ACTIONS:&[&str]=&["inspect_context","list_layers"];
+pub const READ_ONLY_ACTIONS:&[&str]=&["inspect_context","list_layers"];
+pub const MUTATING_ACTIONS:&[&str]=&["set_layer_property"];
+pub const ALLOWED_ACTIONS:&[&str]=&["inspect_context","list_layers","set_layer_property"];
 
 const MAX_BODY_BYTES:usize=256*1024;
 const MAX_HEADER_BYTES:usize=16*1024;
@@ -116,12 +118,13 @@ impl PhotoshopBridgeShared{
         let paired=enabled&&last_seen_ms.map(|seen|now_ms().saturating_sub(seen)<=4_000).unwrap_or(false);
         Ok(PhotoshopBridgeStatus{
             enabled,server_started,paired,port:PHOTOSHOP_BRIDGE_PORT,
-            token:if enabled{token}else{None},last_seen_ms,queued_commands,read_only:true
+            token:if enabled{token}else{None},last_seen_ms,queued_commands,read_only:false
         })
     }
 
     pub async fn request(&self,action:&str,arguments:Value,timeout:Duration)->Result<Value,String>{
-        if !ALLOWED_ACTIONS.contains(&action){return Err("Photoshop action is not in the 40% read-only allowlist.".into());}
+        if !ALLOWED_ACTIONS.contains(&action){return Err("Photoshop action is not in the bounded bridge allowlist.".into());}
+        let mutating=MUTATING_ACTIONS.contains(&action);
         if timeout.is_zero()||timeout>Duration::from_secs(60){return Err("Photoshop read-only timeout must be between 1 ms and 60 seconds.".into());}
         let status=self.status()?;
         if !status.enabled{return Err("Photoshop bridge is not enabled.".into());}
@@ -137,14 +140,22 @@ impl PhotoshopBridgeShared{
         }
         let _guard=PendingGuard{shared:self,id:id.clone()};
         loop{
-            if !self.authenticate(status.token.as_deref()){return Err("Photoshop pairing ended or expired.".into());}
+            if !self.authenticate(status.token.as_deref()){
+                return Err(if mutating{
+                    "execution_status_unknown: Photoshop pairing ended after a guarded mutation may have been dispatched; inspect exact document/layer state before retrying.".into()
+                }else{"Photoshop pairing ended or expired.".into()});
+            }
             let result={
                 let mut work=self.work.lock().map_err(|_|"Photoshop queue is unavailable.".to_string())?;
-                work.take_result(&id)?
+                work.take_result(&id).map_err(|error|{
+                    if mutating{format!("execution_status_unknown: {error} Inspect exact Photoshop document/layer state before retrying.")}
+                    else{error}
+                })?
             };
             if let Some(result)=result{
                 if result.success{return Ok(result.data.unwrap_or(Value::Null));}
-                return Err(result.error.unwrap_or_else(||"Photoshop read-only command failed.".into()));
+                let error=result.error.unwrap_or_else(||"Photoshop command failed.".into());
+                return Err(if mutating{format!("execution_status_unknown: {error} Inspect exact Photoshop document/layer state before retrying.")}else{error});
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -296,8 +307,10 @@ mod tests{
 
     #[test]
     fn allowlist_is_read_only(){
-        assert_eq!(ALLOWED_ACTIONS,&["inspect_context","list_layers"]);
-        for forbidden in ["delete_layer","set_layer_name","save_document","batch_play"]{
+        assert_eq!(READ_ONLY_ACTIONS,&["inspect_context","list_layers"]);
+        assert_eq!(MUTATING_ACTIONS,&["set_layer_property"]);
+        assert!(ALLOWED_ACTIONS.contains(&"set_layer_property"));
+        for forbidden in ["delete_layer","merge_layers","rasterize_layer","save_document","batch_play"]{
             assert!(!ALLOWED_ACTIONS.contains(&forbidden));
         }
     }

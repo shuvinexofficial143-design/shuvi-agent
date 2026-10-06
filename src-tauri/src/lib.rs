@@ -398,7 +398,8 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - photoshop_bridge_status: {}
 - photoshop_bridge_stop: {}
 - photoshop_context: {} — paired UXP read-only active document identity
-- photoshop_layers: {} — paired UXP read-only bounded layer inventory
+- photoshop_layers: {} — paired UXP bounded layer inventory
+- photoshop_set_layer_property: {"expected_document_id":123,"layer_id":456,"operation":"rename|visible|opacity","expected_value":"exact value from latest photoshop_layers","value":"new primitive value"} — guarded high-risk write; fresh pre-inspection + modal history guard + independent post-write readback
 - workspace_scan: {"path":"absolute workspace path"}
 - search_text: {"path":"absolute workspace path","query":"text to find"}
 - replace_text: {"path":"absolute file path","old":"exact old text","new":"replacement text"}
@@ -812,6 +813,7 @@ enum ToolAction {
     PhotoshopBridgeStop,
     PhotoshopContext,
     PhotoshopLayers,
+    PhotoshopSetLayerProperty { request:photoshop::LayerWriteRequest },
     WorkspaceScan { path: String },
     SearchText { path: String, query: String },
     ReplaceText { path: String, old: String, new_value: String },
@@ -1480,6 +1482,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "photoshop_bridge_stop"
         | "photoshop_context"
         | "photoshop_layers"
+        | "photoshop_set_layer_property"
         | "workspace_scan"
         | "search_text"
         | "replace_text"
@@ -6518,6 +6521,15 @@ fn stage_tool(
             "Read-only bounded layer inventory (max 256 layers, depth 8) through the paired UXP bridge.".into(),
             RiskLevel::Low,
         ),
+        "photoshop_set_layer_property" => {
+            let request:photoshop::LayerWriteRequest=serde_json::from_value(proposal.arguments.clone())
+                .map_err(|e|format!("Invalid Photoshop layer write request: {e}"))?;
+            request.validate()?;
+            (ToolAction::PhotoshopSetLayerProperty {request:request.clone()},
+                "Edit exact Photoshop layer property".into(),
+                format!("High risk guarded Photoshop write: document_id={}, layer_id={}, operation={}. Shuvi will refresh context/layers, require the exact expected current value, execute one modal history-guarded property write, then independently read back the layer inventory. Never blindly retry execution_status_unknown.",request.expected_document_id,request.layer_id,request.operation),
+                RiskLevel::High)
+        }
         "workspace_scan" => {
             let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
             (
@@ -15040,8 +15052,9 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "port":status.port,
                     "pairing_token":status.token,
                     "queued_commands":status.queued_commands,
-                    "read_only":true,
-                    "allowed_actions":photoshop_bridge::ALLOWED_ACTIONS,
+                    "read_only":status.read_only,
+                    "read_only_actions":photoshop_bridge::READ_ONLY_ACTIONS,
+                    "guarded_mutation_actions":photoshop_bridge::MUTATING_ACTIONS,
                     "runtime_verified":false
                 })).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)
@@ -15087,6 +15100,40 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "host_receipt_validated":true,
                     "mutation_performed":false,
                     "runtime_verified":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopSetLayerProperty {request} => {
+            let raw_context=state.photoshop_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let context=photoshop::validate_context_receipt(&raw_context)?;
+            let raw_inventory=state.photoshop_bridge.request("list_layers",json!({}),Duration::from_secs(8)).await?;
+            let inventory=photoshop::validate_layer_inventory(&raw_inventory)?;
+            let precondition=photoshop::validate_write_precondition(&request,&context,&inventory)?;
+
+            let raw_receipt=state.photoshop_bridge.request(
+                "set_layer_property",
+                request.bridge_arguments()?,
+                Duration::from_secs(15)
+            ).await?;
+            let mutation_receipt=photoshop::validate_write_receipt(&request,&raw_receipt)?;
+
+            let post_raw=state.photoshop_bridge.request("list_layers",json!({}),Duration::from_secs(8)).await?;
+            let post_inventory=photoshop::validate_layer_inventory(&post_raw)?;
+            let post_readback=photoshop::validate_post_write_readback(&request,&post_inventory)?;
+
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "precondition":precondition,
+                    "mutation_receipt":mutation_receipt,
+                    "post_readback":post_readback,
+                    "post_state_verified":true,
+                    "history_guarded":true,
+                    "automatic_retry_allowed":false,
+                    "destructive_operation":false,
+                    "runtime_verified":false,
+                    "production_ready":false
                 })).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)
             })

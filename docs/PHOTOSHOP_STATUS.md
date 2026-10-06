@@ -2,57 +2,72 @@
 
 ## Milestone
 
-Current declared source milestone: **40%**
+Current declared source milestone: **60%**
 
-The 40% milestone keeps Photoshop read-only. It adds the bounded UXP host-observation path on top of the 20% detect/launch foundation.
+The 60% milestone adds the first permission-gated Photoshop writes on top of the 40% read-only UXP bridge.
 
 ## Source-supported foundation
 
 - bounded Windows Program Files Photoshop detection,
 - exact detected `Photoshop.exe` launch only,
-- Photoshop UXP manifest v5 targeting host `PS`,
-- network permission limited to `http://127.0.0.1:17363`,
-- authenticated localhost pairing token,
-- read-only bridge actions: `inspect_context` and `list_layers`,
+- Photoshop UXP manifest v5 targeting host `PS` with Photoshop API v2,
+- localhost pairing at `127.0.0.1:17363`,
+- token-authenticated request/result bridge,
+- read-only `inspect_context` and `list_layers`,
 - exact request ID/action correlation,
-- bounded outstanding command queue,
-- active document ID/title/dimensions/resolution/mode readback,
-- active layer IDs,
-- bounded layer inventory: maximum 256 layers and depth 8,
-- duplicate layer ID rejection,
-- Rust-side validation of UXP receipts,
-- bridge start/status/stop,
-- capability and readiness reports.
+- bounded 32-command queue,
+- bounded document/layer receipt validation in Rust,
+- high-risk `photoshop_set_layer_property` tool,
+- allowed write properties only:
+  - layer rename,
+  - layer visibility,
+  - layer opacity,
+- exact expected document ID,
+- exact layer ID,
+- exact expected current property value,
+- fresh pre-write context + layer inventory,
+- Photoshop `executeAsModal`,
+- history suspension around the mutation,
+- history rollback on UXP-side exception,
+- mutation receipt validation,
+- independent post-write `list_layers` readback.
 
-## Safety boundary
+## Mutation safety boundary
 
-No document or layer mutation is implemented at 40%.
+A write is rejected when:
 
-The UXP panel cannot request arbitrary host actions through Shuvi. Its native command allowlist contains only `inspect_context` and `list_layers`. Rust validates every returned document/layer receipt before exposing it as evidence.
+- the active document ID changed,
+- the target layer no longer exists,
+- the layer inventory is truncated,
+- the inspected current property no longer equals `expected_value`,
+- the requested value is the same as the current value,
+- the operation is outside `rename | visible | opacity`,
+- the host receipt does not exactly match the approved document/layer/operation/value,
+- independent post-write readback does not show the approved final value.
 
-Pairing is localhost-only, token-authenticated, time-bounded, queue-bounded, and invalidated by stop/token rotation.
+A mutation timeout or pairing loss after dispatch is treated as `execution_status_unknown`; Shuvi must inspect the exact document/layer state before any retry.
 
-## Not implemented yet
+## Still blocked at 60%
 
-- layer rename/visibility/opacity writes,
-- text editing,
-- selections/masks,
+- delete layer,
+- merge/flatten/rasterize,
+- arbitrary `batchPlay`,
+- pixel editing,
+- selections and masks,
+- text content/style editing,
 - transforms,
-- smart objects,
-- filters/adjustments,
-- pixel mutations,
+- smart-object replacement,
+- filters and adjustments,
 - generative fill,
 - save/export,
-- checkpoint/recovery,
-- live Windows Photoshop acceptance.
+- destructive checkpoint/restore.
 
-## Planned 60% milestone
+## Planned 80% milestone
 
-1. Exact expected document identity for mutations.
-2. Small permission-gated layer/document write allowlist.
-3. Fresh pre-write inspection.
-4. Post-write readback.
-5. Safe checkpoint/duplicate-document boundary before destructive operations.
+1. Text-layer content/style editing.
+2. Bounded layer transforms and adjustment controls.
+3. Saved-document checkpoint evidence before higher-risk operations.
+4. Recovery planning and richer post-write verification.
 
 ## Readiness
 

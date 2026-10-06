@@ -1,5 +1,5 @@
 const photoshop=require("photoshop");
-const {app}=photoshop;
+const {app,core}=photoshop;
 
 const PORT=17363;
 const BASE="http://127.0.0.1:"+PORT;
@@ -63,6 +63,104 @@ function layerRecord(layer,depth,parentId){
     parent_id:parentId,
     has_children:Boolean(layer.layers&&layer.layers.length)
   };
+}
+
+function findLayerById(doc,targetId){
+  let visited=0;
+  function walk(layers,depth){
+    if(!layers||depth>MAX_DEPTH)return null;
+    for(const layer of layers){
+      if(visited++>=MAX_LAYERS)return null;
+      if(Number(layer.id)===targetId)return layer;
+      if(layer.layers&&layer.layers.length){
+        const found=walk(layer.layers,depth+1);
+        if(found)return found;
+      }
+    }
+    return null;
+  }
+  return walk(doc.layers,0);
+}
+
+function valueForOperation(layer,operation){
+  if(operation==="rename")return String(layer.name||"");
+  if(operation==="visible")return Boolean(layer.visible);
+  if(operation==="opacity")return Number(layer.opacity);
+  throw new Error("Unsupported layer property operation.");
+}
+
+function primitiveEqual(left,right,operation){
+  if(operation==="opacity")return Number.isFinite(Number(left))&&Number.isFinite(Number(right))&&Math.abs(Number(left)-Number(right))<=0.01;
+  return left===right;
+}
+
+function validateMutationArgs(args){
+  if(!args||typeof args!=="object")throw new Error("Mutation arguments are required.");
+  const documentId=Number(args.expected_document_id);
+  const layerId=Number(args.layer_id);
+  if(!Number.isInteger(documentId)||documentId<=0||!Number.isInteger(layerId)||layerId<=0)throw new Error("Exact document/layer IDs are required.");
+  const operation=String(args.operation||"");
+  if(!["rename","visible","opacity"].includes(operation))throw new Error("Only rename, visible, or opacity is allowed.");
+  if(operation==="rename"){
+    if(typeof args.expected_value!=="string"||typeof args.value!=="string"||args.value.length<1||args.value.length>512)throw new Error("Rename values are invalid.");
+  }else if(operation==="visible"){
+    if(typeof args.expected_value!=="boolean"||typeof args.value!=="boolean")throw new Error("Visibility values must be boolean.");
+  }else{
+    if(typeof args.expected_value!=="number"||typeof args.value!=="number"||!Number.isFinite(args.expected_value)||!Number.isFinite(args.value)
+      ||args.expected_value<0||args.expected_value>100||args.value<0||args.value>100)throw new Error("Opacity values must be 0..100.");
+  }
+  return {documentId,layerId,operation,expectedValue:args.expected_value,value:args.value};
+}
+
+async function setLayerProperty(args){
+  const request=validateMutationArgs(args);
+  const initialDoc=activeDocument();
+  if(!initialDoc||Number(initialDoc.id)!==request.documentId)throw new Error("Active document identity changed before mutation.");
+  const initialLayer=findLayerById(initialDoc,request.layerId);
+  if(!initialLayer)throw new Error("Layer ID is not present in the bounded document tree.");
+  const before=valueForOperation(initialLayer,request.operation);
+  if(!primitiveEqual(before,request.expectedValue,request.operation))throw new Error("Layer property changed since inspection.");
+
+  let receipt=null;
+  await core.executeAsModal(async(executionContext)=>{
+    if(executionContext.isCancelled)throw new Error("Photoshop mutation cancelled before execution.");
+    const doc=activeDocument();
+    if(!doc||Number(doc.id)!==request.documentId)throw new Error("Active document identity changed inside modal execution.");
+    const layer=findLayerById(doc,request.layerId);
+    if(!layer)throw new Error("Layer identity changed inside modal execution.");
+    const current=valueForOperation(layer,request.operation);
+    if(!primitiveEqual(current,request.expectedValue,request.operation))throw new Error("Layer property changed before write.");
+
+    const suspension=await executionContext.hostControl.suspendHistory({
+      documentID:request.documentId,
+      name:"Shuvi: "+request.operation+" layer property"
+    });
+    let committed=false;
+    try{
+      if(request.operation==="rename")layer.name=request.value;
+      else if(request.operation==="visible")layer.visible=request.value;
+      else if(request.operation==="opacity")layer.opacity=request.value;
+      const after=valueForOperation(layer,request.operation);
+      if(!primitiveEqual(after,request.value,request.operation))throw new Error("Photoshop immediate property readback did not match.");
+      await executionContext.hostControl.resumeHistory(suspension,true);
+      committed=true;
+      receipt={
+        document_id:request.documentId,
+        layer_id:request.layerId,
+        operation:request.operation,
+        before,
+        after,
+        mutation_performed:true,
+        history_guard:"suspend_resume_commit"
+      };
+    }finally{
+      if(!committed){
+        try{await executionContext.hostControl.resumeHistory(suspension,false);}catch(_){}
+      }
+    }
+  },{commandName:"Shuvi layer "+request.operation});
+  if(!receipt)throw new Error("Photoshop mutation completed without a receipt.");
+  return receipt;
 }
 
 function listLayers(){
@@ -132,7 +230,8 @@ async function execute(command){
     let data;
     if(command.action==="inspect_context")data=docContext();
     else if(command.action==="list_layers")data=listLayers();
-    else throw new Error("Action is not in the read-only Photoshop allowlist.");
+    else if(command.action==="set_layer_property")data=await setLayerProperty(command.arguments||{});
+    else throw new Error("Action is not in the bounded Photoshop allowlist.");
     await postResult(command,true,data,null);
   }catch(error){
     await postResult(command,false,null,error&&error.message?error.message:error);
@@ -145,7 +244,7 @@ async function poll(){
     await send("/health");
     const command=await send("/command");
     if(command)await execute(command);
-    setStatus("Connected — read-only bridge\nPort: "+PORT);
+    setStatus("Connected — guarded bridge\nPort: "+PORT+"\nWrites: rename / visible / opacity only");
   }catch(error){
     setStatus("Bridge unavailable: "+(error&&error.message?error.message:error));
   }finally{

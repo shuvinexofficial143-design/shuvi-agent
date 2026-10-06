@@ -1,3 +1,4 @@
+use serde::Deserialize;
 use serde_json::{json,Value};
 use std::{collections::HashSet,fs,path::{Path,PathBuf}};
 
@@ -197,13 +198,167 @@ pub fn validate_layer_inventory(value:&Value)->Result<Value,String>{
     }))
 }
 
+#[derive(Debug,Clone,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LayerWriteRequest{
+    pub expected_document_id:u32,
+    pub layer_id:u32,
+    pub operation:String,
+    pub expected_value:Value,
+    pub value:Value,
+}
+
+impl LayerWriteRequest{
+    pub fn validate(&self)->Result<(),String>{
+        if self.expected_document_id==0||self.layer_id==0{
+            return Err("Photoshop write requires non-zero document and layer IDs.".into());
+        }
+        match self.operation.as_str(){
+            "rename"=>{
+                let expected=self.expected_value.as_str().ok_or("Photoshop rename expected_value must be the exact current layer name.")?;
+                let value=self.value.as_str().ok_or("Photoshop rename value must be a string.")?;
+                if !bounded_text(Some(expected),512)||!bounded_text(Some(value),512)||value.trim().is_empty(){
+                    return Err("Photoshop layer names must be 1..512 bounded characters without control characters.".into());
+                }
+                if expected==value{return Err("Photoshop rename value already matches the expected current name.".into());}
+            }
+            "visible"=>{
+                let expected=self.expected_value.as_bool().ok_or("Photoshop visible expected_value must be boolean.")?;
+                let value=self.value.as_bool().ok_or("Photoshop visible value must be boolean.")?;
+                if expected==value{return Err("Photoshop visibility already matches the requested value.".into());}
+            }
+            "opacity"=>{
+                let expected=self.expected_value.as_f64().filter(|v|v.is_finite()&&(0.0..=100.0).contains(v))
+                    .ok_or("Photoshop opacity expected_value must be a finite number from 0 to 100.")?;
+                let value=self.value.as_f64().filter(|v|v.is_finite()&&(0.0..=100.0).contains(v))
+                    .ok_or("Photoshop opacity value must be a finite number from 0 to 100.")?;
+                if (expected-value).abs()<0.0001{return Err("Photoshop opacity already matches the requested value.".into());}
+            }
+            _=>return Err("Photoshop 60% write operation must be rename, visible, or opacity.".into()),
+        }
+        Ok(())
+    }
+
+    pub fn bridge_arguments(&self)->Result<Value,String>{
+        self.validate()?;
+        Ok(json!({
+            "expected_document_id":self.expected_document_id,
+            "layer_id":self.layer_id,
+            "operation":self.operation,
+            "expected_value":self.expected_value,
+            "value":self.value
+        }))
+    }
+}
+
+fn layer_by_id<'a>(inventory:&'a Value,layer_id:u32)->Result<&'a Value,String>{
+    inventory.get("layers").and_then(Value::as_array)
+        .and_then(|layers|layers.iter().find(|layer|layer.get("id").and_then(Value::as_u64)==Some(layer_id as u64)))
+        .ok_or("Photoshop layer ID is not present in the fresh bounded inventory.".into())
+}
+
+fn property_value(layer:&Value,operation:&str)->Result<Value,String>{
+    match operation{
+        "rename"=>layer.get("name").cloned().ok_or("Photoshop layer name is unavailable.".into()),
+        "visible"=>layer.get("visible").cloned().ok_or("Photoshop layer visibility is unavailable.".into()),
+        "opacity"=>layer.get("opacity").cloned().ok_or("Photoshop layer opacity is unavailable.".into()),
+        _=>Err("Unsupported Photoshop layer property.".into()),
+    }
+}
+
+fn primitive_matches(a:&Value,b:&Value,operation:&str)->bool{
+    if operation=="opacity"{
+        return a.as_f64().zip(b.as_f64()).is_some_and(|(left,right)|(left-right).abs()<=0.01);
+    }
+    a==b
+}
+
+pub fn validate_write_precondition(request:&LayerWriteRequest,context:&Value,inventory:&Value)->Result<Value,String>{
+    request.validate()?;
+    if context.get("document_open").and_then(Value::as_bool)!=Some(true)
+        || context.get("document_id").and_then(Value::as_u64)!=Some(request.expected_document_id as u64){
+        return Err("Photoshop active document does not match expected_document_id.".into());
+    }
+    if inventory.get("document_open").and_then(Value::as_bool)!=Some(true)
+        || inventory.get("document_id").and_then(Value::as_u64)!=Some(request.expected_document_id as u64){
+        return Err("Photoshop layer inventory is stale or belongs to another document.".into());
+    }
+    if inventory.get("truncated").and_then(Value::as_bool)!=Some(false){
+        return Err("Photoshop layer inventory is truncated; exact write targeting is unsafe.".into());
+    }
+    let layer=layer_by_id(inventory,request.layer_id)?;
+    let current=property_value(layer,&request.operation)?;
+    if !primitive_matches(&current,&request.expected_value,&request.operation){
+        return Err("Photoshop layer property changed since inspection; refresh before editing.".into());
+    }
+    Ok(json!({
+        "document_id":request.expected_document_id,
+        "layer_id":request.layer_id,
+        "operation":request.operation,
+        "expected_value":request.expected_value,
+        "current_value":current,
+        "fresh_identity_verified":true
+    }))
+}
+
+pub fn validate_write_receipt(request:&LayerWriteRequest,value:&Value)->Result<Value,String>{
+    request.validate()?;
+    if value.get("mutation_performed").and_then(Value::as_bool)!=Some(true)
+        || value.get("document_id").and_then(Value::as_u64)!=Some(request.expected_document_id as u64)
+        || value.get("layer_id").and_then(Value::as_u64)!=Some(request.layer_id as u64)
+        || value.get("operation").and_then(Value::as_str)!=Some(request.operation.as_str()){
+        return Err("Photoshop mutation receipt identity does not match the approved request.".into());
+    }
+    let before=value.get("before").ok_or("Photoshop mutation receipt is missing before value.")?;
+    let after=value.get("after").ok_or("Photoshop mutation receipt is missing after value.")?;
+    if !primitive_matches(before,&request.expected_value,&request.operation){
+        return Err("Photoshop mutation receipt before value does not match the approved expectation.".into());
+    }
+    if !primitive_matches(after,&request.value,&request.operation){
+        return Err("Photoshop mutation receipt did not report the approved final value.".into());
+    }
+    if value.get("history_guard").and_then(Value::as_str)!=Some("suspend_resume_commit"){
+        return Err("Photoshop mutation receipt is missing the expected history guard evidence.".into());
+    }
+    Ok(json!({
+        "document_id":request.expected_document_id,
+        "layer_id":request.layer_id,
+        "operation":request.operation,
+        "before":before,
+        "after":after,
+        "history_guard":"suspend_resume_commit",
+        "host_receipt_validated":true
+    }))
+}
+
+pub fn validate_post_write_readback(request:&LayerWriteRequest,inventory:&Value)->Result<Value,String>{
+    if inventory.get("document_open").and_then(Value::as_bool)!=Some(true)
+        || inventory.get("document_id").and_then(Value::as_u64)!=Some(request.expected_document_id as u64)
+        || inventory.get("truncated").and_then(Value::as_bool)!=Some(false){
+        return Err("Photoshop post-write inventory is stale, truncated, or belongs to another document.".into());
+    }
+    let layer=layer_by_id(inventory,request.layer_id)?;
+    let current=property_value(layer,&request.operation)?;
+    if !primitive_matches(&current,&request.value,&request.operation){
+        return Err("Photoshop post-write readback does not match the approved value.".into());
+    }
+    Ok(json!({
+        "document_id":request.expected_document_id,
+        "layer_id":request.layer_id,
+        "operation":request.operation,
+        "value":current,
+        "post_state_verified":true
+    }))
+}
+
 pub fn capability_report()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_photoshop",
-        "milestone_percent":40,
+        "milestone_percent":60,
         "source_foundation_complete":true,
         "read_only_bridge_source_complete":true,
+        "guarded_layer_write_source_complete":true,
         "source_runtime_verified":false,
         "production_ready":false,
         "transport":{
@@ -212,7 +367,8 @@ pub fn capability_report()->Value{
             "localhost":"127.0.0.1:17363",
             "token_paired":true,
             "read_only_actions":["inspect_context","list_layers"],
-            "note":"40% milestone implements only authenticated read-only document/layer inspection."
+            "guarded_mutation_actions":["set_layer_property"],
+            "note":"60% milestone adds only exact rename/visible/opacity layer writes with fresh identity and post-write readback."
         },
         "features":{
             "detect_install":"source_supported_bounded_program_files_scan",
@@ -221,16 +377,20 @@ pub fn capability_report()->Value{
             "readiness_report":"source_supported",
             "document_inspection":"source_supported_read_only_bounded_receipt_validated",
             "layer_inspection":"source_supported_read_only_256_layers_depth_8_receipt_validated",
-            "pixel_or_layer_mutation":"not_implemented",
+            "layer_property_mutation":"source_supported_guarded_rename_visible_opacity",
+            "destructive_layer_mutation":"not_implemented",
+            "pixel_or_layer_mutation":"limited_non_pixel_metadata_only",
             "generative_fill":"not_implemented",
             "export":"not_implemented"
         },
         "safety":[
             "launch accepts only a freshly detected Photoshop.exe candidate",
             "UXP network permission is limited to Shuvi localhost bridge",
-            "bridge action allowlist contains read-only inspection only",
-            "host receipts are validated again in Rust",
-            "no document mutation in this milestone",
+            "mutation allowlist contains only rename, visible and opacity layer properties",
+            "fresh document/layer identity and exact expected property are required before mutation",
+            "writes use executeAsModal with a Photoshop history suspension and explicit commit",
+            "host mutation receipts and an independent post-write layer inventory are validated in Rust",
+            "delete/merge/rasterize/pixel writes remain unavailable",
             "no runtime acceptance claim without a real Windows Photoshop host"
         ]
     })
@@ -240,7 +400,7 @@ pub fn readiness_report()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_photoshop",
-        "milestone_percent":40,
+        "milestone_percent":60,
         "source_foundation_complete":true,
         "read_only_bridge_source_complete":true,
         "runtime_acceptance":{
@@ -249,15 +409,16 @@ pub fn readiness_report()->Value{
             "uxp_bridge_verified":false,
             "document_readback_verified":false,
             "layer_inventory_verified":false,
-            "mutation_readback_verified":false
+            "mutation_readback_verified":false,
+            "history_guard_runtime_verified":false
         },
         "next_milestone":{
-            "target_percent":60,
+            "target_percent":80,
             "scope":[
-                "permission-gated document and layer mutations",
-                "exact expected document identity",
-                "post-write readback",
-                "checkpoint or duplicate-document safety boundary before destructive operations"
+                "text-layer content/style editing",
+                "bounded transforms and adjustment controls",
+                "saved-document checkpoint evidence before higher-risk operations",
+                "recovery planning and richer post-write verification"
             ]
         },
         "source_runtime_verified":false,
@@ -323,13 +484,55 @@ mod tests{
     }
 
     #[test]
+    fn guarded_layer_write_requires_exact_fresh_precondition(){
+        let request=LayerWriteRequest{
+            expected_document_id:7,layer_id:3,operation:"rename".into(),
+            expected_value:json!("Title"),value:json!("Headline")
+        };
+        let context=json!({"document_open":true,"document_id":7});
+        let inventory=json!({"document_open":true,"document_id":7,"truncated":false,"layers":[
+            {"id":3,"name":"Title","visible":true,"opacity":100}
+        ]});
+        assert_eq!(validate_write_precondition(&request,&context,&inventory).unwrap()["fresh_identity_verified"],true);
+        let mut stale=inventory.clone();stale["layers"][0]["name"]=json!("Changed");
+        assert!(validate_write_precondition(&request,&context,&stale).is_err());
+    }
+
+    #[test]
+    fn guarded_layer_write_receipt_and_post_readback_are_exact(){
+        let request=LayerWriteRequest{
+            expected_document_id:7,layer_id:3,operation:"opacity".into(),
+            expected_value:json!(100.0),value:json!(72.5)
+        };
+        let receipt=json!({"mutation_performed":true,"document_id":7,"layer_id":3,"operation":"opacity",
+            "before":100.0,"after":72.5,"history_guard":"suspend_resume_commit"});
+        assert_eq!(validate_write_receipt(&request,&receipt).unwrap()["host_receipt_validated"],true);
+        let inventory=json!({"document_open":true,"document_id":7,"truncated":false,"layers":[
+            {"id":3,"name":"Title","visible":true,"opacity":72.5}
+        ]});
+        assert_eq!(validate_post_write_readback(&request,&inventory).unwrap()["post_state_verified"],true);
+        let mut wrong=inventory.clone();wrong["layers"][0]["opacity"]=json!(80.0);
+        assert!(validate_post_write_readback(&request,&wrong).is_err());
+    }
+
+    #[test]
+    fn guarded_layer_write_rejects_destructive_or_noop_operations(){
+        let base=LayerWriteRequest{expected_document_id:1,layer_id:2,operation:"delete".into(),
+            expected_value:json!(true),value:json!(false)};
+        assert!(base.validate().is_err());
+        let noop=LayerWriteRequest{expected_document_id:1,layer_id:2,operation:"visible".into(),
+            expected_value:json!(true),value:json!(true)};
+        assert!(noop.validate().is_err());
+    }
+
+    #[test]
     fn reports_do_not_claim_runtime_or_mutation(){
         let capability=capability_report();
-        assert_eq!(capability["milestone_percent"],40);
+        assert_eq!(capability["milestone_percent"],60);
         assert_eq!(capability["source_runtime_verified"],false);
-        assert_eq!(capability["features"]["pixel_or_layer_mutation"],"not_implemented");
+        assert_eq!(capability["features"]["destructive_layer_mutation"],"not_implemented");
         let readiness=readiness_report();
         assert_eq!(readiness["production_ready"],false);
-        assert_eq!(readiness["next_milestone"]["target_percent"],60);
+        assert_eq!(readiness["next_milestone"]["target_percent"],80);
     }
 }
