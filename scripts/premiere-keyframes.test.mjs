@@ -346,7 +346,7 @@ test("static video and audio parameter writes require native value readback",()=
   assert.match(uxp,/async function readStaticEffectValue/);
   assert.match(uxp,/param\.getStartValue\(\)/);
   assert.match(uxp,/verificationStatus:equivalentStaticEffectValue\(expected,observed\) \? "verified_readback" : "accepted_unverified"/);
-  assert.match(uxp,/Math\.max\(0\.000001,Math\.abs\(expected\)\*0\.000001\)/);
+  assert.match(uxp,/Math\.max\(0\.000001,Math\.abs\(a\)\*0\.000001\)/);
   for(const [name,next] of [
     ["setEffectParam","addEffectKeyframe"],
     ["setVideoParamNamed","addVideoKeyframeNamed"],
@@ -390,12 +390,13 @@ test("keyframe edits and range removal require exact native post-state",()=>{
   assert.match(edit,/verificationStatus:verified \? "verified_keyframe_edit" : "accepted_unverified"/);
 });
 
-test("subsequence requires new sequence and project-item identity without claiming content semantics",()=>{
+test("subsequence requires identity, restored selection and exact selected-content semantics",()=>{
   const section=uxp.slice(uxp.indexOf("async function createSubsequence"),uxp.indexOf("async function captionTracks"));
   assert.match(section,/beforeSequenceGuids/);
   assert.match(section,/sequenceMatches\.length === 1/);
   assert.match(section,/projectItemResolved = Boolean\(await findProjectItemById/);
-  assert.match(section,/selectionSemanticsVerified: false/);
+  assert.match(section,/selectionSemanticsVerified=requestedNormalized\.length===observedNormalized\.length/);
+  assert.match(section,/sequenceIdentityVerified && projectItemResolved && selectionRestored && selectionSemanticsVerified/);
   assert.match(section,/verificationStatus: verified \? "verified_creation_identity" : "accepted_unverified"/);
   assert.match(section,/retrySafe: false/);
 });

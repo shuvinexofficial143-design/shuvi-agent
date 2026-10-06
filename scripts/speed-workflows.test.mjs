@@ -69,9 +69,9 @@ test("rejects malformed and unbounded plans", () => {
 
 test("native route reads the inspected clip and never starts an edit transaction", async () => {
   const item = {
-    getName: async () => "Example", getStartTime: async () => ({ seconds: 5 }),
-    getEndTime: async () => ({ seconds: 15 }), getInPoint: async () => ({ seconds: 2 }),
-    getOutPoint: async () => ({ seconds: 12 }), getSpeed: async () => 1,
+    getName: async () => "Example", getStartTime: async () => ({ ticks: "5000", seconds: 5 }),
+    getEndTime: async () => ({ ticks: "15000", seconds: 15 }), getInPoint: async () => ({ ticks: "2000", seconds: 2 }),
+    getOutPoint: async () => ({ ticks: "12000", seconds: 12 }), getSpeed: async () => 1,
     getProjectItem: async () => ({ getId: async () => "media-id" }),
     isSpeedReversed: async () => 0
   };

@@ -12,7 +12,7 @@ test('motion finish retains exact native keyframes and rejects unsupported param
 });
 test('bounded batch requires every exact clip guard, checkpoints once, retains partial failures and cancellation',()=>{
  for(const name of ['premiere_batch_finish','premiere_batch_finish_cancel'])assert.match(rust,new RegExp(`"${name}" =>`));
- for(const pattern of [/targets\.len\(\)>32/,/expected\.clips\.len\(\)!=targets\.len\(\)/,/Duplicate or uninspected video batch target/,/backup_premiere_project\(&client\)\.await\?/,/finishing_cancelled\.load/,/"status":"applied"/,/"status":if uncertain\{"uncertain"\}else\{"failed"\}/])assert.match(rust,pattern);
+ for(const pattern of [/targets\.len\(\)>32/,/expected\.clips\.len\(\)!=targets\.len\(\)/,/Duplicate or uninspected video batch target/,/backup_premiere_project\(&client\)\.await\?/,/finishing_cancelled\.load/,/"status":if verified\{"applied"\}else\{"uncertain"\}/,/"status":if uncertain\{"uncertain"\}else\{"failed"\}/])assert.match(rust,pattern);
 });
 
 test('batch finishing stops on accepted but unverified recipe state',()=>{
