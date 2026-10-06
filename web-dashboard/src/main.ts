@@ -53,8 +53,19 @@ const sidebar = byId<HTMLElement>("sidebar");
 const sidebarBackdrop = byId<HTMLElement>("sidebarBackdrop");
 const globalSearch = byId<HTMLInputElement>("globalSearch");
 const toast = byId<HTMLElement>("toast");
+const moduleDrawer = byId<HTMLElement>("moduleDrawer");
+const moduleDrawerBackdrop = byId<HTMLElement>("moduleDrawerBackdrop");
+const allModules = [...creativeModules, ...toolModules];
+
+interface DraftTask {
+  id: string;
+  title: string;
+  type: string;
+  createdAt: number;
+}
 
 let toastTimer: number | undefined;
+let activeDrawerModule: FeatureModule | null = null;
 
 function showToast(message: string): void {
   toast.textContent = message;
@@ -87,6 +98,7 @@ function badgeClass(module: FeatureModule): string {
 function createModuleCard(module: FeatureModule): HTMLElement {
   const card = make("article", "module-card");
   card.dataset.category = module.category;
+  card.dataset.moduleId = module.id;
   card.dataset.search = [
     module.name,
     module.category,
@@ -120,13 +132,20 @@ function createModuleCard(module: FeatureModule): HTMLElement {
     module.state === "development" ? "View status →" : "Open locally →"
   );
   action.type = "button";
-  action.addEventListener("click", () => {
-    if (module.state === "development") {
-      showToast(module.name + " is being developed separately and is not runnable from the web dashboard yet.");
-      return;
-    }
+  action.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openModuleDrawer(module);
+  });
 
-    showToast("Connect the local Shuvi Windows runtime before opening " + module.name + ".");
+  card.tabIndex = 0;
+  card.setAttribute("role", "button");
+  card.setAttribute("aria-label", "Open " + module.name + " details");
+  card.addEventListener("click", () => openModuleDrawer(module));
+  card.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      openModuleDrawer(module);
+    }
   });
 
   footer.append(stateCopy, action);
@@ -161,22 +180,88 @@ function renderDashboardStudioModules(): void {
 
 function renderProviders(): void {
   const target = byId<HTMLElement>("providerGrid");
+  const selected = localStorage.getItem("shuvi.web.provider");
   target.replaceChildren();
 
   modelProviders.forEach((provider) => {
-    const card = make("article", "provider-card");
+    const card = make("button", "provider-card");
+    card.type = "button";
     card.dataset.search = [provider.name, provider.note, provider.state].join(" ").toLowerCase();
+    card.dataset.provider = provider.name;
+    card.classList.toggle("selected", selected === provider.name);
 
     const icon = make("div", "provider-icon", provider.short);
     const copy = make("div", "provider-copy");
     copy.append(make("strong", "", provider.name), make("span", "", provider.note));
 
     const state = make("div", "provider-state");
-    state.append(make("span", "status-dot neutral"), make("small", "", provider.state));
+    state.append(
+      make("span", selected === provider.name ? "status-dot selected" : "status-dot neutral"),
+      make("small", "", selected === provider.name ? "Selected for planning" : provider.state)
+    );
+
+    card.addEventListener("click", () => setProviderPreference(provider.name));
 
     card.append(icon, copy, state);
     target.append(card);
   });
+}
+
+function setProviderPreference(name: string): void {
+  const provider = modelProviders.find((item) => item.name === name);
+  if (!provider) return;
+
+  localStorage.setItem("shuvi.web.provider", provider.name);
+  byId<HTMLElement>("selectedProviderName").textContent = provider.name;
+  byId<HTMLElement>("selectedProviderNote").textContent =
+    provider.note + " · web planning preference only; Windows runtime remains the source of truth.";
+  renderProviders();
+  showToast(provider.name + " selected for dashboard planning.");
+}
+
+function restoreProviderPreference(): void {
+  const saved = localStorage.getItem("shuvi.web.provider");
+  const provider = modelProviders.find((item) => item.name === saved);
+
+  if (!provider) return;
+
+  byId<HTMLElement>("selectedProviderName").textContent = provider.name;
+  byId<HTMLElement>("selectedProviderNote").textContent =
+    provider.note + " · web planning preference only; Windows runtime remains the source of truth.";
+}
+
+function openModuleDrawer(module: FeatureModule): void {
+  activeDrawerModule = module;
+
+  const icon = byId<HTMLElement>("drawerModuleIcon");
+  icon.className = "module-icon accent-" + module.accent;
+  icon.textContent = module.icon;
+
+  byId<HTMLElement>("drawerModuleCategory").textContent = module.category;
+  byId<HTMLElement>("drawerModuleName").textContent = module.name;
+
+  const status = byId<HTMLElement>("drawerModuleStatus");
+  status.className = badgeClass(module);
+  status.textContent = module.stateLabel;
+
+  byId<HTMLElement>("drawerModuleDescription").textContent = module.description;
+  byId<HTMLElement>("drawerExecutionState").textContent =
+    module.state === "development" ? "Development in progress" : "Local runtime required";
+  byId<HTMLElement>("drawerNextStep").textContent =
+    module.state === "development"
+      ? module.name + " is still being developed. You can prepare a task draft now and connect it when the module is integrated."
+      : "Prepare the task here, then connect the local Shuvi runtime before " + module.name + " can execute it.";
+
+  moduleDrawer.classList.add("open");
+  moduleDrawerBackdrop.classList.add("show");
+  moduleDrawer.setAttribute("aria-hidden", "false");
+}
+
+function closeModuleDrawer(): void {
+  moduleDrawer.classList.remove("open");
+  moduleDrawerBackdrop.classList.remove("show");
+  moduleDrawer.setAttribute("aria-hidden", "true");
+  activeDrawerModule = null;
 }
 
 function setView(viewName: string): void {
@@ -261,6 +346,81 @@ function restoreBridgePreference(): void {
   if (saved) input.value = saved;
 }
 
+function readDraftTasks(): DraftTask[] {
+  try {
+    const raw = localStorage.getItem("shuvi.web.draftTasks");
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveDraftTasks(tasks: DraftTask[]): void {
+  localStorage.setItem("shuvi.web.draftTasks", JSON.stringify(tasks.slice(0, 20)));
+}
+
+function renderDraftTasks(): void {
+  const tasks = readDraftTasks();
+  const list = byId<HTMLElement>("draftTaskList");
+  const stage = byId<HTMLElement>("draftTaskStage");
+  byId<HTMLElement>("draftTaskCount").textContent = String(tasks.length);
+
+  list.replaceChildren();
+
+  if (!tasks.length) {
+    list.append(make("p", "draft-empty", "No browser task drafts yet."));
+    stage.className = "stage-empty";
+    stage.textContent = "No browser drafts";
+    return;
+  }
+
+  const stageList = make("div", "stage-draft-list");
+
+  tasks.forEach((task) => {
+    const row = make("div", "draft-task-row");
+    const copy = make("div", "draft-task-copy");
+    copy.append(make("strong", "", task.title), make("span", "", task.type + " · planning only"));
+
+    const remove = make("button", "draft-remove", "×");
+    remove.type = "button";
+    remove.setAttribute("aria-label", "Remove draft");
+    remove.addEventListener("click", () => {
+      saveDraftTasks(readDraftTasks().filter((item) => item.id !== task.id));
+      renderDraftTasks();
+      showToast("Task draft removed.");
+    });
+
+    row.append(copy, remove);
+    list.append(row);
+
+    const stageItem = make("button", "stage-draft-item");
+    stageItem.type = "button";
+    stageItem.textContent = task.title;
+    stageItem.addEventListener("click", () => {
+      setView("chat");
+      byId<HTMLTextAreaElement>("chatInput").value = task.title;
+      byId<HTMLTextAreaElement>("chatInput").focus();
+    });
+    stageList.append(stageItem);
+  });
+
+  stage.className = "stage-draft-container";
+  stage.replaceChildren(stageList);
+}
+
+function addDraftTask(title: string, type: string): void {
+  const tasks = readDraftTasks();
+  tasks.unshift({
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+    title,
+    type,
+    createdAt: Date.now()
+  });
+  saveDraftTasks(tasks);
+  renderDraftTasks();
+}
+
 function bindInteractions(): void {
   document.addEventListener("click", (event) => {
     const target = event.target as HTMLElement;
@@ -292,6 +452,23 @@ function bindInteractions(): void {
     sidebarBackdrop.classList.remove("show");
   });
 
+  byId<HTMLButtonElement>("closeModuleDrawer").addEventListener("click", closeModuleDrawer);
+  moduleDrawerBackdrop.addEventListener("click", closeModuleDrawer);
+
+  byId<HTMLButtonElement>("drawerPrepareTask").addEventListener("click", () => {
+    if (!activeDrawerModule) return;
+    const module = activeDrawerModule;
+    addDraftTask("New " + module.name + " task", module.name);
+    closeModuleDrawer();
+    setView("tasks");
+    showToast(module.name + " task draft added.");
+  });
+
+  byId<HTMLButtonElement>("drawerOpenSettings").addEventListener("click", () => {
+    closeModuleDrawer();
+    setView("settings");
+  });
+
   globalSearch.addEventListener("input", () => {
     filterVisibleCards(globalSearch.value);
   });
@@ -301,6 +478,12 @@ function bindInteractions(): void {
       event.preventDefault();
       globalSearch.focus();
       globalSearch.select();
+    }
+
+    if (event.key === "Escape") {
+      closeModuleDrawer();
+      sidebar.classList.remove("open");
+      sidebarBackdrop.classList.remove("show");
     }
   });
 
@@ -315,6 +498,18 @@ function bindInteractions(): void {
         card.classList.toggle("filter-hidden", !matches);
       });
     });
+  });
+
+  byId<HTMLFormElement>("taskDraftForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const input = byId<HTMLInputElement>("taskDraftInput");
+    const type = byId<HTMLSelectElement>("taskDraftType").value;
+    const title = input.value.trim();
+    if (!title) return;
+
+    addDraftTask(title, type);
+    input.value = "";
+    showToast("Task draft saved in this browser.");
   });
 
   byId<HTMLFormElement>("chatForm").addEventListener("submit", (event) => {
@@ -360,5 +555,7 @@ renderModuleGrid("toolModuleGrid", toolModules);
 renderProviders();
 hydrateMetrics();
 restoreBridgePreference();
+restoreProviderPreference();
+renderDraftTasks();
 bindInteractions();
 setView("dashboard");
