@@ -248,6 +248,7 @@ Available tools:
 - premiere_review_session_status: {"session_id":"exact returned ID"}
 - premiere_review_session_next: {"session_id":"exact returned ID"}
 - premiere_review_session_continue: {"session_id":"exact returned ID"}
+- premiere_review_session_recovery: {"session_id":"stagnated review session ID"}
 - premiere_review_session_record_fix: {"session_id":"ID","issue_id":"inspected issue ID","target":"exact inspected clip target","planner":"premiere_plan_video_recipe","settings":{"exact":"approved typed settings"},"approved_action_id":"exact successful Shuvi audit action ID"}
 - premiere_plan_review_correction: {"session_id":"ID","issue_id":"inspected issue ID","frame_seconds":2,"kind":"video|audio","track":0,"clip_index":0,"target_signature":"exact inspected targetSignature","component_match_name":"exact inspected native component","param_display_name":"exact inspected native parameter","desired_value":"same primitive type as current value"}
 - premiere_review_session_cancel: {"session_id":"exact returned ID"}
@@ -633,6 +634,7 @@ enum ToolAction {
     PremiereReviewSessionStatus { session_id: String },
     PremiereReviewSessionNext { session_id: String, provider: ProviderContext },
     PremiereReviewSessionContinue { session_id: String },
+    PremiereReviewSessionRecovery { session_id:String },
     PremiereReviewSessionRecordFix { session_id: String, issue_id: String, target: String, planner: String, settings: Value, approved_action_id: String },
     PremiereReviewSessionCancel { session_id: String },
     PremierePlanEditRecipe { request: premiere_editorial::Request },
@@ -1298,6 +1300,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_review_session_status"
         | "premiere_review_session_next"
         | "premiere_review_session_continue"
+        | "premiere_review_session_recovery"
         | "premiere_review_session_record_fix"
         | "premiere_review_session_cancel"
         | "premiere_plan_edit_recipe"
@@ -4125,16 +4128,17 @@ fn stage_tool(
             (ToolAction::PremiereReviewSessionStart {objective,reference,sample_times,max_iterations},
                 "Start bounded Premiere review session".into(), "Inspect active project and sequence before storing bounded session.".into(), RiskLevel::Low)
         }
-        "premiere_review_session_status" | "premiere_review_session_cancel" | "premiere_review_session_next" | "premiere_review_session_continue" => {
+        "premiere_review_session_status" | "premiere_review_session_cancel" | "premiere_review_session_next" | "premiere_review_session_continue" | "premiere_review_session_recovery" => {
             let session_id = arg_string(&proposal.arguments,"session_id")?;
             Uuid::parse_str(&session_id).map_err(|_| "Invalid Premiere review session ID.")?;
             let (action, risk) = match proposal.tool.as_str() {
                 "premiere_review_session_status" => (ToolAction::PremiereReviewSessionStatus {session_id},RiskLevel::Low),
                 "premiere_review_session_cancel" => (ToolAction::PremiereReviewSessionCancel {session_id},RiskLevel::Low),
                 "premiere_review_session_continue" => (ToolAction::PremiereReviewSessionContinue {session_id},RiskLevel::Low),
+                "premiere_review_session_recovery" => (ToolAction::PremiereReviewSessionRecovery {session_id},RiskLevel::Low),
                 _ => (ToolAction::PremiereReviewSessionNext {session_id,provider:provider_context.ok_or("Review requires active vision provider.")?},RiskLevel::Medium),
             };
-            (action,"Advance Premiere review session".into(),"Bounded review/correction orchestration; no correction is auto-executed and every mutating fix keeps its normal approval.".into(),risk)
+            (action,"Advance Premiere review session".into(),"Bounded review/correction orchestration; recovery is read-only and no correction/restore is auto-executed.".into(),risk)
         }
         "premiere_review_session_record_fix" => {
             let session_id=arg_string(&proposal.arguments,"session_id")?;
@@ -6708,6 +6712,14 @@ fn successful_execution_audit_detail(tool:&str,base:&str,result:&ActionResult)->
             let verdict=review.get("verdict").and_then(Value::as_str).unwrap_or("");
             format!("{base} | review_result_sha256={review_sha} | review_plan_snapshot={plan_snapshot} | review_manifest_sha256={manifest_sha} | review_verdict={verdict}")
         }
+        "premiere_apply_video_recipe"|"premiere_apply_audio_recipe"|"premiere_apply_saved_recipe"=>{
+            let checkpoint=value.get("backup").or_else(||value.get("checkpoint")).and_then(Value::as_str)
+                .filter(|path|!path.trim().is_empty()&&path.len()<=32768&&!path.contains('|'));
+            match checkpoint{
+                Some(path)=>format!("{base} | premiere_checkpoint={path}"),
+                None=>format!("{base} | premiere_checkpoint_unavailable"),
+            }
+        }
         _=>base.to_string(),
     }
 }
@@ -6926,6 +6938,11 @@ fn read_action_audit_receipt(
     }
     Ok(matched)
 }
+fn premiere_checkpoint_from_audit(entry:&AuditEntry)->Option<&str>{
+    entry.detail.split(" | ").find_map(|token|token.strip_prefix("premiere_checkpoint="))
+        .filter(|path|!path.trim().is_empty()&&path.len()<=32768&&!path.contains('|'))
+}
+
 fn verify_remotion_action_receipt_binding(
     app:&AppHandle,
     action_id:&str,
@@ -12116,8 +12133,55 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "stop_reason":session.stop_reason,
                     "latest_fix_evaluation":session.attempted_fixes.last().filter(|attempt|attempt.after.is_some()),
                     "terminal":matches!(state.as_str(),"completed"|"stagnated"|"cancelled"|"failed"),
+                    "recovery_tool":if state=="stagnated"&&session.stop_reason.as_deref()==Some("correction_regressed")
+                        {Some("premiere_review_session_recovery")}else{None},
                     "next_proposal":Value::Null,
                     "automatic_mutation":false
+                }).to_string(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PremiereReviewSessionRecovery {session_id} => {
+            let session=premiere_review::load(&premiere_review_path(app,&session_id)?)?;
+            if session.status!="stagnated" || session.stop_reason.as_deref()!=Some("correction_regressed") {
+                return Err("Recovery handoff is available only after a grounded correction regression.".into());
+            }
+            let attempt=session.attempted_fixes.last()
+                .filter(|attempt|attempt.outcome=="regressed")
+                .ok_or("Regressed review session has no matching correction attempt evidence.")?;
+            let action_id=attempt.approved_action_id.as_deref().ok_or("Regressed correction has no approved action binding.")?;
+            let checkpoint=attempt.checkpoint_path.as_deref().ok_or("Regressed correction has no pre-edit checkpoint binding.")?;
+            let receipt=read_action_audit_receipt(app,action_id)?
+                .filter(|entry|entry.success&&entry.event=="executed"
+                    && matches!(entry.tool.as_str(),"premiere_apply_video_recipe"|"premiere_apply_audio_recipe"|"premiere_apply_saved_recipe"))
+                .ok_or("Approved correction audit receipt is unavailable for recovery.")?;
+            if premiere_checkpoint_from_audit(&receipt)!=Some(checkpoint) {
+                return Err("Recovery checkpoint no longer matches the approved correction audit receipt.".into());
+            }
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let project=context.get("projectGuid").and_then(Value::as_str).unwrap_or("");
+            let sequence=context.pointer("/activeSequence/guid").and_then(Value::as_str).unwrap_or("");
+            if project!=session.project_guid || sequence!=session.sequence_guid {
+                return Err("Premiere project/sequence changed after regression; no recovery action may be inferred.".into());
+            }
+            let project_path=context.get("projectPath").and_then(Value::as_str).filter(|value|!value.trim().is_empty())
+                .ok_or("Current saved Premiere project path is unavailable for recovery verification.")?;
+            let checkpoint_evidence=premiere_checkpoint::verify_checkpoint(Path::new(checkpoint),Path::new(project_path))?;
+            Ok(ActionResult{
+                success:true,tool,
+                stdout:json!({
+                    "session_id":session_id,
+                    "status":session.status,
+                    "stop_reason":session.stop_reason,
+                    "regressed_attempt":attempt,
+                    "approved_action_id":action_id,
+                    "checkpoint_evidence":checkpoint_evidence,
+                    "recovery_ready":true,
+                    "automatic_restore":false,
+                    "restore_tool":Value::Null,
+                    "manual_decision_required":true,
+                    "recommended_next_step":"Inspect the verified pre-edit checkpoint and current project, then explicitly choose whether to open/restore that checkpoint. Shuvi will not overwrite the current project automatically.",
+                    "production_ready":false
                 }).to_string(),
                 stderr:String::new(),exit_code:Some(0)
             })
@@ -12129,20 +12193,25 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let project=context.get("projectGuid").and_then(Value::as_str).unwrap_or("");
             let sequence=context.pointer("/activeSequence/guid").and_then(Value::as_str).unwrap_or("");
             if let Err(error)=session.check_identity(project,sequence) { premiere_review::save(&path,&session)?; return Err(error); }
-            let approved_receipt=read_action_audit_receipt(app,&approved_action_id)?;
-            if !approved_receipt.as_ref().is_some_and(|entry|
-                entry.timestamp_ms >= session.created_at_ms
-                && entry.success && entry.event=="executed" && matches!(entry.tool.as_str(),
-                "premiere_apply_video_recipe"|"premiere_apply_audio_recipe"|"premiere_add_video_transition"|"premiere_apply_saved_recipe")) {
-                return Err("No successful approved typed Premiere edit from this review session with this action ID in audit evidence.".into());
-            }
+            let approved_receipt=read_action_audit_receipt(app,&approved_action_id)?
+                .filter(|entry|entry.timestamp_ms>=session.created_at_ms&&entry.success&&entry.event=="executed"
+                    && matches!(entry.tool.as_str(),"premiere_apply_video_recipe"|"premiere_apply_audio_recipe"|"premiere_apply_saved_recipe"))
+                .ok_or("No successful approved typed Premiere recipe edit from this review session with this action ID in audit evidence.")?;
+            let checkpoint=premiere_checkpoint_from_audit(&approved_receipt)
+                .ok_or("Approved correction audit receipt is missing its exact pre-edit Premiere checkpoint.")?;
+            let project_path=context.get("projectPath").and_then(Value::as_str).filter(|value|!value.trim().is_empty())
+                .ok_or("Current saved Premiere project path is unavailable for checkpoint verification.")?;
+            let checkpoint_evidence=premiere_checkpoint::verify_checkpoint(Path::new(checkpoint),Path::new(project_path))?;
             let issue=session.reviews.last().and_then(|r| r.issues.iter().find(|i| i.id==issue_id))
                 .ok_or("Unknown review issue.")?;
             let fingerprint=premiere_review::fingerprint(&issue.category,&target,&planner,&settings)?;
             let before=issue.observation.clone();
-            session.record_fix(&issue_id,&fingerprint,&before)?;
+            session.record_fix_evidence(&issue_id,&fingerprint,&before,Some(&approved_action_id),Some(checkpoint))?;
             premiere_review::save(&path,&session)?;
-            Ok(ActionResult {success:true,tool,stdout:json!({"status":session.status,"fingerprint":fingerprint,"iteration":session.iteration,"next_tool":"premiere_review_session_continue","next_reason":"Re-review the exact same bounded samples after the approved correction; repeated unsuccessful fix fingerprints remain blocked."}).to_string(),stderr:String::new(),exit_code:Some(0)})
+            Ok(ActionResult {success:true,tool,stdout:json!({"status":session.status,"fingerprint":fingerprint,"iteration":session.iteration,
+                "approved_action_id":approved_action_id,"checkpoint_evidence":checkpoint_evidence,
+                "next_tool":"premiere_review_session_continue",
+                "next_reason":"Re-review the exact same bounded samples after the approved correction. If the grounded result regresses, use premiere_review_session_recovery for a verified read-only recovery handoff."}).to_string(),stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::PremiereReviewSessionNext {session_id,provider} => {
             let path=premiere_review_path(app,&session_id)?;

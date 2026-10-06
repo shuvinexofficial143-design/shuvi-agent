@@ -78,3 +78,20 @@ The loop now applies an explicit no-blind-retry policy to grounded correction ou
 - Terminal coordinator responses expose `stop_reason` plus the latest grounded fix evaluation.
 
 This policy does not automatically rollback a real Premiere mutation because rollback itself is a separate high-risk operation that requires runtime-proven host behavior. It stops further mutation instead of hiding or compounding a regression.
+
+
+## 80% milestone — checkpoint-bound regression recovery handoff
+
+Every approved static review correction now carries its pre-edit Premiere checkpoint into the persistent action audit receipt. When the review records that correction, Shuvi re-verifies the checkpoint against the current saved project and persists the exact approved action ID plus checkpoint path with the correction attempt.
+
+If the next grounded review classifies that correction as `regressed`, the session stops and exposes `premiere_review_session_recovery`. That read-only recovery planner:
+
+- requires the same stagnated review session and `correction_regressed` stop reason,
+- requires the exact regressed attempt,
+- re-reads the successful approved action receipt,
+- verifies that the receipt still binds the same checkpoint,
+- verifies the checkpoint metadata/fingerprint against the current saved project,
+- rechecks the same Premiere project and sequence identity,
+- returns the verified recovery evidence without restoring or overwriting anything.
+
+Automatic restore is deliberately not implemented in this milestone. Restoring a project is a separate destructive/high-risk decision and must not be inferred from a visual regression.

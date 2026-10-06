@@ -92,3 +92,18 @@ test("60 percent milestone stops regression and repeated grounded no-gain retrie
   assert.match(review, /blind_retry_allowed/);
   assert.match(rust, /stop_reason/);
 });
+
+
+test("80 percent milestone binds approved correction checkpoints and exposes read-only recovery", () => {
+  const review = fs.readFileSync("src-tauri/src/premiere_review.rs", "utf8");
+  const rust = fs.readFileSync("src-tauri/src/lib.rs", "utf8");
+  assert.match(review, /approved_action_id/);
+  assert.match(review, /checkpoint_path/);
+  assert.match(review, /record_fix_evidence/);
+  assert.match(rust, /premiere_checkpoint_from_audit/);
+  assert.match(rust, /premiere_checkpoint=/);
+  assert.match(rust, /premiere_review_session_recovery/);
+  assert.match(rust, /PremiereReviewSessionRecovery/);
+  assert.match(rust, /automatic_restore/);
+  assert.match(rust, /manual_decision_required/);
+});

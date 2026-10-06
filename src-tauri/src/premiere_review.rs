@@ -44,6 +44,10 @@ pub struct Attempt {
     pub frame_seconds: Vec<f64>,
     #[serde(default)]
     pub after_issue_id: Option<String>,
+    #[serde(default)]
+    pub approved_action_id: Option<String>,
+    #[serde(default)]
+    pub checkpoint_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -211,8 +215,20 @@ impl Session {
     }
 
     pub fn record_fix(&mut self, issue_id: &str, fingerprint: &str, before: &str) -> Result<(), String> {
+        self.record_fix_evidence(issue_id,fingerprint,before,None,None)
+    }
+
+    pub fn record_fix_evidence(&mut self, issue_id:&str, fingerprint:&str, before:&str,
+        approved_action_id:Option<&str>, checkpoint_path:Option<&str>) -> Result<(),String> {
         if self.status != "awaiting_approval" || !short(issue_id, 80) || !short(fingerprint, 300) || !short(before, 800) {
             return Err("Review session is not ready for an approved fix.".into());
+        }
+        if approved_action_id.is_some_and(|value|!short(value,80))
+            || checkpoint_path.is_some_and(|value|value.trim().is_empty()||value.len()>32768) {
+            return Err("Review fix execution evidence is missing or oversized.".into());
+        }
+        if approved_action_id.is_some()!=checkpoint_path.is_some() {
+            return Err("Approved action ID and pre-edit checkpoint must be recorded together.".into());
         }
         let issue=self.reviews.last().and_then(|r|r.issues.iter().find(|i|i.id==issue_id)).cloned()
             .ok_or("Fix references an unknown issue.")?;
@@ -224,9 +240,11 @@ impl Session {
         self.attempted_fixes.push(Attempt { fingerprint: fingerprint.into(), issue_id: issue_id.into(),
             outcome: "uncertain".into(), before: before.into(), after: None, category:issue.category,
             before_severity:issue.severity,before_confidence:issue.confidence,frame_seconds:issue.frame_seconds,
-            after_issue_id:None });
+            after_issue_id:None,approved_action_id:approved_action_id.map(str::to_owned),
+            checkpoint_path:checkpoint_path.map(str::to_owned) });
         self.iteration += 1;
         self.status = "reviewing".into();
+        self.stop_reason = None;
         Ok(())
     }
 
@@ -363,6 +381,11 @@ fn validate_session(session:&Session)->Result<(),String>{
         || !samples_ok(&session.sample_times) || !(1..=8).contains(&session.max_iterations)
         || session.iteration == 0 || session.iteration > session.max_iterations
         || session.stop_reason.as_ref().is_some_and(|reason| reason.is_empty() || reason.len() > 240)
+        || session.attempted_fixes.iter().any(|attempt|{
+            attempt.approved_action_id.as_ref().is_some_and(|value|value.is_empty()||value.len()>80)
+                || attempt.checkpoint_path.as_ref().is_some_and(|value|value.is_empty()||value.len()>32768)
+                || attempt.approved_action_id.is_some()!=attempt.checkpoint_path.is_some()
+        })
         || !matches!(session.status.as_str(), "reviewing" | "awaiting_approval" | "completed" | "cancelled" | "stagnated" | "failed") {
         return Err("Invalid persisted Premiere review session.".into());
     }
@@ -428,6 +451,16 @@ mod tests {
         let r=regressed.add_review(review(2,vec![worse])).unwrap();
         assert_eq!(r["fix_evaluation"]["outcome"],"regressed");
     }
+    #[test] fn approved_fix_can_bind_checkpoint_evidence() {
+        let mut s=session();s.add_review(review(1,vec![issue()])).unwrap();
+        s.record_fix_evidence("i","evidence-fp","too warm",Some("action-1"),Some("C:/Project/Shuvi Backups/edit.prproj")).unwrap();
+        let attempt=s.attempted_fixes.last().unwrap();
+        assert_eq!(attempt.approved_action_id.as_deref(),Some("action-1"));
+        assert_eq!(attempt.checkpoint_path.as_deref(),Some("C:/Project/Shuvi Backups/edit.prproj"));
+        let mut s2=session();s2.add_review(review(1,vec![issue()])).unwrap();
+        assert!(s2.record_fix_evidence("i","bad","too warm",Some("action-1"),None).is_err());
+    }
+
     #[test] fn regression_immediately_stagnates_loop() {
         let mut s = session();
         s.add_review(review(1, vec![issue()])).unwrap();
