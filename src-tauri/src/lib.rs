@@ -402,6 +402,16 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - after_effects_run: {"afterfx_exe":"absolute path to AfterFX.exe","timeout_ms":30000,"request":{"schema_version":1,"request_id":"fresh-id","action":"inspect_context","expected_project_file":null,"expected_project_revision":null,"args":{}}} — for every mutating action copy exact expected_project_file + expected_project_revision from the latest inspect_context receipt
 - after_effects_plan_hand_track: {"plan":{"property":{"target":{"comp_id":1,"layer_id":2},"path":[{"match_name":"ADBE Transform Group","property_index":1},{"match_name":"ADBE Position","property_index":2}]},"samples":[{"time_seconds":0.0,"point":[100,200],"confidence":0.9}],"coordinate_space":"comp_pixels"}}
 - after_effects_plan_hand_track_rig: {"plan":{"comp_id":1,"target_layer_id":2,"samples":[{"time_seconds":0.0,"point":[100,200],"confidence":0.95}],"coordinate_space":"comp_pixels","name":"Shuvi Hand Track","preserve_visual":true,"min_confidence":0.5,"smoothing_alpha":0.35,"max_gap_seconds":0.25}}
+
+- character_animator_capability_report: {}
+- character_animator_readiness_report: {}
+- character_animator_detect: {}
+- character_animator_launch: {"character_animator_exe":"exact absolute Character Animator.exe path returned by character_animator_detect"}
+- character_animator_control_catalog: {}
+- character_animator_plan_control: {"request":{"control_kind":"application_shortcut|trigger_key|midi_note","command":"record_take_work_area|export_png_wav|export_frame when application_shortcut","key":"single project trigger key when trigger_key","midi_note":"0..127 when midi_note","acknowledge_project_mapping":false}}
+- character_animator_runtime_preflight: {"request":{"control":{"control_kind":"application_shortcut","command":"record_take_work_area","key":null,"midi_note":null,"acknowledge_project_mapping":false},"character_animator_exe":"exact detected Character Animator.exe","expected_pid":1234,"explicit_user_approval":true}} — verifies the exact Shuvi-managed foreground process only; sends no input
+- character_animator_execute_application_shortcut: {"request":{"control":{"control_kind":"application_shortcut","command":"record_take_work_area|export_png_wav|export_frame","key":null,"midi_note":null,"acknowledge_project_mapping":false},"character_animator_exe":"exact detected Character Animator.exe","expected_pid":1234,"explicit_user_approval":true}} — high-risk bounded delivery for only the three documented shortcuts; requires exact managed-process identity and immediate foreground PID/path recheck; effect success is not inferred from input dispatch
+- character_animator_plan_interchange: {"request":{"route":"dynamic_link_after_effects|dynamic_link_premiere|media_encoder_export","project_path":"absolute .chproj path","scene_name":"exact scene name"}} — planning only; no import/export execution
 - photoshop_capability_report: {}
 - photoshop_readiness_report: {}
 - photoshop_detect: {}
@@ -676,6 +686,7 @@ enum ToolAction {
     CharacterAnimatorControlCatalog,
     CharacterAnimatorPlanControl { request:character_animator::ControlPlanRequest },
     CharacterAnimatorRuntimePreflight { request:character_animator::RuntimeControlPreflightRequest },
+    CharacterAnimatorExecuteApplicationShortcut { request:character_animator::RuntimeControlPreflightRequest },
     CharacterAnimatorPlanInterchange { request:character_animator::InterchangePlanRequest },
     PremiereDetect,
     PremiereLaunch { project: Option<String> },
@@ -3351,6 +3362,21 @@ fn stage_tool(
                 "Verify Character Animator runtime control target".into(),
                 "Permission-first preflight only: require explicit approval, an exact Shuvi-managed process identity, and exact foreground Character Animator executable/PID verification. No keyboard or MIDI input is sent.".into(),
                 RiskLevel::Medium)
+        }
+
+        "character_animator_execute_application_shortcut" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"character_animator_execute_application_shortcut requires request.".to_string())?;
+            let request:character_animator::RuntimeControlPreflightRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Character Animator application shortcut request: {e}"))?;
+            request.validate()?;
+            if request.control.control_kind!="application_shortcut"{
+                return Err("Character Animator runtime execution currently supports only application_shortcut controls.".into());
+            }
+            (ToolAction::CharacterAnimatorExecuteApplicationShortcut {request},
+                "Execute bounded Character Animator application shortcut".into(),
+                "Send one fixed documented Character Animator shortcut only after normal high-risk approval, exact Shuvi-managed process identity verification, fresh install-path binding, and immediate foreground PID/path recheck. Trigger-key and MIDI delivery remain blocked; input dispatch does not prove the requested Character Animator effect succeeded.".into(),
+                RiskLevel::High)
         }
         "character_animator_plan_interchange" => {
             let value=proposal.arguments.get("request").cloned()
@@ -10463,6 +10489,20 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let detection=character_animator::detect_installs()?;
             character_animator::exact_detected_executable(&detection,&request.character_animator_exe)?;
             let value=character_animator::runtime_control_preflight(&request,true)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+
+        ToolAction::CharacterAnimatorExecuteApplicationShortcut {request} => {
+            if !managed_process_identity_matches(state,request.expected_pid)?{
+                return Err("Character Animator shortcut delivery requires the exact live Shuvi-managed process instance.".into());
+            }
+            let detection=character_animator::detect_installs()?;
+            character_animator::exact_detected_executable(&detection,&request.character_animator_exe)?;
+            let value=character_animator::execute_application_shortcut(&request,true)?;
             Ok(ActionResult {
                 success:true,tool,
                 stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),

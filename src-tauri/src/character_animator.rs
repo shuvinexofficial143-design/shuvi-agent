@@ -132,7 +132,7 @@ pub fn capability_report()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_character_animator",
-        "source_milestone_percent":60,
+        "source_milestone_percent":80,
         "source_scope_complete":false,
         "implemented":{
             "bounded_windows_detection":true,
@@ -146,14 +146,19 @@ pub fn capability_report()->Value{
             "bounded_interchange_planning":true,
             "runtime_control_preflight":true,
             "foreground_focus_verification":true,
-            "explicit_user_approval_guard":true
+            "explicit_user_approval_guard":true,
+            "documented_application_shortcut_execution":true,
+            "immediate_pre_send_focus_recheck":true
         },
         "automation_transport":{
             "status":"no_public_host_api_claimed",
             "implemented":false,
             "supported_control_surfaces":["keyboard_shortcuts","project_trigger_keys","midi_notes","dynamic_link","media_encoder_handoff"],
-            "execution_adapter":"permission_first_preflight",
-            "input_delivery_implemented":false
+            "execution_adapter":"bounded_application_shortcuts",
+            "input_delivery_implemented":true,
+            "application_shortcut_execution":true,
+            "project_trigger_execution":false,
+            "midi_execution":false
         },
         "not_implemented":{
             "host_bridge":true,
@@ -161,9 +166,8 @@ pub fn capability_report()->Value{
             "scene_inspection":true,
             "puppet_inspection":true,
             "timeline_take_inspection":true,
-            "recording_control_execution":true,
-            "keyboard_input_delivery":true,
-            "trigger_input_execution":true,
+            "recording_effect_verification":true,
+            "project_trigger_input_delivery":true,
             "midi_input_execution":true,
             "project_mutation":true,
             "export_execution":true,
@@ -178,17 +182,17 @@ pub fn readiness_report()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_character_animator",
-        "source_milestone_percent":40,
-        "source_coding_status":"runtime_preflight_complete",
+        "source_milestone_percent":80,
+        "source_coding_status":"bounded_application_shortcut_delivery_complete",
         "desktop_detection":true,
         "exact_detected_launch":true,
         "host_transport":"not_implemented",
         "future_host_transport":"no_public_host_api_claimed",
         "host_ready_verified":false,
-        "project_automation_ready":"runtime_preflight_only",
+        "project_automation_ready":"documented_application_shortcuts_only",
         "source_runtime_verified":false,
         "production_ready":false,
-        "next_source_phase":"add bounded keyboard input delivery only after immediate pre-send focus revalidation can be kept fail-closed; keep MIDI delivery and project/scene/puppet host inspection blocked until separately supported"
+        "next_source_phase":"finalize the bounded source scope with a canonical acceptance summary and explicit runtime acceptance handoff; keep project trigger delivery, MIDI delivery and project/scene/puppet host inspection blocked unless separately verified"
     })
 }
 
@@ -248,8 +252,11 @@ pub fn control_catalog()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_character_animator",
-        "source_milestone_percent":40,
-        "execution_supported":false,
+        "source_milestone_percent":80,
+        "execution_supported":true,
+        "application_shortcut_execution_supported":true,
+        "project_trigger_execution_supported":false,
+        "midi_execution_supported":false,
         "supported_control_surfaces":{
             "application_shortcuts":[
                 {"command":"record_take_work_area","windows_sequence":["CTRL","3"],"effect":"creates a take for the enabled work area"},
@@ -260,7 +267,7 @@ pub fn control_catalog()->Value{
             "midi_note":{"range":[0,127],"mapping":"user_project_defined","requires_project_mapping_acknowledgement":true}
         },
         "host_api_claimed":false,
-        "runtime_input_adapter":"permission_first_preflight",
+        "runtime_input_adapter":"bounded_application_shortcuts",
         "source_runtime_verified":false,
         "production_ready":false
     })
@@ -407,6 +414,128 @@ pub fn runtime_control_preflight(
     }
 }
 
+
+fn application_shortcut_send_keys(command:&str)->Result<&'static str,String>{
+    match command{
+        "record_take_work_area"=>Ok("^3"),
+        "export_png_wav"=>Ok("^%m"),
+        "export_frame"=>Ok("^%s"),
+        _=>Err("Character Animator application shortcut command is unsupported for runtime delivery.".into())
+    }
+}
+
+#[cfg(target_os="windows")]
+const APPLICATION_SHORTCUT_SEND_SCRIPT:&str=r#"
+$ErrorActionPreference='Stop'
+$expectedPid=[uint32]$env:SHUVI_CHARACTER_ANIMATOR_PID
+$expectedExe=[string]$env:SHUVI_CHARACTER_ANIMATOR_EXE
+$keys=[string]$env:SHUVI_CHARACTER_ANIMATOR_KEYS
+if($expectedPid -eq 0 -or [string]::IsNullOrWhiteSpace($expectedExe) -or [string]::IsNullOrWhiteSpace($keys)){
+    throw 'Character Animator shortcut delivery environment is incomplete.'
+}
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class ShuviCharacterAnimatorInputTarget {
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+}
+'@
+function Get-ShuviCharacterAnimatorForeground {
+    $handle=[ShuviCharacterAnimatorInputTarget]::GetForegroundWindow()
+    if($handle -eq [IntPtr]::Zero){ throw 'No foreground window is available.' }
+    [uint32]$foregroundPid=0
+    [void][ShuviCharacterAnimatorInputTarget]::GetWindowThreadProcessId($handle,[ref]$foregroundPid)
+    $process=Get-Process -Id $foregroundPid -ErrorAction Stop
+    if($foregroundPid -ne $expectedPid){
+        throw 'Foreground PID changed before Character Animator shortcut delivery.'
+    }
+    if(-not [string]::Equals([string]$process.Path,$expectedExe,[System.StringComparison]::OrdinalIgnoreCase)){
+        throw 'Foreground executable changed before Character Animator shortcut delivery.'
+    }
+    return $process
+}
+[void](Get-ShuviCharacterAnimatorForeground)
+$final=Get-ShuviCharacterAnimatorForeground
+[System.Windows.Forms.SendKeys]::SendWait($keys)
+[pscustomobject]@{
+    pid=[uint32]$final.Id
+    path=[string]$final.Path
+    input_dispatch_completed=$true
+    effect_verified=$false
+} | ConvertTo-Json -Compress
+"#;
+
+pub fn execute_application_shortcut(
+    request:&RuntimeControlPreflightRequest,
+    managed_process_identity_verified:bool,
+)->Result<Value,String>{
+    request.validate()?;
+    if request.control.control_kind!="application_shortcut"{
+        return Err("Character Animator 80% runtime delivery is limited to documented application_shortcut controls.".into());
+    }
+    if !managed_process_identity_verified{
+        return Err("Character Animator shortcut delivery requires the exact live Shuvi-managed process identity.".into());
+    }
+    let command=request.control.command.as_deref()
+        .ok_or("Character Animator application shortcut delivery requires command.")?;
+    let send_keys=application_shortcut_send_keys(command)?;
+    let preflight=runtime_control_preflight(request,true)?;
+
+    #[cfg(target_os="windows")]
+    {
+        let expected_exe=fs::canonicalize(&request.character_animator_exe)
+            .map_err(|e|format!("Expected Character Animator executable is unavailable: {e}"))?;
+        let output=Command::new("powershell.exe")
+            .env("SHUVI_CHARACTER_ANIMATOR_PID",request.expected_pid.to_string())
+            .env("SHUVI_CHARACTER_ANIMATOR_EXE",expected_exe.as_os_str())
+            .env("SHUVI_CHARACTER_ANIMATOR_KEYS",send_keys)
+            .args(["-NoLogo","-NoProfile","-NonInteractive","-Command",APPLICATION_SHORTCUT_SEND_SCRIPT])
+            .output()
+            .map_err(|e|format!("Could not dispatch Character Animator application shortcut: {e}"))?;
+        if !output.status.success(){
+            return Err(format!(
+                "Character Animator application shortcut delivery failed closed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        let receipt:Value=serde_json::from_slice(&output.stdout)
+            .map_err(|e|format!("Could not parse Character Animator shortcut delivery receipt: {e}"))?;
+        if receipt.get("input_dispatch_completed").and_then(Value::as_bool)!=Some(true){
+            return Err("Character Animator shortcut delivery did not return a positive dispatch receipt.".into());
+        }
+        Ok(json!({
+            "execution_type":"character_animator_application_shortcut",
+            "command":command,
+            "windows_sequence":match command{
+                "record_take_work_area"=>json!(["CTRL","3"]),
+                "export_png_wav"=>json!(["CTRL","ALT","M"]),
+                "export_frame"=>json!(["CTRL","ALT","S"]),
+                _=>json!([])
+            },
+            "preflight":preflight,
+            "expected_pid":request.expected_pid,
+            "character_animator_exe":expected_exe,
+            "managed_process_identity_verified":true,
+            "foreground_rechecked_immediately_before_send":true,
+            "input_dispatch_completed":true,
+            "effect_verified":false,
+            "project_trigger_execution":false,
+            "midi_execution":false,
+            "source_runtime_verified":false,
+            "production_ready":false
+        }))
+    }
+
+    #[cfg(not(target_os="windows"))]
+    {
+        Err("Character Animator application shortcut delivery is Windows-only.".into())
+    }
+}
+
 #[derive(Debug,Clone,Serialize,Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InterchangePlanRequest{
@@ -517,7 +646,7 @@ mod tests{
     #[test]
     fn foundation_does_not_invent_host_transport_or_runtime(){
         let capability=capability_report();
-        assert_eq!(capability["source_milestone_percent"],60);
+        assert_eq!(capability["source_milestone_percent"],80);
         assert_eq!(capability["automation_transport"]["status"],"no_public_host_api_claimed");
         assert_eq!(capability["automation_transport"]["implemented"],false);
         assert_eq!(capability["source_runtime_verified"],false);
@@ -526,7 +655,8 @@ mod tests{
         let readiness=readiness_report();
         assert_eq!(readiness["host_transport"],"not_implemented");
         assert_eq!(readiness["future_host_transport"],"no_public_host_api_claimed");
-        assert_eq!(readiness["project_automation_ready"],"runtime_preflight_only");
+        assert_eq!(readiness["source_milestone_percent"],80);
+        assert_eq!(readiness["project_automation_ready"],"documented_application_shortcuts_only");
     }
 
     #[test]
@@ -576,6 +706,15 @@ mod tests{
         };
         assert!(approved.validate().is_ok());
         assert!(runtime_control_preflight(&approved,false).is_err());
+    }
+
+
+    #[test]
+    fn application_shortcut_runtime_mapping_is_fixed_and_bounded(){
+        assert_eq!(application_shortcut_send_keys("record_take_work_area").unwrap(),"^3");
+        assert_eq!(application_shortcut_send_keys("export_png_wav").unwrap(),"^%m");
+        assert_eq!(application_shortcut_send_keys("export_frame").unwrap(),"^%s");
+        assert!(application_shortcut_send_keys("trigger_key").is_err());
     }
 
     #[test]
