@@ -42,7 +42,7 @@ pub struct PhotoshopBridgeStatus{
     pub token:Option<String>,
     pub last_seen_ms:Option<u64>,
     pub queued_commands:usize,
-    pub read_only:true,
+    pub read_only:bool,
 }
 
 #[derive(Default)]
