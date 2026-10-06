@@ -375,15 +375,32 @@
 
           <section id="view-activity" class="view" data-view="activity">
             <div class="section-intro">
-              <div><span class="section-kicker">AUDIT & ACTIVITY</span><h2>Everything Shuvi does, visible.</h2><p>Tool proposals, approvals, denials, task checkpoints and results can be streamed here later.</p></div>
-              <button class="secondary-button" type="button" data-action="export-log">Export log</button>
+              <div><span class="section-kicker">AUDIT & ACTIVITY</span><h2>Planning here. Runtime truth locally.</h2><p>Browser planning events are kept separate from the future Shuvi.exe runtime audit stream.</p></div>
+              <button class="secondary-button" type="button" data-action="export-log">Export planning log</button>
             </div>
-            <article class="panel activity-empty">
-              <div class="empty-icon large">◎</div>
-              <h3>No local activity synced</h3>
-              <p>Connect the Windows runtime to populate the real audit trail. The dashboard will not generate placeholder activity.</p>
-              <button class="secondary-button" type="button" data-action="connect-local">Configure local bridge</button>
-            </article>
+
+            <div class="activity-grid">
+              <article class="panel browser-activity-panel">
+                <div class="card-heading">
+                  <div><span class="section-kicker">BROWSER ACTIVITY</span><h3>Control Center planning</h3></div>
+                  <button id="clearPlanningActivity" class="text-button" type="button">Clear</button>
+                </div>
+                <div id="webActivityList" class="web-activity-list"></div>
+              </article>
+
+              <article class="panel runtime-audit-panel">
+                <div class="card-heading">
+                  <div><span class="section-kicker">LOCAL AUDIT</span><h3>Shuvi.exe activity</h3></div>
+                  <span class="badge badge-offline">Offline</span>
+                </div>
+                <div class="runtime-audit-empty">
+                  <div class="empty-icon large">◎</div>
+                  <h3>No local activity synced</h3>
+                  <p>Tool proposals, approvals, denials and execution results will appear only after the secure local runtime is connected.</p>
+                  <button class="secondary-button" type="button" data-action="connect-local">Configure local bridge</button>
+                </div>
+              </article>
+            </div>
           </section>
 
           <section id="view-settings" class="view" data-view="settings">
