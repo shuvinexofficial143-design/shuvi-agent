@@ -658,6 +658,10 @@ enum ToolAction {
     IllustratorBridgeStop,
     IllustratorContext,
     IllustratorArtboards,
+    IllustratorLayers,
+    IllustratorPageItems,
+    IllustratorSelection,
+    IllustratorIdentityCheck { expected_document_signature:String },
     PremiereDetect,
     PremiereLaunch { project: Option<String> },
     PremiereBridgeStart,
@@ -3334,6 +3338,32 @@ fn stage_tool(
             "Read-only bounded Illustrator artboard names and rectangles through the paired CEP/ExtendScript bridge.".into(),
             RiskLevel::Low,
         ),
+        "illustrator_layers" => (
+            ToolAction::IllustratorLayers,
+            "Inspect Illustrator layers".into(),
+            "Read-only bounded top-level Illustrator layer metadata and observational layer signatures.".into(),
+            RiskLevel::Low,
+        ),
+        "illustrator_page_items" => (
+            ToolAction::IllustratorPageItems,
+            "Inspect Illustrator page items".into(),
+            "Read-only bounded document page-item metadata and observational target signatures.".into(),
+            RiskLevel::Low,
+        ),
+        "illustrator_selection" => (
+            ToolAction::IllustratorSelection,
+            "Inspect Illustrator selection".into(),
+            "Read-only bounded selected-object metadata; selection signatures are observational snapshots, not stable object IDs.".into(),
+            RiskLevel::Low,
+        ),
+        "illustrator_identity_check" => {
+            let expected_document_signature=arg_string(&proposal.arguments,"expected_document_signature")?;
+            illustrator::validate_identity_signature(&expected_document_signature)?;
+            (ToolAction::IllustratorIdentityCheck {expected_document_signature:expected_document_signature.clone()},
+                "Recheck Illustrator document identity".into(),
+                "Read-only fresh host recheck of the exact inspected document signature. It does not authorize mutation.".into(),
+                RiskLevel::Low)
+        }
         "animate_capability_report" => (
             ToolAction::AnimateCapabilityReport,
             "Read Animate source capability report".into(),
@@ -10299,6 +10329,32 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
         ToolAction::IllustratorArtboards => {
             let value=state.illustrator_bridge.request("inspect_artboards",json!({"maxArtboards":128}),Duration::from_secs(10)).await?;
             let validated=illustrator::validate_artboard_receipt(&value)?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::IllustratorLayers => {
+            let value=state.illustrator_bridge.request("inspect_layers",json!({"maxLayers":128}),Duration::from_secs(10)).await?;
+            let validated=illustrator::validate_layer_receipt(&value)?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::IllustratorPageItems => {
+            let value=state.illustrator_bridge.request("inspect_page_items",json!({"maxItems":256}),Duration::from_secs(12)).await?;
+            let validated=illustrator::validate_page_item_receipt(&value)?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::IllustratorSelection => {
+            let value=state.illustrator_bridge.request("inspect_selection",json!({"maxItems":64}),Duration::from_secs(10)).await?;
+            let validated=illustrator::validate_selection_receipt(&value)?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::IllustratorIdentityCheck {expected_document_signature} => {
+            let value=state.illustrator_bridge.request("verify_identity",json!({
+                "expectedDocumentSignature":expected_document_signature
+            }),Duration::from_secs(8)).await?;
+            let validated=illustrator::validate_identity_receipt(&value)?;
             Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)})
         }

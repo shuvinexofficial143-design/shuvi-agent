@@ -2,46 +2,64 @@
 
 ## Source milestone
 
-Current declared source milestone: **40%**
+Current declared source milestone: **60%**
 
-The 40% milestone adds a bounded authenticated **CEP + ExtendScript** read-only host transport on top of the 20% desktop foundation. It does not authorize Illustrator document mutation.
+The 60% milestone extends the bounded read-only CEP + ExtendScript bridge with layer, page-item and selection inspection plus fresh document identity rechecks. It still does **not** authorize Illustrator mutation.
 
 ## Implemented source scope
 
-- bounded Windows detection and exact detected executable launch,
-- managed-process tracking,
-- authenticated localhost bridge on `127.0.0.1:17365`,
-- rotating pairing token and bounded request/result queue,
-- CEP panel targeted at Illustrator host ID `ILST`,
-- CEP `evalScript` to ExtendScript host adapter,
-- read-only active-document context,
-- document name/path/saved state where exposed,
-- bounded counters for artboards, layers, page items and selection,
-- active artboard index,
-- read-only bounded artboard inventory (maximum 256; Shuvi requests 128),
-- artboard names and rectangles,
-- observational document signature for later stale-context guards,
+Desktop foundation:
+- bounded Windows detection,
+- exact detected Illustrator executable launch,
+- managed-process tracking.
+
+Authenticated host transport:
+- localhost bridge on `127.0.0.1:17365`,
+- rotating pairing token,
+- bounded request/result queue,
+- CEP host ID `ILST`,
+- CEP `evalScript` to ExtendScript adapter.
+
+Read-only inspection:
+- active document context,
+- document path and saved state where exposed,
+- artboard inventory and active artboard,
+- bounded top-level layer inventory (maximum 256),
+- layer name, visibility, lock state, opacity, nested-layer/page-item counts,
+- bounded document page-item inventory (maximum 256),
+- page-item type/name/layer, lock/hidden state, opacity and geometric bounds,
+- bounded current selection inventory (maximum 64),
+- observational per-layer and per-item signatures,
+- observational selection snapshot signature,
+- fresh exact document-signature recheck through `verify_identity`,
 - independent Rust-side receipt validation.
 
 ## Read-only allowlist
 
 - `inspect_context`
 - `inspect_artboards`
+- `inspect_layers`
+- `inspect_page_items`
+- `inspect_selection`
+- `verify_identity`
 
-No other native Illustrator action is accepted by the bridge at this milestone.
+The native bridge has an empty mutation allowlist at this milestone.
 
 ## Identity boundary
 
-The 40% observational document signature is not represented as a permanent Illustrator object ID. It is read-only groundwork for stronger exact identity guards in later milestones.
+The document, layer, item and selection signatures in the 60% milestone are bounded observational snapshots. They are intended for stale-target detection and future write preconditions; they are **not** represented as permanent Illustrator object IDs.
 
-## Explicitly not implemented at 40%
+A successful `verify_identity` result reports `mutationAuthorized=false`. Identity confirmation alone never grants write permission.
 
-- layer/page-item detail inventory,
-- selected-object detail inspection,
-- Illustrator document or object mutation,
-- save/Save As,
+## Explicitly not implemented at 60%
+
+- layer/object mutation,
+- create/delete/reorder operations,
+- text/path/appearance mutation,
+- save or Save As,
 - export automation,
 - arbitrary ExtendScript execution,
+- automatic rollback,
 - runtime acceptance.
 
 ## Runtime status
@@ -50,8 +68,8 @@ The 40% observational document signature is not represented as a permanent Illus
 
 `production_ready=false`
 
-CI/source completion does not promote either flag. Real Windows Illustrator acceptance remains a later phase.
+Green source tests and CI do not change these flags. Real Windows Illustrator acceptance remains pending.
 
 ## Next source phase
 
-The 60% milestone should add bounded layer/page-item/selection inspection and stronger exact document/target identity guards while keeping mutation blocked.
+The 80% milestone should introduce only a very small typed guarded mutation surface, with exact fresh document/target-state preconditions, checkpoint/recovery strategy, independent readback, and no arbitrary ExtendScript.

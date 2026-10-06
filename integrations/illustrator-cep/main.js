@@ -47,6 +47,14 @@
     var args=command.arguments||{};
     if(command.action==="inspect_context")return evalHost("inspect_context",{});
     if(command.action==="inspect_artboards")return evalHost("inspect_artboards",{maxArtboards:boundedInteger(args.maxArtboards==null?128:args.maxArtboards,1,256,"maxArtboards")});
+    if(command.action==="inspect_layers")return evalHost("inspect_layers",{maxLayers:boundedInteger(args.maxLayers==null?128:args.maxLayers,1,256,"maxLayers")});
+    if(command.action==="inspect_page_items")return evalHost("inspect_page_items",{maxItems:boundedInteger(args.maxItems==null?256:args.maxItems,1,256,"maxItems")});
+    if(command.action==="inspect_selection")return evalHost("inspect_selection",{maxItems:boundedInteger(args.maxItems==null?64:args.maxItems,1,64,"maxItems")});
+    if(command.action==="verify_identity"){
+      if(typeof args.expectedDocumentSignature!=="string"||!args.expectedDocumentSignature.length||args.expectedDocumentSignature.length>2000)
+        return Promise.reject(new Error("Exact Illustrator document signature is required."));
+      return evalHost("verify_identity",{expectedDocumentSignature:args.expectedDocumentSignature});
+    }
     return Promise.reject(new Error("Unsupported read-only Shuvi Illustrator command: "+command.action));
   }
   function bounded(command,success,data,error){

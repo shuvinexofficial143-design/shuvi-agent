@@ -14,11 +14,19 @@ use super::illustrator_bridge_queue::CommandQueue;
 pub const READ_ONLY_ACTIONS: &[&str] = &[
     "inspect_context",
     "inspect_artboards",
+    "inspect_layers",
+    "inspect_page_items",
+    "inspect_selection",
+    "verify_identity",
 ];
 pub const MUTATING_ACTIONS: &[&str] = &[];
 pub const ALLOWED_ACTIONS: &[&str] = &[
     "inspect_context",
     "inspect_artboards",
+    "inspect_layers",
+    "inspect_page_items",
+    "inspect_selection",
+    "verify_identity",
 ];
 
 pub const ILLUSTRATOR_BRIDGE_PORT: u16 = 17_365;

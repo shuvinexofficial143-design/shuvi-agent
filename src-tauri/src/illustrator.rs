@@ -129,7 +129,7 @@ pub fn capability_report()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_illustrator",
-        "source_milestone_percent":40,
+        "source_milestone_percent":60,
         "source_scope_complete":false,
         "implemented":{
             "bounded_windows_detection":true,
@@ -139,7 +139,11 @@ pub fn capability_report()->Value{
             "readiness_report":true,
             "authenticated_cep_extendscript_bridge":true,
             "document_inspection":true,
-            "artboard_inspection":true
+            "artboard_inspection":true,
+            "layer_inspection":true,
+            "page_item_inspection":true,
+            "selection_inspection":true,
+            "fresh_document_identity_recheck":true
         },
         "planned_transport":{
             "kind":"cep_plus_extendscript",
@@ -147,8 +151,6 @@ pub fn capability_report()->Value{
             "implemented":true
         },
         "not_implemented":{
-            "layer_pageitem_inspection":true,
-            "selection_inspection":true,
             "document_mutation":true,
             "export":true,
             "runtime_acceptance":true
@@ -162,19 +164,19 @@ pub fn readiness_report()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_illustrator",
-        "source_milestone_percent":40,
-        "source_coding_status":"read_only_bridge_complete",
+        "source_milestone_percent":60,
+        "source_coding_status":"read_only_target_inspection_complete",
         "desktop_detection":true,
         "exact_detected_launch":true,
         "host_transport":"cep_plus_extendscript",
         "planned_host_transport":"bounded_cep_plus_extendscript",
         "planned_cep_host_id":"ILST",
         "host_ready_verified":false,
-        "bridge_scope":"read_only_document_and_artboards",
+        "bridge_scope":"read_only_document_artboards_layers_pageitems_selection_identity",
         "document_automation_ready":"read_only_only",
         "source_runtime_verified":false,
         "production_ready":false,
-        "next_source_phase":"add bounded layer/page-item/selection inspection and stronger document identity guards before any mutation"
+        "next_source_phase":"add a tiny typed guarded mutation surface with exact target-state preconditions, checkpoint strategy, and independent readback"
     })
 }
 
@@ -268,6 +270,113 @@ pub fn validate_artboard_receipt(value:&Value)->Result<Value,String>{
     }))
 }
 
+
+pub fn validate_identity_signature(value:&str)->Result<&str,String>{
+    let trimmed=value.trim();
+    if trimmed.is_empty()||trimmed.len()>2000||trimmed.chars().any(char::is_control){
+        return Err("Illustrator document signature must be 1..2000 characters without control characters.".into());
+    }
+    Ok(trimmed)
+}
+
+fn validate_rect(value:&Value,label:&str)->Result<(),String>{
+    let rect=value.as_array().ok_or_else(||format!("Illustrator {label} bounds are missing."))?;
+    if rect.len()!=4||rect.iter().any(|v|v.as_f64().is_none_or(|n|!n.is_finite()||n.abs()>1.0e9)){
+        return Err(format!("Illustrator {label} bounds are invalid."));
+    }
+    Ok(())
+}
+
+pub fn validate_layer_receipt(value:&Value)->Result<Value,String>{
+    if value.get("readOnly").and_then(Value::as_bool)!=Some(true){
+        return Err("Illustrator layer receipt must explicitly be readOnly=true.".into());
+    }
+    validate_identity_signature(value.get("documentSignature").and_then(Value::as_str).unwrap_or(""))?;
+    let layers=value.get("layers").and_then(Value::as_array).ok_or("Illustrator layers are required.")?;
+    if layers.len()>256{return Err("Illustrator layer receipt exceeds 256 entries.".into());}
+    for row in layers{
+        row.get("index").and_then(Value::as_u64).filter(|v|*v<=100_000)
+            .ok_or("Illustrator layer index is invalid.")?;
+        if !bounded_text(row.get("name").and_then(Value::as_str),512){
+            return Err("Illustrator layer name is missing or oversized.".into());
+        }
+        for key in ["visible","locked"]{
+            if row.get(key).and_then(Value::as_bool).is_none(){return Err(format!("Illustrator layer {key} is invalid."));}
+        }
+        let opacity=row.get("opacity").and_then(Value::as_f64).filter(|v|v.is_finite()&&*v>=0.0&&*v<=100.0)
+            .ok_or("Illustrator layer opacity is invalid.")?;
+        let _=opacity;
+        for key in ["nestedLayerCount","pageItemCount"]{
+            row.get(key).and_then(Value::as_u64).filter(|v|*v<=10_000_000)
+                .ok_or_else(||format!("Illustrator layer {key} is invalid."))?;
+        }
+        validate_identity_signature(row.get("layerSignature").and_then(Value::as_str).unwrap_or(""))?;
+    }
+    Ok(value.clone())
+}
+
+pub fn validate_page_item_receipt(value:&Value)->Result<Value,String>{
+    if value.get("readOnly").and_then(Value::as_bool)!=Some(true){
+        return Err("Illustrator page-item receipt must explicitly be readOnly=true.".into());
+    }
+    validate_identity_signature(value.get("documentSignature").and_then(Value::as_str).unwrap_or(""))?;
+    let items=value.get("items").and_then(Value::as_array).ok_or("Illustrator page items are required.")?;
+    if items.len()>256{return Err("Illustrator page-item receipt exceeds 256 entries.".into());}
+    for row in items{
+        row.get("index").and_then(Value::as_u64).filter(|v|*v<=10_000_000)
+            .ok_or("Illustrator page-item index is invalid.")?;
+        if !bounded_text(row.get("typename").and_then(Value::as_str),160){
+            return Err("Illustrator page-item typename is missing or oversized.".into());
+        }
+        for key in ["name","layerName"]{
+            if let Some(text)=row.get(key).and_then(Value::as_str){
+                if text.len()>1024||text.chars().any(char::is_control){
+                    return Err(format!("Illustrator page-item {key} is invalid."));
+                }
+            }
+        }
+        for key in ["locked","hidden"]{
+            if row.get(key).and_then(Value::as_bool).is_none(){return Err(format!("Illustrator page-item {key} is invalid."));}
+        }
+        row.get("opacity").and_then(Value::as_f64).filter(|v|v.is_finite()&&*v>=0.0&&*v<=100.0)
+            .ok_or("Illustrator page-item opacity is invalid.")?;
+        validate_rect(row.get("geometricBounds").unwrap_or(&Value::Null),"page-item geometric")?;
+        validate_identity_signature(row.get("itemSignature").and_then(Value::as_str).unwrap_or(""))?;
+    }
+    Ok(value.clone())
+}
+
+pub fn validate_selection_receipt(value:&Value)->Result<Value,String>{
+    if value.get("readOnly").and_then(Value::as_bool)!=Some(true){
+        return Err("Illustrator selection receipt must explicitly be readOnly=true.".into());
+    }
+    validate_identity_signature(value.get("documentSignature").and_then(Value::as_str).unwrap_or(""))?;
+    validate_identity_signature(value.get("selectionSignature").and_then(Value::as_str).unwrap_or(""))?;
+    let items=value.get("items").and_then(Value::as_array).ok_or("Illustrator selection items are required.")?;
+    if items.len()>64{return Err("Illustrator selection receipt exceeds 64 entries.".into());}
+    for row in items{
+        row.get("index").and_then(Value::as_u64).filter(|v|*v<=100_000)
+            .ok_or("Illustrator selected item index is invalid.")?;
+        if !bounded_text(row.get("typename").and_then(Value::as_str),160){
+            return Err("Illustrator selected item typename is missing or oversized.".into());
+        }
+        validate_identity_signature(row.get("itemSignature").and_then(Value::as_str).unwrap_or(""))?;
+    }
+    Ok(value.clone())
+}
+
+pub fn validate_identity_receipt(value:&Value)->Result<Value,String>{
+    if value.get("readOnly").and_then(Value::as_bool)!=Some(true)
+        ||value.get("mutationAuthorized").and_then(Value::as_bool)!=Some(false){
+        return Err("Illustrator identity receipt must be read-only and must not authorize mutation.".into());
+    }
+    if value.get("documentIdentityMatched").and_then(Value::as_bool)!=Some(true){
+        return Err("Illustrator identity recheck did not confirm the expected document.".into());
+    }
+    validate_identity_signature(value.get("observedDocumentSignature").and_then(Value::as_str).unwrap_or(""))?;
+    Ok(value.clone())
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -315,7 +424,7 @@ mod tests{
     #[test]
     fn reports_never_promote_unimplemented_host_or_runtime(){
         let capability=capability_report();
-        assert_eq!(capability["source_milestone_percent"],40);
+        assert_eq!(capability["source_milestone_percent"],60);
         assert_eq!(capability["planned_transport"]["illustrator_cep_host_id"],"ILST");
         assert_eq!(capability["planned_transport"]["implemented"],true);
         assert_eq!(capability["source_runtime_verified"],false);
@@ -323,5 +432,18 @@ mod tests{
         let readiness=readiness_report();
         assert_eq!(readiness["host_transport"],"cep_plus_extendscript");
         assert_eq!(readiness["document_automation_ready"],"read_only_only");
+    }
+
+    #[test]
+    fn identity_receipt_never_authorizes_mutation(){
+        assert_eq!(validate_identity_signature("doc|1").unwrap(),"doc|1");
+        assert!(validate_identity_signature("").is_err());
+        let receipt=json!({
+            "readOnly":true,
+            "mutationAuthorized":false,
+            "documentIdentityMatched":true,
+            "observedDocumentSignature":"doc|1"
+        });
+        assert_eq!(validate_identity_receipt(&receipt).unwrap()["mutationAuthorized"],false);
     }
 }
