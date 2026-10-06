@@ -78,6 +78,13 @@ interface PaletteItem {
   run: () => void;
 }
 
+interface WebActivity {
+  id: string;
+  type: string;
+  message: string;
+  createdAt: number;
+}
+
 let toastTimer: number | undefined;
 let activeDrawerModule: FeatureModule | null = null;
 
@@ -86,6 +93,86 @@ function showToast(message: string): void {
   toast.classList.add("show");
   if (toastTimer) window.clearTimeout(toastTimer);
   toastTimer = window.setTimeout(() => toast.classList.remove("show"), 3200);
+}
+
+function readWebActivity(): WebActivity[] {
+  try {
+    const raw = localStorage.getItem("shuvi.web.activity");
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveWebActivity(entries: WebActivity[]): void {
+  localStorage.setItem("shuvi.web.activity", JSON.stringify(entries.slice(0, 80)));
+}
+
+function recordWebActivity(type: string, message: string): void {
+  const entries = readWebActivity();
+  entries.unshift({
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+    type,
+    message,
+    createdAt: Date.now()
+  });
+  saveWebActivity(entries);
+  renderWebActivity();
+}
+
+function renderWebActivity(): void {
+  const target = document.getElementById("webActivityList");
+  if (!target) return;
+
+  const entries = readWebActivity();
+  target.replaceChildren();
+
+  if (!entries.length) {
+    const empty = make("div", "activity-browser-empty");
+    empty.append(
+      make("strong", "", "No planning activity yet"),
+      make("p", "", "Task drafts, module planning and model preferences will appear here.")
+    );
+    target.append(empty);
+    return;
+  }
+
+  entries.slice(0, 24).forEach((entry) => {
+    const row = make("div", "web-activity-row");
+    const marker = make("span", "activity-marker", entry.type.slice(0, 2).toUpperCase());
+    const copy = make("div", "web-activity-copy");
+    copy.append(make("strong", "", entry.message));
+
+    const when = new Date(entry.createdAt);
+    copy.append(make("span", "", entry.type + " · " + when.toLocaleString()));
+    row.append(marker, copy);
+    target.append(row);
+  });
+}
+
+function exportPlanningLog(): void {
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    scope: "Shuvi web dashboard planning only",
+    provider: localStorage.getItem("shuvi.web.provider"),
+    preferredModel: localStorage.getItem("shuvi.web.preferredModel"),
+    workload: localStorage.getItem("shuvi.web.workload"),
+    routingPreset: localStorage.getItem("shuvi.web.routingPreset"),
+    taskDrafts: readDraftTasks(),
+    activity: readWebActivity()
+  };
+
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = "shuvi-planning-log-" + new Date().toISOString().slice(0, 10) + ".json";
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+  recordWebActivity("Export", "Exported browser planning log");
 }
 
 function renderNavigation(): void {
@@ -232,6 +319,7 @@ function setProviderPreference(name: string): void {
   renderProviders();
   restoreRoutingPreference();
   renderDashboardPlanningQueue();
+  recordWebActivity("Model", "Selected " + provider.name + " as planning provider");
   showToast(provider.name + " selected for dashboard planning.");
 }
 
@@ -283,6 +371,7 @@ function openModuleDrawer(module: FeatureModule): void {
       ? module.name + " is still being developed. You can prepare a task draft now and connect it when the module is integrated."
       : "Prepare the task here, then connect the local Shuvi runtime before " + module.name + " can execute it.";
 
+  recordWebActivity("Module", "Opened " + module.name + " planning details");
   moduleDrawer.classList.add("open");
   moduleDrawerBackdrop.classList.add("show");
   moduleDrawer.setAttribute("aria-hidden", "false");
@@ -466,7 +555,8 @@ function handleAction(action: string): void {
   }
 
   if (action === "export-log") {
-    showToast("There is no synced activity to export yet.");
+    exportPlanningLog();
+    showToast("Browser planning log exported.");
   }
 }
 
@@ -527,6 +617,7 @@ function renderDraftTasks(): void {
     remove.addEventListener("click", () => {
       saveDraftTasks(readDraftTasks().filter((item) => item.id !== task.id));
       renderDraftTasks();
+      recordWebActivity("Task", "Removed task draft: " + task.title);
       showToast("Task draft removed.");
     });
 
@@ -560,6 +651,7 @@ function addDraftTask(title: string, type: string, priority = "Normal"): void {
   });
   saveDraftTasks(tasks);
   renderDraftTasks();
+  recordWebActivity("Task", "Created " + priority + " priority draft: " + title);
 }
 
 function renderDashboardPlanningQueue(): void {
@@ -645,6 +737,7 @@ function renderRoutingPresets(): void {
       restoreRoutingPreference();
       renderRoutingPresets();
       renderDashboardPlanningQueue();
+      recordWebActivity("Routing", "Selected " + preset.name + " routing preset");
       showToast(preset.name + " routing preset selected.");
     });
 
@@ -682,6 +775,7 @@ function saveRoutingPreference(): void {
   renderRoutingPresets();
   restoreRoutingPreference();
   renderDashboardPlanningQueue();
+  recordWebActivity("Routing", "Saved " + workload + " routing preference" + (model ? " with " + model : ""));
   showToast("Model routing preference saved for planning.");
 }
 
@@ -808,6 +902,12 @@ function bindInteractions(): void {
 
   byId<HTMLButtonElement>("saveRoutingPreference").addEventListener("click", saveRoutingPreference);
 
+  byId<HTMLButtonElement>("clearPlanningActivity").addEventListener("click", () => {
+    localStorage.removeItem("shuvi.web.activity");
+    renderWebActivity();
+    showToast("Browser planning activity cleared.");
+  });
+
   byId<HTMLButtonElement>("saveBridgeSettings").addEventListener("click", () => {
     const endpoint = byId<HTMLInputElement>("bridgeEndpoint").value.trim();
 
@@ -817,6 +917,7 @@ function bindInteractions(): void {
     }
 
     localStorage.setItem("shuvi.web.bridgeEndpoint", endpoint);
+    recordWebActivity("Settings", "Saved localhost bridge preference");
     showToast("Web preference saved. This does not start or expose a local server.");
   });
 }
@@ -840,5 +941,6 @@ restoreRoutingPreference();
 renderRoutingPresets();
 renderDraftTasks();
 renderDashboardPlanningQueue();
+renderWebActivity();
 bindInteractions();
 setView("dashboard");
