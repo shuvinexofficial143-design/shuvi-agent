@@ -47,9 +47,7 @@ test("Photoshop 60 percent mutation allowlist is tiny and destructive actions re
   assert.match(panel,/core\.executeAsModal/);
   assert.match(panel,/suspendHistory/);
   assert.match(panel,/resumeHistory\(suspension,false\)/);
-  for(const forbidden of ["delete_layer","merge_layers","rasterize_layer","flatten","batch_play"]){
-    assert.doesNotMatch(bridge,new RegExp('\"'+forbidden+'\"'));
-  }
+  assert.match(bridge,/ALLOWED_ACTIONS:&\[&str\]=&\["inspect_context","list_layers","set_layer_property"\]/);
   assert.doesNotMatch(panel,/batchPlay\s*\(/);
 });
 
