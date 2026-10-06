@@ -84,6 +84,9 @@ mod audition_acceptance;
 mod animate;
 mod animate_checkpoint;
 mod illustrator;
+mod illustrator_bridge_queue;
+mod illustrator_bridge;
+use illustrator_bridge::{IllustratorBridgeShared,IllustratorBridgeStatus};
 mod photoshop;
 mod photoshop_checkpoint;
 mod motion_graphics;
@@ -650,6 +653,11 @@ enum ToolAction {
     IllustratorReadinessReport,
     IllustratorDetect,
     IllustratorLaunch { illustrator_exe:String },
+    IllustratorBridgeStart,
+    IllustratorBridgeStatus,
+    IllustratorBridgeStop,
+    IllustratorContext,
+    IllustratorArtboards,
     PremiereDetect,
     PremiereLaunch { project: Option<String> },
     PremiereBridgeStart,
@@ -934,6 +942,7 @@ struct ActionState {
     premiere_bridge: Arc<PremiereBridgeShared>,
     audition_bridge: Arc<AuditionBridgeShared>,
     animate_bridge: Arc<AnimateBridgeShared>,
+    illustrator_bridge: Arc<IllustratorBridgeShared>,
     photoshop_bridge: Arc<PhotoshopBridgeShared>,
     premiere_export_jobs_io: Mutex<()>,
     acceptance_probe_running: AtomicBool,
@@ -3295,6 +3304,36 @@ fn stage_tool(
                 format!("Launch exact freshly detected Adobe Illustrator executable {illustrator_exe}; no document open, script execution, or host mutation."),
                 RiskLevel::Medium)
         }
+        "illustrator_bridge_start" => (
+            ToolAction::IllustratorBridgeStart,
+            "Start Illustrator read-only bridge".into(),
+            "Start Shuvi's authenticated localhost CEP/ExtendScript bridge for Adobe Illustrator. The 40% allowlist is read-only only.".into(),
+            RiskLevel::Medium,
+        ),
+        "illustrator_bridge_status" => (
+            ToolAction::IllustratorBridgeStatus,
+            "Read Illustrator bridge status".into(),
+            "Check whether the Illustrator CEP panel is enabled and paired; no host mutation.".into(),
+            RiskLevel::Low,
+        ),
+        "illustrator_bridge_stop" => (
+            ToolAction::IllustratorBridgeStop,
+            "Stop Illustrator bridge".into(),
+            "Disable the Illustrator pairing token and clear queued read-only commands.".into(),
+            RiskLevel::Low,
+        ),
+        "illustrator_context" => (
+            ToolAction::IllustratorContext,
+            "Inspect Illustrator document context".into(),
+            "Read-only active Illustrator document and active artboard context through the paired CEP/ExtendScript bridge.".into(),
+            RiskLevel::Low,
+        ),
+        "illustrator_artboards" => (
+            ToolAction::IllustratorArtboards,
+            "Inspect Illustrator artboards".into(),
+            "Read-only bounded Illustrator artboard names and rectangles through the paired CEP/ExtendScript bridge.".into(),
+            RiskLevel::Low,
+        ),
         "animate_capability_report" => (
             ToolAction::AnimateCapabilityReport,
             "Read Animate source capability report".into(),
@@ -10232,6 +10271,37 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 stderr:String::new(),exit_code:Some(0)
             })
         }
+        ToolAction::IllustratorBridgeStart => {
+            let status=state.illustrator_bridge.start()?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&json!({
+                "enabled":status.enabled,"server_started":status.server_started,"paired":status.paired,
+                "port":status.port,"pairing_token":status.token,
+                "read_only_allowlist":["inspect_context","inspect_artboards"],
+                "source_runtime_verified":false,"production_ready":false
+            })).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::IllustratorBridgeStatus => {
+            let status=state.illustrator_bridge.status()?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&status).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::IllustratorBridgeStop => {
+            let status=state.illustrator_bridge.stop()?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&status).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::IllustratorContext => {
+            let value=state.illustrator_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let validated=illustrator::validate_context_receipt(&value)?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::IllustratorArtboards => {
+            let value=state.illustrator_bridge.request("inspect_artboards",json!({"maxArtboards":128}),Duration::from_secs(10)).await?;
+            let validated=illustrator::validate_artboard_receipt(&value)?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
         ToolAction::AnimateCapabilityReport => {
             Ok(ActionResult {
                 success:true,tool,
@@ -16717,6 +16787,27 @@ fn photoshop_bridge_stop(
 }
 
 #[tauri::command]
+fn illustrator_bridge_start(
+    state: State<'_, ActionState>,
+) -> Result<IllustratorBridgeStatus, String> {
+    state.illustrator_bridge.start()
+}
+
+#[tauri::command]
+fn illustrator_bridge_status(
+    state: State<'_, ActionState>,
+) -> Result<IllustratorBridgeStatus, String> {
+    state.illustrator_bridge.status()
+}
+
+#[tauri::command]
+fn illustrator_bridge_stop(
+    state: State<'_, ActionState>,
+) -> Result<IllustratorBridgeStatus, String> {
+    state.illustrator_bridge.stop()
+}
+
+#[tauri::command]
 fn animate_bridge_start(
     state: State<'_, ActionState>,
 ) -> Result<AnimateBridgeStatus, String> {
@@ -16925,6 +17016,9 @@ pub fn run() {
             animate_bridge_start,
             animate_bridge_status,
             animate_bridge_stop,
+            illustrator_bridge_start,
+            illustrator_bridge_status,
+            illustrator_bridge_stop,
             photoshop_bridge_start,
             photoshop_bridge_status,
             photoshop_bridge_stop,

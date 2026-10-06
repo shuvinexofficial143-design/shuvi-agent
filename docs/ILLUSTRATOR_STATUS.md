@@ -2,35 +2,46 @@
 
 ## Source milestone
 
-Current declared source milestone: **20%**
+Current declared source milestone: **40%**
 
-This milestone establishes only Shuvi's bounded Windows desktop foundation for Adobe Illustrator. It does **not** claim a working Illustrator scripting bridge, document automation, runtime acceptance, or production readiness.
+The 40% milestone adds a bounded authenticated **CEP + ExtendScript** read-only host transport on top of the 20% desktop foundation. It does not authorize Illustrator document mutation.
 
 ## Implemented source scope
 
-- bounded Windows detection under standard `Program Files/Adobe` roots,
-- support for the normal Illustrator Windows executable layout under `Support Files/Contents/Windows/Illustrator.exe`,
-- fallback detection for a directly nested `Illustrator.exe` without broad filesystem searching,
-- exact freshly detected executable validation before launch,
-- Shuvi managed-process registration after launch,
-- source capability report,
-- source readiness report.
+- bounded Windows detection and exact detected executable launch,
+- managed-process tracking,
+- authenticated localhost bridge on `127.0.0.1:17365`,
+- rotating pairing token and bounded request/result queue,
+- CEP panel targeted at Illustrator host ID `ILST`,
+- CEP `evalScript` to ExtendScript host adapter,
+- read-only active-document context,
+- document name/path/saved state where exposed,
+- bounded counters for artboards, layers, page items and selection,
+- active artboard index,
+- read-only bounded artboard inventory (maximum 256; Shuvi requests 128),
+- artboard names and rectangles,
+- observational document signature for later stale-context guards,
+- independent Rust-side receipt validation.
 
-## Planned host transport
+## Read-only allowlist
 
-Adobe Illustrator supports JavaScript/ExtendScript scripting. Adobe CEP documentation identifies Illustrator with host ID `ILST` and supports calling host ExtendScript from a CEP extension.
+- `inspect_context`
+- `inspect_artboards`
 
-Therefore the next source phase is planned as a bounded authenticated **CEP + ExtendScript** transport. This milestone does not implement or claim that bridge yet.
+No other native Illustrator action is accepted by the bridge at this milestone.
 
-## Explicitly not implemented at 20%
+## Identity boundary
 
-- CEP/ExtendScript host bridge,
-- active document inspection,
-- artboard inspection,
-- layer/page-item inspection,
-- selection inspection,
-- Illustrator mutation,
-- save/export automation,
+The 40% observational document signature is not represented as a permanent Illustrator object ID. It is read-only groundwork for stronger exact identity guards in later milestones.
+
+## Explicitly not implemented at 40%
+
+- layer/page-item detail inventory,
+- selected-object detail inspection,
+- Illustrator document or object mutation,
+- save/Save As,
+- export automation,
+- arbitrary ExtendScript execution,
 - runtime acceptance.
 
 ## Runtime status
@@ -39,8 +50,8 @@ Therefore the next source phase is planned as a bounded authenticated **CEP + Ex
 
 `production_ready=false`
 
-Green source tests or CI must not change either flag. A real Windows Illustrator host acceptance run belongs to a later runtime phase.
+CI/source completion does not promote either flag. Real Windows Illustrator acceptance remains a later phase.
 
 ## Next source phase
 
-The 40% milestone should add an authenticated bounded localhost CEP/ExtendScript bridge and expose read-only active-document/artboard context before any mutation is considered.
+The 60% milestone should add bounded layer/page-item/selection inspection and stronger exact document/target identity guards while keeping mutation blocked.

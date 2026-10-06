@@ -32,7 +32,7 @@ fn inspect_adobe_dir(adobe:&Path,source:&str)->Result<Vec<Value>,String>{
             "illustrator_exe":canonical,
             "source":source,
             "launch_supported":true,
-            "host_transport":"not_implemented",
+            "host_transport":"cep_plus_extendscript",
             "future_host_transport":"bounded_cep_plus_extendscript",
             "runtime_verified":false
         }));
@@ -63,7 +63,7 @@ pub fn detect_from_roots(roots:&[(PathBuf,&str)])->Result<Value,String>{
         "candidate_count":candidates.len(),
         "detection_scope":"bounded_windows_program_files_adobe",
         "launch_supported":!candidates.is_empty(),
-        "host_transport":"not_implemented",
+        "host_transport":"cep_plus_extendscript",
         "future_host_transport":"bounded_cep_plus_extendscript",
         "source_runtime_verified":false,
         "production_ready":false
@@ -79,7 +79,7 @@ pub fn detect_installs()->Result<Value,String>{
         return Ok(json!({
             "schema_version":1,"candidates":[],"candidate_count":0,
             "detection_scope":"bounded_windows_program_files_adobe",
-            "launch_supported":false,"host_transport":"not_implemented",
+            "launch_supported":false,"host_transport":"cep_plus_extendscript",
             "future_host_transport":"bounded_cep_plus_extendscript",
             "source_runtime_verified":false,"production_ready":false,
             "reason":"Windows Program Files environment variables are unavailable."
@@ -93,7 +93,7 @@ pub fn detect_installs()->Result<Value,String>{
     Ok(json!({
         "schema_version":1,"candidates":[],"candidate_count":0,
         "detection_scope":"windows_only",
-        "launch_supported":false,"host_transport":"not_implemented",
+        "launch_supported":false,"host_transport":"cep_plus_extendscript",
         "future_host_transport":"bounded_cep_plus_extendscript",
         "source_runtime_verified":false,"production_ready":false,
         "reason":"Adobe Illustrator desktop detection is Windows-targeted in Shuvi."
@@ -129,24 +129,24 @@ pub fn capability_report()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_illustrator",
-        "source_milestone_percent":20,
+        "source_milestone_percent":40,
         "source_scope_complete":false,
         "implemented":{
             "bounded_windows_detection":true,
             "exact_detected_executable_launch":true,
             "managed_process_tracking":true,
             "capability_report":true,
-            "readiness_report":true
+            "readiness_report":true,
+            "authenticated_cep_extendscript_bridge":true,
+            "document_inspection":true,
+            "artboard_inspection":true
         },
         "planned_transport":{
             "kind":"cep_plus_extendscript",
             "illustrator_cep_host_id":"ILST",
-            "implemented":false
+            "implemented":true
         },
         "not_implemented":{
-            "host_bridge":true,
-            "document_inspection":true,
-            "artboard_inspection":true,
             "layer_pageitem_inspection":true,
             "selection_inspection":true,
             "document_mutation":true,
@@ -162,19 +162,109 @@ pub fn readiness_report()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_illustrator",
-        "source_milestone_percent":20,
-        "source_coding_status":"desktop_foundation_complete",
+        "source_milestone_percent":40,
+        "source_coding_status":"read_only_bridge_complete",
         "desktop_detection":true,
         "exact_detected_launch":true,
-        "host_transport":"not_implemented",
+        "host_transport":"cep_plus_extendscript",
         "planned_host_transport":"bounded_cep_plus_extendscript",
         "planned_cep_host_id":"ILST",
         "host_ready_verified":false,
         "document_automation_ready":false,
         "source_runtime_verified":false,
         "production_ready":false,
-        "next_source_phase":"implement an authenticated bounded CEP/ExtendScript bridge with read-only document/artboard context before any Illustrator mutation"
+        "next_source_phase":"add bounded layer/page-item/selection inspection and stronger document identity guards before any mutation"
     })
+}
+
+
+fn bounded_text(value:Option<&str>,max:usize)->bool{
+    value.is_some_and(|text|text.len()<=max&&!text.chars().any(char::is_control))
+}
+
+pub fn validate_context_receipt(value:&Value)->Result<Value,String>{
+    if value.get("readOnly").and_then(Value::as_bool)!=Some(true){
+        return Err("Illustrator context receipt must explicitly be readOnly=true.".into());
+    }
+    let has_document=value.get("hasDocument").and_then(Value::as_bool)
+        .ok_or("Illustrator context hasDocument is required.")?;
+    let signature=value.get("documentSignature").and_then(Value::as_str)
+        .filter(|v|!v.is_empty()&&v.len()<=2000&&!v.chars().any(char::is_control))
+        .ok_or("Illustrator document signature is missing or invalid.")?;
+    if !has_document{
+        if signature!="no_document"{return Err("Closed Illustrator context must use no_document signature.".into());}
+        return Ok(value.clone());
+    }
+    if !bounded_text(value.get("documentName").and_then(Value::as_str),512){
+        return Err("Illustrator documentName is missing or oversized.".into());
+    }
+    if let Some(path)=value.get("documentPath").and_then(Value::as_str){
+        if path.is_empty()||path.len()>MAX_PATH_BYTES||path.chars().any(char::is_control){
+            return Err("Illustrator documentPath is invalid or oversized.".into());
+        }
+    }
+    let artboard_count=value.get("artboardCount").and_then(Value::as_u64)
+        .filter(|v|*v<=100_000).ok_or("Illustrator artboardCount is invalid.")?;
+    let active=value.get("activeArtboardIndex").and_then(Value::as_i64)
+        .filter(|v|*v>=0).ok_or("Illustrator activeArtboardIndex is invalid.")?;
+    if artboard_count>0 && active as u64>=artboard_count{
+        return Err("Illustrator active artboard is outside the artboard inventory.".into());
+    }
+    for key in ["layerCount","pageItemCount","selectionCount"]{
+        value.get(key).and_then(Value::as_u64)
+            .filter(|v|*v<=10_000_000).ok_or_else(||format!("Illustrator {key} is invalid."))?;
+    }
+    Ok(json!({
+        "validated":true,
+        "readOnly":true,
+        "hasDocument":true,
+        "hostVersion":value.get("hostVersion"),
+        "documentName":value.get("documentName"),
+        "documentPath":value.get("documentPath").cloned().unwrap_or(Value::Null),
+        "saved":value.get("saved"),
+        "artboardCount":artboard_count,
+        "activeArtboardIndex":active,
+        "layerCount":value.get("layerCount"),
+        "pageItemCount":value.get("pageItemCount"),
+        "selectionCount":value.get("selectionCount"),
+        "documentSignature":signature,
+        "documentSignatureScope":value.get("documentSignatureScope"),
+        "runtimeVerified":false
+    }))
+}
+
+pub fn validate_artboard_receipt(value:&Value)->Result<Value,String>{
+    if value.get("readOnly").and_then(Value::as_bool)!=Some(true){
+        return Err("Illustrator artboard receipt must explicitly be readOnly=true.".into());
+    }
+    let signature=value.get("documentSignature").and_then(Value::as_str)
+        .filter(|v|!v.is_empty()&&v.len()<=2000&&!v.chars().any(char::is_control))
+        .ok_or("Illustrator artboard document signature is missing or invalid.")?;
+    let artboards=value.get("artboards").and_then(Value::as_array)
+        .ok_or("Illustrator artboards are required.")?;
+    if artboards.len()>256{return Err("Illustrator artboard receipt exceeds 256 entries.".into());}
+    for row in artboards{
+        row.get("index").and_then(Value::as_u64)
+            .filter(|v|*v<=100_000).ok_or("Illustrator artboard index is invalid.")?;
+        if !bounded_text(row.get("name").and_then(Value::as_str),512){
+            return Err("Illustrator artboard name is missing or oversized.".into());
+        }
+        let rect=row.get("rect").and_then(Value::as_array).ok_or("Illustrator artboard rect is missing.")?;
+        if rect.len()!=4||rect.iter().any(|v|v.as_f64().is_none_or(|n|!n.is_finite()||n.abs()>1.0e9)){
+            return Err("Illustrator artboard rect is invalid.".into());
+        }
+    }
+    Ok(json!({
+        "validated":true,
+        "readOnly":true,
+        "documentSignature":signature,
+        "sourceArtboardCount":value.get("sourceArtboardCount"),
+        "returnedArtboardCount":artboards.len(),
+        "activeArtboardIndex":value.get("activeArtboardIndex"),
+        "truncated":value.get("truncated"),
+        "artboards":artboards,
+        "runtimeVerified":false
+    }))
 }
 
 #[cfg(test)]
@@ -224,13 +314,13 @@ mod tests{
     #[test]
     fn reports_never_promote_unimplemented_host_or_runtime(){
         let capability=capability_report();
-        assert_eq!(capability["source_milestone_percent"],20);
+        assert_eq!(capability["source_milestone_percent"],40);
         assert_eq!(capability["planned_transport"]["illustrator_cep_host_id"],"ILST");
-        assert_eq!(capability["planned_transport"]["implemented"],false);
+        assert_eq!(capability["planned_transport"]["implemented"],true);
         assert_eq!(capability["source_runtime_verified"],false);
         assert_eq!(capability["production_ready"],false);
         let readiness=readiness_report();
-        assert_eq!(readiness["host_transport"],"not_implemented");
-        assert_eq!(readiness["document_automation_ready"],false);
+        assert_eq!(readiness["host_transport"],"cep_plus_extendscript");
+        assert_eq!(readiness["document_automation_ready"],"read_only_only");
     }
 }
