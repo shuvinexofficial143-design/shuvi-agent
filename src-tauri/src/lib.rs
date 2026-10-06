@@ -11696,7 +11696,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                         (json!({
                             "objective":review.prompt,
                             "sample_times":review.seconds,
-                            "reference":review.reference.unwrap_or_default(),
+                            "reference":review.reference.clone().unwrap_or_default(),
                             "max_iterations":review.iteration_limit()
                         }),
                         "Start the bounded iterative edit-review-correction session. Every correction still requires its own typed approval and the edit job advances only after acceptable completed review evidence.".to_string())
