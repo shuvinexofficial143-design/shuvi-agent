@@ -346,6 +346,46 @@ pub fn next_actionable_issue(session: &Session) -> Result<Option<Issue>, String>
     Ok(issues.into_iter().next())
 }
 
+pub fn completion_summary(session:&Session)->Result<Value,String>{
+    validate_session(session)?;
+    let final_review=session.reviews.last().ok_or("Review session has no final review evidence.")?;
+    let final_actionable=final_review.issues.iter()
+        .filter(|issue|issue.confidence>=0.65&&matches!(issue.severity.as_str(),"medium"|"high"))
+        .count();
+    let resolved=session.attempted_fixes.iter().filter(|attempt|attempt.outcome=="resolved").count();
+    let improved=session.attempted_fixes.iter().filter(|attempt|attempt.outcome=="improved").count();
+    let unchanged=session.attempted_fixes.iter().filter(|attempt|attempt.outcome=="unchanged").count();
+    let regressed=session.attempted_fixes.iter().filter(|attempt|attempt.outcome=="regressed").count();
+    let uncertain=session.attempted_fixes.iter().filter(|attempt|attempt.outcome=="uncertain").count();
+    let accepted=session.status=="completed"
+        && final_review.overall_confidence>=0.65
+        && final_actionable==0
+        && regressed==0;
+    Ok(json!({
+        "session_id":session.session_id,
+        "status":session.status,
+        "stop_reason":session.stop_reason,
+        "iterations_completed":session.reviews.len(),
+        "corrections_attempted":session.attempted_fixes.len(),
+        "outcomes":{
+            "resolved":resolved,
+            "improved":improved,
+            "unchanged":unchanged,
+            "regressed":regressed,
+            "uncertain":uncertain
+        },
+        "final_review":{
+            "overall_confidence":final_review.overall_confidence,
+            "actionable_medium_high_count":final_actionable,
+            "stop_recommended":final_review.stop_recommended
+        },
+        "accepted":accepted,
+        "source_acceptance_gate_passed":accepted,
+        "runtime_verified":false,
+        "production_ready":false
+    }))
+}
+
 pub fn save(path: &Path, session: &Session) -> Result<(), String> {
     validate_session(session)?;
     let data = serde_json::to_vec(session).map_err(|e| e.to_string())?;
@@ -493,6 +533,31 @@ mod tests {
         assert_eq!(second["retry_policy"]["grounded_non_improving_attempts"], 2);
         assert_eq!(s.status, "stagnated");
         assert_eq!(s.stop_reason.as_deref(), Some("repeated_grounded_no_gain"));
+    }
+
+    #[test] fn completion_summary_requires_clean_high_confidence_completion() {
+        let mut accepted=session();
+        accepted.add_review(review(1,vec![])).unwrap();
+        let summary=completion_summary(&accepted).unwrap();
+        assert_eq!(summary["accepted"],true);
+        assert_eq!(summary["final_review"]["actionable_medium_high_count"],0);
+        assert_eq!(summary["runtime_verified"],false);
+
+        let mut blocked=session();
+        blocked.add_review(review(1,vec![issue()])).unwrap();
+        let summary=completion_summary(&blocked).unwrap();
+        assert_eq!(summary["accepted"],false);
+    }
+
+    #[test] fn completion_summary_counts_grounded_fix_outcomes() {
+        let mut s=session();
+        s.add_review(review(1,vec![issue()])).unwrap();
+        s.record_fix("i","summary-fp","too warm").unwrap();
+        s.add_review(review(2,vec![])).unwrap();
+        let summary=completion_summary(&s).unwrap();
+        assert_eq!(summary["outcomes"]["resolved"],1);
+        assert_eq!(summary["corrections_attempted"],1);
+        assert_eq!(summary["accepted"],true);
     }
 
     #[test] fn prioritizes_grounded_actionable_issue() {

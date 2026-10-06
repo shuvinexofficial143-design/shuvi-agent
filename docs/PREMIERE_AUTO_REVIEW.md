@@ -95,3 +95,14 @@ If the next grounded review classifies that correction as `regressed`, the sessi
 - returns the verified recovery evidence without restoring or overwriting anything.
 
 Automatic restore is deliberately not implemented in this milestone. Restoring a project is a separate destructive/high-risk decision and must not be inferred from a visual regression.
+
+
+## 100% source milestone — canonical completion gate
+
+The bounded Automatic Edit → Review → Correction Loop now has one canonical final summary through `premiere_review_session_summary`.
+
+The summary reports bounded iteration count, correction count, resolved/improved/unchanged/regressed/uncertain outcomes, final review confidence, remaining medium/high actionable issue count, terminal reason, and the acceptance verdict.
+
+The source acceptance gate passes only when the session is `completed`, final review confidence is at least 0.65, no medium/high issue at confidence 0.65+ remains, and no regression exists. Professional edit jobs now reuse this same canonical gate instead of maintaining a second acceptance formula.
+
+This marks the declared source implementation of this feature complete. It does not claim live Premiere runtime verification or production readiness; those remain false until a real Windows/Premiere host acceptance run is performed.

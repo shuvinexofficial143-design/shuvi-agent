@@ -107,3 +107,17 @@ test("80 percent milestone binds approved correction checkpoints and exposes rea
   assert.match(rust, /automatic_restore/);
   assert.match(rust, /manual_decision_required/);
 });
+
+
+test("100 percent milestone exposes one canonical review completion gate", () => {
+  const review = fs.readFileSync("src-tauri/src/premiere_review.rs", "utf8");
+  const rust = fs.readFileSync("src-tauri/src/lib.rs", "utf8");
+  assert.match(review, /pub fn completion_summary/);
+  assert.match(review, /source_acceptance_gate_passed/);
+  assert.match(review, /actionable_medium_high_count/);
+  assert.match(review, /runtime_verified/);
+  assert.match(rust, /premiere_review_session_summary/);
+  assert.match(rust, /PremiereReviewSessionSummary/);
+  assert.match(rust, /completion_summary\(&review\)/);
+  assert.match(rust, /review_summary/);
+});

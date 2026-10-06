@@ -246,6 +246,7 @@ Available tools:
 - premiere_review_frames: {"seconds":[0,5,10],"prompt":"compare continuity, color, framing and edit quality across these Premiere frames"}
 - premiere_review_session_start: {"objective":"clean talking-head edit","sample_times":[0,5],"reference":"optional brief","max_iterations":4}
 - premiere_review_session_status: {"session_id":"exact returned ID"}
+- premiere_review_session_summary: {"session_id":"exact returned ID"}
 - premiere_review_session_next: {"session_id":"exact returned ID"}
 - premiere_review_session_continue: {"session_id":"exact returned ID"}
 - premiere_review_session_recovery: {"session_id":"stagnated review session ID"}
@@ -632,6 +633,7 @@ enum ToolAction {
     PremiereReviewFrames { seconds: Vec<f64>, prompt: String, provider: ProviderContext },
     PremiereReviewSessionStart { objective: String, reference: String, sample_times: Vec<f64>, max_iterations: u8 },
     PremiereReviewSessionStatus { session_id: String },
+    PremiereReviewSessionSummary { session_id:String },
     PremiereReviewSessionNext { session_id: String, provider: ProviderContext },
     PremiereReviewSessionContinue { session_id: String },
     PremiereReviewSessionRecovery { session_id:String },
@@ -1298,6 +1300,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_review_frames"
         | "premiere_review_session_start"
         | "premiere_review_session_status"
+        | "premiere_review_session_summary"
         | "premiere_review_session_next"
         | "premiere_review_session_continue"
         | "premiere_review_session_recovery"
@@ -4128,11 +4131,12 @@ fn stage_tool(
             (ToolAction::PremiereReviewSessionStart {objective,reference,sample_times,max_iterations},
                 "Start bounded Premiere review session".into(), "Inspect active project and sequence before storing bounded session.".into(), RiskLevel::Low)
         }
-        "premiere_review_session_status" | "premiere_review_session_cancel" | "premiere_review_session_next" | "premiere_review_session_continue" | "premiere_review_session_recovery" => {
+        "premiere_review_session_status" | "premiere_review_session_summary" | "premiere_review_session_cancel" | "premiere_review_session_next" | "premiere_review_session_continue" | "premiere_review_session_recovery" => {
             let session_id = arg_string(&proposal.arguments,"session_id")?;
             Uuid::parse_str(&session_id).map_err(|_| "Invalid Premiere review session ID.")?;
             let (action, risk) = match proposal.tool.as_str() {
                 "premiere_review_session_status" => (ToolAction::PremiereReviewSessionStatus {session_id},RiskLevel::Low),
+                "premiere_review_session_summary" => (ToolAction::PremiereReviewSessionSummary {session_id},RiskLevel::Low),
                 "premiere_review_session_cancel" => (ToolAction::PremiereReviewSessionCancel {session_id},RiskLevel::Low),
                 "premiere_review_session_continue" => (ToolAction::PremiereReviewSessionContinue {session_id},RiskLevel::Low),
                 "premiere_review_session_recovery" => (ToolAction::PremiereReviewSessionRecovery {session_id},RiskLevel::Low),
@@ -11898,11 +11902,9 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 || review.status!="completed" {
                 return Err("Review session is incomplete or does not exactly match this edit job review phase.".into());
             }
-            let last=review.reviews.last().ok_or("Completed review session has no review evidence.")?;
-            let acceptable=last.overall_confidence>=0.65
-                && !last.issues.iter().any(|issue|issue.confidence>=0.65&&matches!(issue.severity.as_str(),"medium"|"high"));
-            if !acceptable {
-                return Err("Review session completed without acceptable high-confidence correction evidence; start a fresh bounded review session before advancing.".into());
+            let review_summary=premiere_review::completion_summary(&review)?;
+            if review_summary.get("accepted").and_then(Value::as_bool)!=Some(true) {
+                return Err("Review session failed the canonical completion gate; start a fresh bounded review session before advancing.".into());
             }
             job.record_review(&phase_id,&review_session_id,now_ms())?;
             premiere_edit_job::save(&path,&job)?;
@@ -11913,6 +11915,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "phase_id":phase_id,
                     "review_session_id":review_session_id,
                     "acceptable":true,
+                    "review_summary":review_summary,
                     "job_status":job.status,
                     "next_tool":if job.status=="running"{Some("premiere_edit_job_next")}else{None},
                     "production_ready":false
@@ -12032,7 +12035,12 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let session=premiere_review::load(&premiere_review_path(app,&session_id)?)?;
             Ok(ActionResult {success:true,tool,stdout:serde_json::to_string(&session).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
         }
-        ToolAction::PremiereReviewSessionCancel {session_id} => {
+        ToolAction::PremiereReviewSessionSummary {session_id} => {
+            let session=premiere_review::load(&premiere_review_path(app,&session_id)?)?;
+            let summary=premiere_review::completion_summary(&session)?;
+            Ok(ActionResult {success:true,tool,stdout:summary.to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+                ToolAction::PremiereReviewSessionCancel {session_id} => {
             let path=premiere_review_path(app,&session_id)?;
             let mut session=premiere_review::load(&path)?;
             session.cancel();
@@ -12135,6 +12143,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "terminal":matches!(state.as_str(),"completed"|"stagnated"|"cancelled"|"failed"),
                     "recovery_tool":if state=="stagnated"&&session.stop_reason.as_deref()==Some("correction_regressed")
                         {Some("premiere_review_session_recovery")}else{None},
+                    "summary_tool":if matches!(state.as_str(),"completed"|"stagnated"|"cancelled"|"failed")
+                        {Some("premiere_review_session_summary")}else{None},
                     "next_proposal":Value::Null,
                     "automatic_mutation":false
                 }).to_string(),
@@ -12194,7 +12204,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let sequence=context.pointer("/activeSequence/guid").and_then(Value::as_str).unwrap_or("");
             if let Err(error)=session.check_identity(project,sequence) { premiere_review::save(&path,&session)?; return Err(error); }
             let approved_receipt=read_action_audit_receipt(app,&approved_action_id)?
-                .filter(|entry|entry.timestamp_ms>=session.created_at_ms&&entry.success&&entry.event=="executed"
+                .filter(|entry| entry.timestamp_ms >= session.created_at_ms && entry.success && entry.event=="executed"
                     && matches!(entry.tool.as_str(),"premiere_apply_video_recipe"|"premiere_apply_audio_recipe"|"premiere_apply_saved_recipe"))
                 .ok_or("No successful approved typed Premiere recipe edit from this review session with this action ID in audit evidence.")?;
             let checkpoint=premiere_checkpoint_from_audit(&approved_receipt)
