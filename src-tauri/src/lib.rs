@@ -3731,7 +3731,7 @@ fn stage_tool(
             }
             (ToolAction::FrameIoOauthComplete {callback_url},
                 "Complete Frame.io Native App OAuth PKCE".into(),
-                "Validate the exact configured redirect and OAuth state, then exchange the one-time authorization code at Adobe IMS with the securely stored PKCE verifier. Access/refresh tokens are saved to Windows keyring and never returned.",
+                "Validate the exact configured redirect and OAuth state, then exchange the one-time authorization code at Adobe IMS with the securely stored PKCE verifier. Access/refresh tokens are saved to Windows keyring and never returned.".into(),
                 RiskLevel::Medium)
         }
         "frame_io_oauth_refresh" => (
