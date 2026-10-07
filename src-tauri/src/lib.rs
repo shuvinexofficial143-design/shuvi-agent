@@ -2349,7 +2349,9 @@ mod openai_response_parser_tests {
             }]
         });
 
-        let content = openai_compatible_native_tool_call(&body).expect("legacy native call");
+        let content = openai_compatible_native_tool_call(&body)
+            .expect("legacy parser")
+            .expect("legacy native call");
         let proposal = parse_tool_proposal(&content).expect("legacy proposal");
         assert_eq!(proposal.tool, "premiere_context");
         assert_eq!(proposal.arguments, json!({}));
@@ -2367,7 +2369,9 @@ mod openai_response_parser_tests {
             }]
         });
 
-        let content = openai_compatible_native_tool_call(&body).expect("responses native call");
+        let content = openai_compatible_native_tool_call(&body)
+            .expect("responses parser")
+            .expect("responses native call");
         let proposal = parse_tool_proposal(&content).expect("responses proposal");
         assert_eq!(proposal.tool, "ui_find");
         assert_eq!(
@@ -2389,10 +2393,42 @@ mod openai_response_parser_tests {
         let body = json!({"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{
             "type":"function","function":{"name":"premiere_detect","arguments":"{}"}
         }]}}]});
-        let content = openai_compatible_native_tool_call(&body).expect("native tool call");
+        let content = openai_compatible_native_tool_call(&body)
+            .expect("native parser")
+            .expect("native tool call");
         let proposal = parse_tool_proposal(&content).expect("proposal");
         assert_eq!(proposal.tool, "premiere_detect");
         assert_eq!(proposal.arguments, json!({}));
+    }
+
+    #[test]
+    fn rejects_multiple_native_tool_calls_instead_of_silently_taking_first() {
+        let body = json!({"choices":[{"message":{"role":"assistant","content":"ignored","tool_calls":[
+            {"type":"function","function":{"name":"ui_find","arguments":"{}"}},
+            {"type":"function","function":{"name":"ui_click","arguments":"{}"}}
+        ]}}]});
+        let error = openai_compatible_assistant_or_tool(&body).expect_err("multiple calls must fail");
+        assert!(error.contains("exactly one approved tool call"));
+    }
+
+    #[test]
+    fn native_tool_call_takes_precedence_over_mixed_assistant_text() {
+        let body = json!({"choices":[{"message":{
+            "role":"assistant",
+            "content":"I will click it now.",
+            "tool_calls":[{"type":"function","function":{"name":"premiere_detect","arguments":"{}"}}]
+        }}]});
+        let content = openai_compatible_assistant_or_tool(&body).expect("native precedence");
+        let proposal = parse_tool_proposal(&content).expect("proposal");
+        assert_eq!(proposal.tool, "premiere_detect");
+    }
+
+    #[test]
+    fn rejects_non_object_native_arguments() {
+        let body = json!({"choices":[{"message":{"tool_calls":[{
+            "type":"function","function":{"name":"premiere_detect","arguments":"[]"}
+        }]}}]});
+        assert!(openai_compatible_native_tool_call(&body).is_err());
     }
 }
 
@@ -2415,10 +2451,21 @@ mod tagged_tool_call_parser_tests {
     }
 
     #[test]
-    fn parses_tagged_batch_by_taking_first_call() {
+    fn rejects_tagged_batch_instead_of_silently_taking_first_call() {
         let text = r#"<|tool_call_start|>[ui_find(name='New Project'), ui_click(name='New Project', window='Adobe Premiere')]<|tool_call_end|>"#;
-        let proposal = parse_tool_proposal(text).expect("batch");
-        assert_eq!(proposal.tool, "ui_find");
+        assert!(parse_tool_proposal(text).is_none());
+    }
+
+    #[test]
+    fn rejects_duplicate_tagged_argument_names() {
+        let text = r#"<tool_call>ui_find(name='First',name='Second')</tool_call>"#;
+        assert!(parse_tool_proposal(text).is_none());
+    }
+
+    #[test]
+    fn rejects_json_proposal_arrays_with_more_than_one_call() {
+        let text = r#"[{"tool":"premiere_detect","arguments":{}},{"tool":"premiere_context","arguments":{}}]"#;
+        assert!(parse_tool_proposal(text).is_none());
     }
 }
 
