@@ -7679,14 +7679,36 @@ function connectBridge() {
   setStatus("Connecting…", false);
 }
 
-function disconnectBridge() {
+async function disconnectBridge() {
+  const sessionToken = bridgeToken;
+  let revokeError = null;
+
+  if (sessionToken) {
+    try {
+      await bridgeFetch(
+        "/disconnect",
+        { method: "POST", body: "{}" },
+        2500,
+        sessionToken
+      );
+    } catch (error) {
+      revokeError = String(error);
+    }
+  }
+
   bridgeToken = "";
   clearSavedBridgeToken();
   if (pollTimer) {
     clearInterval(pollTimer);
     pollTimer = null;
   }
-  setStatus("Disconnected", false);
+
+  if (revokeError) {
+    setStatus("Disconnected locally; Shuvi revoke failed", false);
+    show("Local pairing was cleared, but Shuvi could not confirm credential revocation: " + revokeError);
+  } else {
+    setStatus("Disconnected and pairing revoked", false);
+  }
 }
 
 entrypoints.setup({
