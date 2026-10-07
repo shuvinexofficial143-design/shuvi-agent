@@ -2,7 +2,7 @@
   "manifestVersion": 5,
   "id": "com.shuvi.premiere.bridge",
   "name": "Shuvi Premiere Bridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "main": "index.html",
   "host": {
     "app": "premierepro",
@@ -31,9 +31,7 @@
   ],
   "requiredPermissions": {
     "network": {
-      "domains": [
-        "http://127.0.0.1:17361"
-      ]
+      "domains": "all"
     }
   }
 }
