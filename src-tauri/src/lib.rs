@@ -2831,15 +2831,31 @@ async fn openai_compatible_chat(
     if input.provider == "xkiro" {
         payload["tools"] = json!([xkiro_shuvi_tool_definition()]);
         payload["tool_choice"] = Value::String("auto".into());
+        payload["stream"] = Value::Bool(true);
+        payload["stream_options"] = json!({"include_usage": true});
     }
 
-    let mut request = http_client()?.post(&url).json(&payload);
+    let client = if input.provider == "xkiro" {
+        streaming_http_client()?
+    } else {
+        http_client()?
+    };
+    let mut request = client.post(&url).json(&payload);
+    if input.provider == "xkiro" {
+        request = request.header("Accept", "text/event-stream");
+    }
 
     if let Some(key) = api_key.filter(|key| !key.is_empty()) {
         request = request.bearer_auth(key);
     }
 
     let response = send_with_retry(request, "Provider request").await?;
+
+    if input.provider == "xkiro" {
+        let (assistant_text, usage) = bounded_xkiro_stream(response).await?;
+        let content = bounded_provider_text(&assistant_text, "xKiro assistant")?;
+        return Ok(chat_response(content, input.provider, input.model, usage));
+    }
 
     let (status, body) = bounded_provider_json(response, "Provider").await?;
 
