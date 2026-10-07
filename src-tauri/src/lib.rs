@@ -84,6 +84,7 @@ mod audition_acceptance;
 mod animate;
 mod animate_checkpoint;
 mod character_animator;
+mod substance_3d;
 mod illustrator;
 mod illustrator_checkpoint;
 mod illustrator_bridge_queue;
@@ -413,6 +414,10 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - character_animator_execute_application_shortcut: {"request":{"control":{"control_kind":"application_shortcut","command":"record_take_work_area|export_png_wav|export_frame","key":null,"midi_note":null,"acknowledge_project_mapping":false},"character_animator_exe":"exact detected Character Animator.exe","expected_pid":1234,"explicit_user_approval":true}} — high-risk bounded delivery for only the three documented shortcuts; requires exact managed-process identity and immediate foreground PID/path recheck; effect success is not inferred from input dispatch
 - character_animator_plan_interchange: {"request":{"route":"dynamic_link_after_effects|dynamic_link_premiere|media_encoder_export","project_path":"absolute .chproj path","scene_name":"exact scene name"}} — planning only; no import/export execution
 - character_animator_acceptance_summary: {} — canonical 100% bounded source-scope completion summary; runtime verification remains false until a real Windows Character Animator acceptance run
+- substance_3d_capability_report: {}
+- substance_3d_readiness_report: {}
+- substance_3d_detect: {}
+- substance_3d_launch: {"app_id":"painter|designer|sampler|stager|modeler","substance_exe":"exact absolute executable path returned by substance_3d_detect"} — launches only a freshly detected exact Substance 3D candidate; no project open, host scripting or content mutation
 - photoshop_capability_report: {}
 - photoshop_readiness_report: {}
 - photoshop_detect: {}
@@ -690,6 +695,10 @@ enum ToolAction {
     CharacterAnimatorExecuteApplicationShortcut { request:character_animator::RuntimeControlPreflightRequest },
     CharacterAnimatorPlanInterchange { request:character_animator::InterchangePlanRequest },
     CharacterAnimatorAcceptanceSummary,
+    Substance3DCapabilityReport,
+    Substance3DReadinessReport,
+    Substance3DDetect,
+    Substance3DLaunch { app_id:String, substance_exe:String },
     PremiereDetect,
     PremiereLaunch { project: Option<String> },
     PremiereBridgeStart,
@@ -1565,6 +1574,10 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "character_animator_execute_application_shortcut"
         | "character_animator_plan_interchange"
         | "character_animator_acceptance_summary"
+        | "substance_3d_capability_report"
+        | "substance_3d_readiness_report"
+        | "substance_3d_detect"
+        | "substance_3d_launch"
         | "photoshop_capability_report"
         | "photoshop_readiness_report"
         | "photoshop_detect"
@@ -3407,6 +3420,33 @@ fn stage_tool(
             "Report the declared 100% bounded Character Animator source scope, safety gates, explicit unclaimed capabilities, runtime-acceptance gap and production-readiness boundary.".into(),
             RiskLevel::Low,
         ),
+        "substance_3d_capability_report" => (
+            ToolAction::Substance3DCapabilityReport,
+            "Read Substance 3D source capability report".into(),
+            "Source milestone declaration only; does not claim project/material/model automation or a live Substance host transport.".into(),
+            RiskLevel::Low,
+        ),
+        "substance_3d_readiness_report" => (
+            ToolAction::Substance3DReadinessReport,
+            "Read Substance 3D readiness report".into(),
+            "Report the current bounded desktop foundation and explicit host/runtime gaps.".into(),
+            RiskLevel::Low,
+        ),
+        "substance_3d_detect" => (
+            ToolAction::Substance3DDetect,
+            "Detect installed Adobe Substance 3D apps".into(),
+            "Read-only bounded Program Files/Adobe inspection for recognized Painter, Designer, Sampler, Stager and Modeler installs; does not launch an app.".into(),
+            RiskLevel::Low,
+        ),
+        "substance_3d_launch" => {
+            let app_id=arg_string(&proposal.arguments,"app_id")?;
+            let substance_exe=arg_string(&proposal.arguments,"substance_exe")?;
+            substance_3d::validate_requested_executable(&app_id,&substance_exe)?;
+            (ToolAction::Substance3DLaunch {app_id:app_id.clone(),substance_exe:substance_exe.clone()},
+                "Launch detected Adobe Substance 3D app".into(),
+                format!("Launch exact freshly detected Substance 3D app_id={app_id} executable {substance_exe}; no project open, host scripting, render, import/export or content mutation."),
+                RiskLevel::Medium)
+        }
         "illustrator_capability_report" => (
             ToolAction::IllustratorCapabilityReport,
             "Read Illustrator source capability report".into(),
@@ -10539,6 +10579,54 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             Ok(ActionResult {
                 success:true,tool,
                 stdout:serde_json::to_string_pretty(&character_animator::completion_summary()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DCapabilityReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&substance_3d::capability_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DReadinessReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&substance_3d::readiness_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DDetect => {
+            let value=substance_3d::detect_installs()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DLaunch {app_id,substance_exe} => {
+            let detection=substance_3d::detect_installs()?;
+            let exact=substance_3d::exact_detected_executable(&detection,&app_id,&substance_exe)?;
+            let mut child=Command::new(&exact).spawn()
+                .map_err(|e|format!("Could not launch detected Adobe Substance 3D {app_id}: {e}"))?;
+            let pid=child.id();
+            if let Err(error)=register_managed_process(state,pid){
+                let _=child.kill();
+                let _=child.wait();
+                return Err(format!("Adobe Substance 3D was stopped before Shuvi could register the managed process: {error}"));
+            }
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "app_id":app_id,
+                    "substance_exe":exact,
+                    "pid":pid,
+                    "launch_dispatched":true,
+                    "host_ready_verified":false,
+                    "host_transport":"not_implemented",
+                    "source_runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)
             })
         }
