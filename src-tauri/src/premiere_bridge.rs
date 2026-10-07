@@ -271,6 +271,22 @@ impl PremiereBridgeShared {
     pub fn start_persistent(self: &Arc<Self>) -> Result<PremiereBridgeStatus, String> {
         self.ensure_server()?;
 
+        let already_enabled = self
+            .enabled
+            .lock()
+            .map(|enabled| *enabled)
+            .unwrap_or(false);
+        let has_live_token = self
+            .token
+            .lock()
+            .ok()
+            .and_then(|token| token.clone())
+            .is_some_and(|token| Self::valid_persisted_token(&token));
+
+        if already_enabled && has_live_token && self.token_is_current() {
+            return self.status();
+        }
+
         let token = match Self::load_persisted_token() {
             Some(token) => token,
             None => {
