@@ -110,7 +110,7 @@ pub const ALLOWED_ACTIONS: &[&str] = &[
 pub const PREMIERE_BRIDGE_PORT: u16 = 17_361;
 const PREMIERE_PAIRING_SERVICE: &str = "premiere:pairing-token";
 const PREMIERE_PAIRING_USER: &str = "Shuvi";
-const PREMIERE_PAIRING_TTL_MS: u64 = 8 * 60 * 60 * 1000;
+const PREMIERE_SESSION_TTL_MS: u64 = 8 * 60 * 60 * 1000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PremiereBridgeCommand {
@@ -151,8 +151,9 @@ struct PersistedPairing {
 pub struct PremiereBridgeShared {
     server_started: Mutex<bool>,
     enabled: Mutex<bool>,
-    token: Mutex<Option<String>>,
-    token_created_ms: Mutex<Option<u64>>,
+    pairing_secret: Mutex<Option<String>>,
+    session_token: Mutex<Option<String>>,
+    session_created_ms: Mutex<Option<u64>>,
     active_clients: AtomicUsize,
     work: Mutex<CommandQueue>,
     last_seen_ms: Mutex<Option<u64>>,
