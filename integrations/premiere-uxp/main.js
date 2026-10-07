@@ -479,12 +479,22 @@ async function bridgeRequest(path, options = {}, timeoutMs = 2500, token = "") {
 
 async function refreshBridgeSession() {
   if (!bridgeToken) throw new Error("Paste the pairing token from Shuvi.");
-  const session = await bridgeRequest(
-    "/session",
-    { method: "POST", body: "{}" },
-    2500,
-    bridgeToken
-  );
+  let session;
+  try {
+    session = await bridgeRequest(
+      "/session",
+      { method: "POST", body: "{}" },
+      2500,
+      bridgeToken
+    );
+  } catch (error) {
+    if (String(error).includes("HTTP 401")) {
+      bridgeToken = "";
+      bridgeSessionToken = "";
+      clearSavedBridgeToken();
+    }
+    throw error;
+  }
   const token = typeof session?.token === "string" ? session.token.trim() : "";
   if (!/^[0-9a-fA-F]{32}$/.test(token)) {
     throw new Error("Shuvi returned an invalid Premiere session token.");
