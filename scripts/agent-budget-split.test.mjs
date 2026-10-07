@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
+import * as graph from "../src/task-graph.mjs";
 
 const source = readFileSync(new URL("../src/agent-orchestrator.ts", import.meta.url), "utf8");
 const executable = stripTypeScriptTypes(source).replace(
@@ -19,6 +20,15 @@ function recordSuccess(state, proposal) {
   assert.equal(decision.allowed, true, decision.reason);
   return agent.recordToolOutcome(state, proposal, "success", result(proposal.tool));
 }
+
+test("split budgets keep graph, evidence and total ceilings independently bounded", () => {
+  assert.equal(agent.MAX_AGENT_ACTION_STEPS, 12);
+  assert.equal(agent.MAX_AGENT_INSPECTION_STEPS, 12);
+  assert.equal(agent.MAX_AGENT_STEPS, 24);
+  assert.equal(graph.GRAPH_LIMIT, 8);
+  assert.equal(graph.GRAPH_EVIDENCE_LIMIT, 12);
+  assert.equal(graph.ORCHESTRATION_STEP_LIMIT, 24);
+});
 
 test("inspection calls no longer consume the execution-action budget", () => {
   let state = agent.createAgentOrchestrationState();
