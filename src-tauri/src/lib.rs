@@ -10500,6 +10500,7 @@ public static class ShuviUiNative {{
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
+    [DllImport("user32.dll")] public static extern int GetSystemMetrics(int nIndex);
     [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
 }}
 "@
@@ -10560,8 +10561,24 @@ if (-not $clicked) {{
         $y = [int][Math]::Round($rect.Top + ($rect.Height / 2))
         $method = 'bounding-rectangle fallback'
     }}
-    [void][ShuviUiNative]::SetCursorPos($x, $y)
+    $virtualLeft = [ShuviUiNative]::GetSystemMetrics(76)
+    $virtualTop = [ShuviUiNative]::GetSystemMetrics(77)
+    $virtualWidth = [ShuviUiNative]::GetSystemMetrics(78)
+    $virtualHeight = [ShuviUiNative]::GetSystemMetrics(79)
+    if ($virtualWidth -le 0 -or $virtualHeight -le 0 -or
+        $x -lt $virtualLeft -or $x -ge ($virtualLeft + $virtualWidth) -or
+        $y -lt $virtualTop -or $y -ge ($virtualTop + $virtualHeight)) {{
+        throw 'Computed click point is outside the Windows virtual screen bounds.'
+    }}
+    if (-not [ShuviUiNative]::SetCursorPos($x, $y)) {{
+        throw 'Windows refused to position the cursor on the target element.'
+    }}
     Start-Sleep -Milliseconds 100
+    [uint32]$foregroundPid = 0
+    [void][ShuviUiNative]::GetWindowThreadProcessId([ShuviUiNative]::GetForegroundWindow(), [ref]$foregroundPid)
+    if ($foregroundPid -ne [uint32]$e.Current.ProcessId) {{
+        throw 'Foreground application changed before the physical click; refusing coordinate click.'
+    }}
     [ShuviUiNative]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds 50
     [ShuviUiNative]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
@@ -10835,6 +10852,15 @@ if ($foregroundPid -ne [uint32]$e.Current.ProcessId) {{
 }}
 $e.SetFocus()
 Start-Sleep -Milliseconds 120
+[uint32]$foregroundPid = 0
+[void][ShuviUiKeysNative]::GetWindowThreadProcessId([ShuviUiKeysNative]::GetForegroundWindow(), [ref]$foregroundPid)
+if ($foregroundPid -ne [uint32]$e.Current.ProcessId) {{
+    throw 'Foreground application changed after focus; refusing keyboard fallback.'
+}}
+$focused = [System.Windows.Automation.AutomationElement]::FocusedElement
+if ($null -eq $focused -or [uint32]$focused.Current.ProcessId -ne [uint32]$e.Current.ProcessId) {{
+    throw 'Keyboard focus could not be confirmed inside the target application.'
+}}
 [System.Windows.Forms.SendKeys]::SendWait('{escaped_keys}')
 'Keyboard fallback sent to element: ' + $e.Current.Name"#
             );
