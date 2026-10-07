@@ -8,7 +8,9 @@ const types=readFileSync(new URL("../src/types.ts",import.meta.url),"utf8");
 const rust=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
 
 test("agent orchestration has bounded failure and repeat circuit breakers",()=>{
-  assert.match(orchestrator,/MAX_AGENT_STEPS = 8/);
+  assert.match(orchestrator,/MAX_AGENT_ACTION_STEPS = 12/);
+  assert.match(orchestrator,/MAX_AGENT_INSPECTION_STEPS = 12/);
+  assert.match(orchestrator,/MAX_AGENT_STEPS = MAX_AGENT_ACTION_STEPS \+ MAX_AGENT_INSPECTION_STEPS/);
   assert.match(orchestrator,/MAX_CONSECUTIVE_FAILURES = 3/);
   assert.match(orchestrator,/MAX_ORCHESTRATION_BLOCKS = 2/);
   assert.match(orchestrator,/priorFailed && state\.last_proposal_fingerprint === fingerprint/);
