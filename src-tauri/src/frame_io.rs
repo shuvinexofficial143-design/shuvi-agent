@@ -15,6 +15,8 @@ const MAX_ACCESS_TOKEN_BYTES:usize=16*1024;
 const MAX_OAUTH_FIELD_BYTES:usize=4096;
 const MAX_RESOURCE_ID_BYTES:usize=512;
 const MAX_SUMMARY_ITEMS:usize=100;
+const MAX_PAGINATION_AFTER_BYTES:usize=4096;
+const MAX_COMMENT_TEXT_BYTES:usize=16*1024;
 const MAX_PENDING_AGE_SECONDS:u64=15*60;
 pub const TOKEN_REFRESH_SKEW_SECONDS:u64=60;
 
@@ -256,9 +258,52 @@ fn resource_url(segments:&[&str])->Result<Url,String>{
     Ok(url)
 }
 
+fn validate_pagination_after(value:&str)->Result<(),String>{
+    if value.is_empty()||value.len()>MAX_PAGINATION_AFTER_BYTES||value.trim()!=value||value.chars().any(char::is_control){
+        return Err("Frame.io pagination cursor is empty, oversized, padded, or contains control characters.".into());
+    }
+    Ok(())
+}
+
+fn append_pagination(mut url:Url,after:Option<&str>,page_size:Option<u32>,max_page_size:u32)->Result<Url,String>{
+    let page_size=page_size.unwrap_or(50);
+    if page_size==0||page_size>max_page_size{
+        return Err(format!("Frame.io page_size must be between 1 and {max_page_size}."));
+    }
+    {
+        let mut query=url.query_pairs_mut();
+        if let Some(after)=after{
+            validate_pagination_after(after)?;
+            query.append_pair("after",after);
+        }
+        let size=page_size.to_string();
+        query.append_pair("page_size",&size);
+    }
+    assert_api_origin(&url)?;
+    Ok(url)
+}
+
+fn pagination_after(body:&Value)->Result<Option<String>,String>{
+    let Some(next)=body.pointer("/links/next").and_then(Value::as_str) else{return Ok(None);};
+    if next.is_empty(){return Ok(None);}
+    if next.len()>8192||next.chars().any(char::is_control){
+        return Err("Frame.io pagination next link is oversized or contains control characters.".into());
+    }
+    let base=Url::parse(API_ORIGIN).map_err(|e|format!("Invalid Frame.io API origin: {e}"))?;
+    let next_url=base.join(next).map_err(|_|"Frame.io pagination next link is not a valid URL.".to_string())?;
+    assert_api_origin(&next_url)?;
+    let after=next_url.query_pairs().find(|(key,_)|key=="after").map(|(_,value)|value.into_owned());
+    if let Some(value)=after.as_deref(){validate_pagination_after(value)?;}
+    Ok(after)
+}
+
 pub fn workspaces_url(account_id:&str)->Result<Url,String>{
     validate_resource_id(account_id,"account_id")?;
     resource_url(&["v4","accounts",account_id,"workspaces"])
+}
+
+pub fn workspaces_page_url(account_id:&str,after:Option<&str>,page_size:Option<u32>)->Result<Url,String>{
+    append_pagination(workspaces_url(account_id)?,after,page_size,100)
 }
 
 pub fn projects_url(account_id:&str,workspace_id:&str)->Result<Url,String>{
@@ -267,12 +312,18 @@ pub fn projects_url(account_id:&str,workspace_id:&str)->Result<Url,String>{
     resource_url(&["v4","accounts",account_id,"workspaces",workspace_id,"projects"])
 }
 
+pub fn projects_page_url(account_id:&str,workspace_id:&str,after:Option<&str>,page_size:Option<u32>)->Result<Url,String>{
+    append_pagination(projects_url(account_id,workspace_id)?,after,page_size,100)
+}
+
 pub fn folder_children_url(account_id:&str,folder_id:&str)->Result<Url,String>{
+    folder_children_page_url(account_id,folder_id,None,Some(50))
+}
+
+pub fn folder_children_page_url(account_id:&str,folder_id:&str,after:Option<&str>,page_size:Option<u32>)->Result<Url,String>{
     validate_resource_id(account_id,"account_id")?;
     validate_resource_id(folder_id,"folder_id")?;
-    let mut url=resource_url(&["v4","accounts",account_id,"folders",folder_id,"children"])?;
-    url.query_pairs_mut().append_pair("page_size","50");
-    Ok(url)
+    append_pagination(resource_url(&["v4","accounts",account_id,"folders",folder_id,"children"])?,after,page_size,100)
 }
 
 pub fn file_url(account_id:&str,file_id:&str)->Result<Url,String>{
@@ -281,11 +332,23 @@ pub fn file_url(account_id:&str,file_id:&str)->Result<Url,String>{
     resource_url(&["v4","accounts",account_id,"files",file_id])
 }
 
+pub fn comments_url(account_id:&str,file_id:&str,after:Option<&str>,page_size:Option<u32>)->Result<Url,String>{
+    validate_resource_id(account_id,"account_id")?;
+    validate_resource_id(file_id,"file_id")?;
+    append_pagination(resource_url(&["v4","accounts",account_id,"files",file_id,"comments"])?,after,page_size,100)
+}
+
+pub fn comment_url(account_id:&str,comment_id:&str)->Result<Url,String>{
+    validate_resource_id(account_id,"account_id")?;
+    validate_resource_id(comment_id,"comment_id")?;
+    resource_url(&["v4","accounts",account_id,"comments",comment_id])
+}
+
 pub fn capability_report()->Value{
     json!({
         "schema_version":1,
         "integration":"frame_io",
-        "source_milestone_percent":60,
+        "source_milestone_percent":80,
         "source_scope_complete":false,
         "service_type":"adobe_included_web_api",
         "api_generation":"v4",
@@ -306,12 +369,14 @@ pub fn capability_report()->Value{
             "workspace_listing":true,
             "project_listing":true,
             "folder_children_listing":true,
-            "file_metadata_inspection":true
+            "file_metadata_inspection":true,
+            "comment_listing":true,
+            "comment_metadata_inspection":true,
+            "explicit_cursor_pagination":true
         },
         "not_implemented":{
             "os_custom_uri_handler_registration":true,
             "media_link_download":true,
-            "comments":true,
             "uploads":true,
             "shares":true,
             "project_or_asset_mutation":true,
@@ -327,8 +392,8 @@ pub fn readiness_report()->Value{
     json!({
         "schema_version":1,
         "integration":"frame_io",
-        "source_milestone_percent":60,
-        "source_coding_status":"token_freshness_and_read_only_asset_inspection_complete",
+        "source_milestone_percent":80,
+        "source_coding_status":"read_only_review_surfaces_and_explicit_pagination_complete",
         "api_origin":API_ORIGIN,
         "auth_model":"adobe_ims_native_app_pkce",
         "oauth_authorize_endpoint":IMS_AUTHORIZE_URL,
@@ -339,10 +404,10 @@ pub fn readiness_report()->Value{
         "explicit_refresh_implemented":true,
         "automatic_refresh_before_api_reads":true,
         "token_refresh_skew_seconds":TOKEN_REFRESH_SKEW_SECONDS,
-        "project_automation_ready":"read_only_workspace_project_folder_and_file_inspection",
+        "project_automation_ready":"read_only_workspace_project_folder_file_and_comment_inspection",
         "source_runtime_verified":false,
         "production_ready":false,
-        "next_source_phase":"add bounded comments/review read surfaces and explicit pagination controls while keeping uploads, shares and all mutations blocked"
+        "next_source_phase":"canonical bounded source completion with acceptance summary, explicit unclaimed writes, credential safety and runtime handoff; keep runtime verification false until Windows acceptance"
     })
 }
 
@@ -350,6 +415,14 @@ fn bounded_text(value:Option<&str>,label:&str)->Result<Option<String>,String>{
     let Some(value)=value else{return Ok(None);};
     if value.len()>512||value.chars().any(char::is_control){
         return Err(format!("Frame.io {label} is oversized or contains control characters."));
+    }
+    Ok(Some(value.to_string()))
+}
+
+fn bounded_comment_text(value:Option<&str>)->Result<Option<String>,String>{
+    let Some(value)=value else{return Ok(None);};
+    if value.len()>MAX_COMMENT_TEXT_BYTES||value.chars().any(|c|c.is_control()&&!matches!(c,'\n'|'\r'|'\t')){
+        return Err("Frame.io comment text is oversized or contains unsupported control characters.".into());
     }
     Ok(Some(value.to_string()))
 }
@@ -423,6 +496,7 @@ pub fn summarize_workspaces(account_id:&str,body:&Value)->Result<Value,String>{
         "workspace_count":items.len(),
         "workspaces":items,
         "pagination_has_more":has_next_link(body),
+        "pagination_after":pagination_after(body)?,
         "pagination_auto_followed":false,
         "write_operations_performed":false,
         "source_runtime_verified":false,
@@ -462,6 +536,7 @@ pub fn summarize_projects(account_id:&str,workspace_id:&str,body:&Value)->Result
         "project_count":items.len(),
         "projects":items,
         "pagination_has_more":has_next_link(body),
+        "pagination_after":pagination_after(body)?,
         "pagination_auto_followed":false,
         "write_operations_performed":false,
         "source_runtime_verified":false,
@@ -482,7 +557,7 @@ pub fn summarize_folder_children(account_id:&str,folder_id:&str,body:&Value)->Re
         let id=child.get("id").and_then(Value::as_str).ok_or("Frame.io folder child is missing id.")?; validate_resource_id(id,"folder child id")?;
         items.push(json!({"id":id,"type":bounded_text(child.get("type").and_then(Value::as_str),"folder child type")?,"name":bounded_text(child.get("name").and_then(Value::as_str),"folder child name")?,"media_type":bounded_text(child.get("media_type").and_then(Value::as_str),"file media_type")?,"status":bounded_text(child.get("status").and_then(Value::as_str),"file status")?,"file_size":child.get("file_size").and_then(Value::as_u64),"parent_id":bounded_optional_id(child.get("parent_id").and_then(Value::as_str),"parent_id")?,"project_id":bounded_optional_id(child.get("project_id").and_then(Value::as_str),"project_id")?}));
     }
-    Ok(json!({"schema_version":1,"integration":"frame_io","account_id":account_id,"folder_id":folder_id,"child_count":items.len(),"children":items,"pagination_has_more":has_next_link(body),"pagination_auto_followed":false,"media_links_exposed":false,"write_operations_performed":false,"source_runtime_verified":false,"production_ready":false}))
+    Ok(json!({"schema_version":1,"integration":"frame_io","account_id":account_id,"folder_id":folder_id,"child_count":items.len(),"children":items,"pagination_has_more":has_next_link(body),"pagination_after":pagination_after(body)?,"pagination_auto_followed":false,"media_links_exposed":false,"write_operations_performed":false,"source_runtime_verified":false,"production_ready":false}))
 }
 pub fn summarize_file(account_id:&str,file_id:&str,body:&Value)->Result<Value,String>{
     validate_resource_id(account_id,"account_id")?; validate_resource_id(file_id,"file_id")?;
@@ -490,6 +565,67 @@ pub fn summarize_file(account_id:&str,file_id:&str,body:&Value)->Result<Value,St
     let observed_id=file.get("id").and_then(Value::as_str).ok_or("Frame.io file response is missing id.")?; validate_resource_id(observed_id,"file id")?;
     if observed_id!=file_id{return Err("Frame.io file response id does not match the requested file_id.".into());}
     Ok(json!({"schema_version":1,"integration":"frame_io","account_id":account_id,"file_id":observed_id,"name":bounded_text(file.get("name").and_then(Value::as_str),"file name")?,"media_type":bounded_text(file.get("media_type").and_then(Value::as_str),"file media_type")?,"status":bounded_text(file.get("status").and_then(Value::as_str),"file status")?,"file_size":file.get("file_size").and_then(Value::as_u64),"parent_id":bounded_optional_id(file.get("parent_id").and_then(Value::as_str),"parent_id")?,"project_id":bounded_optional_id(file.get("project_id").and_then(Value::as_str),"project_id")?,"media_links_exposed":false,"view_url_exposed":false,"write_operations_performed":false,"source_runtime_verified":false,"production_ready":false}))
+}
+
+fn summarize_comment_item(comment:&Value)->Result<Value,String>{
+    let id=comment.get("id").and_then(Value::as_str).ok_or("Frame.io comment is missing id.")?;
+    validate_resource_id(id,"comment id")?;
+    let file_id=bounded_optional_id(comment.get("file_id").and_then(Value::as_str),"comment file_id")?;
+    let owner=comment.get("owner").and_then(Value::as_object);
+    let owner_id=bounded_optional_id(owner.and_then(|o|o.get("id")).and_then(Value::as_str),"comment owner id")?;
+    let owner_name=bounded_text(owner.and_then(|o|o.get("name")).and_then(Value::as_str),"comment owner name")?;
+    Ok(json!({
+        "comment_id":id,
+        "file_id":file_id,
+        "text":bounded_comment_text(comment.get("text").and_then(Value::as_str))?,
+        "timestamp":comment.get("timestamp").filter(|v|v.is_number()).cloned(),
+        "duration":comment.get("duration").filter(|v|v.is_number()).cloned(),
+        "page":comment.get("page").filter(|v|v.is_number()).cloned(),
+        "created_at":bounded_text(comment.get("created_at").and_then(Value::as_str),"comment created_at")?,
+        "updated_at":bounded_text(comment.get("updated_at").and_then(Value::as_str),"comment updated_at")?,
+        "text_edited_at":bounded_text(comment.get("text_edited_at").and_then(Value::as_str),"comment text_edited_at")?,
+        "completed_at":bounded_text(comment.get("completed_at").and_then(Value::as_str),"comment completed_at")?,
+        "owner_id":owner_id,
+        "owner_name":owner_name,
+        "annotation_present":comment.get("annotation").is_some_and(|v|!v.is_null()),
+        "text_review_annotation_present":comment.get("text_review_annotation").is_some_and(|v|!v.is_null()),
+        "attachments_exposed":false,
+        "external_links_exposed":false
+    }))
+}
+
+pub fn summarize_comments(account_id:&str,file_id:&str,body:&Value)->Result<Value,String>{
+    validate_resource_id(account_id,"account_id")?; validate_resource_id(file_id,"file_id")?;
+    let data=body.get("data").and_then(Value::as_array).ok_or("Frame.io comments response is missing data array.")?;
+    if data.len()>MAX_SUMMARY_ITEMS{return Err("Frame.io comments response exceeds Shuvi's bounded summary limit.".into());}
+    let mut comments=Vec::with_capacity(data.len());
+    for comment in data{
+        if let Some(observed)=comment.get("file_id").and_then(Value::as_str){
+            validate_resource_id(observed,"comment file_id")?;
+            if observed!=file_id{return Err("Frame.io comment response file_id does not match the requested file_id.".into());}
+        }
+        comments.push(summarize_comment_item(comment)?);
+    }
+    Ok(json!({
+        "schema_version":1,"integration":"frame_io","account_id":account_id,"file_id":file_id,
+        "comment_count":comments.len(),"comments":comments,
+        "pagination_has_more":has_next_link(body),"pagination_after":pagination_after(body)?,
+        "pagination_auto_followed":false,"attachments_exposed":false,"external_links_exposed":false,
+        "write_operations_performed":false,"source_runtime_verified":false,"production_ready":false
+    }))
+}
+
+pub fn summarize_comment(account_id:&str,comment_id:&str,body:&Value)->Result<Value,String>{
+    validate_resource_id(account_id,"account_id")?; validate_resource_id(comment_id,"comment_id")?;
+    let comment=body.get("data").ok_or("Frame.io comment response is missing data object.")?;
+    let observed=comment.get("id").and_then(Value::as_str).ok_or("Frame.io comment response is missing id.")?;
+    validate_resource_id(observed,"comment id")?;
+    if observed!=comment_id{return Err("Frame.io comment response id does not match the requested comment_id.".into());}
+    Ok(json!({
+        "schema_version":1,"integration":"frame_io","account_id":account_id,
+        "comment":summarize_comment_item(comment)?,
+        "write_operations_performed":false,"source_runtime_verified":false,"production_ready":false
+    }))
 }
 
 #[cfg(test)]
@@ -581,15 +717,39 @@ mod tests{
     }
 
     #[test]
-    fn reports_sixty_percent_without_runtime_claims(){
+    fn reports_eighty_percent_without_runtime_claims(){
         let cap=capability_report();
-        assert_eq!(cap["source_milestone_percent"],60);
+        assert_eq!(cap["source_milestone_percent"],80);
         assert_eq!(cap["source_scope_complete"],false);
         assert_eq!(cap["source_runtime_verified"],false);
         assert_eq!(cap["production_ready"],false);
         let ready=readiness_report();
         assert_eq!(ready["oauth_flow_implemented"],"native_app_pkce_manual_callback_completion");
         assert_eq!(ready["automatic_refresh_before_api_reads"],true);
-        assert_eq!(ready["project_automation_ready"],"read_only_workspace_project_folder_and_file_inspection");
+        assert_eq!(ready["project_automation_ready"],"read_only_workspace_project_folder_file_and_comment_inspection");
+    }
+
+    #[test]
+    fn explicit_pagination_extracts_only_bounded_cursor(){
+        let url=workspaces_page_url("acct-1",Some("opaque-cursor"),Some(25)).unwrap();
+        assert_eq!(url.host_str(),Some("api.frame.io"));
+        assert!(url.as_str().contains("after=opaque-cursor"));
+        assert!(url.as_str().contains("page_size=25"));
+        let body=json!({"data":[],"links":{"next":"/v4/accounts/acct-1/workspaces?after=next-token&page_size=25"}});
+        assert_eq!(pagination_after(&body).unwrap().as_deref(),Some("next-token"));
+        assert!(workspaces_page_url("acct-1",Some("bad\nvalue"),Some(25)).is_err());
+    }
+
+    #[test]
+    fn comments_are_bounded_and_strip_attachments_and_links(){
+        let body=json!({"data":[{"id":"comment-1","file_id":"file-1","text":"Looks good","timestamp":1.25,"duration":2.0,"owner":{"id":"user-1","name":"Reviewer"},"attachments":[{"upload_urls":["https://secret.example"]}],"links":[{"url":"https://example.com"}]}],"links":{"next":"/v4/accounts/acct-1/files/file-1/comments?after=next-comment"}});
+        let list=summarize_comments("acct-1","file-1",&body).unwrap();
+        assert_eq!(list["comment_count"],1);
+        assert_eq!(list["pagination_after"],"next-comment");
+        assert_eq!(list["comments"][0]["attachments_exposed"],false);
+        assert_eq!(list["comments"][0]["external_links_exposed"],false);
+        let detail=json!({"data":{"id":"comment-1","file_id":"file-1","text":"Looks good"}});
+        let shown=summarize_comment("acct-1","comment-1",&detail).unwrap();
+        assert_eq!(shown["comment"]["comment_id"],"comment-1");
     }
 }
