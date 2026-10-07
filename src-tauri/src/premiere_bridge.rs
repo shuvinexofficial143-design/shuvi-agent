@@ -110,6 +110,7 @@ pub const ALLOWED_ACTIONS: &[&str] = &[
 pub const PREMIERE_BRIDGE_PORT: u16 = 17_361;
 const PREMIERE_PAIRING_SERVICE: &str = "premiere:pairing-token";
 const PREMIERE_PAIRING_USER: &str = "Shuvi";
+const PREMIERE_PAIRING_TTL_MS: u64 = 8 * 60 * 60 * 1000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PremiereBridgeCommand {
@@ -139,12 +140,19 @@ pub struct PremiereBridgeStatus {
     pub queued_commands: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedPairing {
+    version: u32,
+    token: String,
+    issued_at_ms: u64,
+}
+
 #[derive(Default)]
 pub struct PremiereBridgeShared {
     server_started: Mutex<bool>,
     enabled: Mutex<bool>,
     token: Mutex<Option<String>>,
-    token_created: Mutex<Option<std::time::Instant>>,
+    token_created_ms: Mutex<Option<u64>>,
     active_clients: AtomicUsize,
     work: Mutex<CommandQueue>,
     last_seen_ms: Mutex<Option<u64>>,
@@ -218,30 +226,82 @@ impl PremiereBridgeShared {
         value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
     }
 
-    fn load_persisted_token() -> Option<String> {
-        let entry = Self::credential_entry().ok()?;
-        let token = entry.get_password().ok()?;
-        Self::valid_persisted_token(&token).then_some(token)
+    fn pairing_is_current(issued_at_ms: u64) -> bool {
+        let now = now_ms();
+        issued_at_ms > 0
+            && issued_at_ms <= now
+            && now.saturating_sub(issued_at_ms) < PREMIERE_PAIRING_TTL_MS
     }
 
-    fn persist_token(token: &str) -> Result<(), String> {
+    fn load_persisted_pairing() -> Result<Option<PersistedPairing>, String> {
+        let entry = Self::credential_entry()?;
+        let raw = match entry.get_password() {
+            Ok(raw) => raw,
+            Err(keyring::Error::NoEntry) => return Ok(None),
+            Err(error) => return Err(format!("Could not read Premiere pairing credential: {error}")),
+        };
+
+        if let Ok(pairing) = serde_json::from_str::<PersistedPairing>(&raw) {
+            if pairing.version == 1
+                && Self::valid_persisted_token(&pairing.token)
+                && pairing.issued_at_ms > 0
+            {
+                return Ok(Some(pairing));
+            }
+            return Err("Stored Premiere pairing credential is invalid.".into());
+        }
+
+        // One-time migration for the legacy raw 32-hex token format. Persist the
+        // migration timestamp so restarts cannot reset the bounded lifetime.
+        if Self::valid_persisted_token(&raw) {
+            let pairing = PersistedPairing {
+                version: 1,
+                token: raw,
+                issued_at_ms: now_ms(),
+            };
+            Self::persist_pairing(&pairing)?;
+            return Ok(Some(pairing));
+        }
+
+        Err("Stored Premiere pairing credential is malformed.".into())
+    }
+
+    fn persist_pairing(pairing: &PersistedPairing) -> Result<(), String> {
+        let encoded = serde_json::to_string(pairing)
+            .map_err(|error| format!("Could not encode Premiere pairing credential: {error}"))?;
         Self::credential_entry()?
-            .set_password(token)
+            .set_password(&encoded)
             .map_err(|error| format!("Could not store Premiere pairing token: {error}"))
     }
 
-    fn activate_token(&self, token: String) -> Result<PremiereBridgeStatus, String> {
+    fn revoke_persisted_pairing() -> Result<(), String> {
+        let entry = Self::credential_entry()?;
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(format!("Could not revoke Premiere pairing credential: {error}")),
+        }
+    }
+
+    fn new_pairing() -> PersistedPairing {
+        PersistedPairing {
+            version: 1,
+            token: Uuid::new_v4().simple().to_string(),
+            issued_at_ms: now_ms(),
+        }
+    }
+
+    fn activate_pairing(&self, pairing: PersistedPairing) -> Result<PremiereBridgeStatus, String> {
         *self
-            .token_created
+            .token_created_ms
             .lock()
             .map_err(|_| "Premiere token clock is unavailable.".to_string())? =
-            Some(std::time::Instant::now());
+            Some(pairing.issued_at_ms);
 
         *self
             .token
             .lock()
             .map_err(|_| "Premiere bridge token state is unavailable.".to_string())? =
-            Some(token);
+            Some(pairing.token);
 
         *self
             .enabled
@@ -263,9 +323,9 @@ impl PremiereBridgeShared {
 
     pub fn start(self: &Arc<Self>) -> Result<PremiereBridgeStatus, String> {
         self.ensure_server()?;
-        let token = Uuid::new_v4().simple().to_string();
-        Self::persist_token(&token)?;
-        self.activate_token(token)
+        let pairing = Self::new_pairing();
+        Self::persist_pairing(&pairing)?;
+        self.activate_pairing(pairing)
     }
 
     pub fn start_persistent(self: &Arc<Self>) -> Result<PremiereBridgeStatus, String> {
@@ -287,16 +347,22 @@ impl PremiereBridgeShared {
             return self.status();
         }
 
-        let token = match Self::load_persisted_token() {
-            Some(token) => token,
+        let pairing = match Self::load_persisted_pairing()? {
+            Some(pairing) if Self::pairing_is_current(pairing.issued_at_ms) => pairing,
+            Some(_) => {
+                Self::revoke_persisted_pairing()?;
+                let pairing = Self::new_pairing();
+                Self::persist_pairing(&pairing)?;
+                pairing
+            }
             None => {
-                let token = Uuid::new_v4().simple().to_string();
-                Self::persist_token(&token)?;
-                token
+                let pairing = Self::new_pairing();
+                Self::persist_pairing(&pairing)?;
+                pairing
             }
         };
 
-        self.activate_token(token)
+        self.activate_pairing(pairing)
     }
 
     pub fn stop(&self) -> Result<PremiereBridgeStatus, String> {
@@ -311,7 +377,7 @@ impl PremiereBridgeShared {
             .map_err(|_| "Premiere bridge token state is unavailable.".to_string())? = None;
 
         *self
-            .token_created
+            .token_created_ms
             .lock()
             .map_err(|_| "Premiere token clock is unavailable.".to_string())? = None;
 
@@ -323,6 +389,7 @@ impl PremiereBridgeShared {
         self.work.lock()
             .map_err(|_| "Premiere bridge work queue is unavailable.".to_string())?.clear();
 
+        Self::revoke_persisted_pairing()?;
         self.status()
     }
 
@@ -444,8 +511,11 @@ impl PremiereBridgeShared {
     }
 
     fn token_is_current(&self) -> bool {
-        self.token_created.lock().ok().and_then(|value| *value)
-            .is_some_and(|created| created.elapsed() < Duration::from_secs(8 * 60 * 60))
+        self.token_created_ms
+            .lock()
+            .ok()
+            .and_then(|value| *value)
+            .is_some_and(Self::pairing_is_current)
     }
 
     fn mark_seen(&self) {
@@ -610,6 +680,20 @@ fn handle_client(mut stream: TcpStream, shared: Arc<PremiereBridgeShared>) {
             let body = serde_json::to_string(&command).unwrap_or_else(|_| "null".into());
             let _ = write_response(&mut stream, "200 OK", &body);
         }
+        ("POST", "/disconnect") => {
+            match shared.stop() {
+                Ok(_) => {
+                    let _ = write_response(&mut stream, "200 OK", r#"{"ok":true,"revoked":true}"#);
+                }
+                Err(error) => {
+                    let _ = write_response(
+                        &mut stream,
+                        "500 Internal Server Error",
+                        &json!({"ok":false,"error":error}).to_string(),
+                    );
+                }
+            }
+        }
         ("POST", "/result") => {
             let parsed = serde_json::from_slice::<PremiereBridgeResult>(&request.body);
 
@@ -677,12 +761,19 @@ mod tests {
         let shared = PremiereBridgeShared::default();
         *shared.enabled.lock().unwrap() = true;
         *shared.token.lock().unwrap() = Some("first".into());
-        *shared.token_created.lock().unwrap() = Some(std::time::Instant::now());
+        *shared.token_created_ms.lock().unwrap() = Some(now_ms());
         assert!(shared.authenticate(Some("first")));
         *shared.token.lock().unwrap() = Some("second".into());
         assert!(!shared.authenticate(Some("first")));
-        *shared.token_created.lock().unwrap() = Some(std::time::Instant::now() - Duration::from_secs(8 * 60 * 60 + 1));
+        *shared.token_created_ms.lock().unwrap() = Some(now_ms().saturating_sub(PREMIERE_PAIRING_TTL_MS + 1));
         assert!(!shared.authenticate(Some("second")));
+    }
+
+    #[test]
+    fn persisted_pairing_lifetime_cannot_be_reset_by_restart_clock() {
+        let issued_at_ms = now_ms().saturating_sub(PREMIERE_PAIRING_TTL_MS + 1);
+        assert!(!PremiereBridgeShared::pairing_is_current(issued_at_ms));
+        assert!(!PremiereBridgeShared::pairing_is_current(now_ms().saturating_add(60_000)));
     }
 
     #[test]
