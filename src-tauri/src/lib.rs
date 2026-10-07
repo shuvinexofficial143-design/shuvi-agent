@@ -2615,6 +2615,100 @@ fn usage_from_anthropic(body: &Value) -> Option<UsageStats> {
 }
 
 #[cfg(test)]
+mod xkiro_stream_parser_tests {
+    use super::*;
+
+    #[test]
+    fn xkiro_stream_collects_text_usage_and_done() {
+        let mut accumulator = XkiroStreamAccumulator::default();
+        ingest_xkiro_stream_payload(
+            &mut accumulator,
+            r#"{"choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}"#,
+        )
+        .unwrap();
+        ingest_xkiro_stream_payload(
+            &mut accumulator,
+            r#"{"choices":[{"index":0,"delta":{"content":" world"},"finish_reason":"stop"}]}"#,
+        )
+        .unwrap();
+        ingest_xkiro_stream_payload(
+            &mut accumulator,
+            r#"{"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}}"#,
+        )
+        .unwrap();
+        ingest_xkiro_stream_payload(&mut accumulator, "[DONE]").unwrap();
+
+        assert_eq!(accumulator.content, "Hello world");
+        assert!(accumulator.terminated);
+        let usage = accumulator.usage.expect("usage");
+        assert_eq!(usage.input_tokens, 12);
+        assert_eq!(usage.output_tokens, 3);
+        assert_eq!(usage.total_tokens, 15);
+    }
+
+    #[test]
+    fn xkiro_stream_reassembles_fragmented_shuvi_tool_call() {
+        let mut accumulator = XkiroStreamAccumulator::default();
+        ingest_xkiro_stream_payload(
+            &mut accumulator,
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"type":"function","function":{"name":"shuvi_","arguments":"{\"tool\":\"premiere_"}}]},"finish_reason":null}]}"#,
+        )
+        .unwrap();
+        ingest_xkiro_stream_payload(
+            &mut accumulator,
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"tool","arguments":"detect\",\"arguments\":{}}"}}]},"finish_reason":"tool_calls"}]}"#,
+        )
+        .unwrap();
+        ingest_xkiro_stream_payload(&mut accumulator, "[DONE]").unwrap();
+
+        assert_eq!(accumulator.tool_name, "shuvi_tool");
+        let content = native_tool_proposal(
+            accumulator.tool_name.as_str(),
+            Some(&Value::String(accumulator.tool_arguments.clone())),
+        )
+        .expect("validated xKiro tool");
+        let proposal = parse_tool_proposal(&content).expect("typed proposal");
+        assert_eq!(proposal.tool, "premiere_detect");
+        assert_eq!(proposal.arguments, json!({}));
+    }
+
+    #[test]
+    fn xkiro_stream_rejects_parallel_tool_indices() {
+        let mut accumulator = XkiroStreamAccumulator::default();
+        ingest_xkiro_stream_payload(
+            &mut accumulator,
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"shuvi_tool","arguments":"{}"}}]},"finish_reason":null}]}"#,
+        )
+        .unwrap();
+        let error = ingest_xkiro_stream_payload(
+            &mut accumulator,
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{}"}}]},"finish_reason":"tool_calls"}]}"#,
+        )
+        .expect_err("parallel tool call must fail");
+        assert!(error.contains("exactly one at a time"));
+    }
+
+    #[test]
+    fn xkiro_stream_rejects_midstream_error_frame() {
+        let mut accumulator = XkiroStreamAccumulator::default();
+        let error = ingest_xkiro_stream_payload(
+            &mut accumulator,
+            r#"{"error":{"message":"upstream unavailable","type":"api_error","code":"upstream_error"}}"#,
+        )
+        .expect_err("error frame must fail");
+        assert!(error.contains("upstream unavailable"));
+    }
+
+    #[test]
+    fn xkiro_provider_requires_vendor_prefixed_model_id() {
+        assert!(validate_provider_fields("xkiro", "openai/gpt-5.6-sol", None).is_ok());
+        assert!(validate_provider_fields("xkiro", "gpt-5.6-sol", None).is_err());
+        assert!(validate_provider_fields("xkiro", "openai/gpt 5.6", None).is_err());
+        assert!(validate_provider_fields("xkiro", "openai/team/model", None).is_err());
+    }
+}
+
+#[cfg(test)]
 mod openai_response_parser_tests {
     use super::*;
 
