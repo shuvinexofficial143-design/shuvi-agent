@@ -436,6 +436,8 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - frame_io_oauth_refresh: {} — explicitly refresh the access token using the securely stored refresh token and public client_id; no client secret
 - frame_io_list_workspaces: {"account_id":"exact account id from frame_io_identity_preflight"} — read-only GET /v4/accounts/:account_id/workspaces; first bounded response page only
 - frame_io_list_projects: {"account_id":"exact account id","workspace_id":"exact workspace id from frame_io_list_workspaces"} — read-only GET /v4/accounts/:account_id/workspaces/:workspace_id/projects; first bounded response page only
+- frame_io_list_folder_children: {"account_id":"exact account id","folder_id":"exact root/subfolder id"} — read-only GET /v4/accounts/:account_id/folders/:folder_id/children?page_size=50; bounded metadata only, signed media links omitted
+- frame_io_show_file: {"account_id":"exact account id","file_id":"exact file id from folder inspection"} — read-only GET /v4/accounts/:account_id/files/:file_id; bounded metadata only, view/download/media links omitted
 - photoshop_capability_report: {}
 - photoshop_readiness_report: {}
 - photoshop_detect: {}
@@ -734,6 +736,8 @@ enum ToolAction {
     FrameIoOauthRefresh,
     FrameIoListWorkspaces { account_id:String },
     FrameIoListProjects { account_id:String, workspace_id:String },
+    FrameIoListFolderChildren { account_id:String, folder_id:String },
+    FrameIoShowFile { account_id:String, file_id:String },
     PremiereDetect,
     PremiereLaunch { project: Option<String> },
     PremiereBridgeStart,
@@ -1208,6 +1212,13 @@ fn load_frame_io_refresh_token()->Result<Option<String>,String>{
     Ok(value)
 }
 
+fn load_frame_io_access_expires_at()->Result<Option<u64>,String>{
+    let Some(raw)=load_frame_io_secret("access_expires_at")? else{return Ok(None);};
+    let value=raw.parse::<u64>().map_err(|_|"Stored Frame.io access-token expiry is invalid.".to_string())?;
+    if value==0{return Err("Stored Frame.io access-token expiry is invalid.".into());}
+    Ok(Some(value))
+}
+
 fn load_frame_io_oauth_config()->Result<Option<frame_io::OAuthConfig>,String>{
     let Some(raw)=load_frame_io_secret("oauth_config")? else{return Ok(None);};
     let config:frame_io::OAuthConfig=serde_json::from_str(&raw)
@@ -1224,7 +1235,7 @@ fn load_frame_io_oauth_pending()->Result<Option<frame_io::OAuthPending>,String>{
     Ok(Some(pending))
 }
 
-fn store_frame_io_tokens(tokens:&frame_io::OAuthTokens,preserve_refresh:Option<&str>)->Result<(),String>{
+fn store_frame_io_tokens(tokens:&frame_io::OAuthTokens,preserve_refresh:Option<&str>,issued_at_unix:u64)->Result<(),String>{
     frame_io::validate_access_token(&tokens.access_token)?;
     let refresh=tokens.refresh_token.as_deref().or(preserve_refresh);
     if let Some(value)=refresh{frame_io::validate_refresh_token(value)?;}
@@ -1238,6 +1249,11 @@ fn store_frame_io_tokens(tokens:&frame_io::OAuthTokens,preserve_refresh:Option<&
         let _=clear_frame_io_secret("refresh_token");
         return Err(format!("Could not securely save Frame.io access token: {error}"));
     }
+    let expires_at=frame_io::token_expiry_from(issued_at_unix,tokens.expires_in)?;
+    if let Err(error)=frame_io_entry("access_expires_at")?.set_password(&expires_at.to_string()){
+        let _=clear_frame_io_secret("access_token"); let _=clear_frame_io_secret("refresh_token");
+        return Err(format!("Could not securely save Frame.io access-token expiry: {error}"));
+    }
     Ok(())
 }
 
@@ -1247,6 +1263,7 @@ fn save_frame_io_access_token(access_token:String)->Result<(),String>{
     frame_io_entry("access_token")?.set_password(&access_token)
         .map_err(|error|format!("Could not save Frame.io access token: {error}"))?;
     clear_frame_io_secret("refresh_token")?;
+    clear_frame_io_secret("access_expires_at")?;
     clear_frame_io_secret("oauth_pending")
 }
 
@@ -1254,6 +1271,7 @@ fn save_frame_io_access_token(access_token:String)->Result<(),String>{
 fn delete_frame_io_access_token()->Result<(),String>{
     clear_frame_io_secret("access_token")?;
     clear_frame_io_secret("refresh_token")?;
+    clear_frame_io_secret("access_expires_at")?;
     clear_frame_io_secret("oauth_pending")
 }
 
@@ -1275,16 +1293,53 @@ fn delete_frame_io_oauth_config()->Result<(),String>{
 
 #[tauri::command]
 fn frame_io_credential_status()->Result<Value,String>{
+    let credential_configured=load_frame_io_access_token()?.is_some();
+    let expires_at=load_frame_io_access_expires_at()?;
+    let now=now_ms()/1000;
+    let token_freshness=match expires_at{
+        Some(value) if frame_io::access_token_needs_refresh(value,now)=>"refresh_required",
+        Some(_)=>"fresh",
+        None if credential_configured=>"unknown_manual_token",
+        None=>"not_configured"
+    };
     Ok(json!({
-        "integration":"frame_io",
-        "credential_configured":load_frame_io_access_token()?.is_some(),
+        "integration":"frame_io","credential_configured":credential_configured,
         "refresh_token_configured":load_frame_io_refresh_token()?.is_some(),
-        "oauth_configured":load_frame_io_oauth_config()?.is_some(),
-        "oauth_pending":load_frame_io_oauth_pending()?.is_some(),
-        "credential_value_exposed":false,
-        "pkce_verifier_exposed":false,
-        "refresh_token_exposed":false
+        "oauth_configured":load_frame_io_oauth_config()?.is_some(),"oauth_pending":load_frame_io_oauth_pending()?.is_some(),
+        "token_freshness":token_freshness,"expiry_tracking_configured":expires_at.is_some(),
+        "credential_value_exposed":false,"pkce_verifier_exposed":false,"refresh_token_exposed":false
     }))
+}
+
+
+async fn refresh_frame_io_stored_access_token()->Result<(String,bool,u64),String>{
+    let config=load_frame_io_oauth_config()?.ok_or_else(||"Frame.io Native App OAuth config is not set.".to_string())?;
+    let refresh=load_frame_io_refresh_token()?.ok_or_else(||"No Frame.io refresh token is securely configured.".to_string())?;
+    let response=http_client()?.post(frame_io::oauth_token_url(&config.client_id)?)
+        .form(&[("grant_type","refresh_token"),("refresh_token",refresh.as_str())]).send().await
+        .map_err(|e|format!("Adobe IMS Frame.io refresh failed before a verified response: {e}"))?;
+    let (status,body)=bounded_provider_json(response,"Adobe IMS Frame.io refresh").await?;
+    if !status.is_success(){return Err(format!("Adobe IMS Frame.io refresh returned {status}: {}",compact_error(&body)));}
+    let tokens=frame_io::parse_oauth_token_response(&body)?;
+    let rotated=tokens.refresh_token.is_some();
+    let expires_in=tokens.expires_in;
+    let access=tokens.access_token.clone();
+    store_frame_io_tokens(&tokens,Some(&refresh),now_ms()/1000)?;
+    Ok((access,rotated,expires_in))
+}
+
+async fn load_frame_io_fresh_access_token()->Result<(String,bool),String>{
+    let token=load_frame_io_access_token()?.ok_or_else(||"No Frame.io access token is securely configured.".to_string())?;
+    let Some(expires_at)=load_frame_io_access_expires_at()? else{return Ok((token,false));};
+    if !frame_io::access_token_needs_refresh(expires_at,now_ms()/1000){return Ok((token,false));}
+    if load_frame_io_refresh_token()?.is_none(){return Err("Frame.io access token is expired or near expiry and no refresh token is configured; re-authenticate.".into());}
+    let (refreshed,_,_)=refresh_frame_io_stored_access_token().await?;
+    Ok((refreshed,true))
+}
+
+fn annotate_frame_io_refresh(mut value:Value,refreshed:bool)->Value{
+    if let Some(object)=value.as_object_mut(){object.insert("access_token_auto_refreshed".into(),Value::Bool(refreshed));}
+    value
 }
 
 fn http_client() -> Result<Client, String> {
@@ -1743,6 +1798,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "frame_io_oauth_refresh"
         | "frame_io_list_workspaces"
         | "frame_io_list_projects"
+        | "frame_io_list_folder_children"
+        | "frame_io_show_file"
         | "photoshop_capability_report"
         | "photoshop_readiness_report"
         | "photoshop_detect"
@@ -3756,6 +3813,20 @@ fn stage_tool(
                 "List accessible Frame.io projects".into(),
                 "Read-only bounded first-page GET for projects under the exact account/workspace IDs. Pagination is reported but never automatically followed.".into(),
                 RiskLevel::Low)
+        }
+        "frame_io_list_folder_children" => {
+            let account_id=arg_string(&proposal.arguments,"account_id")?;
+            let folder_id=arg_string(&proposal.arguments,"folder_id")?;
+            frame_io::folder_children_url(&account_id,&folder_id)?;
+            (ToolAction::FrameIoListFolderChildren {account_id,folder_id},"Inspect Frame.io folder children".into(),
+                "Read-only bounded first-page folder-child inspection; signed media/download links are omitted.".into(),RiskLevel::Low)
+        }
+        "frame_io_show_file" => {
+            let account_id=arg_string(&proposal.arguments,"account_id")?;
+            let file_id=arg_string(&proposal.arguments,"file_id")?;
+            frame_io::file_url(&account_id,&file_id)?;
+            (ToolAction::FrameIoShowFile {account_id,file_id},"Inspect Frame.io file metadata".into(),
+                "Read-only exact-file metadata lookup; signed media links, view URLs and download URLs are omitted.".into(),RiskLevel::Low)
         }
         "illustrator_capability_report" => (
             ToolAction::IllustratorCapabilityReport,
@@ -11096,8 +11167,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::FrameIoIdentityPreflight => {
-            let token=load_frame_io_access_token()?
-                .ok_or_else(||"No Frame.io access token is securely configured.".to_string())?;
+            let (token,auto_refreshed)=load_frame_io_fresh_access_token().await?;
             let client=http_client()?;
             let me_response=send_with_retry(
                 client.get(frame_io::api_url(frame_io::ME_PATH)?).bearer_auth(&token),
@@ -11115,7 +11185,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             if !accounts_status.is_success(){
                 return Err(format!("Frame.io /v4/accounts returned {accounts_status}: {}",compact_error(&accounts_body)));
             }
-            let value=frame_io::summarize_identity(&me_body,&accounts_body)?;
+            let value=annotate_frame_io_refresh(frame_io::summarize_identity(&me_body,&accounts_body)?,auto_refreshed);
             Ok(ActionResult {
                 success:true,tool,
                 stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
@@ -11165,7 +11235,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             }
             let tokens=frame_io::parse_oauth_token_response(&body)?;
             let has_refresh=tokens.refresh_token.is_some();
-            store_frame_io_tokens(&tokens,None)?;
+            store_frame_io_tokens(&tokens,None,now_ms()/1000)?;
             clear_frame_io_secret("oauth_pending")?;
             Ok(ActionResult {
                 success:true,tool,
@@ -11185,42 +11255,18 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::FrameIoOauthRefresh => {
-            let config=load_frame_io_oauth_config()?
-                .ok_or_else(||"Frame.io Native App OAuth config is not set.".to_string())?;
-            let refresh=load_frame_io_refresh_token()?
-                .ok_or_else(||"No Frame.io refresh token is securely configured.".to_string())?;
-            let token_url=frame_io::oauth_token_url(&config.client_id)?;
-            let response=http_client()?.post(token_url)
-                .form(&[
-                    ("grant_type","refresh_token"),
-                    ("refresh_token",refresh.as_str())
-                ])
-                .send().await
-                .map_err(|e|format!("Adobe IMS Frame.io refresh failed before a verified response: {e}"))?;
-            let (status,body)=bounded_provider_json(response,"Adobe IMS Frame.io refresh").await?;
-            if !status.is_success(){
-                return Err(format!("Adobe IMS Frame.io refresh returned {status}: {}",compact_error(&body)));
-            }
-            let tokens=frame_io::parse_oauth_token_response(&body)?;
-            let rotated=tokens.refresh_token.is_some();
-            store_frame_io_tokens(&tokens,Some(&refresh))?;
+            let (_access_token,rotated,expires_in)=refresh_frame_io_stored_access_token().await?;
             Ok(ActionResult {
                 success:true,tool,
                 stdout:serde_json::to_string_pretty(&json!({
-                    "integration":"frame_io",
-                    "access_token_refreshed":true,
-                    "refresh_token_rotated":rotated,
-                    "expires_in":tokens.expires_in,
-                    "token_values_exposed":false,
-                    "source_runtime_verified":false,
-                    "production_ready":false
-                })).unwrap_or_default(),
-                stderr:String::new(),exit_code:Some(0)
+                    "integration":"frame_io","access_token_refreshed":true,"refresh_token_rotated":rotated,
+                    "expires_in":expires_in,"expiry_tracking_configured":true,"token_values_exposed":false,
+                    "source_runtime_verified":false,"production_ready":false
+                })).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)
             })
         }
         ToolAction::FrameIoListWorkspaces {account_id} => {
-            let token=load_frame_io_access_token()?
-                .ok_or_else(||"No Frame.io access token is securely configured.".to_string())?;
+            let (token,auto_refreshed)=load_frame_io_fresh_access_token().await?;
             let response=send_with_retry(
                 http_client()?.get(frame_io::workspaces_url(&account_id)?).bearer_auth(&token),
                 "Frame.io workspaces"
@@ -11229,7 +11275,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             if !status.is_success(){
                 return Err(format!("Frame.io workspaces returned {status}: {}",compact_error(&body)));
             }
-            let value=frame_io::summarize_workspaces(&account_id,&body)?;
+            let value=annotate_frame_io_refresh(frame_io::summarize_workspaces(&account_id,&body)?,auto_refreshed);
             Ok(ActionResult {
                 success:true,tool,
                 stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
@@ -11237,8 +11283,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::FrameIoListProjects {account_id,workspace_id} => {
-            let token=load_frame_io_access_token()?
-                .ok_or_else(||"No Frame.io access token is securely configured.".to_string())?;
+            let (token,auto_refreshed)=load_frame_io_fresh_access_token().await?;
             let response=send_with_retry(
                 http_client()?.get(frame_io::projects_url(&account_id,&workspace_id)?).bearer_auth(&token),
                 "Frame.io projects"
@@ -11247,12 +11292,24 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             if !status.is_success(){
                 return Err(format!("Frame.io projects returned {status}: {}",compact_error(&body)));
             }
-            let value=frame_io::summarize_projects(&account_id,&workspace_id,&body)?;
-            Ok(ActionResult {
-                success:true,tool,
-                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
-                stderr:String::new(),exit_code:Some(0)
-            })
+            let value=annotate_frame_io_refresh(frame_io::summarize_projects(&account_id,&workspace_id,&body)?,auto_refreshed);
+            Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::FrameIoListFolderChildren {account_id,folder_id} => {
+            let (token,auto_refreshed)=load_frame_io_fresh_access_token().await?;
+            let response=send_with_retry(http_client()?.get(frame_io::folder_children_url(&account_id,&folder_id)?).bearer_auth(&token),"Frame.io folder children").await?;
+            let (status,body)=bounded_provider_json(response,"Frame.io folder children").await?;
+            if !status.is_success(){return Err(format!("Frame.io folder children returned {status}: {}",compact_error(&body)));}
+            let value=annotate_frame_io_refresh(frame_io::summarize_folder_children(&account_id,&folder_id,&body)?,auto_refreshed);
+            Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::FrameIoShowFile {account_id,file_id} => {
+            let (token,auto_refreshed)=load_frame_io_fresh_access_token().await?;
+            let response=send_with_retry(http_client()?.get(frame_io::file_url(&account_id,&file_id)?).bearer_auth(&token),"Frame.io file").await?;
+            let (status,body)=bounded_provider_json(response,"Frame.io file").await?;
+            if !status.is_success(){return Err(format!("Frame.io file returned {status}: {}",compact_error(&body)));}
+            let value=annotate_frame_io_refresh(frame_io::summarize_file(&account_id,&file_id,&body)?,auto_refreshed);
+            Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::IllustratorCapabilityReport => {
             Ok(ActionResult {
