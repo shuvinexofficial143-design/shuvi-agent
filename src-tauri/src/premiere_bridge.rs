@@ -6,6 +6,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -107,6 +108,8 @@ pub const ALLOWED_ACTIONS: &[&str] = &[
 ];
 
 pub const PREMIERE_BRIDGE_PORT: u16 = 17_361;
+const PREMIERE_PAIRING_SERVICE: &str = "premiere:pairing-token";
+const PREMIERE_PAIRING_USER: &str = "Shuvi";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PremiereBridgeCommand {
@@ -156,44 +159,83 @@ fn now_ms() -> u64 {
 }
 
 impl PremiereBridgeShared {
-    pub fn start(self: &Arc<Self>) -> Result<PremiereBridgeStatus, String> {
+    fn ensure_server(self: &Arc<Self>) -> Result<(), String> {
         let mut started = self
             .server_started
             .lock()
             .map_err(|_| "Premiere bridge state is unavailable.".to_string())?;
 
-        if !*started {
-            let listener = TcpListener::bind(("127.0.0.1", PREMIERE_BRIDGE_PORT))
-                .map_err(|error| {
-                    format!(
-                        "Could not bind Premiere bridge to 127.0.0.1:{PREMIERE_BRIDGE_PORT}: {error}"
-                    )
-                })?;
-
-            let shared = Arc::clone(self);
-            thread::Builder::new()
-                .name("shuvi-premiere-bridge".into())
-                .spawn(move || {
-                    for stream in listener.incoming() {
-                        let Ok(stream) = stream else {
-                            continue;
-                        };
-                        let shared = Arc::clone(&shared);
-                        if shared.active_clients.fetch_update(Ordering::AcqRel, Ordering::Relaxed,
-                            |count| (count < 16).then_some(count + 1)).is_err() { continue; }
-                        let guard = ClientGuard(Arc::clone(&shared));
-                        let _ = thread::Builder::new()
-                            .name("shuvi-premiere-client".into())
-                            .spawn(move || { let _guard = guard; handle_client(stream, shared); });
-                    }
-                })
-                .map_err(|error| format!("Could not start Premiere bridge thread: {error}"))?;
-
-            *started = true;
+        if *started {
+            return Ok(());
         }
 
-        let token = Uuid::new_v4().simple().to_string();
-        *self.token_created.lock().map_err(|_| "Premiere token clock is unavailable.".to_string())? = Some(std::time::Instant::now());
+        let listener = TcpListener::bind(("127.0.0.1", PREMIERE_BRIDGE_PORT))
+            .map_err(|error| {
+                format!(
+                    "Could not bind Premiere bridge to 127.0.0.1:{PREMIERE_BRIDGE_PORT}: {error}"
+                )
+            })?;
+
+        let shared = Arc::clone(self);
+        thread::Builder::new()
+            .name("shuvi-premiere-bridge".into())
+            .spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(stream) = stream else {
+                        continue;
+                    };
+                    let shared = Arc::clone(&shared);
+                    if shared
+                        .active_clients
+                        .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |count| {
+                            (count < 16).then_some(count + 1)
+                        })
+                        .is_err()
+                    {
+                        continue;
+                    }
+                    let guard = ClientGuard(Arc::clone(&shared));
+                    let _ = thread::Builder::new()
+                        .name("shuvi-premiere-client".into())
+                        .spawn(move || {
+                            let _guard = guard;
+                            handle_client(stream, shared);
+                        });
+                }
+            })
+            .map_err(|error| format!("Could not start Premiere bridge thread: {error}"))?;
+
+        *started = true;
+        Ok(())
+    }
+
+    fn credential_entry() -> Result<Entry, String> {
+        Entry::new(PREMIERE_PAIRING_SERVICE, PREMIERE_PAIRING_USER)
+            .map_err(|error| format!("Could not open Premiere pairing credential: {error}"))
+    }
+
+    fn valid_persisted_token(value: &str) -> bool {
+        value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    }
+
+    fn load_persisted_token() -> Option<String> {
+        let entry = Self::credential_entry().ok()?;
+        let token = entry.get_password().ok()?;
+        Self::valid_persisted_token(&token).then_some(token)
+    }
+
+    fn persist_token(token: &str) -> Result<(), String> {
+        Self::credential_entry()?
+            .set_password(token)
+            .map_err(|error| format!("Could not store Premiere pairing token: {error}"))
+    }
+
+    fn activate_token(&self, token: String) -> Result<PremiereBridgeStatus, String> {
+        *self
+            .token_created
+            .lock()
+            .map_err(|_| "Premiere token clock is unavailable.".to_string())? =
+            Some(std::time::Instant::now());
 
         *self
             .token
@@ -211,11 +253,34 @@ impl PremiereBridgeShared {
             .lock()
             .map_err(|_| "Premiere bridge state is unavailable.".to_string())? = None;
 
-        self.work.lock()
-            .map_err(|_| "Premiere bridge work queue is unavailable.".to_string())?.clear();
+        self.work
+            .lock()
+            .map_err(|_| "Premiere bridge work queue is unavailable.".to_string())?
+            .clear();
 
-        drop(started);
         self.status()
+    }
+
+    pub fn start(self: &Arc<Self>) -> Result<PremiereBridgeStatus, String> {
+        self.ensure_server()?;
+        let token = Uuid::new_v4().simple().to_string();
+        Self::persist_token(&token)?;
+        self.activate_token(token)
+    }
+
+    pub fn start_persistent(self: &Arc<Self>) -> Result<PremiereBridgeStatus, String> {
+        self.ensure_server()?;
+
+        let token = match Self::load_persisted_token() {
+            Some(token) => token,
+            None => {
+                let token = Uuid::new_v4().simple().to_string();
+                Self::persist_token(&token)?;
+                token
+            }
+        };
+
+        self.activate_token(token)
     }
 
     pub fn stop(&self) -> Result<PremiereBridgeStatus, String> {
@@ -228,6 +293,11 @@ impl PremiereBridgeShared {
             .token
             .lock()
             .map_err(|_| "Premiere bridge token state is unavailable.".to_string())? = None;
+
+        *self
+            .token_created
+            .lock()
+            .map_err(|_| "Premiere token clock is unavailable.".to_string())? = None;
 
         *self
             .last_seen_ms
@@ -359,7 +429,7 @@ impl PremiereBridgeShared {
 
     fn token_is_current(&self) -> bool {
         self.token_created.lock().ok().and_then(|value| *value)
-            .is_some_and(|created| created.elapsed() < Duration::from_secs(8 * 60 * 60))
+            .is_some_and(|created| created.elapsed() < Duration::from_secs(24 * 60 * 60))
     }
 
     fn mark_seen(&self) {
