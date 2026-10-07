@@ -1,18 +1,22 @@
+use base64::{engine::general_purpose::STANDARD as BASE64,Engine as _};
 use serde::{Deserialize,Serialize};
 use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
 use std::{
     collections::HashSet,
     fs::{self,File},
-    io::Read,
+    io::{Read,Write},
     net::{IpAddr,Ipv4Addr,SocketAddr,TcpStream},
     path::{Path,PathBuf},
+    process::Command,
     time::Duration
 };
 
 const MAX_ADOBE_ENTRIES:usize=128;
 const MAX_PATH_BYTES:usize=32*1024;
 const MAX_SCRIPT_BYTES:u64=1024*1024;
+const MAX_RECEIPT_BYTES:u64=64*1024;
+const MAX_REMOTE_RESPONSE_BYTES:usize=64*1024;
 const PAINTER_REMOTE_PORT:u16=60041;
 
 const APPS:&[(&str,&str,&str)]=&[
@@ -162,7 +166,7 @@ pub fn capability_report()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_substance_3d",
-        "source_milestone_percent":60,
+        "source_milestone_percent":80,
         "source_scope_complete":false,
         "suite_apps":["painter","designer","sampler","stager","modeler"],
         "implemented":{
@@ -175,13 +179,18 @@ pub fn capability_report()->Value{
             "bounded_automation_planning":true,
             "painter_remote_launch_adapter":true,
             "painter_remote_connectivity_preflight":true,
+            "painter_endpoint_process_ownership_proof":true,
+            "painter_fixed_read_only_receipt":true,
             "sampler_script_fingerprint":true,
-            "sampler_hash_bound_script_launch_adapter":true
+            "sampler_hash_bound_script_launch_adapter":true,
+            "sampler_completion_receipt_contract":true,
+            "sampler_completion_receipt_verification":true
         },
         "not_implemented":{
-            "painter_remote_command_dispatch":true,
-            "painter_endpoint_process_ownership_proof":true,
+            "painter_arbitrary_remote_command_dispatch":true,
+            "painter_mutating_remote_commands":true,
             "designer_plugin_install_or_execution":true,
+            "sampler_script_native_completion_signal":true,
             "sampler_script_effect_verification":true,
             "stager_verified_scripting_surface":true,
             "modeler_verified_scripting_surface":true,
@@ -203,18 +212,18 @@ pub fn readiness_report()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_substance_3d",
-        "source_milestone_percent":60,
-        "source_coding_status":"permission_first_runtime_adapters_complete",
+        "source_milestone_percent":80,
+        "source_coding_status":"bounded_readback_receipts_complete",
         "suite_apps":["painter","designer","sampler","stager","modeler"],
         "desktop_detection":true,
         "exact_detected_launch":true,
-        "host_transport":"painter_remote_connectivity_probe_plus_sampler_script_launch",
-        "future_host_transport":"painter_bounded_remote_commands_designer_python_plugins_sampler_script_receipts",
+        "host_transport":"painter_pid_bound_fixed_read_only_remote_plus_sampler_receipt_contract",
+        "future_host_transport":"additional_typed_painter_reads_designer_python_plugins_sampler_effect_specific_receipts",
         "host_ready_verified":false,
-        "project_automation_ready":"runtime_adapter_only_painter_and_sampler",
+        "project_automation_ready":"bounded_painter_read_only_plus_sampler_completion_receipt",
         "source_runtime_verified":false,
         "production_ready":false,
-        "next_source_phase":"add bounded Painter remote read-only command receipts and Sampler script completion evidence without promoting host readiness; keep Designer execution and Stager/Modeler scripting blocked unless separately verified"
+        "next_source_phase":"finalize bounded source scope with canonical acceptance summary and explicit Windows runtime acceptance handoff; keep arbitrary Painter commands, Designer execution, Sampler effect claims and Stager/Modeler scripting blocked unless separately verified"
     })
 }
 
@@ -223,9 +232,9 @@ pub fn automation_catalog()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_substance_3d",
-        "source_milestone_percent":60,
+        "source_milestone_percent":80,
         "execution_supported":true,
-        "execution_scope":"painter_remote_launch_and_connectivity_preflight_plus_sampler_hash_bound_script_launch",
+        "execution_scope":"painter_pid_bound_fixed_read_only_receipt_plus_sampler_hash_bound_launch_and_completion_receipt",
         "apps":{
             "painter":{
                 "documented_surface":"python_and_javascript_api_with_remote_scripting",
@@ -233,8 +242,9 @@ pub fn automation_catalog()->Value{
                 "launch_flag":"--enable-remote-scripting",
                 "planning_supported":true,
                 "runtime_adapter_implemented":true,
-                "runtime_adapter_scope":"exact_remote_enabled_launch_plus_localhost_connectivity_preflight_only",
-                "remote_command_dispatch_implemented":false
+                "runtime_adapter_scope":"exact_remote_enabled_launch_plus_pid_owned_endpoint_plus_fixed_read_only_api_version_receipt",
+                "remote_command_dispatch_implemented":"fixed_read_only_only",
+                "arbitrary_remote_command_dispatch_implemented":false
             },
             "designer":{
                 "documented_surface":"python_api_plugins",
@@ -249,7 +259,8 @@ pub fn automation_catalog()->Value{
                 "launch_flag":"--run-script",
                 "planning_supported":true,
                 "runtime_adapter_implemented":true,
-                "runtime_adapter_scope":"hash_bound_explicitly_approved_run_script_launch",
+                "runtime_adapter_scope":"hash_bound_explicitly_approved_run_script_launch_plus_shuvi_completion_receipt",
+                "script_completion_receipt_verification_implemented":true,
                 "script_effect_verification_implemented":false
             },
             "stager":{
@@ -474,6 +485,10 @@ pub struct SamplerScriptLaunchRequest{
     pub script_path:String,
     pub expected_script_sha256:String,
     pub explicit_user_approval:bool,
+    #[serde(default)]
+    pub receipt_path:Option<String>,
+    #[serde(default)]
+    pub request_id:Option<String>,
 }
 
 impl SamplerScriptLaunchRequest{
@@ -485,6 +500,16 @@ impl SamplerScriptLaunchRequest{
         }
         if !self.explicit_user_approval{
             return Err("Sampler script launch requires explicit_user_approval=true.".into());
+        }
+        match (&self.receipt_path,&self.request_id){
+            (None,None)=>{}
+            (Some(path),Some(request_id))=>{
+                validate_receipt_path(path)?;
+                if !valid_request_id(request_id){
+                    return Err("Sampler receipt request_id must be 1..128 ASCII letters, digits, dot, underscore, or hyphen.".into());
+                }
+            }
+            _=>return Err("Sampler completion receipt contract requires both receipt_path and request_id, or neither.".into())
         }
         Ok(())
     }
@@ -499,6 +524,241 @@ pub fn verify_sampler_script_binding(request:&SamplerScriptLaunchRequest)->Resul
         return Err("Sampler script changed after approval: expected_script_sha256 does not match the fresh script fingerprint.".into());
     }
     Ok(fingerprint)
+}
+
+
+fn valid_request_id(value:&str)->bool{
+    !value.is_empty()&&value.len()<=128&&value.chars().all(|c|c.is_ascii_alphanumeric()||matches!(c,'.'|'_'|'-'))
+}
+
+fn validate_receipt_path(path:&str)->Result<(),String>{
+    if path.trim().is_empty()||path.len()>MAX_PATH_BYTES||path.chars().any(char::is_control){
+        return Err("Sampler completion receipt path is empty, oversized, or contains control characters.".into());
+    }
+    let p=Path::new(path);
+    let valid_ext=p.extension().and_then(|v|v.to_str()).is_some_and(|v|v.eq_ignore_ascii_case("json"));
+    if !p.is_absolute()||!valid_ext{
+        return Err("Sampler completion receipt path must be an absolute .json path.".into());
+    }
+    Ok(())
+}
+
+pub fn prepare_sampler_receipt_target(request:&SamplerScriptLaunchRequest)->Result<Option<Value>,String>{
+    request.validate()?;
+    let (Some(path),Some(request_id))=(&request.receipt_path,&request.request_id) else{return Ok(None);};
+    let target=Path::new(path);
+    if target.exists(){
+        return Err("Sampler completion receipt target already exists; refuse stale or ambiguous completion evidence.".into());
+    }
+    let parent=target.parent().ok_or("Sampler completion receipt target has no parent directory.")?;
+    let canonical_parent=fs::canonicalize(parent)
+        .map_err(|e|format!("Sampler completion receipt parent is unavailable: {e}"))?;
+    if !canonical_parent.is_dir(){
+        return Err("Sampler completion receipt parent must be a directory.".into());
+    }
+    let file_name=target.file_name().ok_or("Sampler completion receipt target is missing a file name.")?;
+    let canonical_target=canonical_parent.join(file_name);
+    Ok(Some(json!({
+        "receipt_path":canonical_target,
+        "request_id":request_id,
+        "expected_script_sha256":request.expected_script_sha256.to_ascii_lowercase()
+    })))
+}
+
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PainterReadRequest{
+    pub painter_exe:String,
+    pub expected_pid:u32,
+    pub query:String,
+    pub explicit_user_approval:bool,
+}
+
+impl PainterReadRequest{
+    pub fn validate(&self)->Result<(),String>{
+        validate_requested_executable("painter",&self.painter_exe)?;
+        if self.expected_pid==0{
+            return Err("Painter read-only request requires a nonzero expected_pid.".into());
+        }
+        if self.query!="api_version"{
+            return Err("Painter read-only request currently supports only query=api_version.".into());
+        }
+        if !self.explicit_user_approval{
+            return Err("Painter read-only request requires explicit_user_approval=true.".into());
+        }
+        Ok(())
+    }
+}
+
+fn painter_read_command(query:&str)->Result<(&'static str,&'static str),String>{
+    match query{
+        "api_version"=>Ok(("js","alg.version.painter")),
+        _=>Err("Unsupported Painter read-only query.".into())
+    }
+}
+
+#[cfg(target_os="windows")]
+fn painter_remote_endpoint_owner(expected_pid:u32)->Result<u32,String>{
+    if expected_pid==0{return Err("Painter endpoint ownership check requires a nonzero PID.".into());}
+    let script=r#"$expected=[uint32]$env:SHUVI_EXPECTED_PID
+$match=Get-NetTCPConnection -LocalPort 60041 -State Listen -ErrorAction Stop |
+    Where-Object { [uint32]$_.OwningProcess -eq $expected } |
+    Select-Object -First 1
+if($null -eq $match){ exit 3 }
+[Console]::Out.Write([string]$match.OwningProcess)"#;
+    let output=Command::new("powershell")
+        .args(["-NoProfile","-NonInteractive","-Command",script])
+        .env("SHUVI_EXPECTED_PID",expected_pid.to_string())
+        .output()
+        .map_err(|e|format!("Could not verify Painter remote endpoint ownership: {e}"))?;
+    if !output.status.success(){
+        return Err("Painter localhost:60041 is not proven to be owned by the exact expected Painter PID.".into());
+    }
+    let observed=String::from_utf8_lossy(&output.stdout).trim().parse::<u32>()
+        .map_err(|_|"Painter endpoint ownership probe returned an invalid PID.".to_string())?;
+    if observed!=expected_pid{
+        return Err("Painter endpoint ownership PID does not match the exact expected Painter PID.".into());
+    }
+    Ok(observed)
+}
+
+#[cfg(not(target_os="windows"))]
+fn painter_remote_endpoint_owner(_expected_pid:u32)->Result<u32,String>{
+    Err("Painter endpoint ownership verification is Windows-only.".into())
+}
+
+fn painter_remote_post_js(script:&str)->Result<Value,String>{
+    if script!="alg.version.painter"{
+        return Err("Painter remote transport refuses non-whitelisted JavaScript.".into());
+    }
+    let encoded=BASE64.encode(script.as_bytes());
+    let body=serde_json::to_vec(&json!({"js":encoded}))
+        .map_err(|e|format!("Could not encode Painter remote request: {e}"))?;
+    let address=SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST),PAINTER_REMOTE_PORT);
+    let mut stream=TcpStream::connect_timeout(&address,Duration::from_millis(1500))
+        .map_err(|e|format!("Painter remote endpoint is not reachable: {e}"))?;
+    stream.set_read_timeout(Some(Duration::from_secs(3))).map_err(|e|e.to_string())?;
+    stream.set_write_timeout(Some(Duration::from_secs(3))).map_err(|e|e.to_string())?;
+    let request=format!(
+        "POST /run.json HTTP/1.1\r\nHost: localhost:{PAINTER_REMOTE_PORT}\r\nContent-Type: application/json\r\nAccept: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).map_err(|e|format!("Could not write Painter remote request headers: {e}"))?;
+    stream.write_all(&body).map_err(|e|format!("Could not write Painter remote request body: {e}"))?;
+    stream.flush().map_err(|e|format!("Could not flush Painter remote request: {e}"))?;
+
+    let mut response=Vec::new();
+    stream.take((MAX_REMOTE_RESPONSE_BYTES+1) as u64).read_to_end(&mut response)
+        .map_err(|e|format!("Could not read Painter remote response: {e}"))?;
+    if response.len()>MAX_REMOTE_RESPONSE_BYTES{
+        return Err("Painter remote response exceeds Shuvi's bounded response limit.".into());
+    }
+    let separator=response.windows(4).position(|w|w==b"\r\n\r\n")
+        .ok_or("Painter remote response is missing HTTP headers.")?;
+    let headers=std::str::from_utf8(&response[..separator])
+        .map_err(|_|"Painter remote response headers are not UTF-8.".to_string())?;
+    let status=headers.lines().next().and_then(|line|line.split_whitespace().nth(1))
+        .and_then(|v|v.parse::<u16>().ok())
+        .ok_or("Painter remote response has no valid HTTP status.")?;
+    if !(200..300).contains(&status){
+        return Err(format!("Painter remote endpoint returned HTTP status {status}."));
+    }
+    let body=&response[separator+4..];
+    let value:Value=serde_json::from_slice(body)
+        .map_err(|e|format!("Painter remote response is not valid JSON: {e}"))?;
+    if value.get("error").is_some(){
+        return Err("Painter remote endpoint returned a scripting error.".into());
+    }
+    Ok(value)
+}
+
+pub fn painter_read_only_receipt(request:&PainterReadRequest,managed_process_identity_verified:bool)->Result<Value,String>{
+    request.validate()?;
+    if !managed_process_identity_verified{
+        return Err("Painter read-only request requires the exact live Shuvi-managed process instance.".into());
+    }
+    let owner=painter_remote_endpoint_owner(request.expected_pid)?;
+    let (kind,script)=painter_read_command(&request.query)?;
+    if kind!="js"{return Err("Painter read-only transport currently supports only fixed JavaScript reads.".into());}
+    let result=painter_remote_post_js(script)?;
+    Ok(json!({
+        "schema_version":1,
+        "app_id":"painter",
+        "query":request.query,
+        "documented_command":"alg.version.painter",
+        "expected_pid":request.expected_pid,
+        "endpoint_owner_pid":owner,
+        "managed_process_identity_verified":true,
+        "endpoint_process_ownership_verified":true,
+        "remote_route":"/run.json",
+        "remote_result":result,
+        "read_receipt_verified":true,
+        "mutation_performed":false,
+        "arbitrary_remote_command_supported":false,
+        "host_ready_verified":false,
+        "source_runtime_verified":false,
+        "production_ready":false
+    }))
+}
+
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SamplerReceiptVerifyRequest{
+    pub receipt_path:String,
+    pub expected_request_id:String,
+    pub expected_script_sha256:String,
+}
+
+impl SamplerReceiptVerifyRequest{
+    pub fn validate(&self)->Result<(),String>{
+        validate_receipt_path(&self.receipt_path)?;
+        if !valid_request_id(&self.expected_request_id){
+            return Err("Sampler receipt expected_request_id must be 1..128 ASCII letters, digits, dot, underscore, or hyphen.".into());
+        }
+        if !valid_sha256(&self.expected_script_sha256){
+            return Err("Sampler receipt expected_script_sha256 must be a 64-character hexadecimal SHA-256.".into());
+        }
+        Ok(())
+    }
+}
+
+pub fn verify_sampler_completion_receipt(request:&SamplerReceiptVerifyRequest)->Result<Value,String>{
+    request.validate()?;
+    let canonical=fs::canonicalize(&request.receipt_path)
+        .map_err(|e|format!("Sampler completion receipt is unavailable: {e}"))?;
+    let metadata=fs::metadata(&canonical).map_err(|e|format!("Could not inspect Sampler completion receipt: {e}"))?;
+    if !metadata.is_file()||metadata.len()==0||metadata.len()>MAX_RECEIPT_BYTES{
+        return Err(format!("Sampler completion receipt must be a regular file between 1 and {MAX_RECEIPT_BYTES} bytes."));
+    }
+    let bytes=fs::read(&canonical).map_err(|e|format!("Could not read Sampler completion receipt: {e}"))?;
+    let receipt:Value=serde_json::from_slice(&bytes)
+        .map_err(|e|format!("Sampler completion receipt is not valid JSON: {e}"))?;
+    if receipt.get("schema_version").and_then(Value::as_u64)!=Some(1){
+        return Err("Sampler completion receipt schema_version must be 1.".into());
+    }
+    if receipt.get("request_id").and_then(Value::as_str)!=Some(request.expected_request_id.as_str()){
+        return Err("Sampler completion receipt request_id does not match the expected request.".into());
+    }
+    let actual_hash=receipt.get("script_sha256").and_then(Value::as_str)
+        .ok_or("Sampler completion receipt is missing script_sha256.")?;
+    if !actual_hash.eq_ignore_ascii_case(&request.expected_script_sha256){
+        return Err("Sampler completion receipt script_sha256 does not match the approved script.".into());
+    }
+    if receipt.get("status").and_then(Value::as_str)!=Some("completed"){
+        return Err("Sampler completion receipt status must be completed.".into());
+    }
+    Ok(json!({
+        "schema_version":1,
+        "app_id":"sampler",
+        "receipt_path":canonical,
+        "request_id":request.expected_request_id,
+        "script_sha256":request.expected_script_sha256.to_ascii_lowercase(),
+        "script_completion_receipt_verified":true,
+        "script_effect_verified":false,
+        "native_sampler_completion_signal_verified":false,
+        "source_runtime_verified":false,
+        "production_ready":false
+    }))
 }
 
 #[cfg(test)]
@@ -548,22 +808,22 @@ mod tests{
     }
 
     #[test]
-    fn foundation_reports_sixty_percent_without_runtime_claims(){
+    fn foundation_reports_eighty_percent_without_runtime_claims(){
         let capability=capability_report();
-        assert_eq!(capability["source_milestone_percent"],60);
+        assert_eq!(capability["source_milestone_percent"],80);
         assert_eq!(capability["source_scope_complete"],false);
         assert_eq!(capability["source_runtime_verified"],false);
         assert_eq!(capability["production_ready"],false);
         let readiness=readiness_report();
-        assert_eq!(readiness["host_transport"],"painter_remote_connectivity_probe_plus_sampler_script_launch");
+        assert_eq!(readiness["host_transport"],"painter_pid_bound_fixed_read_only_remote_plus_sampler_receipt_contract");
         assert_eq!(readiness["host_ready_verified"],false);
-        assert_eq!(readiness["project_automation_ready"],"runtime_adapter_only_painter_and_sampler");
+        assert_eq!(readiness["project_automation_ready"],"bounded_painter_read_only_plus_sampler_completion_receipt");
     }
 
     #[test]
     fn automation_catalog_is_documented_but_execution_free(){
         let catalog=automation_catalog();
-        assert_eq!(catalog["source_milestone_percent"],60);
+        assert_eq!(catalog["source_milestone_percent"],80);
         assert_eq!(catalog["execution_supported"],true);
         assert_eq!(catalog["apps"]["painter"]["launch_flag"],"--enable-remote-scripting");
         assert_eq!(catalog["apps"]["designer"]["remote_transport_verified"],false);
@@ -628,10 +888,48 @@ mod tests{
             sampler_exe,
             script_path:script.to_string_lossy().into_owned(),
             expected_script_sha256:hash,
-            explicit_user_approval:true
+            explicit_user_approval:true,
+            receipt_path:None,
+            request_id:None
         };
         assert!(verify_sampler_script_binding(&request).is_ok());
         fs::write(&script,b"print('changed')").unwrap();
         assert!(verify_sampler_script_binding(&request).is_err());
+    }
+
+    #[test]
+    fn painter_read_query_is_fixed_and_non_arbitrary(){
+        assert_eq!(painter_read_command("api_version").unwrap(),("js","alg.version.painter"));
+        assert!(painter_read_command("eval_anything").is_err());
+        let request=PainterReadRequest{
+            painter_exe:std::env::temp_dir().join("Adobe Substance 3D Painter.exe").to_string_lossy().into_owned(),
+            expected_pid:7,
+            query:"api_version".into(),
+            explicit_user_approval:true
+        };
+        assert!(request.validate().is_ok());
+        let arbitrary=PainterReadRequest{query:"custom_js".into(),..request};
+        assert!(arbitrary.validate().is_err());
+    }
+
+    #[test]
+    fn sampler_completion_receipt_is_exactly_bound(){
+        let fixture=Fixture::new();
+        let receipt=fixture.0.join("receipt.json");
+        let hash="a".repeat(64);
+        fs::write(&receipt,serde_json::to_vec(&json!({
+            "schema_version":1,
+            "request_id":"req-80",
+            "script_sha256":hash,
+            "status":"completed"
+        })).unwrap()).unwrap();
+        let request=SamplerReceiptVerifyRequest{
+            receipt_path:receipt.to_string_lossy().into_owned(),
+            expected_request_id:"req-80".into(),
+            expected_script_sha256:"a".repeat(64)
+        };
+        let verified=verify_sampler_completion_receipt(&request).unwrap();
+        assert_eq!(verified["script_completion_receipt_verified"],true);
+        assert_eq!(verified["script_effect_verified"],false);
     }
 }

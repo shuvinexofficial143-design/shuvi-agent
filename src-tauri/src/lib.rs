@@ -423,7 +423,9 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - substance_3d_painter_remote_launch: {"request":{"painter_exe":"exact detected Painter executable","explicit_user_approval":true}} — high-risk exact Painter launch with only Adobe's documented --enable-remote-scripting flag; no remote command is sent
 - substance_3d_painter_remote_preflight: {"request":{"painter_exe":"exact detected Painter executable","expected_pid":1234,"explicit_user_approval":true}} — verifies exact Shuvi-managed process identity plus documented localhost:60041 reachability; endpoint ownership and host readiness remain unverified
 - substance_3d_sampler_script_fingerprint: {"script_path":"absolute .py file"} — read-only canonical path, size and SHA-256 receipt; executes nothing
-- substance_3d_sampler_script_launch: {"request":{"sampler_exe":"exact detected Sampler executable","script_path":"absolute .py file","expected_script_sha256":"exact prior fingerprint","explicit_user_approval":true}} — high-risk hash-bound launch using Adobe's documented --run-script surface; effect/completion is not inferred
+- substance_3d_sampler_script_launch: {"request":{"sampler_exe":"exact detected Sampler executable","script_path":"absolute .py file","expected_script_sha256":"exact prior fingerprint","explicit_user_approval":true,"receipt_path":"optional absolute .json target that must not already exist","request_id":"optional exact receipt request id"}} — high-risk hash-bound launch using Adobe's documented --run-script surface; optional Shuvi receipt environment is injected only when both receipt fields are supplied
+- substance_3d_painter_read_only: {"request":{"painter_exe":"exact detected Painter executable","expected_pid":1234,"query":"api_version","explicit_user_approval":true}} — verifies exact managed Painter PID owns localhost:60041, then sends only Adobe's fixed documented alg.version.painter JavaScript through /run.json; arbitrary commands are impossible
+- substance_3d_sampler_verify_receipt: {"request":{"receipt_path":"exact absolute .json receipt","expected_request_id":"exact launch request id","expected_script_sha256":"exact approved script SHA-256"}} — verifies a Shuvi completion receipt emitted by the approved hash-bound script; does not prove specific material/render effects
 - photoshop_capability_report: {}
 - photoshop_readiness_report: {}
 - photoshop_detect: {}
@@ -711,6 +713,8 @@ enum ToolAction {
     Substance3DPainterRemotePreflight { request:substance_3d::PainterRemotePreflightRequest },
     Substance3DSamplerScriptFingerprint { script_path:String },
     Substance3DSamplerScriptLaunch { request:substance_3d::SamplerScriptLaunchRequest },
+    Substance3DPainterReadOnly { request:substance_3d::PainterReadRequest },
+    Substance3DSamplerVerifyReceipt { request:substance_3d::SamplerReceiptVerifyRequest },
     PremiereDetect,
     PremiereLaunch { project: Option<String> },
     PremiereBridgeStart,
@@ -1596,6 +1600,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "substance_3d_painter_remote_preflight"
         | "substance_3d_sampler_script_fingerprint"
         | "substance_3d_sampler_script_launch"
+        | "substance_3d_painter_read_only"
+        | "substance_3d_sampler_verify_receipt"
         | "photoshop_capability_report"
         | "photoshop_readiness_report"
         | "photoshop_detect"
@@ -3522,8 +3528,30 @@ fn stage_tool(
             request.validate()?;
             (ToolAction::Substance3DSamplerScriptLaunch {request},
                 "Launch approved Sampler Python script".into(),
-                "High-risk launch using Adobe's documented --run-script surface. The exact .py file is freshly canonicalized and SHA-256 matched to the approved fingerprint immediately before launch; dispatch does not prove script effect or completion.".into(),
+                "High-risk launch using Adobe's documented --run-script surface. The exact .py file is freshly canonicalized and SHA-256 matched to the approved fingerprint immediately before launch; optional Shuvi receipt binding does not itself prove script effects.".into(),
                 RiskLevel::High)
+        }
+        "substance_3d_painter_read_only" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"substance_3d_painter_read_only requires request.".to_string())?;
+            let request:substance_3d::PainterReadRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Substance 3D Painter read-only request: {e}"))?;
+            request.validate()?;
+            (ToolAction::Substance3DPainterReadOnly {request},
+                "Read fixed Painter API version receipt".into(),
+                "Medium-risk remote read: require explicit approval, exact managed Painter process, fresh executable binding and proof that the expected PID owns localhost:60041; only fixed alg.version.painter is allowed, with no arbitrary script input.".into(),
+                RiskLevel::Medium)
+        }
+        "substance_3d_sampler_verify_receipt" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"substance_3d_sampler_verify_receipt requires request.".to_string())?;
+            let request:substance_3d::SamplerReceiptVerifyRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Substance 3D Sampler receipt verification request: {e}"))?;
+            request.validate()?;
+            (ToolAction::Substance3DSamplerVerifyReceipt {request},
+                "Verify Sampler script completion receipt".into(),
+                "Read-only verification of an exact JSON completion receipt bound to the expected request ID and approved script SHA-256. It verifies the Shuvi receipt contract, not a native Sampler completion signal or specific effect.".into(),
+                RiskLevel::Low)
         }
         "illustrator_capability_report" => (
             ToolAction::IllustratorCapabilityReport,
@@ -10777,11 +10805,21 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let detection=substance_3d::detect_installs()?;
             let exact=substance_3d::exact_detected_executable(&detection,"sampler",&request.sampler_exe)?;
             let binding=substance_3d::verify_sampler_script_binding(&request)?;
+            let receipt_contract=substance_3d::prepare_sampler_receipt_target(&request)?;
             let script_path=binding.get("canonical_script_path").and_then(Value::as_str)
                 .ok_or_else(||"Sampler script binding is missing canonical_script_path.".to_string())?;
             let script_sha256=binding.get("script_sha256").and_then(Value::as_str)
                 .ok_or_else(||"Sampler script binding is missing script_sha256.".to_string())?;
-            let mut child=Command::new(&exact).arg("--run-script").arg(script_path).spawn()
+            let receipt_path=receipt_contract.as_ref().and_then(|v|v.get("receipt_path")).and_then(Value::as_str).map(str::to_string);
+            let request_id=receipt_contract.as_ref().and_then(|v|v.get("request_id")).and_then(Value::as_str).map(str::to_string);
+            let mut command=Command::new(&exact);
+            command.arg("--run-script").arg(script_path);
+            if let (Some(receipt_path),Some(request_id))=(receipt_path.as_deref(),request_id.as_deref()){
+                command.env("SHUVI_SAMPLER_RECEIPT_PATH",receipt_path)
+                    .env("SHUVI_SAMPLER_REQUEST_ID",request_id)
+                    .env("SHUVI_SAMPLER_SCRIPT_SHA256",script_sha256);
+            }
+            let mut child=command.spawn()
                 .map_err(|e|format!("Could not launch approved Substance 3D Sampler script: {e}"))?;
             let pid=child.id();
             if let Err(error)=register_managed_process(state,pid){
@@ -10798,12 +10836,36 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "launch_args":["--run-script",script_path],
                     "script_sha256":script_sha256,
                     "script_launch_dispatched":true,
+                    "completion_receipt_expected":receipt_contract.is_some(),
+                    "receipt_path":receipt_path,
+                    "request_id":request_id,
                     "script_effect_verified":false,
                     "script_completion_verified":false,
                     "no_blind_retry":true,
                     "source_runtime_verified":false,
                     "production_ready":false
                 })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DPainterReadOnly {request} => {
+            if !managed_process_identity_matches(state,request.expected_pid)?{
+                return Err("Painter read-only request requires the exact live Shuvi-managed process instance.".into());
+            }
+            let detection=substance_3d::detect_installs()?;
+            substance_3d::exact_detected_executable(&detection,"painter",&request.painter_exe)?;
+            let value=substance_3d::painter_read_only_receipt(&request,true)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DSamplerVerifyReceipt {request} => {
+            let value=substance_3d::verify_sampler_completion_receipt(&request)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)
             })
         }

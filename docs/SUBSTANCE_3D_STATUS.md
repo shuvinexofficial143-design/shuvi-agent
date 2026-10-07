@@ -2,65 +2,74 @@
 
 ## Source milestone
 
-Current declared source milestone: **60%**
+Current declared source milestone: **80%**
 
-The 60% milestone keeps the documentation-backed automation contract and adds narrowly bounded, permission-first runtime adapters for Painter and Sampler. It still does not claim project automation readiness, host acceptance, verified command effects, or production readiness.
+The 80% milestone adds bounded readback evidence on top of the 60% Painter/Sampler runtime adapters. It does not make the integration runtime-accepted or production-ready.
 
-## Suite scope
+## Painter read-only remote receipt
 
-Shuvi continues to recognize Painter, Designer, Sampler, Stager and Modeler as Substance 3D desktop apps.
+Adobe documents Painter remote control through localhost port 60041, route `/run.json`, base64 encoded JavaScript/Python payloads, and the read-only JavaScript example `alg.version.painter`.
 
-## Painter runtime adapter
+Shuvi now allows exactly one remote read query:
 
-Adobe documents remote control for Painter when the application is launched with `--enable-remote-scripting`, with the example client using localhost port 60041.
+- `query=api_version`
+- fixed command: `alg.version.painter`
 
-Shuvi now provides:
-- explicit-approval, exact-detected Painter launch with only `--enable-remote-scripting`,
-- managed process registration,
-- a separate preflight that requires the exact live Shuvi-managed PID and a fresh exact executable binding,
-- a bounded TCP connectivity check to `127.0.0.1:60041`.
+Before dispatch Shuvi requires:
+- explicit user approval,
+- exact live Shuvi-managed Painter PID,
+- fresh exact detected Painter executable binding,
+- proof via Windows `Get-NetTCPConnection` that the expected Painter PID owns listening port 60041.
 
-The preflight does **not** send JavaScript or Python. A reachable port is not treated as proof that the endpoint belongs to the expected Painter PID, so:
-- `endpoint_process_ownership_verified=false`
-- `remote_command_dispatch_supported=false`
-- `host_ready_verified=false`
+Only after those checks does Shuvi POST the fixed command to `/run.json`. No arbitrary JS/Python string can be supplied through the tool contract.
 
-## Sampler runtime adapter
+The receipt reports:
+- exact managed PID,
+- endpoint owner PID,
+- fixed documented command,
+- returned JSON value,
+- `read_receipt_verified=true`,
+- `mutation_performed=false`.
 
-Adobe documents Python scripts and the `--run-script` command-line parameter.
+## Sampler completion receipt
 
-Before a Sampler script can be launched, Shuvi:
-- accepts only an absolute `.py` path,
-- canonicalizes the file,
-- limits it to 1 MiB,
-- produces a SHA-256 fingerprint receipt,
-- requires the launch request to provide that exact prior SHA-256,
-- fingerprints the file again immediately before dispatch,
-- requires explicit user approval,
-- binds launch to the freshly detected Sampler executable.
+The 60% approved `.py` launch remains hash-bound to a fresh SHA-256. At 80%, the launch can optionally include:
+- an absolute `.json` receipt target that must not already exist,
+- a bounded request ID.
 
-The source adapter launches Sampler with `--run-script <canonical approved script>`. Dispatch is not treated as effect or completion proof:
+When both are supplied, Shuvi injects:
+- `SHUVI_SAMPLER_RECEIPT_PATH`
+- `SHUVI_SAMPLER_REQUEST_ID`
+- `SHUVI_SAMPLER_SCRIPT_SHA256`
+
+into the Sampler process environment. This is a **Shuvi receipt contract**, not an Adobe-native completion API. An approved script may write a receipt with:
+- `schema_version: 1`
+- exact `request_id`
+- exact approved `script_sha256`
+- `status: "completed"`
+
+The separate verification tool validates that receipt with bounded file size and exact identity/hash binding.
+
+A valid receipt means:
+- `script_completion_receipt_verified=true`
+
+It does **not** mean:
+- a specific material/render/export effect was correct,
+- Adobe Sampler emitted a native completion signal.
+
+Therefore:
 - `script_effect_verified=false`
-- `script_completion_verified=false`
-- blind retry after uncertain dispatch is not allowed.
+- `native_sampler_completion_signal_verified=false`
 
 ## Still blocked
 
-Designer:
-- Python API/plugin planning remains supported,
-- plugin install/execution is not implemented at 60%.
-
-Stager and Modeler:
-- no authoritative scripting surface has been verified in this integration,
-- automation stays blocked.
-
-Also not claimed:
-- Painter remote JavaScript/Python command dispatch,
-- Painter endpoint-to-PID ownership proof,
-- project/material/texture-set/model inspection,
-- render/export completion,
-- verified Sampler script effects,
-- runtime acceptance.
+- arbitrary Painter JavaScript/Python remote commands,
+- Painter mutating remote commands,
+- Designer plugin install/execution,
+- Stager/Modeler scripting without authoritative support,
+- project/material/texture-set/model mutation claims,
+- render/export effect verification,
+- automatic runtime acceptance.
 
 ## Runtime status
 
@@ -74,4 +83,4 @@ Green CI validates source consistency only.
 
 ## Next source phase
 
-The 80% milestone should add bounded, typed Painter remote read-only command receipts and stronger completion/readback evidence for Sampler without inferring success from dispatch. Designer execution and Stager/Modeler scripting remain blocked unless separately verified.
+The 100% milestone should close the bounded source scope with a canonical acceptance summary and an explicit real-Windows runtime acceptance handoff. Unsupported capabilities remain blocked rather than being added merely to reach 100%.
