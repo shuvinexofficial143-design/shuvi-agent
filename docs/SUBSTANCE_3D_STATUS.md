@@ -2,40 +2,56 @@
 
 ## Source milestone
 
-Current declared source milestone: **20%**
+Current declared source milestone: **40%**
 
-This milestone establishes Shuvi's bounded Windows desktop foundation for the Adobe Substance 3D app family. It does not claim a supported host scripting transport, project inspection, material/model automation, rendering automation, or runtime acceptance.
+The 40% milestone keeps the five-app desktop foundation and adds a documentation-backed, planning-only automation contract. It does not execute scripts, plugins, remote commands, project changes, rendering, or export.
 
 ## Suite scope
 
-The foundation recognizes these app identities:
+Shuvi continues to recognize Painter, Designer, Sampler, Stager and Modeler as Substance 3D desktop apps.
 
-- Painter
-- Designer
-- Sampler
-- Stager
-- Modeler
+## Documented automation surfaces
 
-Each detected candidate must live under a recognized Adobe Substance 3D Program Files folder and use the matching app executable name.
+Painter:
+- Adobe documents Python and JavaScript APIs.
+- Adobe documents remote scripting when Painter is launched with `--enable-remote-scripting`.
+- Shuvi now exposes this as a planning-only surface; no remote command transport is implemented yet.
+
+Designer:
+- Adobe documents a Python API and Python plugin system.
+- Shuvi can plan an in-app Python plugin workflow using an absolute `.py` or `.sdplugin` path.
+- No external remote transport is claimed or implemented.
+
+Sampler:
+- Adobe documents a Python API, plugins and scripts.
+- Adobe release/documentation material documents the `--run-script` command-line parameter.
+- Shuvi can plan an absolute `.py` script launch, but does not execute it yet.
+
+Stager and Modeler:
+- no authoritative scripting surface was verified in the research used for this milestone,
+- Shuvi therefore blocks automation planning for them instead of inferring an API.
 
 ## Implemented source scope
 
-- bounded Windows detection under standard `Program Files/Adobe` roots,
-- recognition of the five Substance 3D desktop app identities,
-- exact detected executable validation bound to the requested `app_id`,
-- managed process registration after launch,
-- capability report,
-- readiness report,
-- deterministic Rust unit tests,
-- dedicated source safety CI.
+- bounded five-app Windows detection and exact launch,
+- capability/readiness reports,
+- documentation-backed automation surface catalog,
+- bounded automation planner for Painter, Designer and Sampler,
+- exact app/surface pair validation,
+- bounded absolute script/plugin path validation where required,
+- fail-closed Stager/Modeler planning,
+- source safety and Rust unit tests.
 
-## Automation boundary
+## Execution boundary
 
-`host_transport=not_implemented`
+All 40% automation plans report:
 
-`future_host_transport=research_required`
+- `execution_supported=false`
+- `mutation_performed=false`
+- `source_runtime_verified=false`
+- `production_ready=false`
 
-No project, scene, graph, material, texture-set, mesh, model, render or asset automation API is claimed at 20%.
+No arbitrary Python/JavaScript payload is accepted or executed in this milestone.
 
 ## Runtime status
 
@@ -49,4 +65,4 @@ Green CI does not change these flags.
 
 ## Next source phase
 
-The 40% milestone should first research authoritative supported automation surfaces app-by-app. Only supported, verifiable interfaces should be added; no hidden or inferred host API should be invented.
+The 60% milestone may add permission-first runtime adapters only for separately verified transport surfaces, beginning with Painter remote-scripting readiness and/or Sampler script launch. Designer plugin execution should remain separately guarded, and Stager/Modeler stay blocked until an authoritative scripting surface is verified.

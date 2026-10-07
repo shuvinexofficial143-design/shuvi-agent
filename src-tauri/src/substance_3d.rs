@@ -1,3 +1,4 @@
+use serde::{Deserialize,Serialize};
 use serde_json::{json,Value};
 use std::{collections::HashSet,fs,path::{Path,PathBuf}};
 
@@ -151,7 +152,7 @@ pub fn capability_report()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_substance_3d",
-        "source_milestone_percent":20,
+        "source_milestone_percent":40,
         "source_scope_complete":false,
         "suite_apps":["painter","designer","sampler","stager","modeler"],
         "implemented":{
@@ -159,15 +160,22 @@ pub fn capability_report()->Value{
             "exact_detected_executable_launch":true,
             "managed_process_tracking":true,
             "capability_report":true,
-            "readiness_report":true
+            "readiness_report":true,
+            "automation_surface_catalog":true,
+            "bounded_automation_planning":true
         },
         "not_implemented":{
-            "host_transport":true,
+            "runtime_automation_execution":true,
+            "painter_remote_transport_execution":true,
+            "designer_plugin_install_or_execution":true,
+            "sampler_script_execution":true,
+            "stager_verified_scripting_surface":true,
+            "modeler_verified_scripting_surface":true,
             "project_or_scene_inspection":true,
             "material_graph_inspection":true,
             "texture_set_inspection":true,
             "model_inspection":true,
-            "asset_import_export":true,
+            "asset_import_export_execution":true,
             "project_mutation":true,
             "render_execution":true,
             "runtime_acceptance":true
@@ -181,19 +189,161 @@ pub fn readiness_report()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_substance_3d",
-        "source_milestone_percent":20,
-        "source_coding_status":"desktop_foundation_complete",
+        "source_milestone_percent":40,
+        "source_coding_status":"documented_automation_contract_complete",
         "suite_apps":["painter","designer","sampler","stager","modeler"],
         "desktop_detection":true,
         "exact_detected_launch":true,
-        "host_transport":"not_implemented",
-        "future_host_transport":"research_required",
+        "host_transport":"documented_surfaces_planning_only",
+        "future_host_transport":"painter_remote_scripting_designer_python_plugins_sampler_python_scripts",
         "host_ready_verified":false,
-        "project_automation_ready":false,
+        "project_automation_ready":"planning_only_for_painter_designer_sampler",
         "source_runtime_verified":false,
         "production_ready":false,
-        "next_source_phase":"research authoritative supported automation surfaces per Substance 3D app before adding any project/material/model inspection or mutation contract"
+        "next_source_phase":"add permission-first runtime adapters only for separately verified Painter remote scripting and Sampler script launch surfaces; keep Designer in-app plugin execution separate and keep Stager/Modeler blocked until authoritative scripting surfaces are verified"
     })
+}
+
+
+pub fn automation_catalog()->Value{
+    json!({
+        "schema_version":1,
+        "integration":"adobe_substance_3d",
+        "source_milestone_percent":40,
+        "execution_supported":false,
+        "apps":{
+            "painter":{
+                "documented_surface":"python_and_javascript_api_with_remote_scripting",
+                "transport":"remote_scripting",
+                "launch_flag":"--enable-remote-scripting",
+                "planning_supported":true,
+                "runtime_adapter_implemented":false
+            },
+            "designer":{
+                "documented_surface":"python_api_plugins",
+                "transport":"in_app_python_plugin",
+                "planning_supported":true,
+                "runtime_adapter_implemented":false,
+                "remote_transport_verified":false
+            },
+            "sampler":{
+                "documented_surface":"python_api_plugins_and_scripts",
+                "transport":"python_script_with_command_line_launch",
+                "launch_flag":"--run-script",
+                "planning_supported":true,
+                "runtime_adapter_implemented":false
+            },
+            "stager":{
+                "documented_surface":"no_authoritative_scripting_surface_verified_in_current_research",
+                "planning_supported":false,
+                "runtime_adapter_implemented":false
+            },
+            "modeler":{
+                "documented_surface":"no_authoritative_scripting_surface_verified_in_current_research",
+                "planning_supported":false,
+                "runtime_adapter_implemented":false
+            }
+        },
+        "source_runtime_verified":false,
+        "production_ready":false
+    })
+}
+
+fn validate_absolute_script_path(path:&str,allowed_extensions:&[&str])->Result<(),String>{
+    if path.trim().is_empty()||path.len()>MAX_PATH_BYTES||path.chars().any(char::is_control){
+        return Err("Substance 3D automation script path is empty, oversized, or contains control characters.".into());
+    }
+    let p=Path::new(path);
+    if !p.is_absolute(){
+        return Err("Substance 3D automation script path must be absolute.".into());
+    }
+    let ext=p.extension().and_then(|v|v.to_str()).unwrap_or("").to_ascii_lowercase();
+    if !allowed_extensions.iter().any(|v|*v==ext){
+        return Err("Substance 3D automation script/plugin extension is unsupported for the selected app surface.".into());
+    }
+    Ok(())
+}
+
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AutomationPlanRequest{
+    pub app_id:String,
+    pub automation_kind:String,
+    pub script_path:Option<String>,
+    pub acknowledge_in_app_install:bool,
+}
+
+impl AutomationPlanRequest{
+    pub fn validate(&self)->Result<(),String>{
+        match (self.app_id.as_str(),self.automation_kind.as_str()){
+            ("painter","remote_scripting")=>{
+                if self.script_path.is_some(){
+                    return Err("Painter remote_scripting planning does not accept an arbitrary script path at the 40% milestone.".into());
+                }
+                if self.acknowledge_in_app_install{
+                    return Err("Painter remote_scripting planning does not use acknowledge_in_app_install.".into());
+                }
+            }
+            ("designer","python_plugin")=>{
+                let path=self.script_path.as_deref().ok_or("Designer python_plugin planning requires script_path.")?;
+                validate_absolute_script_path(path,&["py","sdplugin"])?;
+                if !self.acknowledge_in_app_install{
+                    return Err("Designer python_plugin planning requires acknowledge_in_app_install=true because the documented surface is an in-app plugin workflow.".into());
+                }
+            }
+            ("sampler","python_script")=>{
+                let path=self.script_path.as_deref().ok_or("Sampler python_script planning requires script_path.")?;
+                validate_absolute_script_path(path,&["py"])?;
+                if self.acknowledge_in_app_install{
+                    return Err("Sampler command-line python_script planning does not use acknowledge_in_app_install.".into());
+                }
+            }
+            ("stager",_)|("modeler",_)=>{
+                return Err("No authoritative scripting surface has been verified for this Substance 3D app in the current source milestone; automation planning is blocked.".into());
+            }
+            _=>{
+                return Err("Substance 3D automation pair must be painter/remote_scripting, designer/python_plugin, or sampler/python_script.".into());
+            }
+        }
+        Ok(())
+    }
+}
+
+pub fn plan_automation(request:&AutomationPlanRequest)->Result<Value,String>{
+    request.validate()?;
+    let details=match (request.app_id.as_str(),request.automation_kind.as_str()){
+        ("painter","remote_scripting")=>json!({
+            "documented_surface":"python_and_javascript_api_with_remote_scripting",
+            "transport":"remote_scripting",
+            "launch_args":["--enable-remote-scripting"],
+            "arbitrary_command_execution_implemented":false,
+            "requires_runtime_readiness_probe":true
+        }),
+        ("designer","python_plugin")=>json!({
+            "documented_surface":"python_api_plugins",
+            "transport":"in_app_python_plugin",
+            "script_path":request.script_path,
+            "requires_in_app_install":true,
+            "remote_transport_verified":false
+        }),
+        ("sampler","python_script")=>json!({
+            "documented_surface":"python_api_plugins_and_scripts",
+            "transport":"python_script_with_command_line_launch",
+            "launch_args":["--run-script",request.script_path.as_deref().unwrap_or("")],
+            "requires_runtime_readiness_probe":true
+        }),
+        _=>return Err("Unsupported Substance 3D automation plan.".into())
+    };
+    Ok(json!({
+        "plan_type":"substance_3d_automation_plan",
+        "app_id":request.app_id,
+        "automation_kind":request.automation_kind,
+        "details":details,
+        "execution_supported":false,
+        "mutation_performed":false,
+        "source_runtime_verified":false,
+        "production_ready":false
+    }))
 }
 
 #[cfg(test)]
@@ -243,15 +393,56 @@ mod tests{
     }
 
     #[test]
-    fn foundation_reports_twenty_percent_without_runtime_claims(){
+    fn foundation_reports_forty_percent_without_runtime_claims(){
         let capability=capability_report();
-        assert_eq!(capability["source_milestone_percent"],20);
+        assert_eq!(capability["source_milestone_percent"],40);
         assert_eq!(capability["source_scope_complete"],false);
         assert_eq!(capability["source_runtime_verified"],false);
         assert_eq!(capability["production_ready"],false);
         let readiness=readiness_report();
-        assert_eq!(readiness["host_transport"],"not_implemented");
+        assert_eq!(readiness["host_transport"],"documented_surfaces_planning_only");
         assert_eq!(readiness["host_ready_verified"],false);
-        assert_eq!(readiness["project_automation_ready"],false);
+        assert_eq!(readiness["project_automation_ready"],"planning_only_for_painter_designer_sampler");
+    }
+
+    #[test]
+    fn automation_catalog_is_documented_but_execution_free(){
+        let catalog=automation_catalog();
+        assert_eq!(catalog["source_milestone_percent"],40);
+        assert_eq!(catalog["execution_supported"],false);
+        assert_eq!(catalog["apps"]["painter"]["launch_flag"],"--enable-remote-scripting");
+        assert_eq!(catalog["apps"]["designer"]["remote_transport_verified"],false);
+        assert_eq!(catalog["apps"]["sampler"]["launch_flag"],"--run-script");
+        assert_eq!(catalog["apps"]["stager"]["planning_supported"],false);
+        assert_eq!(catalog["apps"]["modeler"]["planning_supported"],false);
+    }
+
+    #[test]
+    fn planner_accepts_only_verified_surface_pairs(){
+        let painter=AutomationPlanRequest{
+            app_id:"painter".into(),automation_kind:"remote_scripting".into(),
+            script_path:None,acknowledge_in_app_install:false
+        };
+        assert_eq!(plan_automation(&painter).unwrap()["execution_supported"],false);
+
+        let plugin=std::env::temp_dir().join("shuvi-designer-plugin.py").to_string_lossy().into_owned();
+        let designer=AutomationPlanRequest{
+            app_id:"designer".into(),automation_kind:"python_plugin".into(),
+            script_path:Some(plugin),acknowledge_in_app_install:true
+        };
+        assert_eq!(plan_automation(&designer).unwrap()["details"]["requires_in_app_install"],true);
+
+        let script=std::env::temp_dir().join("shuvi-sampler-script.py").to_string_lossy().into_owned();
+        let sampler=AutomationPlanRequest{
+            app_id:"sampler".into(),automation_kind:"python_script".into(),
+            script_path:Some(script),acknowledge_in_app_install:false
+        };
+        assert_eq!(plan_automation(&sampler).unwrap()["details"]["launch_args"][0],"--run-script");
+
+        let stager=AutomationPlanRequest{
+            app_id:"stager".into(),automation_kind:"python_script".into(),
+            script_path:None,acknowledge_in_app_install:false
+        };
+        assert!(plan_automation(&stager).is_err());
     }
 }

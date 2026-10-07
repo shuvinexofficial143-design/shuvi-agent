@@ -418,6 +418,8 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - substance_3d_readiness_report: {}
 - substance_3d_detect: {}
 - substance_3d_launch: {"app_id":"painter|designer|sampler|stager|modeler","substance_exe":"exact absolute executable path returned by substance_3d_detect"} — launches only a freshly detected exact Substance 3D candidate; no project open, host scripting or content mutation
+- substance_3d_automation_catalog: {} — read-only documented automation surface matrix; Painter remote scripting, Designer Python plugin and Sampler Python script planning are recognized while Stager/Modeler stay blocked without an authoritative scripting surface
+- substance_3d_plan_automation: {"request":{"app_id":"painter|designer|sampler","automation_kind":"remote_scripting|python_plugin|python_script","script_path":"absolute .py/.sdplugin when required","acknowledge_in_app_install":false}} — planning only; no script/plugin execution or project mutation
 - photoshop_capability_report: {}
 - photoshop_readiness_report: {}
 - photoshop_detect: {}
@@ -699,6 +701,8 @@ enum ToolAction {
     Substance3DReadinessReport,
     Substance3DDetect,
     Substance3DLaunch { app_id:String, substance_exe:String },
+    Substance3DAutomationCatalog,
+    Substance3DPlanAutomation { request:substance_3d::AutomationPlanRequest },
     PremiereDetect,
     PremiereLaunch { project: Option<String> },
     PremiereBridgeStart,
@@ -1578,6 +1582,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "substance_3d_readiness_report"
         | "substance_3d_detect"
         | "substance_3d_launch"
+        | "substance_3d_automation_catalog"
+        | "substance_3d_plan_automation"
         | "photoshop_capability_report"
         | "photoshop_readiness_report"
         | "photoshop_detect"
@@ -3446,6 +3452,23 @@ fn stage_tool(
                 "Launch detected Adobe Substance 3D app".into(),
                 format!("Launch exact freshly detected Substance 3D app_id={app_id} executable {substance_exe}; no project open, host scripting, render, import/export or content mutation."),
                 RiskLevel::Medium)
+        }
+        "substance_3d_automation_catalog" => (
+            ToolAction::Substance3DAutomationCatalog,
+            "Read Substance 3D documented automation catalog".into(),
+            "Read-only matrix of separately verified Adobe automation surfaces. It does not execute scripts, plugins, remote commands or project mutations.".into(),
+            RiskLevel::Low,
+        ),
+        "substance_3d_plan_automation" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"substance_3d_plan_automation requires request.".to_string())?;
+            let request:substance_3d::AutomationPlanRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Substance 3D automation plan request: {e}"))?;
+            request.validate()?;
+            (ToolAction::Substance3DPlanAutomation {request},
+                "Plan documented Substance 3D automation surface".into(),
+                "Planning only for Painter remote scripting, Designer Python plugin, or Sampler Python script surfaces. Stager/Modeler remain blocked and no automation is executed.".into(),
+                RiskLevel::Low)
         }
         "illustrator_capability_report" => (
             ToolAction::IllustratorCapabilityReport,
@@ -10627,6 +10650,21 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "source_runtime_verified":false,
                     "production_ready":false
                 })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DAutomationCatalog => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&substance_3d::automation_catalog()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DPlanAutomation {request} => {
+            let value=substance_3d::plan_automation(&request)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)
             })
         }
