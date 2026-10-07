@@ -226,7 +226,7 @@ root.innerHTML = `
           <strong>Pairing steps</strong>
           <p>1. Open Premiere Pro 25.6+ and load the Shuvi Premiere Bridge UXP panel.</p>
           <p>2. On the first pairing, copy this token into the Premiere panel and press Connect.</p>
-          <p>3. The token is persisted securely by Shuvi and locally by the UXP panel, so later restarts should reconnect automatically.</p>
+          <p>3. The token is stored securely by Shuvi and locally by the UXP panel, so restarts reconnect automatically while the bounded pairing remains valid. Manual Stop/Disconnect revokes it.</p>
         </div>
       </div>
     </section>
