@@ -47,3 +47,10 @@ test("tool receipts use a tighter provider-only ceiling than visible chat messag
   const block=main.slice(start,end);
   assert.match(block,/boundedToolEnvelopeBytes\(content\) != null/);
 });
+
+test("recovery checkpoint stores only the active task slice",()=>{
+  const start=main.indexOf("function currentCheckpoint()");
+  const end=main.indexOf("function renderOrchestrationStatus",start);
+  const block=main.slice(start,end);
+  assert.match(block,/messages: currentTaskMessages\(messages\)/);
+});
