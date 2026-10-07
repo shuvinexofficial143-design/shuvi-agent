@@ -15,7 +15,7 @@ function loadPanel() {
   } };
   vm.createContext(panel);
   vm.runInContext(readFileSync(new URL("../integrations/premiere-uxp/main.js", import.meta.url), "utf8"), panel);
-  vm.runInContext('bridgeToken = "initial";', panel);
+  vm.runInContext('bridgeToken = "pairing"; bridgeSessionToken = "initial";', panel);
   return panel;
 }
 
@@ -36,10 +36,10 @@ test("failed result delivery neither repeats edit nor posts a conflicting failur
   assert.equal(posts, 1);
 });
 
-test("token changes during execution cannot submit results to new pairing", async () => {
+test("session token changes during execution cannot submit results to a new session", async () => {
   const panel = loadPanel();
   panel.executeCommand = async () => {
-    vm.runInContext('bridgeToken = "replacement";', panel);
+    vm.runInContext('bridgeSessionToken = "replacement";', panel);
     return { edited: true };
   };
   panel.bridgeFetch = async (path, options, timeout, token) => {
@@ -53,7 +53,7 @@ test("unpair while polling prevents execution of fetched command", async () => {
   const panel = loadPanel();
   panel.executeCommand = async () => assert.fail("Must not edit after unpair");
   panel.bridgeFetch = async () => {
-    vm.runInContext('bridgeToken = "";', panel);
+    vm.runInContext('bridgeSessionToken = "";', panel);
     return { id: "one", action: "test" };
   };
   await panel.pollBridge();
