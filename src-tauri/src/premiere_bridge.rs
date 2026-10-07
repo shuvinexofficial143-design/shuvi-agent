@@ -859,23 +859,46 @@ mod tests {
     }
 
     #[test]
-    fn pairing_expires_and_rotation_rejects_old_token() {
+    fn session_expiry_and_rotation_reject_old_tokens() {
         let shared = PremiereBridgeShared::default();
         *shared.enabled.lock().unwrap() = true;
-        *shared.token.lock().unwrap() = Some("first".into());
-        *shared.token_created_ms.lock().unwrap() = Some(now_ms());
+        *shared.session_token.lock().unwrap() = Some("first".into());
+        *shared.session_created_ms.lock().unwrap() = Some(now_ms());
         assert!(shared.authenticate(Some("first")));
-        *shared.token.lock().unwrap() = Some("second".into());
+
+        *shared.session_token.lock().unwrap() = Some("second".into());
         assert!(!shared.authenticate(Some("first")));
-        *shared.token_created_ms.lock().unwrap() = Some(now_ms().saturating_sub(PREMIERE_PAIRING_TTL_MS + 1));
+
+        *shared.session_created_ms.lock().unwrap() =
+            Some(now_ms().saturating_sub(PREMIERE_SESSION_TTL_MS + 1));
         assert!(!shared.authenticate(Some("second")));
     }
 
     #[test]
-    fn persisted_pairing_lifetime_cannot_be_reset_by_restart_clock() {
-        let issued_at_ms = now_ms().saturating_sub(PREMIERE_PAIRING_TTL_MS + 1);
-        assert!(!PremiereBridgeShared::pairing_is_current(issued_at_ms));
-        assert!(!PremiereBridgeShared::pairing_is_current(now_ms().saturating_add(60_000)));
+    fn persistent_pairing_can_renew_a_bounded_session_without_repairing() {
+        let shared = PremiereBridgeShared::default();
+        *shared.enabled.lock().unwrap() = true;
+        *shared.pairing_secret.lock().unwrap() = Some("0123456789abcdef0123456789abcdef".into());
+
+        let (session, expires_in_ms) = shared
+            .issue_session(Some("0123456789abcdef0123456789abcdef"))
+            .unwrap();
+        assert_eq!(expires_in_ms, PREMIERE_SESSION_TTL_MS);
+        assert!(shared.authenticate(Some(&session)));
+        assert!(!shared.authenticate_pairing(Some("wrong")));
+    }
+
+    #[test]
+    fn session_rotation_clears_unconfirmed_work_before_new_auth() {
+        let shared = PremiereBridgeShared::default();
+        shared.work.lock().unwrap().enqueue(PremiereBridgeCommand {
+            id: "uncertain".into(),
+            action: "inspect_context".into(),
+            arguments: json!({}),
+        }, Duration::from_secs(10)).unwrap();
+        shared.rotate_session().unwrap();
+        assert_eq!(shared.work.lock().unwrap().queued_len(), 0);
+        assert!(shared.work.lock().unwrap().take_result("uncertain").is_err());
     }
 
     #[test]
