@@ -1685,6 +1685,10 @@ fn parse_tagged_tool_call(text: &str) -> Option<ToolProposal> {
     const START: &str = "<|tool_call_start|>";
     const END: &str = "<|tool_call_end|>";
 
+    if text.matches(START).count() != 1 || text.matches(END).count() != 1 {
+        return None;
+    }
+
     let start = text.find(START)? + START.len();
     let rest = &text[start..];
     let end = rest.find(END)?;
@@ -1695,6 +1699,10 @@ fn parse_tagged_tool_call(text: &str) -> Option<ToolProposal> {
 fn parse_xml_tool_call(text: &str) -> Option<ToolProposal> {
     const START: &str = "<tool_call>";
     const END: &str = "</tool_call>";
+
+    if text.matches(START).count() != 1 || text.matches(END).count() != 1 {
+        return None;
+    }
 
     let start = text.find(START)? + START.len();
     let rest = &text[start..];
@@ -2460,6 +2468,14 @@ mod tagged_tool_call_parser_tests {
     fn rejects_duplicate_tagged_argument_names() {
         let text = r#"<tool_call>ui_find(name='First',name='Second')</tool_call>"#;
         assert!(parse_tool_proposal(text).is_none());
+    }
+
+    #[test]
+    fn rejects_multiple_tagged_or_xml_call_blocks() {
+        let tagged = "<|tool_call_start|>premiere_detect<|tool_call_end|><|tool_call_start|>premiere_context<|tool_call_end|>";
+        let xml = "<tool_call>premiere_detect</tool_call><tool_call>premiere_context</tool_call>";
+        assert!(parse_tool_proposal(tagged).is_none());
+        assert!(parse_tool_proposal(xml).is_none());
     }
 
     #[test]
