@@ -348,8 +348,8 @@ pub fn capability_report()->Value{
     json!({
         "schema_version":1,
         "integration":"frame_io",
-        "source_milestone_percent":80,
-        "source_scope_complete":false,
+        "source_milestone_percent":100,
+        "source_scope_complete":true,
         "service_type":"adobe_included_web_api",
         "api_generation":"v4",
         "api_origin":API_ORIGIN,
@@ -372,7 +372,8 @@ pub fn capability_report()->Value{
             "file_metadata_inspection":true,
             "comment_listing":true,
             "comment_metadata_inspection":true,
-            "explicit_cursor_pagination":true
+            "explicit_cursor_pagination":true,
+            "canonical_source_acceptance_summary":true
         },
         "not_implemented":{
             "os_custom_uri_handler_registration":true,
@@ -392,8 +393,8 @@ pub fn readiness_report()->Value{
     json!({
         "schema_version":1,
         "integration":"frame_io",
-        "source_milestone_percent":80,
-        "source_coding_status":"read_only_review_surfaces_and_explicit_pagination_complete",
+        "source_milestone_percent":100,
+        "source_coding_status":"declared_bounded_source_scope_complete",
         "api_origin":API_ORIGIN,
         "auth_model":"adobe_ims_native_app_pkce",
         "oauth_authorize_endpoint":IMS_AUTHORIZE_URL,
@@ -404,10 +405,13 @@ pub fn readiness_report()->Value{
         "explicit_refresh_implemented":true,
         "automatic_refresh_before_api_reads":true,
         "token_refresh_skew_seconds":TOKEN_REFRESH_SKEW_SECONDS,
-        "project_automation_ready":"read_only_workspace_project_folder_file_and_comment_inspection",
+        "refresh_token_model":"optional_if_adobe_ims_issues_it",
+        "reauthentication_required_when_refresh_unavailable":true,
+        "project_automation_ready":"declared_bounded_source_scope_complete",
+        "source_completion":{"declared_scope_complete":true,"canonical_summary_tool":"frame_io_acceptance_summary","runtime_acceptance_pending":true},
         "source_runtime_verified":false,
         "production_ready":false,
-        "next_source_phase":"canonical bounded source completion with acceptance summary, explicit unclaimed writes, credential safety and runtime handoff; keep runtime verification false until Windows acceptance"
+        "next_source_phase":"real Windows Frame.io V4 acceptance testing; do not expand source scope unless a new milestone is explicitly defined"
     })
 }
 
@@ -628,6 +632,72 @@ pub fn summarize_comment(account_id:&str,comment_id:&str,body:&Value)->Result<Va
     }))
 }
 
+pub fn completion_summary()->Value{
+    json!({
+        "schema_version":1,
+        "integration":"frame_io",
+        "api_generation":"v4",
+        "source_milestone_percent":100,
+        "source_scope_complete":true,
+        "implemented_scope":{
+            "adobe_ims_native_app_pkce":true,
+            "client_secret_required":false,
+            "secure_access_token_storage":true,
+            "optional_secure_refresh_token_storage":true,
+            "expiry_tracking_and_conditional_refresh":true,
+            "identity_and_account_reads":true,
+            "workspace_and_project_reads":true,
+            "folder_and_file_metadata_reads":true,
+            "comment_and_review_reads":true,
+            "explicit_cursor_pagination":true,
+            "strict_api_origin_binding":true,
+            "bounded_secret_free_summaries":true,
+            "canonical_source_acceptance_summary":true
+        },
+        "credential_safety":{
+            "windows_native_keyring":true,
+            "access_token_exposed":false,
+            "refresh_token_exposed":false,
+            "pkce_verifier_exposed":false,
+            "client_secret_embedded":false,
+            "refresh_token_optional_if_issued":true,
+            "reauthentication_required_when_refresh_unavailable":true
+        },
+        "read_safety_gates":[
+            "Frame.io API origin pinned to https://api.frame.io",
+            "Adobe IMS endpoints pinned to documented Adobe hosts",
+            "resource identifiers bounded before path interpolation",
+            "response summaries bounded before model exposure",
+            "pagination advances only with validated opaque after cursor",
+            "signed media, download, view, attachment and arbitrary external links omitted"
+        ],
+        "intentionally_unclaimed":[
+            "comment_create_update_delete",
+            "uploads",
+            "shares",
+            "project_workspace_folder_file_mutation",
+            "deletion",
+            "signed_media_download_execution",
+            "automatic_unbounded_pagination",
+            "automatic_os_custom_uri_handler_registration",
+            "runtime_acceptance"
+        ],
+        "write_safety":{
+            "write_tools_registered":false,
+            "mutations_performed_by_declared_scope":false,
+            "blind_write_retry_supported":false
+        },
+        "runtime_handoff":{
+            "required_environment":"real Windows Shuvi desktop app with a provisioned Frame.io V4 account and Adobe Developer Console user-auth credential",
+            "acceptance_required":true,
+            "source_runtime_verified":false,
+            "production_ready":false
+        },
+        "source_runtime_verified":false,
+        "production_ready":false
+    })
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -717,16 +787,39 @@ mod tests{
     }
 
     #[test]
-    fn reports_eighty_percent_without_runtime_claims(){
+    fn reports_hundred_percent_without_runtime_claims(){
         let cap=capability_report();
-        assert_eq!(cap["source_milestone_percent"],80);
-        assert_eq!(cap["source_scope_complete"],false);
+        assert_eq!(cap["source_milestone_percent"],100);
+        assert_eq!(cap["source_scope_complete"],true);
         assert_eq!(cap["source_runtime_verified"],false);
         assert_eq!(cap["production_ready"],false);
         let ready=readiness_report();
         assert_eq!(ready["oauth_flow_implemented"],"native_app_pkce_manual_callback_completion");
         assert_eq!(ready["automatic_refresh_before_api_reads"],true);
-        assert_eq!(ready["project_automation_ready"],"read_only_workspace_project_folder_file_and_comment_inspection");
+        assert_eq!(ready["project_automation_ready"],"declared_bounded_source_scope_complete");
+        assert_eq!(ready["source_completion"]["declared_scope_complete"],true);
+        assert_eq!(ready["source_completion"]["runtime_acceptance_pending"],true);
+        assert_eq!(ready["refresh_token_model"],"optional_if_adobe_ims_issues_it");
+        assert_eq!(ready["reauthentication_required_when_refresh_unavailable"],true);
+    }
+
+    #[test]
+    fn oauth_token_response_accepts_missing_optional_refresh_token(){
+        let body=json!({"access_token":"abc.def_123","token_type":"bearer","expires_in":3600});
+        let tokens=parse_oauth_token_response(&body).unwrap();
+        assert!(tokens.refresh_token.is_none());
+    }
+
+    #[test]
+    fn completion_summary_never_promotes_runtime_or_writes(){
+        let summary=completion_summary();
+        assert_eq!(summary["source_milestone_percent"],100);
+        assert_eq!(summary["source_scope_complete"],true);
+        assert_eq!(summary["implemented_scope"]["canonical_source_acceptance_summary"],true);
+        assert_eq!(summary["credential_safety"]["refresh_token_optional_if_issued"],true);
+        assert_eq!(summary["write_safety"]["write_tools_registered"],false);
+        assert_eq!(summary["source_runtime_verified"],false);
+        assert_eq!(summary["production_ready"],false);
     }
 
     #[test]
