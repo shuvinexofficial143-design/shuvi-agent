@@ -1,0 +1,34 @@
+name: Frame.io Source CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frame-io-static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - name: Repository structural validation
+        run: npm run validate
+      - name: Frame.io source safety tests
+        run: node --test scripts/frame-io-source-safety.test.mjs
+
+  frame-io-rust:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust compile check
+        run: cargo check --manifest-path src-tauri/Cargo.toml
+      - name: Frame.io Rust unit tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib frame_io

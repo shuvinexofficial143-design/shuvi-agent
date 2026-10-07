@@ -85,6 +85,7 @@ mod animate;
 mod animate_checkpoint;
 mod character_animator;
 mod substance_3d;
+mod frame_io;
 mod illustrator;
 mod illustrator_checkpoint;
 mod illustrator_bridge_queue;
@@ -426,6 +427,10 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - substance_3d_sampler_script_launch: {"request":{"sampler_exe":"exact detected Sampler executable","script_path":"absolute .py file","expected_script_sha256":"exact prior fingerprint","explicit_user_approval":true,"receipt_path":"optional absolute .json target that must not already exist","request_id":"optional exact receipt request id"}} — high-risk hash-bound launch using Adobe's documented --run-script surface; optional Shuvi receipt environment is injected only when both receipt fields are supplied
 - substance_3d_painter_read_only: {"request":{"painter_exe":"exact detected Painter executable","expected_pid":1234,"query":"api_version","explicit_user_approval":true}} — verifies exact managed Painter PID owns localhost:60041, then sends only Adobe's fixed documented alg.version.painter JavaScript through /run.json; arbitrary commands are impossible
 - substance_3d_sampler_verify_receipt: {"request":{"receipt_path":"exact absolute .json receipt","expected_request_id":"exact launch request id","expected_script_sha256":"exact approved script SHA-256"}} — verifies a Shuvi completion receipt emitted by the approved hash-bound script; does not prove specific material/render effects
+- frame_io_capability_report: {}
+- frame_io_readiness_report: {}
+- frame_io_credential_status: {} — returns only whether a Frame.io access token is stored; never exposes the token
+- frame_io_identity_preflight: {} — read-only V4 calls to /v4/me and /v4/accounts using the securely stored Bearer token; no projects/files/comments/uploads or mutations
 - photoshop_capability_report: {}
 - photoshop_readiness_report: {}
 - photoshop_detect: {}
@@ -715,6 +720,10 @@ enum ToolAction {
     Substance3DSamplerScriptLaunch { request:substance_3d::SamplerScriptLaunchRequest },
     Substance3DPainterReadOnly { request:substance_3d::PainterReadRequest },
     Substance3DSamplerVerifyReceipt { request:substance_3d::SamplerReceiptVerifyRequest },
+    FrameIoCapabilityReport,
+    FrameIoReadinessReport,
+    FrameIoCredentialStatus,
+    FrameIoIdentityPreflight,
     PremiereDetect,
     PremiereLaunch { project: Option<String> },
     PremiereBridgeStart,
@@ -1153,6 +1162,49 @@ fn load_api_key(provider_id: &str) -> Result<Option<String>, String> {
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(error) => Err(format!("Could not read credential: {error}")),
     }
+}
+
+fn frame_io_token_entry() -> Result<Entry, String> {
+    Entry::new(KEYRING_SERVICE, "integration:frame_io:access_token")
+        .map_err(|error| format!("Frame.io credential store unavailable: {error}"))
+}
+
+fn load_frame_io_access_token() -> Result<Option<String>, String> {
+    let entry=frame_io_token_entry()?;
+    match entry.get_password() {
+        Ok(value) => {
+            frame_io::validate_access_token(&value)?;
+            Ok(Some(value))
+        }
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(format!("Could not read Frame.io credential: {error}")),
+    }
+}
+
+#[tauri::command]
+fn save_frame_io_access_token(access_token:String)->Result<(),String>{
+    frame_io::validate_access_token(&access_token)?;
+    frame_io_token_entry()?
+        .set_password(&access_token)
+        .map_err(|error|format!("Could not save Frame.io access token: {error}"))
+}
+
+#[tauri::command]
+fn delete_frame_io_access_token()->Result<(),String>{
+    let entry=frame_io_token_entry()?;
+    match entry.delete_credential(){
+        Ok(())|Err(keyring::Error::NoEntry)=>Ok(()),
+        Err(error)=>Err(format!("Could not delete Frame.io access token: {error}")),
+    }
+}
+
+#[tauri::command]
+fn frame_io_credential_status()->Result<Value,String>{
+    Ok(json!({
+        "integration":"frame_io",
+        "credential_configured":load_frame_io_access_token()?.is_some(),
+        "credential_value_exposed":false
+    }))
 }
 
 fn http_client() -> Result<Client, String> {
@@ -1602,6 +1654,10 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "substance_3d_sampler_script_launch"
         | "substance_3d_painter_read_only"
         | "substance_3d_sampler_verify_receipt"
+        | "frame_io_capability_report"
+        | "frame_io_readiness_report"
+        | "frame_io_credential_status"
+        | "frame_io_identity_preflight"
         | "photoshop_capability_report"
         | "photoshop_readiness_report"
         | "photoshop_detect"
@@ -3553,6 +3609,30 @@ fn stage_tool(
                 "Read-only verification of an exact JSON completion receipt bound to the expected request ID and approved script SHA-256. It verifies the Shuvi receipt contract, not a native Sampler completion signal or specific effect.".into(),
                 RiskLevel::Low)
         }
+        "frame_io_capability_report" => (
+            ToolAction::FrameIoCapabilityReport,
+            "Read Frame.io source capability report".into(),
+            "Read the bounded Frame.io V4 source milestone and explicit unsupported surfaces. No network request or mutation.".into(),
+            RiskLevel::Low,
+        ),
+        "frame_io_readiness_report" => (
+            ToolAction::FrameIoReadinessReport,
+            "Read Frame.io readiness report".into(),
+            "Read the Frame.io V4 API/auth foundation status without exposing credentials.".into(),
+            RiskLevel::Low,
+        ),
+        "frame_io_credential_status" => (
+            ToolAction::FrameIoCredentialStatus,
+            "Check Frame.io credential status".into(),
+            "Report only whether an access token is securely configured. The credential value is never returned.".into(),
+            RiskLevel::Low,
+        ),
+        "frame_io_identity_preflight" => (
+            ToolAction::FrameIoIdentityPreflight,
+            "Verify Frame.io V4 identity and accessible accounts".into(),
+            "Read-only GET requests to the official Frame.io V4 /me and /accounts endpoints using the securely stored Bearer token. No project/file/comment/upload/share mutation.".into(),
+            RiskLevel::Low,
+        ),
         "illustrator_capability_report" => (
             ToolAction::IllustratorCapabilityReport,
             "Read Illustrator source capability report".into(),
@@ -10869,6 +10949,55 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 stderr:String::new(),exit_code:Some(0)
             })
         }
+        ToolAction::FrameIoCapabilityReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&frame_io::capability_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::FrameIoReadinessReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&frame_io::readiness_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::FrameIoCredentialStatus => {
+            let value=frame_io_credential_status()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::FrameIoIdentityPreflight => {
+            let token=load_frame_io_access_token()?
+                .ok_or_else(||"No Frame.io access token is securely configured.".to_string())?;
+            let client=http_client()?;
+            let me_response=send_with_retry(
+                client.get(frame_io::api_url(frame_io::ME_PATH)?).bearer_auth(&token),
+                "Frame.io /v4/me"
+            ).await?;
+            let (me_status,me_body)=bounded_provider_json(me_response,"Frame.io /v4/me").await?;
+            if !me_status.is_success(){
+                return Err(format!("Frame.io /v4/me returned {me_status}: {}",compact_error(&me_body)));
+            }
+            let accounts_response=send_with_retry(
+                client.get(frame_io::api_url(frame_io::ACCOUNTS_PATH)?).bearer_auth(&token),
+                "Frame.io /v4/accounts"
+            ).await?;
+            let (accounts_status,accounts_body)=bounded_provider_json(accounts_response,"Frame.io /v4/accounts").await?;
+            if !accounts_status.is_success(){
+                return Err(format!("Frame.io /v4/accounts returned {accounts_status}: {}",compact_error(&accounts_body)));
+            }
+            let value=frame_io::summarize_identity(&me_body,&accounts_body)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
         ToolAction::IllustratorCapabilityReport => {
             Ok(ActionResult {
                 success:true,tool,
@@ -17742,6 +17871,9 @@ pub fn run() {
             list_providers,
             save_api_key,
             delete_api_key,
+            save_frame_io_access_token,
+            delete_frame_io_access_token,
+            frame_io_credential_status,
             chat,
             runtime_status,
             prepare_tool,
