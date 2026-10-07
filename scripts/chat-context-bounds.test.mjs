@@ -30,3 +30,20 @@ test("Rust independently rejects oversized provider chat payloads",()=>{
   assert.match(block,/chat_bytes > MAX_CHAT_CONTEXT_BYTES/);
   assert.match(block,/unsupported chat role/);
 });
+
+test("provider context starts at the latest real user task, not prior chat history",()=>{
+  assert.match(main,/function currentTaskMessages\(source: ChatMessage\[\]\)/);
+  assert.match(main,/message\.role === "user" && !isProviderToolEnvelope\(message\)/);
+  assert.match(main,/const taskMessages = currentTaskMessages\(source\)/);
+  assert.match(main,/index = taskMessages\.length - 1/);
+});
+
+test("tool receipts use a tighter provider-only ceiling than visible chat messages",()=>{
+  assert.match(main,/const MAX_PROVIDER_TOOL_ENVELOPE_BYTES = 64 \* 1024/);
+  assert.match(main,/function boundedToolEnvelopeBytes/);
+  assert.match(main,/bytes <= MAX_PROVIDER_TOOL_ENVELOPE_BYTES/);
+  const start=main.indexOf("function providerToolEnvelope");
+  const end=main.indexOf("function toolResultMessage",start);
+  const block=main.slice(start,end);
+  assert.match(block,/boundedToolEnvelopeBytes\(content\) != null/);
+});
