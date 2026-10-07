@@ -2174,6 +2174,58 @@ fn native_tool_arguments(value: Option<&Value>) -> Option<Value> {
     }
 }
 
+fn xkiro_shuvi_tool_definition() -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": "shuvi_tool",
+            "description": "Request exactly one typed Shuvi action from the tool protocol in the system message. Shuvi locally validates the tool name, arguments, task dependencies, permissions and execution evidence before anything runs.",
+            "parameters": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["tool", "arguments"],
+                "properties": {
+                    "tool": {
+                        "type": "string",
+                        "maxLength": 160,
+                        "pattern": "^[A-Za-z0-9_]+$",
+                        "description": "Exact Shuvi tool name from the system tool protocol."
+                    },
+                    "arguments": {
+                        "type": "object",
+                        "description": "Arguments for that exact Shuvi tool. Do not invent fields."
+                    },
+                    "reason": {
+                        "type": "string",
+                        "maxLength": 800
+                    },
+                    "plan": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["objective", "step", "success_criteria"],
+                        "properties": {
+                            "objective": {"type": "string", "maxLength": 500},
+                            "step": {"type": "string", "maxLength": 500},
+                            "success_criteria": {"type": "string", "maxLength": 800}
+                        }
+                    },
+                    "task_graph": {
+                        "type": "object",
+                        "description": "Optional bounded task graph metadata when the active orchestrator requires it."
+                    },
+                    "task_step_id": {
+                        "type": "string",
+                        "maxLength": 48
+                    },
+                    "task_recovery": {
+                        "type": "boolean"
+                    }
+                }
+            }
+        }
+    })
+}
+
 fn native_tool_proposal(name: &str, arguments: Option<&Value>) -> Option<String> {
     let name = name.trim();
     if name.is_empty()
@@ -2182,6 +2234,15 @@ fn native_tool_proposal(name: &str, arguments: Option<&Value>) -> Option<String>
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
     {
         return None;
+    }
+
+    if name == "shuvi_tool" {
+        let raw = native_tool_arguments(arguments)?;
+        let mut proposal = parse_tool_proposal(&raw.to_string())?;
+        if proposal.reason.is_none() {
+            proposal.reason = Some("xKiro emitted a native Shuvi tool request.".into());
+        }
+        return serde_json::to_string(&proposal).ok();
     }
 
     Some(
