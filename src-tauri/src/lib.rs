@@ -435,10 +435,12 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - frame_io_oauth_begin: {} — generate Adobe IMS Native App PKCE authorization URL; state and code_verifier are stored in Windows keyring and the verifier is never returned
 - frame_io_oauth_complete: {"callback_url":"exact Adobe IMS redirect URI including code and state"} — validate exact configured redirect + state + 15-minute pending lifetime, exchange code with PKCE at Adobe IMS, securely store access/refresh tokens; tokens are never returned
 - frame_io_oauth_refresh: {} — explicitly refresh the access token using the securely stored refresh token and public client_id; no client secret
-- frame_io_list_workspaces: {"account_id":"exact account id from frame_io_identity_preflight"} — read-only GET /v4/accounts/:account_id/workspaces; first bounded response page only
-- frame_io_list_projects: {"account_id":"exact account id","workspace_id":"exact workspace id from frame_io_list_workspaces"} — read-only GET /v4/accounts/:account_id/workspaces/:workspace_id/projects; first bounded response page only
-- frame_io_list_folder_children: {"account_id":"exact account id","folder_id":"exact root/subfolder id"} — read-only GET /v4/accounts/:account_id/folders/:folder_id/children?page_size=50; bounded metadata only, signed media links omitted
+- frame_io_list_workspaces: {"account_id":"exact account id from frame_io_identity_preflight","after":"optional opaque cursor returned by prior response","page_size":50} — read-only GET /v4/accounts/:account_id/workspaces with bounded explicit cursor pagination
+- frame_io_list_projects: {"account_id":"exact account id","workspace_id":"exact workspace id from frame_io_list_workspaces","after":"optional opaque cursor returned by prior response","page_size":50} — read-only GET /v4/accounts/:account_id/workspaces/:workspace_id/projects with bounded explicit cursor pagination
+- frame_io_list_folder_children: {"account_id":"exact account id","folder_id":"exact root/subfolder id","after":"optional opaque cursor returned by prior response","page_size":50} — read-only folder-child inspection with bounded explicit cursor pagination; signed media/download links omitted
 - frame_io_show_file: {"account_id":"exact account id","file_id":"exact file id from folder inspection"} — read-only GET /v4/accounts/:account_id/files/:file_id; bounded metadata only, view/download/media links omitted
+- frame_io_list_comments: {"account_id":"exact account id","file_id":"exact file id","after":"optional opaque cursor returned by prior response","page_size":50} — read-only GET /v4/accounts/:account_id/files/:file_id/comments; comment text/time/reviewer summary only, attachments and external links omitted
+- frame_io_show_comment: {"account_id":"exact account id","comment_id":"exact comment id from frame_io_list_comments"} — read-only GET /v4/accounts/:account_id/comments/:comment_id; bounded comment metadata only
 - photoshop_capability_report: {}
 - photoshop_readiness_report: {}
 - photoshop_detect: {}
@@ -735,10 +737,12 @@ enum ToolAction {
     FrameIoOauthBegin,
     FrameIoOauthComplete { callback_url:String },
     FrameIoOauthRefresh,
-    FrameIoListWorkspaces { account_id:String },
-    FrameIoListProjects { account_id:String, workspace_id:String },
-    FrameIoListFolderChildren { account_id:String, folder_id:String },
+    FrameIoListWorkspaces { account_id:String, after:Option<String>, page_size:Option<u32> },
+    FrameIoListProjects { account_id:String, workspace_id:String, after:Option<String>, page_size:Option<u32> },
+    FrameIoListFolderChildren { account_id:String, folder_id:String, after:Option<String>, page_size:Option<u32> },
     FrameIoShowFile { account_id:String, file_id:String },
+    FrameIoListComments { account_id:String, file_id:String, after:Option<String>, page_size:Option<u32> },
+    FrameIoShowComment { account_id:String, comment_id:String },
     PremiereDetect,
     PremiereLaunch { project: Option<String> },
     PremiereBridgeStart,
@@ -2054,6 +2058,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "frame_io_list_projects"
         | "frame_io_list_folder_children"
         | "frame_io_show_file"
+        | "frame_io_list_comments"
+        | "frame_io_show_comment"
         | "photoshop_capability_report"
         | "photoshop_readiness_report"
         | "photoshop_detect"
@@ -4385,27 +4391,33 @@ fn stage_tool(
         ),
         "frame_io_list_workspaces" => {
             let account_id=arg_string(&proposal.arguments,"account_id")?;
-            frame_io::workspaces_url(&account_id)?;
-            (ToolAction::FrameIoListWorkspaces {account_id},
+            let after=arg_optional_string(&proposal.arguments,"after");
+            let page_size=proposal.arguments.get("page_size").and_then(Value::as_u64).map(|v|u32::try_from(v).map_err(|_|"Frame.io page_size is too large.".to_string())).transpose()?;
+            frame_io::workspaces_page_url(&account_id,after.as_deref(),page_size)?;
+            (ToolAction::FrameIoListWorkspaces {account_id,after,page_size},
                 "List accessible Frame.io workspaces".into(),
-                "Read-only bounded first-page GET for workspaces under the exact Frame.io account ID. Pagination is reported but never automatically followed.".into(),
+                "Read-only bounded workspace page under the exact account ID. Only an opaque cursor returned by a prior Frame.io response may advance pagination; no next URL is followed directly.".into(),
                 RiskLevel::Low)
         }
         "frame_io_list_projects" => {
             let account_id=arg_string(&proposal.arguments,"account_id")?;
             let workspace_id=arg_string(&proposal.arguments,"workspace_id")?;
-            frame_io::projects_url(&account_id,&workspace_id)?;
-            (ToolAction::FrameIoListProjects {account_id,workspace_id},
+            let after=arg_optional_string(&proposal.arguments,"after");
+            let page_size=proposal.arguments.get("page_size").and_then(Value::as_u64).map(|v|u32::try_from(v).map_err(|_|"Frame.io page_size is too large.".to_string())).transpose()?;
+            frame_io::projects_page_url(&account_id,&workspace_id,after.as_deref(),page_size)?;
+            (ToolAction::FrameIoListProjects {account_id,workspace_id,after,page_size},
                 "List accessible Frame.io projects".into(),
-                "Read-only bounded first-page GET for projects under the exact account/workspace IDs. Pagination is reported but never automatically followed.".into(),
+                "Read-only bounded project page under the exact account/workspace IDs with explicit opaque-cursor pagination.".into(),
                 RiskLevel::Low)
         }
         "frame_io_list_folder_children" => {
             let account_id=arg_string(&proposal.arguments,"account_id")?;
             let folder_id=arg_string(&proposal.arguments,"folder_id")?;
-            frame_io::folder_children_url(&account_id,&folder_id)?;
-            (ToolAction::FrameIoListFolderChildren {account_id,folder_id},"Inspect Frame.io folder children".into(),
-                "Read-only bounded first-page folder-child inspection; signed media/download links are omitted.".into(),RiskLevel::Low)
+            let after=arg_optional_string(&proposal.arguments,"after");
+            let page_size=proposal.arguments.get("page_size").and_then(Value::as_u64).map(|v|u32::try_from(v).map_err(|_|"Frame.io page_size is too large.".to_string())).transpose()?;
+            frame_io::folder_children_page_url(&account_id,&folder_id,after.as_deref(),page_size)?;
+            (ToolAction::FrameIoListFolderChildren {account_id,folder_id,after,page_size},"Inspect Frame.io folder children".into(),
+                "Read-only bounded folder-child page with explicit opaque-cursor pagination; signed media/download links are omitted.".into(),RiskLevel::Low)
         }
         "frame_io_show_file" => {
             let account_id=arg_string(&proposal.arguments,"account_id")?;
@@ -4413,6 +4425,22 @@ fn stage_tool(
             frame_io::file_url(&account_id,&file_id)?;
             (ToolAction::FrameIoShowFile {account_id,file_id},"Inspect Frame.io file metadata".into(),
                 "Read-only exact-file metadata lookup; signed media links, view URLs and download URLs are omitted.".into(),RiskLevel::Low)
+        }
+        "frame_io_list_comments" => {
+            let account_id=arg_string(&proposal.arguments,"account_id")?;
+            let file_id=arg_string(&proposal.arguments,"file_id")?;
+            let after=arg_optional_string(&proposal.arguments,"after");
+            let page_size=proposal.arguments.get("page_size").and_then(Value::as_u64).map(|v|u32::try_from(v).map_err(|_|"Frame.io page_size is too large.".to_string())).transpose()?;
+            frame_io::comments_url(&account_id,&file_id,after.as_deref(),page_size)?;
+            (ToolAction::FrameIoListComments {account_id,file_id,after,page_size},"List Frame.io review comments".into(),
+                "Read-only bounded comments page for the exact file. Attachments, signed URLs and arbitrary external links are deliberately omitted.".into(),RiskLevel::Low)
+        }
+        "frame_io_show_comment" => {
+            let account_id=arg_string(&proposal.arguments,"account_id")?;
+            let comment_id=arg_string(&proposal.arguments,"comment_id")?;
+            frame_io::comment_url(&account_id,&comment_id)?;
+            (ToolAction::FrameIoShowComment {account_id,comment_id},"Inspect Frame.io review comment".into(),
+                "Read-only exact-comment lookup with bounded text/time/reviewer metadata; no attachments, external links or writes.".into(),RiskLevel::Low)
         }
         "illustrator_capability_report" => (
             ToolAction::IllustratorCapabilityReport,
@@ -11981,10 +12009,10 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 })).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)
             })
         }
-        ToolAction::FrameIoListWorkspaces {account_id} => {
+        ToolAction::FrameIoListWorkspaces {account_id,after,page_size} => {
             let (token,auto_refreshed)=load_frame_io_fresh_access_token().await?;
             let response=send_with_retry(
-                http_client()?.get(frame_io::workspaces_url(&account_id)?).bearer_auth(&token),
+                http_client()?.get(frame_io::workspaces_page_url(&account_id,after.as_deref(),page_size)?).bearer_auth(&token),
                 "Frame.io workspaces"
             ).await?;
             let (status,body)=bounded_provider_json(response,"Frame.io workspaces").await?;
@@ -11998,10 +12026,10 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 stderr:String::new(),exit_code:Some(0)
             })
         }
-        ToolAction::FrameIoListProjects {account_id,workspace_id} => {
+        ToolAction::FrameIoListProjects {account_id,workspace_id,after,page_size} => {
             let (token,auto_refreshed)=load_frame_io_fresh_access_token().await?;
             let response=send_with_retry(
-                http_client()?.get(frame_io::projects_url(&account_id,&workspace_id)?).bearer_auth(&token),
+                http_client()?.get(frame_io::projects_page_url(&account_id,&workspace_id,after.as_deref(),page_size)?).bearer_auth(&token),
                 "Frame.io projects"
             ).await?;
             let (status,body)=bounded_provider_json(response,"Frame.io projects").await?;
@@ -12011,9 +12039,9 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let value=annotate_frame_io_refresh(frame_io::summarize_projects(&account_id,&workspace_id,&body)?,auto_refreshed);
             Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
         }
-        ToolAction::FrameIoListFolderChildren {account_id,folder_id} => {
+        ToolAction::FrameIoListFolderChildren {account_id,folder_id,after,page_size} => {
             let (token,auto_refreshed)=load_frame_io_fresh_access_token().await?;
-            let response=send_with_retry(http_client()?.get(frame_io::folder_children_url(&account_id,&folder_id)?).bearer_auth(&token),"Frame.io folder children").await?;
+            let response=send_with_retry(http_client()?.get(frame_io::folder_children_page_url(&account_id,&folder_id,after.as_deref(),page_size)?).bearer_auth(&token),"Frame.io folder children").await?;
             let (status,body)=bounded_provider_json(response,"Frame.io folder children").await?;
             if !status.is_success(){return Err(format!("Frame.io folder children returned {status}: {}",compact_error(&body)));}
             let value=annotate_frame_io_refresh(frame_io::summarize_folder_children(&account_id,&folder_id,&body)?,auto_refreshed);
@@ -12025,6 +12053,22 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let (status,body)=bounded_provider_json(response,"Frame.io file").await?;
             if !status.is_success(){return Err(format!("Frame.io file returned {status}: {}",compact_error(&body)));}
             let value=annotate_frame_io_refresh(frame_io::summarize_file(&account_id,&file_id,&body)?,auto_refreshed);
+            Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::FrameIoListComments {account_id,file_id,after,page_size} => {
+            let (token,auto_refreshed)=load_frame_io_fresh_access_token().await?;
+            let response=send_with_retry(http_client()?.get(frame_io::comments_url(&account_id,&file_id,after.as_deref(),page_size)?).bearer_auth(&token),"Frame.io comments").await?;
+            let (status,body)=bounded_provider_json(response,"Frame.io comments").await?;
+            if !status.is_success(){return Err(format!("Frame.io comments returned {status}: {}",compact_error(&body)));}
+            let value=annotate_frame_io_refresh(frame_io::summarize_comments(&account_id,&file_id,&body)?,auto_refreshed);
+            Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::FrameIoShowComment {account_id,comment_id} => {
+            let (token,auto_refreshed)=load_frame_io_fresh_access_token().await?;
+            let response=send_with_retry(http_client()?.get(frame_io::comment_url(&account_id,&comment_id)?).bearer_auth(&token),"Frame.io comment").await?;
+            let (status,body)=bounded_provider_json(response,"Frame.io comment").await?;
+            if !status.is_success(){return Err(format!("Frame.io comment returned {status}: {}",compact_error(&body)));}
+            let value=annotate_frame_io_refresh(frame_io::summarize_comment(&account_id,&comment_id,&body)?,auto_refreshed);
             Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::IllustratorCapabilityReport => {
