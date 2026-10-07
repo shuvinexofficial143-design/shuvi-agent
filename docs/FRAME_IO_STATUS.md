@@ -2,64 +2,39 @@
 
 ## Source milestone
 
-Current declared source milestone: **40%**
+Current declared source milestone: **60%**
 
-This milestone extends the Frame.io V4 foundation with a desktop-appropriate Adobe IMS Native App OAuth PKCE flow and bounded read-only Account → Workspace → Project discovery.
+This milestone extends the Frame.io V4 Native App PKCE integration with token-freshness handling and bounded read-only Project → Folder → File inspection.
 
-## Authentication model
+## Authentication and token freshness
 
-Frame.io V4 uses Adobe IMS OAuth 2.0. Shuvi is a desktop application, so the 40% source scope uses the documented Native App / public-client PKCE model:
+The Native App/public-client PKCE flow remains pinned to Adobe IMS `/ims/authorize/v2` and `/ims/token/v3`, uses S256, stores no client secret, and requests the documented user scopes including `offline_access`.
 
-- authorize endpoint: `https://ims-na1.adobelogin.com/ims/authorize/v2`
-- token endpoint: `https://ims-na1.adobelogin.com/ims/token/v3`
-- PKCE method: `S256`
-- no client secret,
-- scopes: `openid,email,profile,offline_access,additional_info.roles`
-- Adobe-assigned `adobe+...://callback` redirect, or loopback `http://127.0.0.1:<port>/callback` for local development.
+At 60%, OAuth-issued access tokens receive an absolute expiry timestamp in the Windows credential store. Before a Frame.io read-only API call, Shuvi checks expiry with a 60-second safety skew. Near-expiry tokens are refreshed through Adobe IMS with the secure refresh token + public client ID, then rotated token values and expiry are stored without exposing secrets.
 
-Shuvi generates state + code verifier internally. The verifier and pending state are stored in Windows keyring and are never returned to the model. Pending authorization expires after 15 minutes.
+Manual static tokens remain available for controlled testing; their freshness is reported as unknown because Shuvi has no authoritative expiry timestamp for them.
 
-At this source milestone, callback completion is manual: the exact Adobe redirect URI containing `code` and `state` is passed to `frame_io_oauth_complete`. Automatic OS custom-URI registration is not claimed yet.
+## Read-only resource inspection
 
-## Token handling
+Existing reads cover identity/accounts, workspaces, and projects.
 
-Successful code exchange:
-- validates exact configured redirect target,
-- validates exact OAuth state,
-- exchanges the authorization code with the stored PKCE verifier,
-- stores access token securely,
-- stores refresh token securely when Adobe IMS returns one,
-- never returns token values.
+Added at 60%:
+- `GET /v4/accounts/:account_id/folders/:folder_id/children?page_size=50`
+- `GET /v4/accounts/:account_id/files/:file_id`
 
-An explicit `frame_io_oauth_refresh` action is implemented. Automatic refresh before every API call is not yet implemented.
+This lets Shuvi walk from a Project's `root_folder_id` into bounded folder/file metadata. Summaries include IDs, names, type/media type, status, file size, and parent/project IDs where present.
 
-Manual static access-token storage remains available for controlled testing, but saving a manual token clears any older refresh token/pending OAuth state to prevent credential mixing.
-
-## Read-only discovery
-
-The V4 resource hierarchy used here is:
-
-Account → Workspace → Project
-
-Implemented read-only calls:
-- `GET /v4/me`
-- `GET /v4/accounts`
-- `GET /v4/accounts/:account_id/workspaces`
-- `GET /v4/accounts/:account_id/workspaces/:workspace_id/projects`
-
-Workspace/project summaries are bounded to the first response page. If Frame.io returns a next link, Shuvi reports `pagination_has_more=true` but does not automatically follow it.
+Shuvi deliberately omits signed media/download links, Frame.io view URLs, arbitrary includes, and automatic pagination following.
 
 ## Still blocked
 
-- automatic access-token refresh,
-- OS custom URI handler registration,
-- asset/folder/file inspection,
-- comments,
+- comments/review reads,
 - uploads,
 - shares,
-- project/workspace creation or mutation,
+- project/workspace/folder/file creation or mutation,
 - deletion,
-- pagination auto-follow,
+- signed-media download execution,
+- automatic OS custom-URI handler registration,
 - runtime acceptance.
 
 ## Runtime status
@@ -72,4 +47,4 @@ Green CI validates source consistency only.
 
 ## Next source phase
 
-The 60% milestone should add bounded project/asset inspection and explicit token-freshness handling while keeping comments, uploads, shares and all mutations blocked.
+The 80% milestone should add bounded read-only review/comment surfaces and explicit pagination controls, while keeping uploads, shares and all mutations blocked.
