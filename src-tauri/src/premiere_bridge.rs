@@ -884,7 +884,7 @@ mod tests {
             .issue_session(Some("0123456789abcdef0123456789abcdef"))
             .unwrap();
         assert_eq!(expires_in_ms, PREMIERE_SESSION_TTL_MS);
-        assert!(shared.authenticate(Some(&session)));
+        assert!(shared.authenticate(Some(session.as_str())));
         assert!(!shared.authenticate_pairing(Some("wrong")));
     }
 
