@@ -51,6 +51,8 @@ test("saved Premiere pairing automatically renews a bounded session", () => {
   assert.match(uxp, /bridgeRequest\([\s\S]*"\/session"[\s\S]*bridgeToken/);
   assert.match(uxp, /async function ensureBridgeSession\(\)/);
   assert.match(uxp, /const sessionToken = await ensureBridgeSession\(\)/);
+  assert.match(uxp, /bridgeSessionToken !== sessionToken/);
+  assert.doesNotMatch(uxp, /bridgeToken !== sessionToken/);
 });
 
 test("Premiere panel disconnect revokes Shuvi before clearing its local pairing", () => {
