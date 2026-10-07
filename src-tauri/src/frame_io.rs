@@ -1,5 +1,5 @@
 use serde_json::{json,Value};
-use url::Url;
+use reqwest::Url;
 
 pub const API_ORIGIN:&str="https://api.frame.io";
 pub const ME_PATH:&str="/v4/me";
