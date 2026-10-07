@@ -407,7 +407,7 @@ export function proposalFingerprint(proposal: ToolProposal): string {
 
 export function createAgentOrchestrationState(): AgentOrchestrationState {
   return {
-    version: 5,
+    version: 6,
     next_step: 1,
     tool_actions: 0,
     inspection_actions: 0,
