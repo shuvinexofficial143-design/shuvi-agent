@@ -214,7 +214,7 @@ Available tools:
 - audition_set_playhead: {"percent":0.5,"expected_document_signature":"copy documentSignature from audition_context"}
 - audition_invoke_command: {"command":{"property":"exact inspected COMMAND_* property","value":"exact inspected command value"},"expected_document_signature":"copy documentSignature from audition_context"}
 - premiere_detect: {}
-- premiere_launch: {"project":"optional absolute .prproj path"}
+- premiere_launch: {"project":"optional absolute .prproj path"} — only opens an existing .prproj file; never use a nonexistent path to create a project. To create a new Premiere project, launch Premiere without a project and use inspected UI controls.
 - premiere_bridge_start: {}
 - premiere_bridge_status: {}
 - premiere_context: {}
@@ -1134,6 +1134,7 @@ fn http_client() -> Result<Client, String> {
     Client::builder()
         .timeout(Duration::from_secs(120))
         .redirect(reqwest::redirect::Policy::none())
+        .http1_only()
         .build()
         .map_err(|error| format!("HTTP client error: {error}"))
 }
@@ -1258,6 +1259,232 @@ fn compact_error(body: &Value) -> String {
         .unwrap_or_else(|| body.to_string().chars().take(400).collect())
 }
 
+fn split_tagged_call_arguments(input: &str) -> Option<Vec<String>> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    let mut depth: i32 = 0;
+
+    for ch in input.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            current.push(ch);
+            escaped = true;
+            continue;
+        }
+        if let Some(active) = quote {
+            current.push(ch);
+            if ch == active {
+                quote = None;
+            }
+            continue;
+        }
+        if ch == '\'' || ch == '"' {
+            quote = Some(ch);
+            current.push(ch);
+            continue;
+        }
+        match ch {
+            '(' | '[' | '{' => {
+                depth += 1;
+                current.push(ch);
+            }
+            ')' | ']' | '}' => {
+                depth -= 1;
+                if depth < 0 {
+                    return None;
+                }
+                current.push(ch);
+            }
+            ',' if depth == 0 => {
+                if !current.trim().is_empty() {
+                    parts.push(current.trim().to_string());
+                }
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+
+    if quote.is_some() || escaped || depth != 0 {
+        return None;
+    }
+    if !current.trim().is_empty() {
+        parts.push(current.trim().to_string());
+    }
+    Some(parts)
+}
+
+fn parse_tagged_scalar(raw: &str) -> Option<Value> {
+    let value = raw.trim();
+    if value.len() >= 2 && value.starts_with('\'') && value.ends_with('\'') {
+        let inner = &value[1..value.len() - 1];
+        let mut out = String::new();
+        let mut chars = inner.chars();
+        while let Some(ch) = chars.next() {
+            if ch == '\\' {
+                let next = chars.next()?;
+                match next {
+                    '\\' => out.push('\\'),
+                    '\'' => out.push('\''),
+                    'n' => out.push('\n'),
+                    'r' => out.push('\r'),
+                    't' => out.push('\t'),
+                    other => {
+                        out.push('\\');
+                        out.push(other);
+                    }
+                }
+            } else {
+                out.push(ch);
+            }
+        }
+        return Some(Value::String(out));
+    }
+
+    if value.starts_with('"') && value.ends_with('"') {
+        return serde_json::from_str::<Value>(value).ok();
+    }
+
+    match value {
+        "True" | "true" => Some(Value::Bool(true)),
+        "False" | "false" => Some(Value::Bool(false)),
+        "None" | "null" => Some(Value::Null),
+        _ => serde_json::from_str::<Value>(value).ok(),
+    }
+}
+
+fn parse_tool_call_expression(call: &str, reason: &str) -> Option<ToolProposal> {
+    let call = call
+        .trim()
+        .trim_matches(|ch| ch == '|' || ch == '>' || ch == '<')
+        .trim();
+
+    let (tool, args_text) = if let Some(open) = call.find('(') {
+        let close = call.rfind(')')?;
+        if close <= open || !call[close + 1..].trim().is_empty() {
+            return None;
+        }
+        (call[..open].trim(), Some(&call[open + 1..close]))
+    } else {
+        (call, None)
+    };
+
+    if tool.is_empty()
+        || !tool
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
+        return None;
+    }
+
+    let mut arguments = serde_json::Map::new();
+    if let Some(args_text) = args_text {
+        for part in split_tagged_call_arguments(args_text)? {
+            let (key, raw_value) = part.split_once('=')?;
+            let key = key.trim();
+            if key.is_empty()
+                || !key
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+            {
+                return None;
+            }
+            arguments.insert(key.to_string(), parse_tagged_scalar(raw_value)?);
+        }
+    }
+
+    Some(ToolProposal {
+        tool: tool.to_string(),
+        arguments: Value::Object(arguments),
+        reason: Some(reason.into()),
+        plan: None,
+        task_graph: None,
+        task_step_id: None,
+        task_recovery: None,
+    })
+}
+
+fn first_tagged_batch_call(input: &str) -> Option<&str> {
+    let trimmed = input.trim();
+    if !(trimmed.starts_with('[') && trimmed.ends_with(']')) {
+        return (!trimmed.is_empty()).then_some(trimmed);
+    }
+
+    let inner = &trimmed[1..trimmed.len().saturating_sub(1)];
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    let mut depth: i32 = 0;
+
+    for (index, ch) in inner.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if let Some(active) = quote {
+            if ch == active {
+                quote = None;
+            }
+            continue;
+        }
+        if ch == '\'' || ch == '"' {
+            quote = Some(ch);
+            continue;
+        }
+
+        match ch {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+            }
+            ',' if depth == 0 => {
+                let first = inner[..index].trim();
+                return (!first.is_empty()).then_some(first);
+            }
+            _ => {}
+        }
+    }
+
+    if escaped || quote.is_some() || depth != 0 {
+        return None;
+    }
+    let first = inner.trim();
+    (!first.is_empty()).then_some(first)
+}
+
+fn parse_tagged_tool_call(text: &str) -> Option<ToolProposal> {
+    const START: &str = "<|tool_call_start|>";
+    const END: &str = "<|tool_call_end|>";
+
+    let start = text.find(START)? + START.len();
+    let rest = &text[start..];
+    let end = rest.find(END)?;
+    let call = first_tagged_batch_call(&rest[..end])?;
+    parse_tool_call_expression(call, "Provider emitted a tagged tool call.")
+}
+
+fn parse_xml_tool_call(text: &str) -> Option<ToolProposal> {
+    const START: &str = "<tool_call>";
+    const END: &str = "</tool_call>";
+
+    let start = text.find(START)? + START.len();
+    let rest = &text[start..];
+    let end = rest.find(END)?;
+    parse_tool_call_expression(&rest[..end], "Provider emitted an XML-style tool call.")
+}
+
 fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
     let mut candidate = text.trim();
 
@@ -1271,7 +1498,14 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         candidate = stripped.strip_suffix("~~~").unwrap_or(stripped).trim();
     }
 
-    let mut proposal: ToolProposal = serde_json::from_str(candidate).ok()?;
+    let mut proposal: ToolProposal = serde_json::from_str(candidate)
+        .ok()
+        .or_else(|| {
+            let items = serde_json::from_str::<Vec<Value>>(candidate).ok()?;
+            serde_json::from_value::<ToolProposal>(items.into_iter().next()?).ok()
+        })
+        .or_else(|| parse_tagged_tool_call(candidate))
+        .or_else(|| parse_xml_tool_call(candidate))?;
     if proposal.plan.as_ref().is_some_and(|plan| {
         let bounded=|value:&str,max:usize| {
             let trimmed=value.trim();
@@ -1610,6 +1844,95 @@ fn chat_response(
     }
 }
 
+fn text_from_provider_content(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(text.clone())
+            }
+        }
+        Value::Array(items) => {
+            let parts = items
+                .iter()
+                .filter_map(text_from_provider_content)
+                .collect::<Vec<_>>();
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join("\n"))
+            }
+        }
+        Value::Object(_) => ["text", "content", "output_text", "value"]
+            .iter()
+            .find_map(|key| value.get(*key).and_then(text_from_provider_content)),
+        _ => None,
+    }
+}
+
+fn openai_compatible_native_tool_call(body: &Value) -> Option<String> {
+    let call = body.pointer("/choices/0/message/tool_calls/0")?;
+    let name = call.pointer("/function/name")?.as_str()?.trim();
+    if name.is_empty() {
+        return None;
+    }
+
+    let arguments = match call.pointer("/function/arguments") {
+        Some(Value::String(raw)) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                json!({})
+            } else {
+                serde_json::from_str::<Value>(trimmed).ok()?
+            }
+        }
+        Some(Value::Object(map)) => Value::Object(map.clone()),
+        Some(Value::Null) | None => json!({}),
+        _ => return None,
+    };
+
+    Some(
+        json!({
+            "tool": name,
+            "arguments": arguments,
+            "reason": "Provider emitted a native OpenAI-compatible tool call."
+        })
+        .to_string(),
+    )
+}
+
+fn openai_compatible_assistant_text(body: &Value) -> Option<String> {
+    for pointer in [
+        "/choices/0/message/content",
+        "/choices/0/message/output_text",
+        "/choices/0/text",
+        "/output_text",
+    ] {
+        if let Some(text) = body.pointer(pointer).and_then(text_from_provider_content) {
+            return Some(text);
+        }
+    }
+
+    body.get("output")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items.iter().find_map(|item| {
+                let is_assistant = item
+                    .get("role")
+                    .and_then(Value::as_str)
+                    .is_none_or(|role| role == "assistant");
+                if !is_assistant {
+                    return None;
+                }
+                item.get("content")
+                    .and_then(text_from_provider_content)
+                    .or_else(|| item.get("text").and_then(text_from_provider_content))
+            })
+        })
+}
+
 fn usage_from_openai(body: &Value) -> Option<UsageStats> {
     let usage = body.get("usage")?;
     let input = usage
@@ -1674,6 +1997,62 @@ fn usage_from_anthropic(body: &Value) -> Option<UsageStats> {
     })
 }
 
+#[cfg(test)]
+mod openai_response_parser_tests {
+    use super::*;
+
+    #[test]
+    fn parses_chat_completion_string_content() {
+        let body = json!({"choices":[{"message":{"role":"assistant","content":"OPENROUTER OK"}}]});
+        assert_eq!(openai_compatible_assistant_text(&body).as_deref(), Some("OPENROUTER OK"));
+    }
+
+    #[test]
+    fn parses_chat_completion_content_parts() {
+        let body = json!({"choices":[{"message":{"role":"assistant","content":[
+            {"type":"text","text":"OPENROUTER"},{"type":"text","text":"OK"}
+        ]}}]});
+        assert_eq!(openai_compatible_assistant_text(&body).as_deref(), Some("OPENROUTER\nOK"));
+    }
+
+    #[test]
+    fn parses_native_openai_tool_call() {
+        let body = json!({"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{
+            "type":"function","function":{"name":"premiere_detect","arguments":"{}"}
+        }]}}]});
+        let content = openai_compatible_native_tool_call(&body).expect("native tool call");
+        let proposal = parse_tool_proposal(&content).expect("proposal");
+        assert_eq!(proposal.tool, "premiere_detect");
+        assert_eq!(proposal.arguments, json!({}));
+    }
+}
+
+#[cfg(test)]
+mod tagged_tool_call_parser_tests {
+    use super::*;
+
+    #[test]
+    fn parses_tagged_tool_call_with_arguments() {
+        let text = r#"<|tool_call_start|>|ui_click(name='New Project',window='Adobe Premiere')|<|tool_call_end|>"#;
+        let proposal = parse_tool_proposal(text).expect("tagged call");
+        assert_eq!(proposal.tool, "ui_click");
+        assert_eq!(proposal.arguments.get("name").and_then(Value::as_str), Some("New Project"));
+    }
+
+    #[test]
+    fn parses_xml_style_tool_call() {
+        let proposal = parse_tool_proposal("<tool_call>premiere_detect</tool_call>").expect("xml");
+        assert_eq!(proposal.tool, "premiere_detect");
+    }
+
+    #[test]
+    fn parses_tagged_batch_by_taking_first_call() {
+        let text = r#"<|tool_call_start|>[ui_find(name='New Project'), ui_click(name='New Project', window='Adobe Premiere')]<|tool_call_end|>"#;
+        let proposal = parse_tool_proposal(text).expect("batch");
+        assert_eq!(proposal.tool, "ui_find");
+    }
+}
+
 async fn openai_compatible_chat(
     input: ChatInput,
     api_key: Option<String>,
@@ -1718,12 +2097,10 @@ async fn openai_compatible_chat(
         return Err(format!("Provider returned {status}: {}", compact_error(&body)));
     }
 
-    let content = bounded_provider_text(
-        body.pointer("/choices/0/message/content")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "Provider response had no assistant text.".to_string())?,
-        "Provider assistant",
-    )?;
+    let assistant_text = openai_compatible_assistant_text(&body)
+        .or_else(|| openai_compatible_native_tool_call(&body))
+        .ok_or_else(|| "Provider response had no assistant text or native tool call in a supported OpenAI/OpenRouter response shape.".to_string())?;
+    let content = bounded_provider_text(&assistant_text, "Provider assistant")?;
 
     let usage = usage_from_openai(&body);
     Ok(chat_response(content, input.provider, input.model, usage))
@@ -2138,6 +2515,20 @@ fn ui_selector(
 
     if name.is_none() && automation_id.is_none() {
         return Err("UI tools require at least 'name' or 'automation_id'.".into());
+    }
+
+    Ok((name, automation_id, window))
+}
+
+fn ui_selector_allow_window_only(
+    arguments: &Value,
+) -> Result<(Option<String>, Option<String>, Option<String>), String> {
+    let name = arg_optional_string(arguments, "name");
+    let automation_id = arg_optional_string(arguments, "automation_id");
+    let window = arg_optional_string(arguments, "window");
+
+    if name.is_none() && automation_id.is_none() && window.is_none() {
+        return Err("UI tool requires 'name', 'automation_id', or 'window'.".into());
     }
 
     Ok((name, automation_id, window))
@@ -2900,7 +3291,7 @@ fn stage_tool(
             )
         }
         "ui_focus" => {
-            let (name, automation_id, window) = ui_selector(&proposal.arguments)?;
+            let (name, automation_id, window) = ui_selector_allow_window_only(&proposal.arguments)?;
             let detail = format!(
                 "Focus Windows UI element: window={:?}, name={:?}, automation_id={:?}",
                 window, name, automation_id
@@ -2968,7 +3359,7 @@ fn stage_tool(
             )
         }
         "ui_send_keys" => {
-            let (name, automation_id, window) = ui_selector(&proposal.arguments)?;
+            let (name, automation_id, window) = ui_selector_allow_window_only(&proposal.arguments)?;
             let keys = arg_raw_string(&proposal.arguments, "keys")?;
 
             if keys.is_empty() || keys.len() > 2_000 {
@@ -9498,6 +9889,15 @@ $items | ConvertTo-Json -Compress"#
             let root_script = ui_root_script(window.as_deref());
             let script = format!(
                 r#"Add-Type -AssemblyName UIAutomationClient
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class ShuviUiNative {{
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
+    [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
+}}
+"@
 {condition}
 {root_script}
 $matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
@@ -9505,16 +9905,57 @@ if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Use automation_id or a more specific selector.') }}
 $e = $matches.Item(0)
 if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
+try {{
+    $process = [System.Diagnostics.Process]::GetProcessById($e.Current.ProcessId)
+    if ($process.MainWindowHandle -ne [IntPtr]::Zero) {{
+        [void][ShuviUiNative]::SetForegroundWindow($process.MainWindowHandle)
+        Start-Sleep -Milliseconds 120
+    }}
+}} catch {{}}
+$clicked = $false
+$method = ''
 $pattern = $null
 if ($e.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {{
-    ([System.Windows.Automation.InvokePattern]$pattern).Invoke()
-    'Invoked element: ' + $e.Current.Name
-}} elseif ($e.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) {{
-    ([System.Windows.Automation.SelectionItemPattern]$pattern).Select()
-    'Selected element: ' + $e.Current.Name
-}} else {{
-    throw 'Matching element does not expose InvokePattern or SelectionItemPattern.'
-}}"#
+    try {{
+        ([System.Windows.Automation.InvokePattern]$pattern).Invoke()
+        $clicked = $true
+        $method = 'InvokePattern'
+    }} catch {{}}
+}}
+if (-not $clicked) {{
+    $pattern = $null
+    if ($e.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) {{
+        try {{
+            ([System.Windows.Automation.SelectionItemPattern]$pattern).Select()
+            $clicked = $true
+            $method = 'SelectionItemPattern'
+        }} catch {{}}
+    }}
+}}
+if (-not $clicked) {{
+    if ($e.Current.IsOffscreen) {{ throw 'Matching element is offscreen and cannot be clicked safely.' }}
+    $x = $null
+    $y = $null
+    try {{
+        $point = $e.GetClickablePoint()
+        $x = [int][Math]::Round($point.X)
+        $y = [int][Math]::Round($point.Y)
+        $method = 'GetClickablePoint fallback'
+    }} catch {{
+        $rect = $e.Current.BoundingRectangle
+        if ($rect.Width -le 0 -or $rect.Height -le 0) {{ throw 'Matching element has no clickable point or bounding rectangle.' }}
+        $x = [int][Math]::Round($rect.Left + ($rect.Width / 2))
+        $y = [int][Math]::Round($rect.Top + ($rect.Height / 2))
+        $method = 'bounding-rectangle fallback'
+    }}
+    [void][ShuviUiNative]::SetCursorPos($x, $y)
+    Start-Sleep -Milliseconds 100
+    [ShuviUiNative]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 50
+    [ShuviUiNative]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+    $clicked = $true
+}}
+'Clicked element via ' + $method + ': ' + $e.Current.Name"#
             );
 
             let output = run_hidden_powershell(&script)?;
@@ -9539,6 +9980,13 @@ if ($e.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, 
             let escaped_value = ps_single_quote(&value);
             let script = format!(
                 r#"Add-Type -AssemblyName UIAutomationClient
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class ShuviUiValueNative {{
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr hWnd, uint msg, IntPtr wParam, string lParam);
+}}
+"@
 {condition}
 {root_script}
 $matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
@@ -9547,11 +9995,15 @@ if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' ele
 $e = $matches.Item(0)
 if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
 $pattern = $null
-if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) {{
-    throw 'Matching element does not expose ValuePattern.'
-}}
-([System.Windows.Automation.ValuePattern]$pattern).SetValue('{escaped_value}')
-'Value set on element: ' + $e.Current.Name"#
+if ($e.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) {{
+    ([System.Windows.Automation.ValuePattern]$pattern).SetValue('{escaped_value}')
+    'Value set on element: ' + $e.Current.Name
+}} elseif ($e.Current.NativeWindowHandle -ne 0) {{
+    [void][ShuviUiValueNative]::SendMessage([IntPtr]$e.Current.NativeWindowHandle, 0x000C, [IntPtr]::Zero, '{escaped_value}')
+    'Value set by native WM_SETTEXT fallback on element: ' + $e.Current.Name
+}} else {{
+    throw 'Matching element does not expose ValuePattern or a native window handle.'
+}}"#
             );
 
             let output = run_hidden_powershell(&script)?;
@@ -9571,16 +10023,19 @@ if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Patte
             })
         }
         ToolAction::UiFocus { name, automation_id, window } => {
-            let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
             let root_script = ui_root_script(window.as_deref());
+            let target_script = if name.is_none() && automation_id.is_none() {
+                "$e = $root".to_string()
+            } else {
+                let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
+                format!(
+                    "{condition}\n$matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)\nif ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}\nif ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Use automation_id, window, or a more specific selector.') }}\n$e = $matches.Item(0)"
+                )
+            };
             let script = format!(
                 r#"Add-Type -AssemblyName UIAutomationClient
-{condition}
 {root_script}
-$matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
-if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
-if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Use automation_id, window, or a more specific selector.') }}
-$e = $matches.Item(0)
+{target_script}
 if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
 $e.SetFocus()
 'Focused element: ' + $e.Current.Name"#
@@ -9724,22 +10179,39 @@ $expand.{method}()
             })
         }
         ToolAction::UiSendKeys { name, automation_id, window, keys } => {
-            let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
             let root_script = ui_root_script(window.as_deref());
+            let target_script = if name.is_none() && automation_id.is_none() {
+                "$e = $root".to_string()
+            } else {
+                let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
+                format!(
+                    "{condition}\n$matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)\nif ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}\nif ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Refine the selector.') }}\n$e = $matches.Item(0)"
+                )
+            };
             let escaped_keys = ps_single_quote(&keys);
 
             let script = format!(
                 r#"Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName System.Windows.Forms
-{condition}
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class ShuviUiKeysNative {{
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+}}
+"@
 {root_script}
-$matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
-if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
-if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Refine the selector.') }}
-$e = $matches.Item(0)
+{target_script}
 if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
+try {{
+    $process = [System.Diagnostics.Process]::GetProcessById($e.Current.ProcessId)
+    if ($process.MainWindowHandle -ne [IntPtr]::Zero) {{
+        [void][ShuviUiKeysNative]::SetForegroundWindow($process.MainWindowHandle)
+        Start-Sleep -Milliseconds 150
+    }}
+}} catch {{}}
 $e.SetFocus()
-Start-Sleep -Milliseconds 80
+Start-Sleep -Milliseconds 120
 [System.Windows.Forms.SendKeys]::SendWait('{escaped_keys}')
 'Keyboard fallback sent to element: ' + $e.Current.Name"#
             );
@@ -11336,7 +11808,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             })
         }
         ToolAction::PremiereBridgeStart => {
-            let status = state.premiere_bridge.start()?;
+            let status = state.premiere_bridge.start_persistent()?;
             Ok(ActionResult {
                 success: true,
                 tool,
@@ -17277,7 +17749,7 @@ fn audition_bridge_stop(
 fn premiere_bridge_start(
     state: State<'_, ActionState>,
 ) -> Result<PremiereBridgeStatus, String> {
-    state.premiere_bridge.start()
+    state.premiere_bridge.start_persistent()
 }
 
 #[tauri::command]
@@ -17409,8 +17881,13 @@ fn export_diagnostics(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let state = ActionState::default();
+    if let Err(error) = state.premiere_bridge.start_persistent() {
+        eprintln!("Premiere bridge auto-start failed: {error}");
+    }
+
     tauri::Builder::default()
-        .manage(ActionState::default())
+        .manage(state)
         .invoke_handler(tauri::generate_handler![
             list_providers,
             save_api_key,
