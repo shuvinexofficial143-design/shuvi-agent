@@ -716,18 +716,64 @@ fn handle_client(mut stream: TcpStream, shared: Arc<PremiereBridgeShared>) {
         return;
     }
 
+    let route = request.path.split('?').next().unwrap_or_default();
+
+    if request.method == "POST" && route == "/session" {
+        match shared.issue_session(request.token.as_deref()) {
+            Ok((token, expires_in_ms)) => {
+                let _ = write_response(
+                    &mut stream,
+                    "200 OK",
+                    &json!({"ok":true,"token":token,"expires_in_ms":expires_in_ms}).to_string(),
+                );
+            }
+            Err(error) => {
+                let _ = write_response(
+                    &mut stream,
+                    "401 Unauthorized",
+                    &json!({"ok":false,"error":error}).to_string(),
+                );
+            }
+        }
+        return;
+    }
+
+    if request.method == "POST" && route == "/disconnect" {
+        if !shared.authenticate_pairing(request.token.as_deref())
+            && !shared.authenticate(request.token.as_deref())
+        {
+            let _ = write_response(
+                &mut stream,
+                "401 Unauthorized",
+                &json!({"ok":false,"error":"Invalid or disabled Shuvi pairing/session credential."}).to_string(),
+            );
+            return;
+        }
+        match shared.stop() {
+            Ok(_) => {
+                let _ = write_response(&mut stream, "200 OK", r#"{"ok":true,"revoked":true}"#);
+            }
+            Err(error) => {
+                let _ = write_response(
+                    &mut stream,
+                    "500 Internal Server Error",
+                    &json!({"ok":false,"error":error}).to_string(),
+                );
+            }
+        }
+        return;
+    }
+
     if !shared.authenticate(request.token.as_deref()) {
         let _ = write_response(
             &mut stream,
             "401 Unauthorized",
-            &json!({ "ok": false, "error": "Invalid or disabled Shuvi pairing token." }).to_string(),
+            &json!({ "ok": false, "error": "Invalid, disabled or expired Shuvi session token." }).to_string(),
         );
         return;
     }
 
     shared.mark_seen();
-
-    let route = request.path.split('?').next().unwrap_or_default();
 
     match (request.method.as_str(), route) {
         ("GET", "/health") => {
@@ -749,20 +795,6 @@ fn handle_client(mut stream: TcpStream, shared: Arc<PremiereBridgeShared>) {
 
             let body = serde_json::to_string(&command).unwrap_or_else(|_| "null".into());
             let _ = write_response(&mut stream, "200 OK", &body);
-        }
-        ("POST", "/disconnect") => {
-            match shared.stop() {
-                Ok(_) => {
-                    let _ = write_response(&mut stream, "200 OK", r#"{"ok":true,"revoked":true}"#);
-                }
-                Err(error) => {
-                    let _ = write_response(
-                        &mut stream,
-                        "500 Internal Server Error",
-                        &json!({"ok":false,"error":error}).to_string(),
-                    );
-                }
-            }
         }
         ("POST", "/result") => {
             let parsed = serde_json::from_slice::<PremiereBridgeResult>(&request.body);
