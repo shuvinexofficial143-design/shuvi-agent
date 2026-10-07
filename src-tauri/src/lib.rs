@@ -1873,35 +1873,65 @@ fn text_from_provider_content(value: &Value) -> Option<String> {
     }
 }
 
-fn openai_compatible_native_tool_call(body: &Value) -> Option<String> {
-    let call = body.pointer("/choices/0/message/tool_calls/0")?;
-    let name = call.pointer("/function/name")?.as_str()?.trim();
-    if name.is_empty() {
-        return None;
-    }
-
-    let arguments = match call.pointer("/function/arguments") {
+fn native_tool_arguments(value: Option<&Value>) -> Option<Value> {
+    match value {
         Some(Value::String(raw)) => {
             let trimmed = raw.trim();
             if trimmed.is_empty() {
-                json!({})
+                Some(json!({}))
             } else {
-                serde_json::from_str::<Value>(trimmed).ok()?
+                serde_json::from_str::<Value>(trimmed).ok()
             }
         }
-        Some(Value::Object(map)) => Value::Object(map.clone()),
-        Some(Value::Null) | None => json!({}),
-        _ => return None,
-    };
+        Some(Value::Object(map)) => Some(Value::Object(map.clone())),
+        Some(Value::Null) | None => Some(json!({})),
+        _ => None,
+    }
+}
+
+fn native_tool_proposal(name: &str, arguments: Option<&Value>) -> Option<String> {
+    let name = name.trim();
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
+        return None;
+    }
 
     Some(
         json!({
             "tool": name,
-            "arguments": arguments,
+            "arguments": native_tool_arguments(arguments)?,
             "reason": "Provider emitted a native OpenAI-compatible tool call."
         })
         .to_string(),
     )
+}
+
+fn openai_compatible_native_tool_call(body: &Value) -> Option<String> {
+    if let Some(call) = body.pointer("/choices/0/message/tool_calls/0") {
+        let name = call.pointer("/function/name")?.as_str()?;
+        return native_tool_proposal(name, call.pointer("/function/arguments"));
+    }
+
+    if let Some(call) = body.pointer("/choices/0/message/function_call") {
+        let name = call.get("name")?.as_str()?;
+        return native_tool_proposal(name, call.get("arguments"));
+    }
+
+    body.get("output")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items.iter().find_map(|call| {
+                let call_type = call.get("type").and_then(Value::as_str)?;
+                if call_type != "function_call" {
+                    return None;
+                }
+                let name = call.get("name")?.as_str()?;
+                native_tool_proposal(name, call.get("arguments"))
+            })
+        })
 }
 
 fn openai_compatible_assistant_text(body: &Value) -> Option<String> {
@@ -2006,6 +2036,48 @@ mod openai_response_parser_tests {
     fn parses_chat_completion_string_content() {
         let body = json!({"choices":[{"message":{"role":"assistant","content":"OPENROUTER OK"}}]});
         assert_eq!(openai_compatible_assistant_text(&body).as_deref(), Some("OPENROUTER OK"));
+    }
+
+    #[test]
+    fn parses_legacy_openai_function_call() {
+        let body = json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "function_call": {
+                        "name": "premiere_context",
+                        "arguments": "{}"
+                    }
+                }
+            }]
+        });
+
+        let content = openai_compatible_native_tool_call(&body).expect("legacy native call");
+        let proposal = parse_tool_proposal(&content).expect("legacy proposal");
+        assert_eq!(proposal.tool, "premiere_context");
+        assert_eq!(proposal.arguments, json!({}));
+    }
+
+    #[test]
+    fn parses_responses_api_function_call() {
+        let body = json!({
+            "object": "response",
+            "output": [{
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "ui_find",
+                "arguments": "{\"name\":\"New Project\",\"window\":\"Adobe Premiere\"}"
+            }]
+        });
+
+        let content = openai_compatible_native_tool_call(&body).expect("responses native call");
+        let proposal = parse_tool_proposal(&content).expect("responses proposal");
+        assert_eq!(proposal.tool, "ui_find");
+        assert_eq!(
+            proposal.arguments.get("window").and_then(Value::as_str),
+            Some("Adobe Premiere")
+        );
     }
 
     #[test]
