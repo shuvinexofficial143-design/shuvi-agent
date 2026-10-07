@@ -25,6 +25,11 @@ test("ui_click has a foreground-verified physical fallback for Adobe-style contr
   assert.match(block, /GetForegroundWindow/);
   assert.match(block, /foregroundPid -ne \[uint32\]\$e\.Current\.ProcessId/);
   assert.match(block, /refusing coordinate click/);
+  assert.match(block, /GetSystemMetrics\(76\)/);
+  assert.match(block, /GetSystemMetrics\(79\)/);
+  assert.match(block, /outside the Windows virtual screen bounds/);
+  assert.match(block, /if \(-not \[ShuviUiNative\]::SetCursorPos\(\$x, \$y\)\)/);
+  assert.match(block, /Foreground application changed before the physical click/);
   assert.match(block, /mouse_event\(0x0002/);
   assert.match(block, /mouse_event\(0x0004/);
 });
@@ -41,4 +46,7 @@ test("ui_send_keys can target a top-level window and refuses wrong foreground pr
   assert.match(block, /BringWindowToTop/);
   assert.match(block, /GetForegroundWindow/);
   assert.match(block, /refusing keyboard fallback/);
+  assert.match(block, /Foreground application changed after focus/);
+  assert.match(block, /AutomationElement\]::FocusedElement/);
+  assert.match(block, /Keyboard focus could not be confirmed inside the target application/);
 });
