@@ -420,6 +420,10 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - substance_3d_launch: {"app_id":"painter|designer|sampler|stager|modeler","substance_exe":"exact absolute executable path returned by substance_3d_detect"} — launches only a freshly detected exact Substance 3D candidate; no project open, host scripting or content mutation
 - substance_3d_automation_catalog: {} — read-only documented automation surface matrix; Painter remote scripting, Designer Python plugin and Sampler Python script planning are recognized while Stager/Modeler stay blocked without an authoritative scripting surface
 - substance_3d_plan_automation: {"request":{"app_id":"painter|designer|sampler","automation_kind":"remote_scripting|python_plugin|python_script","script_path":"absolute .py/.sdplugin when required","acknowledge_in_app_install":false}} — planning only; no script/plugin execution or project mutation
+- substance_3d_painter_remote_launch: {"request":{"painter_exe":"exact detected Painter executable","explicit_user_approval":true}} — high-risk exact Painter launch with only Adobe's documented --enable-remote-scripting flag; no remote command is sent
+- substance_3d_painter_remote_preflight: {"request":{"painter_exe":"exact detected Painter executable","expected_pid":1234,"explicit_user_approval":true}} — verifies exact Shuvi-managed process identity plus documented localhost:60041 reachability; endpoint ownership and host readiness remain unverified
+- substance_3d_sampler_script_fingerprint: {"script_path":"absolute .py file"} — read-only canonical path, size and SHA-256 receipt; executes nothing
+- substance_3d_sampler_script_launch: {"request":{"sampler_exe":"exact detected Sampler executable","script_path":"absolute .py file","expected_script_sha256":"exact prior fingerprint","explicit_user_approval":true}} — high-risk hash-bound launch using Adobe's documented --run-script surface; effect/completion is not inferred
 - photoshop_capability_report: {}
 - photoshop_readiness_report: {}
 - photoshop_detect: {}
@@ -703,6 +707,10 @@ enum ToolAction {
     Substance3DLaunch { app_id:String, substance_exe:String },
     Substance3DAutomationCatalog,
     Substance3DPlanAutomation { request:substance_3d::AutomationPlanRequest },
+    Substance3DPainterRemoteLaunch { request:substance_3d::PainterRemoteLaunchRequest },
+    Substance3DPainterRemotePreflight { request:substance_3d::PainterRemotePreflightRequest },
+    Substance3DSamplerScriptFingerprint { script_path:String },
+    Substance3DSamplerScriptLaunch { request:substance_3d::SamplerScriptLaunchRequest },
     PremiereDetect,
     PremiereLaunch { project: Option<String> },
     PremiereBridgeStart,
@@ -1584,6 +1592,10 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "substance_3d_launch"
         | "substance_3d_automation_catalog"
         | "substance_3d_plan_automation"
+        | "substance_3d_painter_remote_launch"
+        | "substance_3d_painter_remote_preflight"
+        | "substance_3d_sampler_script_fingerprint"
+        | "substance_3d_sampler_script_launch"
         | "photoshop_capability_report"
         | "photoshop_readiness_report"
         | "photoshop_detect"
@@ -3469,6 +3481,49 @@ fn stage_tool(
                 "Plan documented Substance 3D automation surface".into(),
                 "Planning only for Painter remote scripting, Designer Python plugin, or Sampler Python script surfaces. Stager/Modeler remain blocked and no automation is executed.".into(),
                 RiskLevel::Low)
+        }
+        "substance_3d_painter_remote_launch" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"substance_3d_painter_remote_launch requires request.".to_string())?;
+            let request:substance_3d::PainterRemoteLaunchRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Substance 3D Painter remote launch request: {e}"))?;
+            request.validate()?;
+            (ToolAction::Substance3DPainterRemoteLaunch {request},
+                "Launch Painter with documented remote scripting enabled".into(),
+                "High-risk launch of the exact freshly detected Painter executable with only --enable-remote-scripting after explicit approval. This exposes Painter's documented localhost scripting endpoint; no remote command is sent by this action.".into(),
+                RiskLevel::High)
+        }
+        "substance_3d_painter_remote_preflight" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"substance_3d_painter_remote_preflight requires request.".to_string())?;
+            let request:substance_3d::PainterRemotePreflightRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Substance 3D Painter remote preflight request: {e}"))?;
+            request.validate()?;
+            (ToolAction::Substance3DPainterRemotePreflight {request},
+                "Check Painter remote scripting readiness boundary".into(),
+                "Permission-first preflight: require exact live Shuvi-managed Painter identity, fresh executable binding and localhost:60041 connectivity. It sends no script and does not claim endpoint-process ownership or host readiness.".into(),
+                RiskLevel::Medium)
+        }
+        "substance_3d_sampler_script_fingerprint" => {
+            let script_path=arg_string(&proposal.arguments,"script_path")?;
+            let value=substance_3d::sampler_script_fingerprint(&script_path)?;
+            let canonical=value.get("canonical_script_path").and_then(Value::as_str)
+                .ok_or_else(||"Sampler fingerprint did not return canonical_script_path.".to_string())?.to_string();
+            (ToolAction::Substance3DSamplerScriptFingerprint {script_path:canonical},
+                "Fingerprint Substance 3D Sampler script".into(),
+                "Read-only canonicalization, size check and SHA-256 receipt for one absolute .py script; executes nothing.".into(),
+                RiskLevel::Low)
+        }
+        "substance_3d_sampler_script_launch" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"substance_3d_sampler_script_launch requires request.".to_string())?;
+            let request:substance_3d::SamplerScriptLaunchRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Substance 3D Sampler script launch request: {e}"))?;
+            request.validate()?;
+            (ToolAction::Substance3DSamplerScriptLaunch {request},
+                "Launch approved Sampler Python script".into(),
+                "High-risk launch using Adobe's documented --run-script surface. The exact .py file is freshly canonicalized and SHA-256 matched to the approved fingerprint immediately before launch; dispatch does not prove script effect or completion.".into(),
+                RiskLevel::High)
         }
         "illustrator_capability_report" => (
             ToolAction::IllustratorCapabilityReport,
@@ -10665,6 +10720,90 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             Ok(ActionResult {
                 success:true,tool,
                 stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DPainterRemoteLaunch {request} => {
+            let detection=substance_3d::detect_installs()?;
+            let exact=substance_3d::exact_detected_executable(&detection,"painter",&request.painter_exe)?;
+            let mut child=Command::new(&exact).arg("--enable-remote-scripting").spawn()
+                .map_err(|e|format!("Could not launch detected Substance 3D Painter with remote scripting enabled: {e}"))?;
+            let pid=child.id();
+            if let Err(error)=register_managed_process(state,pid){
+                let _=child.kill();
+                let _=child.wait();
+                return Err(format!("Painter remote-enabled process was stopped before Shuvi could register its identity: {error}"));
+            }
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "app_id":"painter",
+                    "painter_exe":exact,
+                    "pid":pid,
+                    "launch_args":["--enable-remote-scripting"],
+                    "launch_dispatched":true,
+                    "remote_host":"127.0.0.1",
+                    "remote_port":60041,
+                    "remote_endpoint_ready_verified":false,
+                    "remote_command_dispatch_supported":false,
+                    "source_runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DPainterRemotePreflight {request} => {
+            if !managed_process_identity_matches(state,request.expected_pid)?{
+                return Err("Painter remote preflight requires the exact live Shuvi-managed process instance.".into());
+            }
+            let detection=substance_3d::detect_installs()?;
+            substance_3d::exact_detected_executable(&detection,"painter",&request.painter_exe)?;
+            let value=substance_3d::painter_remote_preflight(&request,true)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DSamplerScriptFingerprint {script_path} => {
+            let value=substance_3d::sampler_script_fingerprint(&script_path)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DSamplerScriptLaunch {request} => {
+            let detection=substance_3d::detect_installs()?;
+            let exact=substance_3d::exact_detected_executable(&detection,"sampler",&request.sampler_exe)?;
+            let binding=substance_3d::verify_sampler_script_binding(&request)?;
+            let script_path=binding.get("canonical_script_path").and_then(Value::as_str)
+                .ok_or_else(||"Sampler script binding is missing canonical_script_path.".to_string())?;
+            let script_sha256=binding.get("script_sha256").and_then(Value::as_str)
+                .ok_or_else(||"Sampler script binding is missing script_sha256.".to_string())?;
+            let mut child=Command::new(&exact).arg("--run-script").arg(script_path).spawn()
+                .map_err(|e|format!("Could not launch approved Substance 3D Sampler script: {e}"))?;
+            let pid=child.id();
+            if let Err(error)=register_managed_process(state,pid){
+                let _=child.kill();
+                let _=child.wait();
+                return Err(format!("Sampler script process was stopped before Shuvi could register its identity: {error}"));
+            }
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "app_id":"sampler",
+                    "sampler_exe":exact,
+                    "pid":pid,
+                    "launch_args":["--run-script",script_path],
+                    "script_sha256":script_sha256,
+                    "script_launch_dispatched":true,
+                    "script_effect_verified":false,
+                    "script_completion_verified":false,
+                    "no_blind_retry":true,
+                    "source_runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)
             })
         }

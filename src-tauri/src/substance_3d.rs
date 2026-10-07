@@ -1,9 +1,19 @@
 use serde::{Deserialize,Serialize};
 use serde_json::{json,Value};
-use std::{collections::HashSet,fs,path::{Path,PathBuf}};
+use sha2::{Digest,Sha256};
+use std::{
+    collections::HashSet,
+    fs::{self,File},
+    io::Read,
+    net::{IpAddr,Ipv4Addr,SocketAddr,TcpStream},
+    path::{Path,PathBuf},
+    time::Duration
+};
 
 const MAX_ADOBE_ENTRIES:usize=128;
 const MAX_PATH_BYTES:usize=32*1024;
+const MAX_SCRIPT_BYTES:u64=1024*1024;
+const PAINTER_REMOTE_PORT:u16=60041;
 
 const APPS:&[(&str,&str,&str)]=&[
     ("painter","Adobe Substance 3D Painter","Adobe Substance 3D Painter.exe"),
@@ -152,7 +162,7 @@ pub fn capability_report()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_substance_3d",
-        "source_milestone_percent":40,
+        "source_milestone_percent":60,
         "source_scope_complete":false,
         "suite_apps":["painter","designer","sampler","stager","modeler"],
         "implemented":{
@@ -162,13 +172,17 @@ pub fn capability_report()->Value{
             "capability_report":true,
             "readiness_report":true,
             "automation_surface_catalog":true,
-            "bounded_automation_planning":true
+            "bounded_automation_planning":true,
+            "painter_remote_launch_adapter":true,
+            "painter_remote_connectivity_preflight":true,
+            "sampler_script_fingerprint":true,
+            "sampler_hash_bound_script_launch_adapter":true
         },
         "not_implemented":{
-            "runtime_automation_execution":true,
-            "painter_remote_transport_execution":true,
+            "painter_remote_command_dispatch":true,
+            "painter_endpoint_process_ownership_proof":true,
             "designer_plugin_install_or_execution":true,
-            "sampler_script_execution":true,
+            "sampler_script_effect_verification":true,
             "stager_verified_scripting_surface":true,
             "modeler_verified_scripting_surface":true,
             "project_or_scene_inspection":true,
@@ -189,18 +203,18 @@ pub fn readiness_report()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_substance_3d",
-        "source_milestone_percent":40,
-        "source_coding_status":"documented_automation_contract_complete",
+        "source_milestone_percent":60,
+        "source_coding_status":"permission_first_runtime_adapters_complete",
         "suite_apps":["painter","designer","sampler","stager","modeler"],
         "desktop_detection":true,
         "exact_detected_launch":true,
-        "host_transport":"documented_surfaces_planning_only",
-        "future_host_transport":"painter_remote_scripting_designer_python_plugins_sampler_python_scripts",
+        "host_transport":"painter_remote_connectivity_probe_plus_sampler_script_launch",
+        "future_host_transport":"painter_bounded_remote_commands_designer_python_plugins_sampler_script_receipts",
         "host_ready_verified":false,
-        "project_automation_ready":"planning_only_for_painter_designer_sampler",
+        "project_automation_ready":"runtime_adapter_only_painter_and_sampler",
         "source_runtime_verified":false,
         "production_ready":false,
-        "next_source_phase":"add permission-first runtime adapters only for separately verified Painter remote scripting and Sampler script launch surfaces; keep Designer in-app plugin execution separate and keep Stager/Modeler blocked until authoritative scripting surfaces are verified"
+        "next_source_phase":"add bounded Painter remote read-only command receipts and Sampler script completion evidence without promoting host readiness; keep Designer execution and Stager/Modeler scripting blocked unless separately verified"
     })
 }
 
@@ -209,15 +223,18 @@ pub fn automation_catalog()->Value{
     json!({
         "schema_version":1,
         "integration":"adobe_substance_3d",
-        "source_milestone_percent":40,
-        "execution_supported":false,
+        "source_milestone_percent":60,
+        "execution_supported":true,
+        "execution_scope":"painter_remote_launch_and_connectivity_preflight_plus_sampler_hash_bound_script_launch",
         "apps":{
             "painter":{
                 "documented_surface":"python_and_javascript_api_with_remote_scripting",
                 "transport":"remote_scripting",
                 "launch_flag":"--enable-remote-scripting",
                 "planning_supported":true,
-                "runtime_adapter_implemented":false
+                "runtime_adapter_implemented":true,
+                "runtime_adapter_scope":"exact_remote_enabled_launch_plus_localhost_connectivity_preflight_only",
+                "remote_command_dispatch_implemented":false
             },
             "designer":{
                 "documented_surface":"python_api_plugins",
@@ -231,7 +248,9 @@ pub fn automation_catalog()->Value{
                 "transport":"python_script_with_command_line_launch",
                 "launch_flag":"--run-script",
                 "planning_supported":true,
-                "runtime_adapter_implemented":false
+                "runtime_adapter_implemented":true,
+                "runtime_adapter_scope":"hash_bound_explicitly_approved_run_script_launch",
+                "script_effect_verification_implemented":false
             },
             "stager":{
                 "documented_surface":"no_authoritative_scripting_surface_verified_in_current_research",
@@ -346,6 +365,142 @@ pub fn plan_automation(request:&AutomationPlanRequest)->Result<Value,String>{
     }))
 }
 
+
+fn valid_sha256(value:&str)->bool{
+    value.len()==64&&value.chars().all(|c|c.is_ascii_hexdigit())
+}
+
+pub fn sampler_script_fingerprint(path:&str)->Result<Value,String>{
+    validate_absolute_script_path(path,&["py"])?;
+    let canonical=fs::canonicalize(path)
+        .map_err(|e|format!("Sampler script is unavailable: {e}"))?;
+    let metadata=fs::metadata(&canonical)
+        .map_err(|e|format!("Could not inspect Sampler script: {e}"))?;
+    if !metadata.is_file(){
+        return Err("Sampler script path must resolve to a regular file.".into());
+    }
+    if metadata.len()==0||metadata.len()>MAX_SCRIPT_BYTES{
+        return Err(format!("Sampler script must be between 1 and {MAX_SCRIPT_BYTES} bytes."));
+    }
+    let mut file=File::open(&canonical)
+        .map_err(|e|format!("Could not open Sampler script: {e}"))?;
+    let mut hasher=Sha256::new();
+    let mut buffer=[0u8;8192];
+    loop{
+        let read=file.read(&mut buffer).map_err(|e|format!("Could not hash Sampler script: {e}"))?;
+        if read==0{break;}
+        hasher.update(&buffer[..read]);
+    }
+    let sha256=format!("{:x}",hasher.finalize());
+    Ok(json!({
+        "schema_version":1,
+        "app_id":"sampler",
+        "canonical_script_path":canonical,
+        "script_size_bytes":metadata.len(),
+        "script_sha256":sha256,
+        "execution_performed":false,
+        "source_runtime_verified":false,
+        "production_ready":false
+    }))
+}
+
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PainterRemoteLaunchRequest{
+    pub painter_exe:String,
+    pub explicit_user_approval:bool,
+}
+
+impl PainterRemoteLaunchRequest{
+    pub fn validate(&self)->Result<(),String>{
+        validate_requested_executable("painter",&self.painter_exe)?;
+        if !self.explicit_user_approval{
+            return Err("Painter remote-enabled launch requires explicit_user_approval=true.".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PainterRemotePreflightRequest{
+    pub painter_exe:String,
+    pub expected_pid:u32,
+    pub explicit_user_approval:bool,
+}
+
+impl PainterRemotePreflightRequest{
+    pub fn validate(&self)->Result<(),String>{
+        validate_requested_executable("painter",&self.painter_exe)?;
+        if self.expected_pid==0{
+            return Err("Painter remote preflight requires a nonzero expected_pid.".into());
+        }
+        if !self.explicit_user_approval{
+            return Err("Painter remote preflight requires explicit_user_approval=true.".into());
+        }
+        Ok(())
+    }
+}
+
+pub fn painter_remote_preflight(request:&PainterRemotePreflightRequest,managed_process_identity_verified:bool)->Result<Value,String>{
+    request.validate()?;
+    if !managed_process_identity_verified{
+        return Err("Painter remote preflight requires the exact live Shuvi-managed process instance.".into());
+    }
+    let address=SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST),PAINTER_REMOTE_PORT);
+    TcpStream::connect_timeout(&address,Duration::from_millis(1200))
+        .map_err(|e|format!("Painter documented localhost remote-scripting endpoint is not reachable on port {PAINTER_REMOTE_PORT}: {e}"))?;
+    Ok(json!({
+        "schema_version":1,
+        "app_id":"painter",
+        "expected_pid":request.expected_pid,
+        "painter_exe":request.painter_exe.clone(),
+        "managed_process_identity_verified":true,
+        "remote_host":"127.0.0.1",
+        "remote_port":PAINTER_REMOTE_PORT,
+        "transport_reachable":true,
+        "endpoint_process_ownership_verified":false,
+        "remote_command_dispatch_supported":false,
+        "host_ready_verified":false,
+        "source_runtime_verified":false,
+        "production_ready":false
+    }))
+}
+
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SamplerScriptLaunchRequest{
+    pub sampler_exe:String,
+    pub script_path:String,
+    pub expected_script_sha256:String,
+    pub explicit_user_approval:bool,
+}
+
+impl SamplerScriptLaunchRequest{
+    pub fn validate(&self)->Result<(),String>{
+        validate_requested_executable("sampler",&self.sampler_exe)?;
+        validate_absolute_script_path(&self.script_path,&["py"])?;
+        if !valid_sha256(&self.expected_script_sha256){
+            return Err("Sampler script launch requires a 64-character hexadecimal expected_script_sha256.".into());
+        }
+        if !self.explicit_user_approval{
+            return Err("Sampler script launch requires explicit_user_approval=true.".into());
+        }
+        Ok(())
+    }
+}
+
+pub fn verify_sampler_script_binding(request:&SamplerScriptLaunchRequest)->Result<Value,String>{
+    request.validate()?;
+    let fingerprint=sampler_script_fingerprint(&request.script_path)?;
+    let actual=fingerprint.get("script_sha256").and_then(Value::as_str)
+        .ok_or("Sampler script fingerprint is missing script_sha256.")?;
+    if !actual.eq_ignore_ascii_case(&request.expected_script_sha256){
+        return Err("Sampler script changed after approval: expected_script_sha256 does not match the fresh script fingerprint.".into());
+    }
+    Ok(fingerprint)
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -393,23 +548,23 @@ mod tests{
     }
 
     #[test]
-    fn foundation_reports_forty_percent_without_runtime_claims(){
+    fn foundation_reports_sixty_percent_without_runtime_claims(){
         let capability=capability_report();
-        assert_eq!(capability["source_milestone_percent"],40);
+        assert_eq!(capability["source_milestone_percent"],60);
         assert_eq!(capability["source_scope_complete"],false);
         assert_eq!(capability["source_runtime_verified"],false);
         assert_eq!(capability["production_ready"],false);
         let readiness=readiness_report();
-        assert_eq!(readiness["host_transport"],"documented_surfaces_planning_only");
+        assert_eq!(readiness["host_transport"],"painter_remote_connectivity_probe_plus_sampler_script_launch");
         assert_eq!(readiness["host_ready_verified"],false);
-        assert_eq!(readiness["project_automation_ready"],"planning_only_for_painter_designer_sampler");
+        assert_eq!(readiness["project_automation_ready"],"runtime_adapter_only_painter_and_sampler");
     }
 
     #[test]
     fn automation_catalog_is_documented_but_execution_free(){
         let catalog=automation_catalog();
-        assert_eq!(catalog["source_milestone_percent"],40);
-        assert_eq!(catalog["execution_supported"],false);
+        assert_eq!(catalog["source_milestone_percent"],60);
+        assert_eq!(catalog["execution_supported"],true);
         assert_eq!(catalog["apps"]["painter"]["launch_flag"],"--enable-remote-scripting");
         assert_eq!(catalog["apps"]["designer"]["remote_transport_verified"],false);
         assert_eq!(catalog["apps"]["sampler"]["launch_flag"],"--run-script");
@@ -444,5 +599,39 @@ mod tests{
             script_path:None,acknowledge_in_app_install:false
         };
         assert!(plan_automation(&stager).is_err());
+    }
+
+    #[test]
+    fn painter_remote_requests_are_explicitly_approved_and_command_free(){
+        let painter_exe=std::env::temp_dir().join("Adobe Substance 3D Painter.exe").to_string_lossy().into_owned();
+        let launch=PainterRemoteLaunchRequest{painter_exe:painter_exe.clone(),explicit_user_approval:true};
+        assert!(launch.validate().is_ok());
+        let denied=PainterRemoteLaunchRequest{painter_exe:painter_exe.clone(),explicit_user_approval:false};
+        assert!(denied.validate().is_err());
+        let preflight=PainterRemotePreflightRequest{
+            painter_exe,
+            expected_pid:42,
+            explicit_user_approval:true
+        };
+        assert!(preflight.validate().is_ok());
+    }
+
+    #[test]
+    fn sampler_script_binding_is_hash_pinned(){
+        let fixture=Fixture::new();
+        let script=fixture.0.join("approved.py");
+        fs::write(&script,b"print('approved')").unwrap();
+        let fingerprint=sampler_script_fingerprint(script.to_str().unwrap()).unwrap();
+        let hash=fingerprint["script_sha256"].as_str().unwrap().to_string();
+        let sampler_exe=std::env::temp_dir().join("Adobe Substance 3D Sampler.exe").to_string_lossy().into_owned();
+        let request=SamplerScriptLaunchRequest{
+            sampler_exe,
+            script_path:script.to_string_lossy().into_owned(),
+            expected_script_sha256:hash,
+            explicit_user_approval:true
+        };
+        assert!(verify_sampler_script_binding(&request).is_ok());
+        fs::write(&script,b"print('changed')").unwrap();
+        assert!(verify_sampler_script_binding(&request).is_err());
     }
 }

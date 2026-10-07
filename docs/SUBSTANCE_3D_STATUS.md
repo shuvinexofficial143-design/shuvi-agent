@@ -2,56 +2,65 @@
 
 ## Source milestone
 
-Current declared source milestone: **40%**
+Current declared source milestone: **60%**
 
-The 40% milestone keeps the five-app desktop foundation and adds a documentation-backed, planning-only automation contract. It does not execute scripts, plugins, remote commands, project changes, rendering, or export.
+The 60% milestone keeps the documentation-backed automation contract and adds narrowly bounded, permission-first runtime adapters for Painter and Sampler. It still does not claim project automation readiness, host acceptance, verified command effects, or production readiness.
 
 ## Suite scope
 
 Shuvi continues to recognize Painter, Designer, Sampler, Stager and Modeler as Substance 3D desktop apps.
 
-## Documented automation surfaces
+## Painter runtime adapter
 
-Painter:
-- Adobe documents Python and JavaScript APIs.
-- Adobe documents remote scripting when Painter is launched with `--enable-remote-scripting`.
-- Shuvi now exposes this as a planning-only surface; no remote command transport is implemented yet.
+Adobe documents remote control for Painter when the application is launched with `--enable-remote-scripting`, with the example client using localhost port 60041.
+
+Shuvi now provides:
+- explicit-approval, exact-detected Painter launch with only `--enable-remote-scripting`,
+- managed process registration,
+- a separate preflight that requires the exact live Shuvi-managed PID and a fresh exact executable binding,
+- a bounded TCP connectivity check to `127.0.0.1:60041`.
+
+The preflight does **not** send JavaScript or Python. A reachable port is not treated as proof that the endpoint belongs to the expected Painter PID, so:
+- `endpoint_process_ownership_verified=false`
+- `remote_command_dispatch_supported=false`
+- `host_ready_verified=false`
+
+## Sampler runtime adapter
+
+Adobe documents Python scripts and the `--run-script` command-line parameter.
+
+Before a Sampler script can be launched, Shuvi:
+- accepts only an absolute `.py` path,
+- canonicalizes the file,
+- limits it to 1 MiB,
+- produces a SHA-256 fingerprint receipt,
+- requires the launch request to provide that exact prior SHA-256,
+- fingerprints the file again immediately before dispatch,
+- requires explicit user approval,
+- binds launch to the freshly detected Sampler executable.
+
+The source adapter launches Sampler with `--run-script <canonical approved script>`. Dispatch is not treated as effect or completion proof:
+- `script_effect_verified=false`
+- `script_completion_verified=false`
+- blind retry after uncertain dispatch is not allowed.
+
+## Still blocked
 
 Designer:
-- Adobe documents a Python API and Python plugin system.
-- Shuvi can plan an in-app Python plugin workflow using an absolute `.py` or `.sdplugin` path.
-- No external remote transport is claimed or implemented.
-
-Sampler:
-- Adobe documents a Python API, plugins and scripts.
-- Adobe release/documentation material documents the `--run-script` command-line parameter.
-- Shuvi can plan an absolute `.py` script launch, but does not execute it yet.
+- Python API/plugin planning remains supported,
+- plugin install/execution is not implemented at 60%.
 
 Stager and Modeler:
-- no authoritative scripting surface was verified in the research used for this milestone,
-- Shuvi therefore blocks automation planning for them instead of inferring an API.
+- no authoritative scripting surface has been verified in this integration,
+- automation stays blocked.
 
-## Implemented source scope
-
-- bounded five-app Windows detection and exact launch,
-- capability/readiness reports,
-- documentation-backed automation surface catalog,
-- bounded automation planner for Painter, Designer and Sampler,
-- exact app/surface pair validation,
-- bounded absolute script/plugin path validation where required,
-- fail-closed Stager/Modeler planning,
-- source safety and Rust unit tests.
-
-## Execution boundary
-
-All 40% automation plans report:
-
-- `execution_supported=false`
-- `mutation_performed=false`
-- `source_runtime_verified=false`
-- `production_ready=false`
-
-No arbitrary Python/JavaScript payload is accepted or executed in this milestone.
+Also not claimed:
+- Painter remote JavaScript/Python command dispatch,
+- Painter endpoint-to-PID ownership proof,
+- project/material/texture-set/model inspection,
+- render/export completion,
+- verified Sampler script effects,
+- runtime acceptance.
 
 ## Runtime status
 
@@ -61,8 +70,8 @@ No arbitrary Python/JavaScript payload is accepted or executed in this milestone
 
 `production_ready=false`
 
-Green CI does not change these flags.
+Green CI validates source consistency only.
 
 ## Next source phase
 
-The 60% milestone may add permission-first runtime adapters only for separately verified transport surfaces, beginning with Painter remote-scripting readiness and/or Sampler script launch. Designer plugin execution should remain separately guarded, and Stager/Modeler stay blocked until an authoritative scripting surface is verified.
+The 80% milestone should add bounded, typed Painter remote read-only command receipts and stronger completion/readback evidence for Sampler without inferring success from dispatch. Designer execution and Stager/Modeler scripting remain blocked unless separately verified.
