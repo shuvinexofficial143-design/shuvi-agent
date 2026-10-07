@@ -248,7 +248,8 @@ impl PremiereBridgeShared {
             {
                 return Ok(Some(pairing));
             }
-            return Err("Stored Premiere pairing credential is invalid.".into());
+            Self::revoke_persisted_pairing()?;
+            return Ok(None);
         }
 
         // One-time migration for the legacy raw 32-hex token format. Persist the
@@ -263,7 +264,8 @@ impl PremiereBridgeShared {
             return Ok(Some(pairing));
         }
 
-        Err("Stored Premiere pairing credential is malformed.".into())
+        Self::revoke_persisted_pairing()?;
+        Ok(None)
     }
 
     fn persist_pairing(pairing: &PersistedPairing) -> Result<(), String> {
