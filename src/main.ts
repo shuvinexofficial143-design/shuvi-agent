@@ -424,7 +424,7 @@ function currentCheckpoint(): SessionCheckpoint {
     provider: providerSelect.value,
     model: modelInput.value.trim(),
     base_url: baseUrlInput.value.trim() || null,
-    messages,
+    messages: currentTaskMessages(messages),
     orchestration
   };
 }
