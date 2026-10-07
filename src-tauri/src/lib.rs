@@ -9970,6 +9970,8 @@ public static class ShuviUiNative {{
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
     [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
 }}
@@ -10012,6 +10014,11 @@ if (-not $clicked) {{
 }}
 if (-not $clicked) {{
     if ($e.Current.IsOffscreen) {{ throw 'Matching element is offscreen and cannot be clicked safely.' }}
+    [uint32]$foregroundPid = 0
+    [void][ShuviUiNative]::GetWindowThreadProcessId([ShuviUiNative]::GetForegroundWindow(), [ref]$foregroundPid)
+    if ($foregroundPid -ne [uint32]$e.Current.ProcessId) {{
+        throw 'Target application could not be confirmed as the foreground window; refusing coordinate click.'
+    }}
     $x = $null
     $y = $null
     try {{
@@ -10278,6 +10285,8 @@ public static class ShuviUiKeysNative {{
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
 }}
 "@
 {root_script}
@@ -10292,6 +10301,11 @@ try {{
         Start-Sleep -Milliseconds 180
     }}
 }} catch {{}}
+[uint32]$foregroundPid = 0
+[void][ShuviUiKeysNative]::GetWindowThreadProcessId([ShuviUiKeysNative]::GetForegroundWindow(), [ref]$foregroundPid)
+if ($foregroundPid -ne [uint32]$e.Current.ProcessId) {{
+    throw 'Target application could not be confirmed as the foreground window; refusing keyboard fallback.'
+}}
 $e.SetFocus()
 Start-Sleep -Milliseconds 120
 [System.Windows.Forms.SendKeys]::SendWait('{escaped_keys}')
