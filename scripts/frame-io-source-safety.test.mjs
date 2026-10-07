@@ -46,13 +46,13 @@ test("Frame.io 40 percent is pinned to current V4 and Adobe IMS Native App PKCE"
 });
 
 test("Frame.io token handling does not expose secrets to model tools",()=>{
-  assert.match(lib,/integration:frame_io:access_token/);
+  assert.match(lib,/frame_io_entry\("access_token"\)/);
   assert.match(lib,/set_password/);
   assert.match(lib,/delete_credential/);
   assert.match(lib,/"credential_configured"/);
   assert.match(lib,/"refresh_token_exposed":false/);
   assert.match(lib,/"pkce_verifier_exposed":false/);
-  assert.match(lib,/integration:frame_io:oauth_pending/);
+  assert.match(lib,/frame_io_entry\("oauth_pending"\)/);
   assert.doesNotMatch(lib,/"access_token":token/);
   assert.doesNotMatch(lib,/"access_token":access_token/);
 });
