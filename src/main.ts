@@ -206,18 +206,18 @@ root.innerHTML = `
         <div class="premiere-status-row">
           <div>
             <strong id="premiereBridgeState">Bridge stopped</strong>
-            <p id="premiereBridgeDetail" class="muted">Start the bridge, then paste the temporary token into the Shuvi Premiere Bridge panel.</p>
+            <p id="premiereBridgeDetail" class="muted">The bridge auto-starts. Paste this token into Premiere only for the first pairing or after a manual disconnect.</p>
           </div>
           <span id="premierePairBadge" class="premiere-pair-badge">NOT PAIRED</span>
         </div>
 
         <label>
-          Temporary pairing token
-          <input id="premiereBridgeToken" readonly placeholder="Start bridge to generate a token" />
+          Pairing token
+          <input id="premiereBridgeToken" readonly placeholder="Pairing token will appear when the bridge starts" />
         </label>
 
         <div class="button-row">
-          <button id="startPremiereBridge" class="primary">Start / rotate token</button>
+          <button id="startPremiereBridge" class="primary">Start / reconnect</button>
           <button id="refreshPremiereBridge">Refresh status</button>
           <button id="stopPremiereBridge">Stop bridge</button>
         </div>
@@ -225,8 +225,8 @@ root.innerHTML = `
         <div class="premiere-help">
           <strong>Pairing steps</strong>
           <p>1. Open Premiere Pro 25.6+ and load the Shuvi Premiere Bridge UXP panel.</p>
-          <p>2. Start the bridge here and copy the temporary token into the Premiere panel.</p>
-          <p>3. Press Connect in Premiere. Once paired, Shuvi can use native typed Premiere commands.</p>
+          <p>2. On the first pairing, copy this token into the Premiere panel and press Connect.</p>
+          <p>3. The token is persisted securely by Shuvi and locally by the UXP panel, so later restarts should reconnect automatically.</p>
         </div>
       </div>
     </section>
