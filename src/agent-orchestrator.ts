@@ -5,7 +5,7 @@ import {
   type TaskGraph, type GraphAuditEvent
 } from "./task-graph.mjs";
 
-export const MAX_AGENT_STEPS = 16;
+export const MAX_AGENT_STEPS = 8;
 export const MAX_CONSECUTIVE_FAILURES = 3;
 export const MAX_ORCHESTRATION_BLOCKS = 2;
 export const MAX_INSPECTED_PATHS = 12;
