@@ -1092,6 +1092,13 @@ fn providers() -> Vec<ProviderDescriptor> {
             custom_base_url: false,
         },
         ProviderDescriptor {
+            id: "xkiro",
+            name: "xKiro",
+            default_model: "openai/gpt-5.6-sol",
+            api_key_required: true,
+            custom_base_url: false,
+        },
+        ProviderDescriptor {
             id: "ollama",
             name: "Ollama (local)",
             default_model: "qwen3:4b",
@@ -1137,6 +1144,20 @@ fn validate_provider_fields(
         || model.chars().any(char::is_control)
     {
         return Err("Provider model must be non-empty, control-character free, and at most 256 bytes.".into());
+    }
+
+    if provider == "xkiro" {
+        let Some((vendor, model_name)) = model.split_once('/') else {
+            return Err("xKiro model IDs must include the vendor prefix, for example openai/gpt-5.6-sol.".into());
+        };
+        let valid_component = |value: &str| {
+            !value.is_empty()
+                && value.len() <= MAX_PROVIDER_MODEL_BYTES
+                && value.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ':'))
+        };
+        if !valid_component(vendor) || !valid_component(model_name) || model_name.contains('/') {
+            return Err("xKiro model ID must use the vendor/model form without spaces or control characters.".into());
+        }
     }
 
     let base_url = base_url.map(str::trim).filter(|value| !value.is_empty());
@@ -2502,6 +2523,7 @@ async fn openai_compatible_chat(
         "deepseek" => "https://api.deepseek.com/chat/completions".to_string(),
         "openai" => "https://api.openai.com/v1/chat/completions".to_string(),
         "openrouter" => "https://openrouter.ai/api/v1/chat/completions".to_string(),
+        "xkiro" => "https://api.xkiro.com/v1/chat/completions".to_string(),
         "ollama" => input
             .base_url
             .clone()
@@ -2515,16 +2537,22 @@ async fn openai_compatible_chat(
         _ => return Err("Invalid OpenAI-compatible provider.".into()),
     };
 
-    if matches!(input.provider.as_str(), "deepseek" | "openai" | "openrouter" | "custom")
+    if matches!(input.provider.as_str(), "deepseek" | "openai" | "openrouter" | "xkiro" | "custom")
         && api_key.as_deref().unwrap_or("").is_empty()
     {
         return Err("No API key saved for this provider.".into());
     }
 
-    let mut request = http_client()?.post(&url).json(&json!({
+    let mut payload = json!({
         "model": input.model,
         "messages": input.messages
-    }));
+    });
+    if input.provider == "xkiro" {
+        payload["tools"] = json!([xkiro_shuvi_tool_definition()]);
+        payload["tool_choice"] = Value::String("auto".into());
+    }
+
+    let mut request = http_client()?.post(&url).json(&payload);
 
     if let Some(key) = api_key.filter(|key| !key.is_empty()) {
         request = request.bearer_auth(key);
@@ -2682,7 +2710,7 @@ async fn send_chat(input: ChatInput, api_key: Option<String>) -> Result<ChatResp
     match input.provider.as_str() {
         "gemini" => gemini_chat(input, api_key).await,
         "anthropic" => anthropic_chat(input, api_key).await,
-        "deepseek" | "openai" | "openrouter" | "ollama" | "custom" => {
+        "deepseek" | "openai" | "openrouter" | "xkiro" | "ollama" | "custom" => {
             openai_compatible_chat(input, api_key).await
         }
         other => Err(format!("Unsupported provider: {other}")),
