@@ -7654,7 +7654,7 @@ async function pollBridge() {
   try {
     const sessionToken = await ensureBridgeSession();
     const command = await bridgeFetch("/command", {}, 2500, sessionToken);
-    if (bridgeToken !== sessionToken) return;
+    if (bridgeSessionToken !== sessionToken) return;
 
     setStatus("Connected to Shuvi", true);
 
