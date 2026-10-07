@@ -1153,7 +1153,7 @@ fn validate_provider_fields(
         let valid_component = |value: &str| {
             !value.is_empty()
                 && value.len() <= MAX_PROVIDER_MODEL_BYTES
-                && value.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ':'))
+                && value.chars().all(|ch| ch.is_ascii_graphic() && ch != '/')
         };
         if !valid_component(vendor) || !valid_component(model_name) || model_name.contains('/') {
             return Err("xKiro model ID must use the vendor/model form without spaces or control characters.".into());
