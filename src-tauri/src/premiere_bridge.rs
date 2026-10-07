@@ -501,12 +501,15 @@ impl PremiereBridgeShared {
         }
 
         let token = if self.session_is_current() {
-            self.session_token
+            let current = self
+                .session_token
                 .lock()
                 .map_err(|_| "Premiere session token state is unavailable.".to_string())?
-                .clone()
-                .filter(|token| Self::valid_persisted_token(token))
-                .unwrap_or(self.rotate_session()?)
+                .clone();
+            match current.filter(|token| Self::valid_persisted_token(token)) {
+                Some(token) => token,
+                None => self.rotate_session()?,
+            }
         } else {
             self.rotate_session()?
         };
@@ -537,6 +540,14 @@ impl PremiereBridgeShared {
             );
         }
 
+        let session_token = self
+            .session_token
+            .lock()
+            .map_err(|_| "Premiere session token state is unavailable.".to_string())?
+            .clone()
+            .filter(|token| Self::valid_persisted_token(token))
+            .ok_or_else(|| "Premiere session token is unavailable; reconnect the UXP panel.".to_string())?;
+
         let id = Uuid::new_v4().to_string();
         let command = PremiereBridgeCommand {
             id: id.clone(),
@@ -553,7 +564,7 @@ impl PremiereBridgeShared {
         }
         {
             let mut work = self.work.lock().map_err(|_| "Premiere work queue is unavailable.".to_string())?;
-            if !self.authenticate(status.token.as_deref()) {
+            if !self.authenticate(Some(session_token.as_str())) {
                 return Err("Premiere bridge session changed before enqueueing.".into());
             }
             work.enqueue(command, timeout)?;
@@ -561,7 +572,7 @@ impl PremiereBridgeShared {
         // Dropping/cancelling this future removes both queued work and results.
         let _guard = PendingGuard { shared: self, id: id.clone() };
         loop {
-            if !self.authenticate(status.token.as_deref()) {
+            if !self.authenticate(Some(session_token.as_str())) {
                 return Err("execution_status_unknown: Premiere pairing ended or expired. Inspect before retrying any dispatched edit.".into());
             }
             let result = {
@@ -575,23 +586,6 @@ impl PremiereBridgeShared {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-    }
-
-    fn authenticate(&self, supplied: Option<&str>) -> bool {
-        if !self.enabled.lock().map(|value| *value).unwrap_or(false) || !self.token_is_current() {
-            return false;
-        }
-
-        let expected = self.token.lock().ok().and_then(|value| value.clone());
-        expected.as_deref().is_some_and(|value| Some(value) == supplied)
-    }
-
-    fn token_is_current(&self) -> bool {
-        self.token_created_ms
-            .lock()
-            .ok()
-            .and_then(|value| *value)
-            .is_some_and(Self::pairing_is_current)
     }
 
     fn mark_seen(&self) {
