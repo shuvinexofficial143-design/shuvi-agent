@@ -16,6 +16,7 @@ const MAX_OAUTH_FIELD_BYTES:usize=4096;
 const MAX_RESOURCE_ID_BYTES:usize=512;
 const MAX_SUMMARY_ITEMS:usize=100;
 const MAX_PENDING_AGE_SECONDS:u64=15*60;
+pub const TOKEN_REFRESH_SKEW_SECONDS:u64=60;
 
 pub fn validate_access_token(token:&str)->Result<(),String>{
     if token.is_empty()||token.len()>MAX_ACCESS_TOKEN_BYTES{
@@ -209,6 +210,15 @@ pub fn parse_oauth_token_response(body:&Value)->Result<OAuthTokens,String>{
     Ok(OAuthTokens{access_token,refresh_token,expires_in})
 }
 
+pub fn token_expiry_from(issued_at_unix:u64,expires_in:u64)->Result<u64,String>{
+    if expires_in==0||expires_in>7*24*60*60{return Err("Frame.io token expires_in is outside Shuvi's bounded range.".into());}
+    issued_at_unix.checked_add(expires_in).ok_or_else(||"Frame.io token expiry overflowed.".to_string())
+}
+
+pub fn access_token_needs_refresh(expires_at_unix:u64,now_unix:u64)->bool{
+    expires_at_unix<=now_unix.saturating_add(TOKEN_REFRESH_SKEW_SECONDS)
+}
+
 pub fn api_url(path:&str)->Result<Url,String>{
     if !matches!(path,ME_PATH|ACCOUNTS_PATH){
         return Err("Frame.io identity API helper allows only /v4/me and /v4/accounts.".into());
@@ -257,11 +267,25 @@ pub fn projects_url(account_id:&str,workspace_id:&str)->Result<Url,String>{
     resource_url(&["v4","accounts",account_id,"workspaces",workspace_id,"projects"])
 }
 
+pub fn folder_children_url(account_id:&str,folder_id:&str)->Result<Url,String>{
+    validate_resource_id(account_id,"account_id")?;
+    validate_resource_id(folder_id,"folder_id")?;
+    let mut url=resource_url(&["v4","accounts",account_id,"folders",folder_id,"children"])?;
+    url.query_pairs_mut().append_pair("page_size","50");
+    Ok(url)
+}
+
+pub fn file_url(account_id:&str,file_id:&str)->Result<Url,String>{
+    validate_resource_id(account_id,"account_id")?;
+    validate_resource_id(file_id,"file_id")?;
+    resource_url(&["v4","accounts",account_id,"files",file_id])
+}
+
 pub fn capability_report()->Value{
     json!({
         "schema_version":1,
         "integration":"frame_io",
-        "source_milestone_percent":40,
+        "source_milestone_percent":60,
         "source_scope_complete":false,
         "service_type":"adobe_included_web_api",
         "api_generation":"v4",
@@ -276,14 +300,17 @@ pub fn capability_report()->Value{
             "native_app_pkce_authorization_begin":true,
             "native_app_pkce_code_exchange":true,
             "explicit_refresh_token_exchange":true,
+            "automatic_token_refresh_before_api_reads":true,
+            "token_expiry_tracking":true,
             "client_secret_required":false,
             "workspace_listing":true,
-            "project_listing":true
+            "project_listing":true,
+            "folder_children_listing":true,
+            "file_metadata_inspection":true
         },
         "not_implemented":{
-            "automatic_token_refresh":true,
             "os_custom_uri_handler_registration":true,
-            "asset_listing":true,
+            "media_link_download":true,
             "comments":true,
             "uploads":true,
             "shares":true,
@@ -300,8 +327,8 @@ pub fn readiness_report()->Value{
     json!({
         "schema_version":1,
         "integration":"frame_io",
-        "source_milestone_percent":40,
-        "source_coding_status":"native_app_pkce_and_read_only_project_discovery_complete",
+        "source_milestone_percent":60,
+        "source_coding_status":"token_freshness_and_read_only_asset_inspection_complete",
         "api_origin":API_ORIGIN,
         "auth_model":"adobe_ims_native_app_pkce",
         "oauth_authorize_endpoint":IMS_AUTHORIZE_URL,
@@ -310,11 +337,12 @@ pub fn readiness_report()->Value{
         "credential_store":"windows_native_keyring",
         "oauth_flow_implemented":"native_app_pkce_manual_callback_completion",
         "explicit_refresh_implemented":true,
-        "automatic_refresh_implemented":false,
-        "project_automation_ready":"read_only_workspace_and_project_discovery",
+        "automatic_refresh_before_api_reads":true,
+        "token_refresh_skew_seconds":TOKEN_REFRESH_SKEW_SECONDS,
+        "project_automation_ready":"read_only_workspace_project_folder_and_file_inspection",
         "source_runtime_verified":false,
         "production_ready":false,
-        "next_source_phase":"add bounded project and asset inspection with explicit token freshness handling while keeping comments, uploads, shares and all mutations blocked"
+        "next_source_phase":"add bounded comments/review read surfaces and explicit pagination controls while keeping uploads, shares and all mutations blocked"
     })
 }
 
@@ -441,6 +469,29 @@ pub fn summarize_projects(account_id:&str,workspace_id:&str,body:&Value)->Result
     }))
 }
 
+
+fn bounded_optional_id(value:Option<&str>,label:&str)->Result<Option<String>,String>{
+    value.map(|v|{validate_resource_id(v,label)?;Ok::<String,String>(v.to_string())}).transpose()
+}
+pub fn summarize_folder_children(account_id:&str,folder_id:&str,body:&Value)->Result<Value,String>{
+    validate_resource_id(account_id,"account_id")?; validate_resource_id(folder_id,"folder_id")?;
+    let data=body.get("data").and_then(Value::as_array).ok_or("Frame.io folder children response is missing data array.")?;
+    if data.len()>MAX_SUMMARY_ITEMS{return Err("Frame.io folder children response exceeds Shuvi's bounded summary limit.".into());}
+    let mut items=Vec::with_capacity(data.len());
+    for child in data{
+        let id=child.get("id").and_then(Value::as_str).ok_or("Frame.io folder child is missing id.")?; validate_resource_id(id,"folder child id")?;
+        items.push(json!({"id":id,"type":bounded_text(child.get("type").and_then(Value::as_str),"folder child type")?,"name":bounded_text(child.get("name").and_then(Value::as_str),"folder child name")?,"media_type":bounded_text(child.get("media_type").and_then(Value::as_str),"file media_type")?,"status":bounded_text(child.get("status").and_then(Value::as_str),"file status")?,"file_size":child.get("file_size").and_then(Value::as_u64),"parent_id":bounded_optional_id(child.get("parent_id").and_then(Value::as_str),"parent_id")?,"project_id":bounded_optional_id(child.get("project_id").and_then(Value::as_str),"project_id")?}));
+    }
+    Ok(json!({"schema_version":1,"integration":"frame_io","account_id":account_id,"folder_id":folder_id,"child_count":items.len(),"children":items,"pagination_has_more":has_next_link(body),"pagination_auto_followed":false,"media_links_exposed":false,"write_operations_performed":false,"source_runtime_verified":false,"production_ready":false}))
+}
+pub fn summarize_file(account_id:&str,file_id:&str,body:&Value)->Result<Value,String>{
+    validate_resource_id(account_id,"account_id")?; validate_resource_id(file_id,"file_id")?;
+    let file=body.get("data").and_then(Value::as_object).ok_or("Frame.io file response is missing data object.")?;
+    let observed_id=file.get("id").and_then(Value::as_str).ok_or("Frame.io file response is missing id.")?; validate_resource_id(observed_id,"file id")?;
+    if observed_id!=file_id{return Err("Frame.io file response id does not match the requested file_id.".into());}
+    Ok(json!({"schema_version":1,"integration":"frame_io","account_id":account_id,"file_id":observed_id,"name":bounded_text(file.get("name").and_then(Value::as_str),"file name")?,"media_type":bounded_text(file.get("media_type").and_then(Value::as_str),"file media_type")?,"status":bounded_text(file.get("status").and_then(Value::as_str),"file status")?,"file_size":file.get("file_size").and_then(Value::as_u64),"parent_id":bounded_optional_id(file.get("parent_id").and_then(Value::as_str),"parent_id")?,"project_id":bounded_optional_id(file.get("project_id").and_then(Value::as_str),"project_id")?,"media_links_exposed":false,"view_url_exposed":false,"write_operations_performed":false,"source_runtime_verified":false,"production_ready":false}))
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -513,15 +564,32 @@ mod tests{
     }
 
     #[test]
-    fn reports_forty_percent_without_runtime_claims(){
+    fn token_freshness_uses_sixty_second_skew(){
+        assert_eq!(token_expiry_from(1_000,3_600).unwrap(),4_600);
+        assert!(!access_token_needs_refresh(4_600,4_539));
+        assert!(access_token_needs_refresh(4_600,4_540));
+    }
+
+    #[test]
+    fn folder_and_file_inspection_omit_signed_links(){
+        let children=json!({"data":[{"id":"folder-2","type":"folder","name":"Shots","parent_id":"root-1","project_id":"proj-1"},{"id":"file-1","type":"file","name":"shot.mov","media_type":"video/quicktime","status":"created","file_size":1234,"parent_id":"root-1","project_id":"proj-1","media_links":{"original":{"download_url":"https://secret.example"}}}],"links":{"next":"/next"}});
+        let list=summarize_folder_children("acct-1","root-1",&children).unwrap();
+        assert_eq!(list["child_count"],2); assert_eq!(list["media_links_exposed"],false);
+        let detail=json!({"data":{"id":"file-1","name":"shot.mov","media_type":"video/quicktime","status":"created","file_size":1234,"parent_id":"root-1","project_id":"proj-1","view_url":"https://next.frame.io/secret","media_links":{"original":{"download_url":"https://secret.example"}}}});
+        let file=summarize_file("acct-1","file-1",&detail).unwrap();
+        assert_eq!(file["file_id"],"file-1"); assert_eq!(file["media_links_exposed"],false); assert_eq!(file["view_url_exposed"],false);
+    }
+
+    #[test]
+    fn reports_sixty_percent_without_runtime_claims(){
         let cap=capability_report();
-        assert_eq!(cap["source_milestone_percent"],40);
+        assert_eq!(cap["source_milestone_percent"],60);
         assert_eq!(cap["source_scope_complete"],false);
         assert_eq!(cap["source_runtime_verified"],false);
         assert_eq!(cap["production_ready"],false);
         let ready=readiness_report();
         assert_eq!(ready["oauth_flow_implemented"],"native_app_pkce_manual_callback_completion");
-        assert_eq!(ready["automatic_refresh_implemented"],false);
-        assert_eq!(ready["project_automation_ready"],"read_only_workspace_and_project_discovery");
+        assert_eq!(ready["automatic_refresh_before_api_reads"],true);
+        assert_eq!(ready["project_automation_ready"],"read_only_workspace_project_folder_and_file_inspection");
     }
 }
