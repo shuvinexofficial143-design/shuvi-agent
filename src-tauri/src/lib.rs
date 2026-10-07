@@ -432,14 +432,15 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - frame_io_credential_status: {} — returns only whether a Frame.io access token is stored; never exposes the token
 - frame_io_identity_preflight: {} — read-only V4 calls to /v4/me and /v4/accounts using the securely stored Bearer token; no projects/files/comments/uploads or mutations
 - frame_io_oauth_begin: {} — generate Adobe IMS Native App PKCE authorization URL; state and code_verifier are stored in Windows keyring and the verifier is never returned
-- frame_io_oauth_complete: {"callback_url":"exact Adobe IMS redirect URI including code and state"} — validate exact configured redirect + state + 15-minute pending lifetime, exchange code with PKCE at Adobe IMS, securely store access/refresh tokens; tokens are never returned
-- frame_io_oauth_refresh: {} — explicitly refresh the access token using the securely stored refresh token and public client_id; no client secret
+- frame_io_oauth_complete: {"callback_url":"exact Adobe IMS redirect URI including code and state"} — validate exact configured redirect + state + 15-minute pending lifetime, exchange code with PKCE at Adobe IMS, securely store the access token and a refresh token only when Adobe IMS issues one; tokens are never returned
+- frame_io_oauth_refresh: {} — explicitly refresh the access token only when a refresh token was issued and securely stored; otherwise fail closed and require re-authentication; no client secret
 - frame_io_list_workspaces: {"account_id":"exact account id from frame_io_identity_preflight","after":"optional opaque cursor returned by prior response","page_size":50} — read-only GET /v4/accounts/:account_id/workspaces with bounded explicit cursor pagination
 - frame_io_list_projects: {"account_id":"exact account id","workspace_id":"exact workspace id from frame_io_list_workspaces","after":"optional opaque cursor returned by prior response","page_size":50} — read-only GET /v4/accounts/:account_id/workspaces/:workspace_id/projects with bounded explicit cursor pagination
 - frame_io_list_folder_children: {"account_id":"exact account id","folder_id":"exact root/subfolder id","after":"optional opaque cursor returned by prior response","page_size":50} — read-only folder-child inspection with bounded explicit cursor pagination; signed media/download links omitted
 - frame_io_show_file: {"account_id":"exact account id","file_id":"exact file id from folder inspection"} — read-only GET /v4/accounts/:account_id/files/:file_id; bounded metadata only, view/download/media links omitted
 - frame_io_list_comments: {"account_id":"exact account id","file_id":"exact file id","after":"optional opaque cursor returned by prior response","page_size":50} — read-only GET /v4/accounts/:account_id/files/:file_id/comments; comment text/time/reviewer summary only, attachments and external links omitted
 - frame_io_show_comment: {"account_id":"exact account id","comment_id":"exact comment id from frame_io_list_comments"} — read-only GET /v4/accounts/:account_id/comments/:comment_id; bounded comment metadata only
+- frame_io_acceptance_summary: {} — canonical 100% bounded source-scope summary; explicitly lists implemented reads, unclaimed writes, credential safety and real Windows/Frame.io runtime handoff
 - photoshop_capability_report: {}
 - photoshop_readiness_report: {}
 - photoshop_detect: {}
@@ -742,6 +743,7 @@ enum ToolAction {
     FrameIoShowFile { account_id:String, file_id:String },
     FrameIoListComments { account_id:String, file_id:String, after:Option<String>, page_size:Option<u32> },
     FrameIoShowComment { account_id:String, comment_id:String },
+    FrameIoAcceptanceSummary,
     PremiereDetect,
     PremiereLaunch { project: Option<String> },
     PremiereBridgeStart,
@@ -1806,6 +1808,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "frame_io_show_file"
         | "frame_io_list_comments"
         | "frame_io_show_comment"
+        | "frame_io_acceptance_summary"
         | "photoshop_capability_report"
         | "photoshop_readiness_report"
         | "photoshop_detect"
@@ -3856,6 +3859,12 @@ fn stage_tool(
             (ToolAction::FrameIoShowComment {account_id,comment_id},"Inspect Frame.io review comment".into(),
                 "Read-only exact-comment lookup with bounded text/time/reviewer metadata; no attachments, external links or writes.".into(),RiskLevel::Low)
         }
+        "frame_io_acceptance_summary" => (
+            ToolAction::FrameIoAcceptanceSummary,
+            "Read Frame.io canonical source acceptance summary".into(),
+            "Read-only declaration of the completed bounded Frame.io source scope, explicit unclaimed writes, credential safety and pending real runtime acceptance.".into(),
+            RiskLevel::Low,
+        ),
         "illustrator_capability_report" => (
             ToolAction::IllustratorCapabilityReport,
             "Read Illustrator source capability report".into(),
@@ -11274,6 +11283,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                     "pkce_exchange_verified":true,
                     "access_token_stored":true,
                     "refresh_token_stored":has_refresh,
+                    "refresh_token_optional":true,
+                    "reauthentication_required_when_refresh_unavailable":!has_refresh,
                     "expires_in":tokens.expires_in,
                     "token_values_exposed":false,
                     "source_runtime_verified":false,
@@ -11354,6 +11365,13 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             if !status.is_success(){return Err(format!("Frame.io comment returned {status}: {}",compact_error(&body)));}
             let value=annotate_frame_io_refresh(frame_io::summarize_comment(&account_id,&comment_id,&body)?,auto_refreshed);
             Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::FrameIoAcceptanceSummary => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&frame_io::completion_summary()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
         }
         ToolAction::IllustratorCapabilityReport => {
             Ok(ActionResult {

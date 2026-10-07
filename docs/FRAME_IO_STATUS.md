@@ -2,70 +2,79 @@
 
 ## Source milestone
 
-Current declared source milestone: **80%**
+Current declared source milestone: **100%**
 
-This milestone extends the Frame.io V4 Native App PKCE integration with bounded read-only review/comment inspection and explicit cursor pagination. It preserves the 60% token-freshness and Project → Folder → File inspection scope.
+The declared bounded Frame.io source scope is complete. This milestone does not add write capabilities. It finalizes the V4 Native App PKCE foundation, bounded read-only Account → Workspace → Project → Folder/File → Comment inspection, explicit cursor pagination, canonical acceptance reporting, credential safety and the runtime handoff.
 
-## Authentication and token freshness
+## Authentication model
 
-Frame.io's current V4 authentication guidance documents Adobe IMS user authentication for Native Apps with PKCE, the scopes `openid email profile offline_access additional_info.roles`, refresh tokens for user-authenticated V4 flows, and automatic refresh support in the official SDKs.
+Frame.io V4 uses Adobe IMS OAuth 2.0 user authentication and supports Native App credentials using PKCE. Shuvi uses a public-client model with S256 and does not embed a client secret.
 
-Shuvi therefore keeps:
-- Native App/public-client PKCE with S256,
-- no embedded client secret,
-- secure Windows keyring storage,
-- access-token expiry tracking,
-- a 60-second refresh safety skew,
-- secure refresh-token rotation when Adobe IMS returns a rotated token.
+Current Adobe documentation is not fully consistent about refresh tokens for Native App credentials: the IMS token API documents an optional refresh token when `offline_access` is issued/consented, while the Native App implementation guide says refresh tokens are not available for that credential type.
 
-Manual static tokens remain supported only for controlled testing; their freshness is unknown because Shuvi has no authoritative expiry timestamp for them.
+Shuvi therefore fails closed and treats refresh capability as optional:
 
-## Read-only resource inspection
+- access tokens are always stored in Windows keyring,
+- a refresh token is stored only when Adobe IMS actually returns one,
+- no refresh token is invented or required for a successful authorization-code exchange,
+- near-expiry API reads refresh automatically only when a stored refresh token exists,
+- if expiry is near and no refresh token exists, Shuvi requires re-authentication,
+- access tokens, refresh tokens and PKCE verifier values are never returned to the model,
+- no client secret is embedded.
 
-Existing reads:
+Manual static access tokens remain supported only for controlled testing; their expiry freshness is unknown unless authoritative expiry metadata exists.
+
+## Implemented read-only V4 scope
+
 - `GET /v4/me`
 - `GET /v4/accounts`
-- workspaces
-- projects
-- folder children
-- exact file metadata
+- bounded workspace listing
+- bounded project listing
+- bounded folder-child listing
+- exact file metadata inspection
+- bounded file-comment listing
+- exact comment metadata inspection
 
-Added at 80%:
-- `GET /v4/accounts/:account_id/files/:file_id/comments`
-- `GET /v4/accounts/:account_id/comments/:comment_id`
+Workspace, project, folder-child and comment lists support explicit bounded `page_size` plus an opaque `after` cursor. Shuvi never accepts or follows a model-supplied next URL. It extracts a bounded cursor only from a response whose next URL remains pinned to `https://api.frame.io`, then reconstructs the expected resource URL itself.
 
-Comment summaries are deliberately bounded. They expose review text/time/page/reviewer identity fields where present, but omit attachments, upload URLs, external links and signed media surfaces.
+Read summaries deliberately omit signed media/download links, Frame.io view URLs, comment attachments/upload URLs and arbitrary external links.
 
-## Explicit pagination
+## Canonical acceptance summary
 
-Workspace, project, folder-child and comment list tools now accept:
-- optional opaque `after` cursor,
-- optional bounded `page_size`.
+`frame_io_acceptance_summary` reports:
 
-Shuvi never follows `links.next` as a model-supplied URL. It parses only the opaque `after` value from a Frame.io response after pinning the URL back to `https://api.frame.io`, then reconstructs the next request against the exact expected resource path.
+- implemented bounded source scope,
+- optional credential lifecycle behavior,
+- strict read safety gates,
+- explicitly unclaimed write/mutation capabilities,
+- real runtime acceptance requirements.
 
-Automatic multi-page crawling remains disabled.
+The acceptance summary is source metadata only; it performs no network request or mutation.
 
-## Still blocked
+## Intentionally not implemented
 
-- comment creation/update/delete,
+- comment create/update/delete,
 - uploads,
 - shares,
 - project/workspace/folder/file mutation,
 - deletion,
 - signed-media download execution,
-- automatic OS custom-URI handler registration,
 - automatic unbounded pagination,
+- automatic OS custom-URI handler registration,
 - runtime acceptance.
 
-## Runtime status
+## Runtime handoff
+
+Real acceptance must be performed separately in the Windows Shuvi desktop app with a provisioned Frame.io V4 account and an Adobe Developer Console user-auth credential.
+
+Until that happens:
 
 `source_runtime_verified=false`
 
 `production_ready=false`
 
-Green CI validates source consistency only.
+Green CI proves source consistency only; it is not a live Frame.io acceptance result.
 
-## Next source phase
+## Next phase
 
-The 100% source milestone should produce a canonical bounded acceptance summary, enumerate implemented and explicitly unclaimed capabilities, preserve credential/read/write safety gates, and prepare the runtime handoff. Real Windows/Frame.io acceptance must remain separate.
+Real Windows + Frame.io V4 acceptance testing only. Do not expand the declared source scope unless a new milestone is explicitly defined.
