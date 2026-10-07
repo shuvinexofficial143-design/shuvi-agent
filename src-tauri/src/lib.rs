@@ -1546,6 +1546,9 @@ fn ingest_xkiro_stream_payload(
         let calls = calls
             .as_array()
             .ok_or_else(|| "xKiro delta.tool_calls must be an array.".to_string())?;
+        if calls.len() > 1 {
+            return Err("xKiro emitted multiple streamed tool calls in one frame; Shuvi accepts exactly one at a time.".into());
+        }
         for call in calls {
             let index = call
                 .get("index")
@@ -1597,7 +1600,7 @@ async fn bounded_xkiro_stream(
     let mut received = 0_usize;
     let mut accumulator = XkiroStreamAccumulator::default();
 
-    loop {
+    'stream: loop {
         let chunk = tokio::time::timeout(Duration::from_secs(120), response.chunk())
             .await
             .map_err(|_| "xKiro stream was idle for more than 120 seconds.".to_string())?
@@ -1619,6 +1622,9 @@ async fn bounded_xkiro_stream(
 
             if let Some(payload) = line.strip_prefix("data:") {
                 ingest_xkiro_stream_payload(&mut accumulator, payload)?;
+                if accumulator.terminated {
+                    break 'stream;
+                }
             }
         }
     }
