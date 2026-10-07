@@ -1608,6 +1608,9 @@ fn parse_tool_call_expression(call: &str, reason: &str) -> Option<ToolProposal> 
             {
                 return None;
             }
+            if arguments.contains_key(key) {
+                return None;
+            }
             arguments.insert(key.to_string(), parse_tagged_scalar(raw_value)?);
         }
     }
@@ -1623,7 +1626,7 @@ fn parse_tool_call_expression(call: &str, reason: &str) -> Option<ToolProposal> 
     })
 }
 
-fn first_tagged_batch_call(input: &str) -> Option<&str> {
+fn single_tagged_batch_call(input: &str) -> Option<&str> {
     let trimmed = input.trim();
     if !(trimmed.starts_with('[') && trimmed.ends_with(']')) {
         return (!trimmed.is_empty()).then_some(trimmed);
@@ -1663,8 +1666,9 @@ fn first_tagged_batch_call(input: &str) -> Option<&str> {
                 depth -= 1;
             }
             ',' if depth == 0 => {
-                let first = inner[..index].trim();
-                return (!first.is_empty()).then_some(first);
+                // Shuvi executes one approved tool at a time. Never silently
+                // discard later calls from a provider-emitted batch.
+                return None;
             }
             _ => {}
         }
@@ -1684,7 +1688,7 @@ fn parse_tagged_tool_call(text: &str) -> Option<ToolProposal> {
     let start = text.find(START)? + START.len();
     let rest = &text[start..];
     let end = rest.find(END)?;
-    let call = first_tagged_batch_call(&rest[..end])?;
+    let call = single_tagged_batch_call(&rest[..end])?;
     parse_tool_call_expression(call, "Provider emitted a tagged tool call.")
 }
 
@@ -1714,11 +1718,18 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
     let mut proposal: ToolProposal = serde_json::from_str(candidate)
         .ok()
         .or_else(|| {
-            let items = serde_json::from_str::<Vec<Value>>(candidate).ok()?;
-            serde_json::from_value::<ToolProposal>(items.into_iter().next()?).ok()
+            let mut items = serde_json::from_str::<Vec<Value>>(candidate).ok()?;
+            if items.len() != 1 {
+                return None;
+            }
+            serde_json::from_value::<ToolProposal>(items.pop()?).ok()
         })
         .or_else(|| parse_tagged_tool_call(candidate))
         .or_else(|| parse_xml_tool_call(candidate))?;
+    if !proposal.arguments.is_object() {
+        return None;
+    }
+
     if proposal.plan.as_ref().is_some_and(|plan| {
         let bounded=|value:&str,max:usize| {
             let trimmed=value.trim();
@@ -2115,7 +2126,8 @@ fn native_tool_arguments(value: Option<&Value>) -> Option<Value> {
             if trimmed.is_empty() {
                 Some(json!({}))
             } else {
-                serde_json::from_str::<Value>(trimmed).ok()
+                let parsed = serde_json::from_str::<Value>(trimmed).ok()?;
+                parsed.is_object().then_some(parsed)
             }
         }
         Some(Value::Object(map)) => Some(Value::Object(map.clone())),
@@ -2144,29 +2156,78 @@ fn native_tool_proposal(name: &str, arguments: Option<&Value>) -> Option<String>
     )
 }
 
-fn openai_compatible_native_tool_call(body: &Value) -> Option<String> {
-    if let Some(call) = body.pointer("/choices/0/message/tool_calls/0") {
-        let name = call.pointer("/function/name")?.as_str()?;
-        return native_tool_proposal(name, call.pointer("/function/arguments"));
+fn openai_compatible_native_tool_call(body: &Value) -> Result<Option<String>, String> {
+    if let Some(raw_calls) = body.pointer("/choices/0/message/tool_calls") {
+        let calls = raw_calls
+            .as_array()
+            .ok_or_else(|| "Provider tool_calls must be an array.".to_string())?;
+        if calls.len() != 1 {
+            return Err(format!(
+                "Provider emitted {} native tool calls; Shuvi accepts exactly one approved tool call at a time.",
+                calls.len()
+            ));
+        }
+        let call = &calls[0];
+        if call
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value != "function")
+        {
+            return Err("Provider emitted an unsupported native tool-call type.".into());
+        }
+        let name = call
+            .pointer("/function/name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Provider native tool call is missing function.name.".to_string())?;
+        let proposal = native_tool_proposal(name, call.pointer("/function/arguments"))
+            .ok_or_else(|| "Provider native tool call has invalid arguments.".to_string())?;
+        return Ok(Some(proposal));
     }
 
     if let Some(call) = body.pointer("/choices/0/message/function_call") {
-        let name = call.get("name")?.as_str()?;
-        return native_tool_proposal(name, call.get("arguments"));
+        let name = call
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Provider legacy function_call is missing name.".to_string())?;
+        let proposal = native_tool_proposal(name, call.get("arguments"))
+            .ok_or_else(|| "Provider legacy function_call has invalid arguments.".to_string())?;
+        return Ok(Some(proposal));
     }
 
-    body.get("output")
-        .and_then(Value::as_array)
-        .and_then(|items| {
-            items.iter().find_map(|call| {
-                let call_type = call.get("type").and_then(Value::as_str)?;
-                if call_type != "function_call" {
-                    return None;
-                }
-                let name = call.get("name")?.as_str()?;
-                native_tool_proposal(name, call.get("arguments"))
-            })
-        })
+    if let Some(items) = body.get("output").and_then(Value::as_array) {
+        let calls = items
+            .iter()
+            .filter(|call| call.get("type").and_then(Value::as_str) == Some("function_call"))
+            .collect::<Vec<_>>();
+        if calls.len() > 1 {
+            return Err(format!(
+                "Provider emitted {} Responses API function calls; Shuvi accepts exactly one approved tool call at a time.",
+                calls.len()
+            ));
+        }
+        if let Some(call) = calls.first() {
+            let name = call
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "Provider Responses API function call is missing name.".to_string())?;
+            let proposal = native_tool_proposal(name, call.get("arguments"))
+                .ok_or_else(|| "Provider Responses API function call has invalid arguments.".to_string())?;
+            return Ok(Some(proposal));
+        }
+    }
+
+    Ok(None)
+}
+
+fn openai_compatible_assistant_or_tool(body: &Value) -> Result<String, String> {
+    if let Some(tool_call) = openai_compatible_native_tool_call(body)? {
+        return Ok(tool_call);
+    }
+
+    openai_compatible_assistant_text(body).ok_or_else(|| {
+        "Provider response had no assistant text or native tool call in a supported OpenAI/OpenRouter response shape."
+            .to_string()
+    })
 }
 
 fn openai_compatible_assistant_text(body: &Value) -> Option<String> {
@@ -2405,9 +2466,7 @@ async fn openai_compatible_chat(
         return Err(format!("Provider returned {status}: {}", compact_error(&body)));
     }
 
-    let assistant_text = openai_compatible_assistant_text(&body)
-        .or_else(|| openai_compatible_native_tool_call(&body))
-        .ok_or_else(|| "Provider response had no assistant text or native tool call in a supported OpenAI/OpenRouter response shape.".to_string())?;
+    let assistant_text = openai_compatible_assistant_or_tool(&body)?;
     let content = bounded_provider_text(&assistant_text, "Provider assistant")?;
 
     let usage = usage_from_openai(&body);
