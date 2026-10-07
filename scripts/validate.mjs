@@ -110,7 +110,10 @@ if (premiereManifest?.manifestVersion !== 5) fail("Premiere UXP manifestVersion 
 if (premiereManifest?.host?.app !== "premierepro") fail("Premiere UXP host must target premierepro.");
 if (premiereManifest?.host?.minVersion !== "25.6.0") fail("Premiere UXP minimum host version must be 25.6.0.");
 const premiereDomains = premiereManifest?.requiredPermissions?.network?.domains;
-if (!Array.isArray(premiereDomains) || !premiereDomains.includes("http://127.0.0.1:17361")) {
+const premiereLocalhostPermission =
+  premiereDomains === "all" ||
+  (Array.isArray(premiereDomains) && premiereDomains.includes("http://127.0.0.1:17361"));
+if (!premiereLocalhostPermission) {
   fail("Premiere bridge localhost permission is missing.");
 } else {
   ok("Premiere bridge localhost permission checked.");
