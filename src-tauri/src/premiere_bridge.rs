@@ -227,11 +227,17 @@ impl PremiereBridgeShared {
         value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
     }
 
-    fn pairing_is_current(issued_at_ms: u64) -> bool {
+    fn session_is_current(&self) -> bool {
         let now = now_ms();
-        issued_at_ms > 0
-            && issued_at_ms <= now
-            && now.saturating_sub(issued_at_ms) < PREMIERE_PAIRING_TTL_MS
+        self.session_created_ms
+            .lock()
+            .ok()
+            .and_then(|value| *value)
+            .is_some_and(|created| {
+                created > 0
+                    && created <= now
+                    && now.saturating_sub(created) < PREMIERE_SESSION_TTL_MS
+            })
     }
 
     fn load_persisted_pairing() -> Result<Option<PersistedPairing>, String> {
@@ -253,8 +259,7 @@ impl PremiereBridgeShared {
             return Ok(None);
         }
 
-        // One-time migration for the legacy raw 32-hex token format. Persist the
-        // migration timestamp so restarts cannot reset the bounded lifetime.
+        // One-time migration for the legacy raw 32-hex pairing token format.
         if Self::valid_persisted_token(&raw) {
             let pairing = PersistedPairing {
                 version: 1,
@@ -293,17 +298,33 @@ impl PremiereBridgeShared {
         }
     }
 
+    fn rotate_session(&self) -> Result<String, String> {
+        // Session rotation invalidates any dispatched-but-unconfirmed command.
+        // Clearing the queue prevents an edit from being redelivered under a new token.
+        self.work
+            .lock()
+            .map_err(|_| "Premiere bridge work queue is unavailable.".to_string())?
+            .clear();
+
+        let token = Uuid::new_v4().simple().to_string();
+        *self
+            .session_token
+            .lock()
+            .map_err(|_| "Premiere session token state is unavailable.".to_string())? =
+            Some(token.clone());
+        *self
+            .session_created_ms
+            .lock()
+            .map_err(|_| "Premiere session clock is unavailable.".to_string())? =
+            Some(now_ms());
+        Ok(token)
+    }
+
     fn activate_pairing(&self, pairing: PersistedPairing) -> Result<PremiereBridgeStatus, String> {
         *self
-            .token_created_ms
+            .pairing_secret
             .lock()
-            .map_err(|_| "Premiere token clock is unavailable.".to_string())? =
-            Some(pairing.issued_at_ms);
-
-        *self
-            .token
-            .lock()
-            .map_err(|_| "Premiere bridge token state is unavailable.".to_string())? =
+            .map_err(|_| "Premiere pairing state is unavailable.".to_string())? =
             Some(pairing.token);
 
         *self
@@ -316,11 +337,7 @@ impl PremiereBridgeShared {
             .lock()
             .map_err(|_| "Premiere bridge state is unavailable.".to_string())? = None;
 
-        self.work
-            .lock()
-            .map_err(|_| "Premiere bridge work queue is unavailable.".to_string())?
-            .clear();
-
+        self.rotate_session()?;
         self.status()
     }
 
@@ -339,25 +356,22 @@ impl PremiereBridgeShared {
             .lock()
             .map(|enabled| *enabled)
             .unwrap_or(false);
-        let has_live_token = self
-            .token
+        let has_pairing = self
+            .pairing_secret
             .lock()
             .ok()
             .and_then(|token| token.clone())
             .is_some_and(|token| Self::valid_persisted_token(&token));
 
-        if already_enabled && has_live_token && self.token_is_current() {
+        if already_enabled && has_pairing {
+            if !self.session_is_current() {
+                self.rotate_session()?;
+            }
             return self.status();
         }
 
         let pairing = match Self::load_persisted_pairing()? {
-            Some(pairing) if Self::pairing_is_current(pairing.issued_at_ms) => pairing,
-            Some(_) => {
-                Self::revoke_persisted_pairing()?;
-                let pairing = Self::new_pairing();
-                Self::persist_pairing(&pairing)?;
-                pairing
-            }
+            Some(pairing) => pairing,
             None => {
                 let pairing = Self::new_pairing();
                 Self::persist_pairing(&pairing)?;
@@ -375,22 +389,29 @@ impl PremiereBridgeShared {
             .map_err(|_| "Premiere bridge state is unavailable.".to_string())? = false;
 
         *self
-            .token
+            .pairing_secret
             .lock()
-            .map_err(|_| "Premiere bridge token state is unavailable.".to_string())? = None;
+            .map_err(|_| "Premiere pairing state is unavailable.".to_string())? = None;
 
         *self
-            .token_created_ms
+            .session_token
             .lock()
-            .map_err(|_| "Premiere token clock is unavailable.".to_string())? = None;
+            .map_err(|_| "Premiere session token state is unavailable.".to_string())? = None;
+
+        *self
+            .session_created_ms
+            .lock()
+            .map_err(|_| "Premiere session clock is unavailable.".to_string())? = None;
 
         *self
             .last_seen_ms
             .lock()
             .map_err(|_| "Premiere bridge state is unavailable.".to_string())? = None;
 
-        self.work.lock()
-            .map_err(|_| "Premiere bridge work queue is unavailable.".to_string())?.clear();
+        self.work
+            .lock()
+            .map_err(|_| "Premiere bridge work queue is unavailable.".to_string())?
+            .clear();
 
         Self::revoke_persisted_pairing()?;
         self.status()
@@ -402,18 +423,18 @@ impl PremiereBridgeShared {
             .lock()
             .map_err(|_| "Premiere bridge state is unavailable.".to_string())?;
 
-        let enabled = enabled && self.token_is_current();
+        let token = self
+            .pairing_secret
+            .lock()
+            .map_err(|_| "Premiere pairing state is unavailable.".to_string())?
+            .clone();
+
+        let enabled = enabled && token.as_deref().is_some_and(Self::valid_persisted_token);
 
         let server_started = *self
             .server_started
             .lock()
             .map_err(|_| "Premiere bridge state is unavailable.".to_string())?;
-
-        let token = self
-            .token
-            .lock()
-            .map_err(|_| "Premiere bridge token state is unavailable.".to_string())?
-            .clone();
 
         let last_seen_ms = *self
             .last_seen_ms
@@ -421,12 +442,16 @@ impl PremiereBridgeShared {
             .map_err(|_| "Premiere bridge state is unavailable.".to_string())?;
 
         let queued_commands = {
-            let mut work = self.work.lock().map_err(|_| "Premiere bridge work queue is unavailable.".to_string())?;
+            let mut work = self
+                .work
+                .lock()
+                .map_err(|_| "Premiere bridge work queue is unavailable.".to_string())?;
             work.cleanup(std::time::Instant::now());
             work.queued_len()
         };
 
         let paired = enabled
+            && self.session_is_current()
             && last_seen_ms
                 .map(|seen| now_ms().saturating_sub(seen) <= 4_000)
                 .unwrap_or(false);
@@ -440,6 +465,54 @@ impl PremiereBridgeShared {
             last_seen_ms,
             queued_commands,
         })
+    }
+
+    fn authenticate_pairing(&self, supplied: Option<&str>) -> bool {
+        if !self.enabled.lock().map(|value| *value).unwrap_or(false) {
+            return false;
+        }
+        let expected = self
+            .pairing_secret
+            .lock()
+            .ok()
+            .and_then(|value| value.clone());
+        expected
+            .as_deref()
+            .is_some_and(|value| Some(value) == supplied)
+    }
+
+    fn authenticate(&self, supplied: Option<&str>) -> bool {
+        if !self.enabled.lock().map(|value| *value).unwrap_or(false) || !self.session_is_current() {
+            return false;
+        }
+        let expected = self
+            .session_token
+            .lock()
+            .ok()
+            .and_then(|value| value.clone());
+        expected
+            .as_deref()
+            .is_some_and(|value| Some(value) == supplied)
+    }
+
+    fn issue_session(&self, supplied_pairing: Option<&str>) -> Result<(String, u64), String> {
+        if !self.authenticate_pairing(supplied_pairing) {
+            return Err("Invalid or disabled Shuvi pairing credential.".into());
+        }
+
+        let token = if self.session_is_current() {
+            self.session_token
+                .lock()
+                .map_err(|_| "Premiere session token state is unavailable.".to_string())?
+                .clone()
+                .filter(|token| Self::valid_persisted_token(token))
+                .unwrap_or(self.rotate_session()?)
+        } else {
+            self.rotate_session()?
+        };
+
+        self.mark_seen();
+        Ok((token, PREMIERE_SESSION_TTL_MS))
     }
 
     pub async fn request(
