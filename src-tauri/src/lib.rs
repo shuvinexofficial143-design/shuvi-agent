@@ -9854,6 +9854,7 @@ async fn execute_tool_with_action_id(
 {condition}
 {root_script}
 $matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 $items = @()
 for ($i = 0; $i -lt [Math]::Min($matches.Count, 25); $i++) {{
     $e = $matches.Item($i)
@@ -9894,6 +9895,8 @@ Add-Type @"
 using System;
 using System.Runtime.InteropServices;
 public static class ShuviUiNative {{
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
     [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
@@ -9909,8 +9912,10 @@ if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
 try {{
     $process = [System.Diagnostics.Process]::GetProcessById($e.Current.ProcessId)
     if ($process.MainWindowHandle -ne [IntPtr]::Zero) {{
+        [void][ShuviUiNative]::ShowWindow($process.MainWindowHandle, 9)
+        [void][ShuviUiNative]::BringWindowToTop($process.MainWindowHandle)
         [void][ShuviUiNative]::SetForegroundWindow($process.MainWindowHandle)
-        Start-Sleep -Milliseconds 120
+        Start-Sleep -Milliseconds 150
     }}
 }} catch {{}}
 $clicked = $false
@@ -10198,6 +10203,8 @@ Add-Type @"
 using System;
 using System.Runtime.InteropServices;
 public static class ShuviUiKeysNative {{
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
 }}
 "@
@@ -10207,8 +10214,10 @@ if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
 try {{
     $process = [System.Diagnostics.Process]::GetProcessById($e.Current.ProcessId)
     if ($process.MainWindowHandle -ne [IntPtr]::Zero) {{
+        [void][ShuviUiKeysNative]::ShowWindow($process.MainWindowHandle, 9)
+        [void][ShuviUiKeysNative]::BringWindowToTop($process.MainWindowHandle)
         [void][ShuviUiKeysNative]::SetForegroundWindow($process.MainWindowHandle)
-        Start-Sleep -Milliseconds 150
+        Start-Sleep -Milliseconds 180
     }}
 }} catch {{}}
 $e.SetFocus()
