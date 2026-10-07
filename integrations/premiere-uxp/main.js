@@ -37,6 +37,7 @@ function clearSavedBridgeToken() {
 }
 
 let bridgeToken = loadSavedBridgeToken();
+let bridgeSessionToken = "";
 let pollTimer = null;
 let busy = false;
 let activeExpectation = null;
@@ -446,8 +447,8 @@ function setStatus(text, connected = false) {
   status.classList.toggle("connected", connected);
 }
 
-async function bridgeFetch(path, options = {}, timeoutMs = 2500, sessionToken = bridgeToken) {
-  if (!sessionToken) throw new Error("Enter the Shuvi pairing token first.");
+async function bridgeRequest(path, options = {}, timeoutMs = 2500, token = "") {
+  if (!token) throw new Error("Shuvi bridge credential is unavailable.");
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -457,7 +458,7 @@ async function bridgeFetch(path, options = {}, timeoutMs = 2500, sessionToken = 
       ...options,
       headers: {
         "Content-Type": "application/json",
-        "X-Shuvi-Token": sessionToken,
+        "X-Shuvi-Token": token,
         ...(options.headers || {})
       },
       signal: controller.signal
@@ -467,13 +468,38 @@ async function bridgeFetch(path, options = {}, timeoutMs = 2500, sessionToken = 
     const body = text ? JSON.parse(text) : null;
 
     if (!response.ok) {
-      throw new Error(body?.error || "Bridge returned HTTP " + response.status);
+      throw new Error("HTTP " + response.status + ": " + (body?.error || "Bridge request failed"));
     }
 
     return body;
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function refreshBridgeSession() {
+  if (!bridgeToken) throw new Error("Paste the pairing token from Shuvi.");
+  const session = await bridgeRequest(
+    "/session",
+    { method: "POST", body: "{}" },
+    2500,
+    bridgeToken
+  );
+  const token = typeof session?.token === "string" ? session.token.trim() : "";
+  if (!/^[0-9a-fA-F]{32}$/.test(token)) {
+    throw new Error("Shuvi returned an invalid Premiere session token.");
+  }
+  bridgeSessionToken = token;
+  return token;
+}
+
+async function ensureBridgeSession() {
+  return bridgeSessionToken || refreshBridgeSession();
+}
+
+async function bridgeFetch(path, options = {}, timeoutMs = 2500, sessionToken = bridgeSessionToken) {
+  if (!sessionToken) throw new Error("Shuvi session token is unavailable.");
+  return bridgeRequest(path, options, timeoutMs, sessionToken);
 }
 
 function plainGuid(value) {
@@ -7625,8 +7651,8 @@ async function pollBridge() {
   if (!bridgeToken || busy) return;
 
   busy = true;
-  const sessionToken = bridgeToken;
   try {
+    const sessionToken = await ensureBridgeSession();
     const command = await bridgeFetch("/command", {}, 2500, sessionToken);
     if (bridgeToken !== sessionToken) return;
 
@@ -7649,11 +7675,13 @@ async function pollBridge() {
         await postResult(command, commandError === null, data, commandError, sessionToken);
         show(commandError === null ? JSON.stringify(data, null, 2) : "Command failed: " + commandError);
       } catch (error) {
+        if (String(error).includes("HTTP 401")) bridgeSessionToken = "";
         show("Result delivery unconfirmed; the command may have completed. Inspect Premiere before retrying. " + String(error));
         setStatus("Result delivery unconfirmed", false);
       }
     }
   } catch (error) {
+    if (String(error).includes("HTTP 401")) bridgeSessionToken = "";
     setStatus("Not paired: " + String(error), false);
   } finally {
     busy = false;
@@ -7674,22 +7702,23 @@ function connectBridge() {
   }
 
   bridgeToken = token;
+  bridgeSessionToken = "";
   saveBridgeToken(token);
   startPolling();
   setStatus("Connecting…", false);
 }
 
 async function disconnectBridge() {
-  const sessionToken = bridgeToken;
+  const pairingToken = bridgeToken;
   let revokeError = null;
 
-  if (sessionToken) {
+  if (pairingToken) {
     try {
-      await bridgeFetch(
+      await bridgeRequest(
         "/disconnect",
         { method: "POST", body: "{}" },
         2500,
-        sessionToken
+        pairingToken
       );
     } catch (error) {
       revokeError = String(error);
@@ -7697,6 +7726,7 @@ async function disconnectBridge() {
   }
 
   bridgeToken = "";
+  bridgeSessionToken = "";
   clearSavedBridgeToken();
   if (pollTimer) {
     clearInterval(pollTimer);
