@@ -1379,6 +1379,15 @@ fn http_client() -> Result<Client, String> {
         .map_err(|error| format!("HTTP client error: {error}"))
 }
 
+fn streaming_http_client() -> Result<Client, String> {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::none())
+        .http1_only()
+        .build()
+        .map_err(|error| format!("Streaming HTTP client error: {error}"))
+}
+
 async fn send_with_retry(
     request: reqwest::RequestBuilder,
     label: &str,
@@ -1468,6 +1477,188 @@ async fn bounded_provider_json(
     let value = serde_json::from_slice::<Value>(&body)
         .map_err(|error| format!("Invalid {label} JSON response: {error}"))?;
     Ok((status, value))
+}
+
+#[derive(Default)]
+struct XkiroStreamAccumulator {
+    content: String,
+    tool_call_index: Option<u64>,
+    tool_name: String,
+    tool_arguments: String,
+    usage: Option<UsageStats>,
+    terminated: bool,
+}
+
+fn append_bounded(target: &mut String, fragment: &str, label: &str) -> Result<(), String> {
+    if target.len().saturating_add(fragment.len()) > MAX_ASSISTANT_RESPONSE_BYTES {
+        return Err(format!("{label} exceeds Shuvi's 256 KB safety limit."));
+    }
+    target.push_str(fragment);
+    Ok(())
+}
+
+fn ingest_xkiro_stream_payload(
+    accumulator: &mut XkiroStreamAccumulator,
+    payload: &str,
+) -> Result<(), String> {
+    let payload = payload.trim();
+    if payload.is_empty() {
+        return Ok(());
+    }
+    if payload == "[DONE]" {
+        accumulator.terminated = true;
+        return Ok(());
+    }
+
+    let frame = serde_json::from_str::<Value>(payload)
+        .map_err(|error| format!("Invalid xKiro SSE JSON frame: {error}"))?;
+
+    if let Some(error) = frame.get("error") {
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("xKiro stream reported an unknown provider error.");
+        return Err(format!("xKiro stream error: {}", message.chars().take(800).collect::<String>()));
+    }
+
+    if let Some(usage) = usage_from_openai(&frame) {
+        accumulator.usage = Some(usage);
+    }
+
+    let Some(choice) = frame.pointer("/choices/0") else {
+        return Ok(());
+    };
+
+    if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
+        match reason {
+            "stop" | "tool_calls" => {}
+            "length" => return Err("xKiro generation stopped because the output limit was reached.".into()),
+            "content_filter" => return Err("xKiro blocked the generation with content_filter.".into()),
+            other => return Err(format!("xKiro returned unsupported finish_reason: {other}")),
+        }
+    }
+
+    if let Some(content) = choice.pointer("/delta/content").and_then(Value::as_str) {
+        append_bounded(&mut accumulator.content, content, "xKiro assistant text")?;
+    }
+
+    if let Some(calls) = choice.pointer("/delta/tool_calls") {
+        let calls = calls
+            .as_array()
+            .ok_or_else(|| "xKiro delta.tool_calls must be an array.".to_string())?;
+        for call in calls {
+            let index = call
+                .get("index")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            if accumulator
+                .tool_call_index
+                .is_some_and(|existing| existing != index)
+            {
+                return Err("xKiro emitted multiple streamed tool calls; Shuvi accepts exactly one at a time.".into());
+            }
+            accumulator.tool_call_index = Some(index);
+
+            if call
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|value| value != "function")
+            {
+                return Err("xKiro emitted an unsupported streamed tool-call type.".into());
+            }
+
+            if let Some(name) = call.pointer("/function/name").and_then(Value::as_str) {
+                append_bounded(&mut accumulator.tool_name, name, "xKiro streamed tool name")?;
+            }
+            if let Some(arguments) = call.pointer("/function/arguments").and_then(Value::as_str) {
+                append_bounded(
+                    &mut accumulator.tool_arguments,
+                    arguments,
+                    "xKiro streamed tool arguments",
+                )?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn bounded_xkiro_stream(
+    mut response: reqwest::Response,
+) -> Result<(String, Option<UsageStats>), String> {
+    ensure_provider_response_size(&response, "xKiro")?;
+    let status = response.status();
+    if !status.is_success() {
+        let (_, body) = bounded_provider_json(response, "xKiro").await?;
+        return Err(format!("xKiro returned {status}: {}", compact_error(&body)));
+    }
+
+    let mut pending = Vec::<u8>::new();
+    let mut received = 0_usize;
+    let mut accumulator = XkiroStreamAccumulator::default();
+
+    loop {
+        let chunk = tokio::time::timeout(Duration::from_secs(120), response.chunk())
+            .await
+            .map_err(|_| "xKiro stream was idle for more than 120 seconds.".to_string())?
+            .map_err(|error| format!("xKiro stream failed while reading: {error}"))?;
+        let Some(chunk) = chunk else { break; };
+
+        received = received.saturating_add(chunk.len());
+        if received > MAX_PROVIDER_RESPONSE_BYTES as usize {
+            return Err("xKiro stream exceeds Shuvi's 8 MB streamed-body safety limit.".into());
+        }
+        pending.extend_from_slice(&chunk);
+
+        while let Some(position) = pending.iter().position(|byte| *byte == b'\n') {
+            let line = pending.drain(..=position).collect::<Vec<_>>();
+            let line = std::str::from_utf8(&line[..line.len().saturating_sub(1)])
+                .map_err(|_| "xKiro stream contained invalid UTF-8.".to_string())?
+                .trim_end_matches('\r')
+                .trim();
+
+            if let Some(payload) = line.strip_prefix("data:") {
+                ingest_xkiro_stream_payload(&mut accumulator, payload)?;
+            }
+        }
+    }
+
+    if !pending.is_empty() {
+        let line = std::str::from_utf8(&pending)
+            .map_err(|_| "xKiro stream contained invalid trailing UTF-8.".to_string())?
+            .trim_end_matches('\r')
+            .trim();
+        if let Some(payload) = line.strip_prefix("data:") {
+            ingest_xkiro_stream_payload(&mut accumulator, payload)?;
+        }
+    }
+
+    if !accumulator.terminated {
+        return Err("xKiro stream ended without the required [DONE] terminator.".into());
+    }
+
+    if accumulator.tool_call_index.is_some() {
+        if accumulator.tool_name.is_empty() {
+            return Err("xKiro streamed tool call ended without a function name.".into());
+        }
+        let arguments = if accumulator.tool_arguments.trim().is_empty() {
+            "{}"
+        } else {
+            accumulator.tool_arguments.as_str()
+        };
+        let content = native_tool_proposal(
+            accumulator.tool_name.as_str(),
+            Some(&Value::String(arguments.to_string())),
+        )
+        .ok_or_else(|| "xKiro streamed tool call failed Shuvi's local validation.".to_string())?;
+        return Ok((content, accumulator.usage));
+    }
+
+    if accumulator.content.trim().is_empty() {
+        return Err("xKiro stream completed without assistant text or a valid tool call.".into());
+    }
+
+    Ok((accumulator.content, accumulator.usage))
 }
 
 fn collect_provider_text<'a>(
