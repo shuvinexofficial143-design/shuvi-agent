@@ -2529,6 +2529,35 @@ mod openai_response_parser_tests {
         }]}}]});
         assert!(openai_compatible_native_tool_call(&body).is_err());
     }
+
+    #[test]
+    fn parses_xkiro_shuvi_tool_wrapper_into_local_typed_proposal() {
+        let body = json!({"choices":[{"message":{"tool_calls":[{
+            "type":"function",
+            "function":{
+                "name":"shuvi_tool",
+                "arguments":"{\"tool\":\"premiere_detect\",\"arguments\":{},\"reason\":\"Inspect Premiere before editing.\"}"
+            }
+        }]}}]});
+        let content = openai_compatible_native_tool_call(&body)
+            .expect("xKiro parser")
+            .expect("xKiro native tool request");
+        let proposal = parse_tool_proposal(&content).expect("local typed proposal");
+        assert_eq!(proposal.tool, "premiere_detect");
+        assert_eq!(proposal.arguments, json!({}));
+    }
+
+    #[test]
+    fn rejects_xkiro_wrapper_when_inner_tool_is_not_locally_allowlisted() {
+        let body = json!({"choices":[{"message":{"tool_calls":[{
+            "type":"function",
+            "function":{
+                "name":"shuvi_tool",
+                "arguments":"{\"tool\":\"invented_dangerous_tool\",\"arguments\":{}}"
+            }
+        }]}}]});
+        assert!(openai_compatible_native_tool_call(&body).is_err());
+    }
 }
 
 #[cfg(test)]
