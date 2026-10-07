@@ -68,8 +68,8 @@ test("Frame.io token handling does not expose secrets to model tools",()=>{
 test("Frame.io 80 percent project and asset inspection stays read-only",()=>{
   assert.match(lib,/\.get\(frame_io::api_url\(frame_io::ME_PATH\)/);
   assert.match(lib,/\.get\(frame_io::api_url\(frame_io::ACCOUNTS_PATH\)/);
-  assert.match(lib,/\.get\(frame_io::workspaces_url/);
-  assert.match(lib,/\.get\(frame_io::projects_url/);
+  assert.match(lib,/\.get\(frame_io::workspaces_page_url/);
+  assert.match(lib,/\.get\(frame_io::projects_page_url/);
   assert.match(lib,/\.get\(frame_io::folder_children_page_url/);
   assert.match(lib,/\.get\(frame_io::file_url/);
   assert.match(lib,/\.get\(frame_io::comments_url/);
