@@ -45,6 +45,11 @@ test("xKiro sends one native Shuvi bridge function while local validation remain
   assert.match(openai, /if input\.provider == "xkiro"/);
   assert.match(openai, /payload\["tools"\] = json!\(\[xkiro_shuvi_tool_definition\(\)\]\)/);
   assert.match(openai, /payload\["tool_choice"\] = Value::String\("auto"\.into\(\)\)/);
+  assert.match(openai, /payload\["stream"\] = Value::Bool\(true\)/);
+  assert.match(openai, /payload\["stream_options"\] = json!\(\{"include_usage": true\}\)/);
+  assert.match(openai, /streaming_http_client\(\)\?/);
+  assert.match(openai, /request = request\.header\("Accept", "text\/event-stream"\)/);
+  assert.match(openai, /bounded_xkiro_stream\(response\)\.await\?/);
 });
 
 test("xKiro wrapper is revalidated through the existing Shuvi proposal allowlist", () => {
@@ -54,4 +59,15 @@ test("xKiro wrapper is revalidated through the existing Shuvi proposal allowlist
   assert.match(block, /if name == "shuvi_tool"/);
   assert.match(block, /parse_tool_proposal\(&raw\.to_string\(\)\)\?/);
   assert.match(block, /xKiro emitted a native Shuvi tool request/);
+});
+
+
+test("xKiro streaming parser is bounded and requires a clean terminator", () => {
+  assert.match(rust, /struct XkiroStreamAccumulator/);
+  assert.match(rust, /tokio::time::timeout\(Duration::from_secs\(120\), response\.chunk\(\)\)/);
+  assert.match(rust, /xKiro stream exceeds Shuvi's 8 MB streamed-body safety limit/);
+  assert.match(rust, /xKiro stream ended without the required \[DONE\] terminator/);
+  assert.match(rust, /xKiro stream error:/);
+  assert.match(rust, /multiple streamed tool calls/);
+  assert.match(rust, /xKiro generation stopped because the output limit was reached/);
 });
