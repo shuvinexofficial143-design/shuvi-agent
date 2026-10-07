@@ -56,7 +56,7 @@ test("Substance 3D 80 percent keeps remote reads and receipts bounded",()=>{
   assert.match(substance,/alg\.version\.painter/);
   assert.match(substance,/Get-NetTCPConnection/);
   assert.match(substance,/\/run\.json/);
-  assert.match(substance,/SHUVI_SAMPLER_RECEIPT_PATH/);
+  assert.match(lib,/SHUVI_SAMPLER_RECEIPT_PATH/);
   assert.match(substance,/script_completion_receipt_verified/);
   assert.match(substance,/"mutation_performed":false/);
   assert.match(substance,/PAINTER_REMOTE_PORT:u16=60041/);
