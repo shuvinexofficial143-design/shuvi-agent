@@ -1,6 +1,7 @@
 import type { ToolProposal, ActionResult } from "./types";
 export const GRAPH_LIMIT: 8;
 export const GRAPH_REVISION_LIMIT: 8;
+export const GRAPH_EVIDENCE_LIMIT: 12;
 export const ORCHESTRATION_STEP_LIMIT: 24;
 export const GRAPH_AUDIT_EVENTS: readonly GraphAuditEvent[];
 export const RECOVERY_TOOLS: readonly string[];
