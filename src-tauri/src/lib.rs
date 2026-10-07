@@ -431,6 +431,11 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - frame_io_readiness_report: {}
 - frame_io_credential_status: {} — returns only whether a Frame.io access token is stored; never exposes the token
 - frame_io_identity_preflight: {} — read-only V4 calls to /v4/me and /v4/accounts using the securely stored Bearer token; no projects/files/comments/uploads or mutations
+- frame_io_oauth_begin: {} — generate Adobe IMS Native App PKCE authorization URL; state and code_verifier are stored in Windows keyring and the verifier is never returned
+- frame_io_oauth_complete: {"callback_url":"exact Adobe IMS redirect URI including code and state"} — validate exact configured redirect + state + 15-minute pending lifetime, exchange code with PKCE at Adobe IMS, securely store access/refresh tokens; tokens are never returned
+- frame_io_oauth_refresh: {} — explicitly refresh the access token using the securely stored refresh token and public client_id; no client secret
+- frame_io_list_workspaces: {"account_id":"exact account id from frame_io_identity_preflight"} — read-only GET /v4/accounts/:account_id/workspaces; first bounded response page only
+- frame_io_list_projects: {"account_id":"exact account id","workspace_id":"exact workspace id from frame_io_list_workspaces"} — read-only GET /v4/accounts/:account_id/workspaces/:workspace_id/projects; first bounded response page only
 - photoshop_capability_report: {}
 - photoshop_readiness_report: {}
 - photoshop_detect: {}
@@ -724,6 +729,11 @@ enum ToolAction {
     FrameIoReadinessReport,
     FrameIoCredentialStatus,
     FrameIoIdentityPreflight,
+    FrameIoOauthBegin,
+    FrameIoOauthComplete { callback_url:String },
+    FrameIoOauthRefresh,
+    FrameIoListWorkspaces { account_id:String },
+    FrameIoListProjects { account_id:String, workspace_id:String },
     PremiereDetect,
     PremiereLaunch { project: Option<String> },
     PremiereBridgeStart,
@@ -1164,38 +1174,103 @@ fn load_api_key(provider_id: &str) -> Result<Option<String>, String> {
     }
 }
 
-fn frame_io_token_entry() -> Result<Entry, String> {
-    Entry::new(KEYRING_SERVICE, "integration:frame_io:access_token")
-        .map_err(|error| format!("Frame.io credential store unavailable: {error}"))
+fn frame_io_entry(name:&str)->Result<Entry,String>{
+    Entry::new(KEYRING_SERVICE,&format!("integration:frame_io:{name}"))
+        .map_err(|error|format!("Frame.io credential store unavailable: {error}"))
 }
 
-fn load_frame_io_access_token() -> Result<Option<String>, String> {
-    let entry=frame_io_token_entry()?;
-    match entry.get_password() {
-        Ok(value) => {
-            frame_io::validate_access_token(&value)?;
-            Ok(Some(value))
-        }
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(error) => Err(format!("Could not read Frame.io credential: {error}")),
+fn load_frame_io_secret(name:&str)->Result<Option<String>,String>{
+    let entry=frame_io_entry(name)?;
+    match entry.get_password(){
+        Ok(value)=>Ok(Some(value)),
+        Err(keyring::Error::NoEntry)=>Ok(None),
+        Err(error)=>Err(format!("Could not read Frame.io secure state: {error}"))
     }
+}
+
+fn clear_frame_io_secret(name:&str)->Result<(),String>{
+    let entry=frame_io_entry(name)?;
+    match entry.delete_credential(){
+        Ok(())|Err(keyring::Error::NoEntry)=>Ok(()),
+        Err(error)=>Err(format!("Could not clear Frame.io secure state: {error}"))
+    }
+}
+
+fn load_frame_io_access_token()->Result<Option<String>,String>{
+    let value=load_frame_io_secret("access_token")?;
+    if let Some(token)=value.as_deref(){frame_io::validate_access_token(token)?;}
+    Ok(value)
+}
+
+fn load_frame_io_refresh_token()->Result<Option<String>,String>{
+    let value=load_frame_io_secret("refresh_token")?;
+    if let Some(token)=value.as_deref(){frame_io::validate_refresh_token(token)?;}
+    Ok(value)
+}
+
+fn load_frame_io_oauth_config()->Result<Option<frame_io::OAuthConfig>,String>{
+    let Some(raw)=load_frame_io_secret("oauth_config")? else{return Ok(None);};
+    let config:frame_io::OAuthConfig=serde_json::from_str(&raw)
+        .map_err(|_|"Stored Frame.io OAuth config is invalid.".to_string())?;
+    config.validate()?;
+    Ok(Some(config))
+}
+
+fn load_frame_io_oauth_pending()->Result<Option<frame_io::OAuthPending>,String>{
+    let Some(raw)=load_frame_io_secret("oauth_pending")? else{return Ok(None);};
+    let pending:frame_io::OAuthPending=serde_json::from_str(&raw)
+        .map_err(|_|"Stored Frame.io OAuth pending state is invalid.".to_string())?;
+    pending.validate()?;
+    Ok(Some(pending))
+}
+
+fn store_frame_io_tokens(tokens:&frame_io::OAuthTokens,preserve_refresh:Option<&str>)->Result<(),String>{
+    frame_io::validate_access_token(&tokens.access_token)?;
+    let refresh=tokens.refresh_token.as_deref().or(preserve_refresh);
+    if let Some(value)=refresh{frame_io::validate_refresh_token(value)?;}
+    if let Some(value)=refresh{
+        frame_io_entry("refresh_token")?.set_password(value)
+            .map_err(|error|format!("Could not securely save Frame.io refresh token: {error}"))?;
+    }else{
+        clear_frame_io_secret("refresh_token")?;
+    }
+    if let Err(error)=frame_io_entry("access_token")?.set_password(&tokens.access_token){
+        let _=clear_frame_io_secret("refresh_token");
+        return Err(format!("Could not securely save Frame.io access token: {error}"));
+    }
+    Ok(())
 }
 
 #[tauri::command]
 fn save_frame_io_access_token(access_token:String)->Result<(),String>{
     frame_io::validate_access_token(&access_token)?;
-    frame_io_token_entry()?
-        .set_password(&access_token)
-        .map_err(|error|format!("Could not save Frame.io access token: {error}"))
+    frame_io_entry("access_token")?.set_password(&access_token)
+        .map_err(|error|format!("Could not save Frame.io access token: {error}"))?;
+    clear_frame_io_secret("refresh_token")?;
+    clear_frame_io_secret("oauth_pending")
 }
 
 #[tauri::command]
 fn delete_frame_io_access_token()->Result<(),String>{
-    let entry=frame_io_token_entry()?;
-    match entry.delete_credential(){
-        Ok(())|Err(keyring::Error::NoEntry)=>Ok(()),
-        Err(error)=>Err(format!("Could not delete Frame.io access token: {error}")),
-    }
+    clear_frame_io_secret("access_token")?;
+    clear_frame_io_secret("refresh_token")?;
+    clear_frame_io_secret("oauth_pending")
+}
+
+#[tauri::command]
+fn save_frame_io_oauth_config(client_id:String,redirect_uri:String)->Result<(),String>{
+    let config=frame_io::OAuthConfig{client_id,redirect_uri};
+    config.validate()?;
+    let encoded=serde_json::to_string(&config).map_err(|e|format!("Could not encode Frame.io OAuth config: {e}"))?;
+    frame_io_entry("oauth_config")?.set_password(&encoded)
+        .map_err(|error|format!("Could not save Frame.io OAuth config: {error}"))?;
+    clear_frame_io_secret("oauth_pending")
+}
+
+#[tauri::command]
+fn delete_frame_io_oauth_config()->Result<(),String>{
+    clear_frame_io_secret("oauth_config")?;
+    clear_frame_io_secret("oauth_pending")
 }
 
 #[tauri::command]
@@ -1203,7 +1278,12 @@ fn frame_io_credential_status()->Result<Value,String>{
     Ok(json!({
         "integration":"frame_io",
         "credential_configured":load_frame_io_access_token()?.is_some(),
-        "credential_value_exposed":false
+        "refresh_token_configured":load_frame_io_refresh_token()?.is_some(),
+        "oauth_configured":load_frame_io_oauth_config()?.is_some(),
+        "oauth_pending":load_frame_io_oauth_pending()?.is_some(),
+        "credential_value_exposed":false,
+        "pkce_verifier_exposed":false,
+        "refresh_token_exposed":false
     }))
 }
 
@@ -1658,6 +1738,11 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "frame_io_readiness_report"
         | "frame_io_credential_status"
         | "frame_io_identity_preflight"
+        | "frame_io_oauth_begin"
+        | "frame_io_oauth_complete"
+        | "frame_io_oauth_refresh"
+        | "frame_io_list_workspaces"
+        | "frame_io_list_projects"
         | "photoshop_capability_report"
         | "photoshop_readiness_report"
         | "photoshop_detect"
@@ -3633,6 +3718,45 @@ fn stage_tool(
             "Read-only GET requests to the official Frame.io V4 /me and /accounts endpoints using the securely stored Bearer token. No project/file/comment/upload/share mutation.".into(),
             RiskLevel::Low,
         ),
+        "frame_io_oauth_begin" => (
+            ToolAction::FrameIoOauthBegin,
+            "Begin Frame.io Native App OAuth PKCE".into(),
+            "Generate an Adobe IMS authorization URL using the configured Native App client ID and redirect URI. PKCE verifier/state are securely stored and the verifier is never exposed.".into(),
+            RiskLevel::Low,
+        ),
+        "frame_io_oauth_complete" => {
+            let callback_url=arg_string(&proposal.arguments,"callback_url")?;
+            if callback_url.len()>4096||callback_url.chars().any(char::is_control){
+                return Err("Frame.io OAuth callback_url is oversized or contains control characters.".into());
+            }
+            (ToolAction::FrameIoOauthComplete {callback_url},
+                "Complete Frame.io Native App OAuth PKCE".into(),
+                "Validate the exact configured redirect and OAuth state, then exchange the one-time authorization code at Adobe IMS with the securely stored PKCE verifier. Access/refresh tokens are saved to Windows keyring and never returned.",
+                RiskLevel::Medium)
+        }
+        "frame_io_oauth_refresh" => (
+            ToolAction::FrameIoOauthRefresh,
+            "Refresh Frame.io OAuth access token".into(),
+            "Use the securely stored refresh token and configured public client ID to request a fresh Adobe IMS access token. No client secret is used or exposed.".into(),
+            RiskLevel::Medium,
+        ),
+        "frame_io_list_workspaces" => {
+            let account_id=arg_string(&proposal.arguments,"account_id")?;
+            frame_io::workspaces_url(&account_id)?;
+            (ToolAction::FrameIoListWorkspaces {account_id},
+                "List accessible Frame.io workspaces".into(),
+                "Read-only bounded first-page GET for workspaces under the exact Frame.io account ID. Pagination is reported but never automatically followed.".into(),
+                RiskLevel::Low)
+        }
+        "frame_io_list_projects" => {
+            let account_id=arg_string(&proposal.arguments,"account_id")?;
+            let workspace_id=arg_string(&proposal.arguments,"workspace_id")?;
+            frame_io::projects_url(&account_id,&workspace_id)?;
+            (ToolAction::FrameIoListProjects {account_id,workspace_id},
+                "List accessible Frame.io projects".into(),
+                "Read-only bounded first-page GET for projects under the exact account/workspace IDs. Pagination is reported but never automatically followed.".into(),
+                RiskLevel::Low)
+        }
         "illustrator_capability_report" => (
             ToolAction::IllustratorCapabilityReport,
             "Read Illustrator source capability report".into(),
@@ -10998,6 +11122,138 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 stderr:String::new(),exit_code:Some(0)
             })
         }
+        ToolAction::FrameIoOauthBegin => {
+            let config=load_frame_io_oauth_config()?
+                .ok_or_else(||"Frame.io Native App OAuth config is not set.".to_string())?;
+            let (pending,authorization_url)=frame_io::generate_oauth_begin(&config,now_ms()/1000)?;
+            let encoded=serde_json::to_string(&pending)
+                .map_err(|e|format!("Could not encode Frame.io OAuth pending state: {e}"))?;
+            frame_io_entry("oauth_pending")?.set_password(&encoded)
+                .map_err(|e|format!("Could not securely save Frame.io OAuth pending state: {e}"))?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "integration":"frame_io",
+                    "flow":"native_app_pkce",
+                    "authorization_url":authorization_url,
+                    "pkce_verifier_exposed":false,
+                    "client_secret_used":false,
+                    "pending_lifetime_seconds":900,
+                    "callback_completion":"pass the exact Adobe redirect URI to frame_io_oauth_complete"
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::FrameIoOauthComplete {callback_url} => {
+            let config=load_frame_io_oauth_config()?
+                .ok_or_else(||"Frame.io Native App OAuth config is not set.".to_string())?;
+            let pending=load_frame_io_oauth_pending()?
+                .ok_or_else(||"No pending Frame.io OAuth authorization exists.".to_string())?;
+            let code=frame_io::validate_oauth_callback(&config,&pending,&callback_url,now_ms()/1000)?;
+            let token_url=frame_io::oauth_token_url(&config.client_id)?;
+            let response=http_client()?.post(token_url)
+                .form(&[
+                    ("code",code.as_str()),
+                    ("grant_type","authorization_code"),
+                    ("code_verifier",pending.code_verifier.as_str())
+                ])
+                .send().await
+                .map_err(|e|format!("Adobe IMS Frame.io token exchange failed before a verified response: {e}"))?;
+            let (status,body)=bounded_provider_json(response,"Adobe IMS Frame.io token exchange").await?;
+            if !status.is_success(){
+                return Err(format!("Adobe IMS Frame.io token exchange returned {status}: {}",compact_error(&body)));
+            }
+            let tokens=frame_io::parse_oauth_token_response(&body)?;
+            let has_refresh=tokens.refresh_token.is_some();
+            store_frame_io_tokens(&tokens,None)?;
+            clear_frame_io_secret("oauth_pending")?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "integration":"frame_io",
+                    "oauth_authenticated":true,
+                    "state_verified":true,
+                    "pkce_exchange_verified":true,
+                    "access_token_stored":true,
+                    "refresh_token_stored":has_refresh,
+                    "expires_in":tokens.expires_in,
+                    "token_values_exposed":false,
+                    "source_runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::FrameIoOauthRefresh => {
+            let config=load_frame_io_oauth_config()?
+                .ok_or_else(||"Frame.io Native App OAuth config is not set.".to_string())?;
+            let refresh=load_frame_io_refresh_token()?
+                .ok_or_else(||"No Frame.io refresh token is securely configured.".to_string())?;
+            let token_url=frame_io::oauth_token_url(&config.client_id)?;
+            let response=http_client()?.post(token_url)
+                .form(&[
+                    ("grant_type","refresh_token"),
+                    ("refresh_token",refresh.as_str())
+                ])
+                .send().await
+                .map_err(|e|format!("Adobe IMS Frame.io refresh failed before a verified response: {e}"))?;
+            let (status,body)=bounded_provider_json(response,"Adobe IMS Frame.io refresh").await?;
+            if !status.is_success(){
+                return Err(format!("Adobe IMS Frame.io refresh returned {status}: {}",compact_error(&body)));
+            }
+            let tokens=frame_io::parse_oauth_token_response(&body)?;
+            let rotated=tokens.refresh_token.is_some();
+            store_frame_io_tokens(&tokens,Some(&refresh))?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "integration":"frame_io",
+                    "access_token_refreshed":true,
+                    "refresh_token_rotated":rotated,
+                    "expires_in":tokens.expires_in,
+                    "token_values_exposed":false,
+                    "source_runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::FrameIoListWorkspaces {account_id} => {
+            let token=load_frame_io_access_token()?
+                .ok_or_else(||"No Frame.io access token is securely configured.".to_string())?;
+            let response=send_with_retry(
+                http_client()?.get(frame_io::workspaces_url(&account_id)?).bearer_auth(&token),
+                "Frame.io workspaces"
+            ).await?;
+            let (status,body)=bounded_provider_json(response,"Frame.io workspaces").await?;
+            if !status.is_success(){
+                return Err(format!("Frame.io workspaces returned {status}: {}",compact_error(&body)));
+            }
+            let value=frame_io::summarize_workspaces(&account_id,&body)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::FrameIoListProjects {account_id,workspace_id} => {
+            let token=load_frame_io_access_token()?
+                .ok_or_else(||"No Frame.io access token is securely configured.".to_string())?;
+            let response=send_with_retry(
+                http_client()?.get(frame_io::projects_url(&account_id,&workspace_id)?).bearer_auth(&token),
+                "Frame.io projects"
+            ).await?;
+            let (status,body)=bounded_provider_json(response,"Frame.io projects").await?;
+            if !status.is_success(){
+                return Err(format!("Frame.io projects returned {status}: {}",compact_error(&body)));
+            }
+            let value=frame_io::summarize_projects(&account_id,&workspace_id,&body)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
         ToolAction::IllustratorCapabilityReport => {
             Ok(ActionResult {
                 success:true,tool,
@@ -17873,6 +18129,8 @@ pub fn run() {
             delete_api_key,
             save_frame_io_access_token,
             delete_frame_io_access_token,
+            save_frame_io_oauth_config,
+            delete_frame_io_oauth_config,
             frame_io_credential_status,
             chat,
             runtime_status,
