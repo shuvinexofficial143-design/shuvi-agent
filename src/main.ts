@@ -14,6 +14,8 @@ import type {
 } from "./types";
 import {
   MAX_AGENT_STEPS,
+  MAX_AGENT_ACTION_STEPS,
+  MAX_AGENT_INSPECTION_STEPS,
   createAgentOrchestrationState,
   codingPhase,
   evaluateProposal,
@@ -453,7 +455,7 @@ function renderOrchestrationStatus(): void {
     progress.textContent = `Task: ${orchestration.task_graph.objective} · ${graphProgress.completed}/${graphProgress.total} steps complete · Current: ${graphProgress.current ?? "none"} · Phase: ${orchestration.coding.active ? codingPhase(orchestration) : "general"} · State: ${orchestration.recovery_mode}`;
     return;
   }
-  if (!orchestration.objective && orchestration.tool_actions === 0 && orchestration.next_step === 1) {
+  if (!orchestration.objective && orchestration.tool_actions === 0 && orchestration.inspection_actions === 0 && orchestration.next_step === 1) {
     progress.textContent = "Agent idle";
     return;
   }
@@ -465,7 +467,7 @@ function renderOrchestrationStatus(): void {
     ? ` · ${codingPhase(orchestration).replaceAll("_", " ")}`
     : "";
   progress.textContent =
-    `Agent ${Math.min(orchestration.next_step, MAX_AGENT_STEPS)}/${MAX_AGENT_STEPS}${coding}${mode}`;
+    `Agent actions ${orchestration.tool_actions}/${MAX_AGENT_ACTION_STEPS} · inspect ${orchestration.inspection_actions}/${MAX_AGENT_INSPECTION_STEPS} · total ${Math.min(orchestration.next_step, MAX_AGENT_STEPS)}/${MAX_AGENT_STEPS}${coding}${mode}`;
 }
 
 async function saveActiveCheckpoint(): Promise<void> {
@@ -1081,7 +1083,7 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
         <span class="risk ${pendingAction.risk}">${pendingAction.risk.toUpperCase()} RISK</span>
         <strong>${pendingAction.summary}</strong>
       </div>
-      <span class="permission-step">Agent step ${step}/${MAX_AGENT_STEPS}</span>
+      <span class="permission-step">Step ${step}/${MAX_AGENT_STEPS} · actions ${orchestration.tool_actions}/${MAX_AGENT_ACTION_STEPS} · inspect ${orchestration.inspection_actions}/${MAX_AGENT_INSPECTION_STEPS}</span>
     </div>
     <p class="permission-reason"></p>
     <pre class="permission-detail"></pre>
