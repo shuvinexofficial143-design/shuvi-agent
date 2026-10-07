@@ -502,6 +502,7 @@ Rules:
 - When a tool fails, do not repeat the exact same failing action blindly. Use the observation to refine the selector, inspect the screen, or choose a different typed tool.
 - The local orchestrator may reject an exact repeated unsuccessful proposal or stop after repeated failures. Treat an orchestration_blocked result as a requirement to replan, not as permission to bypass the typed tool/approval layer.
 - After a failure, prefer a read/inspection action when it can reduce uncertainty before another mutation. Do not change a target expectation merely to force a stale edit through.
+- If the provider exposes a native function named shuvi_tool, prefer that function over writing a JSON/tool-call envelope as prose. Request exactly one Shuvi action per turn; the local allowlist, orchestration, permission and evidence checks remain authoritative.
 - If no computer action is needed, answer normally."#;
 
 #[derive(Debug, Clone, Serialize)]
