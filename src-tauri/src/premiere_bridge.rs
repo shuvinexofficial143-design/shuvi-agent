@@ -445,7 +445,7 @@ impl PremiereBridgeShared {
 
     fn token_is_current(&self) -> bool {
         self.token_created.lock().ok().and_then(|value| *value)
-            .is_some_and(|created| created.elapsed() < Duration::from_secs(24 * 60 * 60))
+            .is_some_and(|created| created.elapsed() < Duration::from_secs(8 * 60 * 60))
     }
 
     fn mark_seen(&self) {
