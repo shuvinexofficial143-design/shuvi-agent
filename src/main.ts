@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import "./styles.css";
 import { mountWorkspaceUI, type WorkspaceUI } from "./ui/workspace-ui";
+import { emptyNativeBridges, inspectNativeBridges, type NativeBridgeMap } from "./ui/native-status";
 import type {
   ActionResult,
   ChatMessage,
@@ -54,6 +55,11 @@ let workspaceUI: WorkspaceUI | null = null;
 let currentMemoryMB: number | null = null;
 let runtimeAvailable = false;
 let premiereConnected: boolean | null = null;
+let nativeBridges: NativeBridgeMap = emptyNativeBridges();
+async function refreshNativeStatuses(): Promise<void> {
+  nativeBridges = await inspectNativeBridges();
+  workspaceUI?.refresh();
+}
 
 root.innerHTML = `
 <div id="onboarding" class="onboarding hidden">
@@ -1688,11 +1694,14 @@ workspaceUI = mountWorkspaceUI({
     renderOrchestrationStatus();
     renderMessages();
   },
-  onViewOpen: name => { if (name === "premiere") void refreshPremiereBridge(); },
+  onViewOpen: name => {
+    if (name === "premiere") void refreshPremiereBridge();
+    if (name === "apps") void refreshNativeStatuses();
+  },
   snapshot: () => {
     const progress = taskGraphProgress(orchestration.task_graph);
     return {
-      runtimeAvailable, memoryMB: currentMemoryMB, premiereConnected,
+      runtimeAvailable, memoryMB: currentMemoryMB, premiereConnected, nativeBridges,
       activeSteps: {completed: progress.completed, total: progress.total, current: progress.current, steps: progress.steps},
       permissionSummary: pendingAction?.summary ?? null
     };
