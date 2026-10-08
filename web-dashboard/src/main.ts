@@ -3,6 +3,8 @@ import "./premium-theme.css";
 import "./multi-chat.css";
 import "./smart-dashboard.css";
 import "./task-timeline.css";
+import "./creative-studio.css";
+import { mountCreativeStudio } from "./creative-studio";
 import { mountTaskTimeline, type TaskTimelineController } from "./task-timeline";
 import { initializeAppearance } from "./appearance";
 import { mountChatWorkspace, type ChatWorkspace } from "./chat-workspace";
@@ -1078,6 +1080,14 @@ taskTimeline = mountTaskTimeline({
   drafts: readDraftTasks,
   events: readWebActivity,
   notify: showToast
+});
+mountCreativeStudio({
+  saveDraft: (title, workspace, priority) => {
+    addDraftTask(title, workspace, priority);
+    showToast(workspace + " planning draft saved. No application was launched.");
+  },
+  showModuleDetails: openModuleDrawer,
+  navigate: (name) => setView(name)
 });
 window.addEventListener("storage", event => {
   if (event.key && ["shuvi.web.chat-drafts.v1", "shuvi.web.draftTasks", "shuvi.web.activity"].includes(event.key)) {
