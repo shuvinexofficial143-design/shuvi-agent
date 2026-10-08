@@ -28,6 +28,7 @@ export function mountWorkspaceUI(options: WorkspaceOptions): WorkspaceUI {
     threads = [newThread()];
     saveChatLibrary(threads);
   }
+  let chatFilter = "";
   let activeId = currentThreadId();
   if (!threads.some(t => t.id === activeId)) activeId = threads[0].id;
   setCurrentThreadId(activeId!);
@@ -57,12 +58,21 @@ export function mountWorkspaceUI(options: WorkspaceOptions): WorkspaceUI {
   const rail = document.createElement("aside");
   rail.className = "chat-rail";
   rail.setAttribute("aria-label", "Saved conversations");
-  rail.innerHTML = '<div class="chat-rail-head"><strong>Conversations</strong><button id="newChat" class="rail-new" type="button" title="New chat">+</button></div><p class="chat-rail-intro">Local chat history · one executing task at a time</p><div class="thread-list" id="threadList"></div><p id="chatLibraryWarning" class="chat-store-warning hidden">Chat history could not be saved locally.</p>';
+  rail.innerHTML = '<div class="chat-rail-head"><strong>Conversations</strong><button id="newChat" class="rail-new" type="button" title="New chat">+</button></div><label class="chat-search"><span class="visually-hidden">Search conversations</span><input id="chatSearch" type="search" placeholder="Search conversations…" autocomplete="off" /></label><p class="chat-rail-intro">Local chat history · one executing task at a time</p><div class="thread-list" id="threadList"></div><p id="chatLibraryWarning" class="chat-store-warning hidden">Chat history could not be saved locally.</p>';
   const area = document.createElement("div");
   area.className = "chat-main";
   while (originalChat.firstChild) area.appendChild(originalChat.firstChild);
   layout.append(rail, area);
   originalChat.appendChild(layout);
+  const dialog = document.createElement("dialog");
+  dialog.id = "threadDialog";
+  dialog.className = "thread-dialog";
+  dialog.innerHTML = '<form method="dialog" id="threadForm"><span class="eyebrow">CONVERSATION SETTINGS</span><h2>Manage conversation</h2><label for="threadName">Chat name</label><input id="threadName" name="threadName" maxlength="80" required autocomplete="off" /><p id="threadDialogError" role="alert" class="dialog-error hidden"></p><div class="dialog-actions"><button id="threadCancel" type="button" class="ui-button">Cancel</button><button id="threadDelete" type="button" class="ui-button danger-button">Delete</button><button id="threadSave" type="submit" class="ui-button ui-primary">Save name</button></div></form>';
+  main.appendChild(dialog);
+  let editingThreadId: string | null = null;
+  const nameInput = dialog.querySelector<HTMLInputElement>("#threadName")!;
+  const deleteBtn = dialog.querySelector<HTMLButtonElement>("#threadDelete")!;
+  const dialogError = dialog.querySelector<HTMLElement>("#threadDialogError")!;
   const chatHeader = originalChat.querySelector("h1");
   if (chatHeader) { chatHeader.id = "chatTitle"; chatHeader.textContent = "New chat"; }
   const notice = document.createElement("p");
@@ -88,7 +98,7 @@ export function mountWorkspaceUI(options: WorkspaceOptions): WorkspaceUI {
   function selected(): ChatThread { return threads.find(t => t.id === activeId)!; }
 
   function refresh(): void {
-    renderThreadList(getElement("#threadList"), threads, activeId!);
+    renderThreadList(getElement("#threadList"), threads, activeId!, chatFilter);
     getElement("#chatTitle").textContent = selected().title;
     const state = options.snapshot();
     renderDashboard(getElement("#dashboardContent"), {...state, threads, activeId: activeId!});
@@ -169,6 +179,41 @@ export function mountWorkspaceUI(options: WorkspaceOptions): WorkspaceUI {
     btn.addEventListener("click", () => showView(btn.dataset.view ?? "dashboard"));
   });
   getElement("#newChat").addEventListener("click",newChat);
+  getElement("#chatSearch").addEventListener("input", event => {
+    chatFilter = (event.target as HTMLInputElement).value.slice(0,120);
+    renderThreadList(getElement("#threadList"), threads, activeId!, chatFilter);
+  });
+  getElement("#threadCancel").addEventListener("click", () => dialog.close());
+  dialog.addEventListener("close", () => { editingThreadId = null; dialogError.classList.add("hidden"); deleteBtn.textContent = "Delete"; });
+  dialog.querySelector<HTMLFormElement>("#threadForm")!.addEventListener("submit", event => {
+    event.preventDefault();
+    const name = nameInput.value.trim().slice(0,80);
+    if (!editingThreadId || !name) return;
+    threads = threads.map(t => t.id === editingThreadId ? {...t, title:name} : t);
+    const saved = saveChatLibrary(threads);
+    getElement("#chatLibraryWarning").classList.toggle("hidden",saved);
+    dialog.close(); refresh();
+  });
+  deleteBtn.addEventListener("click", () => {
+    if (!editingThreadId) return;
+    if (deleteBtn.textContent !== "Confirm delete") {
+      deleteBtn.textContent = "Confirm delete";
+      dialogError.textContent = "This removes only this local chat history. Active tasks cannot be deleted.";
+      dialogError.classList.remove("hidden");
+      return;
+    }
+    if (editingThreadId === activeId && !canSwitch()) { dialog.close(); return; }
+    threads = threads.filter(t => t.id !== editingThreadId);
+    if (!threads.length) threads = [newThread()];
+    if (!threads.some(t => t.id === activeId)) {
+      activeId = threads[0].id;
+      setCurrentThreadId(activeId);
+      options.onActivate(selected().messages.slice());
+    }
+    const saved = saveChatLibrary(threads);
+    getElement("#chatLibraryWarning").classList.toggle("hidden",saved);
+    dialog.close(); refresh();
+  });
   getElement("#dashboardNewChat").addEventListener("click",newChat);
   main.addEventListener("click", event => {
     if (!(event.target instanceof Element)) return;
@@ -178,23 +223,12 @@ export function mountWorkspaceUI(options: WorkspaceOptions): WorkspaceUI {
     if (menu?.dataset.threadMenu) {
       const thread = threads.find(t => t.id === menu.dataset.threadMenu);
       if (!thread) return;
-      const response = window.prompt("Rename this chat, or type DELETE to remove it:",thread.title);
-      if (response == null) return;
-      if (response.trim() === "DELETE") {
-        if (thread.id === activeId && !canSwitch()) return;
-        threads = threads.filter(t => t.id !== thread.id);
-        if (!threads.length) threads = [newThread()];
-        if (thread.id === activeId) {
-          activeId = threads[0].id;
-          setCurrentThreadId(activeId);
-          options.onActivate(selected().messages.slice());
-        }
-      } else if (response.trim()) {
-        threads = threads.map(t => t.id === thread.id ? {...t,title:response.trim().slice(0,80)} : t);
-      }
-      const ok = saveChatLibrary(threads);
-      getElement("#chatLibraryWarning").classList.toggle("hidden", ok);
-      refresh();
+      editingThreadId = thread.id;
+      nameInput.value = thread.title;
+      dialogError.classList.add("hidden");
+      deleteBtn.textContent = "Delete";
+      dialog.showModal();
+      nameInput.focus();
       return;
     }
     const thread = event.target.closest<HTMLButtonElement>("[data-thread-id]");
