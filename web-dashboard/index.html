@@ -78,7 +78,7 @@
 
         <div class="content-wrap">
           <section id="view-dashboard" class="view active" data-view="dashboard">
-            <div class="dashboard-heading"><div><span class="section-kicker">OVERVIEW / YOUR WORKSPACE</span><h2>Good to see you back <span aria-hidden="true">✦</span></h2><p>Creative tools, AI models and task planning—organized in one place.</p></div><span class="dashboard-phase">UI development · Level 11 / 15</span></div>
+            <div class="dashboard-heading"><div><span class="section-kicker">OVERVIEW / YOUR WORKSPACE</span><h2>Good to see you back <span aria-hidden="true">✦</span></h2><p>Creative tools, AI models and task planning—organized in one place.</p></div><span class="dashboard-phase">UI development · Level 12 / 15</span></div>
             <div class="hero-grid">
               <article class="hero-card">
                 <div class="hero-copy">
@@ -543,6 +543,70 @@
               </div>
             </div>
             <div class="project-boundary">Real project files, file previews, checkpoints and version control remain outside this web workspace until an authenticated local runtime and per-file permission controls are implemented.</div>
+          </section>
+
+          <section id="view-workflows" class="view" data-view="workflows">
+            <div class="section-intro">
+              <div><span class="section-kicker">LEVEL 12 / VISUAL WORKFLOW BUILDER</span><h2>Design your automation</h2><p>Connect a sequence of planned steps for Blender, Premiere, After Effects or Coding. All steps are browser drafts; no application or AI worker executes them.</p></div>
+              <span class="flow-builder-badge">◌ Runtime disconnected · Planning mode</span>
+            </div>
+            <div class="flow-metrics">
+              <div><span>Saved workflows</span><strong id="flowTotalCount">0</strong><small>Browser storage</small></div>
+              <div><span>Selected steps</span><strong id="flowStepCount">0</strong><small>Editable visual sequence</small></div>
+              <div><span>Linked project</span><strong id="flowLinkedProjectCount">—</strong><small>Project metadata</small></div>
+              <div><span>Executing jobs</span><strong class="flow-unavailable">—</strong><small>Not connected</small></div>
+            </div>
+            <div class="flow-builder-layout">
+              <aside class="flow-rail" aria-label="Saved workflows and templates">
+                <div class="flow-panel-title"><span class="section-kicker">WORKFLOW LIBRARY</span><h3>Saved flows</h3></div>
+                <div id="flowSavedList" class="flow-saved-list"></div>
+                <div class="flow-panel-title flow-templates-heading"><span class="section-kicker">STARTER TEMPLATES</span><h3>Create a workflow</h3></div>
+                <div id="flowTemplateList" class="flow-template-list"></div>
+              </aside>
+              <section class="flow-canvas-panel" aria-label="Workflow visualization and sequence editor">
+                <div id="flowEmptyState" class="flow-empty-state">
+                  <span class="flow-empty-icon">◇</span><h3>Build your first workflow</h3><p>Choose a template on the left. The steps appear here as a visual sequence you can select, reorder, add or remove.</p>
+                </div>
+                <div id="flowCanvasWorkspace" hidden>
+                  <div class="flow-canvas-header">
+                    <div><span class="section-kicker">VISUAL PLAN / NOT EXECUTING</span><h3 id="flowCanvasTitle">Workflow</h3><p>Click a step to edit it. Arrows show proposed order, not background execution.</p></div>
+                    <div class="flow-canvas-actions"><button type="button" id="flowAddStep" class="secondary-button">+ Add step</button><button type="button" id="flowSaveTask" class="secondary-button">Save as task draft</button></div>
+                  </div>
+                  <div class="flow-canvas-scroll"><div id="flowNodeCanvas" class="flow-node-canvas" aria-label="Editable workflow sequence"></div></div>
+                  <div class="flow-canvas-footnote"><span>● Browser plan</span><span>◌ Native permission &amp; execution unavailable</span></div>
+                </div>
+              </section>
+              <aside class="flow-inspector" aria-label="Selected workflow and step inspector">
+                <div id="flowInspectorEmpty" class="flow-inspector-empty"><span class="section-kicker">INSPECTOR</span><h3>Nothing selected</h3><p>Choose a template to begin designing a workflow.</p></div>
+                <div id="flowInspectorWorkspace" hidden>
+                  <div class="flow-panel-title"><span class="section-kicker">WORKFLOW SETTINGS</span><h3>Properties</h3></div>
+                  <form id="flowSettingsForm" class="flow-settings-form">
+                    <label for="flowName">Workflow name<input id="flowName" maxlength="100" required autocomplete="off" /></label>
+                    <label for="flowProject">Linked project<select id="flowProject"><option value="">Unassigned</option></select></label>
+                    <button type="submit" class="secondary-button">Save workflow settings</button>
+                  </form>
+                  <div class="flow-inspector-separator"></div>
+                  <div class="flow-panel-title"><span class="section-kicker">STEP INSPECTOR</span><h3>Selected step</h3></div>
+                  <form id="flowStepForm" class="flow-step-form">
+                    <label for="flowNodeKind">Step type<select id="flowNodeKind"><option>Start</option><option>Action</option><option>Review</option><option>Approval</option><option>Export</option></select></label>
+                    <label for="flowNodeTitle">Step name<input id="flowNodeTitle" maxlength="100" required autocomplete="off" /></label>
+                    <label for="flowNodeDetails">What should happen?<textarea id="flowNodeDetails" maxlength="400" rows="4" placeholder="Describe the intended step. No native commands will run."></textarea></label>
+                    <button type="submit" class="primary-button">Save step changes</button>
+                    <div class="flow-edit-buttons">
+                      <button id="flowMoveUp" class="secondary-button" type="button">↑ Move up</button>
+                      <button id="flowMoveDown" class="secondary-button" type="button">↓ Move down</button>
+                      <button id="flowRemoveStep" class="flow-danger-button" type="button">Remove step</button>
+                    </div>
+                  </form>
+                  <div class="flow-inspector-separator"></div>
+                  <div class="flow-footer-actions">
+                    <button id="flowExport" class="secondary-button" type="button">Export JSON ↓</button>
+                    <button id="flowDelete" class="flow-danger-button" type="button">Delete workflow</button>
+                  </div>
+                  <p class="flow-safety-note">An Approval step is a planned checkpoint, not permission to modify the computer. Real execution requires an authenticated native runtime and separate approval.</p>
+                </div>
+              </aside>
+            </div>
           </section>
 
           <section id="view-agents" class="view" data-view="agents">
