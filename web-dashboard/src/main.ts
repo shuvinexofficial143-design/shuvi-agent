@@ -23,6 +23,8 @@ import { mountCreativeStudio } from "./creative-studio";
 import { mountTaskTimeline, type TaskTimelineController } from "./task-timeline";
 import { initializeAppearance } from "./appearance";
 import { mountChatWorkspace, type ChatWorkspace } from "./chat-workspace";
+import { mountOnlineChat } from "./online-chat";
+import "./online-chat.css";
 import { loadChatLibrary } from "./chat-store";
 import { buildPlanningOverview } from "./planning-overview";
 import {
@@ -1146,6 +1148,7 @@ renderDashboardPlanningQueue();
 renderWebActivity();
 renderLocalOverview();
 bindInteractions();
+mountOnlineChat();
 chatWorkspace = mountChatWorkspace(message => {
   showToast(message);
   renderLocalOverview();
