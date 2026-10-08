@@ -111,17 +111,22 @@ function readWebActivity(): WebActivity[] {
     const raw = localStorage.getItem("shuvi.web.activity");
     const parsed: unknown = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter((entry): entry is WebActivity => entry &&
-      typeof entry === "object" && typeof entry.id === "string" &&
-      typeof entry.message === "string" && typeof entry.type === "string" &&
-      typeof entry.createdAt === "number" && Number.isFinite(entry.createdAt) &&
-      entry.createdAt > 0
-    ).slice(0, 80).map(entry => ({
-      id: entry.id.slice(0,80),
-      message: entry.message.slice(0,360),
-      type: entry.type.slice(0,32),
-      createdAt: entry.createdAt
-    }));
+    const valid: WebActivity[] = [];
+    for (const value of parsed) {
+      if (!value || typeof value !== "object") continue;
+      const entry = value as Partial<WebActivity>;
+      if (typeof entry.id !== "string" || typeof entry.message !== "string" ||
+          typeof entry.type !== "string" || typeof entry.createdAt !== "number" ||
+          !Number.isFinite(entry.createdAt) || entry.createdAt <= 0) continue;
+      valid.push({
+        id: entry.id.slice(0, 80),
+        message: entry.message.slice(0, 360),
+        type: entry.type.slice(0, 32),
+        createdAt: entry.createdAt
+      });
+      if (valid.length >= 80) break;
+    }
+    return valid;
   } catch {
     return [];
   }
