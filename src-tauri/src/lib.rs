@@ -1,5 +1,6 @@
 #![recursion_limit = "512"]
 
+mod web_bridge;
 mod premiere_execution;
 mod premiere_store;
 mod after_effects;
@@ -15593,6 +15594,9 @@ pub fn run() {
             audition_bridge_status,
             audition_bridge_stop,
             export_diagnostics,
+            web_bridge::web_bridge_start,
+            web_bridge::web_bridge_stop,
+            web_bridge::web_bridge_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Shuvi");
