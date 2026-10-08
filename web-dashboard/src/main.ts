@@ -4,6 +4,9 @@ import "./multi-chat.css";
 import "./smart-dashboard.css";
 import "./task-timeline.css";
 import "./creative-studio.css";
+import "./master-agent.css";
+import { mountMasterAgentUI, type MasterAgentUI } from "./master-agent-ui";
+import { DELEGATION_STORAGE_KEY } from "./agent-planner";
 import { mountCreativeStudio } from "./creative-studio";
 import { mountTaskTimeline, type TaskTimelineController } from "./task-timeline";
 import { initializeAppearance } from "./appearance";
@@ -23,6 +26,7 @@ const navGlyphs: Record<string, string> = {
   grid: "⌘",
   spark: "✦",
   play: "▶",
+  agents: "✧",
   tool: "◇",
   check: "✓",
   brain: "AI",
@@ -34,6 +38,7 @@ const pageMeta: Record<string, { eyebrow: string; title: string }> = {
   dashboard: { eyebrow: "CONTROL CENTER", title: "Dashboard" },
   chat: { eyebrow: "AI COMMAND CENTER", title: "AI Chat" },
   studio: { eyebrow: "CREATIVE WORKSPACE", title: "Creative Studio" },
+  agents: { eyebrow: "MULTI-AGENT WORKSPACE", title: "Agents" },
   tools: { eyebrow: "LOCAL CAPABILITIES", title: "Tools" },
   tasks: { eyebrow: "TASK ENGINE", title: "Tasks" },
   models: { eyebrow: "AI ROUTING", title: "AI Models" },
@@ -100,6 +105,7 @@ let toastTimer: number | undefined;
 let activeDrawerModule: FeatureModule | null = null;
 let chatWorkspace: ChatWorkspace | null = null;
 let taskTimeline: TaskTimelineController | null = null;
+let masterAgentUI: MasterAgentUI | null = null;
 
 function showToast(message: string): void {
   toast.textContent = message;
@@ -684,6 +690,7 @@ function renderDraftTasks(): void {
   renderDashboardPlanningQueue();
   renderLocalOverview();
   taskTimeline?.refresh();
+  masterAgentUI?.refresh();
 }
 
 function addDraftTask(title: string, type: string, priority = "Normal"): void {
@@ -975,14 +982,14 @@ function bindInteractions(): void {
       openCommandPalette();
     }
 
-    // Alt+1…Alt+8 navigates between the eight top-level sections.
+    // Alt+1…Alt+9 navigates between the nine top-level sections.
     // Ignore any shortcut that would interfere with typing or assistive input.
     const target = event.target;
     const typing = target instanceof HTMLElement && (
       target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)
     );
     if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey &&
-        /^[1-8]$/.test(event.key) && !typing) {
+        /^[1-9]$/.test(event.key) && !typing) {
       const item = navItems[Number(event.key) - 1];
       if (item) {
         event.preventDefault();
@@ -1089,12 +1096,20 @@ mountCreativeStudio({
   showModuleDetails: openModuleDrawer,
   navigate: (name) => setView(name)
 });
+masterAgentUI = mountMasterAgentUI({
+  drafts: readDraftTasks,
+  navigate: (name) => setView(name),
+  notify: showToast,
+  activity: (message) => recordWebActivity("Task", message)
+});
 window.addEventListener("storage", event => {
   if (event.key && ["shuvi.web.chat-drafts.v1", "shuvi.web.draftTasks", "shuvi.web.activity"].includes(event.key)) {
     renderDraftTasks();
     renderLocalOverview();
     taskTimeline?.refresh();
+    masterAgentUI?.refresh();
   }
+  if (event.key === DELEGATION_STORAGE_KEY) masterAgentUI?.refresh();
 });
 renderLocalOverview();
 setView("dashboard");
