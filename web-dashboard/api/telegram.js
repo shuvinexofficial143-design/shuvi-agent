@@ -1,5 +1,6 @@
 import { safeEqual, httpJson, parseObjectBody, generateOnlineReply, chunks, onlineConfigured } from "../server/online-core.mjs";
 import { redisConfigured, takeUpdateOnce, getTelegramHistory, saveTelegramHistory, clearTelegramHistory } from "../server/redis-history.mjs";
+import {useDailyChatQuota} from "../server/chat-quota.mjs";
 
 export function telegramConfigured(env=process.env) {
   const token=env.TELEGRAM_BOT_TOKEN||"";
@@ -43,6 +44,7 @@ export async function runTelegramUpdate(update,env=process.env,dependencies={}) 
   const load=dependencies.load||((id)=>getTelegramHistory(id,env));
   const save=dependencies.save||((id,h)=>saveTelegramHistory(id,h,env));
   const clear=dependencies.clear||((id)=>clearTelegramHistory(id,env));
+  const quota=dependencies.quota||(()=>useDailyChatQuota(env));
   const reply=dependencies.reply||((opts)=>generateOnlineReply({...opts,env}));
   if(!await once(update.update_id))return {duplicate:true};
   const {chatId,text}=incoming;
@@ -68,6 +70,8 @@ export async function runTelegramUpdate(update,env=process.env,dependencies={}) 
     await send(chatId,"यह Cloud Chat Command उपलब्ध नहीं है। सामान्य संदेश भेजें या /help लिखें।");
     return {blocked:true};
   }
+  const budget=await quota();
+  if(!budget.allowed){await send(chatId,"आज की Shuvi Online चैट सीमा पूरी हो गई है। अगला दिन शुरू होने पर फिर बात कर सकते हैं। कोई नया AI खर्च नहीं हुआ है।");return {limited:true};}
   const history=await load(chatId);
   try {
     const answer=await reply({prompt:text,history});
