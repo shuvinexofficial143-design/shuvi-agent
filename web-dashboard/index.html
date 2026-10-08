@@ -208,46 +208,104 @@
           </section>
 
           <section id="view-chat" class="view" data-view="chat">
-            <div class="chat-layout">
-              <article class="chat-panel">
-                <div class="chat-top">
-                  <div>
-                    <span class="section-kicker">AI COMMAND CENTER</span>
-                    <h2>Ask Shuvi</h2>
-                  </div>
-                  <div class="model-chip"><span class="status-dot offline"></span><strong>Model not synced</strong><small>Local runtime offline</small></div>
+            <div class="multi-chat-heading">
+              <div><span class="section-kicker">LEVEL 5 / CONVERSATION WORKSPACE</span>
+                <h2>Every idea, its own space.</h2>
+                <p>Keep separate conversations organized. This preview saves prompts locally; no AI worker is running.</p>
+              </div>
+              <div class="multi-chat-actions">
+                <span class="chat-offline-pill"><span class="status-dot offline"></span> Runtime disconnected</span>
+                <button type="button" class="primary-button" id="chatNewTop">＋ New chat</button>
+              </div>
+            </div>
+            <div id="chatStorageNotice" class="chat-storage-alert" role="alert" hidden>Browser storage is unavailable or full. Your unsaved chat changes may be lost after refresh.</div>
+            <div class="chat-layout chat-workspace-layout" id="chatWorkspaceLayout">
+              <aside class="conversation-rail" aria-label="Saved conversations">
+                <div class="conversation-rail-head">
+                  <div><strong>Conversations</strong><small id="chatCount">0 chats</small></div>
+                  <button type="button" class="conversation-create" id="chatNew" aria-label="Create a new chat" title="New chat">＋</button>
                 </div>
-                <div id="chatMessages" class="chat-messages">
-                  <div class="assistant-message">
-                    <div class="message-avatar">S</div>
-                    <div>
-                      <strong>Shuvi</strong>
-                      <p>Tell me what you want to build or edit. This web surface can prepare the task, but local computer actions will require the Windows Shuvi runtime.</p>
+                <label class="conversation-search">
+                  <span class="visually-hidden">Search conversations</span>
+                  <input id="chatSearch" type="search" placeholder="Search chats..." autocomplete="off" maxlength="120" />
+                </label>
+                <div class="conversation-filters" role="group" aria-label="Conversation filters">
+                  <button type="button" class="conversation-filter active" data-chat-filter="active" aria-pressed="true">Chats</button>
+                  <button type="button" class="conversation-filter" data-chat-filter="archived" aria-pressed="false">Archived</button>
+                </div>
+                <div id="chatThreads" class="conversation-list" aria-label="Conversation list"></div>
+                <div class="conversation-rail-footer">
+                  <span class="status-dot offline"></span>
+                  <span>Stored on this browser only</span>
+                </div>
+              </aside>
+              <div class="chat-work-area">
+                <article class="chat-panel">
+                  <div class="chat-top">
+                    <div class="chat-title-block">
+                      <span class="section-kicker">AI COMMAND CENTER / LOCAL DRAFTS</span>
+                      <h2 id="currentChatTitle">New chat</h2>
+                      <p id="currentChatMeta">No AI provider connected</p>
+                    </div>
+                    <div class="chat-header-actions">
+                      <button type="button" class="chat-header-button" id="chatPin" title="Pin or unpin this chat">☆ Pin</button>
+                      <button type="button" class="chat-header-button" id="chatSplit" aria-pressed="false" title="Compare two chats side by side">◫ Split</button>
+                      <button type="button" class="chat-header-button" id="chatManage" title="Rename, archive or delete this conversation">···</button>
                     </div>
                   </div>
-                </div>
-                <form id="chatForm" class="chat-composer">
-                  <textarea id="chatInput" rows="3" placeholder="Describe the task — edit a video, build code, create VFX…" required></textarea>
-                  <div class="composer-footer">
-                    <div class="composer-tools"><button type="button" data-action="attachment">＋</button><span>Local tools require connection</span></div>
-                    <button class="primary-button" type="submit">Send ↗</button>
+                  <div id="chatMessages" class="chat-messages" aria-live="polite"></div>
+                  <div id="chatArchivedNotice" class="chat-archived-notice" hidden>Archived conversation. Restore it from the chat menu before adding more prompts.</div>
+                  <form id="chatForm" class="chat-composer">
+                    <label for="chatInput" class="visually-hidden">Write a task draft in this conversation</label>
+                    <textarea id="chatInput" rows="3" maxlength="2500" placeholder="Describe a task for Shuvi — edit a video, model in Blender, or build code…" required></textarea>
+                    <div class="composer-footer">
+                      <div class="composer-tools">
+                        <button type="button" data-action="attachment" aria-label="Attach file (requires desktop runtime)">＋</button>
+                        <span>Web-only draft · No AI execution</span>
+                      </div>
+                      <button class="primary-button" type="submit" id="chatSendDraft">Save prompt ↗</button>
+                    </div>
+                  </form>
+                </article>
+                <aside class="split-chat-panel" id="chatSplitPanel" hidden aria-label="Secondary read-only conversation">
+                  <div class="split-panel-head">
+                    <div><span class="section-kicker">SPLIT VIEW / READ ONLY</span><strong>Compare another chat</strong></div>
+                    <button type="button" class="chat-header-button" id="chatSplitClose" aria-label="Close split view">×</button>
                   </div>
-                </form>
-              </article>
-
-              <aside class="context-panel">
+                  <label class="split-chat-picker-label" for="chatSplitSelect">Second conversation</label>
+                  <select id="chatSplitSelect" class="split-chat-picker"></select>
+                  <div id="chatSplitMessages" class="split-chat-messages"></div>
+                  <p class="split-note">Side-by-side planning preview. Simultaneous AI execution requires the native task scheduler.</p>
+                </aside>
+              </div>
+              <aside class="context-panel chat-context-panel">
                 <span class="section-kicker">TASK CONTEXT</span>
                 <h3>Runtime boundary</h3>
                 <div class="context-list">
-                  <div><span>Web planning</span><strong class="ok">Available</strong></div>
-                  <div><span>Local files</span><strong>Disconnected</strong></div>
-                  <div><span>Adobe apps</span><strong>Disconnected</strong></div>
-                  <div><span>Blender</span><strong>Disconnected</strong></div>
-                  <div><span>Screen control</span><strong>Disconnected</strong></div>
+                  <div><span>Browser drafts</span><strong class="ok">Saved locally</strong></div>
+                  <div><span>AI providers</span><strong>Not connected</strong></div>
+                  <div><span>Adobe / Blender</span><strong>Disconnected</strong></div>
+                  <div><span>Computer control</span><strong>Desktop only</strong></div>
                 </div>
-                <div class="security-note"><span>◇</span><p>Sensitive actions stay behind Shuvi's local permission gate.</p></div>
+                <div class="security-note"><span>◇</span><p>No prompts from this web screen are sent to a model or native app. Real tasks will require runtime pairing and permissions.</p></div>
+                <div class="chat-context-tip"><strong>Tip</strong><p>Use the split button to inspect two saved conversations side by side.</p></div>
               </aside>
             </div>
+            <dialog id="chatManageDialog" class="chat-manage-dialog" aria-labelledby="chatDialogTitle">
+              <form id="chatManageForm" method="dialog">
+                <span class="section-kicker">CONVERSATION SETTINGS</span>
+                <h2 id="chatDialogTitle">Manage conversation</h2>
+                <label for="chatRename">Conversation name</label>
+                <input type="text" id="chatRename" maxlength="80" required autocomplete="off" />
+                <p id="chatDialogWarning" class="chat-dialog-warning" role="status" hidden>Delete this local conversation permanently? Click Confirm delete to continue.</p>
+                <div class="chat-dialog-actions">
+                  <button class="secondary-button" type="button" id="chatCancelDialog">Cancel</button>
+                  <button class="secondary-button" type="button" id="chatArchive">Archive</button>
+                  <button class="secondary-button chat-danger" type="button" id="chatDelete">Delete</button>
+                  <button class="primary-button" type="submit">Save name</button>
+                </div>
+              </form>
+            </dialog>
           </section>
 
           <section id="view-studio" class="view" data-view="studio">
