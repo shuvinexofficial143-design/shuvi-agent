@@ -709,6 +709,7 @@ function renderMessages(): void {
 }
 
 function setBusy(value: boolean): void {
+  const wasBusy = busy;
   busy = value;
   const send = el<HTMLButtonElement>("#sendButton");
   const stop = el<HTMLButtonElement>("#stopButton");
@@ -716,7 +717,14 @@ function setBusy(value: boolean): void {
   send.textContent = value ? "Working…" : "Send";
   stop.textContent = "Stop";
   stop.classList.toggle("hidden", !value);
-  if (!value) telegramUI?.finish();
+  if (!value) {
+    const progress = taskGraphProgress(orchestration.task_graph);
+    const notice = wasBusy && orchestration.recovery_mode !== "stopped" && progress.total
+      ? (progress.completed === progress.total ? "Completed" : "Paused / incomplete") +
+        " · " + progress.completed + "/" + progress.total + " verified steps"
+      : null;
+    telegramUI?.finish(notice);
+  }
 }
 
 function providerToolEnvelope(payload: Record<string, unknown>): string {
