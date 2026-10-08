@@ -87,7 +87,7 @@ test("UI: New Chat, search, manage, archive, pin, split and no synthetic AI chat
     "chatSplit", "chatSplitSelect", "chatSplitPanel", "chatArchivedNotice", "chatStorageNotice"]) {
     assert.ok(markup.includes('id="' + id + '"'), id + " missing");
   }
-  assert.match(main, /mountChatWorkspace\(showToast\)/);
+  assert.match(main, /chatWorkspace = mountChatWorkspace\(/);
   assert.match(main, /import "\.\/multi-chat\.css"/);
   assert.doesNotMatch(main, /appendChatMessage\(/);
   assert.match(controllerSource, /dialog\.showModal\(\)/);
