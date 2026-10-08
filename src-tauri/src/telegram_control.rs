@@ -484,6 +484,24 @@ pub fn telegram_save_bot_token(
     {
         return Err("Telegram bot token is invalid.".into());
     }
+    // Rotating to a different bot must never leave the old bot polling or
+    // reuse the previous bot's authorized chat identity with a new token.
+    let token_changed = load_bot_token()?.as_deref() != Some(token);
+    if token_changed {
+        state.inner.running.store(false, Ordering::Release);
+        state.inner.generation.fetch_add(1, Ordering::AcqRel);
+        clear_paired_chat_id()?;
+        *state
+            .inner
+            .paired_chat_id
+            .lock()
+            .map_err(|_| "Telegram pairing state is unavailable.".to_string())? = None;
+        *state
+            .inner
+            .pair_code
+            .lock()
+            .map_err(|_| "Telegram pairing state is unavailable.".to_string())? = None;
+    }
     credential_entry(TELEGRAM_TOKEN_USER)?
         .set_password(token)
         .map_err(|error| format!("Could not save Telegram bot token: {error}"))?;
