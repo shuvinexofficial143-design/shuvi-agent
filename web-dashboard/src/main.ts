@@ -7,6 +7,8 @@ import "./creative-studio.css";
 import "./master-agent.css";
 import "./project-workspace.css";
 import "./visual-workflows.css";
+import "./runtime-status.css";
+import { NATIVE_ENDPOINT, ShuviReadOnlyBridge, type BridgeSnapshot } from "./local-runtime";
 import { mountWorkflowBuilder, type WorkflowBuilder } from "./visual-workflow-ui";
 import { FLOW_KEY } from "./visual-flow-store";
 import { mountProjectWorkspace, type ProjectUI } from "./project-workspace";
@@ -118,6 +120,34 @@ let taskTimeline: TaskTimelineController | null = null;
 let masterAgentUI: MasterAgentUI | null = null;
 let projectUI: ProjectUI | null = null;
 let workflowBuilder: WorkflowBuilder | null = null;
+let readOnlyBridge: ShuviReadOnlyBridge | null = null;
+
+function renderNativeConnection(snapshot: BridgeSnapshot): void {
+  const paired = snapshot.phase === "paired";
+  byId<HTMLElement>("sidebarRuntimeState").textContent = paired
+    ? "Status paired · Read-only" : "Not connected";
+  byId<HTMLElement>("webRuntimeTopbar").replaceChildren(
+    make("span", "status-dot " + (paired ? "verified" : "offline")),
+    document.createTextNode(paired ? " Native status paired" : " Runtime offline")
+  );
+  byId<HTMLElement>("dashboardRuntimeBadge").textContent = paired ? "Status paired" : "Offline";
+  byId<HTMLElement>("dashboardRuntimeState").textContent = paired
+    ? "Shuvi.exe verified · PID " + snapshot.runtime.pid
+    : "Awaiting local bridge";
+  byId<HTMLElement>("dashboardRuntimePermission").textContent = paired
+    ? "Read-only status · Native approval unchanged" : "Local only";
+  byId<HTMLElement>("bridgeConnectionState").replaceChildren(
+    make("span", "status-dot " + (paired ? "verified" : "offline")),
+    document.createTextNode(paired ? " Connected · Status only" : " Not connected")
+  );
+  byId<HTMLElement>("bridgeConnectionDetail").textContent = paired
+    ? "Verified Shuvi.exe v" + snapshot.runtime.version +
+      " · PID " + snapshot.runtime.pid +
+      " · Last heartbeat " + new Date(snapshot.runtime.heartbeat_ms).toLocaleTimeString() +
+      ". No tools, approval requests, private files or running jobs are exposed."
+    : snapshot.detail;
+}
+
 
 function showToast(message: string): void {
   toast.textContent = message;
@@ -595,7 +625,7 @@ function handleAction(action: string): void {
   }
   if (action === "connect-local") {
     setView("settings");
-    showToast("Local bridge is not wired yet. The endpoint preference is ready for the next integration step.");
+    showToast("Open native Shuvi.exe → AI Provider → Start read-only bridge, then paste the code here.");
     return;
   }
 
@@ -616,9 +646,10 @@ function handleAction(action: string): void {
 }
 
 function restoreBridgePreference(): void {
+  // The endpoint is fixed: never trust old saved values, remote URLs or host prefixes.
   const input = byId<HTMLInputElement>("bridgeEndpoint");
-  const saved = localStorage.getItem("shuvi.web.bridgeEndpoint");
-  if (saved) input.value = saved;
+  input.value = NATIVE_ENDPOINT;
+  input.readOnly = true;
 }
 
 function readDraftTasks(): DraftTask[] {
@@ -1060,17 +1091,28 @@ function bindInteractions(): void {
     showToast("Browser planning activity cleared.");
   });
 
-  byId<HTMLButtonElement>("saveBridgeSettings").addEventListener("click", () => {
-    const endpoint = byId<HTMLInputElement>("bridgeEndpoint").value.trim();
-
-    if (!endpoint.startsWith("http://127.0.0.1") && !endpoint.startsWith("http://localhost")) {
-      showToast("For now, keep the web bridge on localhost only.");
-      return;
+  byId<HTMLButtonElement>("bridgeConnect").addEventListener("click", async () => {
+    const code = byId<HTMLInputElement>("bridgePairingCode");
+    const button = byId<HTMLButtonElement>("bridgeConnect");
+    button.disabled = true;
+    try {
+      const result = await readOnlyBridge?.pair(code.value);
+      // Never keep a pairing secret in a visible field or browser storage.
+      code.value = "";
+      if (result?.phase === "paired") {
+        recordWebActivity("Settings", "Verified read-only native Shuvi runtime pairing");
+        showToast("Native Shuvi.exe paired for read-only status. No execution enabled.");
+      } else {
+        showToast("Native pairing unavailable. Check the status message in Settings.");
+      }
+    } finally {
+      button.disabled = false;
     }
-
-    localStorage.setItem("shuvi.web.bridgeEndpoint", endpoint);
-    recordWebActivity("Settings", "Saved localhost bridge preference");
-    showToast("Web preference saved. This does not start or expose a local server.");
+  });
+  byId<HTMLButtonElement>("bridgeDisconnect").addEventListener("click", () => {
+    readOnlyBridge?.disconnect();
+    byId<HTMLInputElement>("bridgePairingCode").value = "";
+    showToast("Browser disconnected. This does not stop the native Shuvi app.");
   });
 }
 
@@ -1089,6 +1131,8 @@ renderProviders();
 renderRoutingPresets();
 hydrateMetrics();
 restoreBridgePreference();
+readOnlyBridge = new ShuviReadOnlyBridge(renderNativeConnection);
+renderNativeConnection(readOnlyBridge.state());
 restoreProviderPreference();
 restoreRoutingPreference();
 renderRoutingPresets();
