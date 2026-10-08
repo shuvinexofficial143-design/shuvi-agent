@@ -9,3 +9,8 @@
 #dashboardRuntimeBadge {font-size:10px;white-space:nowrap;}
 #bridgeConnectionState {display:flex;align-items:center;gap:7px;}
 @media(max-width:650px) {.runtime-pair-actions button {flex:1 1 150px;}}
+
+/* Remote web-origin pairing cannot reach the Windows loopback listener. */
+#bridgeConnect[data-remote-blocked="true"]:disabled {cursor:not-allowed;opacity:.58;}
+#bridgePairingCode:disabled,#bridgeDisconnect:disabled {cursor:not-allowed;opacity:.6;}
+#remoteRuntimeNotice {margin:14px 0;}
