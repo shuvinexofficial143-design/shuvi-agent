@@ -29,6 +29,7 @@ export function mountWorkspaceUI(options: WorkspaceOptions): WorkspaceUI {
     saveChatLibrary(threads);
   }
   let chatFilter = "";
+  let catalogRevision = "";
   let activeId = currentThreadId();
   if (!threads.some(t => t.id === activeId)) activeId = threads[0].id;
   setCurrentThreadId(activeId!);
@@ -102,7 +103,11 @@ export function mountWorkspaceUI(options: WorkspaceOptions): WorkspaceUI {
     getElement("#chatTitle").textContent = selected().title;
     const state = options.snapshot();
     renderDashboard(getElement("#dashboardContent"), {...state, threads, activeId: activeId!});
-    renderAppCatalog(getElement("#appCatalog"), state.premiereConnected, state.nativeBridges);
+    const nextCatalogRevision = JSON.stringify([state.premiereConnected, state.nativeBridges]);
+    if (nextCatalogRevision !== catalogRevision) {
+      renderAppCatalog(getElement("#appCatalog"), state.premiereConnected, state.nativeBridges);
+      catalogRevision = nextCatalogRevision;
+    }
     const approvalBox = getElement("#approvalList");
     approvalBox.replaceChildren();
     const card = document.createElement("div");
