@@ -1,6 +1,7 @@
 import "./styles.css";
 import "./premium-theme.css";
 import { initializeAppearance } from "./appearance";
+import { mountChatWorkspace } from "./chat-workspace";
 import {
   creativeModules,
   modelProviders,
@@ -527,21 +528,6 @@ function filterVisibleCards(query: string): void {
   });
 }
 
-function appendChatMessage(role: "user" | "assistant", text: string): void {
-  const messages = byId<HTMLElement>("chatMessages");
-  const wrap = make("div", role === "user" ? "user-message" : "assistant-message");
-
-  if (role === "assistant") {
-    wrap.append(make("div", "message-avatar", "S"));
-  }
-
-  const copy = make("div");
-  copy.append(make("strong", "", role === "assistant" ? "Shuvi" : "You"), make("p", "", text));
-  wrap.append(copy);
-  messages.append(wrap);
-  messages.scrollTop = messages.scrollHeight;
-}
-
 function handleAction(action: string): void {
   if (action === "connect-local") {
     setView("settings");
@@ -936,23 +922,6 @@ function bindInteractions(): void {
     showToast("Task draft saved in this browser.");
   });
 
-  byId<HTMLFormElement>("chatForm").addEventListener("submit", (event) => {
-    event.preventDefault();
-    const input = byId<HTMLTextAreaElement>("chatInput");
-    const prompt = input.value.trim();
-    if (!prompt) return;
-
-    appendChatMessage("user", prompt);
-    input.value = "";
-
-    window.setTimeout(() => {
-      appendChatMessage(
-        "assistant",
-        "I can keep this task in the dashboard, but I cannot execute computer, Adobe or Blender actions until the secure local Shuvi bridge is connected."
-      );
-    }, 280);
-  });
-
   byId<HTMLButtonElement>("saveRoutingPreference").addEventListener("click", saveRoutingPreference);
 
   byId<HTMLButtonElement>("clearPlanningActivity").addEventListener("click", () => {
@@ -997,4 +966,5 @@ renderDraftTasks();
 renderDashboardPlanningQueue();
 renderWebActivity();
 bindInteractions();
+mountChatWorkspace(showToast);
 setView("dashboard");
