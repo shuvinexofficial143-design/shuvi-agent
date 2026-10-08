@@ -71,3 +71,17 @@ test("Vercel preview is stand-alone, clearly marked and cannot execute computer 
   const { Script } = await import("node:vm");
   new Script(script[1], { filename: "preview-script.js" });
 });
+
+
+test("real Adobe connection cards rely on read-only bridge status commands", () => {
+  const native = read("src/ui/native-status.ts");
+  for (const bridge of ["photoshop","illustrator","audition","animate"]) {
+    assert.ok(native.includes('"' + bridge + '"'), bridge + " bridge must be checked");
+  }
+  assert.match(native, /invoke<BridgeResult>\(name \+ "_bridge_status"\)/);
+  assert.match(native, /state\.paired \? "paired"/);
+  assert.doesNotMatch(native, /_bridge_start/);
+  assert.match(main, /refreshNativeStatuses/);
+  assert.match(catalog, /Bridge waiting/);
+  assert.match(shell, /catalogRevision/);
+});
