@@ -48,6 +48,7 @@ export function mountChatWorkspace(notify: (message: string) => void): ChatWorks
   const count = $<HTMLElement>("chatCount");
   const searchInput = $<HTMLInputElement>("chatSearch");
   const pinnedButton = $<HTMLButtonElement>("chatPin");
+  const exportButton = $<HTMLButtonElement>("chatExport");
   const splitButton = $<HTMLButtonElement>("chatSplit");
   const splitPanel = $<HTMLElement>("chatSplitPanel");
   const splitMessages = $<HTMLElement>("chatSplitMessages");
@@ -60,6 +61,34 @@ export function mountChatWorkspace(notify: (message: string) => void): ChatWorks
   const dialogWarning = $<HTMLElement>("chatDialogWarning");
   const deleteButton = $<HTMLButtonElement>("chatDelete");
   const archiveButton = $<HTMLButtonElement>("chatArchive");
+
+  function readPreferredProvider(): string {
+    try {
+      const provider = localStorage.getItem("shuvi.web.provider");
+      return typeof provider === "string" ? provider.slice(0, 72) : "";
+    } catch { return ""; }
+  }
+
+  function exportThread(): void {
+    const t = active();
+    const safeCopy = {
+      schema: "shuvi-chat-export-v1",
+      exportedAt: new Date().toISOString(),
+      title: t.title, createdAt: t.createdAt, updatedAt: t.updatedAt,
+      pinned: t.pinned, archived: t.archived,
+      // Only user-authored browser drafts. Never include an API key or native receipts.
+      messages: t.messages.map(m => ({role:m.role, content:m.content, createdAt:m.createdAt}))
+    };
+    const objectUrl = URL.createObjectURL(new Blob([JSON.stringify(safeCopy, null, 2)], {type:"application/json"}));
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = "shuvi-chat-" + t.id.slice(0, 12) + ".json";
+    document.body.append(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    notify("Conversation exported as JSON. No AI call was made.");
+  }
 
   function active(): SavedChatThread {
     const thread = library.threads.find(t => t.id === library.activeId);
@@ -86,6 +115,10 @@ export function mountChatWorkspace(notify: (message: string) => void): ChatWorks
 
   function renderMessages(): void {
     const t = active();
+    const preferredProvider = readPreferredProvider();
+    $<HTMLElement>("chatPlanningHint").textContent = preferredProvider
+      ? "Planning preference: " + preferredProvider + " · no AI connection or execution"
+      : "Choose a preferred AI model on the AI Models page (planning only).";
     heading.textContent = t.title;
     meta.textContent = t.messages.length + " saved prompts · " + (t.archived ? "Archived · " : "") + "Browser only · No model connected";
     pinnedButton.textContent = t.pinned ? "★ Pinned" : "☆ Pin";
@@ -203,6 +236,7 @@ export function mountChatWorkspace(notify: (message: string) => void): ChatWorks
   }
 
   $<HTMLButtonElement>("chatNew").addEventListener("click", createChat);
+  exportButton.addEventListener("click", exportThread);
   $<HTMLButtonElement>("chatNewTop").addEventListener("click", createChat);
   threadList.addEventListener("click", event => {
     const target = event.target;
@@ -228,6 +262,12 @@ export function mountChatWorkspace(notify: (message: string) => void): ChatWorks
     updateThread({...t, draft: input.value.slice(0, CHAT_MAX_MESSAGE_LENGTH)});
   });
 
+  input.addEventListener("keydown", event => {
+    if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !event.isComposing && !input.disabled) {
+      event.preventDefault();
+      $<HTMLFormElement>("chatForm").requestSubmit();
+    }
+  });
   $<HTMLFormElement>("chatForm").addEventListener("submit", event => {
     event.preventDefault();
     const t = active();
