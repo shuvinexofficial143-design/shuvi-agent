@@ -2,6 +2,8 @@ import "./styles.css";
 import "./premium-theme.css";
 import "./multi-chat.css";
 import "./smart-dashboard.css";
+import "./task-timeline.css";
+import { mountTaskTimeline, type TaskTimelineController } from "./task-timeline";
 import { initializeAppearance } from "./appearance";
 import { mountChatWorkspace, type ChatWorkspace } from "./chat-workspace";
 import { loadChatLibrary } from "./chat-store";
@@ -95,6 +97,7 @@ interface WebActivity {
 let toastTimer: number | undefined;
 let activeDrawerModule: FeatureModule | null = null;
 let chatWorkspace: ChatWorkspace | null = null;
+let taskTimeline: TaskTimelineController | null = null;
 
 function showToast(message: string): void {
   toast.textContent = message;
@@ -106,8 +109,19 @@ function showToast(message: string): void {
 function readWebActivity(): WebActivity[] {
   try {
     const raw = localStorage.getItem("shuvi.web.activity");
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed : [];
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry): entry is WebActivity => entry &&
+      typeof entry === "object" && typeof entry.id === "string" &&
+      typeof entry.message === "string" && typeof entry.type === "string" &&
+      typeof entry.createdAt === "number" && Number.isFinite(entry.createdAt) &&
+      entry.createdAt > 0
+    ).slice(0, 80).map(entry => ({
+      id: entry.id.slice(0,80),
+      message: entry.message.slice(0,360),
+      type: entry.type.slice(0,32),
+      createdAt: entry.createdAt
+    }));
   } catch {
     return [];
   }
@@ -128,6 +142,7 @@ function recordWebActivity(type: string, message: string): void {
   saveWebActivity(entries);
   renderWebActivity();
   renderLocalOverview();
+  taskTimeline?.refresh();
 }
 
 function renderWebActivity(): void {
@@ -619,6 +634,7 @@ function renderDraftTasks(): void {
     stage.textContent = "No browser drafts";
     renderDashboardPlanningQueue();
     renderLocalOverview();
+    taskTimeline?.refresh();
     return;
   }
 
@@ -660,6 +676,7 @@ function renderDraftTasks(): void {
   stage.replaceChildren(stageList);
   renderDashboardPlanningQueue();
   renderLocalOverview();
+  taskTimeline?.refresh();
 }
 
 function addDraftTask(title: string, type: string, priority = "Normal"): void {
@@ -1006,6 +1023,8 @@ function bindInteractions(): void {
   byId<HTMLButtonElement>("clearPlanningActivity").addEventListener("click", () => {
     localStorage.removeItem("shuvi.web.activity");
     renderWebActivity();
+    renderLocalOverview();
+    taskTimeline?.refresh();
     showToast("Browser planning activity cleared.");
   });
 
@@ -1050,10 +1069,16 @@ chatWorkspace = mountChatWorkspace(message => {
   showToast(message);
   renderLocalOverview();
 });
+taskTimeline = mountTaskTimeline({
+  drafts: readDraftTasks,
+  events: readWebActivity,
+  notify: showToast
+});
 window.addEventListener("storage", event => {
   if (event.key && ["shuvi.web.chat-drafts.v1", "shuvi.web.draftTasks", "shuvi.web.activity"].includes(event.key)) {
     renderDraftTasks();
     renderLocalOverview();
+    taskTimeline?.refresh();
   }
 });
 renderLocalOverview();
