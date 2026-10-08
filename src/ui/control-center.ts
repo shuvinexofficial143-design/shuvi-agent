@@ -5,7 +5,12 @@ export type DashboardSnapshot = {
   activeId: string;
   runtimeAvailable: boolean;
   memoryMB: number | null;
-  activeSteps: { completed: number; total: number; current: string | null };
+  activeSteps: {
+    completed: number;
+    total: number;
+    current: string | null;
+    steps: {step_id: string; title: string; status: string; evidence_verified: boolean; reason?: string | null}[];
+  };
   permissionSummary: string | null;
   premiereConnected: boolean | null;
 };
@@ -36,8 +41,10 @@ function statusLabel(value: ThreadStatus): string {
   return {idle:"Idle",running:"Running",approval:"Approval needed",completed:"Completed",failed:"Failed",paused:"Paused"}[value];
 }
 
-export function renderThreadList(container: HTMLElement, threads: ChatThread[], activeId: string): void {
-  const ordered = [...threads].sort((a,b) => b.updatedAt - a.updatedAt);
+export function renderThreadList(container: HTMLElement, threads: ChatThread[], activeId: string, search = ""): void {
+  const needle = search.trim().toLocaleLowerCase();
+  const ordered = [...threads].filter(t => !needle || t.title.toLocaleLowerCase().includes(needle))
+    .sort((a,b) => b.updatedAt - a.updatedAt);
   container.innerHTML = ordered.map(thread => `
     <div class="thread-row ${thread.id === activeId ? "selected" : ""}">
       <button class="thread-open" type="button" data-thread-id="${escapeHTML(thread.id)}" title="${escapeHTML(thread.title)}">
@@ -45,7 +52,7 @@ export function renderThreadList(container: HTMLElement, threads: ChatThread[], 
         <span class="thread-sub"><i class="task-dot dot-${thread.status}"></i>${statusLabel(thread.status)}</span>
       </button>
       <button class="thread-more" type="button" data-thread-menu="${escapeHTML(thread.id)}" title="Rename or delete this chat" aria-label="Chat options">···</button>
-    </div>`).join("");
+    </div>`).join("") || '<p class="chat-rail-empty">No conversations match this search.</p>';
 }
 
 export function renderDashboard(container: HTMLElement, data: DashboardSnapshot): void {
@@ -98,6 +105,15 @@ export function renderDashboard(container: HTMLElement, data: DashboardSnapshot)
         ${data.permissionSummary ? `<div class="permission-alert"><strong>Approval needed</strong><p>${escapeHTML(data.permissionSummary)}</p><button class="ui-button" type="button" data-open-view="approvals">Review action →</button></div>` : ""}
       </section>
     </div>
+    <section class="surface-card task-inspector">
+      <div class="section-heading"><h2>Current task steps</h2><span class="muted">Verified completion only</span></div>
+      ${data.activeSteps.total ? `<div class="task-step-list">${data.activeSteps.steps.map((step,i) =>
+        `<div class="task-step"><span class="task-step-no">${i+1}</span>
+          <div><strong>${escapeHTML(step.title)}</strong><small>${escapeHTML(step.reason || (step.evidence_verified ? "Result verified" : step.status))}</small></div>
+          <span class="task-tag tag-${step.status}">${step.evidence_verified ? "Verified" : escapeHTML(step.status)}</span>
+        </div>`).join("")}</div>` :
+        '<div class="empty-panel">No active task graph. Start a conversation to see verified execution steps here.</div>'}
+    </section>
   `;
 }
 
