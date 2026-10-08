@@ -1,0 +1,25 @@
+name: Shuvi Web Control Center CI
+on:
+  pull_request:
+    paths:
+      - "web-dashboard/**"
+      - ".github/workflows/shuvi-web-control-center.yml"
+  workflow_dispatch:
+jobs:
+  web-dashboard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web-dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Telegram and AI team regression tests
+        run: node --test scripts/telegram-team.test.mjs
+      - name: Build Vercel dashboard
+        run: npm run build
