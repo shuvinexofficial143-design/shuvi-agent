@@ -73,7 +73,7 @@ test("Level 10 preserves theme-responsive UI and existing creative/task behavior
   assert.match(main,/masterAgentUI\?\.refresh\(\)/);
   assert.match(main,/addDraftTask\(title, workspace, priority\)/);
   assert.match(main,/renderDraftTasks\(\)/);
-  assert.match(main,/Alt\+1…Alt\+9/);
+  assert.match(main,/Alt\+1…Alt\+9 and Alt\+0/);
   assert.match(css,/var\(--shuvi-accent\)/);
   assert.match(css,/@media\(max-width:650px\)/);
   assert.match(markup,/id="studioPlanForm"/);
