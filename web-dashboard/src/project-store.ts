@@ -7,9 +7,11 @@ export const MAX_ASSOCIATIONS=40;
 export type AssetKind="Reference"|"Video"|"Audio"|"Image"|"3D Model"|"Document"|"Other";
 export type ProjectAsset={id:string;label:string;kind:AssetKind;reference:string;createdAt:number};
 export type ProjectNote={id:string;text:string;createdAt:number};
+export type ProjectHistory={id:string;kind:string;detail:string;createdAt:number};
+export const MAX_HISTORY=60;
 export type ProjectWorkspace={
  id:string;name:string;description:string;createdAt:number;updatedAt:number;
- taskIds:string[];assets:ProjectAsset[];notes:ProjectNote[];
+ taskIds:string[];assets:ProjectAsset[];notes:ProjectNote[];history:ProjectHistory[];
 };
 const idPattern=/^[a-zA-Z0-9_-]{1,80}$/;
 const safeId=(x:unknown):x is string=>typeof x==="string"&&idPattern.test(x);
@@ -36,6 +38,12 @@ export function normalizeProject(value:unknown):ProjectWorkspace|null {
   // Metadata-only user-entered label/reference. No network fetch, file read or upload.
   return {id:a.id,label,kind,reference:text(a.reference,220),createdAt:a.createdAt};
  }).filter((a):a is ProjectAsset=>a!==null),a=>a.id,MAX_ASSETS);
+ const history=unique(safeArray(v.history).map(x=>{
+  if(!x||typeof x!=="object")return null;
+  const e=x as Record<string,unknown>;
+  if(!safeId(e.id)||!safeTime(e.createdAt))return null;
+  const detail=text(e.detail,180);return detail?{id:e.id,kind:text(e.kind,40)||"Project",detail,createdAt:e.createdAt}:null;
+ }).filter((e):e is ProjectHistory=>e!==null),e=>e.id,MAX_HISTORY);
  const notes=unique(safeArray(v.notes).map(x=>{
   if(!x||typeof x!=="object")return null;
   const n=x as Record<string,unknown>;
@@ -46,7 +54,7 @@ export function normalizeProject(value:unknown):ProjectWorkspace|null {
   id:v.id,name,description:text(v.description,300),
   createdAt:v.createdAt,updatedAt:v.updatedAt,
   taskIds:unique(safeArray(v.taskIds).filter(safeId),x=>x,MAX_ASSOCIATIONS),
-  assets,notes
+  assets,notes,history
  };
 }
 export function normalizeProjects(input:unknown):ProjectWorkspace[] {
@@ -65,7 +73,7 @@ export function createProject(name:string,description:string):ProjectWorkspace|n
  const label=text(name,80);if(!label)return null;
  const now=Date.now();return {
   id:crypto.randomUUID(),name:label,description:text(description,300),
-  createdAt:now,updatedAt:now,taskIds:[],assets:[],notes:[]
+  createdAt:now,updatedAt:now,taskIds:[],assets:[],notes:[],history:[]
  };
 }
 export function associateTask(project:ProjectWorkspace,taskId:string,enabled:boolean):ProjectWorkspace {
@@ -90,3 +98,10 @@ export function addNote(project:ProjectWorkspace,body:string):ProjectWorkspace|n
  return {...project,notes:[{id:crypto.randomUUID(),text:safe,createdAt:Date.now()},...project.notes],updatedAt:Date.now()};
 }
 export const ASSET_KINDS=kinds;
+
+/** Append an audit-like browser event. This is not a native Shuvi audit receipt. */
+export function withProjectEvent(project:ProjectWorkspace,kind:string,detail:string):ProjectWorkspace {
+ const now=Date.now();
+ const e:ProjectHistory={id:crypto.randomUUID(),kind:text(kind,40)||"Project",detail:text(detail,180)||"Updated",createdAt:now};
+ return {...project,updatedAt:now,history:[e,...project.history].slice(0,MAX_HISTORY)};
+}
