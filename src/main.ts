@@ -437,6 +437,7 @@ function currentCheckpoint(): SessionCheckpoint {
 }
 
 function renderOrchestrationStatus(): void {
+  workspaceUI?.refresh();
   const progress = el<HTMLElement>("#agentProgress");
   const graphProgress = taskGraphProgress(orchestration.task_graph);
   const graphView = el<HTMLElement>("#taskProgress");
@@ -966,6 +967,7 @@ function clearChatPermission(): void {
   pendingChatProposal = null;
   chatPermission.classList.add("hidden");
   chatPermission.innerHTML = "";
+  workspaceUI?.refresh();
 }
 
 async function auditGraphOutcome(proposal: ToolProposal): Promise<void> {
@@ -1020,6 +1022,7 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
   if (!pendingAction || cancelRequested) return;
 
   const actionId = pendingAction.id;
+  workspaceUI?.setStatus("running");
   executingActionId = actionId;
   executingCancellation = null;
   clearChatPermission();
@@ -1534,6 +1537,7 @@ el<HTMLButtonElement>("#prepareAction").addEventListener("click", async () => {
 });
 
 function renderManualPending(): void {
+  workspaceUI?.refresh();
   const box = el<HTMLElement>("#pendingAction");
 
   if (!pendingAction) {
