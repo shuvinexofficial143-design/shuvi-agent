@@ -8,7 +8,7 @@ import {readFlows} from "./visual-flow-store";
 type ProjectActions={
  drafts():TaskDraftRef[];
  navigate(view:"tasks"|"agents"|"workflows"):void;
- openVisualBuilder(projectId:string):void;
+ openVisualBuilder(projectId:string,flowId?:string):void;
  notify(message:string):void;
  activity(message:string):void;
 };
@@ -182,7 +182,7 @@ export function mountProjectWorkspace(actions:ProjectActions):ProjectUI {
    const title=e("span","project-select-copy");
    title.append(e("strong","",flow.title),e("small","",flow.nodes.length+" visual steps · Browser plan"));
    row.append(e("span","project-select-mark","◇"),title);
-   row.addEventListener("click",()=>actions.openVisualBuilder(project.id));
+   row.addEventListener("click",()=>actions.openVisualBuilder(project.id,flow.id));
    visualList.append(row);
   }
   if(!project.workflows.length)workflowList.append(e("div","project-placeholder","No workflow plans yet. Save a plan for Blender, Adobe or Coding."));
