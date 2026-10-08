@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import "./styles.css";
+import { mountWorkspaceUI, type WorkspaceUI } from "./ui/workspace-ui";
 import type {
   ActionResult,
   ChatMessage,
@@ -49,6 +50,10 @@ let sessionInputTokens = 0;
 let sessionOutputTokens = 0;
 let sessionTotalTokens = 0;
 const sessionAllowedScopes = new Set<string>();
+let workspaceUI: WorkspaceUI | null = null;
+let currentMemoryMB: number | null = null;
+let runtimeAvailable = false;
+let premiereConnected: boolean | null = null;
 
 root.innerHTML = `
 <div id="onboarding" class="onboarding hidden">
@@ -510,6 +515,9 @@ async function refreshRam(): Promise<void> {
   try {
     const status = await invoke<RuntimeStatus>("runtime_status");
     el<HTMLElement>("#ramValue").textContent = `${status.shuvi_memory_mb.toFixed(0)} MB`;
+    runtimeAvailable = true;
+    currentMemoryMB = status.shuvi_memory_mb;
+    workspaceUI?.refresh();
 
     const pct = Math.min(100, (status.shuvi_memory_mb / status.hard_limit_mb) * 100);
     el<HTMLElement>("#ramMeter").style.width = `${pct}%`;
@@ -527,6 +535,9 @@ async function refreshRam(): Promise<void> {
         : `${status.managed_children_count} managed process${status.managed_children_count === 1 ? "" : "es"} · ${status.managed_children_memory_mb.toFixed(0)} MB`;
   } catch {
     el<HTMLElement>("#ramValue").textContent = "-- MB";
+    runtimeAvailable = false;
+    currentMemoryMB = null;
+    workspaceUI?.refresh();
   }
 }
 
@@ -564,6 +575,8 @@ async function refreshAudit(): Promise<void> {
 }
 
 function renderPremiereBridgeStatus(status: PremiereBridgeStatus): void {
+  premiereConnected = status.paired;
+  workspaceUI?.refresh();
   premiereBridgeState.textContent = status.enabled
     ? status.paired
       ? "Premiere bridge connected"
@@ -651,7 +664,13 @@ function renderMessages(): void {
     (message) => message.role !== "system" && !isHiddenToolMessage(message)
   );
 
-  if (!visible.length) return;
+  if (!visible.length) {
+    if (workspaceUI) {
+      box.innerHTML = '<div class="empty-state"><div class="orb">S</div><h2>What should we work on?</h2><p>Start a chat to use Shuvi’s tools and agents. Sensitive actions still need permission.</p></div>';
+      workspaceUI.record(messages);
+    }
+    return;
+  }
 
   box.innerHTML = visible
     .map(
@@ -672,6 +691,7 @@ function renderMessages(): void {
   });
 
   box.scrollTop = box.scrollHeight;
+  workspaceUI?.record(messages);
 }
 
 function setBusy(value: boolean): void {
@@ -682,6 +702,14 @@ function setBusy(value: boolean): void {
   send.textContent = value ? "Working…" : "Send";
   stop.textContent = "Stop";
   stop.classList.toggle("hidden", !value);
+  if (value) workspaceUI?.setStatus("running");
+  else {
+    const graph = taskGraphProgress(orchestration.task_graph);
+    const finalText = messages.at(-1)?.content ?? "";
+    workspaceUI?.setStatus(cancelRequested || orchestration.recovery_mode === "stopped" ||
+      (graph.total > 0 && graph.completed < graph.total) ? "paused" :
+      finalText.startsWith("Error:") ? "failed" : "completed");
+  }
 }
 
 function providerToolEnvelope(payload: Record<string, unknown>): string {
@@ -1077,6 +1105,7 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
   }
 
   chatPermission.classList.remove("hidden");
+  workspaceUI?.setStatus("approval");
   chatPermission.innerHTML = `
     <div class="permission-head">
       <div>
@@ -1456,6 +1485,7 @@ el<HTMLFormElement>("#chatForm").addEventListener("submit", async (event) => {
   orchestration = createAgentOrchestrationState();
   renderOrchestrationStatus();
   messages.push({ role: "user", content });
+  workspaceUI?.setStatus("running");
   prompt.value = "";
   renderMessages();
   await saveActiveCheckpoint();
@@ -1644,4 +1674,26 @@ document.querySelectorAll<HTMLButtonElement>(".nav").forEach((button) => {
   });
 });
 
+workspaceUI = mountWorkspaceUI({
+  isTaskLocked: () => busy || manualActionRunning || pendingAction !== null ||
+    executingActionId !== null || savedCheckpoint !== null,
+  onActivate: (history) => {
+    messages = history;
+    orchestration = createAgentOrchestrationState();
+    cancelRequested = false;
+    renderOrchestrationStatus();
+    renderMessages();
+  },
+  onViewOpen: name => { if (name === "premiere") void refreshPremiereBridge(); },
+  snapshot: () => {
+    const progress = taskGraphProgress(orchestration.task_graph);
+    return {
+      runtimeAvailable, memoryMB: currentMemoryMB, premiereConnected,
+      activeSteps: {completed: progress.completed, total: progress.total, current: progress.current},
+      permissionSummary: pendingAction?.summary ?? null
+    };
+  }
+});
+messages = workspaceUI.initialMessages();
+renderMessages();
 void boot();
