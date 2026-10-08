@@ -1,6 +1,6 @@
 import {
   WORKERS,readDelegations,writeDelegations,createDelegation,delegationViews,
-  type TaskDraftRef,type DelegationPlan,DELEGATION_STORAGE_KEY
+  type TaskDraftRef
 } from "./agent-planner";
 
 type MasterCallbacks={
@@ -26,7 +26,6 @@ export function mountMasterAgentUI(callbacks:MasterCallbacks):MasterAgentUI {
   const board=id<HTMLElement>("agentPlanList");
   const grid=id<HTMLElement>("agentWorkerGrid");
   let selectedWorker=WORKERS[0].id;
-  let editingRecordId="";
   id<HTMLElement>("agentWorkerCount").textContent=String(WORKERS.length);
 
   function renderWorkers():void{
