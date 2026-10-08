@@ -124,3 +124,12 @@
   .chat-dialog-actions .primary-button{margin-left:auto}
 }
 @media(prefers-reduced-motion:reduce){.conversation-item,.chat-header-button{transition:none}}
+
+/* Level 6: advanced browser chat planning controls. */
+.chat-planning-hint { margin-top: 8px; font-size: 11px; line-height: 1.45; color: var(--shuvi-secondary, #7DD3FC); }
+#chatExport { color: var(--shuvi-secondary, #7DD3FC); }
+#chatExport:hover { border-color: var(--shuvi-accent-line, #2563EB); }
+@media (max-width: 620px) {
+  .chat-header-actions { flex-wrap: wrap; }
+  .chat-planning-hint { font-size: 10px; }
+}
