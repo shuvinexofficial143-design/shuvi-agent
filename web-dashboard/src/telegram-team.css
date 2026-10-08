@@ -42,3 +42,17 @@
 .shuvi-telegram-panel button:disabled{opacity:.43;cursor:not-allowed}
 @media(max-width:1000px){.shuvi-telegram-columns{grid-template-columns:1fr}.shuvi-team-grid{grid-template-columns:1fr}}
 @media(max-width:580px){.shuvi-telegram-panel,.shuvi-team-planner{padding:17px}.shuvi-telegram-heading,.shuvi-team-head{align-items:start;flex-wrap:wrap}.shuvi-telegram-flow{gap:5px;padding:10px}.shuvi-telegram-flow div{flex-direction:column;text-align:center;gap:4px}.shuvi-telegram-flow div>span{width:25px;height:25px}.shuvi-telegram-flow small{font-size:9px}.shuvi-telegram-actions button{width:100%}}
+
+/* Balanced routing preview — static browser-only planning, never native control. */
+.shuvi-router-limits{font-size:11px;line-height:1.65;color:var(--shuvi-secondary);padding:10px 13px;border:1px solid var(--line);border-radius:10px;margin:0 0 18px;background:var(--panel-2)}
+.shuvi-route-preview{border:1px solid var(--line);background:var(--panel-2);border-radius:13px;padding:17px;margin:0 0 20px}
+.shuvi-route-preview h4{font-size:14px;margin:0 0 7px}
+.shuvi-route-preview>p{color:var(--muted);font-size:11px;line-height:1.6;margin:0 0 11px}
+.shuvi-route-task{display:block;width:100%;min-height:74px;resize:vertical;padding:11px 13px;color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:10px;font-size:12px;line-height:1.5}
+.shuvi-route-task:focus{outline:1px solid var(--shuvi-secondary);border-color:var(--shuvi-secondary)}
+.shuvi-route-preview>button{min-height:39px;margin:12px 0 0;padding:8px 13px}
+.shuvi-route-result{display:grid;gap:6px;color:var(--muted);font-size:11px;line-height:1.55;margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:10px;overflow-wrap:anywhere}
+.shuvi-route-result strong{color:var(--text);font-size:12px}
+.shuvi-route-result p{margin:0}
+.shuvi-route-result small{font-size:10px;color:var(--shuvi-secondary)}
+@media(max-width:580px){.shuvi-route-preview{padding:12px}.shuvi-route-preview>button{width:100%}}

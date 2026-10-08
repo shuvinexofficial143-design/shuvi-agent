@@ -1,7 +1,7 @@
 # Shuvi Balanced AI Mode — Model Router Implementation Plan
 **Decision date:** 2026-10-08  
 **Decision:** Balanced is the *approved default policy* for the next Shuvi multi-agent router.  
-**State:** Architecture/role plan only. This document does **not** mean the multi-model router, parallel workers, Vercel remote control, or Telegram live pairing is deployed or working. Windows/AntCloud verification is pending.
+**State:** Architecture + browser-local 11-role Balanced planning/route preview implemented. The real multi-model native router, parallel workers, Vercel remote control, and Telegram live pairing are **not** deployed or verified. Windows/AntCloud acceptance is pending.
 
 ## 1. Goal
 Use a low-cost, low-latency model for routine requests; invoke strong reasoning or multimodal models only when the task and quality requirement justify the cost. A Shuvi **Master Router** owns task planning, worker handoff, cost controls and evidence review; the existing Rust **typed-tool / approval gate** always controls real Windows actions.
@@ -27,7 +27,7 @@ The names below are model *preferences*, not verified API model IDs or pricing c
 
 *Provider inventory found in current native Rust code:* `deepseek`, `openai`, `gemini`, `anthropic`, `openrouter`, `ollama`, `custom` (OpenAI-compatible). xKiro is **not** a separate registered native adapter in the inspected `ui-dashboard` source; check whether its actual endpoint is compatible with `custom` before mapping it. Do not invent xKiro-specific model IDs, SOL 6.1 endpoints, Gemini image IDs, Veo access, cost rates or free-credit entitlements.
 
-*Existing web role planner:* exactly **8** browser-local roles (`master`, `launcher`, `project`, `coding`, `video`, `image`, `video_gen`, `blender`). Add `motion`, `vision`, `reviewer` later with a non-destructive settings migration and an explicit **planning-only** label until native sync works.
+*Web role planner:* expanded to **11** browser-local roles by adding `motion`, `vision`, `reviewer`. The eight legacy role IDs and `shuvi.web.ai-team-model-assignments.v1` settings key remain unchanged; unassigned roles use Balanced family-label defaults. The deterministic preview runs with **zero model/API calls** and does not enable native sync.
 
 ## 3. Balanced routing rules
 1. **Preflight classifier:** Determine intent, modality, supported tools, risk, needed output quality, and budget. Prefer a fast/inexpensive model for this brief classification; deterministic keywords/safety constraints can bypass an AI call.
@@ -69,12 +69,12 @@ Separate identities:
 1. Bring AntCloud online, verify checked-out GitHub branch and protect current local projects/unsaved creative work.
 2. Verify available xKiro/OpenRouter/custom/Gemini/Claude provider connections, **real model IDs**, authenticated health tests, modality and per-unit cost. No assumptions.
 3. Keep native Telegram PR separate until it compiles and passes actual paired private-chat and current-action approval tests.
-4. Implement **read-only** role/capability registry and routing dry-run first. Test that simple launch routes to cheap model, coding to Sonnet-class, Blender/VFX to eligible heavy model, image/video to correct modality endpoints.
+4. Reuse the existing browser-only 11-role dry-run classifier as the test contract; implement and test the missing **native** role/capability registry against real provider IDs. Verify that simple launch routes to cheap model, coding to Sonnet-class, Blender/VFX to eligible heavy model, and image/video to the correct verified endpoints.
 5. Add price guardrails and audit (80% warning, 100% pause), fallback policy, explicit expensive-media approval and provider-failure simulations.
 6. Integrate Master → Specialist dispatch with the **existing typed-tool** policy, queue, action IDs, cancellation and resource locking. Start with serialized Windows actions; do not exceed 8-step native action budget unreviewed.
 7. Execute minimal safe native tests: app status read, folder inspect, simple dry-run code plan, read-only Premiere/Blender scene inspect; verify no mutation without permission.
 8. Gradually add real parallel *model planning* (max two) and independent reviewer evidence checks. Validate memory ceiling, UI lock contention, crash/restart and stale Telegram approval.
-9. Only after that, update 8-role browser planner to 11-role representation with non-destructive migration. Do not imply browser-local preferences control Windows until an authenticated sync exists.
+9. Verify the already-expanded 11-role browser UI and non-destructive 8-role saved-preference migration, then design authenticated native sync separately. Never imply browser-local preferences control Windows until that sync passes live testing.
 10. Finish with a measured pass/fail report and observed costs/latencies; keep production actions and web remote control disabled until acceptance succeeds.
 
 ## 8. Acceptance matrix
@@ -92,8 +92,8 @@ Separate identities:
 | Browser refresh | browser plan survives locally; native task truth is never fabricated from cached UI values |
 
 ## 9. Delivery scope
-**Already in source:** single-provider typed agent loop, provider adapters, local approval/audit/checkpoints, browser-only 8-role model-assignment planner and Telegram native feature PR under review.
+**Already in source:** single-provider typed agent loop, provider adapters, local approval/audit/checkpoints, browser-only 11-role Balanced model-assignment planner with offline route preview and regression tests, and Telegram native feature PR under review.
 
-**Not yet implemented/verified:** a functioning 11-role multi-model router, provider pricing discovery, shared worker scheduler, independent parallel worker execution, web↔native authenticated remote relay, verified SOL 6.1/xKiro/Veo availability, and end-to-end Telegram live control.
+**Not yet implemented/verified:** functioning 11-role **native execution** router, provider pricing discovery, enforced budget caps, shared worker scheduler, independent parallel worker execution, web↔native authenticated remote relay, verified SOL 6.1/xKiro/Veo availability, and end-to-end Telegram live control.
 
 **No code execution, provider calls, credential writes, Vercel release or server changes are authorized by this planning document.** All new runtime actions require explicit live acceptance and the existing Shuvi permission system.
