@@ -45,3 +45,29 @@ test("new navigation preserves existing task and connection sections", () => {
   assert.match(main, /renderPremiereBridgeStatus/);
   assert.match(main, /saveActiveCheckpoint/);
 });
+
+
+test("UI batch 2 uses searchable conversations and an explicit delete confirmation", () => {
+  assert.match(shell, /id="chatSearch"/);
+  assert.match(shell, /id="threadDialog"/);
+  assert.match(shell, /dialog\.showModal\(\)/);
+  assert.match(shell, /Confirm delete/);
+  assert.doesNotMatch(shell, /window\.prompt\(/);
+  assert.match(catalog, /renderThreadList\(container: HTMLElement, threads: ChatThread\[\], activeId: string, search = ""\)/);
+  assert.match(catalog, /task-inspector/);
+  assert.match(main, /steps: progress\.steps/);
+});
+
+test("Vercel preview is stand-alone, clearly marked and cannot execute computer commands", async () => {
+  const html = read("preview/index.html");
+  assert.match(html, /UI PREVIEW · SAMPLE DATA/);
+  assert.match(html, /browser-only demonstration/);
+  assert.match(html, /All workflow metrics in the browser preview are fictional/);
+  assert.match(html, /AI execution is not connected/);
+  assert.doesNotMatch(html, /@tauri-apps\/api|window\.__TAURI__|fetch\s*\(/);
+  assert.doesNotMatch(html, /<script[^>]+src=/);
+  const script = html.match(/<script>([\s\S]*?)<\/script>/);
+  assert.ok(script, "Preview must have an inline script");
+  const { Script } = await import("node:vm");
+  new Script(script[1], { filename: "preview-script.js" });
+});
