@@ -3,15 +3,17 @@ export const PROJECTS_KEY="shuvi.web.projects.v1";
 export const MAX_PROJECTS=12;
 export const MAX_ASSETS=40;
 export const MAX_NOTES=40;
+export const MAX_WORKFLOWS=24;
 export const MAX_ASSOCIATIONS=40;
 export type AssetKind="Reference"|"Video"|"Audio"|"Image"|"3D Model"|"Document"|"Other";
 export type ProjectAsset={id:string;label:string;kind:AssetKind;reference:string;createdAt:number};
 export type ProjectNote={id:string;text:string;createdAt:number};
 export type ProjectHistory={id:string;kind:string;detail:string;createdAt:number};
+export type ProjectWorkflow={id:string;title:string;app:string;steps:string;createdAt:number};
 export const MAX_HISTORY=60;
 export type ProjectWorkspace={
  id:string;name:string;description:string;createdAt:number;updatedAt:number;
- taskIds:string[];assets:ProjectAsset[];notes:ProjectNote[];history:ProjectHistory[];
+ taskIds:string[];assets:ProjectAsset[];notes:ProjectNote[];history:ProjectHistory[];workflows:ProjectWorkflow[];
 };
 const idPattern=/^[a-zA-Z0-9_-]{1,80}$/;
 const safeId=(x:unknown):x is string=>typeof x==="string"&&idPattern.test(x);
@@ -38,6 +40,13 @@ export function normalizeProject(value:unknown):ProjectWorkspace|null {
   // Metadata-only user-entered label/reference. No network fetch, file read or upload.
   return {id:a.id,label,kind,reference:text(a.reference,220),createdAt:a.createdAt};
  }).filter((a):a is ProjectAsset=>a!==null),a=>a.id,MAX_ASSETS);
+ const workflows=unique(safeArray(v.workflows).map(x=>{
+  if(!x||typeof x!=="object")return null;
+  const w=x as Record<string,unknown>;
+  if(!safeId(w.id)||!safeTime(w.createdAt))return null;
+  const title=text(w.title,100);if(!title)return null;
+  return {id:w.id,title,app:text(w.app,60)||"General",steps:text(w.steps,600),createdAt:w.createdAt};
+ }).filter((w):w is ProjectWorkflow=>w!==null),w=>w.id,MAX_WORKFLOWS);
  const history=unique(safeArray(v.history).map(x=>{
   if(!x||typeof x!=="object")return null;
   const e=x as Record<string,unknown>;
@@ -54,7 +63,7 @@ export function normalizeProject(value:unknown):ProjectWorkspace|null {
   id:v.id,name,description:text(v.description,300),
   createdAt:v.createdAt,updatedAt:v.updatedAt,
   taskIds:unique(safeArray(v.taskIds).filter(safeId),x=>x,MAX_ASSOCIATIONS),
-  assets,notes,history
+  assets,notes,history,workflows
  };
 }
 export function normalizeProjects(input:unknown):ProjectWorkspace[] {
@@ -73,7 +82,7 @@ export function createProject(name:string,description:string):ProjectWorkspace|n
  const label=text(name,80);if(!label)return null;
  const now=Date.now();return {
   id:crypto.randomUUID(),name:label,description:text(description,300),
-  createdAt:now,updatedAt:now,taskIds:[],assets:[],notes:[],history:[]
+  createdAt:now,updatedAt:now,taskIds:[],assets:[],notes:[],history:[],workflows:[]
  };
 }
 export function associateTask(project:ProjectWorkspace,taskId:string,enabled:boolean):ProjectWorkspace {
@@ -104,4 +113,11 @@ export function withProjectEvent(project:ProjectWorkspace,kind:string,detail:str
  const now=Date.now();
  const e:ProjectHistory={id:crypto.randomUUID(),kind:text(kind,40)||"Project",detail:text(detail,180)||"Updated",createdAt:now};
  return {...project,updatedAt:now,history:[e,...project.history].slice(0,MAX_HISTORY)};
+}
+
+export function addWorkflow(project:ProjectWorkspace,title:string,app:string,steps:string):ProjectWorkspace|null {
+ if(project.workflows.length>=MAX_WORKFLOWS)return null;
+ const name=text(title,100);if(!name)return null;
+ const workflow:ProjectWorkflow={id:crypto.randomUUID(),title:name,app:text(app,60)||"General",steps:text(steps,600),createdAt:Date.now()};
+ return {...project,workflows:[workflow,...project.workflows],updatedAt:Date.now()};
 }
