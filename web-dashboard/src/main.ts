@@ -3,6 +3,8 @@ import "./premium-theme.css";
 import "./multi-chat.css";
 import { initializeAppearance } from "./appearance";
 import { mountChatWorkspace, type ChatWorkspace } from "./chat-workspace";
+import { loadChatLibrary } from "./chat-store";
+import { buildPlanningOverview } from "./planning-overview";
 import {
   creativeModules,
   modelProviders,
@@ -124,6 +126,7 @@ function recordWebActivity(type: string, message: string): void {
   });
   saveWebActivity(entries);
   renderWebActivity();
+  renderLocalOverview();
 }
 
 function renderWebActivity(): void {
@@ -577,11 +580,19 @@ function restoreBridgePreference(): void {
 function readDraftTasks(): DraftTask[] {
   try {
     const raw = localStorage.getItem("shuvi.web.draftTasks");
-    const parsed = raw ? JSON.parse(raw) : [];
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(parsed)) return [];
-    return parsed.map((task) => ({
-      ...task,
-      priority: task.priority || "Normal"
+    return parsed.filter((task): task is DraftTask =>
+      task && typeof task === "object" &&
+      typeof task.id === "string" && typeof task.title === "string" &&
+      typeof task.type === "string" && typeof task.createdAt === "number" &&
+      Number.isFinite(task.createdAt) && task.createdAt > 0
+    ).slice(0, 20).map(task => ({
+      id: task.id.slice(0, 80),
+      title: task.title.slice(0, 160),
+      type: task.type.slice(0, 64),
+      priority: ["Low", "Normal", "High"].includes(task.priority ?? "") ? task.priority : "Normal",
+      createdAt: task.createdAt
     }));
   } catch {
     return [];
@@ -606,6 +617,7 @@ function renderDraftTasks(): void {
     stage.className = "stage-empty";
     stage.textContent = "No browser drafts";
     renderDashboardPlanningQueue();
+    renderLocalOverview();
     return;
   }
 
@@ -646,6 +658,7 @@ function renderDraftTasks(): void {
   stage.className = "stage-draft-container";
   stage.replaceChildren(stageList);
   renderDashboardPlanningQueue();
+  renderLocalOverview();
 }
 
 function addDraftTask(title: string, type: string, priority = "Normal"): void {
@@ -717,6 +730,54 @@ function renderDashboardPlanningQueue(): void {
   });
 
   target.append(list);
+}
+
+function renderLocalOverview(): void {
+  const overview = buildPlanningOverview(readDraftTasks(), loadChatLibrary().threads, readWebActivity());
+  byId<HTMLElement>("planDraftStatus").textContent = String(overview.draftCount);
+  byId<HTMLElement>("planDraftCount").textContent = String(overview.draftCount);
+  byId<HTMLElement>("planConversationCount").textContent = String(overview.conversationCount);
+  byId<HTMLElement>("planHighPriorityCount").textContent = String(overview.highPriorityCount);
+  byId<HTMLElement>("planActivityCount").textContent = String(overview.activityCount);
+  byId<HTMLElement>("localPlanningUpdated").textContent = overview.lastActivityAt == null
+    ? "No saved activity yet"
+    : "Last saved: " + new Date(overview.lastActivityAt).toLocaleString();
+
+  const drafts = byId<HTMLElement>("planRecentDrafts");
+  drafts.replaceChildren();
+  if (!overview.recentDrafts.length) {
+    drafts.append(make("p", "overview-empty", "No saved task drafts. Plan one from the Tasks page."));
+  } else {
+    for (const task of overview.recentDrafts) {
+      const row = make("button", "overview-entry");
+      row.type = "button";
+      row.dataset.viewJump = "tasks";
+      row.append(
+        make("span", "overview-entry-glyph", "▤"),
+        make("span", "overview-entry-title", task.title),
+        make("small", "overview-entry-meta", (task.priority || "Normal") + " · Draft")
+      );
+      drafts.append(row);
+    }
+  }
+
+  const conversations = byId<HTMLElement>("planRecentChats");
+  conversations.replaceChildren();
+  if (!overview.recentThreads.length) {
+    conversations.append(make("p", "overview-empty", "No conversations saved in this browser."));
+  } else {
+    for (const thread of overview.recentThreads) {
+      const row = make("button", "overview-entry");
+      row.type = "button";
+      row.dataset.viewJump = "chat";
+      row.append(
+        make("span", "overview-entry-glyph", "✦"),
+        make("span", "overview-entry-title", thread.title),
+        make("small", "overview-entry-meta", thread.archived ? "Archived" : "Local chat")
+      );
+      conversations.append(row);
+    }
+  }
 }
 
 function renderRoutingPresets(): void {
@@ -982,6 +1043,17 @@ renderRoutingPresets();
 renderDraftTasks();
 renderDashboardPlanningQueue();
 renderWebActivity();
+renderLocalOverview();
 bindInteractions();
-chatWorkspace = mountChatWorkspace(showToast);
+chatWorkspace = mountChatWorkspace(message => {
+  showToast(message);
+  renderLocalOverview();
+});
+window.addEventListener("storage", event => {
+  if (event.key && ["shuvi.web.chat-drafts.v1", "shuvi.web.draftTasks", "shuvi.web.activity"].includes(event.key)) {
+    renderDraftTasks();
+    renderLocalOverview();
+  }
+});
+renderLocalOverview();
 setView("dashboard");
