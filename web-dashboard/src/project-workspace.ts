@@ -3,10 +3,12 @@ import {
  PROJECTS_KEY,MAX_PROJECTS,MAX_ASSETS,MAX_NOTES,MAX_WORKFLOWS,type ProjectWorkspace
 } from "./project-store";
 import {readDelegations,WORKERS,type TaskDraftRef} from "./agent-planner";
+import {readFlows} from "./visual-flow-store";
 
 type ProjectActions={
  drafts():TaskDraftRef[];
- navigate(view:"tasks"|"agents"):void;
+ navigate(view:"tasks"|"agents"|"workflows"):void;
+ openVisualBuilder(projectId:string):void;
  notify(message:string):void;
  activity(message:string):void;
 };
@@ -169,7 +171,20 @@ export function mountProjectWorkspace(actions:ProjectActions):ProjectUI {
  }
  function renderWorkflows(project:ProjectWorkspace):void{
   workflowList.replaceChildren();
-  get<HTMLElement>("projectWorkflowCount").textContent=String(project.workflows.length);
+  const linkedVisual=readFlows().filter(flow=>flow.projectId===project.id);
+  get<HTMLElement>("projectWorkflowCount").textContent=String(project.workflows.length+linkedVisual.length);
+  const visualList=get<HTMLElement>("projectVisualFlows");
+  visualList.replaceChildren();
+  if(!linkedVisual.length)visualList.append(e("div","project-placeholder","No visual workflows linked yet. Open Visual Builder to create a connected step sequence."));
+  for(const flow of linkedVisual){
+   const row=e("button","project-select");
+   row.type="button";
+   const title=e("span","project-select-copy");
+   title.append(e("strong","",flow.title),e("small","",flow.nodes.length+" visual steps · Browser plan"));
+   row.append(e("span","project-select-mark","◇"),title);
+   row.addEventListener("click",()=>actions.openVisualBuilder(project.id));
+   visualList.append(row);
+  }
   if(!project.workflows.length)workflowList.append(e("div","project-placeholder","No workflow plans yet. Save a plan for Blender, Adobe or Coding."));
   for(const workflow of project.workflows){
    const card=e("article","project-workflow-item");
@@ -285,6 +300,7 @@ export function mountProjectWorkspace(actions:ProjectActions):ProjectUI {
  });
  get<HTMLButtonElement>("projectOpenTasks").addEventListener("click",()=>actions.navigate("tasks"));
  get<HTMLButtonElement>("projectOpenAgents").addEventListener("click",()=>actions.navigate("agents"));
+ get<HTMLButtonElement>("projectOpenVisual").addEventListener("click",()=>{const project=current();if(project)actions.openVisualBuilder(project.id);});
  for(const tab of document.querySelectorAll<HTMLButtonElement>("[data-project-tab]")){
   tab.addEventListener("click",()=>{
    const target=tab.dataset.projectTab;
