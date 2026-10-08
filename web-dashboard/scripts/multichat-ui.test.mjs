@@ -98,3 +98,17 @@ test("UI: New Chat, search, manage, archive, pin, split and no synthetic AI chat
   assert.match(styles, /@media\(max-width:620px\)/);
   assert.doesNotMatch(controllerSource, /\binvoke\(|\bfetch\(|window\.__TAURI__/);
 });
+
+test("level 6 web chat exports only browser drafts and supports Ctrl+Enter", () => {
+  assert.match(markup, /id="chatExport"/);
+  assert.match(markup, /id="chatPlanningHint"/);
+  assert.match(markup, /Ctrl\+Enter to save/);
+  assert.match(controllerSource, /schema: "shuvi-chat-export-v1"/);
+  assert.match(controllerSource, /messages: t\.messages\.map/);
+  assert.match(controllerSource, /JSON\.stringify\(safeCopy, null, 2\)/);
+  assert.match(controllerSource, /URL\.revokeObjectURL/);
+  assert.match(controllerSource, /event\.ctrlKey \|\| event\.metaKey/);
+  assert.match(controllerSource, /requestSubmit\(\)/);
+  assert.match(controllerSource, /readPreferredProvider\(\)/);
+  assert.doesNotMatch(controllerSource, /\binvoke\(|\bfetch\(|window\.__TAURI__/);
+});
