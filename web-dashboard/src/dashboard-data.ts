@@ -32,7 +32,7 @@ export interface RoutingPreset {
 
 export const navItems: NavItem[] = [
   { id: "dashboard", label: "Dashboard", hint: "Overview", icon: "grid" },
-  { id: "chat", label: "AI Chat", hint: "Command Shuvi", icon: "spark" },
+  { id: "chat", label: "Multi-Chat", hint: "Local conversations", icon: "spark" },
   { id: "studio", label: "Creative Studio", hint: "Adobe + Blender", icon: "play" },
   { id: "tools", label: "Tools", hint: "Computer capabilities", icon: "tool" },
   { id: "tasks", label: "Tasks", hint: "Runs & progress", icon: "check" },
