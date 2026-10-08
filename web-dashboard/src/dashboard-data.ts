@@ -119,6 +119,84 @@ export const creativeModules: FeatureModule[] = [
     capabilities: ["Export queue planning", "Preset-oriented delivery", "Format handoff", "Encoding status surface"],
     workflows: ["YouTube delivery", "Social exports", "Master + proxy outputs", "Batch encoding"],
     requirement: "Media Encoder + local runtime"
+  },
+  {
+    id: "photoshop",
+    name: "Photoshop",
+    category: "Design & Image",
+    description: "Permission-gated Photoshop bridge for image documents, layer editing, text and masks.",
+    state: "ready",
+    stateLabel: "Bridge source present",
+    accent: "blue",
+    icon: "Ps",
+    capabilities: ["Document and layer inspection", "Layer transforms", "Text and mask operations", "Save and state verification"],
+    workflows: ["Thumbnail design", "Photo retouch preparation", "Composite edit", "Social creative variants"],
+    requirement: "Installed Photoshop + paired Shuvi native bridge; runtime not verified in the web UI"
+  },
+  {
+    id: "illustrator",
+    name: "Illustrator",
+    category: "Design & Image",
+    description: "Source-side Illustrator vector workflow and document bridge.",
+    state: "ready",
+    stateLabel: "Bridge source present",
+    accent: "blue",
+    icon: "Ai",
+    capabilities: ["Document discovery", "Vector object plans", "Color and style operations", "Controlled save/checkpoints"],
+    workflows: ["Logo and icon refinement", "Vector illustration", "Brand asset preparation", "Document review"],
+    requirement: "Illustrator + local Shuvi bridge; actual paired state is not available in this browser"
+  },
+  {
+    id: "animate",
+    name: "Adobe Animate",
+    category: "Animation",
+    description: "Source-side animation bridge and document/checkpoint workflows.",
+    state: "ready",
+    stateLabel: "Bridge source present",
+    accent: "violet",
+    icon: "An",
+    capabilities: ["Timeline and scene planning", "Animation document discovery", "Checkpoint-aware edits", "Export preparation"],
+    workflows: ["2D character scene", "Timeline animation", "Interactive animation planning", "Short animation export"],
+    requirement: "Adobe Animate installed and connected to a trusted local Shuvi runtime"
+  },
+  {
+    id: "character-animator",
+    name: "Character Animator",
+    category: "Animation",
+    description: "Shortcut-based control, trigger discovery and interchange planning sources.",
+    state: "ready",
+    stateLabel: "Source adapters present",
+    accent: "violet",
+    icon: "Ch",
+    capabilities: ["Host preflight", "Shortcut and trigger plans", "Interchange preparation", "Review/checkpoints"],
+    workflows: ["Puppet trigger setup", "Character performance", "Live animation capture plan", "Scene interchange"],
+    requirement: "Character Animator + local runtime and supported host controls"
+  },
+  {
+    id: "substance-3d",
+    name: "Substance 3D",
+    category: "3D & VFX",
+    description: "Bounded Painter/Sampler automation foundations; some products require a separate license.",
+    state: "development",
+    stateLabel: "Partial source coverage",
+    accent: "cyan",
+    icon: "3D",
+    capabilities: ["Capability and host discovery", "Painter preflight and texturing plans", "Sampler workflow discovery", "Evidence and safe export planning"],
+    workflows: ["Material preparation", "PBR texture planning", "Asset baking preparation", "Surface variation review"],
+    requirement: "Separately licensed Substance application and explicit native acceptance testing"
+  },
+  {
+    id: "frame-io",
+    name: "Frame.io",
+    category: "Review & Collaboration",
+    description: "Review workspace integration with project/file discovery and commentary sources.",
+    state: "ready",
+    stateLabel: "API source present",
+    accent: "blue",
+    icon: "Fi",
+    capabilities: ["Workspace/project discovery", "Asset listing", "Comment review", "Review approval planning"],
+    workflows: ["Client feedback review", "Version delivery preparation", "Shot notes", "Creative review checklist"],
+    requirement: "Authorized Frame.io connection in the trusted Shuvi runtime; web dashboard cannot authenticate it"
   }
 ];
 
