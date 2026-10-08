@@ -640,6 +640,12 @@ async function boot(): Promise<void> {
         el<HTMLButtonElement>("#stopButton").click();
         return true;
       },
+      onResume() {
+        const button = el<HTMLButtonElement>("#resumeTask");
+        if (busy || pendingAction || !savedCheckpoint || button.closest(".hidden") || button.disabled) return false;
+        button.click(); // Use the existing validated checkpoint recovery path.
+        return true;
+      },
       getStatus() {
         const pending = pendingAction && pendingChatProposal
           ? "Waiting for approval: " + pendingAction.summary + " (code " + pendingAction.id.slice(0, 8) + ")"
