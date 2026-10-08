@@ -28,9 +28,8 @@ export const SOFTWARE_CATALOG = [
 ] as const;
 
 function escapeHTML(value: string): string {
-  return value.replace(/[&<>"']/g, char => ({
-    "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"
-  })[char] ?? char);
+  const entities: Record<string, string> = {"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"};
+  return value.replace(/[&<>"']/g, char => entities[char] ?? char);
 }
 
 function statusLabel(value: ThreadStatus): string {
