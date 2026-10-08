@@ -1,6 +1,6 @@
 import {
- readProjects,writeProjects,createProject,associateTask,addAsset,addNote,withProjectEvent,
- PROJECTS_KEY,MAX_PROJECTS,MAX_ASSETS,MAX_NOTES,type ProjectWorkspace,type ProjectAsset
+ readProjects,writeProjects,createProject,associateTask,addAsset,addNote,addWorkflow,withProjectEvent,
+ PROJECTS_KEY,MAX_PROJECTS,MAX_ASSETS,MAX_NOTES,MAX_WORKFLOWS,type ProjectWorkspace
 } from "./project-store";
 import {readDelegations,WORKERS,type TaskDraftRef} from "./agent-planner";
 
@@ -12,7 +12,7 @@ type ProjectActions={
 };
 export type ProjectUI={refresh():void};
 const SELECTION_KEY="shuvi.web.project-selected.v1";
-type Tab="tasks"|"assets"|"history";
+type Tab="tasks"|"assets"|"workflows"|"history";
 const get=<T extends HTMLElement>(id:string):T=>{
  const v=document.getElementById(id);if(!v)throw Error("Missing project UI #"+id);return v as T;
 };
@@ -34,6 +34,8 @@ export function mountProjectWorkspace(actions:ProjectActions):ProjectUI {
  const createForm=get<HTMLFormElement>("projectCreateForm");
  const assetForm=get<HTMLFormElement>("projectAssetForm");
  const noteForm=get<HTMLFormElement>("projectNoteForm");
+ const workflowForm=get<HTMLFormElement>("projectWorkflowForm");
+ const workflowList=get<HTMLElement>("projectWorkflowList");
  const checklist=get<HTMLElement>("projectTaskChecklist");
  const delegationList=get<HTMLElement>("projectDelegations");
  const assetList=get<HTMLElement>("projectAssetList");
@@ -91,7 +93,7 @@ export function mountProjectWorkspace(actions:ProjectActions):ProjectUI {
    b.classList.toggle("active",active);
    b.setAttribute("aria-selected",String(active));
   }
-  for(const name of ["tasks","assets","history"] as Tab[]){
+  for(const name of ["tasks","assets","workflows","history"] as Tab[]){
    get<HTMLElement>("projectTab"+name[0].toUpperCase()+name.slice(1)).hidden=name!==tab;
   }
  }
@@ -165,6 +167,25 @@ export function mountProjectWorkspace(actions:ProjectActions):ProjectUI {
    card.append(body,remove);noteList.append(card);
   }
  }
+ function renderWorkflows(project:ProjectWorkspace):void{
+  workflowList.replaceChildren();
+  get<HTMLElement>("projectWorkflowCount").textContent=String(project.workflows.length);
+  if(!project.workflows.length)workflowList.append(e("div","project-placeholder","No workflow plans yet. Save a plan for Blender, Adobe or Coding."));
+  for(const workflow of project.workflows){
+   const card=e("article","project-workflow-item");
+   const body=e("div","project-workflow-copy");
+   body.append(e("strong","",workflow.title),e("small","",workflow.app+" · Planned · "+date(workflow.createdAt)));
+   if(workflow.steps)body.append(e("p","",workflow.steps));
+   const remove=e("button","project-inline-button","Remove");
+   remove.type="button";remove.setAttribute("aria-label","Remove workflow plan "+workflow.title);
+   remove.addEventListener("click",()=>commit(
+    {...project,workflows:project.workflows.filter(w=>w.id!==workflow.id)},
+    "Workflow","Removed workflow plan: "+workflow.title
+   ));
+   card.append(e("span","project-asset-icon","◇"),body,remove);
+   workflowList.append(card);
+  }
+ }
  function renderHistory(project:ProjectWorkspace):void{
   historyList.replaceChildren();
   const entries=project.history.slice().sort((a,b)=>b.createdAt-a.createdAt);
@@ -188,7 +209,7 @@ export function mountProjectWorkspace(actions:ProjectActions):ProjectUI {
   get<HTMLElement>("projectActiveTitle").textContent=project.name;
   get<HTMLElement>("projectActiveDescription").textContent=project.description||"No description added yet.";
   get<HTMLElement>("projectLinkedCount").textContent=String(project.taskIds.filter(id=>actions.drafts().some(t=>t.id===id)).length);
-  renderTaskLinks(project);renderAssets(project);renderHistory(project);
+  renderTaskLinks(project);renderAssets(project);renderWorkflows(project);renderHistory(project);
   setTab(currentTab);
  }
  createForm.addEventListener("submit",event=>{
@@ -213,12 +234,40 @@ export function mountProjectWorkspace(actions:ProjectActions):ProjectUI {
   const updated=addAsset(project,name,kind,reference);if(!updated)return;
   if(commit(updated,"Asset","Saved asset reference: "+name.trim().slice(0,100))){assetForm.reset();actions.notify("Asset metadata saved. No file was uploaded.");}
  });
+ workflowForm.addEventListener("submit",event=>{
+  event.preventDefault();const project=current();if(!project)return;
+  if(project.workflows.length>=MAX_WORKFLOWS){actions.notify("This project supports at most 24 workflow plans.");return;}
+  const title=get<HTMLInputElement>("projectWorkflowTitle").value;
+  const app=get<HTMLSelectElement>("projectWorkflowApp").value;
+  const steps=get<HTMLTextAreaElement>("projectWorkflowSteps").value;
+  const next=addWorkflow(project,title,app,steps);if(!next)return;
+  if(commit(next,"Workflow","Saved workflow plan: "+title.trim().slice(0,100))){
+   workflowForm.reset();
+   actions.notify("Workflow plan saved. No software was opened.");
+  }
+ });
  noteForm.addEventListener("submit",event=>{
   event.preventDefault();const project=current();if(!project)return;
   if(project.notes.length>=MAX_NOTES){actions.notify("Project note limit reached (40).");return;}
   const note=get<HTMLTextAreaElement>("projectNoteText").value;
   const updated=addNote(project,note);if(!updated)return;
   if(commit(updated,"Note","Saved a project note")){noteForm.reset();actions.notify("Project note saved locally.");}
+ });
+ get<HTMLButtonElement>("projectExport").addEventListener("click",()=>{
+  const project=current();if(!project)return;
+  // Export contains only browser-entered project metadata. No real files or API keys.
+  const snapshot=JSON.stringify({
+   schema:"shuvi-browser-project-v1",exportedAt:new Date().toISOString(),
+   origin:"Local browser planning metadata; no native file contents or execution history",
+   project
+  },null,2);
+  const url=URL.createObjectURL(new Blob([snapshot],{type:"application/json"}));
+  const a=e("a","");
+  a.href=url;
+  a.download="shuvi-project-"+project.id.slice(0,12)+".json";
+  document.body.append(a);a.click();a.remove();
+  window.setTimeout(()=>URL.revokeObjectURL(url),1000);
+  actions.notify("Project metadata exported as JSON. No local files were included.");
  });
  get<HTMLButtonElement>("projectDelete").addEventListener("click",()=>{
   const project=current();if(!project)return;
@@ -234,7 +283,7 @@ export function mountProjectWorkspace(actions:ProjectActions):ProjectUI {
  for(const tab of document.querySelectorAll<HTMLButtonElement>("[data-project-tab]")){
   tab.addEventListener("click",()=>{
    const target=tab.dataset.projectTab;
-   if(target==="tasks"||target==="assets"||target==="history")setTab(target);
+   if(target==="tasks"||target==="assets"||target==="workflows"||target==="history")setTab(target);
   });
  }
  refresh();
