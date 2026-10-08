@@ -1,0 +1,28 @@
+name: Native Shuvi Read-only Bridge
+
+on:
+  push:
+    branches: [ui-dashboard]
+    paths:
+      - "src-tauri/src/web_bridge.rs"
+      - "src-tauri/src/lib.rs"
+      - "src-tauri/Cargo.toml"
+      - ".github/workflows/native-readonly-bridge.yml"
+  pull_request:
+    paths:
+      - "src-tauri/src/web_bridge.rs"
+      - "src-tauri/src/lib.rs"
+      - "src-tauri/Cargo.toml"
+      - ".github/workflows/native-readonly-bridge.yml"
+
+jobs:
+  windows-native:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout Shuvi
+        uses: actions/checkout@v4
+      - name: Show Rust version
+        run: rustc --version
+      - name: Compile native Rust library and bridge
+        run: cargo check --manifest-path src-tauri/Cargo.toml --lib
