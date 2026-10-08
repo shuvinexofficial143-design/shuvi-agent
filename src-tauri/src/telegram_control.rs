@@ -396,12 +396,25 @@ async fn poll_loop(
         .query(&[("timeout", "0".to_string()), ("offset", "-1".to_string()),
                   ("allowed_updates", r#"["message"]"#.to_string())])
         .send().await;
-    if let Ok(response) = bootstrap {
-        if let Ok(body) = response.json::<TelegramEnvelope<Vec<TelegramUpdate>>>().await {
-            if let Some(last) = body.result.unwrap_or_default().iter().map(|u| u.update_id).max() {
-                offset = last.saturating_add(1);
+    // Never fall back to offset=0 after a failed startup sync: stale queued
+    // approvals/commands must not execute as fresh messages.
+    let valid_bootstrap = match bootstrap {
+        Ok(response) if response.status().is_success() => {
+            match response.json::<TelegramEnvelope<Vec<TelegramUpdate>>>().await {
+                Ok(body) if body.ok => {
+                    if let Some(last) = body.result.unwrap_or_default().iter().map(|u| u.update_id).max() {
+                        offset = last.saturating_add(1);
+                    }
+                    true
+                }
+                _ => false,
             }
         }
+        _ => false,
+    };
+    if !valid_bootstrap {
+        state.inner.running.store(false, Ordering::Release);
+        return;
     }
 
     while state.inner.running.load(Ordering::Acquire)
@@ -436,6 +449,10 @@ async fn poll_loop(
         }
 
         for update in body.result.unwrap_or_default() {
+            if !state.inner.running.load(Ordering::Acquire)
+                || state.inner.generation.load(Ordering::Acquire) != generation {
+                break;
+            }
             offset = offset.max(update.update_id.saturating_add(1));
             if let Some(message) = update.message {
                 if let Err(error) = handle_message(&app, &state, &token, message).await {
