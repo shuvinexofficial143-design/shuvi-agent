@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#07090d" />
+    <meta name="theme-color" content="#0B0F17" />
     <meta name="description" content="Shuvi Control Center — web dashboard for the Shuvi Windows AI agent." />
     <title>Shuvi Control Center</title>
   </head>
@@ -14,7 +14,7 @@
           <div class="brand-mark">S</div>
           <div class="brand-copy">
             <strong>Shuvi</strong>
-            <span>Control Center</span>
+            <span>AI Control Center</span>
           </div>
           <button id="closeSidebar" class="icon-button mobile-only" type="button" aria-label="Close navigation">×</button>
         </div>
@@ -59,12 +59,13 @@
           <div class="topbar-left">
             <button id="openSidebar" class="icon-button mobile-only" type="button" aria-label="Open navigation">☰</button>
             <div>
-              <p id="pageEyebrow" class="page-eyebrow">CONTROL CENTER</p>
+              <p id="pageEyebrow" class="page-eyebrow">SHUVI / CONTROL CENTER</p>
               <h1 id="pageTitle">Dashboard</h1>
             </div>
           </div>
 
           <div class="topbar-actions">
+            <span class="topbar-runtime"><span class="status-dot offline"></span> Runtime offline</span>
             <label class="global-search">
               <span>⌕</span>
               <input id="globalSearch" type="search" placeholder="Search tools and modules" autocomplete="off" />
@@ -77,15 +78,16 @@
 
         <div class="content-wrap">
           <section id="view-dashboard" class="view active" data-view="dashboard">
+            <div class="dashboard-heading"><div><span class="section-kicker">OVERVIEW / YOUR WORKSPACE</span><h2>Good to see you back <span aria-hidden="true">✦</span></h2><p>Creative tools, AI models and task planning—organized in one place.</p></div><span class="dashboard-phase">Design phase · Levels 2–4 / 15</span></div>
             <div class="hero-grid">
               <article class="hero-card">
                 <div class="hero-copy">
                   <div class="hero-kicker">
                     <span class="status-dot offline"></span>
-                    Web dashboard online · local runtime offline
+                    Interface ready · Local agent offline
                   </div>
-                  <h2>Your AI workstation,<br />one control surface.</h2>
-                  <p>Plan work, inspect creative modules and prepare tasks here. Windows, Adobe, Blender and computer control remain permission-first inside the local Shuvi runtime.</p>
+                  <h2>Create with Shuvi.<br /><em>Control every workflow.</em></h2>
+                  <p>Explore your creative apps, plan work and organize agents. Real Windows, Adobe and Blender actions stay inside the permission-first local Shuvi runtime.</p>
                   <div class="hero-actions">
                     <button class="primary-button" type="button" data-view-jump="chat">Start a task</button>
                     <button class="secondary-button" type="button" data-view-jump="studio">Open Creative Studio</button>
@@ -171,14 +173,11 @@
                   <span class="badge badge-neutral">Local</span>
                 </div>
                 <div class="readiness-list">
-                  <div class="readiness-row"><span>Task orchestration</span><strong>Code present</strong></div>
-                  <div class="progress-track"><span style="width: 92%"></span></div>
-                  <div class="readiness-row"><span>Creative integrations</span><strong>In progress</strong></div>
-                  <div class="progress-track"><span style="width: 74%"></span></div>
-                  <div class="readiness-row"><span>Web ↔ local bridge</span><strong>Not wired</strong></div>
-                  <div class="progress-track"><span style="width: 18%"></span></div>
+                  <div class="readiness-row"><span>Desktop task orchestration</span><strong class="readiness-status">Source available</strong></div>
+                  <div class="readiness-row"><span>Creative integrations</span><strong class="readiness-status">Runtime verification required</strong></div>
+                  <div class="readiness-row"><span>Web ↔ local bridge</span><strong class="readiness-status warning">Not connected</strong></div>
                 </div>
-                <p class="panel-note">These are product-surface indicators, not runtime test results.</p>
+                <p class="panel-note">Readiness labels reflect implementation scope, not completed live tests.</p>
               </article>
 
               <article class="panel span-two">
@@ -408,6 +407,15 @@
               <div><span class="section-kicker">SETTINGS</span><h2>Dashboard & runtime connection</h2><p>Web-only preferences can be saved in this browser. Sensitive local permissions stay inside Shuvi.exe.</p></div>
             </div>
             <div class="settings-grid">
+              <article class="panel appearance-panel">
+                <div class="settings-heading"><div class="settings-icon">◐</div><div><h3>Appearance</h3><p>Choose Shuvi’s accent palette. Your preference stays in this browser.</p></div></div>
+                <div class="appearance-options" id="appearanceOptions" role="group" aria-label="Color palette">
+                  <button type="button" class="appearance-option active" data-palette="ember" aria-pressed="true"><span class="theme-swatches"><i style="background:#F3A261"></i><i style="background:#89B4E8"></i><i style="background:#171E29"></i></span><strong>Shuvi Ember</strong><small>Orange + Ice blue</small></button>
+                  <button type="button" class="appearance-option" data-palette="frost" aria-pressed="false"><span class="theme-swatches"><i style="background:#9BC3F5"></i><i style="background:#C7B4FF"></i><i style="background:#171E29"></i></span><strong>Arctic</strong><small>Blue + Lavender</small></button>
+                  <button type="button" class="appearance-option" data-palette="jade" aria-pressed="false"><span class="theme-swatches"><i style="background:#68D6AC"></i><i style="background:#90B8DB"></i><i style="background:#171E29"></i></span><strong>Jade</strong><small>Mint + Steel</small></button>
+                </div>
+                <p class="appearance-hint" id="appearanceStatus" role="status">Shuvi Ember selected.</p>
+              </article>
               <article class="panel">
                 <div class="settings-heading"><div class="settings-icon">↔</div><div><h3>Local bridge</h3><p>Endpoint reserved for the future secure web-to-local connection.</p></div></div>
                 <label class="field"><span>Local endpoint</span><input id="bridgeEndpoint" value="http://127.0.0.1:47771" autocomplete="off" /></label>
