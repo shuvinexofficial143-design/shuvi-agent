@@ -78,7 +78,7 @@
 
         <div class="content-wrap">
           <section id="view-dashboard" class="view active" data-view="dashboard">
-            <div class="dashboard-heading"><div><span class="section-kicker">OVERVIEW / YOUR WORKSPACE</span><h2>Good to see you back <span aria-hidden="true">✦</span></h2><p>Creative tools, AI models and task planning—organized in one place.</p></div><span class="dashboard-phase">UI development · Level 7 / 15</span></div>
+            <div class="dashboard-heading"><div><span class="section-kicker">OVERVIEW / YOUR WORKSPACE</span><h2>Good to see you back <span aria-hidden="true">✦</span></h2><p>Creative tools, AI models and task planning—organized in one place.</p></div><span class="dashboard-phase">UI development · Level 10 / 15</span></div>
             <div class="hero-grid">
               <article class="hero-card">
                 <div class="hero-copy">
@@ -456,6 +456,62 @@
               </div>
               <div id="creativeModuleGrid" class="module-grid"></div>
             </details>
+          </section>
+
+          <section id="view-agents" class="view" data-view="agents">
+            <div class="section-intro">
+              <div><span class="section-kicker">LEVEL 10 / MULTI-AGENT SYSTEM</span><h2>Master Agent Control Center</h2><p>Plan and supervise specialist workers from one place. Native task dispatch, agent execution and approvals are not connected yet.</p></div>
+              <button type="button" class="secondary-button" id="agentsOpenRuntime">Configure Windows runtime</button>
+            </div>
+            <div class="agent-hero">
+              <div class="agent-master-badge"><span>✦</span><div><strong>Shuvi Master</strong><small>Coordinator · Planning only</small></div></div>
+              <div class="agent-master-flow" aria-label="Planned worker hierarchy">
+                <span class="agent-flow-node">Master Agent</span><span class="agent-flow-line">→</span>
+                <span class="agent-flow-node">Task Planner</span><span class="agent-flow-line">→</span>
+                <span class="agent-flow-node">Worker Candidates</span>
+              </div>
+              <span class="agent-not-connected">◌ Native runtime offline</span>
+            </div>
+            <div class="agent-metrics">
+              <div><span>Specialist profiles</span><strong id="agentWorkerCount">6</strong><small>Source/planning catalog</small></div>
+              <div><span>Delegation plans</span><strong id="agentPlanCount">0</strong><small>Saved in this browser</small></div>
+              <div><span>Active native jobs</span><strong class="agent-no-runtime" aria-label="Unavailable">—</strong><small>Not synced</small></div>
+              <div><span>Approval requests</span><strong class="agent-no-runtime" aria-label="Unavailable">—</strong><small>Desktop only</small></div>
+            </div>
+            <div class="agent-workspace">
+              <section class="agent-worker-section">
+                <div class="agent-block-heading"><div><span class="section-kicker">WORKERS</span><h3>Specialist Agents</h3></div><span>6 planning profiles</span></div>
+                <div id="agentWorkerGrid" class="agent-worker-grid"></div>
+                <div class="agent-locks panel">
+                  <span class="section-kicker">PARALLEL EXECUTION / SAFETY RULES</span>
+                  <h3>Shared PC input must be coordinated</h3>
+                  <p>Independent workers may plan jobs, but real parallel execution needs an authenticated scheduler, per-project locks and a single owner of the shared Windows mouse and keyboard.</p>
+                  <div class="agent-lock-list"><span>◈ Desktop/UI resource lock</span><span>◈ Project + timeline locks</span><span>◈ Native approval gate</span><span>◈ Verifiable receipts</span></div>
+                </div>
+              </section>
+              <section class="agent-delegation-section">
+                <div class="agent-block-heading"><div><span class="section-kicker">DELEGATION BUILDER</span><h3>Assign a saved draft</h3></div><span>Planning only</span></div>
+                <form id="agentPlanForm" class="agent-plan-form">
+                  <label for="agentTaskSelect">Existing task draft
+                    <select id="agentTaskSelect" required><option value="">Select a saved task…</option></select>
+                  </label>
+                  <label for="agentWorkerSelect">Proposed worker
+                    <select id="agentWorkerSelect" required></select>
+                  </label>
+                  <label for="agentInstructions">Worker instructions (optional)
+                    <textarea id="agentInstructions" rows="3" maxlength="240" placeholder="Describe what this worker would do…" ></textarea>
+                  </label>
+                  <p id="agentDraftWarning" class="agent-form-note">Create a task draft on the Tasks page before planning delegation.</p>
+                  <button id="agentPlanSubmit" class="primary-button" type="submit">Save delegation plan →</button>
+                  <small>No worker will start, no API will be called, and no permission is granted.</small>
+                </form>
+                <div class="agent-planned-work">
+                  <div class="agent-block-heading"><div><span class="section-kicker">SAVED PLANS</span><h3>Delegation board</h3></div><span id="agentPlanBadge">0 planned</span></div>
+                  <div id="agentPlanList" class="agent-plan-list"></div>
+                </div>
+              </section>
+            </div>
+            <div class="agent-acceptance-note">Next runtime milestone: native task IDs → durable queue → authenticated agent dispatch → resource locks → approval → evidence-based completion. This browser screen is a planning console, not a live worker monitor.</div>
           </section>
 
           <section id="view-tools" class="view" data-view="tools">
