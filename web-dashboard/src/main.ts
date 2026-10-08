@@ -648,6 +648,7 @@ function renderDraftTasks(): void {
     renderDashboardPlanningQueue();
     renderLocalOverview();
     taskTimeline?.refresh();
+    masterAgentUI?.refresh();
     return;
   }
 
