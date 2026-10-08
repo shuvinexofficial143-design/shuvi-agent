@@ -102,7 +102,7 @@ export function mountWorkspaceUI(options: WorkspaceOptions): WorkspaceUI {
     getElement("#chatTitle").textContent = selected().title;
     const state = options.snapshot();
     renderDashboard(getElement("#dashboardContent"), {...state, threads, activeId: activeId!});
-    renderAppCatalog(getElement("#appCatalog"), state.premiereConnected);
+    renderAppCatalog(getElement("#appCatalog"), state.premiereConnected, state.nativeBridges);
     const approvalBox = getElement("#approvalList");
     approvalBox.replaceChildren();
     const card = document.createElement("div");
@@ -217,6 +217,8 @@ export function mountWorkspaceUI(options: WorkspaceOptions): WorkspaceUI {
   getElement("#dashboardNewChat").addEventListener("click",newChat);
   main.addEventListener("click", event => {
     if (!(event.target instanceof Element)) return;
+    const refresh = event.target.closest<HTMLButtonElement>("#refreshNativeConnections");
+    if (refresh) { options.onViewOpen("apps"); return; }
     const view = event.target.closest<HTMLButtonElement>("[data-open-view]");
     if (view?.dataset.openView) { showView(view.dataset.openView); return; }
     const menu = event.target.closest<HTMLButtonElement>("[data-thread-menu]");
