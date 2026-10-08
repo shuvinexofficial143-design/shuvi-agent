@@ -2,7 +2,7 @@ import "./styles.css";
 import "./premium-theme.css";
 import "./multi-chat.css";
 import { initializeAppearance } from "./appearance";
-import { mountChatWorkspace } from "./chat-workspace";
+import { mountChatWorkspace, type ChatWorkspace } from "./chat-workspace";
 import {
   creativeModules,
   modelProviders,
@@ -91,6 +91,7 @@ interface WebActivity {
 
 let toastTimer: number | undefined;
 let activeDrawerModule: FeatureModule | null = null;
+let chatWorkspace: ChatWorkspace | null = null;
 
 function showToast(message: string): void {
   toast.textContent = message;
@@ -412,6 +413,16 @@ function paletteItems(): PaletteItem[] {
   const actions: PaletteItem[] = [
     {
       kind: "Action",
+      label: "New conversation",
+      description: "Create a separate browser-local chat",
+      keywords: "new chat conversation multi chat independent thread",
+      run: () => {
+        setView("chat");
+        chatWorkspace?.createChat();
+      }
+    },
+    {
+      kind: "Action",
       label: "Create task draft",
       description: "Open Tasks and focus the draft field",
       keywords: "new task draft create planning",
@@ -530,6 +541,11 @@ function filterVisibleCards(query: string): void {
 }
 
 function handleAction(action: string): void {
+  if (action === "new-chat") {
+    setView("chat");
+    chatWorkspace?.createChat();
+    return;
+  }
   if (action === "connect-local") {
     setView("settings");
     showToast("Local bridge is not wired yet. The endpoint preference is ready for the next integration step.");
@@ -967,5 +983,5 @@ renderDraftTasks();
 renderDashboardPlanningQueue();
 renderWebActivity();
 bindInteractions();
-mountChatWorkspace(showToast);
+chatWorkspace = mountChatWorkspace(showToast);
 setView("dashboard");
