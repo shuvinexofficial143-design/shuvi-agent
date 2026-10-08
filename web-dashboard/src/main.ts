@@ -8,6 +8,9 @@ import "./master-agent.css";
 import "./project-workspace.css";
 import "./visual-workflows.css";
 import "./runtime-status.css";
+import "./telegram-team.css";
+import { mountTelegramWebSettings } from "./telegram-web-setup";
+import { mountAITeamWebPlanner } from "./ai-team-web-planner";
 import { NATIVE_ENDPOINT, ShuviReadOnlyBridge, type BridgeSnapshot } from "./local-runtime";
 import { mountWorkflowBuilder, type WorkflowBuilder } from "./visual-workflow-ui";
 import { FLOW_KEY } from "./visual-flow-store";
@@ -1158,6 +1161,8 @@ mountCreativeStudio({
   showModuleDetails: openModuleDrawer,
   navigate: (name) => setView(name)
 });
+mountTelegramWebSettings();
+mountAITeamWebPlanner();
 masterAgentUI = mountMasterAgentUI({
   drafts: readDraftTasks,
   navigate: (name) => setView(name),
