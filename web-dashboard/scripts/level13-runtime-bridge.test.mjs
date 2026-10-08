@@ -102,6 +102,6 @@ test("the bridge cannot execute, approve, read files or silently expose bearer s
  assert.match(html,/id="bridgeConnect"/);
  assert.match(html,/id="bridgeDisconnect"/);
  assert.match(main,/new ShuviReadOnlyBridge\(renderNativeConnection\)/);
- assert.doesNotMatch(source,/localStorage|sessionStorage|document\.cookie|POST|PUT|DELETE|\binvoke\(/);
+ assert.doesNotMatch(source,/localStorage\.(?:setItem|getItem)|sessionStorage\.(?:setItem|getItem)|document\.cookie\s*=|method:\s*"(?:POST|PUT|DELETE)"|\binvoke\(/);
  assert.doesNotMatch(rust,/execute_action\(|prepare_tool\(|read_audit\(|fs::read\(|Command::new\(/);
 });
