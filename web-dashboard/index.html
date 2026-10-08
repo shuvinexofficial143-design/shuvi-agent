@@ -78,7 +78,7 @@
 
         <div class="content-wrap">
           <section id="view-dashboard" class="view active" data-view="dashboard">
-            <div class="dashboard-heading"><div><span class="section-kicker">OVERVIEW / YOUR WORKSPACE</span><h2>Good to see you back <span aria-hidden="true">✦</span></h2><p>Creative tools, AI models and task planning—organized in one place.</p></div><span class="dashboard-phase">UI development · Level 10 / 15</span></div>
+            <div class="dashboard-heading"><div><span class="section-kicker">OVERVIEW / YOUR WORKSPACE</span><h2>Good to see you back <span aria-hidden="true">✦</span></h2><p>Creative tools, AI models and task planning—organized in one place.</p></div><span class="dashboard-phase">UI development · Level 11 / 15</span></div>
             <div class="hero-grid">
               <article class="hero-card">
                 <div class="hero-copy">
@@ -456,6 +456,81 @@
               </div>
               <div id="creativeModuleGrid" class="module-grid"></div>
             </details>
+          </section>
+
+          <section id="view-projects" class="view" data-view="projects">
+            <div class="section-intro">
+              <div><span class="section-kicker">LEVEL 11 / PROJECT WORKSPACE</span><h2>Your creative projects, organized</h2><p>Organize browser task drafts, assigned worker plans, asset references and project notes. Files remain on your computer; nothing is uploaded or executed.</p></div>
+              <span class="badge badge-neutral">Local browser workspace</span>
+            </div>
+            <div class="project-overview">
+              <div><span>Projects</span><strong id="projectTotalCount">0</strong><small>Saved in this browser</small></div>
+              <div><span>Linked task drafts</span><strong id="projectTaskTotal">0</strong><small>Project associations</small></div>
+              <div><span>Asset references</span><strong id="projectAssetTotal">0</strong><small>Metadata only</small></div>
+              <div><span>Native file access</span><strong class="project-unsynced">—</strong><small>Not connected</small></div>
+            </div>
+            <div class="project-workspace">
+              <aside class="project-sidebar">
+                <div class="project-section-head"><div><span class="section-kicker">PROJECT LIBRARY</span><h3>My Projects</h3></div><span id="projectSidebarCount">0</span></div>
+                <div id="projectList" class="project-list" aria-label="Saved projects"></div>
+                <form id="projectCreateForm" class="project-create">
+                  <h4>New project</h4>
+                  <label for="projectCreateName">Project name
+                    <input id="projectCreateName" maxlength="80" required placeholder="E.g. Mahakal Lok 3D" autocomplete="off"/>
+                  </label>
+                  <label for="projectCreateDescription">Short description (optional)
+                    <textarea id="projectCreateDescription" maxlength="300" rows="2" placeholder="What are we building?"></textarea>
+                  </label>
+                  <button type="submit" class="primary-button full">Create project +</button>
+                </form>
+              </aside>
+              <div class="project-main">
+                <section id="projectEmpty" class="project-empty">
+                  <div class="project-empty-mark">◈</div><h3>Your project hub starts here</h3>
+                  <p>Create a project on the left. Then link your existing Shuvi task drafts, view planned agents, and save reference asset information.</p>
+                </section>
+                <div id="projectDetail" hidden>
+                  <header class="project-detail-hero">
+                    <div><span class="section-kicker">ACTIVE PROJECT / BROWSER ONLY</span><h3 id="projectActiveTitle"></h3><p id="projectActiveDescription"></p></div>
+                    <button class="project-delete-button" type="button" id="projectDelete">Delete project</button>
+                  </header>
+                  <div class="project-detail-metrics">
+                    <div><strong id="projectLinkedCount">0</strong><span>Linked drafts</span></div>
+                    <div><strong id="projectAgentCount">0</strong><span>Planned agents</span></div>
+                    <div><strong id="projectFileCount">0</strong><span>Asset references</span></div>
+                  </div>
+                  <div class="project-tabs" role="tablist" aria-label="Project sections">
+                    <button type="button" class="project-tab active" role="tab" aria-selected="true" data-project-tab="tasks">Tasks & Agents</button>
+                    <button type="button" class="project-tab" role="tab" aria-selected="false" data-project-tab="assets">Assets & Notes</button>
+                    <button type="button" class="project-tab" role="tab" aria-selected="false" data-project-tab="history">Project History</button>
+                  </div>
+                  <section id="projectTabTasks" class="project-pane" role="tabpanel">
+                    <div class="project-section-head"><div><h4>Task drafts linked to this project</h4><p>Each link points to an existing local planning draft, not an executing job.</p></div><button type="button" class="project-inline-button" id="projectOpenTasks">Open Tasks ↗</button></div>
+                    <div id="projectTaskChecklist" class="project-task-checklist"></div>
+                    <div class="project-section-head project-subsection"><div><h4>Associated worker plans</h4><p>Delegations tied to the linked drafts; not active background agents.</p></div><button type="button" class="project-inline-button" id="projectOpenAgents">Open Agents ↗</button></div>
+                    <div id="projectDelegations" class="project-delegations"></div>
+                  </section>
+                  <section id="projectTabAssets" class="project-pane" role="tabpanel" hidden>
+                    <div class="project-section-head"><div><h4>Asset reference library</h4><p>Metadata only. Add names and optional references; Shuvi does not read or upload any file.</p></div></div>
+                    <form id="projectAssetForm" class="project-asset-form">
+                      <label for="projectAssetName">Asset name<input id="projectAssetName" maxlength="100" required placeholder="Temple reference photo" autocomplete="off"/></label>
+                      <label for="projectAssetType">Type<select id="projectAssetType"><option>Reference</option><option>Image</option><option>Video</option><option>Audio</option><option>3D Model</option><option>Document</option><option>Other</option></select></label>
+                      <label for="projectAssetRef">Optional reference / filename<input id="projectAssetRef" maxlength="220" placeholder="e.g. mahakal-overview.jpg" autocomplete="off"/></label>
+                      <button class="secondary-button" type="submit">Save asset reference</button>
+                    </form>
+                    <div id="projectAssetList" class="project-asset-list"></div>
+                    <div class="project-section-head project-subsection"><div><h4>Project Notes</h4><p>Design decisions and reminders saved locally to this project.</p></div></div>
+                    <form id="projectNoteForm" class="project-note-form"><label for="projectNoteText">Add a note<textarea id="projectNoteText" rows="3" maxlength="550" required placeholder="Project plan, design decisions, next steps…"></textarea></label><button type="submit" class="secondary-button">Save note</button></form>
+                    <div id="projectNoteList" class="project-note-list"></div>
+                  </section>
+                  <section id="projectTabHistory" class="project-pane" role="tabpanel" hidden>
+                    <div class="project-section-head"><div><h4>Project planning history</h4><p>Only changes saved in this browser. Not an execution log or Windows file version history.</p></div></div>
+                    <div id="projectHistoryList" class="project-history-list"></div>
+                  </section>
+                </div>
+              </div>
+            </div>
+            <div class="project-boundary">Real project files, file previews, checkpoints and version control remain outside this web workspace until an authenticated local runtime and per-file permission controls are implemented.</div>
           </section>
 
           <section id="view-agents" class="view" data-view="agents">
