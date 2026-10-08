@@ -1,4 +1,5 @@
 import type { ChatThread, ThreadStatus } from "./chat-store";
+import type { NativeBridgeMap } from "./native-status";
 
 export type DashboardSnapshot = {
   threads: ChatThread[];
@@ -13,6 +14,7 @@ export type DashboardSnapshot = {
   };
   permissionSummary: string | null;
   premiereConnected: boolean | null;
+  nativeBridges: NativeBridgeMap;
 };
 
 export const SOFTWARE_CATALOG = [
@@ -117,13 +119,19 @@ export function renderDashboard(container: HTMLElement, data: DashboardSnapshot)
   `;
 }
 
-export function renderAppCatalog(container: HTMLElement, premiereConnected: boolean | null): void {
+export function renderAppCatalog(container: HTMLElement, premiereConnected: boolean | null, nativeBridges: NativeBridgeMap): void {
   container.innerHTML = `<div class="catalog-intro"><h2>Creative apps & AI tools</h2>
-    <p>These capabilities exist in Shuvi source code. Real availability is shown separately from implementation.</p></div>
+    <p>These capabilities exist in Shuvi source code. Real availability is shown separately from implementation.</p><button type="button" id="refreshNativeConnections" class="ui-button">↻ Refresh native bridge status</button></div>
     <div class="catalog-grid">${SOFTWARE_CATALOG.map(app => {
+      const bridgeName = {"Photoshop":"photoshop","Illustrator":"illustrator","Audition":"audition","Adobe Animate":"animate"}[app.name] as keyof NativeBridgeMap | undefined;
+      const bridgeState = bridgeName ? nativeBridges[bridgeName] : undefined;
       const state = app.kind === "separate" ? "Separate repository"
         : app.name === "Premiere Pro" && premiereConnected ? "Bridge paired"
-        : app.name === "Premiere Pro" ? "Bridge not paired" : "Source available";
+        : app.name === "Premiere Pro" ? "Bridge not paired"
+        : bridgeState === "paired" ? "Bridge paired"
+        : bridgeState === "waiting" ? "Bridge waiting"
+        : bridgeState === "stopped" ? "Bridge stopped"
+        : bridgeName ? "Status unavailable" : "Source available";
       return `<article class="app-card">
         <div class="app-card-heading">
           <span class="app-symbol accent-${app.tone}">${escapeHTML(app.symbol)}</span>
