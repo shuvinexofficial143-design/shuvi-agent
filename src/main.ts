@@ -1693,7 +1693,7 @@ workspaceUI = mountWorkspaceUI({
     const progress = taskGraphProgress(orchestration.task_graph);
     return {
       runtimeAvailable, memoryMB: currentMemoryMB, premiereConnected,
-      activeSteps: {completed: progress.completed, total: progress.total, current: progress.current},
+      activeSteps: {completed: progress.completed, total: progress.total, current: progress.current, steps: progress.steps},
       permissionSummary: pendingAction?.summary ?? null
     };
   }
