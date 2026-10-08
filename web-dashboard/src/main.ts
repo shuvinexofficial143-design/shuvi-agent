@@ -1,5 +1,6 @@
 import "./styles.css";
 import "./premium-theme.css";
+import "./multi-chat.css";
 import { initializeAppearance } from "./appearance";
 import { mountChatWorkspace } from "./chat-workspace";
 import {
