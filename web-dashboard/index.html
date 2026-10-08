@@ -526,7 +526,8 @@
                     <div id="projectNoteList" class="project-note-list"></div>
                   </section>
                   <section id="projectTabWorkflows" class="project-pane" role="tabpanel" hidden>
-                    <div class="project-section-head"><div><h4>Project workflow plans</h4><p>Save proposed steps for Blender, Adobe and other applications; no workflow will execute in this browser.</p></div></div>
+                    <div class="project-section-head"><div><h4>Project workflow plans</h4><p>Save proposed steps for Blender, Adobe and other applications; no workflow will execute in this browser.</p></div><button type="button" id="projectOpenVisual" class="project-inline-button">Open Visual Builder ↗</button></div>
+                    <div id="projectVisualFlows" class="project-workflow-list" aria-label="Visual workflows linked to this project"></div>
                     <form id="projectWorkflowForm" class="project-workflow-form">
                       <label for="projectWorkflowTitle">Workflow name<input id="projectWorkflowTitle" required maxlength="100" placeholder="Mahakal corridor blockout" autocomplete="off"/></label>
                       <label for="projectWorkflowApp">Target software<select id="projectWorkflowApp"><option>Blender</option><option>Premiere Pro</option><option>After Effects</option><option>Photoshop</option><option>Illustrator</option><option>Coding Workspace</option><option>Browser</option><option>Other</option></select></label>
