@@ -1,4 +1,6 @@
 import "./styles.css";
+import "./premium-theme.css";
+import { initializeAppearance } from "./appearance";
 import {
   creativeModules,
   modelProviders,
@@ -183,6 +185,7 @@ function renderNavigation(): void {
     button.type = "button";
     button.dataset.viewJump = item.id;
     button.setAttribute("aria-label", item.label);
+    button.title = item.label + " · Alt+" + String(navItems.indexOf(item) + 1);
 
     const icon = make("span", "nav-icon", navGlyphs[item.icon] ?? "•");
     const copy = make("span", "nav-copy");
@@ -487,7 +490,9 @@ function setView(viewName: string): void {
   const meta = pageMeta[viewName] ?? pageMeta.dashboard;
 
   document.querySelectorAll<HTMLElement>(".view").forEach((view) => {
-    view.classList.toggle("active", view.dataset.view === viewName);
+    const active = view.dataset.view === viewName;
+    view.classList.toggle("active", active);
+    view.setAttribute("aria-hidden", String(!active));
   });
 
   document.querySelectorAll<HTMLButtonElement>(".nav-button").forEach((button) => {
@@ -849,6 +854,22 @@ function bindInteractions(): void {
       openCommandPalette();
     }
 
+    // Alt+1…Alt+8 navigates between the eight top-level sections.
+    // Ignore any shortcut that would interfere with typing or assistive input.
+    const target = event.target;
+    const typing = target instanceof HTMLElement && (
+      target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)
+    );
+    if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey &&
+        /^[1-8]$/.test(event.key) && !typing) {
+      const item = navItems[Number(event.key) - 1];
+      if (item) {
+        event.preventDefault();
+        closeCommandPalette();
+        setView(item.id);
+      }
+    }
+
     if (event.key === "Escape") {
       closeModuleDrawer();
       closeCommandPalette();
@@ -928,6 +949,7 @@ function hydrateMetrics(): void {
   byId<HTMLElement>("providerMetric").textContent = String(modelProviders.length);
 }
 
+initializeAppearance();
 renderNavigation();
 renderDashboardStudioModules();
 renderModuleGrid("creativeModuleGrid", creativeModules);
