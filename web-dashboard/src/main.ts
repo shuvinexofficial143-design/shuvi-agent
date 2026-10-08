@@ -842,6 +842,38 @@ function bindInteractions(): void {
   commandPaletteBackdrop.addEventListener("click", closeCommandPalette);
   commandPaletteInput.addEventListener("input", () => renderCommandPalette(commandPaletteInput.value));
   commandPaletteInput.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      commandPaletteResults.querySelector<HTMLButtonElement>(".command-result")?.focus();
+    }
+  });
+  commandPaletteResults.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    const buttons = Array.from(commandPaletteResults.querySelectorAll<HTMLButtonElement>(".command-result"));
+    const current = buttons.findIndex(button => button === document.activeElement);
+    if (current < 0) return;
+    event.preventDefault();
+    const next = current + (event.key === "ArrowDown" ? 1 : -1);
+    if (next < 0) commandPaletteInput.focus();
+    else buttons[Math.min(next, buttons.length - 1)]?.focus();
+  });
+  commandPalette.addEventListener("keydown", (event) => {
+    if (event.key !== "Tab" || !commandPalette.classList.contains("open")) return;
+    const controls: HTMLElement[] = [
+      commandPaletteInput,
+      ...Array.from(commandPaletteResults.querySelectorAll<HTMLButtonElement>(".command-result"))
+    ];
+    const first = controls[0];
+    const last = controls[controls.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last?.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first?.focus();
+    }
+  });
+  commandPaletteInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
       commandPaletteResults.querySelector<HTMLButtonElement>("[data-first-result='true']")?.click();
