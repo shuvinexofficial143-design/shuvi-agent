@@ -246,8 +246,10 @@
                       <span class="section-kicker">AI COMMAND CENTER / LOCAL DRAFTS</span>
                       <h2 id="currentChatTitle">New chat</h2>
                       <p id="currentChatMeta">No AI provider connected</p>
+                      <div class="chat-planning-hint" id="chatPlanningHint" role="status">Model selection is for planning only; no AI call will be made.</div>
                     </div>
                     <div class="chat-header-actions">
+                      <button type="button" class="chat-header-button" id="chatExport" title="Export this conversation as JSON">↓ Export</button>
                       <button type="button" class="chat-header-button" id="chatPin" title="Pin or unpin this chat">☆ Pin</button>
                       <button type="button" class="chat-header-button" id="chatSplit" aria-pressed="false" title="Compare two chats side by side">◫ Split</button>
                       <button type="button" class="chat-header-button" id="chatManage" title="Rename, archive or delete this conversation">···</button>
@@ -261,7 +263,7 @@
                     <div class="composer-footer">
                       <div class="composer-tools">
                         <button type="button" data-action="attachment" aria-label="Attach file (requires desktop runtime)">＋</button>
-                        <span>Web-only draft · No AI execution</span>
+                        <span>Web-only draft · Ctrl+Enter to save · No AI execution</span>
                       </div>
                       <button class="primary-button" type="submit" id="chatSendDraft">Save prompt ↗</button>
                     </div>
