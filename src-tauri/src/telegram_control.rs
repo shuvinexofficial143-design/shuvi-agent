@@ -325,7 +325,7 @@ async fn handle_message(
             send_text_to_chat(
                 token,
                 message.chat.id,
-                "Shuvi paired. Send prompts here. For approvals, reply /approve CODE or /deny CODE from the pending-action notice. Other commands: /status, /cancel.",
+                "Shuvi paired. Telegram prompts go to Desktop Chat. Commands: /status, /cancel, /resume; approvals require /approve CODE or /deny CODE from a fresh pending-action notice.",
             )
             .await?;
         } else {
@@ -363,13 +363,14 @@ async fn handle_message(
         "deny" | "/deny" | "reject" => {
             send_text_to_chat(token, message.chat.id, "Use /deny CODE from the current permission notice.").await?;
         },
-        "cancel" | "/cancel" | "stop" | "/stop" => emit_control(app, "cancel", None).await?,
+        "cancel" | "/cancel" | "stop" | "/stop" | "pause" | "/pause" => emit_control(app, "cancel", None).await?,
+        "resume" | "/resume" => emit_control(app, "resume", None).await?,
         "status" | "/status" => emit_control(app, "status", None).await?,
         "help" | "/help" => {
             send_text_to_chat(
                 token,
                 message.chat.id,
-                "Send a prompt, /status or /cancel. For an action requiring permission, use /approve CODE or /deny CODE shown in the current notice.",
+                "Send a prompt, /status, /cancel or /resume. For a pending approval use /approve CODE or /deny CODE shown in the current notice.",
             )
             .await?;
         }
