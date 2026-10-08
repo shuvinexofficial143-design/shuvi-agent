@@ -256,6 +256,19 @@ root.innerHTML = `
 
         <p id="settingsStatus" class="muted"></p>
       </div>
+        <section class="panel" aria-label="Web Control Center pairing">
+          <h3>Web Control Center · Read-only connection</h3>
+          <p class="muted">Start a local pairing listener manually. It only confirms that this Shuvi Windows process is running. It cannot run computer commands, inspect private data or approve actions.</p>
+          <div class="button-row">
+            <button id="startWebReadOnlyBridge" class="primary" type="button">Start read-only bridge</button>
+            <button id="stopWebReadOnlyBridge" type="button">Stop &amp; revoke pairing</button>
+          </div>
+          <label>Pairing code (copy into web Dashboard Settings)
+            <input id="webPairingCode" type="text" autocomplete="off" spellcheck="false" readonly placeholder="Start the bridge to generate a temporary code" />
+          </label>
+          <p id="webPairingStatus" class="muted" role="status">Bridge disabled. Nothing is listening on 127.0.0.1:47771.</p>
+          <p class="muted">Web URL: http://127.0.0.1:1423 — code is session-only and must not be pasted into chat or shared publicly.</p>
+        </section>
     </section>
   </main>
 </div>`;
@@ -1325,6 +1338,31 @@ el<HTMLButtonElement>("#completeOnboarding").addEventListener("click", async () 
     settingsStatus.textContent = `${provider.name} is ready.`;
   } catch (error) {
     onboardingStatus.textContent = `Setup failed: ${String(error)}`;
+  }
+});
+
+type WebReadOnlyPairing = {endpoint:string;token:string;access:string};
+const nativePairingCode = el<HTMLInputElement>("#webPairingCode");
+const nativePairingStatus = el<HTMLElement>("#webPairingStatus");
+el<HTMLButtonElement>("#startWebReadOnlyBridge").addEventListener("click", async () => {
+  nativePairingStatus.textContent = "Starting authenticated localhost listener…";
+  try {
+    const status = await invoke<WebReadOnlyPairing>("web_bridge_start");
+    nativePairingCode.value = status.token;
+    nativePairingStatus.textContent =
+      "Listening at " + status.endpoint + " · Read-only status. Copy the token into your Web Dashboard Settings.";
+  } catch (error) {
+    nativePairingCode.value = "";
+    nativePairingStatus.textContent = "Bridge was not started: " + String(error);
+  }
+});
+el<HTMLButtonElement>("#stopWebReadOnlyBridge").addEventListener("click", async () => {
+  try {
+    await invoke<boolean>("web_bridge_stop");
+    nativePairingCode.value = "";
+    nativePairingStatus.textContent = "Read-only bridge stopped. Previous pairing is revoked.";
+  } catch (error) {
+    nativePairingStatus.textContent = "Could not confirm bridge shutdown: " + String(error);
   }
 });
 
