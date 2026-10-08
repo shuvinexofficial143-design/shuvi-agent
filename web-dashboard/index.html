@@ -350,14 +350,112 @@
               <div><span class="section-kicker">CREATIVE STUDIO</span><h2>Adobe, 3D and motion workflows</h2><p>One surface for the creative modules being integrated into Shuvi.</p></div>
               <button class="secondary-button" type="button" data-action="connect-local">Connect local runtime</button>
             </div>
-            <div class="filter-row">
-              <button class="filter-chip active" type="button" data-filter="all">All modules</button>
-              <button class="filter-chip" type="button" data-filter="Video editing">Video</button>
-              <button class="filter-chip" type="button" data-filter="Motion & VFX">Motion & VFX</button>
-              <button class="filter-chip" type="button" data-filter="3D & VFX">3D</button>
-              <button class="filter-chip" type="button" data-filter="Audio">Audio</button>
+            <div class="studio-status-strip" aria-label="Creative apps integration scope">
+              <span class="studio-live-dot"></span>
+              <strong>Creative application control center</strong>
+              <span id="studioAppsTracked">12 apps in source catalog</span>
+              <span class="studio-separator" aria-hidden="true"></span>
+              <span>Windows runtime <b>not paired</b></span>
+              <span class="studio-source-tag">Source inventory ≠ runtime verified</span>
             </div>
-            <div id="creativeModuleGrid" class="module-grid"></div>
+
+            <div class="studio-console" aria-label="Individual creative application panels">
+              <aside class="studio-app-picker">
+                <div class="studio-picker-heading"><div><span class="section-kicker">APPLICATIONS</span><h3>Creative software</h3></div><span id="studioAppCount">0</span></div>
+                <label class="studio-picker-search" for="studioAppSearch"><span class="visually-hidden">Search creative applications</span>
+                  <input id="studioAppSearch" type="search" placeholder="Search apps…" autocomplete="off" maxlength="80" />
+                </label>
+                <div id="studioAppList" class="studio-app-list" role="list" aria-label="Creative app selection"></div>
+              </aside>
+              <section class="studio-details" aria-label="Selected application">
+                <div class="studio-details-header">
+                  <span id="studioHeroIcon" class="studio-large-icon">Pr</span>
+                  <div class="studio-details-heading">
+                    <span id="studioHeroCategory" class="section-kicker">VIDEO EDITING</span>
+                    <h3 id="studioHeroName">Premiere Pro</h3>
+                    <p id="studioHeroDescription">View creative capabilities and prepare a safe workflow draft.</p>
+                  </div>
+                  <span id="studioHeroSource" class="studio-src-chip">Source available</span>
+                </div>
+                <div class="studio-notice" role="status"><span>◈</span><p id="studioRuntimeSummary">Browser design view only. Connected app and host installation are not yet checked.</p></div>
+                <div class="studio-tabs" role="tablist" aria-label="Application details">
+                  <button type="button" class="studio-tab active" role="tab" id="studioTabOverview" data-studio-tab="overview" aria-selected="true">Overview</button>
+                  <button type="button" class="studio-tab" role="tab" id="studioTabCapabilities" data-studio-tab="capabilities" aria-selected="false">Capabilities</button>
+                  <button type="button" class="studio-tab" role="tab" id="studioTabWorkflow" data-studio-tab="workflow" aria-selected="false">Workflow builder</button>
+                </div>
+                <div id="studioPanelOverview" class="studio-tab-panel active" role="tabpanel" aria-labelledby="studioTabOverview">
+                  <div class="studio-panel-caption"><h4>What Shuvi is being built to do</h4><span>Source scope</span></div>
+                  <div id="studioOverviewCaps" class="studio-cap-list"></div>
+                  <div class="studio-panel-caption studio-followup-title"><h4>Popular creative workflows</h4><span>Planning templates</span></div>
+                  <div id="studioOverviewWorkflows" class="studio-workflow-pills"></div>
+                </div>
+                <div id="studioPanelCapabilities" class="studio-tab-panel" role="tabpanel" aria-labelledby="studioTabCapabilities" hidden>
+                  <div class="studio-panel-caption"><h4>Available source areas</h4><span>Not live-verified</span></div>
+                  <div id="studioFullCapabilities" class="studio-cap-list"></div>
+                  <p id="studioCapabilityLimit" class="studio-panel-help">Capability names describe the current source, not a passed native acceptance test.</p>
+                </div>
+                <div id="studioPanelWorkflow" class="studio-tab-panel" role="tabpanel" aria-labelledby="studioTabWorkflow" hidden>
+                  <div class="studio-panel-caption"><h4>Prepare a task draft</h4><span>No execution</span></div>
+                  <form id="studioPlanForm" class="studio-plan-form">
+                    <label for="studioPlanPreset">Workflow
+                      <select id="studioPlanPreset"></select>
+                    </label>
+                    <label for="studioPlanTitle">Task description
+                      <input id="studioPlanTitle" placeholder="Describe the output you want…" maxlength="150" autocomplete="off" required />
+                    </label>
+                    <label for="studioPlanPriority">Priority
+                      <select id="studioPlanPriority">
+                        <option value="Normal">Normal</option><option value="High">High</option><option value="Low">Low</option>
+                      </select>
+                    </label>
+                    <div class="studio-plan-actions">
+                      <button type="submit" class="primary-button">Save task draft →</button>
+                      <span>Saved to browser Tasks; approval and dispatch happen later in Windows.</span>
+                    </div>
+                  </form>
+                </div>
+                <div class="studio-details-footer">
+                  <button class="secondary-button" type="button" id="studioDetailsButton">Full module details</button>
+                  <button class="studio-link-button" type="button" id="studioSettingsButton">Runtime settings ↗</button>
+                </div>
+              </section>
+              <aside class="studio-context" aria-label="Local integration readiness">
+                <span class="section-kicker">CONNECTION &amp; READINESS</span>
+                <h3 id="studioContextHeading">Premiere Pro</h3>
+                <div class="studio-connection-card">
+                  <div class="studio-connection-led"><span class="studio-dot-offline"></span><strong>Desktop bridge not connected</strong></div>
+                  <p>Installed software and native host status have not been checked from this web page.</p>
+                </div>
+                <div class="studio-facts">
+                  <div><span>Source implementation</span><strong id="studioSourceState">Available</strong></div>
+                  <div><span>Host installation</span><strong>Unknown</strong></div>
+                  <div><span>Bridge pairing</span><strong>Not connected</strong></div>
+                  <div><span>Native acceptance</span><strong>Not verified here</strong></div>
+                </div>
+                <div class="studio-readiness">
+                  <h4>Before running a task</h4>
+                  <ol id="studioPreflight"></ol>
+                </div>
+                <button class="secondary-button studio-context-action" type="button" id="studioOpenTasks">View saved task drafts →</button>
+              </aside>
+            </div>
+
+            <details class="studio-library-details">
+              <summary>Browse all creative capability cards <span id="studioLibraryCount">12 modules</span></summary>
+              <div class="filter-row">
+                <button class="filter-chip active" type="button" data-filter="all">All modules</button>
+                <button class="filter-chip" type="button" data-filter="Video editing">Video</button>
+                <button class="filter-chip" type="button" data-filter="Motion & VFX">Motion &amp; VFX</button>
+                <button class="filter-chip" type="button" data-filter="3D & VFX">3D</button>
+                <button class="filter-chip" type="button" data-filter="Audio">Audio</button>
+                <button class="filter-chip" type="button" data-filter="Design & Image">Design</button>
+                <button class="filter-chip" type="button" data-filter="Animation">Animation</button>
+                <button class="filter-chip" type="button" data-filter="Delivery">Delivery</button>
+                <button class="filter-chip" type="button" data-filter="Review & Collaboration">Review</button>
+                <button class="filter-chip" type="button" data-filter="Programmatic video">Code video</button>
+              </div>
+              <div id="creativeModuleGrid" class="module-grid"></div>
+            </details>
           </section>
 
           <section id="view-tools" class="view" data-view="tools">
