@@ -33,3 +33,16 @@ This batch extends the existing Tauri/WebView2 desktop UI. It does **not** repla
 ## Validation
 
 Run `npm test`, `npm run validate`, `npm run build` and `cargo check --manifest-path src-tauri/Cargo.toml` on the current branch. Then perform Windows WebView2 UI smoke checks and existing Premiere/permission regression tests. CI or source tests are not evidence of successful native Adobe/Blender runtime execution.
+
+
+## UI batch 2 — October 8, 2026
+
+- Chat sidebar now supports case-insensitive search. Rename/delete uses a native modal dialog with a second explicit delete confirmation, without the browser prompt.
+- Dashboard includes actual active task-graph steps and evidence verification flags, not invented work progress. Completed labels require local typed-action evidence from the existing orchestrator.
+- Adobe app cards for Photoshop, Illustrator, Audition and Animate now inspect their existing `*_bridge_status` commands without starting apps or changing settings. The catalog differentiates paired / waiting / stopped / status unavailable.
+- Extended UI regression tests cover the new controls and require the web preview to remain isolated from native execution.
+- A standalone static page at `preview/index.html` provides a clearly labeled design demonstration for a future Vercel preview deployment. All preview dashboard metrics are explicitly illustrative. The page does not run native actions or call external APIs.
+
+### Vercel deployment boundary
+
+The connected Vercel account exposes team `Avanti Verse` and other linked GitHub projects, but has no `shuvi-agent` preview project. Attempting to create `shuvi-ui-preview` via the linked Vercel API returned HTTP 403 (permission denied). No deployment or project has been created. Deploy only once authorized project-creation or a correct existing target is available; never overwrite the unrelated `shuvinex-frontend` project.
