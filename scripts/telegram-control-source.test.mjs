@@ -46,7 +46,8 @@ test("Remote Telegram polling skips stale queued commands and checks stop genera
   assert.match(rust, /generation\.load\(Ordering::Acquire\) != generation/);
   assert.match(rust, /"allowed_updates", r#"\["message"\]"#/);
   assert.match(telegram, /await listen<Command>\("shuvi:\/\/telegram-control"/);
-  assert.match(telegram, /\/resume/);
+  assert.match(rust, /"\/resume"/);
+  assert.match(telegram, /command === "resume"/);
 });
 
 test("Telegram cannot be mistaken for a fake always-on cloud runtime", () => {
