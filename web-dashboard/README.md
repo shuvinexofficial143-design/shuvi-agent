@@ -6,18 +6,24 @@ It stays independent from local-only Tauri/Rust commands. Local Adobe, Blender,
 filesystem, PowerShell and computer-control features must go through an explicit
 secure local bridge when that layer is implemented.
 
-## Local preview
+## Local preview — one fixed browser URL
+
+Use the new Control Center only, not the old Desktop frontend from the repository root.
 
 From the repository root on Windows PowerShell:
 
 ```powershell
-git fetch origin ui-dashboard; git switch ui-dashboard; git pull; cd web-dashboard; .\run-local.ps1
+git pull --ff-only origin ui-dashboard
+npm run dev
 ```
 
-Or, after the branch is already checked out, double-click `run-local.cmd`.
+Always open **http://127.0.0.1:1423/**.
 
-The runner installs dependencies only when `node_modules` is missing and then
-starts Vite on localhost.
+You may alternatively use `cd web-dashboard; npm run dev` or double-click `web-dashboard/run-local.cmd`. All of these now use the **same port 1423** with `strictPort=true`, so a port conflict is shown as an error rather than opening the wrong UI or switching to 1424.
+
+**If the old "Ask Shuvi" UI still appears**, a previously started legacy Vite process is serving that port. Stop that process in its own VS Code Terminal with **Ctrl+C**, then start `npm run dev` again. Pulling GitHub changes cannot terminate already-running processes on your Windows machine.
+
+The root Tauri Desktop frontend is retained solely for the native Windows runtime and is started explicitly using `npm run tauri dev` or `npm run dev:desktop` (port 1420). Never delete the native Rust or Tauri frontend while building the browser dashboard.
 
 ## Vercel later
 
