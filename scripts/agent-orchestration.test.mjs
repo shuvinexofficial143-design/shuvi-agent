@@ -8,7 +8,9 @@ const types=readFileSync(new URL("../src/types.ts",import.meta.url),"utf8");
 const rust=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
 
 test("agent orchestration has bounded failure and repeat circuit breakers",()=>{
-  assert.match(orchestrator,/MAX_AGENT_STEPS = 8/);
+  assert.match(orchestrator,/MAX_AGENT_ACTION_STEPS = 12/);
+  assert.match(orchestrator,/MAX_AGENT_INSPECTION_STEPS = 12/);
+  assert.match(orchestrator,/MAX_AGENT_STEPS = MAX_AGENT_ACTION_STEPS \+ MAX_AGENT_INSPECTION_STEPS/);
   assert.match(orchestrator,/MAX_CONSECUTIVE_FAILURES = 3/);
   assert.match(orchestrator,/MAX_ORCHESTRATION_BLOCKS = 2/);
   assert.match(orchestrator,/priorFailed && state\.last_proposal_fingerprint === fingerprint/);
@@ -19,7 +21,7 @@ test("agent orchestration has bounded failure and repeat circuit breakers",()=>{
 
 test("interrupted tasks resume their persisted orchestration step instead of step one",()=>{
   assert.match(types,/orchestration\?: AgentOrchestrationCheckpoint \| null/);
-  assert.match(main,/version: 2,[\s\S]*messages,[\s\S]*orchestration/);
+  assert.match(main,/version: 2,[\s\S]*messages:\s*currentTaskMessages\(messages\),[\s\S]*orchestration/);
   assert.match(main,/orchestration = normalizeAgentOrchestrationState\(checkpoint\.orchestration\)/);
   assert.doesNotMatch(main,/resumeTask[\s\S]{0,1800}runAgentStep\(1\)/);
   assert.match(main,/orchestration_context: orchestrationContext\(orchestration\)/);

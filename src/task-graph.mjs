@@ -1,6 +1,8 @@
 // Pure bounded coordinator. Provider metadata is never execution authority.
 export const GRAPH_LIMIT = 8;
 export const GRAPH_REVISION_LIMIT = 8;
+export const GRAPH_EVIDENCE_LIMIT = 12;
+export const ORCHESTRATION_STEP_LIMIT = 24;
 export const GRAPH_AUDIT_EVENTS = Object.freeze([
   "task_graph_created", "task_step_completed", "task_step_failed",
   "task_dependency_blocked", "task_graph_replanned", "task_graph_stopped"
@@ -203,7 +205,7 @@ export function finishTaskStep(
       "Action lacked matching typed result and Rust audit evidence for the bound prepared action." };
   return refreshTaskGraph({ ...graph, steps: graph.steps.map(s => s !== target ? s :
     { ...s, status: success ? "completed" : "failed", running: null, blocked_reason: null,
-      evidence: [...s.evidence, evidence].slice(-GRAPH_LIMIT) }) });
+      evidence: [...s.evidence, evidence].slice(-GRAPH_EVIDENCE_LIMIT) }) });
 }
 
 export function taskGraphProgress(graph) {
@@ -235,11 +237,11 @@ export function restoreTaskGraph(value, nextStep) {
   const steps = [];
   for (const s of value.steps) {
     if (!["pending", "ready", "running", "completed", "failed", "blocked", "skipped"].includes(s.status)
-        || !Array.isArray(s.evidence) || s.evidence.length > GRAPH_LIMIT
+        || !Array.isArray(s.evidence) || s.evidence.length > GRAPH_EVIDENCE_LIMIT
         || (s.status === "blocked" && !bounded(s.blocked_reason, 500))) return fail("Invalid saved step state.");
     for (const e of s.evidence) {
       if (!object(e) || e.step_id !== s.step_id || !bounded(e.tool, 160)
-          || !bounded(e.fingerprint, 16384) || !integer(e.orchestration_step, 1, GRAPH_LIMIT)
+          || !bounded(e.fingerprint, 16384) || !integer(e.orchestration_step, 1, ORCHESTRATION_STEP_LIMIT)
           || e.orchestration_step >= nextStep || seenNumbers.has(e.orchestration_step)
           || !["success", "failure", "denied"].includes(e.outcome)
           || !["typed_result", "local_failure", "interrupted"].includes(e.source)
@@ -260,7 +262,7 @@ export function restoreTaskGraph(value, nextStep) {
       blocked_reason: bounded(s.blocked_reason, 500) ? s.blocked_reason : null, running: null };
     if (s.status === "running") {
       if (!object(s.running) || !bounded(s.running.fingerprint, 16384)
-          || s.running.orchestration_step !== nextStep || nextStep > GRAPH_LIMIT
+          || s.running.orchestration_step !== nextStep || nextStep > ORCHESTRATION_STEP_LIMIT
           || (s.running.action_id !== null && !actionId(s.running.action_id)))
         return fail("Invalid saved in-flight action.");
       interrupted.push(s.running.fingerprint);
@@ -276,7 +278,7 @@ export function restoreTaskGraph(value, nextStep) {
     }
     steps.push(restored);
   }
-  if (count > GRAPH_LIMIT || interrupted.length > 1) return fail("Saved evidence exceeds the action ceiling.");
+  if (count > GRAPH_EVIDENCE_LIMIT || interrupted.length > 1) return fail("Saved evidence exceeds the action ceiling.");
   const graph = refreshTaskGraph({ ...parsed.graph, steps });
   for (const s of graph.steps.filter(completed)) {
     const n = s.evidence.find(e => e.success).orchestration_step;

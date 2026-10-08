@@ -55,9 +55,10 @@ export type CodingWorkflowCheckpoint = {
 };
 
 export type AgentOrchestrationCheckpoint = {
-  version: 1 | 2 | 3 | 4 | 5;
+  version: 1 | 2 | 3 | 4 | 5 | 6;
   next_step: number;
   tool_actions: number;
+  inspection_actions?: number;
   consecutive_failures: number;
   blocked_repeats: number;
   last_proposal_fingerprint: string | null;

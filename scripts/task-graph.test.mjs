@@ -302,19 +302,19 @@ test("completed step and same completed action under another ID cannot rerun", (
   const next = plan([step("inspect"),step("again")],2);
   assert.equal(agent.evaluateProposal(s,proposal("again","read_file",{task_graph:next})).allowed,false);
 });
-test("checkpoint v5 round trip preserves action-and-audit-bound evidence and next step", () => {
+test("checkpoint v6 round trip preserves action-and-audit-bound evidence and next step", () => {
   const s = done(initial(),proposal());
   const restored = agent.normalizeAgentOrchestrationState(json(s));
   assert.deepEqual(restored,s);
   assert.equal(restored.next_step,2);
   assert.equal(graph.taskGraphProgress(restored.task_graph).completed,1);
 });
-test("legacy v1/v2/v3/v4 non-graph migration starts with no invented graph", () => {
-  for (const version of [1,2,3,4]) {
+test("legacy v1/v2/v3/v4/v5 non-graph migration starts with no invented graph", () => {
+  for (const version of [1,2,3,4,5]) {
     const s = agent.normalizeAgentOrchestrationState({version,next_step:4});
     assert.equal(s.task_graph,null);
     assert.equal(s.next_step,4);
-    assert.equal(s.version,5);
+    assert.equal(s.version,6);
   }
 });
 test("interrupted in-flight actions become uncertain failures, never automatic retries", () => {
@@ -396,9 +396,12 @@ test("three consecutive actual failures stop; preparation and denial do not add 
   prep=agent.recordToolOutcome(prep,{tool:"read_file",arguments:{path:"other"}},"denied");
   assert.equal(prep.consecutive_failures,0);
 });
-test("replan cannot increase eight-action or eight-revision ceilings", () => {
-  const s={...initial(),next_step:9};
-  assert.equal(agent.evaluateProposal(s,proposal()).allowed,false);
+test("task graph revision ceiling stays eight while orchestration uses split budgets", () => {
+  const s={...initial(),next_step:25};
+  const decision=agent.evaluateProposal(s,proposal());
+  assert.equal(decision.allowed,false);
+  assert.equal(decision.stop,true);
+  assert.match(decision.reason,/24-step total safety limit/);
   assert.equal(graph.parseTaskGraph(plan(undefined,9)).ok,false);
 });
 test("progress completion count requires typed evidence even for forged in-memory status", () => {
@@ -574,20 +577,23 @@ test("progress exposes visible evidence verification and failure reasons", () =>
 });
 
 
-test("persisted action receipts cannot rewind the eight-step budget", () => {
+test("persisted receipts cannot rewind split action and inspection budgets", () => {
   const state=agent.normalizeAgentOrchestrationState({
-    version:5,
+    version:6,
     next_step:2,
-    tool_actions:8,
+    tool_actions:12,
+    inspection_actions:0,
     consecutive_failures:0,
     blocked_repeats:0,
     unsuccessful_fingerprints:[]
   });
-  assert.equal(state.next_step,9);
-  const decision=agent.evaluateProposal(state,{tool:"read_file",arguments:{path:"/repo/a.ts"}});
-  assert.equal(decision.allowed,false);
-  assert.equal(decision.stop,true);
-  assert.match(decision.reason,/8-step safety limit/);
+  assert.equal(state.next_step,13);
+  const actionDecision=agent.evaluateProposal(state,{tool:"ui_click",arguments:{name:"New Project"}});
+  assert.equal(actionDecision.allowed,false);
+  assert.equal(actionDecision.stop,true);
+  assert.match(actionDecision.reason,/12-action execution safety limit/);
+  const inspectionDecision=agent.evaluateProposal(state,{tool:"read_file",arguments:{path:"/repo/a.ts"}});
+  assert.equal(inspectionDecision.allowed,true);
 });
 
 test("persisted coding step receipts can only advance the resume floor", () => {

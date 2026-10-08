@@ -1,6 +1,8 @@
 import type { ToolProposal, ActionResult } from "./types";
 export const GRAPH_LIMIT: 8;
 export const GRAPH_REVISION_LIMIT: 8;
+export const GRAPH_EVIDENCE_LIMIT: 12;
+export const ORCHESTRATION_STEP_LIMIT: 24;
 export const GRAPH_AUDIT_EVENTS: readonly GraphAuditEvent[];
 export const RECOVERY_TOOLS: readonly string[];
 export type GraphAuditEvent = "task_graph_created" | "task_step_completed" | "task_step_failed" | "task_dependency_blocked" | "task_graph_replanned" | "task_graph_stopped";

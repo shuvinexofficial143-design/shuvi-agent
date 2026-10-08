@@ -82,9 +82,9 @@ test("checkpoint normalization bounds coding evidence to past steps and drops am
 
 test("coding dependency state persists across orchestration v5 and legacy non-graph states",()=>{
   assert.match(types,/export type CodingWorkflowCheckpoint/);
-  assert.match(types,/version: 1 \| 2 \| 3 \| 4 \| 5/);
-  assert.match(orchestrator,/input\.version !== 1 && input\.version !== 2 && input\.version !== 3 && input\.version !== 4 && input\.version !== 5/);
-  assert.match(orchestrator,/input\.version === 2 \|\| input\.version === 3 \|\| input\.version === 4 \|\| input\.version === 5/);
+  assert.match(types,/version: 1 \| 2 \| 3 \| 4 \| 5 \| 6/);
+  assert.match(orchestrator,/input\.version !== 1 && input\.version !== 2 && input\.version !== 3 && input\.version !== 4 && input\.version !== 5 && input\.version !== 6/);
+  assert.match(orchestrator,/input\.version === 2 \|\| input\.version === 3 \|\| input\.version === 4 \|\| input\.version === 5 \|\| input\.version === 6/);
   assert.match(orchestrator,/createCodingWorkflowState\(\)/);
   assert.match(orchestrator,/legacyUnboundGraph = input\.version === 3 && input\.task_graph != null/);
   assert.match(orchestrator,/legacyUnauditedGraph = input\.version === 4 && input\.task_graph != null/);

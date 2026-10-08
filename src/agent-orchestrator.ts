@@ -5,7 +5,9 @@ import {
   type TaskGraph, type GraphAuditEvent
 } from "./task-graph.mjs";
 
-export const MAX_AGENT_STEPS = 8;
+export const MAX_AGENT_ACTION_STEPS = 12;
+export const MAX_AGENT_INSPECTION_STEPS = 12;
+export const MAX_AGENT_STEPS = MAX_AGENT_ACTION_STEPS + MAX_AGENT_INSPECTION_STEPS;
 export const MAX_CONSECUTIVE_FAILURES = 3;
 export const MAX_ORCHESTRATION_BLOCKS = 2;
 export const MAX_INSPECTED_PATHS = 12;
@@ -63,9 +65,11 @@ export type CodingWorkflowState = {
 };
 
 export type AgentOrchestrationState = {
-  version: 5;
+  version: 6;
   next_step: number;
+  // Execution/action budget. Kept as tool_actions for checkpoint compatibility.
   tool_actions: number;
+  inspection_actions: number;
   consecutive_failures: number;
   blocked_repeats: number;
   last_proposal_fingerprint: string | null;
@@ -103,6 +107,53 @@ const CODING_START_TOOLS = new Set([
   "git_commit",
   "git_push"
 ]);
+
+const INSPECTION_TOOLS = new Set([
+  "list_directory",
+  "read_file",
+  "workspace_scan",
+  "search_text",
+  "git_status",
+  "git_diff",
+  "capture_screen",
+  "inspect_screen",
+  "list_processes",
+  "ui_find",
+  "browser_dom_read",
+  "premiere_detect",
+  "premiere_context",
+  "premiere_timeline",
+  "premiere_bridge_status",
+  "premiere_project_tree",
+  "premiere_project_diagnostics",
+  "premiere_caption_tracks",
+  "premiere_get_work_area",
+  "premiere_export_status",
+  "premiere_readiness_report",
+  "premiere_timeline_capabilities",
+  "premiere_version",
+  "premiere_runtime_capability_count",
+  "premiere_runtime_verified_count",
+  "premiere_runtime_verified_pct",
+  "premiere_speed_write_capability",
+  "premiere_calibration_report",
+  "premiere_edit_job_status",
+  "premiere_edit_session_status",
+  "premiere_review_session_status",
+  "premiere_review_session_summary",
+  "frame_io_capability_report",
+  "frame_io_readiness_report",
+  "frame_io_credential_status",
+  "frame_io_identity_preflight"
+]);
+
+export function isInspectionTool(tool: string): boolean {
+  return INSPECTION_TOOLS.has(tool)
+    || tool.startsWith("premiere_list_")
+    || tool.startsWith("premiere_inspect_")
+    || tool.startsWith("frame_io_list_")
+    || tool.startsWith("frame_io_show_");
+}
 
 const CODE_PATH_SUFFIXES = [
   ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".rs", ".py", ".go", ".java",
@@ -356,9 +407,10 @@ export function proposalFingerprint(proposal: ToolProposal): string {
 
 export function createAgentOrchestrationState(): AgentOrchestrationState {
   return {
-    version: 5,
+    version: 6,
     next_step: 1,
     tool_actions: 0,
+    inspection_actions: 0,
     consecutive_failures: 0,
     blocked_repeats: 0,
     last_proposal_fingerprint: null,
@@ -383,16 +435,18 @@ export function normalizeAgentOrchestrationState(value: unknown): AgentOrchestra
     version?: number;
     coding?: unknown;
   };
-  if (input.version !== 1 && input.version !== 2 && input.version !== 3 && input.version !== 4 && input.version !== 5) {
+  if (input.version !== 1 && input.version !== 2 && input.version !== 3 && input.version !== 4 && input.version !== 5 && input.version !== 6) {
     return { ...base, recovery_mode: "stopped", stop_reason: "Unsupported saved orchestration state; start a new task." };
   }
 
   const requestedNextStep = Number.isInteger(input.next_step) ? Number(input.next_step) : 1;
   const toolActions = Number.isInteger(input.tool_actions) ? Number(input.tool_actions) : 0;
+  const inspectionActions = Number.isInteger(input.inspection_actions) ? Number(input.inspection_actions) : 0;
   const codingInput = input.coding && typeof input.coding === "object"
     ? input.coding as Partial<CodingWorkflowState>
     : null;
   const persistedStepFloor = Math.max(
+    boundedStep(toolActions + inspectionActions),
     boundedStep(toolActions),
     boundedStep(input.recovery_step),
     boundedStep(codingInput?.last_mutation_step),
@@ -417,8 +471,8 @@ export function normalizeAgentOrchestrationState(value: unknown): AgentOrchestra
 
   const legacyUnboundGraph = input.version === 3 && input.task_graph != null;
   const legacyUnauditedGraph = input.version === 4 && input.task_graph != null;
-  const restored = restoreTaskGraph(input.version === 5 ? input.task_graph : null, nextStep);
-  const receipts = input.version === 3 || input.version === 4 || input.version === 5 ? input.unsuccessful_fingerprints
+  const restored = restoreTaskGraph(input.version === 5 || input.version === 6 ? input.task_graph : null, nextStep);
+  const receipts = input.version === 3 || input.version === 4 || input.version === 5 || input.version === 6 ? input.unsuccessful_fingerprints
     : input.last_proposal_fingerprint && ["failure", "denied", "blocked"].includes(String(input.last_outcome))
       ? [input.last_proposal_fingerprint] : [];
   const validReceipts = Array.isArray(receipts) && receipts.length <= MAX_AGENT_STEPS
@@ -427,9 +481,10 @@ export function normalizeAgentOrchestrationState(value: unknown): AgentOrchestra
   const invalid = legacyUnboundGraph || legacyUnauditedGraph || !restored.ok || !validReceipts
     || (restored.ok && restored.graph && restored.graph.objective !== input.objective);
   const result: AgentOrchestrationState = {
-    version: 5,
+    version: 6,
     next_step: Math.max(1, Math.min(MAX_AGENT_STEPS + 1, nextStep)),
-    tool_actions: Math.max(0, Math.min(MAX_AGENT_STEPS, toolActions)),
+    tool_actions: Math.max(0, Math.min(MAX_AGENT_ACTION_STEPS, toolActions)),
+    inspection_actions: Math.max(0, Math.min(MAX_AGENT_INSPECTION_STEPS, inspectionActions)),
     consecutive_failures: Math.max(0, Math.min(MAX_CONSECUTIVE_FAILURES, failures)),
     blocked_repeats: Math.max(0, Math.min(MAX_ORCHESTRATION_BLOCKS, blocks)),
     last_proposal_fingerprint: boundedText(input.last_proposal_fingerprint, 16_384),
@@ -440,7 +495,7 @@ export function normalizeAgentOrchestrationState(value: unknown): AgentOrchestra
     last_plan_step: boundedText(input.last_plan_step, 500),
     last_success_criteria: boundedText(input.last_success_criteria, 800),
     stop_reason: boundedText(input.stop_reason, 800),
-    coding: input.version === 2 || input.version === 3 || input.version === 4 || input.version === 5
+    coding: input.version === 2 || input.version === 3 || input.version === 4 || input.version === 5 || input.version === 6
       ? normalizeCodingWorkflowState(input.coding, nextStep)
       : createCodingWorkflowState(),
     task_graph: restored.ok ? restored.graph : null,
@@ -455,7 +510,9 @@ export function normalizeAgentOrchestrationState(value: unknown): AgentOrchestra
         : "Invalid saved graph/evidence; a new user instruction/reset is required." };
   if (interrupted.length) {
     result.next_step = Math.min(MAX_AGENT_STEPS + 1, result.next_step + 1);
-    result.tool_actions = Math.min(MAX_AGENT_STEPS, result.tool_actions + 1);
+    // Interrupted work is conservatively charged to the execution budget because
+    // legacy graph receipts do not prove that the in-flight tool was inspection-only.
+    result.tool_actions = Math.min(MAX_AGENT_ACTION_STEPS, result.tool_actions + 1);
     if (result.recovery_mode !== "stopped") result.recovery_mode = "replan_required";
     result.last_outcome = "failure";
     result.last_proposal_fingerprint = interrupted[0];
@@ -586,7 +643,24 @@ export function evaluateProposal(
     return {
       allowed: false,
       fingerprint,
-      reason: `The task reached Shuvi's ${MAX_AGENT_STEPS}-step safety limit.`,
+      reason: `The task reached Shuvi's ${MAX_AGENT_STEPS}-step total safety limit.`,
+      stop: true
+    };
+  }
+  const inspection = isInspectionTool(proposal.tool);
+  if (inspection && state.inspection_actions >= MAX_AGENT_INSPECTION_STEPS) {
+    return {
+      allowed: false,
+      fingerprint,
+      reason: `The task used its ${MAX_AGENT_INSPECTION_STEPS}-step inspection budget. Use the evidence already gathered and propose an execution action, or wait for a new user instruction.`,
+      stop: false
+    };
+  }
+  if (!inspection && state.tool_actions >= MAX_AGENT_ACTION_STEPS) {
+    return {
+      allowed: false,
+      fingerprint,
+      reason: `The task reached Shuvi's ${MAX_AGENT_ACTION_STEPS}-action execution safety limit.`,
       stop: true
     };
   }
@@ -818,7 +892,12 @@ export function recordToolOutcome(
     ...state,
     ...planFields(state, proposal),
     next_step: Math.min(MAX_AGENT_STEPS + 1, state.next_step + 1),
-    tool_actions: Math.min(MAX_AGENT_STEPS, state.tool_actions + 1),
+    tool_actions: isInspectionTool(proposal.tool)
+      ? state.tool_actions
+      : Math.min(MAX_AGENT_ACTION_STEPS, state.tool_actions + 1),
+    inspection_actions: isInspectionTool(proposal.tool)
+      ? Math.min(MAX_AGENT_INSPECTION_STEPS, state.inspection_actions + 1)
+      : state.inspection_actions,
     consecutive_failures: Math.min(MAX_CONSECUTIVE_FAILURES, failures),
     blocked_repeats: outcome === "success" ? 0 : state.blocked_repeats,
     last_proposal_fingerprint: fingerprint,
@@ -907,7 +986,9 @@ export function orchestrationContext(state: AgentOrchestrationState): string {
       ...state.task_graph.steps.map(s => `- ${s.step_id}: ${s.status}; tool=${s.expected_tool}; needs=${s.depends_on.join(",") || "none"}`),
       "- Use task_step_id. For recovery use task_recovery:true with an unassociated inspection; then submit next graph revision with recover_steps.",
     ] : []),
-    `- next step: ${state.next_step}/${MAX_AGENT_STEPS}`,
+    `- total orchestration step: ${state.next_step}/${MAX_AGENT_STEPS}`,
+    `- execution actions used: ${state.tool_actions}/${MAX_AGENT_ACTION_STEPS}`,
+    `- inspection actions used: ${state.inspection_actions}/${MAX_AGENT_INSPECTION_STEPS}`,
     `- previous outcome: ${state.last_outcome ?? "none"}`,
     `- consecutive failures: ${state.consecutive_failures}/${MAX_CONSECUTIVE_FAILURES}`,
     `- recovery mode: ${state.recovery_mode}`
@@ -963,5 +1044,5 @@ export function orchestrationSummary(state: AgentOrchestrationState): string {
   const coding = state.coding.active ? ` · coding ${codingPhase(state).replaceAll("_", " ")}` : "";
   const progress = taskGraphProgress(state.task_graph);
   const graph = progress.total ? `${progress.completed}/${progress.total} steps complete · ` : "";
-  return `${graph}step ${Math.min(state.next_step, MAX_AGENT_STEPS)}/${MAX_AGENT_STEPS} · ${mode}${coding}`;
+  return `${graph}actions ${state.tool_actions}/${MAX_AGENT_ACTION_STEPS} · inspect ${state.inspection_actions}/${MAX_AGENT_INSPECTION_STEPS} · total ${Math.min(state.next_step, MAX_AGENT_STEPS)}/${MAX_AGENT_STEPS} · ${mode}${coding}`;
 }

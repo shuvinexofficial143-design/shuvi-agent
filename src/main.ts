@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import "./styles.css";
+import { mountWorkspaceUI, type WorkspaceUI } from "./ui/workspace-ui";
+import { emptyNativeBridges, inspectNativeBridges, type NativeBridgeMap } from "./ui/native-status";
 import type {
   ActionResult,
   ChatMessage,
@@ -14,6 +16,8 @@ import type {
 } from "./types";
 import {
   MAX_AGENT_STEPS,
+  MAX_AGENT_ACTION_STEPS,
+  MAX_AGENT_INSPECTION_STEPS,
   createAgentOrchestrationState,
   codingPhase,
   evaluateProposal,
@@ -47,6 +51,15 @@ let sessionInputTokens = 0;
 let sessionOutputTokens = 0;
 let sessionTotalTokens = 0;
 const sessionAllowedScopes = new Set<string>();
+let workspaceUI: WorkspaceUI | null = null;
+let currentMemoryMB: number | null = null;
+let runtimeAvailable = false;
+let premiereConnected: boolean | null = null;
+let nativeBridges: NativeBridgeMap = emptyNativeBridges();
+async function refreshNativeStatuses(): Promise<void> {
+  nativeBridges = await inspectNativeBridges();
+  workspaceUI?.refresh();
+}
 
 root.innerHTML = `
 <div id="onboarding" class="onboarding hidden">
@@ -206,18 +219,18 @@ root.innerHTML = `
         <div class="premiere-status-row">
           <div>
             <strong id="premiereBridgeState">Bridge stopped</strong>
-            <p id="premiereBridgeDetail" class="muted">Start the bridge, then paste the temporary token into the Shuvi Premiere Bridge panel.</p>
+            <p id="premiereBridgeDetail" class="muted">The bridge auto-starts. Paste this token into Premiere only for the first pairing or after a manual disconnect.</p>
           </div>
           <span id="premierePairBadge" class="premiere-pair-badge">NOT PAIRED</span>
         </div>
 
         <label>
-          Temporary pairing token
-          <input id="premiereBridgeToken" readonly placeholder="Start bridge to generate a token" />
+          Pairing token
+          <input id="premiereBridgeToken" readonly placeholder="Pairing token will appear when the bridge starts" />
         </label>
 
         <div class="button-row">
-          <button id="startPremiereBridge" class="primary">Start / rotate token</button>
+          <button id="startPremiereBridge" class="primary">Start / reconnect</button>
           <button id="refreshPremiereBridge">Refresh status</button>
           <button id="stopPremiereBridge">Stop bridge</button>
         </div>
@@ -225,8 +238,8 @@ root.innerHTML = `
         <div class="premiere-help">
           <strong>Pairing steps</strong>
           <p>1. Open Premiere Pro 25.6+ and load the Shuvi Premiere Bridge UXP panel.</p>
-          <p>2. Start the bridge here and copy the temporary token into the Premiere panel.</p>
-          <p>3. Press Connect in Premiere. Once paired, Shuvi can use native typed Premiere commands.</p>
+          <p>2. On the first pairing, copy this token into the Premiere panel and press Connect.</p>
+          <p>3. The pairing is stored securely and reused across restarts. Shuvi issues short-lived command sessions automatically; manual Stop/Disconnect revokes the saved pairing.</p>
         </div>
       </div>
     </section>
@@ -367,6 +380,7 @@ function prepareOnboarding(): void {
 const MAX_PROVIDER_MESSAGES = 80;
 const MAX_PROVIDER_MESSAGE_BYTES = 256 * 1024;
 const MAX_PROVIDER_CONTEXT_BYTES = 1_500_000;
+const MAX_PROVIDER_TOOL_ENVELOPE_BYTES = 64 * 1024;
 
 function boundedMessageBytes(content: string, encoder = new TextEncoder()): number | null {
   if (content.length > MAX_PROVIDER_MESSAGE_BYTES) return null;
@@ -374,13 +388,33 @@ function boundedMessageBytes(content: string, encoder = new TextEncoder()): numb
   return bytes <= MAX_PROVIDER_MESSAGE_BYTES ? bytes : null;
 }
 
+function boundedToolEnvelopeBytes(content: string, encoder = new TextEncoder()): number | null {
+  const bytes = boundedMessageBytes(content, encoder);
+  return bytes != null && bytes <= MAX_PROVIDER_TOOL_ENVELOPE_BYTES ? bytes : null;
+}
+
+function isProviderToolEnvelope(message: ChatMessage): boolean {
+  return message.role === "user" && message.content.startsWith("[SHUVI_TOOL_RESULT]\n");
+}
+
+function currentTaskMessages(source: ChatMessage[]): ChatMessage[] {
+  for (let index = source.length - 1; index >= 0; index -= 1) {
+    const message = source[index];
+    if (message.role === "user" && !isProviderToolEnvelope(message)) {
+      return source.slice(index);
+    }
+  }
+  return source;
+}
+
 function providerMessageWindow(source: ChatMessage[]): ChatMessage[] {
   const encoder = new TextEncoder();
+  const taskMessages = currentTaskMessages(source);
   const selected: ChatMessage[] = [];
   let bytes = 0;
 
-  for (let index = source.length - 1; index >= 0 && selected.length < MAX_PROVIDER_MESSAGES; index -= 1) {
-    const message = source[index];
+  for (let index = taskMessages.length - 1; index >= 0 && selected.length < MAX_PROVIDER_MESSAGES; index -= 1) {
+    const message = taskMessages[index];
     const messageBytes = boundedMessageBytes(message.content, encoder);
     if (messageBytes == null) {
       if (selected.length === 0) {
@@ -403,12 +437,13 @@ function currentCheckpoint(): SessionCheckpoint {
     provider: providerSelect.value,
     model: modelInput.value.trim(),
     base_url: baseUrlInput.value.trim() || null,
-    messages,
+    messages: currentTaskMessages(messages),
     orchestration
   };
 }
 
 function renderOrchestrationStatus(): void {
+  workspaceUI?.refresh();
   const progress = el<HTMLElement>("#agentProgress");
   const graphProgress = taskGraphProgress(orchestration.task_graph);
   const graphView = el<HTMLElement>("#taskProgress");
@@ -432,7 +467,7 @@ function renderOrchestrationStatus(): void {
     progress.textContent = `Task: ${orchestration.task_graph.objective} · ${graphProgress.completed}/${graphProgress.total} steps complete · Current: ${graphProgress.current ?? "none"} · Phase: ${orchestration.coding.active ? codingPhase(orchestration) : "general"} · State: ${orchestration.recovery_mode}`;
     return;
   }
-  if (!orchestration.objective && orchestration.tool_actions === 0 && orchestration.next_step === 1) {
+  if (!orchestration.objective && orchestration.tool_actions === 0 && orchestration.inspection_actions === 0 && orchestration.next_step === 1) {
     progress.textContent = "Agent idle";
     return;
   }
@@ -444,7 +479,7 @@ function renderOrchestrationStatus(): void {
     ? ` · ${codingPhase(orchestration).replaceAll("_", " ")}`
     : "";
   progress.textContent =
-    `Agent ${Math.min(orchestration.next_step, MAX_AGENT_STEPS)}/${MAX_AGENT_STEPS}${coding}${mode}`;
+    `Agent actions ${orchestration.tool_actions}/${MAX_AGENT_ACTION_STEPS} · inspect ${orchestration.inspection_actions}/${MAX_AGENT_INSPECTION_STEPS} · total ${Math.min(orchestration.next_step, MAX_AGENT_STEPS)}/${MAX_AGENT_STEPS}${coding}${mode}`;
 }
 
 async function saveActiveCheckpoint(): Promise<void> {
@@ -487,6 +522,9 @@ async function refreshRam(): Promise<void> {
   try {
     const status = await invoke<RuntimeStatus>("runtime_status");
     el<HTMLElement>("#ramValue").textContent = `${status.shuvi_memory_mb.toFixed(0)} MB`;
+    runtimeAvailable = true;
+    currentMemoryMB = status.shuvi_memory_mb;
+    workspaceUI?.refresh();
 
     const pct = Math.min(100, (status.shuvi_memory_mb / status.hard_limit_mb) * 100);
     el<HTMLElement>("#ramMeter").style.width = `${pct}%`;
@@ -504,6 +542,9 @@ async function refreshRam(): Promise<void> {
         : `${status.managed_children_count} managed process${status.managed_children_count === 1 ? "" : "es"} · ${status.managed_children_memory_mb.toFixed(0)} MB`;
   } catch {
     el<HTMLElement>("#ramValue").textContent = "-- MB";
+    runtimeAvailable = false;
+    currentMemoryMB = null;
+    workspaceUI?.refresh();
   }
 }
 
@@ -541,6 +582,8 @@ async function refreshAudit(): Promise<void> {
 }
 
 function renderPremiereBridgeStatus(status: PremiereBridgeStatus): void {
+  premiereConnected = status.paired;
+  workspaceUI?.refresh();
   premiereBridgeState.textContent = status.enabled
     ? status.paired
       ? "Premiere bridge connected"
@@ -628,7 +671,13 @@ function renderMessages(): void {
     (message) => message.role !== "system" && !isHiddenToolMessage(message)
   );
 
-  if (!visible.length) return;
+  if (!visible.length) {
+    if (workspaceUI) {
+      box.innerHTML = '<div class="empty-state"><div class="orb">S</div><h2>What should we work on?</h2><p>Start a chat to use Shuvi’s tools and agents. Sensitive actions still need permission.</p></div>';
+      workspaceUI.record(messages);
+    }
+    return;
+  }
 
   box.innerHTML = visible
     .map(
@@ -649,6 +698,7 @@ function renderMessages(): void {
   });
 
   box.scrollTop = box.scrollHeight;
+  workspaceUI?.record(messages);
 }
 
 function setBusy(value: boolean): void {
@@ -659,6 +709,14 @@ function setBusy(value: boolean): void {
   send.textContent = value ? "Working…" : "Send";
   stop.textContent = "Stop";
   stop.classList.toggle("hidden", !value);
+  if (value) workspaceUI?.setStatus("running");
+  else {
+    const graph = taskGraphProgress(orchestration.task_graph);
+    const finalText = messages.at(-1)?.content ?? "";
+    workspaceUI?.setStatus(cancelRequested || orchestration.recovery_mode === "stopped" ||
+      (graph.total > 0 && graph.completed < graph.total) ? "paused" :
+      finalText.startsWith("Error:") ? "failed" : "completed");
+  }
 }
 
 function providerToolEnvelope(payload: Record<string, unknown>): string {
@@ -667,7 +725,7 @@ function providerToolEnvelope(payload: Record<string, unknown>): string {
 
   let candidate = { ...payload };
   let content = wrap(candidate);
-  if (boundedMessageBytes(content) != null) return content;
+  if (boundedMessageBytes(content) != null && boundedToolEnvelopeBytes(content) != null) return content;
 
   const originals = new Map(
     Object.entries(candidate)
@@ -688,7 +746,7 @@ function providerToolEnvelope(payload: Record<string, unknown>): string {
         (tail ? original.slice(-tail) : "");
     }
     content = wrap(candidate);
-    if (boundedMessageBytes(content) != null) return content;
+    if (boundedMessageBytes(content) != null && boundedToolEnvelopeBytes(content) != null) return content;
   }
 
   return wrap({
@@ -915,6 +973,7 @@ function clearChatPermission(): void {
   pendingChatProposal = null;
   chatPermission.classList.add("hidden");
   chatPermission.innerHTML = "";
+  workspaceUI?.refresh();
 }
 
 async function auditGraphOutcome(proposal: ToolProposal): Promise<void> {
@@ -969,6 +1028,7 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
   if (!pendingAction || cancelRequested) return;
 
   const actionId = pendingAction.id;
+  workspaceUI?.setStatus("running");
   executingActionId = actionId;
   executingCancellation = null;
   clearChatPermission();
@@ -1054,13 +1114,14 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
   }
 
   chatPermission.classList.remove("hidden");
+  workspaceUI?.setStatus("approval");
   chatPermission.innerHTML = `
     <div class="permission-head">
       <div>
         <span class="risk ${pendingAction.risk}">${pendingAction.risk.toUpperCase()} RISK</span>
         <strong>${pendingAction.summary}</strong>
       </div>
-      <span class="permission-step">Agent step ${step}/${MAX_AGENT_STEPS}</span>
+      <span class="permission-step">Step ${step}/${MAX_AGENT_STEPS} · actions ${orchestration.tool_actions}/${MAX_AGENT_ACTION_STEPS} · inspect ${orchestration.inspection_actions}/${MAX_AGENT_INSPECTION_STEPS}</span>
     </div>
     <p class="permission-reason"></p>
     <pre class="permission-detail"></pre>
@@ -1433,6 +1494,7 @@ el<HTMLFormElement>("#chatForm").addEventListener("submit", async (event) => {
   orchestration = createAgentOrchestrationState();
   renderOrchestrationStatus();
   messages.push({ role: "user", content });
+  workspaceUI?.setStatus("running");
   prompt.value = "";
   renderMessages();
   await saveActiveCheckpoint();
@@ -1481,6 +1543,7 @@ el<HTMLButtonElement>("#prepareAction").addEventListener("click", async () => {
 });
 
 function renderManualPending(): void {
+  workspaceUI?.refresh();
   const box = el<HTMLElement>("#pendingAction");
 
   if (!pendingAction) {
@@ -1621,4 +1684,29 @@ document.querySelectorAll<HTMLButtonElement>(".nav").forEach((button) => {
   });
 });
 
+workspaceUI = mountWorkspaceUI({
+  isTaskLocked: () => busy || manualActionRunning || pendingAction !== null ||
+    executingActionId !== null || savedCheckpoint !== null,
+  onActivate: (history) => {
+    messages = history;
+    orchestration = createAgentOrchestrationState();
+    cancelRequested = false;
+    renderOrchestrationStatus();
+    renderMessages();
+  },
+  onViewOpen: name => {
+    if (name === "premiere") void refreshPremiereBridge();
+    if (name === "apps") void refreshNativeStatuses();
+  },
+  snapshot: () => {
+    const progress = taskGraphProgress(orchestration.task_graph);
+    return {
+      runtimeAvailable, memoryMB: currentMemoryMB, premiereConnected, nativeBridges,
+      activeSteps: {completed: progress.completed, total: progress.total, current: progress.current, steps: progress.steps},
+      permissionSummary: pendingAction?.summary ?? null
+    };
+  }
+});
+messages = workspaceUI.initialMessages();
+renderMessages();
 void boot();
