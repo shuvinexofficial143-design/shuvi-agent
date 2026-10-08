@@ -10,6 +10,7 @@ import "./visual-workflows.css";
 import "./runtime-status.css";
 import "./telegram-team.css";
 import { mountTelegramWebSettings } from "./telegram-web-setup";
+import { mountCloudTelegramSetup } from "./cloud-telegram-setup";
 import { mountAITeamWebPlanner } from "./ai-team-web-planner";
 import { mountRemoteRuntimeNotice } from "./remote-runtime-notice";
 import { NATIVE_ENDPOINT, ShuviReadOnlyBridge, type BridgeSnapshot } from "./local-runtime";
@@ -23,6 +24,8 @@ import { mountCreativeStudio } from "./creative-studio";
 import { mountTaskTimeline, type TaskTimelineController } from "./task-timeline";
 import { initializeAppearance } from "./appearance";
 import { mountChatWorkspace, type ChatWorkspace } from "./chat-workspace";
+import { mountOnlineChat } from "./online-chat";
+import "./online-chat.css";
 import { loadChatLibrary } from "./chat-store";
 import { buildPlanningOverview } from "./planning-overview";
 import {
@@ -1146,6 +1149,7 @@ renderDashboardPlanningQueue();
 renderWebActivity();
 renderLocalOverview();
 bindInteractions();
+mountOnlineChat();
 chatWorkspace = mountChatWorkspace(message => {
   showToast(message);
   renderLocalOverview();
@@ -1164,6 +1168,7 @@ mountCreativeStudio({
   navigate: (name) => setView(name)
 });
 mountTelegramWebSettings();
+mountCloudTelegramSetup();
 mountAITeamWebPlanner();
 masterAgentUI = mountMasterAgentUI({
   drafts: readDraftTasks,
