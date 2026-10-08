@@ -1,0 +1,11 @@
+/* Level 13 — actual native Shuvi pairing status (read-only, opt-in). */
+.runtime-pair-actions {display:flex;flex-wrap:wrap;align-items:center;gap:9px;margin-top:13px;}
+.runtime-pair-actions button {min-height:40px;}
+.runtime-connection-detail,.runtime-readonly-warning {color:var(--muted);font-size:11px;line-height:1.75;margin:13px 0 0;overflow-wrap:anywhere;}
+.runtime-readonly-warning {padding:12px 14px;border:1px solid var(--shuvi-accent-line);background:var(--shuvi-accent-soft);border-radius:10px;color:var(--shuvi-secondary);}
+#bridgePairingCode {font-family:ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.04em;}
+#bridgeConnect:disabled {opacity:.65;cursor:wait;}
+.status-dot.verified,.topbar-runtime .status-dot.verified {background:#6bd5bb!important;box-shadow:0 0 0 3px rgba(107,213,187,.13)!important;}
+#dashboardRuntimeBadge {font-size:10px;white-space:nowrap;}
+#bridgeConnectionState {display:flex;align-items:center;gap:7px;}
+@media(max-width:650px) {.runtime-pair-actions button {flex:1 1 150px;}}
