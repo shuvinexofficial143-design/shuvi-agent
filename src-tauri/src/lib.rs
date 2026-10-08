@@ -1,6 +1,7 @@
 #![recursion_limit = "512"]
 
 mod web_bridge;
+mod telegram_control;
 mod premiere_execution;
 mod premiere_store;
 mod after_effects;
@@ -15565,8 +15566,12 @@ fn export_diagnostics(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let telegram_state = telegram_control::TelegramControlState::default();
+    // Paired chat is restored only when the owner explicitly starts polling.
+    // Telegram never bypasses Shuvi's native action permission gate.
     tauri::Builder::default()
         .manage(ActionState::default())
+        .manage(telegram_state)
         .invoke_handler(tauri::generate_handler![
             list_providers,
             save_api_key,
@@ -15597,6 +15602,13 @@ pub fn run() {
             web_bridge::web_bridge_start,
             web_bridge::web_bridge_stop,
             web_bridge::web_bridge_state,
+            telegram_control::telegram_control_status,
+            telegram_control::telegram_save_bot_token,
+            telegram_control::telegram_delete_bot_token,
+            telegram_control::telegram_control_start,
+            telegram_control::telegram_control_stop,
+            telegram_control::telegram_unpair,
+            telegram_control::telegram_send_message,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Shuvi");
