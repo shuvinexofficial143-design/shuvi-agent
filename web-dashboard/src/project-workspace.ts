@@ -201,7 +201,12 @@ export function mountProjectWorkspace(actions:ProjectActions):ProjectUI {
  }
  function refresh():void{
   const projects=readProjects();
-  const project=projects.find(p=>p.id===selectedId)??null;
+  let project=projects.find(p=>p.id===selectedId)??null;
+  if(!project && projects.length){
+   project=projects[0];
+   selectedId=project.id;
+   try{localStorage.setItem(SELECTION_KEY,selectedId);}catch{ /* fallback to in-memory selection */ }
+  }
   renderList(projects);
   empty.hidden=Boolean(project);
   details.hidden=!project;
