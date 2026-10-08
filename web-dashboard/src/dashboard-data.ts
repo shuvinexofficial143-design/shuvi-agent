@@ -35,6 +35,7 @@ export const navItems: NavItem[] = [
   { id: "chat", label: "Multi-Chat", hint: "Local conversations", icon: "spark" },
   { id: "studio", label: "Creative Studio", hint: "Adobe + Blender", icon: "play" },
   { id: "projects", label: "Projects", hint: "Tasks & assets", icon: "folder" },
+  { id: "workflows", label: "Workflows", hint: "Visual automation", icon: "flow" },
   { id: "agents", label: "Agents", hint: "Master & workers", icon: "agents" },
   { id: "tools", label: "Tools", hint: "Computer capabilities", icon: "tool" },
   { id: "tasks", label: "Tasks", hint: "Runs & progress", icon: "check" },
