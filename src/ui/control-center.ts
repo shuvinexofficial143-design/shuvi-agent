@@ -123,7 +123,8 @@ export function renderAppCatalog(container: HTMLElement, premiereConnected: bool
   container.innerHTML = `<div class="catalog-intro"><h2>Creative apps & AI tools</h2>
     <p>These capabilities exist in Shuvi source code. Real availability is shown separately from implementation.</p><button type="button" id="refreshNativeConnections" class="ui-button">↻ Refresh native bridge status</button></div>
     <div class="catalog-grid">${SOFTWARE_CATALOG.map(app => {
-      const bridgeName = {"Photoshop":"photoshop","Illustrator":"illustrator","Audition":"audition","Adobe Animate":"animate"}[app.name] as keyof NativeBridgeMap | undefined;
+      const bridgeNames: Partial<Record<string, keyof NativeBridgeMap>> = {"Photoshop":"photoshop","Illustrator":"illustrator","Audition":"audition","Adobe Animate":"animate"};
+      const bridgeName = bridgeNames[app.name];
       const bridgeState = bridgeName ? nativeBridges[bridgeName] : undefined;
       const state = app.kind === "separate" ? "Separate repository"
         : app.name === "Premiere Pro" && premiereConnected ? "Bridge paired"
