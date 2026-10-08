@@ -6,10 +6,20 @@ on:
       - ui-dashboard
     paths:
       - "web-dashboard/**"
+      - "package.json"
+      - "index.html"
+      - "src/entry.ts"
+      - "src-tauri/tauri.conf.json"
+      - "vite.config.ts"
       - ".github/workflows/web-dashboard-ci.yml"
   pull_request:
     paths:
       - "web-dashboard/**"
+      - "package.json"
+      - "index.html"
+      - "src/entry.ts"
+      - "src-tauri/tauri.conf.json"
+      - "vite.config.ts"
       - ".github/workflows/web-dashboard-ci.yml"
 
 jobs:
@@ -36,4 +46,14 @@ jobs:
         run: npm test
 
       - name: Build dashboard
+        run: npm run build
+
+      # The legacy Desktop UI remains required by Windows/Tauri. Validate that
+      # browser route hardening does not break the native frontend bundle.
+      - name: Install native frontend dependencies
+        working-directory: .
+        run: npm ci
+
+      - name: Verify preserved Tauri frontend build
+        working-directory: .
         run: npm run build
