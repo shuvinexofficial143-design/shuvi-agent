@@ -95,3 +95,40 @@ test("Level 11 navigation + theme preserve agent, studio, timeline and desktop p
  assert.match(css,/@media\(max-width:850px\)/);
  for(const page of ["view-agents","view-studio","view-tasks","view-chat"])assert.ok(html.includes('id="'+page+'"'));
 });
+
+test("Level 11 workflow plans are bounded and cannot trigger native execution",()=>{
+ const now=Date.now();
+ const base=store.normalizeProject({
+  id:"pr",name:"Mahakal",createdAt:now,updatedAt:now,
+  taskIds:[],assets:[],notes:[],history:[],workflows:[]
+ });
+ const a=store.addWorkflow(base,"3D scene blockout","Blender","Match corridor layout from Cesium");
+ assert.ok(a);
+ assert.equal(a.workflows.length,1);
+ assert.equal(a.workflows[0].app,"Blender");
+ assert.equal(a.workflows[0].steps,"Match corridor layout from Cesium");
+ assert.equal(base.workflows.length,0);
+ assert.equal(store.addWorkflow(base,"","Blender",""),null);
+ assert.equal(store.MAX_WORKFLOWS,24);
+ const many={...base,workflows:Array.from({length:31},(_,i)=>({
+  id:"workflow-"+i,title:"Plan "+i,app:"Blender",steps:"Step "+i,createdAt:i+1
+ }))};
+ assert.equal(store.normalizeProject(many).workflows.length,24);
+ assert.match(ui,/addWorkflow\(project,title,app,steps\)/);
+ assert.match(ui,/workflowForm\.addEventListener\("submit"/);
+ assert.match(html,/id="projectTabWorkflows"/);
+ assert.match(html,/id="projectWorkflowForm"/);
+ assert.match(html,/id="projectWorkflowTitle"/);
+ assert.match(html,/id="projectWorkflowSteps"/);
+ assert.match(html,/id="projectWorkflowList"/);
+});
+
+test("project JSON export includes metadata only and revokes temporary URLs",()=>{
+ assert.match(html,/id="projectExport"/);
+ assert.match(ui,/shuvi-browser-project-v1/);
+ assert.match(ui,/JSON\.stringify\(\{/);
+ assert.match(ui,/URL\.createObjectURL\(new Blob/);
+ assert.match(ui,/URL\.revokeObjectURL\(url\)/);
+ assert.match(ui,/No local files were included/);
+ assert.doesNotMatch(ui,/FileReader|showOpenFilePicker|navigator\.storage\.getDirectory|\binvoke\(|\bfetch\(/);
+});
