@@ -9,17 +9,26 @@ const palette = read("src/appearance.ts");
 const premium = read("src/premium-theme.css");
 const old = read("src/styles.css");
 
-test("Level 2 design tokens and three theme buttons are implemented", () => {
+test("Midnight Sapphire is the default and four palette controls work", () => {
   assert.match(main, /import "\.\/premium-theme\.css"/);
   assert.match(main, /initializeAppearance\(\)/);
-  assert.match(premium, /--shuvi-accent: #f3a261/);
-  assert.match(premium, /--shuvi-secondary: #89b4e8/);
-  for (const name of ["ember", "frost", "jade"]) {
+  assert.match(premium, /--bg: #0B1220/);
+  assert.match(premium, /--panel-2: #1E293B/);
+  assert.match(premium, /--shuvi-accent: #2563EB/);
+  assert.match(premium, /--shuvi-secondary: #7DD3FC/);
+  assert.match(premium, /--text: #F8FAFC/);
+  for (const name of ["sapphire", "violet", "teal", "steel"]) {
     assert.ok(html.includes('data-palette="' + name + '"'), name + " button missing");
     assert.ok(palette.includes('value === "' + name + '"'), name + " not whitelisted");
   }
+  assert.match(palette, /shuvi\.web\.palette\.v2/);
+  assert.match(palette, /return isShuviPalette\(value\) \? value : "sapphire"/);
   assert.match(palette, /localStorage\.setItem\(KEY, value\)/);
   assert.match(palette, /button\.setAttribute\("aria-pressed"/);
+  assert.match(html, /data-palette="sapphire" aria-pressed="true"/);
+  assert.match(html, /Midnight Sapphire selected/);
+  assert.doesNotMatch(html, /Shuvi Ember|Orange \+ Ice blue/);
+  assert.doesNotMatch(premium, /#f3a261|#f9dbc3|#f9d7bd/i);
   assert.match(html, /id="appearanceStatus" role="status"/);
 });
 
