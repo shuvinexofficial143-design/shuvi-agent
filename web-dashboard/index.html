@@ -414,6 +414,63 @@
               <article class="panel task-stage"><div class="stage-head"><span>03</span><strong>Approval</strong><b>0</b></div><div class="stage-empty">No pending permissions</div></article>
               <article class="panel task-stage"><div class="stage-head"><span>04</span><strong>Complete</strong><b>0</b></div><div class="stage-empty">No synced history</div></article>
             </div>
+            <section class="task-timeline panel" aria-label="Level 8 browser planning timeline">
+              <div class="timeline-top">
+                <div>
+                  <span class="section-kicker">LEVEL 8 / ADVANCED TIMELINE</span>
+                  <h3>Task history &amp; planning activity</h3>
+                  <p>Only saved browser activity is displayed. Real agent steps, screenshots and approvals require the secure Windows runtime.</p>
+                </div>
+                <div class="timeline-top-actions">
+                  <span class="timeline-local-badge">Browser data · Not executing</span>
+                  <button class="secondary-button" type="button" id="timelineExport">Export timeline ↓</button>
+                </div>
+              </div>
+              <div class="timeline-summary">
+                <div><span>Planning events</span><strong id="timelineEventCount">0</strong></div>
+                <div><span>Task-related events</span><strong id="timelineTaskEventCount">0</strong></div>
+                <div><span>Saved drafts</span><strong id="timelineDraftCount">0</strong></div>
+                <div><span>Native task receipts</span><strong class="timeline-unknown" aria-label="Unavailable">—</strong></div>
+              </div>
+              <div class="timeline-controls">
+                <label class="timeline-filter-label" for="timelineFilter">Activity type
+                  <select id="timelineFilter">
+                    <option value="all">All events</option>
+                    <option value="Task">Tasks</option>
+                    <option value="Module">Modules</option>
+                    <option value="Model">Models</option>
+                    <option value="Routing">Routing</option>
+                    <option value="Settings">Settings</option>
+                    <option value="Export">Exports</option>
+                  </select>
+                </label>
+                <label class="timeline-filter-label timeline-search-label" for="timelineSearch">Search browser history
+                  <input id="timelineSearch" type="search" maxlength="120" placeholder="Search event text..." autocomplete="off" />
+                </label>
+                <span class="timeline-result-count" id="timelineShowingCount" role="status">No saved events</span>
+              </div>
+              <div class="timeline-layout">
+                <div class="timeline-feed-wrap">
+                  <div class="timeline-list-heading"><strong>Activity timeline</strong><span>Most recent first</span></div>
+                  <div id="timelineFeed" class="timeline-feed" aria-label="Saved planning events"></div>
+                </div>
+                <aside class="timeline-inspector" aria-label="Selected planning record">
+                  <span class="section-kicker">RECORD INSPECTOR</span>
+                  <div id="timelineInspector" class="timeline-inspector-body" aria-live="polite"></div>
+                  <div class="timeline-evidence">
+                    <strong>Desktop evidence</strong>
+                    <div><span>Agent steps</span><b>Not synced</b></div>
+                    <div><span>Tool receipts</span><b>Not synced</b></div>
+                    <div><span>Screenshot history</span><b>Not synced</b></div>
+                    <div><span>Human approvals</span><b>Desktop only</b></div>
+                  </div>
+                </aside>
+              </div>
+              <div class="timeline-draft-list-block">
+                <div class="timeline-list-heading"><strong>Saved draft inspector</strong><span>Select a draft to inspect its metadata · no execution implied</span></div>
+                <div id="timelineDraftList" class="timeline-draft-list"></div>
+              </div>
+            </section>
           </section>
 
           <section id="view-models" class="view" data-view="models">
