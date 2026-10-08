@@ -1125,8 +1125,9 @@ projectUI = mountProjectWorkspace({
   navigate: (name) => setView(name),
   notify: showToast,
   activity: (message) => recordWebActivity("Task", message),
-  openVisualBuilder: (projectId) => {
-    workflowBuilder?.selectProject(projectId);
+  openVisualBuilder: (projectId, flowId) => {
+    if (flowId) workflowBuilder?.selectFlow(flowId);
+    else workflowBuilder?.selectProject(projectId);
     setView("workflows");
   }
 });
