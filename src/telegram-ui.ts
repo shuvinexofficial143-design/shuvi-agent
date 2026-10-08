@@ -22,7 +22,7 @@ export type TelegramUI = {
   approvalPending: (summary: string, risk: string, actionCode: string) => void;
   assistantAnswer: (reply: string) => void;
   taskStopped: (reason: string) => void;
-  finish: () => void;
+  finish: (taskStatus?: string | null) => void;
 };
 
 export async function mountTelegramUI(callbacks: TelegramCallbacks): Promise<TelegramUI> {
@@ -164,6 +164,9 @@ export async function mountTelegramUI(callbacks: TelegramCallbacks): Promise<Tel
     taskStopped(reason) {
       void send("Shuvi task stopped: " + reason.slice(0, 900));
     },
-    finish() { telegramOrigin = false; }
+    finish(taskStatus) {
+      if (taskStatus) void send("Shuvi task update: " + taskStatus.slice(0, 500));
+      telegramOrigin = false;
+    }
   };
 }
