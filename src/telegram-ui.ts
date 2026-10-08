@@ -15,6 +15,7 @@ export type TelegramCallbacks = {
   onApprove: (actionCode: string) => boolean;
   onDeny: (actionCode: string) => boolean;
   onCancel: () => boolean;
+  onResume: () => boolean;
   getStatus: () => string;
 };
 export type TelegramUI = {
@@ -72,7 +73,7 @@ export async function mountTelegramUI(callbacks: TelegramCallbacks): Promise<Tel
   }
 
   async function send(message: string): Promise<void> {
-    if (!last?.running || !last.paired || !message.trim()) return;
+    if (!last?.running || !message.trim()) return;
     try {
       await invoke("telegram_send_message", { text: message.slice(0, 9000) });
     } catch {
@@ -113,6 +114,10 @@ export async function mountTelegramUI(callbacks: TelegramCallbacks): Promise<Tel
     if (command === "cancel") {
       const cancelled = callbacks.onCancel();
       await send(cancelled ? "Stop requested; waiting for confirmation from Shuvi." : "No active task to cancel.");
+    }
+    if (command === "resume") {
+      const resumed = callbacks.onResume();
+      await send(resumed ? "Saved task resume requested. /status shows progress." : "There is no safe resumable task, or Shuvi is busy.");
     }
   });
 
