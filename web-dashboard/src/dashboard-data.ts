@@ -75,7 +75,7 @@ export const creativeModules: FeatureModule[] = [
     description: "Advanced Blender control is being developed in the dedicated Shuvi Blender module.",
     state: "development",
     stateLabel: "Separate module in development",
-    accent: "orange",
+    accent: "blue",
     icon: "Bl",
     capabilities: ["Scene inspection", "Object and transform control", "Material and lighting workflows", "Animation planning"],
     workflows: ["3D scene build", "Camera and lighting setup", "Animation blocking", "VFX scene preparation"],
