@@ -43,12 +43,12 @@ test("Level 3 dashboard is balanced and does not fake runtime progress", () => {
   assert.match(premium, /\.metric-card span/);
 });
 
-test("Level 4–10 navigation preserves nine routes and keyboard interactions", () => {
-  for (const route of ["dashboard","chat","studio","agents","tools","tasks","models","activity","settings"]) {
+test("Level 4–11 navigation preserves ten routes and keyboard interactions", () => {
+  for (const route of ["dashboard","chat","studio","projects","agents","tools","tasks","models","activity","settings"]) {
     assert.ok(main.includes(route + ': { eyebrow:'), route + " route missing");
     assert.ok(html.includes('id="view-' + route + '"'), route + " view missing");
   }
-  assert.match(main, /Alt\+1…Alt\+9/);
+  assert.match(main, /Alt\+1…Alt\+9 and Alt\+0/);
   assert.match(main, /button\.setAttribute\("aria-label", item\.label\)/);
   assert.match(main, /view\.setAttribute\("aria-hidden"/);
   assert.match(main, /event\.key === "ArrowDown"/);
