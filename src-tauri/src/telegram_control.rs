@@ -197,7 +197,7 @@ async fn verify_bot(client: &Client, token: &str) -> Result<(), String> {
         .get(telegram_url(token, "getMe"))
         .send()
         .await
-        .map_err(|error| format!("Telegram getMe failed: {error}"))?;
+        .map_err(|_| "Could not reach Telegram Bot API to verify this bot.".to_string())?;
     if !response.status().is_success() {
         return Err(format!("Telegram rejected the bot token with HTTP {}.", response.status()));
     }
@@ -223,7 +223,7 @@ async fn send_one(client: &Client, token: &str, chat_id: i64, text: &str) -> Res
         }))
         .send()
         .await
-        .map_err(|error| format!("Telegram sendMessage failed: {error}"))?;
+        .map_err(|_| "Could not send Telegram message.".to_string())?;
     if !response.status().is_success() {
         return Err(format!("Telegram sendMessage returned HTTP {}.", response.status()));
     }
