@@ -6,6 +6,9 @@ import "./task-timeline.css";
 import "./creative-studio.css";
 import "./master-agent.css";
 import "./project-workspace.css";
+import "./visual-workflows.css";
+import { mountWorkflowBuilder, type WorkflowBuilder } from "./visual-workflow-ui";
+import { FLOW_KEY } from "./visual-flow-store";
 import { mountProjectWorkspace, type ProjectUI } from "./project-workspace";
 import { PROJECTS_KEY } from "./project-store";
 import { mountMasterAgentUI, type MasterAgentUI } from "./master-agent-ui";
@@ -31,6 +34,7 @@ const navGlyphs: Record<string, string> = {
   play: "▶",
   agents: "✧",
   folder: "▧",
+  flow: "⧉",
   tool: "◇",
   check: "✓",
   brain: "AI",
@@ -43,6 +47,7 @@ const pageMeta: Record<string, { eyebrow: string; title: string }> = {
   chat: { eyebrow: "AI COMMAND CENTER", title: "AI Chat" },
   studio: { eyebrow: "CREATIVE WORKSPACE", title: "Creative Studio" },
   projects: { eyebrow: "PROJECT WORKSPACE", title: "Projects" },
+  workflows: { eyebrow: "VISUAL AUTOMATION", title: "Workflows" },
   agents: { eyebrow: "MULTI-AGENT WORKSPACE", title: "Agents" },
   tools: { eyebrow: "LOCAL CAPABILITIES", title: "Tools" },
   tasks: { eyebrow: "TASK ENGINE", title: "Tasks" },
@@ -112,6 +117,7 @@ let chatWorkspace: ChatWorkspace | null = null;
 let taskTimeline: TaskTimelineController | null = null;
 let masterAgentUI: MasterAgentUI | null = null;
 let projectUI: ProjectUI | null = null;
+let workflowBuilder: WorkflowBuilder | null = null;
 
 function showToast(message: string): void {
   toast.textContent = message;
@@ -226,7 +232,8 @@ function renderNavigation(): void {
     button.type = "button";
     button.dataset.viewJump = item.id;
     button.setAttribute("aria-label", item.label);
-    button.title = item.label + " · Alt+" + (navItems.indexOf(item) === 9 ? "0" : String(navItems.indexOf(item) + 1));
+    const shortcutIndex = navItems.indexOf(item);
+    button.title = item.label + (shortcutIndex < 10 ? " · Alt+" + (shortcutIndex === 9 ? "0" : String(shortcutIndex + 1)) : "");
 
     const icon = make("span", "nav-icon", navGlyphs[item.icon] ?? "•");
     const copy = make("span", "nav-copy");
@@ -561,6 +568,7 @@ function setView(viewName: string): void {
   globalSearch.value = "";
   clearSearchFilter();
   if (viewName === "projects") projectUI?.refresh();
+  if (viewName === "workflows") workflowBuilder?.refresh();
   window.scrollTo({ top: 0, behavior: "auto" });
 }
 
@@ -992,7 +1000,7 @@ function bindInteractions(): void {
       openCommandPalette();
     }
 
-    // Alt+1…Alt+9 and Alt+0 navigate the ten top-level sections.
+    // Alt+1…Alt+9 and Alt+0 navigate the first ten top-level sections.
     // Ignore any shortcut that would interfere with typing or assistive input.
     const target = event.target;
     const typing = target instanceof HTMLElement && (
@@ -1116,7 +1124,17 @@ projectUI = mountProjectWorkspace({
   drafts: readDraftTasks,
   navigate: (name) => setView(name),
   notify: showToast,
-  activity: (message) => recordWebActivity("Task", message)
+  activity: (message) => recordWebActivity("Task", message),
+  openVisualBuilder: (projectId) => {
+    workflowBuilder?.selectProject(projectId);
+    setView("workflows");
+  }
+});
+workflowBuilder = mountWorkflowBuilder({
+  saveTaskDraft: (title, workspace) => addDraftTask(title, workspace),
+  notify: showToast,
+  activity: (message) => recordWebActivity("Task", message),
+  onChange: () => projectUI?.refresh()
 });
 window.addEventListener("storage", event => {
   if (event.key && ["shuvi.web.chat-drafts.v1", "shuvi.web.draftTasks", "shuvi.web.activity"].includes(event.key)) {
@@ -1130,7 +1148,14 @@ window.addEventListener("storage", event => {
     masterAgentUI?.refresh();
     projectUI?.refresh();
   }
-  if (event.key === PROJECTS_KEY) projectUI?.refresh();
+  if (event.key === PROJECTS_KEY) {
+    projectUI?.refresh();
+    workflowBuilder?.refresh();
+  }
+  if (event.key === FLOW_KEY) {
+    workflowBuilder?.refresh();
+    projectUI?.refresh();
+  }
 });
 renderLocalOverview();
 setView("dashboard");
