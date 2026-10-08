@@ -65,7 +65,7 @@
           </div>
 
           <div class="topbar-actions">
-            <span class="topbar-runtime"><span class="status-dot offline"></span> Runtime offline</span>
+            <span class="topbar-runtime" id="webRuntimeTopbar"><span class="status-dot offline"></span> Runtime offline</span>
             <label class="global-search">
               <span>⌕</span>
               <input id="globalSearch" type="search" placeholder="Search tools and modules" autocomplete="off" />
@@ -109,7 +109,7 @@
                     <span class="section-kicker">RUNTIME</span>
                     <h3>Local connection</h3>
                   </div>
-                  <span class="badge badge-offline">Offline</span>
+                  <span class="badge badge-offline" id="dashboardRuntimeBadge">Offline</span>
                 </div>
                 <div class="connection-visual">
                   <div class="connection-device">
@@ -125,9 +125,9 @@
                   </div>
                 </div>
                 <div class="connection-meta">
-                  <div><span>Agent state</span><strong>Awaiting local bridge</strong></div>
+                  <div><span>Agent state</span><strong id="dashboardRuntimeState">Awaiting local bridge</strong></div>
                   <div><span>Active model</span><strong>Not synced</strong></div>
-                  <div><span>Permission mode</span><strong>Local only</strong></div>
+                  <div><span>Permission mode</span><strong id="dashboardRuntimePermission">Local only</strong></div>
                 </div>
                 <button class="secondary-button full" type="button" data-action="connect-local">Configure connection</button>
               </article>
@@ -876,13 +876,21 @@
                 <p class="appearance-hint" id="appearanceStatus" role="status">Midnight Sapphire selected.</p>
               </article>
               <article class="panel">
-                <div class="settings-heading"><div class="settings-icon">↔</div><div><h3>Local bridge</h3><p>Endpoint reserved for the future secure web-to-local connection.</p></div></div>
-                <label class="field"><span>Local endpoint</span><input id="bridgeEndpoint" value="http://127.0.0.1:47771" autocomplete="off" /></label>
+                <div class="settings-heading"><div class="settings-icon">↔</div><div><h3>Local bridge · Level 13</h3><p>Pair read-only with the actual Windows Shuvi process. This does not enable agent execution, file access or approvals.</p></div></div>
+                <label class="field"><span>Local endpoint (fixed, localhost only)</span><input id="bridgeEndpoint" value="http://127.0.0.1:47771" autocomplete="off" readonly /></label>
+                <label class="field"><span>Read-only pairing code from Shuvi.exe → AI Provider → Web Control Center</span>
+                  <input id="bridgePairingCode" type="password" autocomplete="off" spellcheck="false" placeholder="Paste temporary native pairing code" maxlength="64" />
+                </label>
                 <div class="field-row">
                   <label class="field"><span>Connection mode</span><select id="bridgeMode"><option>Localhost only</option><option disabled>Remote relay — not available</option></select></label>
-                  <label class="field"><span>Status</span><div class="static-field"><span class="status-dot offline"></span>Not connected</div></label>
+                  <label class="field"><span>Status</span><div class="static-field" id="bridgeConnectionState"><span class="status-dot offline"></span>Not connected</div></label>
                 </div>
-                <button id="saveBridgeSettings" class="primary-button" type="button">Save web preference</button>
+                <div class="runtime-pair-actions">
+                  <button id="bridgeConnect" class="primary-button" type="button">Pair read-only</button>
+                  <button id="bridgeDisconnect" class="secondary-button" type="button">Disconnect browser</button>
+                </div>
+                <p id="bridgeConnectionDetail" class="runtime-connection-detail" role="status">Open the native Windows Shuvi app, start its read-only bridge, and paste the generated code here. Pairing codes are never saved to browser storage.</p>
+                <p class="runtime-readonly-warning">Authenticated status is not authority to run tools. Tasks, worker jobs, screenshots and pending approvals remain unavailable here.</p>
               </article>
 
               <article class="panel">
