@@ -5,6 +5,9 @@ import "./smart-dashboard.css";
 import "./task-timeline.css";
 import "./creative-studio.css";
 import "./master-agent.css";
+import "./project-workspace.css";
+import { mountProjectWorkspace, type ProjectUI } from "./project-workspace";
+import { PROJECTS_KEY } from "./project-store";
 import { mountMasterAgentUI, type MasterAgentUI } from "./master-agent-ui";
 import { DELEGATION_STORAGE_KEY } from "./agent-planner";
 import { mountCreativeStudio } from "./creative-studio";
@@ -27,6 +30,7 @@ const navGlyphs: Record<string, string> = {
   spark: "✦",
   play: "▶",
   agents: "✧",
+  folder: "▧",
   tool: "◇",
   check: "✓",
   brain: "AI",
@@ -38,6 +42,7 @@ const pageMeta: Record<string, { eyebrow: string; title: string }> = {
   dashboard: { eyebrow: "CONTROL CENTER", title: "Dashboard" },
   chat: { eyebrow: "AI COMMAND CENTER", title: "AI Chat" },
   studio: { eyebrow: "CREATIVE WORKSPACE", title: "Creative Studio" },
+  projects: { eyebrow: "PROJECT WORKSPACE", title: "Projects" },
   agents: { eyebrow: "MULTI-AGENT WORKSPACE", title: "Agents" },
   tools: { eyebrow: "LOCAL CAPABILITIES", title: "Tools" },
   tasks: { eyebrow: "TASK ENGINE", title: "Tasks" },
@@ -106,6 +111,7 @@ let activeDrawerModule: FeatureModule | null = null;
 let chatWorkspace: ChatWorkspace | null = null;
 let taskTimeline: TaskTimelineController | null = null;
 let masterAgentUI: MasterAgentUI | null = null;
+let projectUI: ProjectUI | null = null;
 
 function showToast(message: string): void {
   toast.textContent = message;
@@ -220,7 +226,7 @@ function renderNavigation(): void {
     button.type = "button";
     button.dataset.viewJump = item.id;
     button.setAttribute("aria-label", item.label);
-    button.title = item.label + " · Alt+" + String(navItems.indexOf(item) + 1);
+    button.title = item.label + " · Alt+" + (navItems.indexOf(item) === 9 ? "0" : String(navItems.indexOf(item) + 1));
 
     const icon = make("span", "nav-icon", navGlyphs[item.icon] ?? "•");
     const copy = make("span", "nav-copy");
@@ -554,6 +560,7 @@ function setView(viewName: string): void {
   sidebarBackdrop.classList.remove("show");
   globalSearch.value = "";
   clearSearchFilter();
+  if (viewName === "projects") projectUI?.refresh();
   window.scrollTo({ top: 0, behavior: "auto" });
 }
 
@@ -649,6 +656,7 @@ function renderDraftTasks(): void {
     renderLocalOverview();
     taskTimeline?.refresh();
     masterAgentUI?.refresh();
+    projectUI?.refresh();
     return;
   }
 
@@ -692,6 +700,7 @@ function renderDraftTasks(): void {
   renderLocalOverview();
   taskTimeline?.refresh();
   masterAgentUI?.refresh();
+  projectUI?.refresh();
 }
 
 function addDraftTask(title: string, type: string, priority = "Normal"): void {
@@ -983,15 +992,15 @@ function bindInteractions(): void {
       openCommandPalette();
     }
 
-    // Alt+1…Alt+9 navigates between the nine top-level sections.
+    // Alt+1…Alt+9 and Alt+0 navigate the ten top-level sections.
     // Ignore any shortcut that would interfere with typing or assistive input.
     const target = event.target;
     const typing = target instanceof HTMLElement && (
       target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)
     );
     if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey &&
-        /^[1-9]$/.test(event.key) && !typing) {
-      const item = navItems[Number(event.key) - 1];
+        /^[0-9]$/.test(event.key) && !typing) {
+      const item = navItems[event.key === "0" ? 9 : Number(event.key) - 1];
       if (item) {
         event.preventDefault();
         closeCommandPalette();
@@ -1103,14 +1112,25 @@ masterAgentUI = mountMasterAgentUI({
   notify: showToast,
   activity: (message) => recordWebActivity("Task", message)
 });
+projectUI = mountProjectWorkspace({
+  drafts: readDraftTasks,
+  navigate: (name) => setView(name),
+  notify: showToast,
+  activity: (message) => recordWebActivity("Task", message)
+});
 window.addEventListener("storage", event => {
   if (event.key && ["shuvi.web.chat-drafts.v1", "shuvi.web.draftTasks", "shuvi.web.activity"].includes(event.key)) {
     renderDraftTasks();
     renderLocalOverview();
     taskTimeline?.refresh();
     masterAgentUI?.refresh();
+    projectUI?.refresh();
   }
-  if (event.key === DELEGATION_STORAGE_KEY) masterAgentUI?.refresh();
+  if (event.key === DELEGATION_STORAGE_KEY) {
+    masterAgentUI?.refresh();
+    projectUI?.refresh();
+  }
+  if (event.key === PROJECTS_KEY) projectUI?.refresh();
 });
 renderLocalOverview();
 setView("dashboard");
