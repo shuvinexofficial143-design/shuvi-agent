@@ -4,7 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --port 1420",
+    "dev": "npm --prefix web-dashboard run dev",
+    "dev:web": "npm --prefix web-dashboard run dev",
+    "dev:desktop": "vite --port 1420 --strictPort",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
