@@ -81,7 +81,7 @@ test("Redis duplicate key uses NX and expiry, never local serverless memory",asy
   let posted;
   const fetcher=async(url,opts)=>{posted=JSON.parse(opts.body);return {ok:true,json:async()=>({result:"OK"})};};
   assert.equal(await takeUpdateOnce(77,env,fetcher),true);
-  assert.deepEqual(posted.slice(-3),["86400","NX"].slice(-2));
+  assert.deepEqual(posted.slice(-3),["EX","86400","NX"]);
 });
 
 test("Online provider completion is text-only and never includes native execution tools",async()=>{
