@@ -1,7 +1,8 @@
 /**
  * The Vercel dashboard is a public, static planning surface.
- * Telegram secrets MUST only be configured in the native Shuvi credential vault.
- * Never ask for a bot token or pairing code in a public browser.
+ * In native long-polling mode, credentials stay in Windows Credential Manager.
+ * In separate cloud-webhook mode, credentials stay in Vercel Environment Variables.
+ * Never ask for a bot token or pairing code in public browser forms.
  */
 const USERNAME_KEY = "shuvi.web.telegram.public_username.v1";
 const BOTFATHER = "https://t.me/BotFather";
@@ -26,7 +27,7 @@ export function mountTelegramWebSettings(): void {
       <div class="shuvi-telegram-title">
         <span class="section-kicker">REMOTE CONTROL / TELEGRAM</span>
         <h3>Telegram Connection</h3>
-        <p>Configure your Bot identity here. Your Bot Token and approvals stay inside the trusted Windows Shuvi app.</p>
+        <p>Configure your public Bot identity here. Online AI chat uses server-side Vercel credentials; Desktop approvals remain inside trusted Windows Shuvi.</p>
       </div>
       <span class="shuvi-telegram-state" id="telegramWebBadge">Not paired</span>
     </div>
@@ -53,7 +54,7 @@ export function mountTelegramWebSettings(): void {
         <p id="telegramWebFeedback" class="shuvi-telegram-feedback" role="status">No Bot Token is required on this website.</p>
       </div>
       <div class="shuvi-telegram-steps">
-        <h4>Step 2 · Pair when Shuvi.exe is running</h4>
+        <h4>Alternative: Native-only chat, when Shuvi.exe is running</h4>
         <ol>
           <li>Open <strong>Shuvi Desktop → Provider → Telegram</strong>.</li>
           <li>Paste the Bot Token <strong>only in Shuvi Desktop</strong>, save and start Telegram.</li>
@@ -64,8 +65,8 @@ export function mountTelegramWebSettings(): void {
       </div>
     </div>
     <div class="shuvi-telegram-warning" role="note">
-      <strong>Connection status: waiting for the native app.</strong>
-      Vercel cannot read or control your Windows desktop by itself. This page does not connect your Bot Token, forward private messages or approve actions. Pairing is done in Shuvi.exe while the host is on.
+      <strong>Native-only connection status: waiting for the native app.</strong>
+      Cloud Telegram chat is a separate Vercel webhook (configured below). Vercel cannot read or control your Windows desktop, and cannot approve local actions. IMPORTANT: the same Telegram Bot cannot use cloud webhook and native getUpdates polling simultaneously. In cloud mode, keep native Telegram polling stopped.
     </div>
   `;
   const heading = settings.querySelector<HTMLElement>(".section-intro");
@@ -86,7 +87,7 @@ export function mountTelegramWebSettings(): void {
     }
     try {
       localStorage.setItem(USERNAME_KEY, name);
-      feedback.textContent = "Bot username saved on this browser only. Native pairing is still required.";
+      feedback.textContent = "Bot username saved on this browser only. Online AI requires separate secure Vercel setup; native pairing is optional.";
       buttonOpen.disabled = false;
     } catch {
       feedback.textContent = "Browser storage unavailable. You can still create your Bot using BotFather.";
