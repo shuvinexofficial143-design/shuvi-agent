@@ -1,50 +1,111 @@
 /*
- * Shuvi design system — Levels 2, 3 and 4.
- * Layered over the original dashboard CSS to preserve existing views and runtime guards.
- * No external fonts or remote assets: remains offline-first.
+ * Shuvi AI Control Center — Midnight Sapphire design system.
+ * Source-of-truth tokens from the approved four-theme comparison.
+ * All creative controls remain UI-only until the native runtime is connected.
  */
 :root {
-  --bg: #0b0f17;
-  --panel: #141a24;
-  --panel-2: #171e29;
-  --panel-3: #1e2735;
-  --line: #30394a;
-  --line-soft: #242e3d;
-  --text: #f4f6fa;
-  --muted: #a0aec2;
-  --muted-2: #8999ad;
-  --accent: #f3a261;
-  --accent-strong: #ffd1a6;
-  --shuvi-accent: #f3a261;
-  --shuvi-accent-text: #182231;
-  --shuvi-accent-soft: rgba(243, 162, 97, .12);
-  --shuvi-accent-line: rgba(243, 162, 97, .4);
-  --shuvi-secondary: #89b4e8;
-  --shuvi-secondary-soft: rgba(137, 180, 232, .12);
-  --shuvi-shadow: 0 18px 55px rgba(0, 0, 0, .16);
+  --bg: #0B1220;
+  --panel: #142034;
+  --panel-2: #1E293B;
+  --panel-3: #273751;
+  --line: #31435F;
+  --line-soft: #243752;
+  --text: #F8FAFC;
+  --muted: #A6B9D3;
+  --muted-2: #8DA7C9;
+  --accent: #2563EB;
+  --accent-strong: #3B82F6;
+  --shuvi-accent: #2563EB;
+  --shuvi-accent-text: #FFFFFF;
+  --shuvi-accent-soft: rgba(37, 99, 235, .14);
+  --shuvi-accent-line: rgba(96, 165, 250, .46);
+  --shuvi-secondary: #7DD3FC;
+  --shuvi-secondary-soft: rgba(125, 211, 252, .12);
+  --shuvi-brand-light: #7DD3FC;
+  --shuvi-text-gradient: #60A5FA;
+  --shuvi-nav-bg: #0A1628;
+  --shuvi-header-bg: rgba(11, 18, 32, .93);
+  --shuvi-hero-a: #162942;
+  --shuvi-hero-b: #0E1B30;
+  --shuvi-orbit-bg: #1E3A69;
+  --shuvi-shadow: 0 18px 55px rgba(0, 0, 0, .2);
   --sidebar: 240px;
+  --violet: #60A5FA;
+  --indigo: #60A5FA;
+  --orange: #60A5FA;
+  --blue: #60A5FA;
   font-family: Inter, "Segoe UI Variable", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
   font-synthesis: none;
+  color-scheme: dark;
 }
-:root[data-palette="frost"] {
-  --accent: #9bc3f5;
-  --accent-strong: #e2edff;
-  --shuvi-accent: #9bc3f5;
-  --shuvi-accent-text: #17243c;
-  --shuvi-accent-soft: rgba(155, 195, 245, .12);
-  --shuvi-accent-line: rgba(155, 195, 245, .4);
-  --shuvi-secondary: #c7b4ff;
-  --shuvi-secondary-soft: rgba(199, 180, 255, .12);
+:root[data-palette="violet"] {
+  --bg: #120F1F;
+  --panel: #20192F;
+  --panel-2: #2A1F3D;
+  --panel-3: #37284D;
+  --line: #49395F;
+  --line-soft: #362946;
+  --accent: #8B5CF6;
+  --accent-strong: #A78BFA;
+  --shuvi-accent: #8B5CF6;
+  --shuvi-accent-text: #FFFFFF;
+  --shuvi-accent-soft: rgba(139,92,246,.17);
+  --shuvi-accent-line: rgba(167,139,250,.46);
+  --shuvi-secondary: #60A5FA;
+  --shuvi-secondary-soft: rgba(96,165,250,.12);
+  --shuvi-brand-light: #C4B5FD;
+  --shuvi-text-gradient: #A78BFA;
+  --shuvi-nav-bg: #140F23;
+  --shuvi-header-bg: rgba(18,15,31,.94);
+  --shuvi-hero-a: #2B2043;
+  --shuvi-hero-b: #161124;
+  --shuvi-orbit-bg: #342452;
 }
-:root[data-palette="jade"] {
-  --accent: #68d6ac;
-  --accent-strong: #b9f8da;
-  --shuvi-accent: #68d6ac;
-  --shuvi-accent-text: #122a25;
-  --shuvi-accent-soft: rgba(104, 214, 172, .12);
-  --shuvi-accent-line: rgba(104, 214, 172, .4);
-  --shuvi-secondary: #90b8db;
-  --shuvi-secondary-soft: rgba(144, 184, 219, .12);
+:root[data-palette="teal"] {
+  --bg: #071826;
+  --panel: #0B2232;
+  --panel-2: #0F2A3A;
+  --panel-3: #173B50;
+  --line: #275267;
+  --line-soft: #1D3B4D;
+  --accent: #14B8A6;
+  --accent-strong: #2DD4BF;
+  --shuvi-accent: #14B8A6;
+  --shuvi-accent-text: #06252B;
+  --shuvi-accent-soft: rgba(20,184,166,.16);
+  --shuvi-accent-line: rgba(45,212,191,.46);
+  --shuvi-secondary: #38BDF8;
+  --shuvi-secondary-soft: rgba(56,189,248,.12);
+  --shuvi-brand-light: #70E2DA;
+  --shuvi-text-gradient: #2DD4BF;
+  --shuvi-nav-bg: #071C2A;
+  --shuvi-header-bg: rgba(7,24,38,.94);
+  --shuvi-hero-a: #0D3544;
+  --shuvi-hero-b: #082231;
+  --shuvi-orbit-bg: #115163;
+}
+:root[data-palette="steel"] {
+  --bg: #090B0E;
+  --panel: #171E29;
+  --panel-2: #1F2937;
+  --panel-3: #2A3749;
+  --line: #354354;
+  --line-soft: #283442;
+  --accent: #CBD5E1;
+  --accent-strong: #F1F5F9;
+  --shuvi-accent: #CBD5E1;
+  --shuvi-accent-text: #101827;
+  --shuvi-accent-soft: rgba(148,163,184,.13);
+  --shuvi-accent-line: rgba(148,163,184,.48);
+  --shuvi-secondary: #94A3B8;
+  --shuvi-secondary-soft: rgba(148,163,184,.1);
+  --shuvi-brand-light: #F9FAFB;
+  --shuvi-text-gradient: #CBD5E1;
+  --shuvi-nav-bg: #090C11;
+  --shuvi-header-bg: rgba(9,11,14,.95);
+  --shuvi-hero-a: #222D3C;
+  --shuvi-hero-b: #101820;
+  --shuvi-orbit-bg: #334155;
 }
 html { background: var(--bg); scrollbar-color: #3b4658 var(--bg); }
 body {
@@ -63,7 +124,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 }
 ::selection { color: #fff; background: #435779; }
 .sidebar {
-  background: #0e141e;
+  background: var(--shuvi-nav-bg);
   border-right: 1px solid var(--line-soft);
   padding: 23px 13px 17px;
 }
@@ -71,8 +132,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .brand-mark {
   width: 42px; height: 42px; flex-basis: 42px;
   border-radius: 13px;
-  background: linear-gradient(145deg, #f9d7bd, var(--shuvi-accent));
-  color: #20212a;
+  background: linear-gradient(145deg, var(--shuvi-brand-light), var(--shuvi-accent));
+  color: var(--shuvi-accent-text);
   font-size: 20px;
   box-shadow: 0 5px 23px var(--shuvi-accent-soft), inset 0 1px rgba(255,255,255,.5);
 }
@@ -96,7 +157,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   border: 1px solid transparent;
   transition: color .16s, border-color .16s, background .16s, transform .16s;
 }
-.nav-button:hover { color: #fff; background: #1d2838; transform: translateX(2px); }
+.nav-button:hover { color: #fff; background: var(--panel-2); transform: translateX(2px); }
 .nav-button.active {
   color: #fff;
   border-color: var(--shuvi-accent-line);
@@ -105,7 +166,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 }
 .nav-icon {
   color: var(--shuvi-secondary);
-  background: #1c2839;
+  background: var(--shuvi-accent-soft);
   border-radius: 9px;
   min-width: 31px; width: 31px; height: 31px;
   font-size: 13px;
@@ -122,7 +183,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   min-height: 80px;
   padding: 18px 32px;
   border-bottom-color: var(--line-soft);
-  background: rgba(13, 19, 28, .92);
+  background: var(--shuvi-header-bg);
   backdrop-filter: blur(16px);
 }
 .page-eyebrow, .section-kicker { color: var(--shuvi-secondary); font-size: 10px; letter-spacing: .11em; }
@@ -135,12 +196,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   border: 1px solid #5b443c; background: rgba(246, 157, 111, .065);
 }
 .topbar-runtime .status-dot { background: #d4a17d; box-shadow: 0 0 0 3px rgba(212,161,125,.11); }
-.global-search { width: min(310px, 25vw); min-width: 190px; height: 42px; border-color: var(--line); background: #151e2a; }
+.global-search { width: min(310px, 25vw); min-width: 190px; height: 42px; border-color: var(--line); background: var(--panel); }
 .global-search input { font-size: 12px; }
 .global-search input::placeholder { color: #95a3b5; }
-.global-search kbd { color: #a1afc0; border-color: #435068; background: #1e2939; font-size: 10px; }
-.icon-button { color: #adbed3; background: #182231; border-color: var(--line); min-width: 40px; height: 40px; }
-.icon-button:hover { color: #fff; background: #233145; border-color: var(--shuvi-secondary); }
+.global-search kbd { color: #a1afc0; border-color: #435068; background: var(--panel-2); font-size: 10px; }
+.icon-button { color: #adbed3; background: var(--panel-2); border-color: var(--line); min-width: 40px; height: 40px; }
+.icon-button:hover { color: #fff; background: var(--panel-3); border-color: var(--shuvi-secondary); }
 .primary-button {
   min-height: 42px; padding: 0 18px;
   border-radius: 10px; background: var(--shuvi-accent);
@@ -149,8 +210,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 }
 .primary-button:hover { background: var(--accent-strong); transform: translateY(-1px); }
 .primary-button.compact { min-height: 40px; }
-.secondary-button, .ghost-button { min-height: 42px; padding-inline: 15px; font-size: 12px; color: #dde6f5; background: #1a2432; border-color: #3c485a; }
-.secondary-button:hover, .ghost-button:hover { border-color: var(--shuvi-secondary); background: #253449; }
+.secondary-button, .ghost-button { min-height: 42px; padding-inline: 15px; font-size: 12px; color: #dde6f5; background: var(--panel-2); border-color: #3c485a; }
+.secondary-button:hover, .ghost-button:hover { border-color: var(--shuvi-secondary); background: var(--panel-3); }
 .text-button, .module-action { color: var(--shuvi-secondary); font-size: 12px; font-weight: 700; }
 .text-button:hover, .module-action:hover { color: var(--accent-strong); }
 .content-wrap { width: min(1510px, 100%); padding: 25px 32px 56px; }
@@ -176,24 +237,23 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .hero-card {
   min-height: 285px; grid-template-columns: minmax(0, 1fr) minmax(160px, .55fr);
   border-color: #394353; padding: 28px 32px; border-radius: 18px;
-  background: radial-gradient(circle at 92% 23%, var(--shuvi-secondary-soft), transparent 48%),
-    linear-gradient(135deg, #1d2736, #151d2b 80%);
+  background: radial-gradient(circle at 92% 23%, var(--shuvi-secondary-soft), transparent 48%), linear-gradient(135deg, var(--shuvi-hero-a), var(--shuvi-hero-b) 80%);
 }
 .hero-card::before { background: radial-gradient(circle, var(--shuvi-accent-soft), transparent 66%); width: 350px; height: 350px; right: -150px; top: -170px; }
-.hero-kicker { color: #e3c7ae; background: var(--shuvi-accent-soft); border-color: var(--shuvi-accent-line); padding: 7px 11px; font-size: 10px; }
+.hero-kicker { color: var(--shuvi-brand-light); background: var(--shuvi-accent-soft); border-color: var(--shuvi-accent-line); padding: 7px 11px; font-size: 10px; }
 .hero-card h2 {
   max-width: 640px; margin: 17px 0 12px;
   font-size: clamp(28px, 2.8vw, 42px); line-height: 1.1; letter-spacing: -.045em;
   font-weight: 780;
 }
-.hero-card h2 em { font-style: normal; color: var(--shuvi-accent); }
+.hero-card h2 em { font-style: normal; color: var(--shuvi-text-gradient); }
 .hero-card p { color: #b2bfd1; font-size: 12px; line-height: 1.7; max-width: 520px; }
 .hero-actions { gap: 10px; margin-top: 22px; }
 .hero-orbit { transform: scale(.79); transform-origin: center right; width: 226px; height: 226px; margin-left: -20px; }
 .orbit-core {
-  color: #23212a;
+  color: var(--shuvi-accent-text);
   border-color: rgba(255,255,255,.25);
-  background: linear-gradient(145deg, #f9dbc3, var(--shuvi-accent));
+  background: linear-gradient(145deg, var(--shuvi-brand-light), var(--shuvi-accent));
   box-shadow: 0 20px 70px var(--shuvi-accent-soft);
 }
 .orbit-node { border-color: #44536a; color: #c7d9f0; background: #202c3e; font-size: 10px; }
@@ -201,7 +261,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .connection-card { min-height: 285px; padding: 23px; border-radius: 18px; }
 .card-heading h3 { font-size: 16px; letter-spacing: -.025em; }
 .badge, .module-status { min-height: 25px; padding: 0 10px; font-size: 10px; }
-.badge-offline { color: #ebb79a; border-color: #674c42; background: rgba(243,162,97,.07); }
+.badge-offline { color: #F4B4B4; border-color: rgba(225,109,109,.36); background: rgba(225,109,109,.09); }
 .connection-device, .connection-cloud { background: #182333; border-color: #344158; min-height: 75px; }
 .connection-device strong, .connection-cloud strong { font-size: 12px; }
 .connection-device small, .connection-cloud small { font-size: 10px; color: #96a4ba; }
@@ -230,7 +290,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .mini-module-copy strong { font-size: 12px; }
 .mini-module-copy small { color: #9cacc1; font-size: 10px; }
 .quick-list button { background: #172231; border: 1px solid #2d3a4d; border-radius: 11px; }
-.quick-list button:hover { border-color: var(--shuvi-accent-line); background: #202c3d; }
+.quick-list button:hover { border-color: var(--shuvi-accent-line); background: var(--panel-3); }
 .section-intro h2 { font-size: clamp(23px,2.4vw,31px); line-height: 1.25; }
 .section-intro p { font-size: 13px; line-height: 1.6; color: var(--muted); }
 .module-card { border-radius: 15px; padding: 19px; transition: transform .18s, border-color .18s, background .18s; }
@@ -249,11 +309,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .appearance-options { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 12px; margin: 20px 0 0; }
 .appearance-option {
   min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
-  background: #192230; border: 1px solid #394558; border-radius: 13px;
+  background: var(--panel-2); border: 1px solid #394558; border-radius: 13px;
   padding: 16px 17px; color: var(--text); text-align: left;
   transition: border-color .18s, transform .18s, background .18s;
 }
-.appearance-option:hover { border-color: var(--shuvi-secondary); background: #212d3f; transform: translateY(-2px); }
+.appearance-option:hover { border-color: var(--shuvi-secondary); background: var(--panel-3); transform: translateY(-2px); }
 .appearance-option.active { background: var(--shuvi-accent-soft); border-color: var(--shuvi-accent); box-shadow: inset 0 0 0 1px var(--shuvi-accent-line); }
 .theme-swatches { display: flex; gap: 5px; padding-bottom: 12px; }
 .theme-swatches i { width: 26px; height: 26px; border-radius: 8px; border: 1px solid rgba(255,255,255,.15); }
@@ -310,4 +370,56 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 }
 @media(prefers-reduced-motion: reduce) {
   .nav-button:hover, .module-card:hover, .appearance-option:hover, .metric-card:hover { transform: none !important; }
+}
+
+
+/* Consistent Sapphire accents across every existing workspace route:
+   Dashboard, AI Chat, Creative Studio, Tools, Tasks, Models, Activity and Settings. */
+.nav-button.active { background: linear-gradient(100deg, var(--shuvi-accent-soft), var(--panel) 94%); }
+.nav-button.active .nav-icon { color: var(--shuvi-brand-light); }
+.brand-mark { color: var(--shuvi-accent-text); }
+.hero-card { background: radial-gradient(circle at 92% 23%, var(--shuvi-secondary-soft), transparent 48%), linear-gradient(135deg,var(--shuvi-hero-a),var(--shuvi-hero-b) 80%); }
+.hero-card h2 em { color: var(--shuvi-text-gradient); }
+.orbit-core { color: var(--shuvi-accent-text); background: linear-gradient(145deg,var(--shuvi-brand-light),var(--shuvi-accent)); }
+.dashboard-phase { color: var(--shuvi-secondary); border-color: var(--shuvi-accent-line); }
+.hero-kicker { color: var(--shuvi-secondary); }
+.appearance-option.active { color: var(--text); }
+.appearance-options { grid-template-columns: repeat(4,minmax(0,1fr)); }
+.theme-swatches { gap: 5px; max-width: 100%; }
+.theme-swatches i { width: 23px; height: 23px; flex: 0 1 23px; }
+.metric-icon.violet, .metric-icon.amber { color: var(--shuvi-brand-light); background: var(--shuvi-accent-soft); }
+.metric-icon.cyan, .metric-icon.green { color: var(--shuvi-secondary); background: var(--shuvi-secondary-soft); }
+.accent-violet, .accent-indigo, .accent-orange, .accent-amber { color: var(--shuvi-brand-light) !important; background: var(--shuvi-accent-soft) !important; }
+.accent-teal, .accent-cyan, .accent-blue, .accent-green { color: var(--shuvi-secondary) !important; background: var(--shuvi-secondary-soft) !important; }
+.provider-icon, .model-chip { border-color: var(--line); }
+.provider-card.selected, .routing-preset.active, .filter-chip.active { border-color: var(--shuvi-accent-line); background: var(--shuvi-accent-soft); }
+.module-card:hover, .provider-card:hover { border-color: var(--shuvi-accent-line); }
+.module-local-state, .module-category, .mini-module-copy small, .provider-copy span,
+.provider-state small, .draft-task-copy span, .stage-draft-item, .policy-points span,
+.routing-summary, .planning-empty, .stage-empty {
+  color: var(--muted-2); font-size: max(10px, .69rem);
+}
+.provider-copy strong, .draft-task-copy strong, .stage-head strong { font-size: 12px; }
+.provider-copy span, .provider-state small { font-size: 11px; }
+.module-status, .status-ready, .status-local { color: var(--shuvi-secondary); border-color: var(--shuvi-accent-line); }
+.status-development { color: #E7C48E; }
+.mini-module-status { color: var(--shuvi-secondary); font-size: 10px; }
+.connection-device, .connection-cloud, .mini-module, .quick-list button, .stage-draft-container,
+.chat-top, .chat-composer, .routing-summary, .draft-task-row, .model-routing-panel {
+  border-color: var(--line-soft); 
+}
+.chat-composer textarea, .field input, .field select, .global-search, .command-palette-head input {
+  background-color: var(--panel); border-color: var(--line); color: var(--text);
+}
+.chat-composer textarea:focus, .field input:focus, .field select:focus { border-color: var(--shuvi-accent-line); }
+.chat-messages, .activity-panel, .task-stage, .settings-grid .panel { background-color: var(--panel); }
+.task-board .task-stage, .provider-card, .module-card, .context-panel, .panel, .metric-card { border-color: var(--line); }
+.activity-marker, .stage-head span, .settings-icon { color: var(--shuvi-secondary); background: var(--shuvi-accent-soft); }
+.command-palette { background: var(--panel); }
+.command-result:hover, .command-result:focus-visible { background: var(--panel-3); border-color: var(--shuvi-accent-line); }
+@media(max-width: 1200px) {
+  .appearance-options { grid-template-columns: repeat(2,minmax(0,1fr)); }
+}
+@media(max-width: 620px) {
+  .appearance-options { grid-template-columns: 1fr; }
 }
