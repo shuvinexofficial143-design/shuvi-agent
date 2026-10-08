@@ -78,7 +78,7 @@
 
         <div class="content-wrap">
           <section id="view-dashboard" class="view active" data-view="dashboard">
-            <div class="dashboard-heading"><div><span class="section-kicker">OVERVIEW / YOUR WORKSPACE</span><h2>Good to see you back <span aria-hidden="true">✦</span></h2><p>Creative tools, AI models and task planning—organized in one place.</p></div><span class="dashboard-phase">Design phase · Levels 2–4 / 15</span></div>
+            <div class="dashboard-heading"><div><span class="section-kicker">OVERVIEW / YOUR WORKSPACE</span><h2>Good to see you back <span aria-hidden="true">✦</span></h2><p>Creative tools, AI models and task planning—organized in one place.</p></div><span class="dashboard-phase">UI development · Level 7 / 15</span></div>
             <div class="hero-grid">
               <article class="hero-card">
                 <div class="hero-copy">
@@ -151,6 +151,41 @@
                 <div><span>Task drafts</span><strong id="draftMetric">0</strong><small>saved in this browser</small></div>
               </article>
             </div>
+
+            <section class="dashboard-run-summary" aria-label="Native task status">
+              <div class="dashboard-run-heading"><span class="section-kicker">DESKTOP EXECUTION</span><strong>Runtime not paired</strong><span class="dashboard-unsynced-mark">Not synced</span></div>
+              <div class="dashboard-run-grid">
+                <div><span>Running</span><strong aria-label="Not available">—</strong></div>
+                <div><span>Approvals</span><strong aria-label="Not available">—</strong></div>
+                <div><span>Completed</span><strong aria-label="Not available">—</strong></div>
+                <div><span>Failed</span><strong aria-label="Not available">—</strong></div>
+                <button type="button" class="dashboard-draft-button" data-view-jump="tasks"><span>Browser drafts</span><strong id="planDraftStatus">0</strong></button>
+              </div>
+              <p>Dash (—) means unavailable, not zero. The browser cannot inspect or execute Windows tasks until a secure runtime is connected.</p>
+            </section>
+
+            <section class="dashboard-local-overview" aria-label="Browser planning overview">
+              <div class="dashboard-local-heading">
+                <div><span class="section-kicker">YOUR SAVED WORK / THIS BROWSER</span><h2>Planning overview</h2><p>Real counts from local drafts and chats, never simulated agent runs.</p></div>
+                <span class="dashboard-local-sync" id="localPlanningUpdated">No saved activity yet</span>
+              </div>
+              <div class="dashboard-local-metrics">
+                <button type="button" data-view-jump="chat"><span>Conversations</span><strong id="planConversationCount">0</strong><small>Saved in this browser</small></button>
+                <button type="button" data-view-jump="tasks"><span>Task drafts</span><strong id="planDraftCount">0</strong><small>Not running yet</small></button>
+                <button type="button" data-view-jump="tasks"><span>High priority drafts</span><strong id="planHighPriorityCount">0</strong><small>Local planning only</small></button>
+                <button type="button" data-view-jump="activity"><span>Planning events</span><strong id="planActivityCount">0</strong><small>Browser activity log</small></button>
+              </div>
+              <div class="dashboard-local-lists">
+                <article class="panel">
+                  <div class="card-heading"><h3>Recent task drafts</h3><button class="text-button" type="button" data-view-jump="tasks">View tasks →</button></div>
+                  <div id="planRecentDrafts" class="dashboard-entries"></div>
+                </article>
+                <article class="panel">
+                  <div class="card-heading"><h3>Recent conversations</h3><button class="text-button" type="button" data-view-jump="chat">Open chats →</button></div>
+                  <div id="planRecentChats" class="dashboard-entries"></div>
+                </article>
+              </div>
+            </section>
 
             <div class="dashboard-grid">
               <article class="panel span-two">
