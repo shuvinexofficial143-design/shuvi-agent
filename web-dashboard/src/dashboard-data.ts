@@ -100,7 +100,7 @@ export const creativeModules: FeatureModule[] = [
     category: "Programmatic video",
     description: "Code-driven motion graphics and video rendering runtime tracked inside Shuvi.",
     state: "ready",
-    stateLabel: "Runtime present",
+    stateLabel: "Render source present",
     accent: "cyan",
     icon: "Rm",
     capabilities: ["Code-driven compositions", "Reusable motion systems", "Data-bound video", "Render planning"],
