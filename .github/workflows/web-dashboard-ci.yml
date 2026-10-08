@@ -32,5 +32,8 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Test UI contracts
+        run: npm test
+
       - name: Build dashboard
         run: npm run build
