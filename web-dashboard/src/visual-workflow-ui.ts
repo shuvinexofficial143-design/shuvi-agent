@@ -11,7 +11,7 @@ type Actions={
  activity(message:string):void;
  onChange():void;
 };
-export type WorkflowBuilder={refresh():void;selectProject(id:string):void};
+export type WorkflowBuilder={refresh():void;selectProject(id:string):void;selectFlow(id:string):void};
 const KEY="shuvi.web.selected-visual-flow.v1";
 const one=<T extends HTMLElement>(id:string):T=>{
  const result=document.getElementById(id);if(!result)throw Error("Missing flow element #"+id);
@@ -111,7 +111,6 @@ export function mountWorkflowBuilder(actions:Actions):WorkflowBuilder {
  }
  function renderCanvas(plan:FlowPlan):void{
   canvas.replaceChildren();
-  const width=String(plan.nodes.length).padStart(2,"0");
   one<HTMLElement>("flowCanvasTitle").textContent=plan.title;
   one<HTMLElement>("flowStepCount").textContent=String(plan.nodes.length);
   plan.nodes.forEach((step,index)=>{
@@ -231,6 +230,9 @@ export function mountWorkflowBuilder(actions:Actions):WorkflowBuilder {
  renderTemplates();refresh();
  return {
   refresh,
+  selectFlow(flowId:string){
+   if(readFlows().some(f=>f.id===flowId))select(flowId);
+  },
   selectProject(projectId:string){
    const found=readFlows().find(f=>f.projectId===projectId);
    if(found)select(found.id);
