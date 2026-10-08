@@ -1,25 +1,29 @@
 /**
  * Shuvi web-only appearance preferences.
+ * Midnight Sapphire is the default. Older Ember settings are intentionally
+ * not migrated: the previous orange look should never reappear after upgrade.
  * No remote requests, credentials or native runtime actions.
  */
-export type ShuviPalette = "ember" | "frost" | "jade";
-const KEY = "shuvi.web.palette.v1";
+export type ShuviPalette = "sapphire" | "violet" | "teal" | "steel";
+const KEY = "shuvi.web.palette.v2";
 const labels: Record<ShuviPalette, string> = {
-  ember: "Shuvi Ember",
-  frost: "Arctic",
-  jade: "Jade"
+  sapphire: "Midnight Sapphire",
+  violet: "Arctic Violet",
+  teal: "Teal Matrix",
+  steel: "Steel Monochrome"
 };
 
 export function isShuviPalette(value: unknown): value is ShuviPalette {
-  return value === "ember" || value === "frost" || value === "jade";
+  return value === "sapphire" || value === "violet" ||
+    value === "teal" || value === "steel";
 }
 
 export function readPalette(): ShuviPalette {
   try {
     const value: unknown = localStorage.getItem(KEY);
-    return isShuviPalette(value) ? value : "ember";
+    return isShuviPalette(value) ? value : "sapphire";
   } catch {
-    return "ember";
+    return "sapphire";
   }
 }
 
