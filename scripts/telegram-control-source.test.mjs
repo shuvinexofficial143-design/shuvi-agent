@@ -55,3 +55,17 @@ test("Telegram cannot be mistaken for a fake always-on cloud runtime", () => {
   assert.match(telegram, /Telegram native commands unavailable/);
   assert.match(telegram, /The matching pending action was/);
 });
+
+test("Changing Telegram bot token stops the old poller and revokes previous pairing", () => {
+  const handler = rust.split("pub fn telegram_save_bot_token(")[1]?.split("pub fn telegram_delete_bot_token(")[0];
+  assert.ok(handler, "Telegram token rotation handler exists");
+  assert.match(handler, /token_changed = load_bot_token\(\)\?\.as_deref\(\) != Some\(token\)/);
+  assert.match(handler, /if token_changed \{/);
+  assert.match(handler, /running\.store\(false, Ordering::Release\)/);
+  assert.match(handler, /generation\.fetch_add\(1, Ordering::AcqRel\)/);
+  assert.match(handler, /clear_paired_chat_id\(\)\?/);
+  assert.match(handler, /\.paired_chat_id[\s\S]*?= None/);
+  assert.match(handler, /\.pair_code[\s\S]*?= None/);
+  assert.ok(handler.indexOf("clear_paired_chat_id()?") < handler.indexOf(".set_password(token)"),
+    "old chat must be revoked before the new bot token is persisted");
+});
