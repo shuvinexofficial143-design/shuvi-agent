@@ -1,0 +1,67 @@
+/* Shuvi Level 10 — browser planning console for Master + specialist agents */
+.agent-hero,.agent-metrics>div,.agent-worker-section,.agent-delegation-section,.agent-acceptance-note {
+  border:1px solid var(--line);background:var(--panel);border-radius:15px;
+}
+.agent-hero {display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px;padding:18px 22px;margin:22px 0 15px;background:linear-gradient(125deg,var(--panel),var(--shuvi-hero-a));}
+.agent-master-badge {display:flex;gap:12px;align-items:center;}
+.agent-master-badge>span {display:grid;place-items:center;width:47px;height:47px;border-radius:14px;background:var(--shuvi-accent-soft);color:var(--shuvi-secondary);font-size:25px;}
+.agent-master-badge strong {display:block;font-size:15px;color:var(--text);}
+.agent-master-badge small {color:var(--muted);display:block;margin-top:5px;font-size:11px;}
+.agent-master-flow {display:flex;align-items:center;gap:7px;flex-wrap:wrap;}
+.agent-flow-node {background:var(--panel-2);border:1px solid var(--line);border-radius:9px;padding:11px 12px;font-size:11px;color:var(--text);}
+.agent-flow-line {color:var(--shuvi-secondary);}
+.agent-not-connected {font-size:10px;color:#e7bd99;padding:8px 10px;border-radius:999px;border:1px solid rgba(237,187,146,.34);background:rgba(237,187,146,.08);}
+.agent-metrics {display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:13px;margin:0 0 17px;}
+.agent-metrics>div {min-width:0;padding:17px 18px;}
+.agent-metrics span {display:block;color:var(--muted);font-size:11px;}
+.agent-metrics strong {display:block;font-size:28px;color:var(--text);margin:10px 0 5px;line-height:1;}
+.agent-metrics strong.agent-no-runtime {color:var(--muted-2);}
+.agent-metrics small {font-size:10px;color:var(--muted-2);}
+.agent-workspace {display:grid;grid-template-columns:minmax(0,1.27fr) minmax(320px,.9fr);align-items:start;gap:16px;}
+.agent-worker-section,.agent-delegation-section {padding:22px;min-width:0;}
+.agent-block-heading {display:flex;justify-content:space-between;gap:12px;align-items:center;}
+.agent-block-heading h3 {margin:6px 0 0;font-size:17px;letter-spacing:-.03em;}
+.agent-block-heading>span {font-size:10px;color:var(--muted-2);}
+.agent-worker-grid {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px;margin:21px 0 17px;}
+.agent-worker {min-width:0;display:flex;flex-direction:column;gap:11px;padding:15px;text-align:left;color:var(--text);background:var(--panel-2);border:1px solid var(--line);border-radius:12px;cursor:pointer;}
+.agent-worker:hover {border-color:var(--shuvi-accent-line);}
+.agent-worker.selected {background:var(--shuvi-accent-soft);border-color:var(--shuvi-accent);}
+.agent-worker-top {display:flex;align-items:center;gap:11px;}
+.agent-worker-icon {display:grid;place-items:center;flex-shrink:0;width:37px;height:37px;background:var(--shuvi-accent-soft);color:var(--shuvi-secondary);border-radius:10px;font-weight:800;font-size:13px;}
+.agent-worker-text {min-width:0;}
+.agent-worker-text strong {display:block;font-size:12px;line-height:1.3;}
+.agent-worker-text span {display:block;color:var(--muted-2);font-size:10px;margin-top:5px;}
+.agent-worker p {flex:1;font-size:11px;line-height:1.6;color:var(--muted);margin:0;min-height:52px;}
+.agent-worker-lock {font-size:10px;line-height:1.5;color:var(--muted-2);overflow-wrap:anywhere;}
+.agent-worker-state {font-size:10px;font-weight:720;color:#e8b695;}
+.agent-locks {box-shadow:none;padding:18px;}
+.agent-locks h3 {font-size:14px;margin:7px 0 9px;}
+.agent-locks p {font-size:11px;color:var(--muted);line-height:1.65;margin:0 0 14px;}
+.agent-lock-list {display:flex;flex-wrap:wrap;gap:9px;}
+.agent-lock-list span {padding:7px 10px;border-radius:8px;background:var(--panel-2);color:var(--shuvi-secondary);font-size:10px;}
+.agent-plan-form {display:grid;gap:14px;margin-top:20px;}
+.agent-plan-form label {display:grid;gap:8px;color:var(--muted);font-size:11px;}
+.agent-plan-form select,.agent-plan-form textarea {width:100%;min-width:0;background:var(--panel-2);border:1px solid var(--line);border-radius:9px;color:var(--text);padding:11px 13px;font-size:12px;}
+.agent-plan-form select {height:44px;}
+.agent-plan-form textarea {resize:vertical;min-height:75px;line-height:1.6;}
+.agent-plan-form select:focus,.agent-plan-form textarea:focus {border-color:var(--shuvi-accent-line);}
+.agent-plan-form .agent-form-note {font-size:10px;line-height:1.6;color:var(--muted-2);margin:0;}
+.agent-plan-form>small {font-size:10px;line-height:1.5;color:var(--muted-2);}
+.agent-plan-form .primary-button:disabled {opacity:.48;cursor:not-allowed;transform:none;}
+.agent-planned-work {margin-top:27px;padding-top:22px;border-top:1px solid var(--line);}
+.agent-plan-list {display:grid;gap:10px;margin-top:15px;max-height:495px;overflow:auto;}
+.agent-empty {border:1px dashed var(--line);border-radius:11px;color:var(--muted);font-size:11px;line-height:1.7;padding:22px;}
+.agent-plan-card {border:1px solid var(--line);border-radius:11px;padding:14px;background:var(--panel-2);}
+.agent-plan-card-header {display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:11px;}
+.agent-plan-worker {font-size:11px;color:var(--shuvi-secondary);font-weight:700;}
+.agent-plan-tag {font-size:9px;color:var(--muted);border:1px solid var(--line);padding:5px 8px;border-radius:999px;}
+.agent-plan-title {display:block;overflow-wrap:anywhere;font-size:12px;line-height:1.55;}
+.agent-plan-desc {font-size:11px;color:var(--muted);overflow-wrap:anywhere;line-height:1.6;margin:7px 0 12px;}
+.agent-plan-footer {display:flex;justify-content:space-between;gap:10px;align-items:center;padding-top:11px;border-top:1px solid var(--line);}
+.agent-plan-footer>span {color:var(--muted-2);font-size:10px;}
+.agent-plan-remove {font-size:10px;color:#e9b1b5;border:1px solid rgba(234,145,145,.28);background:transparent;padding:8px 10px;border-radius:7px;}
+.agent-plan-remove:hover {background:rgba(234,145,145,.1);}
+.agent-plan-orphan {color:#f0c495;font-size:10px;line-height:1.6;}
+.agent-acceptance-note {padding:16px 19px;margin-top:17px;color:var(--muted);font-size:11px;line-height:1.7;border-style:dashed;}
+@media(max-width:1180px){.agent-workspace {grid-template-columns:1fr;}.agent-master-flow {order:3;width:100%;}.agent-metrics {grid-template-columns:repeat(2,minmax(0,1fr));}}
+@media(max-width:650px){.agent-hero {padding:17px;}.agent-master-flow {gap:5px;}.agent-flow-node {font-size:10px;padding:8px;}.agent-worker-grid {grid-template-columns:1fr;}.agent-worker-section,.agent-delegation-section {padding:16px;}.agent-worker p {min-height:0;}}
