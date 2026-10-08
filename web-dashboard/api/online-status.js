@@ -5,7 +5,7 @@ import {telegramConfigured} from "./telegram.js";
 export default function handler(req,res) {
   if(req.method!=="GET")return httpJson(res,405,{error:"Method not allowed"});
   return httpJson(res,200,{
-    onlineAI:onlineConfigured() && !!process.env.SHUVI_OWNER_ACCESS_KEY && process.env.SHUVI_OWNER_ACCESS_KEY.length>=32,
+    onlineAI:onlineConfigured() && redisConfigured() && !!process.env.SHUVI_OWNER_ACCESS_KEY && process.env.SHUVI_OWNER_ACCESS_KEY.length>=32,
     telegramReady:telegramConfigured(),
     memoryReady:redisConfigured(),
     nativeConnected:false,
