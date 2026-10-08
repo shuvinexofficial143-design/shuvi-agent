@@ -389,20 +389,20 @@ async fn poll_loop(
             .await;
 
         let Ok(response) = response else {
-            tauri::async_runtime::sleep(Duration::from_secs(2)).await;
+            tokio::time::sleep(Duration::from_secs(2)).await;
             continue;
         };
         if !response.status().is_success() {
-            tauri::async_runtime::sleep(Duration::from_secs(2)).await;
+            tokio::time::sleep(Duration::from_secs(2)).await;
             continue;
         }
 
         let Ok(body) = response.json::<TelegramEnvelope<Vec<TelegramUpdate>>>().await else {
-            tauri::async_runtime::sleep(Duration::from_secs(2)).await;
+            tokio::time::sleep(Duration::from_secs(2)).await;
             continue;
         };
         if !body.ok {
-            tauri::async_runtime::sleep(Duration::from_secs(2)).await;
+            tokio::time::sleep(Duration::from_secs(2)).await;
             continue;
         }
 
