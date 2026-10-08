@@ -1,6 +1,7 @@
 import "./styles.css";
 import "./premium-theme.css";
 import "./multi-chat.css";
+import "./smart-dashboard.css";
 import { initializeAppearance } from "./appearance";
 import { mountChatWorkspace, type ChatWorkspace } from "./chat-workspace";
 import { loadChatLibrary } from "./chat-store";
