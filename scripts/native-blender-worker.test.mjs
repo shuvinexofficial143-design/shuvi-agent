@@ -42,5 +42,5 @@ test("Blender mutation/render APIs are not added to the model allowlist",()=>{
   const allowlist=rust.split("fn parse_tool_proposal(")[1].split("fn chat_response(")[0];
   assert.match(allowlist,/\| "blender_inspect"/);
   assert.doesNotMatch(allowlist,/\| "blender_(?:run|render|save|mutate)"/);
-  assert.match(py,/No arbitrary bpy\\/Python, mutation, save or render/);
+  assert.ok(py.includes("No arbitrary bpy/Python, mutation, save or render."));
 });
