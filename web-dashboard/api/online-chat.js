@@ -1,6 +1,7 @@
 import { safeEqual, httpJson, parseObjectBody, cleanHistory, generateOnlineReply, onlineConfigured } from "../server/online-core.mjs";
 import { useDailyChatQuota } from "../server/chat-quota.mjs";
 import {redisConfigured} from "../server/redis-history.mjs";
+import {conversationalRoute} from "../server/cloud-chat-router.mjs";
 
 export default async function handler(req,res) {
   if(req.method!=="POST")return httpJson(res,405,{error:"Method not allowed"});
@@ -15,7 +16,9 @@ export default async function handler(req,res) {
   try {
     const quota=await useDailyChatQuota();
     if(!quota.allowed)return httpJson(res,429,{error:"Daily online AI chat limit reached. No paid model call was made."});
-    const answer=await generateOnlineReply({prompt:body.message,history:cleanHistory(body.history)});
-    return httpJson(res,200,{reply:answer,mode:"cloud_chat_only",computerConnected:false});
+    const route=conversationalRoute(body.message);
+    const answer=await generateOnlineReply({prompt:body.message,history:cleanHistory(body.history),roleInstruction:route.instruction});
+    return httpJson(res,200,{reply:answer,mode:"cloud_chat_only",computerConnected:false,
+      role:route.roleId,tier:route.tier,workersActive:0,selectionSource:route.selectionSource});
   }catch{return httpJson(res,503,{error:"AI is temporarily unavailable. Try again later."});}
 }
