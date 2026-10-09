@@ -8221,6 +8221,7 @@ async fn analyze_png_bytes_with_provider(
     let key = load_api_key(&context.provider)?;
     provider_request_guard::claim_paid_attempt(&context.provider, &context.model, context.base_url.as_deref())?;
 
+    let result:Result<String,String>=async move {
     match context.provider.as_str() {
         "gemini" => {
             let api_key = key
@@ -8400,6 +8401,28 @@ async fn analyze_png_bytes_with_provider(
         }
         other => Err(format!("Provider '{other}' is not supported for screen vision.")),
     }
+    }.await;
+    // Every admitted vision request gets a durable outcome receipt, even if
+    // the provider adapter returns a transport/parse error. This remains
+    // provider usage UNKNOWN, never zero dollars or an invoice.
+    match result {
+        Ok(text) => {
+            provider_request_guard::record_provider_reported_usage(
+                &context.provider,&context.model,context.base_url.as_deref(),None
+            ).map_err(|error|format!(
+                "single vision response received, but usage receipt could not be persisted: {error}. Paid request outcome may be billed; DO NOT automatically retry."
+            ))?;
+            Ok(text)
+        }
+        Err(error) => {
+            provider_request_guard::record_provider_unknown_outcome(
+                &context.provider,&context.model,context.base_url.as_deref()
+            ).map_err(|record_error|format!(
+                "single vision failed: {error}; usage receipt could not be persisted: {record_error}. Paid request outcome UNKNOWN; DO NOT automatically retry."
+            ))?;
+            Err(error)
+        }
+    }
 }
 
 async fn analyze_png_frames_with_provider(
@@ -8440,6 +8463,7 @@ async fn analyze_png_frames_with_provider(
     }
     let key=load_api_key(&context.provider)?;
     provider_request_guard::claim_paid_attempt(&context.provider, &context.model, context.base_url.as_deref())?;
+    let result:Result<String,String>=async move {
     match context.provider.as_str(){
         "gemini"=>{
             let api_key=key.filter(|value|!value.is_empty())
@@ -8549,6 +8573,28 @@ async fn analyze_png_frames_with_provider(
             bounded_provider_text(text,"Multi-frame vision provider")
         }
         other=>Err(format!("Provider '{other}' is not supported for multi-frame vision.")),
+    }
+    }.await;
+    // Every admitted vision request gets a durable outcome receipt, even if
+    // the provider adapter returns a transport/parse error. This remains
+    // provider usage UNKNOWN, never zero dollars or an invoice.
+    match result {
+        Ok(text) => {
+            provider_request_guard::record_provider_reported_usage(
+                &context.provider,&context.model,context.base_url.as_deref(),None
+            ).map_err(|error|format!(
+                "multi vision response received, but usage receipt could not be persisted: {error}. Paid request outcome may be billed; DO NOT automatically retry."
+            ))?;
+            Ok(text)
+        }
+        Err(error) => {
+            provider_request_guard::record_provider_unknown_outcome(
+                &context.provider,&context.model,context.base_url.as_deref()
+            ).map_err(|record_error|format!(
+                "multi vision failed: {error}; usage receipt could not be persisted: {record_error}. Paid request outcome UNKNOWN; DO NOT automatically retry."
+            ))?;
+            Err(error)
+        }
     }
 }
 

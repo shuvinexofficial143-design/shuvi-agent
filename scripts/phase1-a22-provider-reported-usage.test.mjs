@@ -47,3 +47,18 @@ test("A22 preflights the durable usage receipt journal before any paid request r
  assert.match(usage,/preflight_rejects_corrupt_full_and_exhausted_receipt_journals/);
  assert.match(usage,/f\.sync_all\(\)/);
 });
+
+test("A22 every admitted vision request journals successful/missing usage or unknown adapter failure",()=>{
+ const single=native.slice(native.indexOf("async fn analyze_png_bytes_with_provider("),native.indexOf("async fn analyze_png_frames_with_provider("));
+ const multi=native.slice(native.indexOf("async fn analyze_png_frames_with_provider("),native.indexOf("fn is_ignored_workspace_dir("));
+ for(const body of [single,multi]){
+  const admission=body.indexOf("provider_request_guard::claim_paid_attempt(");
+  const handle=body.indexOf("let result:Result<String,String>=async move");
+  assert.ok(admission>=0&&handle>admission,"vision admission must precede fallible provider adapter");
+  assert.match(body,/record_provider_reported_usage\(/);
+  assert.match(body,/record_provider_unknown_outcome\(/);
+  assert.match(body,/DO NOT automatically retry/);
+  assert.match(body,/usage receipt could not be persisted/);
+  assert.match(body,/\\.as_deref\\(\\),None/);
+ }
+});
