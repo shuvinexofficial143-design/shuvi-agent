@@ -49,7 +49,12 @@ const MASTER_GUIDANCE = [
 ].join("\n");
 export function editingMasterContext(messages) {
   if (!Array.isArray(messages)) return "";
-  const lastUser = [...messages].reverse().find(m => m && m.role === "user");
+  // Rust currently represents tool receipts as role:"user" messages. Never
+  // mistake a tool's output for a fresh owner command: it is untrusted data.
+  const lastUser = [...messages].reverse().find(m =>
+    m && m.role === "user" && typeof m.content === "string"
+    && !m.content.trimStart().startsWith("[SHUVI_TOOL_RESULT]")
+  );
   return typeof lastUser?.content === "string" && EDITING_INTENT.test(lastUser.content.slice(0, 16384))
     ? MASTER_GUIDANCE : "";
 }
