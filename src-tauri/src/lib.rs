@@ -2136,7 +2136,7 @@ async fn anthropic_chat(
 }
 
 async fn send_chat(input: ChatInput, api_key: Option<String>) -> Result<ChatResponse, String> {
-    provider_request_guard::claim_paid_attempt(&input.provider, input.base_url.as_deref())?;
+    provider_request_guard::claim_paid_attempt(&input.provider, &input.model, input.base_url.as_deref())?;
     match input.provider.as_str() {
         "gemini" => gemini_chat(input, api_key).await,
         "anthropic" => anthropic_chat(input, api_key).await,
@@ -8196,7 +8196,7 @@ async fn analyze_png_bytes_with_provider(
     }
     let encoded = BASE64.encode(bytes);
     let key = load_api_key(&context.provider)?;
-    provider_request_guard::claim_paid_attempt(&context.provider, context.base_url.as_deref())?;
+    provider_request_guard::claim_paid_attempt(&context.provider, &context.model, context.base_url.as_deref())?;
 
     match context.provider.as_str() {
         "gemini" => {
@@ -8416,7 +8416,7 @@ async fn analyze_png_frames_with_provider(
         ));
     }
     let key=load_api_key(&context.provider)?;
-    provider_request_guard::claim_paid_attempt(&context.provider, context.base_url.as_deref())?;
+    provider_request_guard::claim_paid_attempt(&context.provider, &context.model, context.base_url.as_deref())?;
     match context.provider.as_str(){
         "gemini"=>{
             let api_key=key.filter(|value|!value.is_empty())

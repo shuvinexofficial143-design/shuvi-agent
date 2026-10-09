@@ -1,0 +1,165 @@
+//! A22 user-authorized per-model USD reservation ledger (not actual billing).
+//! Unknown provider/model/endpoint or missing policy fails closed.
+use std::{collections::HashSet,fs::{self,OpenOptions},io::{Read,Seek,SeekFrom,Write},os::windows::fs::OpenOptionsExt,path::{Path,PathBuf}};
+use serde::Deserialize;
+const MAX_POLICY_BYTES:usize=16384;
+const MAX_MODEL_ROWS:usize=64;
+const RECORD_BYTES:usize=21;
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ModelApproval {
+    provider:String,
+    model:String,
+    #[serde(default)]
+    endpoint:Option<String>,
+    reserve_usd_micros:u64,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Policy {
+    version:u32,
+    daily_allowance_usd_micros:u64,
+    models:Vec<ModelApproval>,
+}
+fn parse_policy(bytes:&[u8])->Result<Policy,String>{
+    if bytes.is_empty()||bytes.len()>MAX_POLICY_BYTES {
+        return Err("A22 USD approval policy missing or oversized; paid calls blocked.".into());
+    }
+    let p:Policy=serde_json::from_slice(bytes)
+        .map_err(|_|"A22 USD policy invalid JSON/schema; paid calls blocked.".to_string())?;
+    if p.version!=1||p.daily_allowance_usd_micros==0||p.daily_allowance_usd_micros>1_000_000_000
+        ||p.models.is_empty()||p.models.len()>MAX_MODEL_ROWS {
+        return Err("A22 USD policy invalid version, daily limit or models.".into());
+    }
+    let mut seen=HashSet::new();
+    for m in &p.models {
+        if !matches!(m.provider.as_str(),"openai"|"openrouter"|"gemini"|"anthropic"|"deepseek"|"ollama"|"custom")
+            ||m.model.is_empty()||m.model.len()>256||m.model.trim()!=m.model||m.model.chars().any(char::is_control)
+            ||m.reserve_usd_micros==0||m.reserve_usd_micros>p.daily_allowance_usd_micros
+            ||m.endpoint.as_deref().is_some_and(|e|e.is_empty()||e.len()>4096||e.trim()!=e||e.chars().any(char::is_control))
+            ||(!matches!(m.provider.as_str(),"ollama"|"custom")&&m.endpoint.is_some())
+            ||(m.provider=="custom"&&m.endpoint.is_none()){
+            return Err("A22 USD policy has invalid model, endpoint or reservation.".into());
+        }
+        if !seen.insert((&m.provider,&m.model,&m.endpoint)){
+            return Err("A22 USD policy contains duplicate model approvals.".into());
+        }
+    }
+    Ok(p)
+}
+fn reserve_for_model(p:&Policy,provider:&str,model:&str,endpoint:Option<&str>)->Result<u64,String>{
+    let actual_endpoint=if matches!(provider,"custom"|"ollama"){endpoint}else{None};
+    p.models.iter().find(|m|m.provider==provider&&m.model==model&&m.endpoint.as_deref()==actual_endpoint)
+        .map(|m|m.reserve_usd_micros)
+        .ok_or_else(||"A22 model or endpoint has no explicit USD approval; paid call blocked.".into())
+}
+fn file_ok(path:&Path,allow_missing:bool)->Result<(),String>{
+    match fs::symlink_metadata(path){
+        Ok(meta) if meta.is_file()&&!super::has_windows_reparse(&meta)=>Ok(()),
+        Ok(_)=>Err("A22 USD policy or ledger is not a normal non-reparse file.".into()),
+        Err(e) if allow_missing&&e.kind()==std::io::ErrorKind::NotFound=>Ok(()),
+        Err(e)=>Err(format!("A22 USD policy/ledger inaccessible, blocking paid call: {e}")),
+    }
+}
+fn paths()->Result<(PathBuf,PathBuf),String>{
+    let attempt=super::daily_journal_path()?;
+    let folder=attempt.parent().ok_or("A22 budget directory unavailable.")?;
+    let stamp=attempt.file_name().and_then(|v|v.to_str())
+        .and_then(|v|v.strip_prefix("paid-ai-attempts-utc-"))
+        .ok_or("A22 UTC day unavailable.")?;
+    Ok((folder.join("paid-ai-budget-policy-v1.json"),
+        folder.join(format!("paid-ai-budget-reservations-utc-{stamp}"))))
+}
+fn read_policy(path:&Path)->Result<Policy,String>{
+    file_ok(path,false)?;
+    let mut file=OpenOptions::new().read(true).share_mode(0)
+        .custom_flags(super::OPEN_REPARSE_POINT).open(path)
+        .map_err(|e|format!("A22 USD approval policy cannot be opened: {e}"))?;
+    let meta=file.metadata().map_err(|e|format!("A22 USD policy metadata failed: {e}"))?;
+    if !meta.is_file()||super::has_windows_reparse(&meta){
+        return Err("A22 USD policy handle redirected; paid call blocked.".into());
+    }
+    let mut bytes=Vec::new();
+    (&mut file).take((MAX_POLICY_BYTES+1) as u64).read_to_end(&mut bytes)
+        .map_err(|e|format!("A22 USD policy read failed: {e}"))?;
+    parse_policy(&bytes)
+}
+fn sum_reservations(bytes:&[u8])->Result<u64,String>{
+    if bytes.len()%RECORD_BYTES!=0{
+        return Err("A22 USD ledger has a partial record; paid calls blocked.".into());
+    }
+    let mut sum=0u64;
+    for r in bytes.chunks_exact(RECORD_BYTES){
+        if r[20]!=b'\n'||!r[..20].iter().all(u8::is_ascii_digit){
+            return Err("A22 USD ledger contains invalid data; paid calls blocked.".into());
+        }
+        let n=std::str::from_utf8(&r[..20]).ok().and_then(|s|s.parse::<u64>().ok())
+            .ok_or("A22 USD ledger contains invalid amount.")?;
+        if n==0{return Err("A22 USD ledger contains zero reservation.".into());}
+        sum=sum.checked_add(n).ok_or("A22 USD ledger overflow.")?;
+    }
+    Ok(sum)
+}
+// An approval error must be recognized before reserving any request attempts.
+pub(super) fn preflight(provider:&str,model:&str,endpoint:Option<&str>)->Result<(),String>{
+    let (policy_path,_)=paths()?;
+    let p=read_policy(&policy_path)?;
+    reserve_for_model(&p,provider,model,endpoint).map(|_|())
+}
+pub(super) fn reserve_approved_allowance(provider:&str,model:&str,endpoint:Option<&str>)->Result<(),String>{
+    let (policy_path,journal_path)=paths()?;
+    let policy=read_policy(&policy_path)?;
+    let amount=reserve_for_model(&policy,provider,model,endpoint)?;
+    file_ok(&journal_path,true)?;
+    let mut file=OpenOptions::new().read(true).append(true).create(true)
+        .share_mode(0).custom_flags(super::OPEN_REPARSE_POINT).open(&journal_path)
+        .map_err(|e|format!("A22 USD reservation ledger locked/inaccessible: {e}"))?;
+    let meta=file.metadata().map_err(|e|format!("A22 USD ledger metadata failed: {e}"))?;
+    if !meta.is_file()||super::has_windows_reparse(&meta){
+        return Err("A22 USD ledger handle redirected; paid call blocked.".into());
+    }
+    file.seek(SeekFrom::Start(0)).map_err(|e|format!("A22 USD ledger seek failed: {e}"))?;
+    let mut bytes=Vec::new();
+    let max_len=RECORD_BYTES*(super::MAX_DAILY_PAID_ATTEMPTS+1);
+    (&mut file).take((max_len+1) as u64).read_to_end(&mut bytes)
+        .map_err(|e|format!("A22 USD ledger read failed: {e}"))?;
+    if bytes.len()>max_len{return Err("A22 USD ledger oversized; paid calls blocked.".into());}
+    let total=sum_reservations(&bytes)?.checked_add(amount).ok_or("A22 USD reservation overflow.")?;
+    if total>policy.daily_allowance_usd_micros{
+        return Err("A22 explicitly authorized USD daily allowance reached; paid call blocked.".into());
+    }
+    file.write_all(format!("{amount:020}\n").as_bytes())
+        .map_err(|e|format!("A22 USD reservation failed: {e}"))?;
+    file.sync_all().map_err(|e|format!("A22 USD reservation sync failed, outcome uncertain: {e}"))?;
+    Ok(())
+}
+#[cfg(test)]
+mod tests{
+    use super::*;
+    fn sample()->Policy {
+        parse_policy(br#"{"version":1,"daily_allowance_usd_micros":5000000,"models":[{"provider":"openrouter","model":"test","reserve_usd_micros":1000000},{"provider":"custom","model":"xkiro-test","endpoint":"https://example.test/v1","reserve_usd_micros":2000000}]}"#).unwrap()
+    }
+    #[test]fn exact_model_and_endpoint_required(){
+        let p=sample();
+        assert_eq!(reserve_for_model(&p,"openrouter","test",None).unwrap(),1000000);
+        assert!(reserve_for_model(&p,"openrouter","other",None).is_err());
+        assert_eq!(reserve_for_model(&p,"custom","xkiro-test",Some("https://example.test/v1")).unwrap(),2000000);
+        assert!(reserve_for_model(&p,"custom","xkiro-test",Some("https://different.test/v1")).is_err());
+    }
+    #[test]fn invalid_policies_fail_closed(){
+        for value in [
+            r#"{"version":2,"daily_allowance_usd_micros":5,"models":[{"provider":"openai","model":"a","reserve_usd_micros":1}]}"#,
+            r#"{"version":1,"daily_allowance_usd_micros":0,"models":[{"provider":"openai","model":"a","reserve_usd_micros":1}]}"#,
+            r#"{"version":1,"daily_allowance_usd_micros":5,"models":[{"provider":"openai","model":"a","reserve_usd_micros":0}]}"#,
+            r#"{"version":1,"daily_allowance_usd_micros":5,"models":[{"provider":"openai","model":"a","reserve_usd_micros":6}]}"#,
+            r#"{"version":1,"daily_allowance_usd_micros":5,"models":[{"provider":"custom","model":"a","reserve_usd_micros":1}]}"#
+        ]{assert!(parse_policy(value.as_bytes()).is_err());}
+    }
+    #[test]fn reservations_reject_corruption(){
+        assert_eq!(sum_reservations(b"").unwrap(),0);
+        assert_eq!(sum_reservations(b"00000000000001000000\n").unwrap(),1000000);
+        assert!(sum_reservations(b"00000000000001000000").is_err());
+        assert!(sum_reservations(b"00000000000000000000\n").is_err());
+        assert!(sum_reservations(b"0000000000000100000x\n").is_err());
+    }
+}

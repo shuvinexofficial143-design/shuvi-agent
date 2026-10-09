@@ -4,6 +4,9 @@ use std::sync::atomic::{AtomicUsize,Ordering};
 use reqwest::Url;
 
 #[cfg(windows)]
+mod usd_budget;
+
+#[cfg(windows)]
 use std::{
     fs::{self,File,OpenOptions},
     io::{Read,Seek,SeekFrom,Write},
@@ -121,7 +124,7 @@ fn reserve_durable_daily_attempt()->Result<(),String>{
     Ok(())
 }
 
-pub(crate) fn claim_paid_attempt(provider:&str,base_url:Option<&str>)->Result<(),String>{
+pub(crate) fn claim_paid_attempt(provider:&str,model:&str,base_url:Option<&str>)->Result<(),String>{
     if !is_metered(provider,base_url){
         // Local loopback Ollama does not contact a metered AI service.
         return Ok(());
@@ -135,8 +138,13 @@ pub(crate) fn claim_paid_attempt(provider:&str,base_url:Option<&str>)->Result<()
     }
     #[cfg(windows)]
     {
+        // A22: unknown/missing USD model approval must not consume the
+        // daily paid-request attempt journal merely to report a policy error.
+        usd_budget::preflight(provider,model,base_url)?;
         reserve(&PAID_ATTEMPTS,MAX_PAID_REQUEST_ATTEMPTS_PER_RUNTIME)?;
         reserve_durable_daily_attempt()?;
+        // Reserve a user-approved USD allowance before a potentially billable call.
+        usd_budget::reserve_approved_allowance(provider,model,base_url)?;
         Ok(())
     }
 }
@@ -152,15 +160,15 @@ mod tests{
         assert!(is_metered("ollama",Some("invalid-url")));
     }
     #[test] fn unmetered_local_ollama_is_allowed_without_touching_paid_usage(){
-        assert!(claim_paid_attempt("ollama",None).is_ok());
-        assert!(claim_paid_attempt("ollama",Some("http://127.0.0.1:11434")).is_ok());
+        assert!(claim_paid_attempt("ollama","local",None).is_ok());
+        assert!(claim_paid_attempt("ollama","local",Some("http://127.0.0.1:11434")).is_ok());
     }
     #[cfg(not(windows))]
     #[test] fn metered_endpoints_are_rejected_without_durable_usage_journal(){
-        let error=claim_paid_attempt("openrouter",None).expect_err("remote paid provider must fail closed");
+        let error=claim_paid_attempt("openrouter","test-model",None).expect_err("remote paid provider must fail closed");
         assert!(error.contains("non-Windows"));
-        assert!(claim_paid_attempt("ollama",Some("https://remote.example/v1")).is_err());
-        assert!(claim_paid_attempt("custom",Some("http://localhost:3000")).is_err());
+        assert!(claim_paid_attempt("ollama","test-model",Some("https://remote.example/v1")).is_err());
+        assert!(claim_paid_attempt("custom","test-model",Some("http://localhost:3000")).is_err());
     }
     #[test] fn rejects_after_limit_without_extra_increment(){
         let v=AtomicUsize::new(0);

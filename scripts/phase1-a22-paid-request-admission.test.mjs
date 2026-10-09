@@ -37,3 +37,18 @@ test("A22 metered non-Windows calls never silently bypass daily persisted accoun
  assert.match(guard,/metered_endpoints_are_rejected_without_durable_usage_journal/);
  assert.match(guard,/unmetered_local_ollama_is_allowed_without_touching_paid_usage/);
 });
+
+test("A22 exact model included in every native paid admission",()=>{
+ const calls=[...rust.matchAll(/provider_request_guard::claim_paid_attempt\(([^;]+)\)\?/g)];
+ assert.equal(calls.length,3);
+ for(const [,args] of calls) assert.match(args,/\.(?:model)/);
+ assert.match(guard,/usd_budget::reserve_approved_allowance\(provider,model,base_url\)\?/);
+ assert.match(guard,/#\[cfg\(windows\)\]\s*mod usd_budget;/);
+});
+
+test("A22 rejects missing/unknown USD approval before consuming the paid attempt ledger",()=>{
+ const guardClaim=guard.slice(guard.indexOf("pub(crate) fn claim_paid_attempt("),guard.indexOf("#[cfg(test)]",guard.indexOf("pub(crate) fn claim_paid_attempt(")));
+ const auth=guardClaim.indexOf("usd_budget::preflight(provider,model,base_url)?");
+ const firstAttempt=guardClaim.indexOf("reserve(&PAID_ATTEMPTS");
+ assert.ok(auth>=0 && firstAttempt>auth,"unknown pricing must fail before consuming daily attempt counters");
+});
