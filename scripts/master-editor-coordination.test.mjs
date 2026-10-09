@@ -15,7 +15,8 @@ test("worker availability reflects executable native tools, not browser-only moc
   assert.equal(EDITOR_WORKERS.premiere.inspection,"premiere_context");
   assert.equal(EDITOR_WORKERS.after_effects.execution,"after_effects_run");
   assert.equal(EDITOR_WORKERS.remotion.execution,"motion_graphics_run_remotion");
-  assert.equal(EDITOR_WORKERS.blender.available,false);
+  assert.equal(EDITOR_WORKERS.blender.available,true);
+  assert.equal(EDITOR_WORKERS.blender.inspection,"blender_inspect");
   assert.equal(EDITOR_WORKERS.blender.execution,null);
 });
 
@@ -27,7 +28,7 @@ test("routing requires host evidence and approved Remotion-to-Premiere handoff",
     assert.ok(guide.includes(tool),tool);
   }
   assert.match(guide,/NOT a rendered asset/);
-  assert.match(guide,/Blender.*no callable native worker/);
+  assert.match(guide,/Blender supports blender_inspect read-only/);
   assert.match(guide,/eight-action safety budget/);
   assert.match(guide,/normal approval, audit and checkpoints/);
 });
