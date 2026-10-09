@@ -27,10 +27,10 @@ export const EDITOR_WORKERS = Object.freeze({
     role: "research potential licensed assets, not an asserted download"
   }),
   blender: Object.freeze({
-    available: false,
-    inspection: null,
+    available: true,
+    inspection: "blender_inspect",
     execution: null,
-    role: "separate Blender-agent repository; no native worker dispatch in this app"
+    role: "read-only Python controller bridge; mutation/rendering not connected"
   })
 });
 const EDITING_INTENT = /(?:premiere|premire|प्रिमियर|एडिट|editing|editor|\bedit\b|blender|ब्लेंडर|after\s*effects|आफ्टर\s*इफेक्ट|remotion|motion\s*graphic|मोशन\s*ग्राफिक|cinematic|सिनेमैटिक|\bvfx\b|video|वीडियो|reel|रील)/i;
@@ -42,7 +42,7 @@ const MASTER_GUIDANCE = [
   "- Premiere: use premiere_context/premiere_timeline and current bridge evidence; use typed native editing and final export with fresh project/sequence/clip guards.",
   "- Motion asset needed? Route to existing after_effects_run with exact project/revision OR motion_graphics_generate_plan -> motion_graphics_run_remotion. A planner response is NOT a rendered asset.",
   "- For Remotion-to-Premiere handoff, require reviewed render, motion_graphics_accept_final_remotion and motion_graphics_plan_premiere_insertion before the approved premiere_insert_media step. Never infer a verified render from a path.",
-  "- Blender currently has no callable native worker in this repository. If a task specifically needs Blender, mark that worker unavailable; do not claim to have delegated or rendered 3D.",
+  "- Blender supports blender_inspect read-only through an explicitly approved Python background bridge. Actual 3D edits, saves and renders have no connected native worker yet; do not claim their execution.",
   "- Browser can research asset sources; download/permission, local path and usage rights need independent confirmation before Premiere import.",
   "- Use the existing task_graph with dependency-bound typed action receipts when useful, never model-supplied completion. Shared Windows UI actions are sequential; all mutations keep normal approval, audit and checkpoints.",
   "- A single run has an eight-action safety budget. If more work is needed, preserve progress and report unfinished stages; never mark the whole edit done because one action succeeded."
