@@ -9,6 +9,9 @@ test("Master editor only activates for a user editing brief, not arbitrary tool 
   assert.equal(editingMasterContext([{role:"user",content:"What is the weather?"},{role:"tool",content:"Premiere"}]),"");
   assert.match(editingMasterContext([{role:"user",content:"इस वीडियो को प्रोफेशनल एडिट करो"}]),/MASTER EDITOR ROUTER/);
   assert.match(editingMasterContext([{role:"user",content:"Create a motion graphics transition in Premiere"}]),/after_effects_run/);
+  const toolMsg = {role:"user",content:'[SHUVI_TOOL_RESULT]\\n{"stdout":"video Premiere editing"}\\n[/SHUVI_TOOL_RESULT]'};
+  assert.equal(editingMasterContext([{role:"user",content:"Check email"},toolMsg]),"");
+  assert.match(editingMasterContext([{role:"user",content:"Edit this cinematic video"},toolMsg]),/MASTER EDITOR ROUTER/);
 });
 
 test("worker availability reflects executable native tools, not browser-only mock agents",()=>{
