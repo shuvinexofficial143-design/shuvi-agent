@@ -18127,6 +18127,8 @@ fn clear_session_checkpoint(app: AppHandle) -> Result<(), String> {
 fn photoshop_bridge_start(
     state: State<'_, ActionState>,
 ) -> Result<PhotoshopBridgeStatus,String> {
+    // A09: a bridge lifecycle change cannot race a native editing action.
+    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
     state.photoshop_bridge.start()
 }
 
@@ -18141,6 +18143,8 @@ fn photoshop_bridge_status(
 fn photoshop_bridge_stop(
     state: State<'_, ActionState>,
 ) -> Result<PhotoshopBridgeStatus,String> {
+    // A09: a bridge lifecycle change cannot race a native editing action.
+    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
     state.photoshop_bridge.stop()
 }
 
@@ -18148,6 +18152,8 @@ fn photoshop_bridge_stop(
 fn illustrator_bridge_start(
     state: State<'_, ActionState>,
 ) -> Result<IllustratorBridgeStatus, String> {
+    // A09: a bridge lifecycle change cannot race a native editing action.
+    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
     state.illustrator_bridge.start()
 }
 
@@ -18162,6 +18168,8 @@ fn illustrator_bridge_status(
 fn illustrator_bridge_stop(
     state: State<'_, ActionState>,
 ) -> Result<IllustratorBridgeStatus, String> {
+    // A09: a bridge lifecycle change cannot race a native editing action.
+    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
     state.illustrator_bridge.stop()
 }
 
@@ -18169,6 +18177,8 @@ fn illustrator_bridge_stop(
 fn animate_bridge_start(
     state: State<'_, ActionState>,
 ) -> Result<AnimateBridgeStatus, String> {
+    // A09: a bridge lifecycle change cannot race a native editing action.
+    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
     state.animate_bridge.start()
 }
 
@@ -18183,6 +18193,8 @@ fn animate_bridge_status(
 fn animate_bridge_stop(
     state: State<'_, ActionState>,
 ) -> Result<AnimateBridgeStatus, String> {
+    // A09: a bridge lifecycle change cannot race a native editing action.
+    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
     state.animate_bridge.stop()
 }
 
@@ -18190,6 +18202,8 @@ fn animate_bridge_stop(
 fn audition_bridge_start(
     state: State<'_, ActionState>,
 ) -> Result<AuditionBridgeStatus, String> {
+    // A09: a bridge lifecycle change cannot race a native editing action.
+    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
     state.audition_bridge.start()
 }
 
@@ -18204,6 +18218,8 @@ fn audition_bridge_status(
 fn audition_bridge_stop(
     state: State<'_, ActionState>,
 ) -> Result<AuditionBridgeStatus, String> {
+    // A09: a bridge lifecycle change cannot race a native editing action.
+    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
     state.audition_bridge.stop()
 }
 
@@ -18211,6 +18227,8 @@ fn audition_bridge_stop(
 fn premiere_bridge_start(
     state: State<'_, ActionState>,
 ) -> Result<PremiereBridgeStatus, String> {
+    // A09: a bridge lifecycle change cannot race a native editing action.
+    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
     state.premiere_bridge.start()
 }
 
@@ -18225,6 +18243,8 @@ fn premiere_bridge_status(
 fn premiere_bridge_stop(
     state: State<'_, ActionState>,
 ) -> Result<PremiereBridgeStatus, String> {
+    // A09: a bridge lifecycle change cannot race a native editing action.
+    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
     state.premiere_bridge.stop()
 }
 

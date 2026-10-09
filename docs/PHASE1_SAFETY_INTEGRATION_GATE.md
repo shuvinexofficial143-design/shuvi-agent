@@ -53,6 +53,11 @@ Date: 2026-10-09. Deployment is explicitly forbidden during this phase.
 - High/critical npm advisories and RustSec vulnerability findings fail the advisory job. Empty, malformed, or unavailable audit reports fail closed; summary and raw JSON artifacts are retained for triage.
 - This is a detection workflow, **NOT proof that the dependency graph is patched or vulnerability-free** until the exact job passes and findings are reviewed. Never auto-upgrade a package without affected-feature and build review.
 
+## A09 bridge lifecycle serialization (partial)
+- Native approved tool execution, and **all five Adobe bridge start/stop Tauri commands** (Photoshop, Illustrator, Animate, Audition, Premiere) now share the same Rust-owned execution slot.
+- Bridge status/read commands stay nonexclusive. Concurrent bridge lifecycle operations fail closed while any native tool owns the slot. Shared slot also has real-thread and unwind regression tests.
+- **A09 is not complete:** internal/background workers and application-owned IPC access paths still require entrypoint audit, process ownership verification, and real Windows concurrency tests before parallel agents can safely drive mouse/keyboard.
+
 ## Priority
 A10 atomic write and A08 cancellation before any destructive Windows acceptance;
 A01 baseline before per-module integration; A09 before real parallel workers;
