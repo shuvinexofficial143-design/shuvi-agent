@@ -41,6 +41,9 @@ test("clearing a task removes primary temp and backup checkpoint files",()=>{
   assert.match(store,/path\.with_extension\("json\.tmp"\)/);
   assert.match(store,/path\.with_extension\("json\.bak"\)/);
   assert.match(store,/fs::symlink_metadata\(&candidate\)/);
+  assert.match(store,/let mut verified=Vec::new\(\)/);
+  assert.match(store,/verified\.push\(candidate\)/);
+  assert.match(store,/for candidate in verified/);
   assert.match(store,/fs::remove_file\(&candidate\)/);
 });
 

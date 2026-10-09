@@ -40,6 +40,8 @@ pub fn replace(path:&Path,bytes:&[u8],limit:usize,validate:impl Fn(&[u8])->Resul
 /// session after a clear request has been acknowledged.
 pub fn clear_snapshot(path:&Path)->Result<(),String>{
     let _write=WRITES.lock().map_err(|_|"Snapshot persistence lock unavailable.")?;
+    // Verify every candidate first; an invalid backup must not delete the primary.
+    let mut verified=Vec::new();
     for candidate in [
         path.to_path_buf(),
         path.with_extension("json.tmp"),
@@ -56,9 +58,12 @@ pub fn clear_snapshot(path:&Path)->Result<(),String>{
                         return Err("Refusing to clear Windows reparse snapshot.".into());
                     }
                 }
+                verified.push(candidate);
             }
             Ok(_)=>return Err("Refusing to clear non-regular snapshot path.".into()),
         }
+    }
+    for candidate in verified {
         fs::remove_file(&candidate)
             .map_err(|e|format!("Could not clear snapshot safely: {e}"))?;
     }
@@ -83,6 +88,20 @@ pub fn clear_snapshot(path:&Path)->Result<(),String>{
         assert!(!path.with_extension("json.tmp").exists());
         assert!(!path.with_extension("json.bak").exists());
         clear_snapshot(&path).unwrap();
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test] fn bad_later_backup_never_deletes_valid_primary_or_temp(){
+        let dir=std::env::temp_dir().join(format!("shuvi-clear-safety-{}",uuid::Uuid::new_v4()));
+        fs::create_dir(&dir).unwrap();
+        let file=dir.join("session.json");
+        let temp=file.with_extension("json.tmp");
+        let backup=file.with_extension("json.bak");
+        fs::write(&file,b"keep-primary").unwrap();
+        fs::write(&temp,b"keep-interrupted").unwrap();
+        fs::create_dir(&backup).unwrap();
+        assert!(clear_snapshot(&file).is_err());
+        assert_eq!(fs::read(&file).unwrap(),b"keep-primary");
+        assert_eq!(fs::read(&temp).unwrap(),b"keep-interrupted");
         fs::remove_dir_all(dir).unwrap();
     }
     #[test] fn refuses_to_delete_directory_named_as_checkpoint(){
