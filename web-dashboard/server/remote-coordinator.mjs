@@ -118,7 +118,8 @@ export function createRemoteCoordinator({store,clock=()=>Date.now()}={}) {
   /** A receipt comes only from an authenticated device session. */
   async function recordReceipt(actor,receipt) {
     return transact(actor,"agent",(state,now)=>{
-      if (!validateTaskReceipt(receipt).ok) return fail("invalid_receipt");
+      const shape = validateTaskReceipt(receipt);
+      if (!shape.ok) return shape;
       if (receipt.ownerId!==actor.ownerId || receipt.deviceId!==actor.deviceId)
         return fail("wrong_owner_or_device");
       if (receipt.occurredAt>now+CLOCK_SKEW_MS) return fail("future_receipt");
