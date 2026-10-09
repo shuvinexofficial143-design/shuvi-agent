@@ -36,6 +36,7 @@ export function xkiroConfigured(env=process.env) {
 }
 
 export async function callXkiroFree({env=process.env,messages,fetcher=fetch}) {
+  if(env.SHUVI_AI_CALLS_ENABLED!=="true")throw new Error("AI calls disabled");
   if(!xkiroConfigured(env))throw new Error("xKiro free-model setup incomplete");
   const model=env.XKIRO_CHAT_MODEL||DEFAULT_XKIRO_FREE_MODEL;
   const key=env.XKIRO_API_KEY;
