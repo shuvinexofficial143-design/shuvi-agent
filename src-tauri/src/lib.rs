@@ -2037,7 +2037,7 @@ fn run_hidden_powershell(script: &str) -> Result<std::process::Output, String> {
     #[cfg(target_os = "windows")]
     {
         // A PowerShell/UIA/CDP host call can stop answering indefinitely.
-        // Bound the entire child lifetime rather than waiting in .output().
+        // Bound the entire child lifetime rather than a blocking output wait.
         const POWER_SHELL_DEADLINE: Duration = Duration::from_secs(30);
         let mut child = Command::new("powershell.exe")
             .args([
