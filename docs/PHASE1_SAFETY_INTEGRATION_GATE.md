@@ -43,6 +43,11 @@ Date: 2026-10-09. Deployment is explicitly forbidden during this phase.
 - Lockfiles are committed with this change. Rust attested commands use `--locked`; Web Dashboard and Remotion CI use `npm ci`, never installation-time ad-hoc version resolution.
 - These fixes address application install reproducibility, NOT vulnerability/advisory triage, host runtime certification or A23 dependency security audit. A23 remains OPEN; A24 pending exact-commit CI results.
 
+## A22 partial native paid-model attempt circuit breaker
+- Native text/vision provider entrypoints reserve a shared atomic slot before sending a metered request, with a conservative 48 attempts per running process. Local loopback Ollama is exempt; remote Ollama, unknown and other providers are metered.
+- Paid text model POST requests now have no automatic network or throttling retry; a failed or ambiguous call is not silently duplicated. Frame.io GET retries are unchanged.
+- This guard RESETS on process restart and is **NOT a USD/daily/monthly cost budget**. Provider token rates, billable image/video usage, user-approved price limits, persistent ledger and startup reconciliation remain OPEN for A22.
+
 ## Priority
 A10 atomic write and A08 cancellation before any destructive Windows acceptance;
 A01 baseline before per-module integration; A09 before real parallel workers;
