@@ -143,6 +143,10 @@ pub(crate) fn claim_paid_attempt(provider:&str,model:&str,base_url:Option<&str>)
         // A22: unknown/missing USD model approval must not consume the
         // daily paid-request attempt journal merely to report a policy error.
         usd_budget::preflight(provider,model,base_url)?;
+        // A22: inspect and open the durable receipt journal before any paid
+        // attempt is reserved. A corrupt/full/inaccessible journal must stop
+        // network dispatch, not surprise us after provider billing.
+        reported_usage::preflight_journal()?;
         reserve(&PAID_ATTEMPTS,MAX_PAID_REQUEST_ATTEMPTS_PER_RUNTIME)?;
         reserve_durable_daily_attempt()?;
         // Reserve a user-approved USD allowance before a potentially billable call.

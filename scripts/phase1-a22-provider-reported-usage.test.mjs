@@ -35,3 +35,15 @@ test("A22 text adapter failures persist an unknown outcome without private error
  assert.match(usage,/request_failed_or_unknown/);
  assert.match(usage,/failed_requests_keep_billing_and_tokens_unknown/);
 });
+
+test("A22 preflights the durable usage receipt journal before any paid request reservation",()=>{
+ const claim=guard.slice(guard.indexOf("pub(crate) fn claim_paid_attempt("),guard.indexOf("pub(crate) fn record_provider_unknown_outcome("));
+ const preflight=claim.indexOf("reported_usage::preflight_journal()?");
+ const attempts=claim.indexOf("reserve(&PAID_ATTEMPTS");
+ const durable=claim.indexOf("reserve_durable_daily_attempt()?");
+ assert.ok(preflight>=0 && attempts>preflight && durable>preflight,"journal must be checked before paid admission");
+ assert.match(usage,/pub\(super\) fn preflight_journal\(\)->Result<\(\),String>/);
+ assert.match(usage,/ensure_room_for_receipt\(&bytes\)\?/);
+ assert.match(usage,/preflight_rejects_corrupt_full_and_exhausted_receipt_journals/);
+ assert.match(usage,/f\.sync_all\(\)/);
+});

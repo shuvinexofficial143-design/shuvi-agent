@@ -86,6 +86,45 @@ fn validate_receipt(val:&Value)->Result<(),String>{
     }else if val["status"]!=expected["status"]{return Err(invalid());}
     Ok(())
 }
+// Validate the complete prior journal and leave headroom for one new receipt
+// BEFORE admitting a paid HTTP request. A later crash or concurrent process can
+// still make the actual outcome uncertain; this is not billing reconciliation.
+fn ensure_room_for_receipt(data:&[u8])->Result<(),String>{
+    let count=count_prior_receipts(data)?;
+    if count>=MAX_RECORDS||data.len().saturating_add(MAX_RECORD_BYTES)>MAX_LEDGER_BYTES{
+        return Err("A22 provider usage journal is full; paid request blocked before dispatch.".into());
+    }
+    Ok(())
+}
+#[cfg(windows)]
+pub(super) fn preflight_journal()->Result<(),String>{
+    let out=path()?;
+    super::verify_journal_file_candidate(&out)?;
+    // Create the empty journal here to verify permissions rather than
+    // discovering an unwritable directory only after an API was billed.
+    let mut f=OpenOptions::new().read(true).append(true).create(true)
+        .share_mode(0).custom_flags(super::OPEN_REPARSE_POINT).open(&out)
+        .map_err(|e|format!("A22 usage journal cannot be opened before paid dispatch: {e}"))?;
+    let meta=f.metadata().map_err(|e|format!("A22 preflight journal metadata failed: {e}"))?;
+    if !meta.is_file()||super::has_windows_reparse(&meta){
+        return Err("A22 usage journal preflight detected a redirected file.".into());
+    }
+    if meta.len()>MAX_LEDGER_BYTES as u64{
+        return Err("A22 usage journal preflight detected oversized data.".into());
+    }
+    f.seek(SeekFrom::Start(0))
+        .map_err(|e|format!("A22 usage journal preflight seek failed: {e}"))?;
+    let mut bytes=Vec::new();
+    (&mut f).take((MAX_LEDGER_BYTES+1) as u64).read_to_end(&mut bytes)
+        .map_err(|e|format!("A22 usage journal preflight read failed: {e}"))?;
+    if bytes.len()>MAX_LEDGER_BYTES{
+        return Err("A22 usage journal preflight detected oversized data.".into());
+    }
+    ensure_room_for_receipt(&bytes)?;
+    // Fail before a paid request if storage cannot be synchronized.
+    f.sync_all().map_err(|e|format!("A22 usage journal preflight sync failed: {e}"))?;
+    Ok(())
+}
 #[cfg(windows)]
 pub(super) fn append_receipt(provider:&str,model:&str,endpoint:Option<&str>,reported:Option<(u64,u64,u64)>)->Result<(),String>{
     append_outcome(provider,model,endpoint,reported,false)
@@ -140,6 +179,16 @@ fn append_outcome(provider:&str,model:&str,endpoint:Option<&str>,reported:Option
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test] fn preflight_rejects_corrupt_full_and_exhausted_receipt_journals(){
+        assert!(ensure_room_for_receipt(b"").is_ok());
+        let record=create_receipt("openai","test",None,Some((2,1,3)),42).unwrap();
+        assert!(ensure_room_for_receipt(&record).is_ok());
+        assert!(ensure_room_for_receipt(&record[..record.len()-1]).is_err());
+        let mut full=Vec::new();
+        for _ in 0..MAX_RECORDS {full.extend_from_slice(&record);}
+        assert!(ensure_room_for_receipt(&full).is_err());
+        assert!(ensure_room_for_receipt(b"{}\\n").is_err());
+    }
     #[test] fn failed_requests_keep_billing_and_tokens_unknown(){
         let bytes=create_unknown_receipt("custom","model",Some("https://private.test/v1?key=secret"),22).unwrap();
         let value:Value=serde_json::from_slice(&bytes).unwrap();

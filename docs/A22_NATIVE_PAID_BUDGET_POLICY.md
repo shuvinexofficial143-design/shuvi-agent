@@ -29,3 +29,13 @@ Failed/ambiguous provider requests may already have incurred a charge and are
 still reserved in the request/USD admission ledgers. This does not reconcile
 those charges. Corrupt/oversized receipt journals fail closed; log failures
 must not be silently presented as successful bookkeeping.
+
+### Pre-dispatch usage journal admission (A22 incremental)
+Before metered AI text or vision calls, the native Windows request guard now
+opens and validates the existing daily provider-usage receipt journal, checks
+for corrupt/incomplete/oversized entries and reserves headroom for one more
+receipt. Missing or unwritable storage, malformed entries or a full journal
+block new billable requests **before network dispatch**. This does not prove
+that all requests have usage receipts: process crashes, racing external
+modifications, concurrent instances and provider-side billing remain unknown.
+Missing receipts must never be converted to zero cost.
