@@ -175,6 +175,12 @@ export function createRemoteCoordinator({store,clock=()=>Date.now(),verifyActor}
       return ok({taskId,cancelRequested:true,status:task.receipt.status});
     });
   }
+  async function describe(actor) {
+    return transact(actor,"user",(state)=>ok({
+      ownerId:actor.ownerId,deviceId:actor.deviceId,lastSequence:state.lastSequence,
+      tasks:state.tasks.slice(-25).map(taskView)
+    }));
+  }
   async function list(actor) {
     return transact(actor,"user",(state,now)=>ok(state.tasks.map(t=>({
       ...taskView(t),
@@ -183,5 +189,5 @@ export function createRemoteCoordinator({store,clock=()=>Date.now(),verifyActor}
         : "native_receipt_recorded"
     }))));
   }
-  return Object.freeze({admit,poll,recordReceipt,decide,requestCancel,list});
+  return Object.freeze({admit,poll,recordReceipt,decide,requestCancel,list,describe});
 }
