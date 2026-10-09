@@ -23,7 +23,7 @@ The existing native Telegram feature uses Bot API getUpdates long polling from W
    - TELEGRAM_BOT_TOKEN: private BotFather token.
    - TELEGRAM_WEBHOOK_SECRET: random strong 32+ character letters/numbers/underscore/hyphen.
    - SHUVI_OWNER_ACCESS_KEY: **different** random high-entropy 32+ character value.
-   - UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN: private Redis REST settings; required for atomic update deduplication.
+   - UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN: **optional at this stage**. Configure later for real AI chat history and duplicate suppression.
    - SHUVI_AI_CALLS_ENABLED = false (or leave unset); **do not configure the paid AI provider yet**.
 3. Redeploy production ui-dashboard. These are **server-only** variables, not VITE_-prefixed variables.
 4. In Telegram send /start to your bot in a private chat. In Shuvi Web Settings > Telegram Cloud, enter **only** your owner access key and click Find my Chat ID. Confirm the candidate belongs to YOU, then set TELEGRAM_OWNER_CHAT_ID on Vercel Production and redeploy.
@@ -46,4 +46,4 @@ The existing native Telegram feature uses Bot API getUpdates long polling from W
 - Message history is limited and can be cleared with Telegram /reset; browser online chat text is locally saved until New Conversation. Do not enter passwords or confidential medical records into cloud chat.
 - Provider token prices and free credits are NOT assumed. The chat quota counts attempted model calls, not money. Add an OpenRouter-side dollar spending limit separately.
 - Telegram connectivity-only mode depends on Vercel, Telegram and Upstash; real AI chat additionally depends on OpenRouter and explicit SHUVI_AI_CALLS_ENABLED=true. It is NOT a fully built always-on Windows agent.
-- Webhook setup needs Telegram + owner + Redis secrets but does **not** require an AI model/key. No AI call, bot pairing, webhook activation or remote computer task is implied by a successful GitHub build.
+- Webhook setup needs Telegram + owner secrets only in connection-only mode; Redis and AI provider keys are added **later**. Without Redis, simple Telegram commands have no persistent duplicate suppression; safe no-cost status tests remain possible. No AI call, bot pairing, webhook activation or remote computer task is implied by a successful GitHub build.
