@@ -22,6 +22,8 @@ import { mountCreativeStudio } from "./creative-studio";
 import { mountTaskTimeline, type TaskTimelineController } from "./task-timeline";
 import { initializeAppearance } from "./appearance";
 import { mountChatWorkspace, type ChatWorkspace } from "./chat-workspace";
+import { mountRemoteCommandClient } from "./remote-command-client";
+import "./remote-command-client.css";
 import "./testing-readiness.css";
 import {mountReadinessPanel} from "./testing-readiness";
 import { loadChatLibrary } from "./chat-store";
@@ -1189,11 +1191,13 @@ renderDashboardPlanningQueue();
 renderWebActivity();
 renderLocalOverview();
 bindInteractions();
-// Single Vercel command chat. Native authenticated delivery is not yet connected.
+// Same Vercel command chat. Relay is explicitly opted into; drafts remain
+// offline-safe when it is disconnected. Native execution needs agent receipts.
+const remoteChat = mountRemoteCommandClient(()=>chatWorkspace?.refreshChat());
 chatWorkspace = mountChatWorkspace(message => {
   showToast(message);
   renderLocalOverview();
-});
+}, remoteChat);
 taskTimeline = mountTaskTimeline({
   drafts: readDraftTasks,
   events: readWebActivity,

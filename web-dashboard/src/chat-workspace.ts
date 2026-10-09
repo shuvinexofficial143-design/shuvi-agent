@@ -5,7 +5,11 @@ import {
 } from "./chat-store";
 
 type ViewFilter = "active" | "archived";
-export type ChatWorkspace = { createChat(): void; focusChat(): void };
+export type ChatWorkspace = { createChat(): void; focusChat(): void; refreshChat(): void };
+export type RemoteChatTransport = {
+ connected():boolean;
+ send(text:string,threadId:string):Promise<{ok:boolean;error?:string}>;
+};
 
 function $<T extends HTMLElement>(id: string): T {
   const node = document.getElementById(id);
@@ -25,7 +29,7 @@ function sortThreads(threads: SavedChatThread[]): SavedChatThread[] {
   return [...threads].sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt);
 }
 
-export function mountChatWorkspace(notify: (message: string) => void): ChatWorkspace {
+export function mountChatWorkspace(notify: (message: string) => void, remote?: RemoteChatTransport): ChatWorkspace {
   let library: SavedChatLibrary = loadChatLibrary();
   if (!library.threads.length) {
     const chat = createChatThread();
@@ -38,6 +42,7 @@ export function mountChatWorkspace(notify: (message: string) => void): ChatWorks
   let split = false;
   let splitId = "";
   let deleting = false;
+  let remoteSending = false;
 
   const layout = $<HTMLElement>("chatWorkspaceLayout");
   const threadList = $<HTMLElement>("chatThreads");
@@ -120,7 +125,7 @@ export function mountChatWorkspace(notify: (message: string) => void): ChatWorks
       ? "Planning preference: " + preferredProvider + " · no AI connection or execution"
       : "Choose a preferred AI model on the AI Models page (planning only).";
     heading.textContent = t.title;
-    meta.textContent = t.messages.length + " local messages · " + (t.archived ? "Archived · " : "") + "Windows agent offline · Not delivered";
+    meta.textContent = t.messages.length + " local messages · " + (t.archived ? "Archived · " : "") + (remote?.connected() ? "Cloud link authenticated · native execution unverified" : "Windows agent offline · Not delivered");
     pinnedButton.textContent = t.pinned ? "★ Pinned" : "☆ Pin";
     pinnedButton.setAttribute("aria-pressed", String(t.pinned));
     archivedNotice.hidden = !t.archived;
@@ -140,7 +145,7 @@ export function mountChatWorkspace(notify: (message: string) => void): ChatWorks
       messages.append(empty);
     } else {
       for (const message of t.messages) drawMessage(message, messages);
-      messages.append(node("p", "chat-safety-caption", "Saved locally · Not delivered to Shuvi · No AI response or Windows action"));
+      messages.append(node("p", "chat-safety-caption", remote?.connected() ? "Local history may include cloud-queued commands · check task status for execution evidence" : "Saved locally · Not delivered to Shuvi · No AI response or Windows action"));
     }
     messages.scrollTop = messages.scrollHeight;
   }
@@ -268,11 +273,29 @@ export function mountChatWorkspace(notify: (message: string) => void): ChatWorks
       $<HTMLFormElement>("chatForm").requestSubmit();
     }
   });
-  $<HTMLFormElement>("chatForm").addEventListener("submit", event => {
+  $<HTMLFormElement>("chatForm").addEventListener("submit", async event => {
     event.preventDefault();
     const t = active();
     const text = input.value.trim();
-    if (t.archived || !text) return;
+    if (remoteSending || t.archived || !text) return;
+    if (remote?.connected()) {
+      remoteSending = true;
+      submit.disabled = true;
+      try {
+        const result = await remote.send(text,t.id);
+        if(!result.ok) {
+          notify("Remote command not queued: " + (result.error || "Unknown error") + ". Draft kept.");
+          return;
+        }
+        // Only save as submitted after the remote journal acknowledged admission.
+        const current=library.threads.find(x=>x.id===t.id);
+        if(current)updateThread(addPrompt(current,text));
+        render();
+        input.focus();
+        notify("Command queued in secure relay. Windows execution is not yet confirmed.");
+      } finally {remoteSending=false;submit.disabled=active().archived;}
+      return;
+    }
     const updated = addPrompt(t, text);
     updateThread(updated);
     render();
@@ -340,5 +363,5 @@ export function mountChatWorkspace(notify: (message: string) => void): ChatWorks
 
   render();
   save();
-  return {createChat, focusChat: () => input.focus()};
+  return {createChat, focusChat: () => input.focus(), refreshChat: renderMessages};
 }
