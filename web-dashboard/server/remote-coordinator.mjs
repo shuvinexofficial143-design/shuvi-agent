@@ -178,7 +178,7 @@ export function createRemoteCoordinator({store,clock=()=>Date.now(),verifyActor}
     });
   }
   async function describe(actor) {
-    return transact(actor,"user",(state)=>ok({
+    return transact(actor,"user",(state,now)=>ok({
       ownerId:actor.ownerId,deviceId:actor.deviceId,lastSequence:state.lastSequence,
       agentConnected:Number.isSafeInteger(state.lastAgentPollAt) &&
         state.lastAgentPollAt>0 && now-state.lastAgentPollAt<20_000,
