@@ -29,7 +29,7 @@ import {
 } from "./agent-orchestrator";
 
 import { taskGraphProgress, type GraphAuditEvent } from "./task-graph.mjs";
-import { orchestrationWithMasterEditor } from "./master-editor.mjs";
+import { editingMasterContext, orchestrationWithMasterEditor } from "./master-editor.mjs";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("Missing app root");
@@ -1364,9 +1364,14 @@ async function runAgentStep(): Promise<void> {
     } else {
       await clearActiveCheckpoint();
     }
+    // A native action receipt proves that action, not an entire creative edit.
+    // Master-edit requests must have a completed evidence-backed task graph
+    // before the mobile UI can display a completed task.
+    const masterEditing = Boolean(editingMasterContext(messages));
+    const graphSatisfied = progress.total > 0 && progress.completed === progress.total;
     if(remoteTask)await closeRemoteTask(
       remoteTask.evidenceActionId && !remoteTask.hadFailure &&
-      (!progress.total || progress.completed===progress.total)
+      (masterEditing ? graphSatisfied : (!progress.total || graphSatisfied))
         ? "succeeded" : "outcome_unknown"
     );
     setBusy(false);
