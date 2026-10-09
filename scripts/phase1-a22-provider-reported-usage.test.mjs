@@ -59,6 +59,6 @@ test("A22 every admitted vision request journals successful/missing usage or unk
   assert.match(body,/record_provider_unknown_outcome\(/);
   assert.match(body,/DO NOT automatically retry/);
   assert.match(body,/usage receipt could not be persisted/);
-  assert.match(body,/\\.as_deref\\(\\),None/);
+  assert.match(body,/\.as_deref\(\),None/);
  }
 });
