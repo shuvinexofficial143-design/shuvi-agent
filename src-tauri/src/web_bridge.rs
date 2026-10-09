@@ -7,7 +7,7 @@ use std::{
     net::{TcpListener, TcpStream},
     sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex, OnceLock},
     thread::{self, JoinHandle},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use uuid::Uuid;
 
@@ -51,12 +51,19 @@ fn same_secret(actual: &str, expected: &str) -> bool {
     diff == 0
 }
 
+const TOTAL_HEADER_DEADLINE: Duration = Duration::from_secs(3);
+
 fn read_headers(stream: &mut TcpStream) -> Result<String, ()> {
-    stream.set_read_timeout(Some(Duration::from_secs(2))).map_err(|_| ())?;
+    // A per-read timeout is insufficient: an attacker can trickle one byte
+    // every two seconds and indefinitely block the single bridge worker.
+    let deadline = Instant::now() + TOTAL_HEADER_DEADLINE;
     stream.set_write_timeout(Some(Duration::from_secs(2))).map_err(|_| ())?;
     let mut bytes = Vec::with_capacity(1024);
     let mut buffer = [0u8; 1024];
     while bytes.len() < MAX_HEADERS {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() { return Err(()); }
+        stream.set_read_timeout(Some(remaining)).map_err(|_| ())?;
         let count = stream.read(&mut buffer).map_err(|_| ())?;
         if count == 0 { return Err(()); }
         bytes.extend_from_slice(&buffer[..count]);
