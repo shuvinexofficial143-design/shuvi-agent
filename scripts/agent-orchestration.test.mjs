@@ -23,7 +23,7 @@ test("interrupted tasks resume their persisted orchestration step instead of ste
   assert.match(main,/const restored = normalizeAgentOrchestrationState\(checkpoint\.orchestration\)/);
   assert.match(main,/orchestration = restored/);
   assert.doesNotMatch(main,/resumeTask[\s\S]{0,1800}runAgentStep\(1\)/);
-  assert.match(main,/orchestration_context: orchestrationContext\(orchestration\)/);
+  assert.match(main,/orchestration_context: orchestrationWithMasterEditor\(orchestrationContext\(orchestration\), messages\)/);
 });
 
 test("new user instruction starts fresh state but failures do not auto retry",()=>{
