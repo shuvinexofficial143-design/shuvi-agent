@@ -63,6 +63,9 @@ export function mountOnlineChat():void {
   let messages=load();
   let accessKey="";
   let busy=false;
+  // A14: a cleared conversation must never accept an old network reply.
+  let conversationRevision=0;
+  let activeRequest:AbortController|null=null;
   const error=element("p","shuvi-online-error");
   error.setAttribute("role","alert");form.insertAdjacentElement("afterend",error);
 
@@ -104,8 +107,18 @@ export function mountOnlineChat():void {
   });
   newButton.addEventListener("click",()=>{
     if(messages.length && !window.confirm("Start a new online conversation? This clears saved chat text on this browser."))return;
+    conversationRevision++;
+    // Aborting a fetch is best effort. The provider might still bill the
+    // request; do not retry and never attach the late reply to the new chat.
+    activeRequest?.abort();
+    activeRequest=null;
+    busy=false;send.disabled=false;
     messages=[];try{localStorage.removeItem(CHAT_KEY);}catch{}
-    draw();error.textContent="";input.focus();
+    draw();error.textContent="";
+    status.textContent=accessKey
+      ? "New conversation ready. Previous cloud reply discarded; prior request outcome unknown."
+      : "Cloud connection not configured";
+    input.focus();
   });
   input.addEventListener("keydown",event=>{
     if(event.key==="Enter"&&(event.ctrlKey||event.metaKey)&&!event.isComposing){
@@ -118,6 +131,10 @@ export function mountOnlineChat():void {
     if(busy||!text)return;
     if(!accessKey){error.textContent="पहले Vercel में सेट की गई Private Online Access Key डालकर Unlock करें।";accessInput.focus();return;}
     busy=true;send.disabled=true;error.textContent="";
+    const revision=conversationRevision;
+    const controller=new AbortController();
+    activeRequest=controller;
+    const timeoutId=window.setTimeout(()=>controller.abort(),28000);
     const previous=messages.slice(-16);
     messages=[...messages,{role:"user",content:text}].slice(-24);
     input.value="";draw();status.textContent="Shuvi is thinking…";
@@ -126,9 +143,12 @@ export function mountOnlineChat():void {
         method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+accessKey},
         credentials:"omit",cache:"no-store",
         body:JSON.stringify({message:text,history:previous}),
-        signal:AbortSignal.timeout(28000)
+        signal:controller.signal
       });
       const data:unknown=await response.json();
+      // The user might have started a new conversation while this request
+      // was in flight. Ignore a stale response before touching any UI/data.
+      if(revision!==conversationRevision)return;
       const result=data as {reply?:unknown;error?:unknown;role?:unknown;tier?:unknown};
       if(!response.ok || typeof result.reply!=="string")throw new Error(
         response.status===401?"Wrong access key. Check your Vercel secret.":"Online AI is not configured or temporarily unavailable.");
@@ -139,10 +159,17 @@ export function mountOnlineChat():void {
       const tier=typeof result.tier==="string" && /^(fast|balanced|heavy)$/.test(result.tier)?result.tier:"balanced";
       status.textContent=`Shuvi ${role} · ${tier} response · Windows not connected`;
     }catch(err){
+      if(revision!==conversationRevision)return;
       error.textContent=err instanceof Error?err.message:"Shuvi Online could not reply.";
       status.textContent="Connection not confirmed";
       try{localStorage.setItem(CHAT_KEY,JSON.stringify(messages));}catch{}
-    }finally{busy=false;send.disabled=false;input.focus();}
+    }finally{
+      window.clearTimeout(timeoutId);
+      if(revision===conversationRevision){
+        activeRequest=null;
+        busy=false;send.disabled=false;input.focus();
+      }
+    }
   });
   void fetch("/api/online-status",{cache:"no-store"}).then(async response=>{
     const data=await response.json() as {onlineAI?:boolean};
