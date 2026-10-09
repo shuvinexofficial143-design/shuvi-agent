@@ -1214,6 +1214,13 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
       if (!pendingAction) return;
 
       const actionId = pendingAction.id;
+      if(remoteTask){
+        clearChatPermission();
+        try{await invoke("deny_action",{actionId});}catch{/* fail closed */}
+        await closeRemoteTask("stopped");
+        await stopAgentForSafety("The remote Windows action was denied locally.");
+        return;
+      }
       clearChatPermission();
 
       let deniedConfirmed = false;
@@ -1297,10 +1304,12 @@ async function runAgentStep(): Promise<void> {
   } catch {
     messages.push({ role: "assistant", content: "Shuvi could not safely save task progress. No AI provider request was sent. Check local storage before trying again." });
     renderMessages();
+    if(remoteTask)await closeRemoteTask("outcome_unknown");
     setBusy(false);
     return;
   }
   if (cancelRequested) {
+    if(remoteTask)await closeRemoteTask("stopped");
     setBusy(false);
     return;
   }
@@ -1331,6 +1340,7 @@ async function runAgentStep(): Promise<void> {
         await recordOrchestrationAudit("task_graph_stopped", "User stopped the task after the provider returned; progress retained.");
         await saveActiveCheckpoint();
       } else await clearActiveCheckpoint();
+      if(remoteTask)await closeRemoteTask("outcome_unknown");
       setBusy(false);
       return;
     }
@@ -1724,6 +1734,13 @@ el<HTMLButtonElement>("#stopButton").addEventListener("click", async () => {
   if (pendingAction && pendingChatProposal) {
     const actionId = pendingAction.id;
     const proposal = pendingChatProposal;
+    if(remoteTask){
+      try{await invoke("deny_action",{actionId});}catch{/* conservative stop */}
+      clearChatPermission();
+      await closeRemoteTask("stopped");
+      await stopAgentForSafety("Windows owner stopped the remote task before its action.");
+      return;
+    }
     clearChatPermission();
 
     let denied = false;
@@ -1811,9 +1828,16 @@ el<HTMLButtonElement>("#remoteAgentConnect").addEventListener("click",async()=>{
 });
 el<HTMLButtonElement>("#remoteAgentDisconnect").addEventListener("click",async()=>{
   remoteAgentEnabled=false;
+  if(remoteTask){
+    cancelRequested=true;
+    if(pendingAction){
+      try{await invoke("deny_action",{actionId:pendingAction.id});}catch{/* fail closed */}
+      clearChatPermission();
+    }
+    await closeRemoteTask("outcome_unknown");
+  }
   try{await invoke("remote_agent_disconnect");}
   catch{remoteStatusLabel("Could not revoke OS credential. Verify in Windows credential manager.");return;}
-  if(remoteTask)await closeRemoteTask("outcome_unknown");
   await refreshRemoteAgent();
 });
 function remoteReceipt(status:string,task:RemoteActiveTask,extras:Record<string,unknown>={}){
