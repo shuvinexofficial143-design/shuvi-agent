@@ -48,6 +48,7 @@ function taskView(task) {
     messageId:task.command.messageId, status:r.status,
     revision:r.revision, expiresAt:task.command.expiresAt,
     approvalId:r.status==="requires_approval" ? r.approvalId : undefined,
+    approvalExpiresAt:r.status==="requires_approval" ? r.approvalExpiresAt : undefined,
     cancelRequested:task.cancelRequested===true
   };
 }

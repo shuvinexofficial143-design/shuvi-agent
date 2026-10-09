@@ -6,7 +6,8 @@ import {REMOTE_PROTOCOL} from "./remote-command-contract.mjs";
 
 type Result<T>={ok:boolean;value?:T;error?:string};
 type Status={ownerId:string;deviceId:string;lastSequence:number;
- tasks:Array<{taskId:string;status:string;cancelRequested?:boolean}>};
+ tasks:Array<{taskId:string;status:string;cancelRequested?:boolean;
+  approvalId?:string;approvalExpiresAt?:number}>};
 export type RemoteChatTransport={
  connected():boolean;
  send(text:string,threadId:string):Promise<{ok:boolean;error?:string}>;
@@ -79,14 +80,52 @@ export function mountRemoteCommandClient(onChange:()=>void):RemoteChatTransport 
   }catch{return {ok:false,error:"Remote server unreachable or not configured"};}
   finally{window.clearTimeout(timer);}
  }
+ async function decide(task:{taskId:string;approvalId?:string},choice:"approve"|"deny") {
+  if(!identity||!task.approvalId)return;
+  const decision={
+   ownerId:identity.ownerId,deviceId:identity.deviceId,
+   taskId:task.taskId,approvalId:task.approvalId,decision:choice
+  };
+  const answer=await exchange("POST",{operation:"decide",decision});
+  if(!answer.ok)state.textContent="Approval rejected or expired; no Windows tool was authorized";
+  else state.textContent=choice==="approve"
+    ? "Approval queued for Windows agent; execution not yet confirmed"
+    : "Denial queued for Windows agent";
+  void reload();
+ }
+ async function cancel(taskId:string){
+  const answer=await exchange("POST",{operation:"cancel",taskId});
+  state.textContent=answer.ok
+    ? "Cancellation requested; Windows stop not confirmed"
+    : "Cancellation rejected or task already closed";
+  void reload();
+ }
  function showTasks(status:Status){
   tasks.replaceChildren();
   if(!Array.isArray(status.tasks)||!status.tasks.length) {
    tasks.append(node("small","No remote tasks yet."));return;
   }
   for(const t of status.tasks.slice(-8).reverse()){
-   const item=node("p",String(t.taskId).slice(0,8)+" · "+String(t.status).slice(0,40)+
-      (t.cancelRequested?" · cancel requested":""));
+   const item=node("div");
+   item.className="shuvi-remote-task-item";
+   item.append(node("small",String(t.taskId).slice(0,8)+" · "+String(t.status).slice(0,40)+
+      (t.cancelRequested?" · cancel requested":"")));
+   const active=["received","admitted","running","requires_approval"].includes(t.status);
+   if(t.status==="requires_approval" && t.approvalId &&
+      Number.isSafeInteger(t.approvalExpiresAt) &&
+      t.approvalExpiresAt!>Date.now() && !t.cancelRequested){
+     const approve=node("button","Approve once") as HTMLButtonElement;
+     const deny=node("button","Deny") as HTMLButtonElement;
+     approve.type=deny.type="button";
+     approve.onclick=()=>{approve.disabled=deny.disabled=true;void decide(t,"approve");};
+     deny.onclick=()=>{approve.disabled=deny.disabled=true;void decide(t,"deny");};
+     item.append(approve,deny);
+   }
+   if(active && !t.cancelRequested){
+     const stop=node("button","Request stop") as HTMLButtonElement;
+     stop.type="button";stop.onclick=()=>{stop.disabled=true;void cancel(t.taskId);};
+     item.append(stop);
+   }
    tasks.append(item);
   }
  }

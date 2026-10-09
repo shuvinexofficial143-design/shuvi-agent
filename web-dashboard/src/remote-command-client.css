@@ -9,3 +9,7 @@
 .shuvi-remote-link-notice{font-size:12px;opacity:.8;margin:10px 0 0}
 .shuvi-remote-task-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
 .shuvi-remote-task-list p,.shuvi-remote-task-list small{font-size:11px;border:1px solid #43506a;padding:4px 8px;border-radius:8px;margin:0}
+
+.shuvi-remote-task-item{display:flex;align-items:center;gap:6px;flex-wrap:wrap;border:1px solid #43506a;border-radius:8px;padding:5px}
+.shuvi-remote-task-item button{background:transparent;color:inherit;border:1px solid #697892;padding:4px 7px;border-radius:6px;cursor:pointer;font-size:11px}
+.shuvi-remote-task-item button:disabled{opacity:.5}
