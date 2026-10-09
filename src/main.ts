@@ -315,6 +315,9 @@ function applyProviderDefaults(forceModel = false): void {
   if (!provider) return;
 
   if (forceModel || !modelInput.value) modelInput.value = provider.default_model;
+  modelInput.placeholder = provider.id === "xkiro"
+    ? "Enter the exact xKiro model ID (no default is assumed)"
+    : "Model ID";
   baseUrlLabel.classList.toggle("hidden", !provider.custom_base_url);
   apiKeyLabel.classList.toggle("hidden", !provider.api_key_required);
   activeProvider.textContent = `${provider.name} · ${modelInput.value || provider.default_model}`;

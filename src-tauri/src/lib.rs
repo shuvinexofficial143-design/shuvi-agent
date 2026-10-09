@@ -1066,6 +1066,14 @@ impl Drop for AcceptanceProbeGuard<'_> {
 fn providers() -> Vec<ProviderDescriptor> {
     vec![
         ProviderDescriptor {
+            id: "xkiro",
+            name: "xKiro",
+            // No guessed, possibly chargeable model ID. User chooses a verified model.
+            default_model: "",
+            api_key_required: true,
+            custom_base_url: false,
+        },
+        ProviderDescriptor {
             id: "deepseek",
             name: "DeepSeek",
             default_model: "deepseek-chat",
@@ -1940,6 +1948,7 @@ async fn openai_compatible_chat(
     api_key: Option<String>,
 ) -> Result<ChatResponse, String> {
     let url = match input.provider.as_str() {
+        "xkiro" => "https://api.xkiro.com/v1/chat/completions".to_string(),
         "deepseek" => "https://api.deepseek.com/chat/completions".to_string(),
         "openai" => "https://api.openai.com/v1/chat/completions".to_string(),
         "openrouter" => "https://openrouter.ai/api/v1/chat/completions".to_string(),
@@ -1956,7 +1965,7 @@ async fn openai_compatible_chat(
         _ => return Err("Invalid OpenAI-compatible provider.".into()),
     };
 
-    if matches!(input.provider.as_str(), "deepseek" | "openai" | "openrouter" | "custom")
+    if matches!(input.provider.as_str(), "xkiro" | "deepseek" | "openai" | "openrouter" | "custom")
         && api_key.as_deref().unwrap_or("").is_empty()
     {
         return Err("No API key saved for this provider.".into());
@@ -2145,7 +2154,7 @@ async fn send_chat(input: ChatInput, api_key: Option<String>) -> Result<ChatResp
     let result=match input.provider.as_str() {
         "gemini" => gemini_chat(input, api_key).await,
         "anthropic" => anthropic_chat(input, api_key).await,
-        "deepseek" | "openai" | "openrouter" | "ollama" | "custom" => {
+        "xkiro" | "deepseek" | "openai" | "openrouter" | "ollama" | "custom" => {
             openai_compatible_chat(input, api_key).await
         }
         other => Err(format!("Unsupported provider: {other}")),

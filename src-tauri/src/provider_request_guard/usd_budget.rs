@@ -33,7 +33,7 @@ fn parse_policy(bytes:&[u8])->Result<Policy,String>{
     }
     let mut seen=HashSet::new();
     for m in &p.models {
-        if !matches!(m.provider.as_str(),"openai"|"openrouter"|"gemini"|"anthropic"|"deepseek"|"ollama"|"custom")
+        if !matches!(m.provider.as_str(),"xkiro"|"openai"|"openrouter"|"gemini"|"anthropic"|"deepseek"|"ollama"|"custom")
             ||m.model.is_empty()||m.model.len()>256||m.model.trim()!=m.model||m.model.chars().any(char::is_control)
             ||m.reserve_usd_micros==0||m.reserve_usd_micros>p.daily_allowance_usd_micros
             ||m.endpoint.as_deref().is_some_and(|e|e.is_empty()||e.len()>4096||e.trim()!=e||e.chars().any(char::is_control))
