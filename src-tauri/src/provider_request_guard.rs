@@ -152,6 +152,17 @@ pub(crate) fn claim_paid_attempt(provider:&str,model:&str,base_url:Option<&str>)
 }
 // Persist only actual token counts returned by the provider. No price
 // estimates are invented, and missing metadata is recorded as unknown.
+pub(crate) fn record_provider_unknown_outcome(provider:&str,model:&str,base_url:Option<&str>)->Result<(),String>{
+    if !is_metered(provider,base_url){return Ok(());}
+    #[cfg(windows)]
+    { reported_usage::append_unknown_outcome(provider,model,base_url) }
+    #[cfg(not(windows))]
+    {
+        let _=model;
+        Err("Metered AI outcome receipts require Windows durable storage; paid calls remain blocked.".into())
+    }
+}
+
 pub(crate) fn record_provider_reported_usage(
     provider:&str,model:&str,base_url:Option<&str>,
     reported:Option<(u64,u64,u64)>

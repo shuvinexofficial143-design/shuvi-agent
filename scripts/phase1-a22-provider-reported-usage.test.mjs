@@ -24,3 +24,14 @@ test("A22 usage is not conflated with prices or actual provider invoices",()=>{
  assert.match(usage,/\.share_mode\(0\)\.custom_flags\(super::OPEN_REPARSE_POINT\)/);
  assert.match(usage,/detects_corruption_and_prevents_silent_receipt_loss/);
 });
+test("A22 text adapter failures persist an unknown outcome without private error bodies or reservation refunds",()=>{
+ const start=native.indexOf("async fn send_chat(");
+ const send=native.slice(start,native.indexOf("fn current_runtime_status(",start));
+ const failure=send.slice(send.indexOf("} else {"));
+ assert.match(failure,/record_provider_unknown_outcome\(/);
+ assert.doesNotMatch(failure,/result\.unwrap_err|result\.as_ref|refund|release_approved/);
+ assert.match(failure,/DO NOT automatically retry/);
+ assert.match(guard,/reported_usage::append_unknown_outcome/);
+ assert.match(usage,/request_failed_or_unknown/);
+ assert.match(usage,/failed_requests_keep_billing_and_tokens_unknown/);
+});

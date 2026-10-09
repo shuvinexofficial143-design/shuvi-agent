@@ -2158,6 +2158,14 @@ async fn send_chat(input: ChatInput, api_key: Option<String>) -> Result<ChatResp
         ).map_err(|error|format!(
             "Provider response was received, but the paid AI usage receipt could not be persisted: {error}. The external request may already have been billed; DO NOT automatically retry."
         ))?;
+    } else {
+        // Do not persist raw adapter errors: they can contain private response
+        // bodies or endpoint credentials. Failure is not proof of zero charge.
+        provider_request_guard::record_provider_unknown_outcome(
+            &provider,&model,base_url.as_deref()
+        ).map_err(|error|format!(
+            "Provider request failed or its outcome is unknown, and its accounting receipt could not be persisted: {error}. The USD reservation remains consumed; DO NOT automatically retry."
+        ))?;
     }
     result
 }

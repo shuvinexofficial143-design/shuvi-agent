@@ -59,11 +59,29 @@ fn count_prior_receipts(data:&[u8])->Result<usize,String>{
     Ok(count)
 }
 pub(super) fn append_receipt(provider:&str,model:&str,endpoint:Option<&str>,reported:Option<(u64,u64,u64)>)->Result<(),String>{
+    append_outcome(provider,model,endpoint,reported,false)
+}
+// Adapter errors include transport timeouts, rejected responses and parse failures.
+// None proves that the provider did not bill; never release the USD reservation.
+fn create_unknown_receipt(provider:&str,model:&str,endpoint:Option<&str>,utc:u64)->Result<Vec<u8>,String>{
+    let line=create_receipt(provider,model,endpoint,None,utc)?;
+    let mut value:Value=serde_json::from_slice(&line).map_err(|_|"A22 outcome serialization failed.")?;
+    value["status"]=json!("request_failed_or_unknown");
+    let mut line=serde_json::to_vec(&value).map_err(|_|"A22 outcome serialization failed.")?;
+    line.push(b'\n');
+    if line.len()>MAX_RECORD_BYTES{return Err("A22 outcome receipt exceeds allowed size.".into());}
+    Ok(line)
+}
+pub(super) fn append_unknown_outcome(provider:&str,model:&str,endpoint:Option<&str>)->Result<(),String>{
+    append_outcome(provider,model,endpoint,None,true)
+}
+fn append_outcome(provider:&str,model:&str,endpoint:Option<&str>,reported:Option<(u64,u64,u64)>,unknown:bool)->Result<(),String>{
     let out=path()?;
     super::verify_journal_file_candidate(&out)?;
     let utc=SystemTime::now().duration_since(UNIX_EPOCH)
        .map_err(|_|"A22 provider usage system time invalid.")?.as_secs();
-    let line=create_receipt(provider,model,endpoint,reported,utc)?;
+    let line=if unknown {create_unknown_receipt(provider,model,endpoint,utc)?}
+        else {create_receipt(provider,model,endpoint,reported,utc)?};
     // Serialize writes from all Shuvi processes. Fail closed if another instance
     // owns the journal or a reparse point is swapped in.
     let mut f=OpenOptions::new().read(true).append(true).create(true)
@@ -91,6 +109,17 @@ pub(super) fn append_receipt(provider:&str,model:&str,endpoint:Option<&str>,repo
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test] fn failed_requests_keep_billing_and_tokens_unknown(){
+        let bytes=create_unknown_receipt("custom","model",Some("https://private.test/v1?key=secret"),22).unwrap();
+        let value:Value=serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["status"],"request_failed_or_unknown");
+        for field in ["usd_billed","input_tokens","output_tokens","total_tokens"]{
+            assert!(value[field].is_null(),"{field} must not imply zero usage");
+        }
+        assert!(!String::from_utf8_lossy(&bytes).contains("secret"));
+        assert_eq!(count_prior_receipts(&bytes).unwrap(),1);
+        assert!(create_unknown_receipt("","model",None,22).is_err());
+    }
     #[test] fn successful_and_missing_usage_are_distinct_and_nonmonetary(){
         let ok=create_receipt("openrouter","model",Some("https://example.test/v1"),Some((300,80,380)),10).unwrap();
         let row:Value=serde_json::from_slice(&ok).unwrap();
