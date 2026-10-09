@@ -111,7 +111,7 @@ mod tests {
     // These native tests share Shuvi's real per-user Windows lease. One test
     // must not race another test's intentionally exclusive OS lock fixture.
     #[cfg(windows)]
-    static WINDOWS_TEST_LEASE_MUTEX:std::sync::Mutex<()>=std::sync::Mutex::new();
+    static WINDOWS_TEST_LEASE_MUTEX:std::sync::Mutex<()>=std::sync::Mutex::new(());
     #[test]
     fn only_one_execution_can_own_desktop_at_a_time() {
         #[cfg(windows)]
