@@ -30,6 +30,11 @@ const uniqueNames=[
   "prepare_powershell",
   "prepare_tool",
   "record_agent_event",
+  "remote_agent_disconnect",
+  "remote_agent_pair",
+  "remote_agent_poll",
+  "remote_agent_receipt",
+  "remote_agent_status",
   "runtime_status",
   "save_api_key",
   "save_session_checkpoint",
@@ -46,6 +51,9 @@ test("A01 every UI IPC name resolves to a live Tauri handler, including qualifie
  assert.ok(handlerMatch,"missing Rust Tauri handler");
  assert.equal(new Set(aliases).size,aliases.length,"duplicate registered command alias");
  for(const name of uniqueNames) assert.ok(aliases.includes(name),"UI invokes missing Rust command: "+name);
+ for(const name of ["remote_agent_status","remote_agent_pair","remote_agent_disconnect","remote_agent_poll","remote_agent_receipt"]){
+   assert.ok(declared.includes("remote_agent::"+name),"remote Windows API alias missing: "+name);
+ }
  for(const name of ["web_bridge_start","web_bridge_stop"]){
    assert.ok(declared.includes("web_bridge::"+name),"read-only Web UI bridge alias missing");
  }
