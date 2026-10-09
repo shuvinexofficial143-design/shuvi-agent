@@ -28,3 +28,12 @@ test("bounded child drains streams in parallel and stops on timeout",()=>{
   assert.match(bounded,/outcome of any external action is unknown/);
   assert.match(bounded,/inspect it before retrying/);
 });
+
+test("screen capture shares the bounded PowerShell helper instead of .output()",()=>{
+  const from=rust.indexOf("fn capture_screen_png()");
+  const to=rust.indexOf("async fn analyze_png_with_provider(",from);
+  assert.ok(from>=0&&to>from);
+  const block=rust.slice(from,to);
+  assert.match(block,/run_hidden_powershell\(&script\)/);
+  assert.doesNotMatch(block,/\.output\(\)/);
+});
