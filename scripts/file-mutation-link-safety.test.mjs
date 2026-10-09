@@ -25,8 +25,12 @@ test("write_file creates new targets exclusively and stages existing replacement
   const start=rust.indexOf("ToolAction::WriteFile { path, content }",rust.indexOf("async fn execute_tool_with_action_id"));
   const end=rust.indexOf("ToolAction::CreateDirectory",start);
   const block=rust.slice(start,end);
-  assert.match(block,/create_new\(true\)/);
-  assert.match(block,/ErrorKind::AlreadyExists/);
+  assert.match(block,/fs::symlink_metadata\(target\)/);
+  assert.match(block,/ErrorKind::NotFound/);
+  assert.match(block,/atomic_file::create_new_verified\(target,content\.as_bytes\(\),"write_file"\)/);
+  assert.match(atomic,/fs::hard_link\(&stage,target\)/);
+  assert.match(atomic,/ensure_real_directory_ancestors\(parent\)\?/);
+  assert.match(atomic,/file\.sync_all\(\)/);
   assert.match(block,/atomic_file::replace_existing\(/);
   assert.match(block,/target,content\.as_bytes\(\),None,"write_file"/);
   assert.match(block,/recovery_backup=Some\(backup\)/);

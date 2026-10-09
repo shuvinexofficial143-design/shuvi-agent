@@ -68,6 +68,11 @@ Date: 2026-10-09. Deployment is explicitly forbidden during this phase.
 - The shared managed-process termination command is bounded to 10 seconds with capped stdout/stderr. An unconfirmed termination explicitly reports an unknown outcome, rather than automatically retrying an external action.
 - This does NOT prove rollback of file/project mutations or kill every unrelated descendant retaining handles; real Windows acceptance still required.
 
+## A10 new-file publication hardening (pending exact Windows CI)
+- Newly created files now write to a unique same-directory staged inode, fsync it, and create a no-overwrite hard link into the final path. Existing files still go through backed-up atomic replacement. Direct truncation and partial new-file publication are disallowed.
+- New path ancestors must be real non-reparse directories, including Windows junctions; no silent overwrite of a destination appearing concurrently. If a host/filesystem does not support hard links, file creation fails closed rather than exposing partial bytes.
+- Added disposable Rust fixtures and source regression checks. Host-specific Windows permissions, durability after power loss, and same-user symlink races still need live acceptance.
+
 ## Priority
 A10 atomic write and A08 cancellation before any destructive Windows acceptance;
 A01 baseline before per-module integration; A09 before real parallel workers;

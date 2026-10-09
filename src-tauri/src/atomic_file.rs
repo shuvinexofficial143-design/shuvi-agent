@@ -165,6 +165,51 @@ fn replace_impl(
     })
 }
 
+/// Create a new file without ever exposing partially written bytes.
+/// A same-directory hard link publishes an already-fsynced staging file
+/// without replacing any concurrent existing target.
+fn create_new_impl(target:&Path,contents:&[u8],label:&str,fail_before_publish:bool)->Result<(),String>{
+    let parent=target.parent().ok_or_else(||format!("{label} path has no parent directory."))?;
+    ensure_real_directory_ancestors(parent)?;
+    let stage=private_sibling(parent,"create-stage");
+    let mut published=false;
+    let result=(||{
+        let mut file=OpenOptions::new().write(true).create_new(true).open(&stage)
+            .map_err(|error|format!("Could not stage new {label}: {error}"))?;
+        file.write_all(contents).map_err(|error|format!("Could not write staged {label}: {error}"))?;
+        file.sync_all().map_err(|error|format!("Could not flush staged {label}: {error}"))?;
+        drop(file);
+        ensure_real_directory_ancestors(parent)?;
+        match fs::symlink_metadata(target){
+            Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
+            Ok(_)=>return Err(format!("{label} already exists; refusing to overwrite new-file target.")),
+            Err(error)=>return Err(format!("Cannot inspect {label} target before publication: {error}")),
+        }
+        if fail_before_publish{return Err("Injected new-file pre-publish failure; no target must exist.".into());}
+        // Hard-link creation is atomic and refuses an existing destination.
+        // Rename could silently overwrite a concurrent file on POSIX, so it
+        // must NOT be used here. Both paths are on the same filesystem.
+        fs::hard_link(&stage,target)
+            .map_err(|error|format!("Could not publish complete new {label} atomically: {error}"))?;
+        published=true;
+        let expected:([u8;32],u64)=(Sha256::digest(contents).into(),contents.len() as u64);
+        if source_fingerprint(target,label)?!=expected{
+            return Err("Newly published file bytes differ from staged bytes.".into());
+        }
+        Ok(())
+    })();
+    // Preserve the staged, fully-flushed bytes if the observed post-publish
+    // state differs. No silent retry or automatic rollback after publication.
+    if !published || result.is_ok(){let _=fs::remove_file(&stage);}
+    result.map_err(|error|if published{
+        format!("{error} New file publication outcome is uncertain; inspect {target:?} and staged recovery {stage:?} before retrying.")
+    }else{error})
+}
+
+pub(crate) fn create_new_verified(target:&Path,contents:&[u8],label:&str)->Result<(),String>{
+    create_new_impl(target,contents,label,false)
+}
+
 /// Existing regular file only: no creation, no in-place truncation.
 /// On success caller receives a recoverable backup path.
 pub(crate) fn replace_existing(
@@ -186,6 +231,62 @@ mod tests {
         fs::write(&target,b"original content").expect("create initial content");
         (parent, target)
     }
+    #[test]
+    fn new_file_is_published_only_after_complete_binary_write(){
+        let (dir,_) = fixture();
+        let target=dir.join("new-binary.dat");
+        let contents=[0_u8,255,14,10,6,0,1];
+        create_new_verified(&target,&contents,"new fixture").unwrap();
+        assert_eq!(fs::read(&target).unwrap(),contents.to_vec());
+        assert_eq!(fs::read_dir(&dir).unwrap().count(),2,"no temporary stage after publish");
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn new_file_injected_failure_never_publishes_partial_target(){
+        let (dir,_) = fixture();
+        let target=dir.join("absent.txt");
+        assert!(create_new_impl(&target,b"complete bytes","new fixture",true).is_err());
+        assert!(!target.exists());
+        assert_eq!(fs::read_dir(&dir).unwrap().count(),1,"incomplete stage must be cleaned");
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn new_file_refuses_to_overwrite_concurrent_existing_target(){
+        let (dir,_) = fixture();
+        let target=dir.join("already-here.txt");
+        fs::write(&target,b"not replaceable").unwrap();
+        assert!(create_new_verified(&target,b"unexpected bytes","new fixture").is_err());
+        assert_eq!(fs::read(&target).unwrap(),b"not replaceable");
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn new_file_rejects_symlinked_ancestor(){
+        use std::os::unix::fs::symlink;
+        let (dir,_) = fixture();
+        let real=dir.join("real");
+        fs::create_dir(&real).unwrap();
+        symlink(&real,dir.join("alias")).unwrap();
+        assert!(create_new_verified(&dir.join("alias").join("bad.txt"),b"new data","test").is_err());
+        assert!(!real.join("bad.txt").exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[cfg(windows)]
+    #[test]
+    fn new_file_rejects_windows_junction_ancestor(){
+        use std::process::Command;
+        let (dir,_) = fixture();
+        let real=dir.join("real");
+        fs::create_dir(&real).unwrap();
+        let alias=dir.join("alias");
+        let created=Command::new("cmd").args(["/C","mklink","/J"]).arg(&alias).arg(&real).output().unwrap();
+        assert!(created.status.success(),"junction fixture failed: {}",String::from_utf8_lossy(&created.stderr));
+        assert!(create_new_verified(&alias.join("bad.txt"),b"new data","test").is_err());
+        assert!(!real.join("bad.txt").exists());
+        fs::remove_dir(&alias).unwrap();
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn pre_publish_failure_preserves_existing_file() {
         let (dir,target)=fixture();

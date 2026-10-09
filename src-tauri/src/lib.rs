@@ -9526,22 +9526,19 @@ async fn execute_tool_with_action_id(
         ToolAction::WriteFile { path, content } => {
             let target = Path::new(&path);
             let mut recovery_backup: Option<std::path::PathBuf> = None;
-            match OpenOptions::new().write(true).create_new(true).open(target) {
-                Ok(mut file) => {
-                    file.write_all(content.as_bytes())
-                        .map_err(|error| format!("Could not write new file: {error}"))?;
-                    file.sync_all()
-                        .map_err(|error| format!("Could not flush new file: {error}"))?;
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            // Do not expose partially written new files. Existing files are
+            // published with an independently verified recovery backup.
+            match fs::symlink_metadata(target) {
+                Ok(_) => {
                     let backup=atomic_file::replace_existing(
                         target,content.as_bytes(),None,"write_file"
                     )?;
-                    // Keep the previous exact content recoverable on disk.
-                    // The recovery path is disclosed in the action's audit-visible result.
                     recovery_backup=Some(backup);
                 }
-                Err(error) => return Err(format!("Could not create file: {error}")),
+                Err(error) if error.kind()==std::io::ErrorKind::NotFound => {
+                    atomic_file::create_new_verified(target,content.as_bytes(),"write_file")?;
+                }
+                Err(error) => return Err(format!("Could not inspect new file target: {error}")),
             }
 
             Ok(ActionResult {
