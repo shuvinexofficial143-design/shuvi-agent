@@ -58,6 +58,11 @@ Date: 2026-10-09. Deployment is explicitly forbidden during this phase.
 - Bridge status/read commands stay nonexclusive. Concurrent bridge lifecycle operations fail closed while any native tool owns the slot. Shared slot also has real-thread and unwind regression tests.
 - **A09 is not complete:** internal/background workers and application-owned IPC access paths still require entrypoint audit, process ownership verification, and real Windows concurrency tests before parallel agents can safely drive mouse/keyboard.
 
+## A10 byte-verified Windows publication and recovery (pending exact Windows CI)
+- After the OS publishes a staged file, native A10 code independently hashes the new target and the same-directory recovery backup and compares those with the intended new bytes and the fingerprint of the original file. Mismatch refuses a success receipt and preserves available evidence as an **uncertain external mutation** requiring manual inspection.
+- Existing pre-publish fault injection remains fail-closed. Added safe temporary-directory Rust tests for binary-byte restoration, missing targets, pre-publish failure and symlinked file paths, plus a Windows disposable junction-ancestor test.
+- This is not a complete defense against a malicious same-user process racing filesystem paths, and a successful CI on Windows is not proof of durable power-failure recovery. Real Windows/Adobe acceptance remains explicitly pending.
+
 ## Priority
 A10 atomic write and A08 cancellation before any destructive Windows acceptance;
 A01 baseline before per-module integration; A09 before real parallel workers;

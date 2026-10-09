@@ -142,6 +142,15 @@ fn replace_impl(
         }
         publication_attempted=true;
         publish_replacement(target, &stage, &backup)?;
+        // The OS reporting a completed replacement is not sufficient evidence:
+        // verify both the new bytes and recoverability of the exact old bytes.
+        // Any mismatch is an *uncertain external mutation*; never auto-retry.
+        let expected_new:([u8;32],u64)=(Sha256::digest(replacement).into(),replacement.len() as u64);
+        let actual_new=source_fingerprint(target,label)?;
+        let actual_backup=source_fingerprint(&backup,"replacement backup")?;
+        if actual_new!=expected_new || actual_backup!=before {
+            return Err("Published replacement or recovery backup did not match the verified bytes.".into());
+        }
         Ok(backup.clone())
     })();
     // A failed OS publication may be partial. Keep staged and backup evidence
@@ -214,4 +223,71 @@ mod tests {
         assert_eq!(fs::read(real.join("note.txt")).unwrap(),b"original content");
         fs::remove_dir_all(dir).unwrap();
     }
+    #[test]
+    fn refuses_to_create_missing_target_or_overwrite_a_directory(){
+        let (dir,target)=fixture();
+        let missing=dir.join("absent.txt");
+        assert!(replace_existing(&missing,b"new bytes",None,"test").is_err());
+        assert!(!missing.exists());
+        assert!(replace_existing(&dir,b"new bytes",None,"test").is_err());
+        assert_eq!(fs::read(&target).unwrap(),b"original content");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn binary_exact_byte_recovery_after_success(){
+        let (dir,target)=fixture();
+        let before=[0_u8,1,255,13,10,42];
+        let next=[10_u8,0,99,255,99];
+        fs::write(&target,&before).unwrap();
+        let backup=replace_existing(&target,&next,Some(&before),"test").unwrap();
+        assert_eq!(fs::read(&target).unwrap(),next.to_vec());
+        assert_eq!(fs::read(&backup).unwrap(),before.to_vec());
+        assert_ne!(backup,target);
+        assert_eq!(fs::read_dir(&dir).unwrap().count(),2);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn original_is_not_changed_on_empty_replacement_failure_injection(){
+        let (dir,target)=fixture();
+        assert!(replace_impl(&target,b"",Some(b"original content"),"test",true).is_err());
+        assert_eq!(fs::read(&target).unwrap(),b"original content");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(),1);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_target_is_rejected_without_overwriting_destination(){
+        use std::os::unix::fs::symlink;
+        let (dir,target)=fixture();
+        let alias=dir.join("linked-note.txt");
+        symlink(&target,&alias).unwrap();
+        assert!(replace_existing(&alias,b"bad bytes",None,"test").is_err());
+        assert_eq!(fs::read(&target).unwrap(),b"original content");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_junction_in_ancestor_is_refused(){
+        // Junction creation needs no admin privileges on most Windows CI
+        // environments; if this host forbids it, test Windows metadata
+        // flag detection separately rather than treating junction test as pass.
+        use std::process::Command;
+        let (dir,target)=fixture();
+        let real=dir.join("real").join("nested");
+        fs::create_dir_all(&real).unwrap();
+        fs::copy(&target,real.join("note.txt")).unwrap();
+        let alias=dir.join("linked");
+        let result=Command::new("cmd").args(["/C","mklink","/J"])
+            .arg(&alias).arg(dir.join("real")).output().unwrap();
+        assert!(result.status.success(),"Windows junction fixture creation failed: {}",String::from_utf8_lossy(&result.stderr));
+        assert!(replace_existing(&alias.join("nested").join("note.txt"),b"bad bytes",None,"test").is_err());
+        assert_eq!(fs::read(real.join("note.txt")).unwrap(),b"original content");
+        fs::remove_dir(&alias).unwrap();
+        fs::remove_dir_all(dir).unwrap();
+    }
+
 }
