@@ -26,3 +26,14 @@ test("A22 circuit breaker atomic across workers and labeled nonmonetary",()=>{
  assert.match(guard,/concurrently_enforces_same_runtime_limit/);
  assert.match(guard,/NOT a USD or daily budget/);
 });
+
+test("A22 metered non-Windows calls never silently bypass daily persisted accounting",()=>{
+ const claim=guard.slice(guard.indexOf("pub(crate) fn claim_paid_attempt("),guard.indexOf("#[cfg(test)]",guard.indexOf("pub(crate) fn claim_paid_attempt(")));
+ assert.match(claim,/if !is_metered\(provider,base_url\)/);
+ assert.match(claim,/#\[cfg\(not\(windows\)\)\]/);
+ assert.match(claim,/Metered AI requests are blocked on non-Windows runtimes/);
+ assert.match(claim,/#\[cfg\(windows\)\]/);
+ assert.match(claim,/reserve_durable_daily_attempt\(\)\?/);
+ assert.match(guard,/metered_endpoints_are_rejected_without_durable_usage_journal/);
+ assert.match(guard,/unmetered_local_ollama_is_allowed_without_touching_paid_usage/);
+});

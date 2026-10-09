@@ -122,12 +122,23 @@ fn reserve_durable_daily_attempt()->Result<(),String>{
 }
 
 pub(crate) fn claim_paid_attempt(provider:&str,base_url:Option<&str>)->Result<(),String>{
-    if is_metered(provider,base_url){
-        reserve(&PAID_ATTEMPTS,MAX_PAID_REQUEST_ATTEMPTS_PER_RUNTIME)?;
-        #[cfg(windows)]
-        reserve_durable_daily_attempt()?;
+    if !is_metered(provider,base_url){
+        // Local loopback Ollama does not contact a metered AI service.
+        return Ok(());
     }
-    Ok(())
+    #[cfg(not(windows))]
+    {
+        // A22: the persisted cross-process paid-attempt journal only exists on
+        // Windows. Do not silently fall back to a restart-resettable in-memory
+        // counter on Linux/macOS for billable or remote endpoints.
+        return Err("Metered AI requests are blocked on non-Windows runtimes until a durable cross-process spending journal is available. Local loopback Ollama remains supported.".into());
+    }
+    #[cfg(windows)]
+    {
+        reserve(&PAID_ATTEMPTS,MAX_PAID_REQUEST_ATTEMPTS_PER_RUNTIME)?;
+        reserve_durable_daily_attempt()?;
+        Ok(())
+    }
 }
 #[cfg(test)]
 mod tests{
@@ -139,6 +150,17 @@ mod tests{
         assert!(!is_metered("ollama",Some("http://127.0.0.1:11434")));
         assert!(is_metered("ollama",Some("https://paid.example/v1")));
         assert!(is_metered("ollama",Some("invalid-url")));
+    }
+    #[test] fn unmetered_local_ollama_is_allowed_without_touching_paid_usage(){
+        assert!(claim_paid_attempt("ollama",None).is_ok());
+        assert!(claim_paid_attempt("ollama",Some("http://127.0.0.1:11434")).is_ok());
+    }
+    #[cfg(not(windows))]
+    #[test] fn metered_endpoints_are_rejected_without_durable_usage_journal(){
+        let error=claim_paid_attempt("openrouter",None).expect_err("remote paid provider must fail closed");
+        assert!(error.contains("non-Windows"));
+        assert!(claim_paid_attempt("ollama",Some("https://remote.example/v1")).is_err());
+        assert!(claim_paid_attempt("custom",Some("http://localhost:3000")).is_err());
     }
     #[test] fn rejects_after_limit_without_extra_increment(){
         let v=AtomicUsize::new(0);
