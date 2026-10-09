@@ -1,3 +1,4 @@
+import { workerQueueView } from "./master-worker-queue.mjs";
 // Pure bounded coordinator. Provider metadata is never execution authority.
 export const GRAPH_LIMIT = 8;
 export const GRAPH_REVISION_LIMIT = 8;
@@ -139,6 +140,14 @@ export function graphDependencyFailure(graph, proposal) {
   if (missing.length) return "Task dependency missing: " + missing.join(", ");
   if (step.status === "blocked") return "Task step must be recalculated as ready before execution.";
   if (step.expected_tool !== proposal.tool) return "Task step requires typed tool " + step.expected_tool + ".";
+  // Defense in depth: a model-proposed completed status is not enough to
+  // unlock cross-application work, and a shared app lane cannot be double-booked.
+  const lane = workerQueueView(graph);
+  const job = lane.jobs.find(j => j.id === stepId);
+  if (job?.worker === "unsupported") return "No native worker exists for this typed tool.";
+  if (job && !lane.ready_job_ids.includes(stepId)) {
+    return "Worker lane is busy, unavailable, or lacks exact Rust-audited dependency evidence.";
+  }
   return null;
 }
 
