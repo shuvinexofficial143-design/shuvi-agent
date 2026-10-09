@@ -17581,7 +17581,11 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                         std::thread::sleep(Duration::from_millis(250));
                     }
                 });
-                let output = child.wait_with_output();
+                // Manual Permission Lab shells are allowed to run longer than
+                // UIA probes, but must never wait forever or buffer unbounded logs.
+                let output = bounded_child::collect_with_deadline(
+                    child, Duration::from_secs(120),
+                );
                 let _ = monitor.join();
                 output
             });
