@@ -320,10 +320,19 @@ function applyProviderDefaults(forceModel = false): void {
   activeProvider.textContent = `${provider.name} · ${modelInput.value || provider.default_model}`;
 }
 
+// A20: The browser can throw on localStorage access (policy, private mode,
+// WebView sandbox or quota). Provider UI must remain usable without storage.
+function readLocalPreference(key: string): string | null {
+  try { return window.localStorage.getItem(key); } catch { return null; }
+}
+function writeLocalPreference(key: string, value: string): boolean {
+  try { window.localStorage.setItem(key, value); return true; } catch { return false; }
+}
+
 function loadSavedProvider(): void {
-  const id = localStorage.getItem("shuvi.provider");
-  const model = localStorage.getItem("shuvi.model");
-  const baseUrl = localStorage.getItem("shuvi.baseUrl");
+  const id = readLocalPreference("shuvi.provider");
+  const model = readLocalPreference("shuvi.model");
+  const baseUrl = readLocalPreference("shuvi.baseUrl");
 
   if (id && providers.some((provider) => provider.id === id)) providerSelect.value = id;
   if (model) modelInput.value = model;
@@ -333,11 +342,15 @@ function loadSavedProvider(): void {
 }
 
 function saveProviderSettings(): void {
-  localStorage.setItem("shuvi.provider", providerSelect.value);
-  localStorage.setItem("shuvi.model", modelInput.value.trim());
-  localStorage.setItem("shuvi.baseUrl", baseUrlInput.value.trim());
+  const saved = [
+    writeLocalPreference("shuvi.provider", providerSelect.value),
+    writeLocalPreference("shuvi.model", modelInput.value.trim()),
+    writeLocalPreference("shuvi.baseUrl", baseUrlInput.value.trim()),
+  ].every(Boolean);
   applyProviderDefaults();
-  settingsStatus.textContent = "Provider settings saved.";
+  settingsStatus.textContent = saved
+    ? "Provider settings saved."
+    : "Local storage unavailable. Settings apply only until Shuvi restarts.";
 }
 
 function selectedOnboardingProvider(): ProviderDescriptor | undefined {
@@ -365,14 +378,14 @@ function prepareOnboarding(): void {
     .map((provider) => `<option value="${provider.id}">${provider.name}</option>`)
     .join("");
 
-  const savedProvider = localStorage.getItem("shuvi.provider");
+  const savedProvider = readLocalPreference("shuvi.provider");
   if (savedProvider && providers.some((provider) => provider.id === savedProvider)) {
     onboardingProvider.value = savedProvider;
   }
 
   syncOnboardingProvider(true);
 
-  if (localStorage.getItem("shuvi.onboarded") !== "1") {
+  if (readLocalPreference("shuvi.onboarded") !== "1") {
     onboarding.classList.remove("hidden");
   }
 }
@@ -1322,10 +1335,12 @@ el<HTMLButtonElement>("#completeOnboarding").addEventListener("click", async () 
       await invoke("save_api_key", { provider: provider.id, apiKey });
     }
 
-    localStorage.setItem("shuvi.provider", provider.id);
-    localStorage.setItem("shuvi.model", model);
-    localStorage.setItem("shuvi.baseUrl", baseUrl);
-    localStorage.setItem("shuvi.onboarded", "1");
+    const stored = [
+      writeLocalPreference("shuvi.provider", provider.id),
+      writeLocalPreference("shuvi.model", model),
+      writeLocalPreference("shuvi.baseUrl", baseUrl),
+      writeLocalPreference("shuvi.onboarded", "1"),
+    ].every(Boolean);
 
     providerSelect.value = provider.id;
     modelInput.value = model;
@@ -1335,7 +1350,7 @@ el<HTMLButtonElement>("#completeOnboarding").addEventListener("click", async () 
 
     onboarding.classList.add("hidden");
     onboardingStatus.textContent = "";
-    settingsStatus.textContent = `${provider.name} is ready.`;
+    settingsStatus.textContent = stored ? `${provider.name} is ready.` : `${provider.name} ready for this session; local settings could not be saved.`;
   } catch (error) {
     onboardingStatus.textContent = `Setup failed: ${String(error)}`;
   }
