@@ -20,7 +20,7 @@ test("workspace discovery stays inside the canonical selected root",()=>{
   }
   assert.match(scan,/workspace_scan_recursive\(root, &canonical/);
   assert.match(search,/search_text_recursive\(root, &canonical/);
-  assert.match(search,/fs::read_to_string\(&canonical\)/);
+  assert.match(search,/read_utf8_file_bounded\(&canonical,\s*768 \* 1024,\s*"search candidate"\)/);
 });
 
 test("workspace and search entry points canonicalize roots before recursion",()=>{
