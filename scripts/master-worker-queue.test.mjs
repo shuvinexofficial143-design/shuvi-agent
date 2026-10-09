@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 import {workerForTool,evidenceForStep,workerQueueView,workerQueueSummary} from "../src/master-worker-queue.mjs";
+import {graphDependencyFailure} from "../src/task-graph.mjs";
 const UUID="123e4567-e89b-42d3-a456-426614174000";
 const step=(step_id,expected_tool,status="ready",depends_on=[],evidence=[])=>({step_id,expected_tool,status,depends_on,evidence,title:step_id});
 const accepted=(tool)=>[{success:true,source:"typed_result",audit_event:"executed",tool,action_id:UUID}];
@@ -59,4 +60,26 @@ test("Native Shuvi UI shows audit-backed worker progress, not fake cloud runtime
   assert.match(ui,/workerQueue\.verified/);
   assert.match(ui,/worker\?\.worker/);
   assert.match(ui,/renderOrchestrationStatus\(\)/);
+});
+
+test("task graph rejects falsely completed predecessor without audit-bound UUID",()=>{
+  const g={steps:[
+    step("asset","motion_graphics_run_remotion","completed",[],[{
+      source:"typed_result",success:true,audit_event:"executed",
+      tool:"motion_graphics_run_remotion",action_id:"not-a-UUID"
+    }]),
+    step("import","premiere_insert_media","ready",["asset"])
+  ]};
+  assert.match(graphDependencyFailure(g,{tool:"premiere_insert_media",task_step_id:"import"}),
+    /Rust-audited dependency evidence/);
+  g.steps[0].evidence=accepted("motion_graphics_run_remotion");
+  assert.equal(graphDependencyFailure(g,{tool:"premiere_insert_media",task_step_id:"import"}),null);
+});
+test("resource lock prevents claiming a second renderer while first is active",()=>{
+  const g={steps:[
+    step("first","motion_graphics_run_remotion","running"),
+    step("second","motion_graphics_run_remotion","ready")
+  ]};
+  assert.match(graphDependencyFailure(g,{tool:"motion_graphics_run_remotion",task_step_id:"second"}),
+    /Worker lane is busy/);
 });
