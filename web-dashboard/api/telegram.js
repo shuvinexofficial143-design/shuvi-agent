@@ -8,7 +8,7 @@ export function telegramConfigured(env=process.env) {
   const owner=env.TELEGRAM_OWNER_CHAT_ID||"";
   return /^[0-9]{5,20}:[A-Za-z0-9_-]{25,}$/.test(token) &&
     /^[A-Za-z0-9_-]{32,256}$/.test(secret) &&
-    /^[1-9][0-9]{3,18}$/.test(owner) && onlineConfigured(env) && redisConfigured(env);
+    /^[1-9][0-9]{3,18}$/.test(owner) && redisConfigured(env);
 }
 
 export function telegramInput(update,env=process.env) {
@@ -50,11 +50,14 @@ export async function runTelegramUpdate(update,env=process.env,dependencies={}) 
   const {chatId,text}=incoming;
   const command=text.split(/\s/)[0].toLowerCase().split("@")[0];
   if(command==="/start" || command==="/help") {
-    await send(chatId,"नमस्ते! मैं Shuvi Online हूँ। 😊\n\nPC बंद हो तब भी आप मुझसे सामान्य बातचीत, आइडिया, स्क्रिप्ट, कोडिंग सलाह और प्रोजेक्ट प्लानिंग कर सकते हैं।\n\n/status — ऑनलाइन स्थिति\n/reset — इस Bot की बातचीत की याद मिटाएँ\n\nWindows कंट्रोल फिलहाल ऑनलाइन Bot से जुड़ा नहीं है।");
+    await send(chatId,"नमस्ते! Shuvi Telegram कनेक्शन चालू है। ✅\n\n/status — Telegram स्थिति\n/reset — पिछली AI बातचीत साफ करें\n\n"+(onlineConfigured(env)
+      ? "सामान्य AI बातचीत उपलब्ध है। Windows कंट्रोल अभी अलग है।"
+      : "AI API अभी बंद है। इसलिए Telegram का परीक्षण बिना किसी Paid AI Call के हो रहा है।"));
     return {command};
   }
   if(command==="/status") {
-    await send(chatId,"Shuvi Online AI: उपलब्ध ✅\nWindows / Premiere / Blender: Cloud Chat से कनेक्ट नहीं है।\nइस Bot से अभी केवल सामान्य चैट और प्लानिंग होगी।");
+    await send(chatId,"Telegram Bot: कनेक्टेड ✅\nAI मॉडल: "+(onlineConfigured(env)?"चालू ✅":"सुरक्षित रूप से बंद ⏸️")+
+      "\nWindows / Premiere / Blender: अभी कनेक्ट नहीं हैं।\nAI कॉल तभी होंगे जब सर्वर पर अलग से अनुमति दी जाएगी।");
     return {command};
   }
   if(command==="/reset") {
@@ -69,6 +72,11 @@ export async function runTelegramUpdate(update,env=process.env,dependencies={}) 
   if(command.startsWith("/")) {
     await send(chatId,"यह Cloud Chat Command उपलब्ध नहीं है। सामान्य संदेश भेजें या /help लिखें।");
     return {blocked:true};
+  }
+  // Connection-only mode must never consume any AI credits or quota.
+  if (!onlineConfigured(env)) {
+    await send(chatId,"Telegram से आपका संदेश मिल गया। ✅ अभी AI मॉडल बंद है ताकि टेस्ट के दौरान कोई API खर्च न हो। Chat शुरू करने के लिए बाद में server-side SHUVI_AI_CALLS_ENABLED=true सेट करेंगे।");
+    return {aiPaused:true};
   }
   const budget=await quota();
   if(!budget.allowed){await send(chatId,"आज की Shuvi Online चैट सीमा पूरी हो गई है। अगला दिन शुरू होने पर फिर बात कर सकते हैं। कोई नया AI खर्च नहीं हुआ है।");return {limited:true};}
