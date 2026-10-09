@@ -64,7 +64,7 @@ test("Requests never become execution authorization or verified provider availab
 });
 
 test("11-role web UI preserves existing settings key and exposes the dry-run preview", () => {
-  const ui=source("ai-team-web-planner.ts"),css=source("telegram-team.css");
+  const ui=source("ai-team-web-planner.ts"),css=source("ai-team.css");
   assert.match(ui, /shuvi\.web\.ai-team-model-assignments\.v1/);
   assert.match(ui, /assignmentFor\(role\.id\)/);
   for(const role of ["motion","vision","reviewer"])assert.match(ui,new RegExp('id: "'+role+'"'));
