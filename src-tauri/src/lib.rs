@@ -10380,7 +10380,10 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                         std::thread::sleep(Duration::from_millis(250));
                     }
                 });
-                let output=child.wait_with_output();
+                // A08: prevent inherited pipes from blocking after the renderer timeout.
+                let output=bounded_child::collect_with_deadline(
+                    child,timeout.saturating_add(Duration::from_secs(5))
+                );
                 let _=monitor.join();
                 output
             });
@@ -17339,7 +17342,11 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                         std::thread::sleep(Duration::from_millis(250));
                     }
                 });
-                let output = child.wait_with_output();
+                // A08: bound both output memory and total validation runtime.
+                // Timed-out validation has an uncertain external outcome.
+                let output = bounded_child::collect_with_deadline(
+                    child, Duration::from_secs(600),
+                );
                 let _ = monitor.join();
                 output
             });
@@ -17555,6 +17562,21 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 ));
             }
 
+            if let Some(action_id) = execution_action_id {
+                match state.running_action_children.lock() {
+                    Ok(mut running) => {
+                        running.insert(action_id.to_string(), child_pid);
+                    }
+                    Err(_) => {
+                        let _ = terminate_registered_process_tree(state, child_pid);
+                        unregister_managed_process(state, child_pid);
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err("Running-action state is unavailable; manual shell was stopped before execution could continue safely.".into());
+                    }
+                }
+            }
+
             let hard_limit_triggered = AtomicBool::new(false);
             let hard_limit_terminated = AtomicBool::new(false);
             let output_result = std::thread::scope(|scope| {
@@ -17581,6 +17603,11 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 let _ = monitor.join();
                 output
             });
+            if let Some(action_id) = execution_action_id {
+                if let Ok(mut running) = state.running_action_children.lock() {
+                    running.remove(action_id);
+                }
+            }
             unregister_managed_process(state, child_pid);
             let output = output_result
                 .map_err(|error| format!("Could not wait for manual shell: {error}"))?;
@@ -17789,7 +17816,7 @@ fn cancel_running_action(
             .map_err(|_| "Permission state is unavailable.".to_string())?;
         let cancellable = pending
             .get(&action_id)
-            .is_some_and(|action| action.tool == "run_project_task");
+            .is_some_and(|action| matches!(action.tool.as_str(), "run_project_task" | "powershell" | "motion_graphics_run_remotion"));
         if cancellable {
             let action = pending.remove(&action_id)
                 .ok_or_else(|| "Prepared action disappeared during cancellation.".to_string())?;
@@ -17818,7 +17845,7 @@ fn cancel_running_action(
             .get(&action_id)
             .cloned();
         match active_tool.as_deref() {
-            Some("run_project_task") => {}
+            Some("run_project_task") | Some("powershell") | Some("motion_graphics_run_remotion") => {}
             Some(_) | None => return Ok(false),
         }
 
@@ -17841,16 +17868,23 @@ fn cancel_running_action(
 
             let pid_string = pid.to_string();
             #[cfg(target_os = "windows")]
-            let output = Command::new("taskkill")
+            let killer = Command::new("taskkill")
                 .args(["/PID", pid_string.as_str(), "/T", "/F"])
-                .output()
-                .map_err(|error| format!("Could not cancel running action: {error}"))?;
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|error| format!("Could not start managed cancellation: {error}"))?;
 
             #[cfg(not(target_os = "windows"))]
-            let output = Command::new("kill")
+            let killer = Command::new("kill")
                 .args(["-TERM", pid_string.as_str()])
-                .output()
-                .map_err(|error| format!("Could not cancel running action: {error}"))?;
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|error| format!("Could not start managed cancellation: {error}"))?;
+
+            let output = bounded_child::collect_with_deadline(killer, Duration::from_secs(10))
+                .map_err(|error| format!("Cancellation command did not finish safely: {error}. External action outcome is unknown."))?;
 
             if output.status.success() {
                 unregister_managed_process(state.inner(), pid);

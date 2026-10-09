@@ -22,7 +22,7 @@ test("running project task is correlated to the exact prepared action ID",()=>{
 test("cancel_running_action only denies or stops the exact run_project_task action UUID",()=>{
   const cancel=rust.slice(rust.indexOf("fn cancel_running_action("),rust.indexOf("async fn execute_action("));
   assert.match(cancel,/Uuid::parse_str\(&action_id\)/);
-  assert.match(cancel,/action\.tool == "run_project_task"/);
+  assert.match(cancel,/matches!\(action\.tool\.as_str\(\), "run_project_task" \| "powershell" \| "motion_graphics_run_remotion"\)/);
   assert.match(cancel,/event: "denied"/);
   assert.match(cancel,/running_action_tools/);
   assert.match(cancel,/Some\("run_project_task"\)/);
