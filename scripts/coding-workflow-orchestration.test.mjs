@@ -160,7 +160,8 @@ test("project validation child process is included in managed RAM accounting",()
   assert.match(block,/\.spawn\(\)/);
   assert.match(block,/let child_pid = child\.id\(\)/);
   assert.match(block,/register_managed_process\(state, child_pid\)/);
-  assert.match(block,/child\.wait_with_output\(\)/);
+  assert.match(block,/bounded_child::collect_with_deadline\(\s*child, Duration::from_secs\(600\)/);
+  assert.doesNotMatch(block,/child\.wait_with_output\(\)/);
   assert.match(block,/unregister_managed_process\(state, child_pid\)/);
   assert.doesNotMatch(block,/\.output\(\)/);
   assert.match(block,/project task was stopped before execution could continue safely/);
