@@ -44,3 +44,16 @@ The coordinator's state is keyed by owner+device and capped at 200 historical
 tasks per scope; production needs documented cleanup/archiving to avoid
 permanent capacity lock. Inflight unknown external effects MUST NOT be silently
 retried after a disconnect.
+
+## Safety hardening: actor proof and native approval
+
+The coordinator now requires a `verifyActor` callback supplied by **trusted
+server middleware**, not an `authenticated:true` flag in a request body.
+This callback MUST cryptographically establish the principal, role, owner and
+device and remain unexposed to the browser. A test-only WeakSet demonstrates
+a non-forgeable identity scope within the test process.
+
+A native `requires_approval → running` receipt is rejected unless a matching
+approve decision is recorded and its deadline has not elapsed. Agent polling
+does not deliver expired or cancelled approval decisions. This is only a
+defense-in-depth ledger check; the Windows native approval gate remains mandatory.

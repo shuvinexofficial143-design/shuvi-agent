@@ -21,11 +21,13 @@ const clone = o => JSON.parse(JSON.stringify(o));
 const MAX_DEVICE_TASKS = 200;
 const MAX_POLL = 20;
 
-function actorAllowed(actor, kind) {
-  // The 'authenticated' flag must be set INSIDE the trusted HTTP middleware,
-  // never parsed from a request header/body. This is not an auth scheme.
-  return actor && actor.authenticated === true && actor.kind === kind &&
-    validId(actor.ownerId) && validId(actor.deviceId);
+function actorAllowed(actor, kind, verifyActor) {
+  if (!actor || actor.kind !== kind || !validId(actor.ownerId) ||
+      !validId(actor.deviceId)) return false;
+  // A caller-controlled boolean is not proof of authentication. Require a
+  // trusted middleware verifier supplied by the host (never from HTTP input).
+  try { return verifyActor(actor) === true; }
+  catch { return false; }
 }
 function scope(actor) { return actor.ownerId + ":" + actor.deviceId; }
 function fresh() {
@@ -62,10 +64,11 @@ function isTerminal(status) {
  * - no side effects and no external provider calls inside a transaction
  * A memory-only Map or process-level mutex is NOT acceptable for production.
  */
-export function createRemoteCoordinator({store,clock=()=>Date.now()}={}) {
+export function createRemoteCoordinator({store,clock=()=>Date.now(),verifyActor}={}) {
   if (!store || typeof store.transact !== "function") throw new TypeError("Durable atomic store required");
+  if (typeof verifyActor !== "function") throw new TypeError("Server-side actor verifier required");
   async function transact(actor,kind,callback) {
-    if (!actorAllowed(actor,kind)) return fail("unauthenticated_actor");
+    if (!actorAllowed(actor,kind,verifyActor)) return fail("unauthenticated_actor");
     const now=clock();
     if (!validNow(now)) return fail("invalid_server_clock");
     return store.transact(scope(actor), current => {
@@ -110,7 +113,8 @@ export function createRemoteCoordinator({store,clock=()=>Date.now()}={}) {
         t.cancelRequested && !isTerminal(t.receipt.status)
       ).slice(0,MAX_POLL).map(t=>({taskId:t.command.taskId,request:"cancel"}));
       const decisions=state.tasks.filter(t=>t.approvalDecision &&
-        t.receipt.status==="requires_approval"
+        t.receipt.status==="requires_approval" &&
+        t.receipt.approvalExpiresAt>now && !t.cancelRequested
       ).slice(0,MAX_POLL).map(t=>clone(t.approvalDecision));
       return ok({messages,pending,decisions});
     });
@@ -127,6 +131,12 @@ export function createRemoteCoordinator({store,clock=()=>Date.now()}={}) {
       if (!task) return fail("unknown_task");
       const valid=validateReceiptTransition(task.receipt,receipt);
       if (!valid.ok) return valid;
+      if (task.receipt.status==="requires_approval" && receipt.status==="running") {
+        const approved=task.approvalDecision?.decision==="approve" &&
+          task.approvalDecision.approvalId===task.receipt.approvalId &&
+          now<task.receipt.approvalExpiresAt;
+        if (!approved) return fail("missing_live_task_approval");
+      }
       // No native execution permission is granted by any receipt.
       task.receipt=clone(receipt);
       if (receipt.status!=="requires_approval") task.approvalDecision=null;
@@ -168,8 +178,9 @@ export function createRemoteCoordinator({store,clock=()=>Date.now()}={}) {
   async function list(actor) {
     return transact(actor,"user",(state,now)=>ok(state.tasks.map(t=>({
       ...taskView(t),
-      delivery:t.receipt.status==="received" && t.command.expiresAt<=now
-        ? "expired_not_delivered" : "unconfirmed"
+      delivery:t.receipt.status==="received"
+        ? (t.command.expiresAt<=now ? "expired_not_delivered" : "awaiting_agent")
+        : "native_receipt_recorded"
     }))));
   }
   return Object.freeze({admit,poll,recordReceipt,decide,requestCancel,list});
