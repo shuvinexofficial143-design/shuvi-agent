@@ -1,6 +1,7 @@
 #![recursion_limit = "512"]
 
 mod web_bridge;
+mod remote_agent;
 mod atomic_file;
 mod execution_lease;
 mod bounded_child;
@@ -18608,6 +18609,11 @@ pub fn run() {
             web_bridge::web_bridge_start,
             web_bridge::web_bridge_stop,
             web_bridge::web_bridge_state,
+            remote_agent::remote_agent_status,
+            remote_agent::remote_agent_pair,
+            remote_agent::remote_agent_disconnect,
+            remote_agent::remote_agent_poll,
+            remote_agent::remote_agent_receipt,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Shuvi");
