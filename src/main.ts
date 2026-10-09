@@ -1266,9 +1266,16 @@ async function runAgentStep(): Promise<void> {
       await clearActiveCheckpoint();
     }
     setBusy(false);
-  } catch (error) {
-    messages.push({ role: "assistant", content: `Error: ${String(error)}` });
+  } catch {
+    // A12/A14: provider errors/timeouts may occur AFTER an upstream charge.
+    // Do not store arbitrary URL/credential-bearing HTTP error strings in
+    // durable chat or let the recovery flow blindly retry this attempt.
+    const caution = "AI provider request outcome is unknown; the request may already have been billed. DO NOT automatically retry. Inspect provider usage before issuing a new instruction.";
+    orchestration = { ...orchestration, recovery_mode: "stopped", stop_reason: caution };
+    renderOrchestrationStatus();
+    messages.push({ role: "assistant", content: caution });
     renderMessages();
+    await saveActiveCheckpoint();
     setBusy(false);
   }
 }
@@ -1277,6 +1284,10 @@ el<HTMLButtonElement>("#resumeTask").addEventListener("click", async () => {
   if (!savedCheckpoint || busy) return;
 
   const checkpoint = savedCheckpoint;
+  const restored = normalizeAgentOrchestrationState(checkpoint.orchestration);
+  if (restored.recovery_mode !== "stopped" && !window.confirm(
+    "Resuming may resend an unfinished AI request. The prior provider request may have been billed. Verify provider usage before continuing. Send a new request?"
+  )) return;
   savedCheckpoint = null;
   resumeBanner.classList.add("hidden");
 
@@ -1288,11 +1299,16 @@ el<HTMLButtonElement>("#resumeTask").addEventListener("click", async () => {
   }
 
   messages = checkpoint.messages;
-  orchestration = normalizeAgentOrchestrationState(checkpoint.orchestration);
+  orchestration = restored;
   renderOrchestrationStatus();
   renderMessages();
   cancelRequested = false;
   await saveActiveCheckpoint();
+  if (orchestration.recovery_mode === "stopped") {
+    // Restore history for inspection, not a second paid generation call.
+    setBusy(false);
+    return;
+  }
   await runAgentStep();
 });
 
