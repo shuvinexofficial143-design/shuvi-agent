@@ -4,7 +4,7 @@
 param([string]$ExpectedSha = "")
 $ErrorActionPreference = "Stop"
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
-$isWindows = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
+$hostIsWindows = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
 
 function IsAvailable([string]$Name) {
     return $null -ne (Get-Command $Name -CommandType Application -ErrorAction SilentlyContinue)
@@ -55,13 +55,13 @@ $running = [ordered]@{
     after_effects=(RunningCount "AfterFX")
     blender=(RunningCount "blender")
 }
-$ready = $isWindows -and $head -and ($branch -eq "phase1/safety-reconciliation-oct9") -and
+$ready = $hostIsWindows -and $head -and ($branch -eq "phase1/safety-reconciliation-oct9") -and
     ($clean -eq $true) -and $commands.node -and $commands.npm -and $commands.cargo -and
     $installed.package_json -and $installed.tauri_config -and $installed.cargo_lock -and
     ((-not $expectedSupplied) -or $matchesExpected)
 $report = [ordered]@{
     schema_version=1; observed_at_utc=[DateTime]::UtcNow.ToString("o")
-    mode="read_only_probe"; source=$source; windows_host=$isWindows
+    mode="read_only_probe"; source=$source; windows_host=$hostIsWindows
     toolchain=$commands; local_artifacts=$installed; existing_processes=$running
     ready_for_separately_approved_host_test=[bool]$ready
     live_host_tests_completed=0; native_ai_requests_sent=0
