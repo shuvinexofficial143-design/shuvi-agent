@@ -3335,10 +3335,13 @@ fn stage_tool(
         "blender_inspect" => {
             let python_exe=absolute_path(arg_string(&proposal.arguments,"python_exe")?)?;
             let blender_exe=absolute_path(arg_string(&proposal.arguments,"blender_exe")?)?;
-            if !Path::new(&python_exe).is_file() || !python_exe.to_ascii_lowercase().ends_with(".exe"){
-                return Err("blender_inspect requires an existing absolute Python.exe.".into());
+            let python_name=Path::new(&python_exe).file_name().and_then(|x|x.to_str()).unwrap_or_default();
+            if !Path::new(&python_exe).is_file()
+                || !matches!(python_name.to_ascii_lowercase().as_str(),"python.exe"|"python3.exe"){
+                return Err("blender_inspect requires an existing absolute Python.exe or Python3.exe.".into());
             }
-            if !Path::new(&blender_exe).is_file() || !blender_exe.to_ascii_lowercase().ends_with(".exe"){
+            let blender_name=Path::new(&blender_exe).file_name().and_then(|x|x.to_str()).unwrap_or_default();
+            if !Path::new(&blender_exe).is_file() || !blender_name.eq_ignore_ascii_case("blender.exe"){
                 return Err("blender_inspect requires an existing absolute Blender.exe.".into());
             }
             let blend_file=match proposal.arguments.get("blend_file"){
