@@ -151,3 +151,10 @@ test("expired approval is not delivered and cannot resume task",async()=>{
   assert.equal((await c.recordReceipt(agent,receipt("running",4))).error,"missing_live_task_approval");
  } finally { now-=1000; }
 });
+
+test("agent heartbeat is only set by authenticated agent poll",async()=>{
+ const c=setup();
+ assert.equal((await c.describe(user)).value.agentConnected,false);
+ await c.poll(agent);
+ assert.equal((await c.describe(user)).value.agentConnected,true);
+});

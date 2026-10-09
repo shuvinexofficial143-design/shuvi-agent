@@ -31,7 +31,7 @@ function actorAllowed(actor, kind, verifyActor) {
 }
 function scope(actor) { return actor.ownerId + ":" + actor.deviceId; }
 function fresh() {
-  return {lastSequence:0,seenMessageIds:[],seenTaskIds:[],usedApprovals:[],tasks:[]};
+  return {lastSequence:0,seenMessageIds:[],seenTaskIds:[],usedApprovals:[],tasks:[],lastAgentPollAt:0};
 }
 function stateFrom(value) {
   if (!value) return fresh();
@@ -106,6 +106,7 @@ export function createRemoteCoordinator({store,clock=()=>Date.now(),verifyActor}
   async function poll(actor,{limit=10}={}) {
     return transact(actor,"agent",(state,now)=>{
       if (!Number.isSafeInteger(limit) || limit<1 || limit>MAX_POLL) return fail("invalid_poll_limit");
+      state.lastAgentPollAt=now;
       const messages=state.tasks.filter(t=>
         t.receipt.status==="received" && !t.cancelRequested &&
         t.command.expiresAt>now && t.command.issuedAt<=now+CLOCK_SKEW_MS
@@ -179,6 +180,9 @@ export function createRemoteCoordinator({store,clock=()=>Date.now(),verifyActor}
   async function describe(actor) {
     return transact(actor,"user",(state)=>ok({
       ownerId:actor.ownerId,deviceId:actor.deviceId,lastSequence:state.lastSequence,
+      agentConnected:Number.isSafeInteger(state.lastAgentPollAt) &&
+        state.lastAgentPollAt>0 && now-state.lastAgentPollAt<20_000,
+      lastAgentPollAt:Number.isSafeInteger(state.lastAgentPollAt) ? state.lastAgentPollAt : 0,
       tasks:state.tasks.slice(-25).map(taskView)
     }));
   }

@@ -41,6 +41,7 @@ test("server-minted principal, queued remote command, bounded outbound poll",asy
  assert.equal(polled.json.value.messages[0].text,"Shuvi, open Notepad");
  assert.equal(polled.json.value.messages[0].taskId,E);
  assert.equal((await request("user")).json.value.lastSequence,1);
+ assert.equal((await request("user")).json.value.agentConnected,true);
  assert.equal((await request("user","POST",{operation:"submit",message:message()})).statusCode,409);
 });
 test("agent receipt only and no browser receipt spoof",async()=>{

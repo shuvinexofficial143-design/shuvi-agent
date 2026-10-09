@@ -6,6 +6,7 @@ import {REMOTE_PROTOCOL} from "./remote-command-contract.mjs";
 
 type Result<T>={ok:boolean;value?:T;error?:string};
 type Status={ownerId:string;deviceId:string;lastSequence:number;
+ agentConnected:boolean;lastAgentPollAt:number;
  tasks:Array<{taskId:string;status:string;cancelRequested?:boolean;
   approvalId?:string;approvalExpiresAt?:number}>};
 export type RemoteChatTransport={
@@ -142,7 +143,9 @@ export function mountRemoteCommandClient(onChange:()=>void):RemoteChatTransport 
    if(typeof x.ownerId!=="string"||typeof x.deviceId!=="string"||
       !Number.isSafeInteger(x.lastSequence)||!Array.isArray(x.tasks))return false;
    identity=x;
-   state.textContent="Cloud authenticated · Windows agent connection unverified";
+   state.textContent=x.agentConnected
+     ? "Windows Agent contacted relay recently · task execution requires audit"
+     : "Cloud authenticated · Windows Agent offline or not polling";
    showTasks(x);
    return true;
   }finally{updating=false;}
