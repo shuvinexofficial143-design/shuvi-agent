@@ -21,8 +21,8 @@ export function commandPlan(scope){
     {name:"frontend_build",command:process.platform==="win32"?"npm.cmd":"npm",args:["run","build"]},
   ];
   const rust=[
-    {name:"cargo_check",command:"cargo",args:["check","--manifest-path","src-tauri/Cargo.toml"]},
-    {name:"cargo_tests",command:"cargo",args:["test","--manifest-path","src-tauri/Cargo.toml","--lib"]},
+    {name:"cargo_check",command:"cargo",args:["check","--manifest-path","src-tauri/Cargo.toml","--locked"]},
+    {name:"cargo_tests",command:"cargo",args:["test","--manifest-path","src-tauri/Cargo.toml","--lib","--locked"]},
   ];
   if(scope==="frontend") return frontend;
   if(scope==="rust") return rust;

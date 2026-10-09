@@ -8,7 +8,7 @@ dist/
 src-tauri/target/
 # Tauri-generated ACL schemas are build artifacts, not authored sources.
 src-tauri/gen/schemas/
-src-tauri/Cargo.lock
+# Cargo.lock is committed for reproducible application builds.
 target/
 .vscode/
 .idea/

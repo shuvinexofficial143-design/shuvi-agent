@@ -38,6 +38,11 @@ Date: 2026-10-09. Deployment is explicitly forbidden during this phase.
 - Stage-specific GitHub CI must run on the exact candidate SHA after these changes. Last fully completed predecessor: 08ab75f00dbd270ac33f1f5ee8bc6596ade450e7 (frontend + Windows Rust + source workflows passed).
 - No Windows/Adobe live acceptance has been performed by these source changes. No Vercel preview, production deployment or protected branch merge is authorized.
 
+## A24 generated lockfile verification (pending exact new CI)
+- CI run 37894450545 generated all three locks from real npm and Cargo resolution on Ubuntu: `src-tauri/Cargo.lock`, `web-dashboard/package-lock.json`, `remotion-runtime/package-lock.json`. The two nested npm clean installs passed.
+- Lockfiles are committed with this change. Rust attested commands use `--locked`; Web Dashboard and Remotion CI use `npm ci`, never installation-time ad-hoc version resolution.
+- These fixes address application install reproducibility, NOT vulnerability/advisory triage, host runtime certification or A23 dependency security audit. A23 remains OPEN; A24 pending exact-commit CI results.
+
 ## Priority
 A10 atomic write and A08 cancellation before any destructive Windows acceptance;
 A01 baseline before per-module integration; A09 before real parallel workers;
