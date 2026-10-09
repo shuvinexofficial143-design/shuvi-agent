@@ -34,9 +34,14 @@ test("clearing a task removes primary temp and backup checkpoint files",()=>{
   const start=rust.indexOf("fn remove_session_checkpoint(");
   const end=rust.indexOf("fn workspace_config_path",start);
   const block=rust.slice(start,end);
-  assert.match(block,/path\.with_extension\("json\.tmp"\)/);
-  assert.match(block,/path\.with_extension\("json\.bak"\)/);
-  assert.match(block,/fs::remove_file\(&candidate\)/);
+  assert.match(block,/premiere_store::clear_snapshot\(&path\)/);
+  const store=readFileSync(new URL("../src-tauri/src/premiere_store.rs",import.meta.url),"utf8");
+  assert.match(store,/pub fn clear_snapshot\(path:&Path\)/);
+  assert.match(store,/let _write=WRITES\.lock\(\)/);
+  assert.match(store,/path\.with_extension\("json\.tmp"\)/);
+  assert.match(store,/path\.with_extension\("json\.bak"\)/);
+  assert.match(store,/fs::symlink_metadata\(&candidate\)/);
+  assert.match(store,/fs::remove_file\(&candidate\)/);
 });
 
 

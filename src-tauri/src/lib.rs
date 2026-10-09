@@ -9475,17 +9475,9 @@ fn read_session_checkpoint(app: &AppHandle) -> Result<Option<SessionCheckpoint>,
 }
 fn remove_session_checkpoint(app: &AppHandle) -> Result<(), String> {
     let path = session_checkpoint_path(app)?;
-    for candidate in [
-        path.clone(),
-        path.with_extension("json.tmp"),
-        path.with_extension("json.bak"),
-    ] {
-        if candidate.exists() {
-            fs::remove_file(&candidate)
-                .map_err(|error| format!("Could not clear session checkpoint state: {error}"))?;
-        }
-    }
-    Ok(())
+    // A10: serialize checkpoint clear with its snapshot writer.
+    // Delete only regular files, never reparse entries or directories.
+    premiere_store::clear_snapshot(&path)
 }
 fn workspace_config_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     let dir = app
