@@ -179,3 +179,28 @@ test("Explicit server-side AI switch blocks provider HTTP even when key/model ex
   );
   assert.equal(httpCalls,0);
 });
+
+
+test("Bot /start and /status work without Redis OR paid AI configuration",async()=>{
+  const basicEnv={
+    TELEGRAM_BOT_TOKEN:env.TELEGRAM_BOT_TOKEN,
+    TELEGRAM_WEBHOOK_SECRET:env.TELEGRAM_WEBHOOK_SECRET,
+    TELEGRAM_OWNER_CHAT_ID:env.TELEGRAM_OWNER_CHAT_ID,
+    SHUVI_AI_CALLS_ENABLED:"false"
+  };
+  assert.equal(telegramConfigured(basicEnv),true);
+  assert.equal(redisConfigured(basicEnv),false);
+  assert.equal(onlineConfigured(basicEnv),false);
+  const sent=[];
+  const opts={send:async(_chat,text)=>sent.push(text),
+    reply:async()=>{throw Error("Provider must not be called")},
+    quota:async()=>{throw Error("Paid quota must not be touched")}};
+  assert.equal((await runTelegramUpdate(message("/start"),basicEnv,opts)).command,"/start");
+  assert.equal((await runTelegramUpdate(message("/status"),basicEnv,opts)).command,"/status");
+  assert.equal((await runTelegramUpdate(message("Shuvi, hello"),basicEnv,opts)).aiPaused,true);
+  assert.equal((await runTelegramUpdate(message("/reset"),basicEnv,opts)).command,"/reset");
+  assert.equal(sent.length,4);
+  assert.match(sent[3],/कोई Cloud Memory/);
+  const paidEnv={...basicEnv,SHUVI_AI_CALLS_ENABLED:"true",OPENROUTER_API_KEY:"demo-key",SHUVI_CHAT_MODEL:"example"};
+  assert.equal(telegramConfigured(paidEnv),false,"Paid AI mode must fail closed without Redis");
+});
