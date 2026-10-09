@@ -73,6 +73,11 @@ Date: 2026-10-09. Deployment is explicitly forbidden during this phase.
 - New path ancestors must be real non-reparse directories, including Windows junctions; no silent overwrite of a destination appearing concurrently. If a host/filesystem does not support hard links, file creation fails closed rather than exposing partial bytes.
 - Added disposable Rust fixtures and source regression checks. Host-specific Windows permissions, durability after power loss, and same-user symlink races still need live acceptance.
 
+## A01 regression gate — code registry union (CI pending)
+- Current isolated candidate retains the union of Tauri commands from native `main` (40) and `ui-dashboard` (29): 43 unique handlers including all five Adobe lifecycle bridges and the web read-only local bridge.
+- Rust module declarations similarly retain the declared source module union from both baselines. A new Node regression suite fails if a baseline module or command is dropped or duplicated on the unified candidate.
+- This is **registry/source parity**, NOT a completed live merge or runtime acceptance; Phase 1 A01 remains open until the exact release candidate passes Windows/Adobe real integration and authenticated bridge acceptance.
+
 ## Priority
 A10 atomic write and A08 cancellation before any destructive Windows acceptance;
 A01 baseline before per-module integration; A09 before real parallel workers;

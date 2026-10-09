@@ -22,4 +22,6 @@ test("A08 successful cancellation is not inferred from taskkill status alone",()
  assert.ok(loop>=0&&success>loop);
  assert.match(cancel,/Cancellation outcome is unknown; inspect before retrying/);
  assert.match(cancel,/Duration::from_millis\(40\)/);
+ assert.match(cancel,/return Err\("Termination was requested, but the original process is still visible/);
+ assert.doesNotMatch(cancel,/^\s*Err\("Termination was requested, but the original process is still visible/m);
 });

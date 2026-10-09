@@ -17960,7 +17960,7 @@ fn cancel_running_action(
                 }
                 std::thread::sleep(Duration::from_millis(40));
             }
-            Err("Termination was requested, but the original process is still visible. Cancellation outcome is unknown; inspect before retrying.".into())
+            return Err("Termination was requested, but the original process is still visible. Cancellation outcome is unknown; inspect before retrying.".into());
         }
         std::thread::sleep(Duration::from_millis(20));
     }
