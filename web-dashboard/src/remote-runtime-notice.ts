@@ -25,7 +25,7 @@ export function mountRemoteRuntimeNotice(): void {
   if (detail) {
     detail.textContent = "This Vercel website is not linked to your Windows computer. " +
       "The localhost read-only bridge can only be paired from the local Windows dashboard at " +
-      "http://127.0.0.1:1423. Set up Telegram through Shuvi Desktop; remote web control " +
+      "http://127.0.0.1:1423. Remote web control " +
       "requires a separate authenticated relay that is not available yet.";
   }
 
@@ -52,8 +52,7 @@ export function mountRemoteRuntimeNotice(): void {
     notice.className = "runtime-readonly-warning";
     notice.setAttribute("role", "note");
     notice.textContent = "Remote control is not enabled on this website. " +
-      "Use Settings → Telegram Connection for bot setup instructions; actual Telegram " +
-      "pairing and permissions stay inside Shuvi Desktop on Windows.";
+      "Remote desktop pairing and permissions remain inside Shuvi Desktop on Windows.";
     panel.querySelector(".settings-heading")?.insertAdjacentElement("afterend", notice);
   }
 }
