@@ -1,6 +1,7 @@
 #![recursion_limit = "512"]
 
 mod web_bridge;
+mod atomic_file;
 mod premiere_execution;
 mod premiere_store;
 mod after_effects;
@@ -2176,17 +2177,6 @@ fn read_utf8_open_file_bounded(
     }
     String::from_utf8(bytes)
         .map_err(|error| format!("{label} is not valid UTF-8: {error}"))
-}
-
-fn overwrite_open_file(file: &mut fs::File, bytes: &[u8], label: &str) -> Result<(), String> {
-    file.seek(SeekFrom::Start(0))
-        .map_err(|error| format!("Could not seek {label} target: {error}"))?;
-    file.set_len(0)
-        .map_err(|error| format!("Could not truncate {label} target: {error}"))?;
-    file.write_all(bytes)
-        .map_err(|error| format!("Could not write {label} target: {error}"))?;
-    file.sync_all()
-        .map_err(|error| format!("Could not flush {label} target: {error}"))
 }
 
 fn read_utf8_file_bounded(path: &Path, max_bytes: usize, label: &str) -> Result<String, String> {
@@ -8353,6 +8343,7 @@ async fn execute_tool_with_action_id(
         }
         ToolAction::WriteFile { path, content } => {
             let target = Path::new(&path);
+            let mut recovery_backup: Option<std::path::PathBuf> = None;
             match OpenOptions::new().write(true).create_new(true).open(target) {
                 Ok(mut file) => {
                     file.write_all(content.as_bytes())
@@ -8361,8 +8352,12 @@ async fn execute_tool_with_action_id(
                         .map_err(|error| format!("Could not flush new file: {error}"))?;
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let mut file = open_existing_file_for_mutation(target, "write_file")?;
-                    overwrite_open_file(&mut file, content.as_bytes(), "write_file")?;
+                    let backup=atomic_file::replace_existing(
+                        target,content.as_bytes(),None,"write_file"
+                    )?;
+                    // Keep the previous exact content recoverable on disk.
+                    // The recovery path is disclosed in the action's audit-visible result.
+                    recovery_backup=Some(backup);
                 }
                 Err(error) => return Err(format!("Could not create file: {error}")),
             }
@@ -8370,7 +8365,8 @@ async fn execute_tool_with_action_id(
             Ok(ActionResult {
                 success: true,
                 tool,
-                stdout: format!("Wrote {} bytes to {path}.", content.len()),
+                stdout: format!("Wrote {} bytes to {path}.{}",content.len(),
+                    recovery_backup.as_ref().map(|p|format!(" Previous content retained in recovery backup: {}.",p.display())).unwrap_or_default()),
                 stderr: String::new(),
                 exit_code: Some(0),
             })
@@ -14635,12 +14631,15 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             }
 
             let updated = source.replacen(&old, &new_value, 1);
-            overwrite_open_file(&mut file, updated.as_bytes(), "replace_text")?;
+            drop(file); // Windows ReplaceFileW needs the original handle closed.
+            let backup=atomic_file::replace_existing(
+                Path::new(&path),updated.as_bytes(),Some(source.as_bytes()),"replace_text"
+            )?;
 
             Ok(ActionResult {
                 success: true,
                 tool,
-                stdout: format!("Applied one exact replacement in {path}."),
+                stdout: format!("Applied one exact replacement in {path}. Recovery backup: {}.",backup.display()),
                 stderr: String::new(),
                 exit_code: Some(0),
             })
