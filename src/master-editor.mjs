@@ -66,13 +66,13 @@ function utf8Prefix(value, byteLimit) {
   }
   return result;
 }
+// Rust's TOOL_PROTOCOL already contains the complete Master Editor rules.
+// Preserve existing graph/audit/failure state. Only add a tiny hint when there
+// is room; never truncate important progress to repeat a static instruction.
+const MASTER_SHORT_HINT = "MASTER EDITOR ROUTER: choose approved native specialists; do not report completion without audited evidence.";
 export function orchestrationWithMasterEditor(base, messages) {
-  const stableBase = typeof base === "string" ? base : "";
-  const editor = editingMasterContext(messages);
-  if (!editor) return utf8Prefix(stableBase, CONTEXT_LIMIT);
-  const editorBytes = new TextEncoder().encode(editor).length;
-  const available = Math.max(0, CONTEXT_LIMIT - editorBytes - 1);
-  // Dynamic orchestrator receipts retain their leading status/context,
-  // and native Rust's 3000-byte gate is satisfied for Unicode objectives.
-  return utf8Prefix(stableBase, available) + "\n" + editor;
+  const stableBase = utf8Prefix(typeof base === "string" ? base : "", CONTEXT_LIMIT);
+  if (!editingMasterContext(messages)) return stableBase;
+  const withHint = stableBase + "\n" + MASTER_SHORT_HINT;
+  return new TextEncoder().encode(withHint).length <= CONTEXT_LIMIT ? withHint : stableBase;
 }
