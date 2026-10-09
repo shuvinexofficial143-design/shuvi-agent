@@ -9371,29 +9371,66 @@ fn write_session_checkpoint(
     }
 
     let path = session_checkpoint_path(app)?;
-    let temp = path.with_extension("json.tmp");
-    let backup = path.with_extension("json.bak");
+    // A10: delegate to the bounded, fsynced, serialized snapshot publisher.
+    // Keep a last-known-good .json.bak and refuse an interrupted .json.tmp.
+    // Never erase the only valid backup before publishing a replacement.
+    premiere_store::replace(&path, &content, 2 * 1024 * 1024, validate_checkpoint_bytes)
+}
 
-    fs::write(&temp, &content)
-        .map_err(|error| format!("Could not write temporary session checkpoint: {error}"))?;
+fn validate_checkpoint_bytes(bytes: &[u8]) -> Result<(), String> {
+    let checkpoint: SessionCheckpoint = serde_json::from_slice(bytes)
+        .map_err(|error| format!("Session checkpoint JSON is invalid: {error}"))?;
+    if !matches!(checkpoint.version, 1 | 2) {
+        return Err("Session checkpoint has an unsupported version.".into());
+    }
+    validate_session_checkpoint_payload(&checkpoint)
+}
 
-    if backup.exists() {
-        let _ = fs::remove_file(&backup);
+
+#[cfg(test)]
+mod session_checkpoint_durability_tests {
+    use super::*;
+
+    fn checkpoint_bytes(version: u32, provider: &str) -> Vec<u8> {
+        serde_json::to_vec(&SessionCheckpoint {
+            version, updated_at_ms: 1,
+            provider: provider.into(), model: "local-test".into(),
+            base_url: None, messages: vec![], orchestration: None,
+        }).unwrap()
     }
-    if path.exists() {
-        fs::rename(&path, &backup)
-            .map_err(|error| format!("Could not preserve the previous session checkpoint: {error}"))?;
+
+    #[test]
+    fn old_checkpoint_is_preserved_as_valid_backup_on_update() {
+        let dir = std::env::temp_dir().join(format!("shuvi-checkpoint-{}", Uuid::new_v4()));
+        fs::create_dir(&dir).unwrap();
+        let target = dir.join("session-checkpoint.json");
+        let old = checkpoint_bytes(1, "ollama");
+        let newer = checkpoint_bytes(2, "ollama");
+        premiere_store::replace(&target, &old, 2 * 1024 * 1024, validate_checkpoint_bytes).unwrap();
+        premiere_store::replace(&target, &newer, 2 * 1024 * 1024, validate_checkpoint_bytes).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), newer);
+        assert_eq!(fs::read(target.with_extension("json.bak")).unwrap(), old);
+        fs::remove_dir_all(dir).unwrap();
     }
-    if let Err(error) = fs::rename(&temp, &path) {
-        if backup.exists() {
-            let _ = fs::rename(&backup, &path);
-        }
-        return Err(format!("Could not finalize session checkpoint: {error}"));
+
+    #[test]
+    fn unsupported_primary_never_overwrites_last_valid_checkpoint() {
+        let dir = std::env::temp_dir().join(format!("shuvi-checkpoint-{}", Uuid::new_v4()));
+        fs::create_dir(&dir).unwrap();
+        let target = dir.join("session-checkpoint.json");
+        let good = checkpoint_bytes(2, "ollama");
+        let first = checkpoint_bytes(1, "ollama");
+        premiere_store::replace(&target, &first, 2 * 1024 * 1024, validate_checkpoint_bytes).unwrap();
+        premiere_store::replace(&target, &good, 2 * 1024 * 1024, validate_checkpoint_bytes).unwrap();
+        let backup = target.with_extension("json.bak");
+        assert_eq!(fs::read(&backup).unwrap(), first);
+        fs::write(&target, checkpoint_bytes(99, "ollama")).unwrap();
+        let next = checkpoint_bytes(2, "ollama");
+        premiere_store::replace(&target, &next, 2 * 1024 * 1024, validate_checkpoint_bytes).unwrap();
+        assert_eq!(fs::read(&backup).unwrap(), first);
+        assert_eq!(fs::read(&target).unwrap(), next);
+        fs::remove_dir_all(dir).unwrap();
     }
-    if backup.exists() {
-        let _ = fs::remove_file(&backup);
-    }
-    Ok(())
 }
 
 fn read_session_checkpoint(app: &AppHandle) -> Result<Option<SessionCheckpoint>, String> {
@@ -9410,8 +9447,12 @@ fn read_session_checkpoint(app: &AppHandle) -> Result<Option<SessionCheckpoint>,
             2 * 1024 * 1024,
             "saved session checkpoint",
         )?;
-        serde_json::from_str(&content)
-            .map_err(|error| format!("Saved session checkpoint is invalid: {error}"))
+        let checkpoint: SessionCheckpoint = serde_json::from_str(&content)
+            .map_err(|error| format!("Saved session checkpoint is invalid: {error}"))?;
+        // Semantic invalidity must also select the valid backup, rather than
+        // trusting a parseable but unsupported/corrupt primary snapshot.
+        validate_checkpoint_bytes(content.as_bytes())?;
+        Ok(checkpoint)
     };
 
     let mut checkpoint = if path.exists() {
