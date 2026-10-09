@@ -30,6 +30,7 @@ import {
 
 import { taskGraphProgress, type GraphAuditEvent } from "./task-graph.mjs";
 import { editingMasterContext, orchestrationWithMasterEditor } from "./master-editor.mjs";
+import { workerQueueView } from "./master-worker-queue.mjs";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("Missing app root");
@@ -471,6 +472,7 @@ function currentCheckpoint(): SessionCheckpoint {
 function renderOrchestrationStatus(): void {
   const progress = el<HTMLElement>("#agentProgress");
   const graphProgress = taskGraphProgress(orchestration.task_graph);
+  const workerQueue = workerQueueView(orchestration.task_graph);
   const graphView = el<HTMLElement>("#taskProgress");
   graphView.classList.toggle("hidden", !graphProgress.total);
   const list = el<HTMLElement>("#taskProgressSteps");
@@ -479,17 +481,19 @@ function renderOrchestrationStatus(): void {
     el<HTMLElement>("#taskProgressSummary").textContent =
       `${graphProgress.completed}/${graphProgress.total} evidence-verified steps complete`;
     const symbols: Record<string, string> = { completed: "✓", running: "→", ready: "→", pending: "○", failed: "!", blocked: "!", skipped: "–" };
+    const laneById = new Map(workerQueue.jobs.map(job => [job.id, job]));
     for (const step of graphProgress.steps) {
       const row = document.createElement("div");
       const verified = step.evidence_verified ? " · verified evidence" : "";
       const reason = step.reason && (step.status === "failed" || step.status === "blocked")
         ? ` — ${step.reason}`
         : "";
-      row.textContent = `${symbols[step.status]} ${step.title} (${step.status}${verified})${reason}`;
+      const worker = laneById.get(step.step_id);
+      row.textContent = `${symbols[step.status]} [${worker?.worker ?? "master"}] ${step.title} (${worker?.status ?? step.status}${verified})${reason}`;
       row.title = step.reason ?? (step.evidence_verified ? "Completion backed by local typed-tool evidence." : step.status);
       list.append(row);
     }
-    progress.textContent = `Task: ${orchestration.task_graph.objective} · ${graphProgress.completed}/${graphProgress.total} steps complete · Current: ${graphProgress.current ?? "none"} · Phase: ${orchestration.coding.active ? codingPhase(orchestration) : "general"} · State: ${orchestration.recovery_mode}`;
+    progress.textContent = `Task: ${orchestration.task_graph.objective} · ${workerQueue.verified}/${workerQueue.total} audited worker actions · ${workerQueue.ready} ready · ${workerQueue.running} running · ${workerQueue.blocked} blocked · Current: ${graphProgress.current ?? "none"} · Phase: ${orchestration.coding.active ? codingPhase(orchestration) : "general"} · State: ${orchestration.recovery_mode}`;
     return;
   }
   if (!orchestration.objective && orchestration.tool_actions === 0 && orchestration.next_step === 1) {
