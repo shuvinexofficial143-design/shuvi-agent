@@ -53,12 +53,26 @@ export function editingMasterContext(messages) {
   return typeof lastUser?.content === "string" && EDITING_INTENT.test(lastUser.content.slice(0, 16384))
     ? MASTER_GUIDANCE : "";
 }
+// Rust bounds orchestration_context in UTF-8 bytes, not JS UTF-16 length.
+// Stop on a complete code point so Hindi prompts cannot exceed that limit.
+function utf8Prefix(value, byteLimit) {
+  const encoder = new TextEncoder();
+  let result = "", used = 0;
+  for (const char of value) {
+    const bytes = encoder.encode(char).length;
+    if (used + bytes > byteLimit) break;
+    result += char;
+    used += bytes;
+  }
+  return result;
+}
 export function orchestrationWithMasterEditor(base, messages) {
-  const stableBase = typeof base === "string" ? base.slice(0, CONTEXT_LIMIT) : "";
+  const stableBase = typeof base === "string" ? base : "";
   const editor = editingMasterContext(messages);
-  if (!editor) return stableBase;
-  const available = CONTEXT_LIMIT - editor.length - 1;
-  // Dynamic orchestration receipts are never dropped entirely in favor of
-  // advisory routing text. The backend applies the same 3000-byte/char gate.
-  return stableBase.slice(0, Math.max(0, available)) + "\n" + editor;
+  if (!editor) return utf8Prefix(stableBase, CONTEXT_LIMIT);
+  const editorBytes = new TextEncoder().encode(editor).length;
+  const available = Math.max(0, CONTEXT_LIMIT - editorBytes - 1);
+  // Dynamic orchestrator receipts retain their leading status/context,
+  // and native Rust's 3000-byte gate is satisfied for Unicode objectives.
+  return utf8Prefix(stableBase, available) + "\n" + editor;
 }
