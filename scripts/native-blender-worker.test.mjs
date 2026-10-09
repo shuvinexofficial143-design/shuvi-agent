@@ -20,6 +20,8 @@ test("Blender agent approval is explicit and read-only, no unrestricted operatio
   assert.match(rust,/"blender_inspect" => \{/);
   assert.match(rust,/ToolAction::BlenderInspect/);
   assert.match(rust,/"scene\.inspect"\|"system\.capabilities"/);
+  assert.match(rust,/"python.exe"\|"python3.exe"/);
+  assert.match(rust,/eq_ignore_ascii_case\("blender.exe"\)/);
   assert.match(rust,/"Inspect Blender through authenticated worker"\.into\(\),detail,RiskLevel::Medium/);
   assert.match(py,/choices=\("scene.inspect", "system.capabilities"\)/);
   assert.match(py,/policy=SafetyPolicy\(\)/);
