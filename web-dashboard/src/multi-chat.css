@@ -133,3 +133,5 @@
   .chat-header-actions { flex-wrap: wrap; }
   .chat-planning-hint { font-size: 10px; }
 }
+
+.chat-command-delivery-notice{margin:0 0 14px;padding:12px 16px;border:1px solid var(--line);background:var(--panel);border-radius:12px;color:var(--muted);font-size:12px;line-height:1.6}

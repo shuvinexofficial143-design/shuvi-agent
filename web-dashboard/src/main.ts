@@ -22,8 +22,6 @@ import { mountCreativeStudio } from "./creative-studio";
 import { mountTaskTimeline, type TaskTimelineController } from "./task-timeline";
 import { initializeAppearance } from "./appearance";
 import { mountChatWorkspace, type ChatWorkspace } from "./chat-workspace";
-import { mountOnlineChat } from "./online-chat";
-import "./online-chat.css";
 import "./testing-readiness.css";
 import {mountReadinessPanel} from "./testing-readiness";
 import { loadChatLibrary } from "./chat-store";
@@ -1191,7 +1189,7 @@ renderDashboardPlanningQueue();
 renderWebActivity();
 renderLocalOverview();
 bindInteractions();
-mountOnlineChat();
+// Single Vercel command chat. Native authenticated delivery is not yet connected.
 chatWorkspace = mountChatWorkspace(message => {
   showToast(message);
   renderLocalOverview();

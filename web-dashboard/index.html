@@ -244,15 +244,16 @@
 
           <section id="view-chat" class="view" data-view="chat">
             <div class="multi-chat-heading">
-              <div><span class="section-kicker">LEVEL 5 / CONVERSATION WORKSPACE</span>
-                <h2>Every idea, its own space.</h2>
-                <p>Keep separate conversations organized. This preview saves prompts locally; no AI worker is running.</p>
+              <div><span class="section-kicker">SHUVI / ONE COMMAND CHAT</span>
+                <h2>One Shuvi. One chat.</h2>
+                <p>Talk normally or write a Windows command in the same conversation. Until the native agent is connected, messages remain on this browser.</p>
               </div>
               <div class="multi-chat-actions">
-                <span class="chat-offline-pill"><span class="status-dot offline"></span> Runtime disconnected</span>
+                <span class="chat-offline-pill"><span class="status-dot offline"></span> Agent offline · Not delivered</span>
                 <button type="button" class="primary-button" id="chatNewTop">＋ New chat</button>
               </div>
             </div>
+            <div id="chatDeliveryNotice" class="chat-command-delivery-notice" role="status">Windows command delivery is not connected. Messages stay on this browser: no AI response or PC action has happened.</div>
             <div id="chatStorageNotice" class="chat-storage-alert" role="alert" hidden>Browser storage is unavailable or full. Your unsaved chat changes may be lost after refresh.</div>
             <div class="chat-layout chat-workspace-layout" id="chatWorkspaceLayout">
               <aside class="conversation-rail" aria-label="Saved conversations">
@@ -278,10 +279,10 @@
                 <article class="chat-panel">
                   <div class="chat-top">
                     <div class="chat-title-block">
-                      <span class="section-kicker">AI COMMAND CENTER / LOCAL DRAFTS</span>
+                      <span class="section-kicker">SHUVI CHAT / AGENT CONNECTION REQUIRED</span>
                       <h2 id="currentChatTitle">New chat</h2>
-                      <p id="currentChatMeta">No AI provider connected</p>
-                      <div class="chat-planning-hint" id="chatPlanningHint" role="status">Model selection is for planning only; no AI call will be made.</div>
+                      <p id="currentChatMeta">Shuvi Windows agent offline · Nothing sent</p>
+                      <div class="chat-planning-hint" id="chatPlanningHint" role="status">xKiro Master AI uses the Windows agent once connected. This page does not make AI API calls.</div>
                     </div>
                     <div class="chat-header-actions">
                       <button type="button" class="chat-header-button" id="chatExport" title="Export this conversation as JSON">↓ Export</button>
@@ -293,14 +294,14 @@
                   <div id="chatMessages" class="chat-messages" aria-live="polite"></div>
                   <div id="chatArchivedNotice" class="chat-archived-notice" hidden>Archived conversation. Restore it from the chat menu before adding more prompts.</div>
                   <form id="chatForm" class="chat-composer">
-                    <label for="chatInput" class="visually-hidden">Write a task draft in this conversation</label>
-                    <textarea id="chatInput" rows="3" maxlength="2500" placeholder="Describe a task for Shuvi — edit a video, model in Blender, or build code…" required></textarea>
+                    <label for="chatInput" class="visually-hidden">Write to Shuvi (saved locally while the native link is offline)</label>
+                    <textarea id="chatInput" rows="3" maxlength="2500" placeholder="Ask Shuvi anything, or describe a Windows task — e.g. open Premiere Pro…" required></textarea>
                     <div class="composer-footer">
                       <div class="composer-tools">
                         <button type="button" data-action="attachment" aria-label="Attach file (requires desktop runtime)">＋</button>
-                        <span>Web-only draft · Ctrl+Enter to save · No AI execution</span>
+                        <span>Agent offline · Ctrl+Enter to save locally · No command sent</span>
                       </div>
-                      <button class="primary-button" type="submit" id="chatSendDraft">Save prompt ↗</button>
+                      <button class="primary-button" type="submit" id="chatSendDraft">Save locally ↗</button>
                     </div>
                   </form>
                 </article>

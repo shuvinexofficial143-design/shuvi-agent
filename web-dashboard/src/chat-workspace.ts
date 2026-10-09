@@ -120,7 +120,7 @@ export function mountChatWorkspace(notify: (message: string) => void): ChatWorks
       ? "Planning preference: " + preferredProvider + " · no AI connection or execution"
       : "Choose a preferred AI model on the AI Models page (planning only).";
     heading.textContent = t.title;
-    meta.textContent = t.messages.length + " saved prompts · " + (t.archived ? "Archived · " : "") + "Browser only · No model connected";
+    meta.textContent = t.messages.length + " local messages · " + (t.archived ? "Archived · " : "") + "Windows agent offline · Not delivered";
     pinnedButton.textContent = t.pinned ? "★ Pinned" : "☆ Pin";
     pinnedButton.setAttribute("aria-pressed", String(t.pinned));
     archivedNotice.hidden = !t.archived;
@@ -134,13 +134,13 @@ export function mountChatWorkspace(notify: (message: string) => void): ChatWorks
       empty.append(
         node("div","chat-empty-orb","S"),
         node("h3","","Start something new."),
-        node("p","","Keep notes and task prompts in a separate conversation. Shuvi's AI and desktop tools are not connected to this browser yet."),
+        node("p","","Talk normally or write a computer command here. Messages stay local until an authorized Windows command link is connected."),
         node("span","chat-empty-hint","Your prompts are stored locally on this device.")
       );
       messages.append(empty);
     } else {
       for (const message of t.messages) drawMessage(message, messages);
-      messages.append(node("p", "chat-safety-caption", "Saved locally · No AI response generated · No computer action started"));
+      messages.append(node("p", "chat-safety-caption", "Saved locally · Not delivered to Shuvi · No AI response or Windows action"));
     }
     messages.scrollTop = messages.scrollHeight;
   }
@@ -232,7 +232,7 @@ export function mountChatWorkspace(notify: (message: string) => void): ChatWorks
     save();
     render();
     input.focus();
-    notify("New conversation created. AI runtime is not connected.");
+    notify("New conversation created. Windows Shuvi agent is not connected.");
   }
 
   $<HTMLButtonElement>("chatNew").addEventListener("click", createChat);
@@ -277,7 +277,7 @@ export function mountChatWorkspace(notify: (message: string) => void): ChatWorks
     updateThread(updated);
     render();
     input.focus();
-    notify("Prompt saved in this browser. No AI model or local tools were run.");
+    notify("Message saved locally, not delivered. Windows Shuvi agent is not connected.");
   });
 
   pinnedButton.addEventListener("click", () => {
