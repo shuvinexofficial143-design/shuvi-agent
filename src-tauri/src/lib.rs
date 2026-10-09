@@ -8221,7 +8221,7 @@ async fn analyze_png_bytes_with_provider(
     let key = load_api_key(&context.provider)?;
     provider_request_guard::claim_paid_attempt(&context.provider, &context.model, context.base_url.as_deref())?;
 
-    let result:Result<String,String>=async move {
+    let result:Result<(String,Option<UsageStats>),String>=async move {
     match context.provider.as_str() {
         "gemini" => {
             let api_key = key
@@ -8274,7 +8274,7 @@ async fn analyze_png_bytes_with_provider(
                 return Err("Gemini vision returned an empty response.".into());
             }
 
-            Ok(text)
+            Ok((text,usage_from_gemini(&body)))
         }
         "anthropic" => {
             let api_key = key
@@ -8332,7 +8332,7 @@ async fn analyze_png_bytes_with_provider(
                 return Err("Anthropic vision returned an empty response.".into());
             }
 
-            Ok(text)
+            Ok((text,usage_from_anthropic(&body)))
         }
         "deepseek" => Err(
             "The selected DeepSeek text endpoint is not configured for screen vision. Choose Gemini, OpenAI, Claude, OpenRouter, Ollama vision, or a compatible vision endpoint.".into()
@@ -8397,7 +8397,7 @@ async fn analyze_png_bytes_with_provider(
                 .and_then(Value::as_str)
                 .ok_or_else(|| "Vision provider returned no assistant text.".to_string())?;
 
-            bounded_provider_text(text, "Vision provider")
+            bounded_provider_text(text, "Vision provider").map(|text|(text,usage_from_openai(&body)))
         }
         other => Err(format!("Provider '{other}' is not supported for screen vision.")),
     }
@@ -8406,9 +8406,10 @@ async fn analyze_png_bytes_with_provider(
     // the provider adapter returns a transport/parse error. This remains
     // provider usage UNKNOWN, never zero dollars or an invoice.
     match result {
-        Ok(text) => {
+        Ok((text,reported_usage)) => {
             provider_request_guard::record_provider_reported_usage(
-                &context.provider,&context.model,context.base_url.as_deref(),None
+                &context.provider,&context.model,context.base_url.as_deref(),
+                reported_usage.map(|usage|(usage.input_tokens,usage.output_tokens,usage.total_tokens))
             ).map_err(|error|format!(
                 "single vision response received, but usage receipt could not be persisted: {error}. Paid request outcome may be billed; DO NOT automatically retry."
             ))?;
@@ -8463,7 +8464,7 @@ async fn analyze_png_frames_with_provider(
     }
     let key=load_api_key(&context.provider)?;
     provider_request_guard::claim_paid_attempt(&context.provider, &context.model, context.base_url.as_deref())?;
-    let result:Result<String,String>=async move {
+    let result:Result<(String,Option<UsageStats>),String>=async move {
     match context.provider.as_str(){
         "gemini"=>{
             let api_key=key.filter(|value|!value.is_empty())
@@ -8492,7 +8493,7 @@ async fn analyze_png_frames_with_provider(
                 "Gemini multi-frame vision",
             )?;
             if text.is_empty(){return Err("Gemini multi-frame vision returned an empty response.".into());}
-            Ok(text)
+            Ok((text,usage_from_gemini(&body)))
         }
         "anthropic"=>{
             let api_key=key.filter(|value|!value.is_empty())
@@ -8527,7 +8528,7 @@ async fn analyze_png_frames_with_provider(
                 "Anthropic multi-frame vision",
             )?;
             if text.is_empty(){return Err("Anthropic multi-frame vision returned an empty response.".into());}
-            Ok(text)
+            Ok((text,usage_from_anthropic(&body)))
         }
         "deepseek"=>Err("The selected DeepSeek text endpoint is not configured for multi-frame vision.".into()),
         "openai"|"openrouter"|"ollama"|"custom"=>{
@@ -8570,7 +8571,7 @@ async fn analyze_png_frames_with_provider(
             }
             let text=body.pointer("/choices/0/message/content").and_then(Value::as_str)
                 .ok_or_else(||"Multi-frame vision provider returned no assistant text.".to_string())?;
-            bounded_provider_text(text,"Multi-frame vision provider")
+            bounded_provider_text(text,"Multi-frame vision provider").map(|text|(text,usage_from_openai(&body)))
         }
         other=>Err(format!("Provider '{other}' is not supported for multi-frame vision.")),
     }
@@ -8579,9 +8580,10 @@ async fn analyze_png_frames_with_provider(
     // the provider adapter returns a transport/parse error. This remains
     // provider usage UNKNOWN, never zero dollars or an invoice.
     match result {
-        Ok(text) => {
+        Ok((text,reported_usage)) => {
             provider_request_guard::record_provider_reported_usage(
-                &context.provider,&context.model,context.base_url.as_deref(),None
+                &context.provider,&context.model,context.base_url.as_deref(),
+                reported_usage.map(|usage|(usage.input_tokens,usage.output_tokens,usage.total_tokens))
             ).map_err(|error|format!(
                 "multi vision response received, but usage receipt could not be persisted: {error}. Paid request outcome may be billed; DO NOT automatically retry."
             ))?;
