@@ -85,4 +85,10 @@ test("AI off never sends any GET or POST to xKiro",async()=>{
     fetcher:async()=>{called++;throw Error("Should never hit xKiro");}
   }));
   assert.equal(called,0);
+  await assert.rejects(callXkiroFree({
+    env:{...env,SHUVI_AI_CALLS_ENABLED:"false"},
+    messages:[{role:"user",content:"hello"}],
+    fetcher:async()=>{called++;throw Error("No network allowed");}
+  }),/AI calls disabled/);
+  assert.equal(called,0);
 });
