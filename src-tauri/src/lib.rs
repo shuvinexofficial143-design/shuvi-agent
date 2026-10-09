@@ -2137,14 +2137,29 @@ async fn anthropic_chat(
 
 async fn send_chat(input: ChatInput, api_key: Option<String>) -> Result<ChatResponse, String> {
     provider_request_guard::claim_paid_attempt(&input.provider, &input.model, input.base_url.as_deref())?;
-    match input.provider.as_str() {
+    // Keep the provider identity before handing the request to its adapter.
+    // This receipt is provider-reported token usage, NOT verified provider billing.
+    let provider=input.provider.clone();
+    let model=input.model.clone();
+    let base_url=input.base_url.clone();
+    let result=match input.provider.as_str() {
         "gemini" => gemini_chat(input, api_key).await,
         "anthropic" => anthropic_chat(input, api_key).await,
         "deepseek" | "openai" | "openrouter" | "ollama" | "custom" => {
             openai_compatible_chat(input, api_key).await
         }
         other => Err(format!("Unsupported provider: {other}")),
+    };
+    if let Ok(ref response)=result {
+        let reported=response.usage.as_ref()
+            .map(|usage|(usage.input_tokens,usage.output_tokens,usage.total_tokens));
+        provider_request_guard::record_provider_reported_usage(
+            &provider,&model,base_url.as_deref(),reported
+        ).map_err(|error|format!(
+            "Provider response was received, but the paid AI usage receipt could not be persisted: {error}. The external request may already have been billed; DO NOT automatically retry."
+        ))?;
     }
+    result
 }
 
 fn current_runtime_status(state: &ActionState) -> Result<RuntimeStatus, String> {

@@ -5,6 +5,8 @@ use reqwest::Url;
 
 #[cfg(windows)]
 mod usd_budget;
+#[cfg(windows)]
+mod reported_usage;
 
 #[cfg(windows)]
 use std::{
@@ -146,6 +148,21 @@ pub(crate) fn claim_paid_attempt(provider:&str,model:&str,base_url:Option<&str>)
         // Reserve a user-approved USD allowance before a potentially billable call.
         usd_budget::reserve_approved_allowance(provider,model,base_url)?;
         Ok(())
+    }
+}
+// Persist only actual token counts returned by the provider. No price
+// estimates are invented, and missing metadata is recorded as unknown.
+pub(crate) fn record_provider_reported_usage(
+    provider:&str,model:&str,base_url:Option<&str>,
+    reported:Option<(u64,u64,u64)>
+)->Result<(),String>{
+    if !is_metered(provider,base_url){return Ok(());}
+    #[cfg(windows)]
+    { reported_usage::append_receipt(provider,model,base_url,reported) }
+    #[cfg(not(windows))]
+    {
+        let _=(model,reported);
+        Err("Metered AI usage receipts require Windows durable storage; paid calls remain blocked.".into())
     }
 }
 #[cfg(test)]
