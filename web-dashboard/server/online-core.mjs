@@ -1,4 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
+import { callXkiroFree, xkiroConfigured } from "./xkiro-free.mjs";
 
 export function safeEqual(given, expected) {
   if (typeof given !== "string" || typeof expected !== "string" || expected.length < 32) return false;
@@ -50,7 +51,11 @@ export function aiCallsEnabled(env=process.env) {
   return env.SHUVI_AI_CALLS_ENABLED === "true";
 }
 export function onlineConfigured(env=process.env) {
-  return aiCallsEnabled(env) && Boolean(env.OPENROUTER_API_KEY && env.SHUVI_CHAT_MODEL);
+  if (!aiCallsEnabled(env)) return false;
+  if (env.SHUVI_CHAT_PROVIDER === "xkiro") return xkiroConfigured(env);
+  if (!env.SHUVI_CHAT_PROVIDER || env.SHUVI_CHAT_PROVIDER === "openrouter")
+    return Boolean(env.OPENROUTER_API_KEY && env.SHUVI_CHAT_MODEL);
+  return false;
 }
 
 /**
@@ -60,6 +65,8 @@ export function onlineConfigured(env=process.env) {
 export async function generateOnlineReply({prompt,history=[],env=process.env,fetcher=fetch}) {
   if (!onlineConfigured(env)) throw new Error("AI provider not configured");
   if (typeof prompt!=="string" || !prompt.trim() || prompt.length>4000) throw new Error("Invalid message");
+  const messages=[{role:"system",content:SYSTEM},...cleanHistory(history),{role:"user",content:prompt.trim()}];
+  if (env.SHUVI_CHAT_PROVIDER === "xkiro") return callXkiroFree({env,messages,fetcher});
   const model=env.SHUVI_CHAT_MODEL.trim();
   if (!model || model.length>160 || /[\r\n]/.test(model)) throw new Error("Invalid model configuration");
   const controller=new AbortController();
@@ -75,7 +82,7 @@ export async function generateOnlineReply({prompt,history=[],env=process.env,fet
       },
       body:JSON.stringify({
         model,
-        messages:[{role:"system",content:SYSTEM},...cleanHistory(history),{role:"user",content:prompt.trim()}],
+        messages,
         max_tokens:850,
         temperature:0.65,
         stream:false

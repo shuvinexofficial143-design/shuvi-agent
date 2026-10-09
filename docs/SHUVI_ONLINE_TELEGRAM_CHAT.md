@@ -31,12 +31,28 @@ The existing native Telegram feature uses Bot API getUpdates long polling from W
 6. Expected **no-cost AI mode**: /start and /status acknowledge the bot; ordinary chat gives an honest "AI is paused" response, **without any model call or inference charge**. Do not claim a real AI response has been tested yet.
 7. Confirm Telegram owner's private chat can message the bot, an unrelated chat/group gets no response and /approve CODE or /run cannot execute desktop actions. Check only source tests and safe Telegram/network status; do not spend AI credits.
 
+## Stage B1 — Use xKiro's FREE model, not the paid five-hour window
+xKiro's free-token allowance and rolling paid spend window are **separate** counters, according to its API documentation. However, the account's actual allowance (for example a claimed 8 million tokens) must be checked using the read-only, unmetered GET /v1/usage response, not guessed from a promotional headline.
+
+1. Obtain an xKiro API Key directly from xKiro's official dashboard. Do **not** paste it into this chat, a screenshot, GitHub or browser Local Storage.
+2. Set Production Vercel environment variables:
+   - SHUVI_CHAT_PROVIDER = xkiro
+   - XKIRO_API_KEY = private key (server-side only)
+   - XKIRO_CHAT_MODEL = deepseek/deepseek-v4-flash (initial preference; confirm via live model catalog)
+   - SHUVI_AI_CALLS_ENABLED = false (still disabled during configuration and free eligibility checks).
+   - UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN = secure Redis REST credentials for conversation memory, update ID dedup and shared quota. These ARE required for real AI conversation, unlike connection-only tests.
+3. Deploy ui-dashboard and open Settings → Telegram Cloud → Check xKiro Free Tokens using the owner access key. This uses read-only /v1/models and /v1/usage and NEVER POSTs a chat completion.
+4. The backend requires an **exact catalog match** with access_tier=free and both input/output price=0, plus positive free_token.remaining. If these cannot be confirmed, the message is blocked (never falls back to a paid model). Paid plans do not need to be activated.
+5. Only after verifying the free tier and Telegram connection, explicitly set SHUVI_AI_CALLS_ENABLED = true on Vercel Production, redeploy, and send ONE short normal chat message. Watch usage before and after. The server always rechecks free eligibility before every xKiro completion.
+6. In xKiro the free-model daily limit may vary with your account and verified bonuses; don't assume it is 8M. If free allowance is depleted, Shuvi pauses AI replies instead of billing paid usage.
+7. This is text-only cloud chat. It does not enable Shuvi.exe, Adobe/Blender, model tool execution or Telegram PC approvals. No normal chat call is permitted to start xKiro's paid 5-hour window.
+
 ## Stage B — Enable conversational AI ONLY after setup and bugs pass
-1. Select a real available low-cost OpenRouter text model and provider-side dollar spend cap. Set OPENROUTER_API_KEY and SHUVI_CHAT_MODEL privately in Vercel.
+1. Either select the verified xKiro Free setup above, OR explicitly select OpenRouter (SHUVI_CHAT_PROVIDER=openrouter) and set a real paid model and provider-side dollar cap. xKiro Free is preferred for tests.
 2. Keep SHUVI_AI_CALLS_ENABLED=false until the explicit final go-ahead. All /start, /status and no-cost tests must work before proceeding.
 3. Only when ready, set SHUVI_AI_CALLS_ENABLED=true in Production, redeploy, and send ONE short controlled message. This enables paid inference — do not do it accidentally.
 4. Separately test Multi-Chat > Online AI Chat using the private owner access key. Local browser chat storage does not sync with Telegram's Redis context.
-5. This Cloud AI setup uses OpenRouter, **not xKiro automatically**. Nothing here should trigger the rented xKiro five-hour access window.
+5. This Cloud AI setup uses the explicitly selected provider. xKiro Free is used only when SHUVI_CHAT_PROVIDER=xkiro and eligibility checks pass. Nothing here should trigger the rented xKiro five-hour access window.
 
 ## Security and limits
 - The provider key, bot token, webhook secret and Redis token are server-only Vercel environment variables, never public UI fields or code constants.
