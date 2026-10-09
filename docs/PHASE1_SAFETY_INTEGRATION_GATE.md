@@ -48,6 +48,11 @@ Date: 2026-10-09. Deployment is explicitly forbidden during this phase.
 - Paid text model POST requests now have no automatic network or throttling retry; a failed or ambiguous call is not silently duplicated. Frame.io GET retries are unchanged.
 - This guard RESETS on process restart and is **NOT a USD/daily/monthly cost budget**. Provider token rates, billable image/video usage, user-approved price limits, persistent ledger and startup reconciliation remain OPEN for A22.
 
+## A23 evidence-based advisory audit (pending CI)
+- A read-only Phase 1 GitHub Actions audit will check the three committed npm locks (root, Web Dashboard and Remotion) with npm advisory data, and the committed Cargo.lock using pinned cargo-audit v0.22.2 and RustSec advisories.
+- High/critical npm advisories and RustSec vulnerability findings fail the advisory job. Empty, malformed, or unavailable audit reports fail closed; summary and raw JSON artifacts are retained for triage.
+- This is a detection workflow, **NOT proof that the dependency graph is patched or vulnerability-free** until the exact job passes and findings are reviewed. Never auto-upgrade a package without affected-feature and build review.
+
 ## Priority
 A10 atomic write and A08 cancellation before any destructive Windows acceptance;
 A01 baseline before per-module integration; A09 before real parallel workers;
