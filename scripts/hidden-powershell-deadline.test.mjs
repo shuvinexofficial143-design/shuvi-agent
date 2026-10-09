@@ -20,8 +20,9 @@ test("hidden PowerShell uses an absolute 30-second deadline",()=>{
 
 test("bounded child drains streams in parallel and stops on timeout",()=>{
   assert.match(bounded,/MAX_UI_HELPER_STREAM_BYTES: usize=8\*1024\*1024/);
-  assert.match(bounded,/drain_limited\(stdout,MAX_UI_HELPER_STREAM_BYTES\)/);
-  assert.match(bounded,/drain_limited\(stderr,MAX_UI_HELPER_STREAM_BYTES\)/);
+  assert.match(bounded,/collect_with_deadline_capped\(child,deadline,MAX_UI_HELPER_STREAM_BYTES\)/);
+  assert.match(bounded,/drain_limited\(stdout,max_stream_bytes\)/);
+  assert.match(bounded,/drain_limited\(stderr,max_stream_bytes\)/);
   assert.match(bounded,/child\.try_wait\(\)/);
   assert.match(bounded,/start\.elapsed\(\)>=deadline/);
   assert.match(bounded,/child\.kill\(\)/);
