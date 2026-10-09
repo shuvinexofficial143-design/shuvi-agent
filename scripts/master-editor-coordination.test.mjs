@@ -37,7 +37,11 @@ test("the master context remains within the exact provider context budget",()=>{
   const messages=[{role:"user",content:"Premiere edit with motion graphics"}];
   const result=orchestrationWithMasterEditor(base,messages);
   assert.ok(result.length<=3000);
+  assert.ok(new TextEncoder().encode(result).length<=3000);
   assert.ok(result.startsWith("Agent orchestration state:"));
+  const hindi=orchestrationWithMasterEditor("लक्ष्य: "+"वीडियो".repeat(500),messages);
+  assert.ok(new TextEncoder().encode(hindi).length<=3000);
+  assert.match(hindi,/MASTER EDITOR ROUTER/);
   assert.match(result,/MASTER EDITOR ROUTER/);
   assert.equal(orchestrationWithMasterEditor(base,[{role:"user",content:"Hello"}]),base);
 });
