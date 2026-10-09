@@ -8,12 +8,15 @@ use std::{
     fs::{self,File,OpenOptions},
     io::{Read,Seek,SeekFrom,Write},
     os::windows::fs::{MetadataExt,OpenOptionsExt},
-    path::PathBuf,
+    path::{Path,PathBuf},
     time::{SystemTime,UNIX_EPOCH},
 };
 pub(crate) const MAX_PAID_REQUEST_ATTEMPTS_PER_RUNTIME:usize=48;
 static PAID_ATTEMPTS:AtomicUsize=AtomicUsize::new(0);
 const MAX_DAILY_PAID_ATTEMPTS:usize=48;
+
+#[cfg(windows)]
+const OPEN_REPARSE_POINT:u32=0x0020_0000; // Windows FILE_FLAG_OPEN_REPARSE_POINT
 
 fn is_metered(provider:&str,base_url:Option<&str>)->bool{
     if provider!="ollama"{return true;}
@@ -77,17 +80,24 @@ fn daily_journal_path()->Result<PathBuf,String>{
 }
 
 #[cfg(windows)]
+fn verify_journal_file_candidate(path:&Path)->Result<(),String>{
+    match fs::symlink_metadata(path){
+        Ok(meta) if meta.is_file() && !has_windows_reparse(&meta)=>Ok(()),
+        Ok(_)=>Err("Paid AI usage journal is not a regular unlinked file.".into()),
+        Err(error) if error.kind()==std::io::ErrorKind::NotFound=>Ok(()),
+        Err(error)=>Err(format!("Cannot inspect paid AI usage journal safely: {error}")),
+    }
+}
+
+#[cfg(windows)]
 fn reserve_durable_daily_attempt()->Result<(),String>{
     let path=daily_journal_path()?;
-    if let Ok(meta)=fs::symlink_metadata(&path){
-        if !meta.is_file()||has_windows_reparse(&meta){
-            return Err("Paid AI usage journal is not a regular unlinked file.".into());
-        }
-    }
+    verify_journal_file_candidate(&path)?;
     // Exclusive Windows share ownership serializes all Shuvi instances
     // belonging to this local user profile; contention FAILS CLOSED.
     let mut journal=OpenOptions::new().read(true).append(true).create(true)
-        .share_mode(0).open(&path)
+        // A22: do not follow a symlink swapped in after metadata inspection.
+        .custom_flags(OPEN_REPARSE_POINT).share_mode(0).open(&path)
         .map_err(|error|format!("Cannot reserve a billable AI attempt (another Shuvi instance or inaccessible journal): {error}"))?;
     let meta=journal.metadata()
         .map_err(|error|format!("Cannot verify billable AI journal: {error}"))?;
@@ -153,6 +163,18 @@ mod tests{
         assert!(read_attempt_count(b"0\n",2).is_err());
         assert!(read_attempt_count(b"1\n1",2).is_err());
         assert!(read_attempt_count(b"1\n1\n",2).is_err());
+    }
+    #[cfg(windows)]
+    #[test] fn journal_candidate_rejects_directory_and_allows_only_regular_file_or_absence(){
+        // This fixture never touches LOCALAPPDATA or the real usage journal.
+        let path=std::env::temp_dir().join(format!("shuvi-a22-path-{}",uuid::Uuid::new_v4()));
+        fs::create_dir(&path).expect("isolated directory fixture");
+        assert!(verify_journal_file_candidate(&path).is_err());
+        fs::remove_dir(&path).expect("remove directory fixture");
+        assert!(verify_journal_file_candidate(&path).is_ok());
+        fs::write(&path,b"1\\n").expect("regular file fixture");
+        assert!(verify_journal_file_candidate(&path).is_ok());
+        fs::remove_file(&path).expect("remove regular fixture");
     }
     #[cfg(windows)]
     #[test] fn windows_billable_journal_denies_parallel_process_handle(){

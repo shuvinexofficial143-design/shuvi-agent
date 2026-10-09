@@ -28,3 +28,11 @@ test("A22 runtime and daily safety limits are different from money budgets",()=>
  assert.match(guard,/NOT a USD budget or a guarantee about provider pricing/);
  assert.match(guard,/durable_journal_rejects_partial_or_edited_records/);
 });
+
+test("A22 journal opening does not follow a reparse-point swapped after metadata validation",()=>{
+ assert.match(guard,/const OPEN_REPARSE_POINT:u32=0x0020_0000/);
+ assert.match(guard,/verify_journal_file_candidate\(&path\)\?/);
+ assert.match(guard,/Err\(error\) if error\.kind\(\)==std::io::ErrorKind::NotFound=>Ok\(\(\)\)/);
+ assert.match(guard,/\.custom_flags\(OPEN_REPARSE_POINT\)\.share_mode\(0\)\.open\(&path\)/);
+ assert.match(guard,/journal_candidate_rejects_directory_and_allows_only_regular_file_or_absence/);
+});
