@@ -34,7 +34,8 @@
     "shortDescription": "Permission-first Windows AI computer agent",
     "longDescription": "Shuvi is a lightweight, permission-first Windows AI computer agent with selectable cloud AI providers and local computer tools.",
     "resources": {
-      "../integrations/after-effects-extendscript/shuvi-ae.jsx": "after-effects/shuvi-ae.jsx"
+      "../integrations/after-effects-extendscript/shuvi-ae.jsx": "after-effects/shuvi-ae.jsx",
+      "../integrations/blender-worker/shuvi_blender_bridge.py": "blender-worker/shuvi_blender_bridge.py"
     }
   }
 }
