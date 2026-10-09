@@ -9,6 +9,8 @@ import "./project-workspace.css";
 import "./visual-workflows.css";
 import "./runtime-status.css";
 import "./telegram-team.css";
+import "./telegram-inbox.css";
+import {mountTelegramDashboardInbox} from "./telegram-inbox";
 import { mountTelegramWebSettings } from "./telegram-web-setup";
 import { mountCloudTelegramSetup } from "./cloud-telegram-setup";
 import { mountAITeamWebPlanner } from "./ai-team-web-planner";
@@ -1169,6 +1171,7 @@ mountCreativeStudio({
 });
 mountTelegramWebSettings();
 mountCloudTelegramSetup();
+mountTelegramDashboardInbox();
 mountAITeamWebPlanner();
 masterAgentUI = mountMasterAgentUI({
   drafts: readDraftTasks,
