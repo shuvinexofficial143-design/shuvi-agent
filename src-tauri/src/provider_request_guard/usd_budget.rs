@@ -100,11 +100,45 @@ fn sum_reservations(bytes:&[u8])->Result<u64,String>{
     }
     Ok(sum)
 }
+// Inspect the CURRENT approved USD headroom before any attempt is counted.
+// This is a preflight optimization: a concurrent process can reserve after
+// the check, so the final reserve_approved_allowance remains authoritative.
+fn ensure_approved_headroom(data:&[u8],amount:u64,daily_limit:u64)->Result<(),String>{
+    let sum=sum_reservations(data)?;
+    let projected=sum.checked_add(amount).ok_or("A22 USD reservation overflow.")?;
+    if projected>daily_limit {
+        return Err("A22 explicitly authorized USD daily allowance reached; paid call blocked before request admission.".into());
+    }
+    Ok(())
+}
+fn read_reservation_entries(file:&mut std::fs::File)->Result<Vec<u8>,String>{
+    let meta=file.metadata().map_err(|e|format!("A22 USD ledger metadata failed: {e}"))?;
+    if !meta.is_file()||super::has_windows_reparse(&meta){
+        return Err("A22 USD ledger handle redirected; paid call blocked.".into());
+    }
+    file.seek(SeekFrom::Start(0)).map_err(|e|format!("A22 USD ledger seek failed: {e}"))?;
+    let max_len=RECORD_BYTES*(super::MAX_DAILY_PAID_ATTEMPTS+1);
+    let mut bytes=Vec::new();
+    (&mut *file).take((max_len+1) as u64).read_to_end(&mut bytes)
+        .map_err(|e|format!("A22 USD ledger read failed: {e}"))?;
+    if bytes.len()>max_len{return Err("A22 USD ledger oversized; paid calls blocked.".into());}
+    Ok(bytes)
+}
 // An approval error must be recognized before reserving any request attempts.
 pub(super) fn preflight(provider:&str,model:&str,endpoint:Option<&str>)->Result<(),String>{
-    let (policy_path,_)=paths()?;
+    let (policy_path,journal_path)=paths()?;
     let p=read_policy(&policy_path)?;
-    reserve_for_model(&p,provider,model,endpoint).map(|_|())
+    let amount=reserve_for_model(&p,provider,model,endpoint)?;
+    file_ok(&journal_path,true)?;
+    // Exclusive Windows handle ensures even the preliminary read cannot
+    // mistakenly treat a corrupted or concurrently edited file as headroom.
+    let mut file=OpenOptions::new().read(true).append(true).create(true)
+        .share_mode(0).custom_flags(super::OPEN_REPARSE_POINT).open(&journal_path)
+        .map_err(|e|format!("A22 USD preflight ledger inaccessible: {e}"))?;
+    let existing=read_reservation_entries(&mut file)?;
+    ensure_approved_headroom(&existing,amount,p.daily_allowance_usd_micros)?;
+    file.sync_all().map_err(|e|format!("A22 USD preflight ledger sync failed: {e}"))?;
+    Ok(())
 }
 pub(super) fn reserve_approved_allowance(provider:&str,model:&str,endpoint:Option<&str>)->Result<(),String>{
     let (policy_path,journal_path)=paths()?;
@@ -114,20 +148,10 @@ pub(super) fn reserve_approved_allowance(provider:&str,model:&str,endpoint:Optio
     let mut file=OpenOptions::new().read(true).append(true).create(true)
         .share_mode(0).custom_flags(super::OPEN_REPARSE_POINT).open(&journal_path)
         .map_err(|e|format!("A22 USD reservation ledger locked/inaccessible: {e}"))?;
-    let meta=file.metadata().map_err(|e|format!("A22 USD ledger metadata failed: {e}"))?;
-    if !meta.is_file()||super::has_windows_reparse(&meta){
-        return Err("A22 USD ledger handle redirected; paid call blocked.".into());
-    }
-    file.seek(SeekFrom::Start(0)).map_err(|e|format!("A22 USD ledger seek failed: {e}"))?;
-    let mut bytes=Vec::new();
-    let max_len=RECORD_BYTES*(super::MAX_DAILY_PAID_ATTEMPTS+1);
-    (&mut file).take((max_len+1) as u64).read_to_end(&mut bytes)
-        .map_err(|e|format!("A22 USD ledger read failed: {e}"))?;
-    if bytes.len()>max_len{return Err("A22 USD ledger oversized; paid calls blocked.".into());}
-    let total=sum_reservations(&bytes)?.checked_add(amount).ok_or("A22 USD reservation overflow.")?;
-    if total>policy.daily_allowance_usd_micros{
-        return Err("A22 explicitly authorized USD daily allowance reached; paid call blocked.".into());
-    }
+    let bytes=read_reservation_entries(&mut file)?;
+    // Re-check under the exclusive handle: another instance may have
+    // reserved between preflight and this definitive append.
+    ensure_approved_headroom(&bytes,amount,policy.daily_allowance_usd_micros)?;
     file.write_all(format!("{amount:020}\n").as_bytes())
         .map_err(|e|format!("A22 USD reservation failed: {e}"))?;
     file.sync_all().map_err(|e|format!("A22 USD reservation sync failed, outcome uncertain: {e}"))?;
@@ -154,6 +178,17 @@ mod tests{
             r#"{"version":1,"daily_allowance_usd_micros":5,"models":[{"provider":"openai","model":"a","reserve_usd_micros":6}]}"#,
             r#"{"version":1,"daily_allowance_usd_micros":5,"models":[{"provider":"custom","model":"a","reserve_usd_micros":1}]}"#
         ]{assert!(parse_policy(value.as_bytes()).is_err());}
+    }
+    #[test]fn exhausted_allowance_is_detected_without_mutating_attempts(){
+        let policy=sample();
+        let amount=reserve_for_model(&policy,"openrouter","test",None).unwrap();
+        assert!(ensure_approved_headroom(b"",amount,policy.daily_allowance_usd_micros).is_ok());
+        let four=b"00000000000001000000\n".repeat(4);
+        assert!(ensure_approved_headroom(&four,amount,policy.daily_allowance_usd_micros).is_ok());
+        let five=b"00000000000001000000\n".repeat(5);
+        assert!(ensure_approved_headroom(&five,amount,policy.daily_allowance_usd_micros).is_err());
+        assert!(ensure_approved_headroom(b"broken",amount,policy.daily_allowance_usd_micros).is_err());
+        assert!(ensure_approved_headroom(&four,u64::MAX,policy.daily_allowance_usd_micros).is_err());
     }
     #[test]fn reservations_reject_corruption(){
         assert_eq!(sum_reservations(b"").unwrap(),0);

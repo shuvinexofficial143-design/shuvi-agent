@@ -39,3 +39,6 @@ block new billable requests **before network dispatch**. This does not prove
 that all requests have usage receipts: process crashes, racing external
 modifications, concurrent instances and provider-side billing remain unknown.
 Missing receipts must never be converted to zero cost.
+
+### A22 budget capacity preflight (2026-10-09)
+The Windows native admission gate checks the *remaining approved USD reservation allowance* **before** recording another paid attempt. Exhausted, corrupt or inaccessible reservation ledgers now block before consuming the separate request-attempt quota. The definitive reservation still re-checks under an exclusive Windows file handle; a concurrent reservation may change the available capacity between checks. These are user-approved accounting reservations, **not actual provider billing or spend ceilings**.

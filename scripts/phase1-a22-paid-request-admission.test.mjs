@@ -52,3 +52,17 @@ test("A22 rejects missing/unknown USD approval before consuming the paid attempt
  const firstAttempt=guardClaim.indexOf("reserve(&PAID_ATTEMPTS");
  assert.ok(auth>=0 && firstAttempt>auth,"unknown pricing must fail before consuming daily attempt counters");
 });
+
+test("A22 checks remaining approved USD headroom before consuming attempt counters",()=>{
+ const budget=read("src-tauri/src/provider_request_guard/usd_budget.rs");
+ const claim=guard.slice(guard.indexOf("pub(crate) fn claim_paid_attempt("),guard.indexOf("// Persist only actual token counts"));
+ const preflight=claim.indexOf("usd_budget::preflight(provider,model,base_url)?");
+ const counter=claim.indexOf("reserve(&PAID_ATTEMPTS");
+ assert.ok(preflight>=0&&counter>preflight);
+ const headroom=budget.slice(budget.indexOf("pub(super) fn preflight("),budget.indexOf("pub(super) fn reserve_approved_allowance("));
+ assert.match(headroom,/read_reservation_entries\(&mut file\)\?/);
+ assert.match(headroom,/ensure_approved_headroom\(&existing,amount,p\.daily_allowance_usd_micros\)\?/);
+ assert.match(headroom,/\.share_mode\(0\)\.custom_flags\(super::OPEN_REPARSE_POINT\)/);
+ assert.match(budget,/exhausted_allowance_is_detected_without_mutating_attempts/);
+ assert.match(budget,/Re-check under the exclusive handle/);
+});
