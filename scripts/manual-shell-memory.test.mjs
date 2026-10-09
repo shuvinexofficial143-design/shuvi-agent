@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 
-const rust=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
+// Git for Windows may check out Rust with CRLF; match source structure consistently.
+const rust=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8").replace(/\r\n/g,"\n");
 
 test("manual shell is registered as a Shuvi-managed process",()=>{
   const start=rust.indexOf("ToolAction::PowerShell { command } =>");
