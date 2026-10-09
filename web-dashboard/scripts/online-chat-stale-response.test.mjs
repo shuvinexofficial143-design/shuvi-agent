@@ -16,7 +16,7 @@ test("A14 stale async responses cannot mutate the replacement conversation",()=>
  assert.match(request,/const revision=conversationRevision/);
  assert.match(request,/const controller=new AbortController\(\)/);
  assert.match(request,/signal:controller\.signal/);
- assert.match(request,/window\.setTimeout\(\(\)=>controller\.abort\(\),28000\)/);
+ assert.match(request,/window\.setTimeout\(\(\)=>controller\.abort\(\),34000\)/);
  assert.match(request,/if\(revision!==conversationRevision\)return/);
  assert.ok(request.indexOf("if(revision!==conversationRevision)return;")<request.indexOf('messages=[...messages,{role:"assistant"'));
  assert.match(request,/window\.clearTimeout\(timeoutId\)/);

@@ -134,7 +134,8 @@ export function mountOnlineChat():void {
     const revision=conversationRevision;
     const controller=new AbortController();
     activeRequest=controller;
-    const timeoutId=window.setTimeout(()=>controller.abort(),28000);
+    // Wait slightly beyond the 30s serverless ceiling for an authoritative reply.
+    const timeoutId=window.setTimeout(()=>controller.abort(),34000);
     const previous=messages.slice(-16);
     messages=[...messages,{role:"user",content:text}].slice(-24);
     input.value="";draw();status.textContent="Shuvi is thinking…";
