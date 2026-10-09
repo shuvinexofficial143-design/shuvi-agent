@@ -108,8 +108,14 @@ pub(crate) fn claim_single_execution<'a>(active:&'a AtomicBool)->Result<NativeEx
 #[cfg(test)]
 mod tests {
     use super::*;
+    // These native tests share Shuvi's real per-user Windows lease. One test
+    // must not race another test's intentionally exclusive OS lock fixture.
+    #[cfg(windows)]
+    static WINDOWS_TEST_LEASE_MUTEX:std::sync::Mutex<()>=std::sync::Mutex::new();
     #[test]
     fn only_one_execution_can_own_desktop_at_a_time() {
+        #[cfg(windows)]
+        let _serial_windows_fixture=WINDOWS_TEST_LEASE_MUTEX.lock().expect("Windows lease fixture lock");
         let active=AtomicBool::new(false);
         let first=claim_single_execution(&active).expect("first action");
         assert!(claim_single_execution(&active).is_err());
@@ -121,6 +127,8 @@ mod tests {
     }
     #[test]
     fn guard_releases_slot_after_unwinding() {
+        #[cfg(windows)]
+        let _serial_windows_fixture=WINDOWS_TEST_LEASE_MUTEX.lock().expect("Windows lease fixture lock");
         let active=AtomicBool::new(false);
         let outcome=std::panic::catch_unwind(||{
             let _lease=claim_single_execution(&active).unwrap();
@@ -131,6 +139,8 @@ mod tests {
     }
     #[test]
     fn two_real_threads_cannot_both_edit_desktop_at_once(){
+        #[cfg(windows)]
+        let _serial_windows_fixture=WINDOWS_TEST_LEASE_MUTEX.lock().expect("Windows lease fixture lock");
         use std::sync::{Arc,Barrier};
         let lock=Arc::new(AtomicBool::new(false));
         let started=Arc::new(Barrier::new(2));
@@ -152,6 +162,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn two_independent_shuvi_instances_cannot_acquire_windows_desktop_simultaneously(){
+        #[cfg(windows)]
+        let _serial_windows_fixture=WINDOWS_TEST_LEASE_MUTEX.lock().expect("Windows lease fixture lock");
         // Separate atomics emulate two independent Tauri application states.
         // Exclusive Windows File handles cover both even across processes.
         let instance_a=AtomicBool::new(false);
@@ -183,6 +195,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn a_denied_cross_process_claim_cannot_poison_existing_instance(){
+        #[cfg(windows)]
+        let _serial_windows_fixture=WINDOWS_TEST_LEASE_MUTEX.lock().expect("Windows lease fixture lock");
         let a=AtomicBool::new(false);
         let b=AtomicBool::new(false);
         let lease=claim_single_execution(&a).unwrap();

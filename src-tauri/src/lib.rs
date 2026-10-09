@@ -18118,7 +18118,14 @@ fn record_agent_event(
 }
 
 #[tauri::command]
-fn set_workspace(path: String, app: AppHandle) -> Result<(), String> {
+fn set_workspace(
+    path: String,
+    app: AppHandle,
+    state: State<'_, ActionState>,
+) -> Result<(), String> {
+    // A09: switching the active project during a native edit can retarget
+    // subsequent actions in that workflow. Share the desktop execution lease.
+    let _native_slot = execution_lease::claim_single_execution(&state.native_execution_owned)?;
     write_workspace(&app, path.trim())
 }
 

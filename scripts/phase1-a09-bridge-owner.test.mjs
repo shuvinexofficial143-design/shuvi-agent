@@ -34,3 +34,15 @@ test("A09 single execution slot guards action and bridge lifecycle, with concurr
  assert.match(lease,/two_real_threads_cannot_both_edit_desktop_at_once/);
  assert.match(lease,/guard_releases_slot_after_unwinding/);
 });
+
+
+test("A09 workspace selection cannot change while a native desktop action owns the execution lease",()=>{
+  const start=source.indexOf("fn set_workspace(");
+  const end=source.indexOf("\n}",start);
+  assert.ok(start>=0&&end>start,"set_workspace command missing");
+  const body=source.slice(start,end);
+  assert.match(body,/state: State<'_, ActionState>/,"workspace selection needs backend ActionState");
+  const lock=body.indexOf("execution_lease::claim_single_execution(&state.native_execution_owned)?");
+  const write=body.indexOf("write_workspace(&app, path.trim())");
+  assert.ok(lock>=0&&write>lock,"workspace mutation must wait for the SAME exclusive native desktop lease");
+});
