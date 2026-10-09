@@ -2,6 +2,7 @@
 
 mod web_bridge;
 mod remote_agent;
+mod blender_worker;
 mod atomic_file;
 mod execution_lease;
 mod bounded_child;
@@ -185,6 +186,7 @@ Available tools:
 - ui_expand_collapse: {"name":"exact visible name","automation_id":"optional exact automation id","window":"optional exact top-level window name","action":"expand|collapse"}
 - ui_send_keys: {"name":"exact visible name","automation_id":"optional exact automation id","window":"optional exact top-level window name","keys":"SendKeys sequence"}
 - pointer_click: {"x":123,"y":456,"button":"left|right|middle","clicks":1}
+- blender_inspect: {"python_exe":"existing absolute Python.exe","blender_exe":"existing absolute Blender.exe","blend_file":"optional existing absolute .blend","operation":"scene.inspect|system.capabilities"} — starts an explicitly approved read-only owned background bridge, not a GUI mouse worker, and never edits/renders
 - motion_graphics_validate_plan: {"plan":{"schema_version":1,"objective":"short goal","renderer":"auto|after_effects|remotion","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":true},"delivery":"standalone_video|transparent_overlay","scenes":[{"id":"scene_1","start_seconds":0,"duration_seconds":4,"layers":[{"id":"title","kind":"text|shape|image|video|group","name":"Title","text":"optional text","asset_id":"optional_asset_id","shape":{"kind":"rectangle|ellipse","size":[640,160],"position":[0,0],"roundness":24,"fill_color":[0.1,0.2,0.3,1],"stroke_color":[1,1,1,1],"stroke_width":4},"tracks":[{"property":"x|y|scale_x|scale_y|rotation_degrees|opacity","keyframes":[{"time_seconds":0,"value":0,"easing":"linear|ease_in|ease_out|ease_in_out|hold"}]}]}]}],"review":{"sample_times_seconds":[1,2,3],"criteria":["readability"]}}}
 - motion_graphics_plan_after_effects: {"request":{"project_file":"absolute saved .aep/.aepx","composition_name":"Shuvi Motion","plan":{"schema_version":1,"objective":"...","renderer":"auto|after_effects","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":true},"delivery":"standalone_video|transparent_overlay","scenes":[...],"review":{"sample_times_seconds":[],"criteria":[]}},"asset_item_ids":{"asset_1":123}}} — read-only adapter planner; every emitted AE mutation still requires fresh inspect_context, exact project revision and normal after_effects_run approval
 - motion_graphics_plan_after_effects_output: {"request":{"project_file":"absolute saved .aep/.aepx","comp_id":123,"output_file":"absolute single-file output path","output_module_template":"caller-selected template","render_settings_template":"optional caller-selected template","transparent_required":true}} — read-only queue/evidence planner; stages add_render_queue_item then inspect_output_module, never renders, and never infers alpha from a template name
@@ -478,6 +480,7 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - git_push: {"path":"absolute repository path","expected_head":"exact committed HEAD copied from the successful git_commit receipt"}
 
 Rules:
+- For complex creative editing choose the required native application/tool yourself. Premiere owns sequence editing; After Effects handles compositing; Remotion can render fixed motion plans; Blender is read-only via blender_inspect until an approved mutation bridge is implemented. Never claim a separate worker ran when only a plan was produced. For new graphics, require actual rendered-file evidence and explicit Premiere insertion before claiming a handoff. Browser asset research never proves a file is licensed/downloaded. Keep all execution permission-gated and audit-bound.
 - Use tools only when a computer action is required.
 - Never claim an action succeeded before Shuvi returns a tool result.
 - Prefer typed file/app/browser/screen tools over PowerShell.
@@ -643,6 +646,7 @@ enum ToolAction {
     UiExpandCollapse { name: Option<String>, automation_id: Option<String>, window: Option<String>, action: String },
     UiSendKeys { name: Option<String>, automation_id: Option<String>, window: Option<String>, keys: String },
     PointerClick { x: i32, y: i32, button: String, clicks: u32 },
+    BlenderInspect { python_exe:String, blender_exe:String, blend_file:Option<String>, operation:String },
     MotionGraphicsValidatePlan { plan: motion_graphics::Plan },
     MotionGraphicsPlanAfterEffects { request: motion_graphics::AfterEffectsPlanRequest },
     MotionGraphicsPlanAfterEffectsOutput { request: motion_graphics::AfterEffectsOutputPlanRequest },
@@ -1562,6 +1566,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "ui_expand_collapse"
         | "ui_send_keys"
         | "pointer_click"
+        | "blender_inspect"
         | "motion_graphics_validate_plan"
         | "motion_graphics_plan_after_effects"
         | "motion_graphics_plan_after_effects_output"
@@ -3326,6 +3331,34 @@ fn stage_tool(
                 format!("{button} click x={x}, y={y}, clicks={clicks}"),
                 RiskLevel::High,
             )
+        }
+        "blender_inspect" => {
+            let python_exe=absolute_path(arg_string(&proposal.arguments,"python_exe")?)?;
+            let blender_exe=absolute_path(arg_string(&proposal.arguments,"blender_exe")?)?;
+            if !Path::new(&python_exe).is_file() || !python_exe.to_ascii_lowercase().ends_with(".exe"){
+                return Err("blender_inspect requires an existing absolute Python.exe.".into());
+            }
+            if !Path::new(&blender_exe).is_file() || !blender_exe.to_ascii_lowercase().ends_with(".exe"){
+                return Err("blender_inspect requires an existing absolute Blender.exe.".into());
+            }
+            let blend_file=match proposal.arguments.get("blend_file"){
+                None|Some(Value::Null)=>None,
+                Some(Value::String(path))=>{
+                    let path=absolute_path(path.clone())?;
+                    if !Path::new(&path).is_file() || !path.to_ascii_lowercase().ends_with(".blend"){
+                        return Err("blender_inspect requires an existing .blend input.".into());
+                    }
+                    Some(path)
+                }
+                _=>return Err("blender_inspect blend_file must be an absolute .blend path.".into())
+            };
+            let operation=arg_string(&proposal.arguments,"operation")?;
+            if !matches!(operation.as_str(),"scene.inspect"|"system.capabilities"){
+                return Err("Blender worker only supports read-only scene.inspect/system.capabilities.".into());
+            }
+            let detail=format!("Start owned read-only Blender bridge | operation={operation} | blend_file={:?} | no host mutation",blend_file);
+            (ToolAction::BlenderInspect{python_exe,blender_exe,blend_file,operation},
+                "Inspect Blender through authenticated worker".into(),detail,RiskLevel::Medium)
         }
         "motion_graphics_validate_plan" => {
             let plan_value=proposal.arguments.get("plan").cloned()
@@ -10082,6 +10115,19 @@ async fn execute_tool_with_action_id(
                 stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
                 stderr: truncate_output(String::from_utf8_lossy(&output.stderr).to_string()),
                 exit_code: output.status.code(),
+            })
+        }
+        ToolAction::BlenderInspect {python_exe,blender_exe,blend_file,operation} => {
+            let script=app.path().resource_dir()
+                .map_err(|e|format!("Could not resolve Blender worker resource directory: {e}"))?
+                .join("blender-worker").join("shuvi_blender_bridge.py");
+            let evidence=blender_worker::inspect(
+                &python_exe,&blender_exe,blend_file.as_deref(),&operation,&script,state
+            )?;
+            Ok(ActionResult{
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&evidence).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
             })
         }
         ToolAction::CaptureScreen => {
