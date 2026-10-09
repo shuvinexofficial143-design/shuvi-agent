@@ -51,7 +51,7 @@ const navGlyphs: Record<string, string> = {
 
 const pageMeta: Record<string, { eyebrow: string; title: string }> = {
   dashboard: { eyebrow: "CONTROL CENTER", title: "Dashboard" },
-  chat: { eyebrow: "AI COMMAND CENTER", title: "AI Chat" },
+  chat: { eyebrow: "AI COMMAND CENTER", title: "Chat" },
   studio: { eyebrow: "CREATIVE WORKSPACE", title: "Creative Studio" },
   projects: { eyebrow: "PROJECT WORKSPACE", title: "Projects" },
   workflows: { eyebrow: "VISUAL AUTOMATION", title: "Workflows" },
