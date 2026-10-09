@@ -10,7 +10,7 @@ export function mountCloudTelegramSetup():void {
   const info=document.createElement("p");
   info.textContent="Online AI handles normal chat and planning. Windows controls and approvals are not connected. The bot token and AI key stay only in Vercel Environment Variables.";
   const guide=document.createElement("p");
-  guide.textContent="Step 1: For FREE Telegram connection tests, configure TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, SHUVI_OWNER_ACCESS_KEY, UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN in Vercel. Keep SHUVI_AI_CALLS_ENABLED=false (default); do NOT purchase xKiro or configure paid AI yet. Redeploy. Step 2: Send /start, discover and verify YOUR private chat ID, set TELEGRAM_OWNER_CHAT_ID and redeploy. Step 3: Activate webhook, then test /start, /status and a normal message. AI must say paused; no model request is sent until you explicitly enable it later.";
+  guide.textContent="Step 1: For FREE Telegram connection tests, configure TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET and SHUVI_OWNER_ACCESS_KEY in Vercel (Redis is optional for connection-only tests). Keep SHUVI_AI_CALLS_ENABLED=false (default); do NOT purchase xKiro or configure paid AI yet. Redeploy. Step 2: Send /start, discover and verify YOUR private chat ID, set TELEGRAM_OWNER_CHAT_ID and redeploy. Step 3: Activate webhook, then test /start, /status and a normal message. AI must say paused; no model request is sent until you explicitly enable it later.";
   const link=document.createElement("a");
   link.href="https://vercel.com/avanti-verse/shuvi-control-center/settings/environment-variables";
   link.textContent="Open Vercel Environment Settings ↗";link.target="_blank";link.rel="noopener noreferrer";
@@ -63,6 +63,6 @@ export function mountCloudTelegramSetup():void {
       ? "Telegram connection test ready · Paid AI OFF · Safe to test /start and /status."
       :s.telegramReady
         ? "Telegram configured · AI switch is ON. Avoid messages until approved test time."
-        : "Telegram setup needs bot, owner Chat ID, webhook secret and Redis; paid AI is NOT required.";
+        : "Telegram setup needs bot, owner Chat ID and webhook secret. Redis and paid AI are NOT required for connection tests.";
   }).catch(()=>{feedback.textContent="Could not check cloud readiness. Verify Vercel setup.";});
 }
