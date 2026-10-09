@@ -83,6 +83,11 @@ Date: 2026-10-09. Deployment is explicitly forbidden during this phase.
 - The exclusive handle is thread-migration safe, unlike an OS mutex held by a thread across async Rust awaits. Guard drop releases the Windows handle before releasing the atomic slot. Windows Rust tests exercise independent per-instance atomics and repeated conflict/recovery; the lease folder and target reject junction/reparse points.
 - A09 remains OPEN: this excludes **multiple Shuvi instances under the same Windows user profile**, not independent other desktop-control programs or every Adobe/IPC side channel. OS ownership and live Windows acceptance must be confirmed on the exact candidate.
 
+## A22 durable Windows daily paid-attempt journal (source staged; exact CI pending)
+- Native metered text/vision calls now reserve against BOTH the 48-attempt runtime limit and a **48-attempt UTC-day append-only journal** in `%LOCALAPPDATA%/Shuvi/paid-ai-attempts-utc-<day>.log` before calling provider HTTP.
+- Daily append events use a 2-byte verified format, bounded reads, Windows exclusive cross-instance file ownership and `sync_all`; an inaccessible, partial, tampered, or saturated journal fails closed. It prevents an ordinary application restart from resetting the daily attempt allowance.
+- This is still NOT a verified dollar/rupee spend budget. The Windows system clock, per-user local files, external concurrent usage, provider prices, token billing and remote APIs are not reconciled. Persisted attempt quotas are an interim protection; **A22 remains OPEN** until user-approved monetary ceilings, pricing validation and provider-side usage reconciliation exist.
+
 ## Priority
 A10 atomic write and A08 cancellation before any destructive Windows acceptance;
 A01 baseline before per-module integration; A09 before real parallel workers;
