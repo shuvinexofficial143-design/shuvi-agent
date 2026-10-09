@@ -42,6 +42,14 @@ test("the master context remains within the exact provider context budget",()=>{
   assert.equal(orchestrationWithMasterEditor(base,[{role:"user",content:"Hello"}]),base);
 });
 
+test("mobile editing completion requires an audited finished task graph",()=>{
+  const main=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
+  assert.match(main,/const masterEditing = Boolean\(editingMasterContext\(messages\)\)/);
+  assert.match(main,/const graphSatisfied = progress.total > 0 && progress.completed === progress.total/);
+  assert.match(main,/masterEditing \? graphSatisfied :/);
+  assert.match(main,/\? "succeeded" : "outcome_unknown"/);
+});
+
 test("native UI routes through the existing permission-first chat, not a fake worker executor",()=>{
   const main=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
   assert.match(main,/orchestration_context: orchestrationWithMasterEditor\(orchestrationContext\(orchestration\), messages\)/);
