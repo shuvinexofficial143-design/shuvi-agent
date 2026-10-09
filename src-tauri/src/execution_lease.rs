@@ -7,6 +7,11 @@ use std::sync::atomic::{AtomicBool,Ordering};
 #[cfg(windows)]
 use std::{fs::{self,File,OpenOptions},path::PathBuf,os::windows::fs::OpenOptionsExt};
 
+// FILE_FLAG_OPEN_REPARSE_POINT: opening a lock must never follow a swapped
+// final-component Windows symlink. Verify the opened handle again afterward.
+#[cfg(windows)]
+const OPEN_REPARSE_POINT:u32=0x0020_0000;
+
 pub(crate) struct NativeExecutionLease<'a>{
     active:&'a AtomicBool,
     #[cfg(windows)]
@@ -28,7 +33,15 @@ fn windows_lease_path()->Result<PathBuf,String>{
     let local=std::env::var_os("LOCALAPPDATA")
         .filter(|value|!value.is_empty())
         .ok_or_else(||"Windows local user profile is unavailable; desktop execution is blocked.".to_string())?;
-    let folder=PathBuf::from(local).join("Shuvi");
+    let local=PathBuf::from(local);
+    // A09: a redirected LOCALAPPDATA must not become the global desktop
+    // execution coordination directory. Validate it before creating Shuvi.
+    let local_meta=fs::symlink_metadata(&local)
+        .map_err(|error|format!("Could not inspect Windows desktop lease parent: {error}"))?;
+    if !local_meta.is_dir()||is_windows_reparse_point(&local_meta){
+        return Err("Windows desktop lease parent cannot be a symlink or junction.".into());
+    }
+    let folder=local.join("Shuvi");
     fs::create_dir_all(&folder)
         .map_err(|error|format!("Could not prepare Windows desktop lease folder: {error}"))?;
     let folder_meta=fs::symlink_metadata(&folder)
@@ -44,18 +57,24 @@ fn is_windows_reparse_point(meta:&fs::Metadata)->bool{
     meta.is_symlink()||meta.file_attributes() & 0x400 !=0
 }
 #[cfg(windows)]
+fn validate_windows_lock_entry(path:&std::path::Path)->Result<(),String>{
+    match fs::symlink_metadata(path){
+        Ok(meta) if meta.is_file()&&!is_windows_reparse_point(&meta)=>Ok(()),
+        Ok(_)=>Err("Shuvi desktop lease path is not a regular unlinked file.".into()),
+        Err(error) if error.kind()==std::io::ErrorKind::NotFound=>Ok(()),
+        Err(error)=>Err(format!("Cannot inspect Shuvi desktop lease path: {error}")),
+    }
+}
+#[cfg(windows)]
 fn claim_windows_desktop_lease()->Result<File,String>{
     let path=windows_lease_path()?;
-    if let Ok(meta)=fs::symlink_metadata(&path){
-        if !meta.is_file()||is_windows_reparse_point(&meta){
-            return Err("Shuvi desktop lease path is not a regular unlinked file.".into());
-        }
-    }
+    validate_windows_lock_entry(&path)?;
     // Windows share_mode(0) requests exclusive sharing. Unlike a Win32
     // mutex, the ownership is tied to File and can safely survive an async
     // Rust future moving to a different executor thread.
     let file=OpenOptions::new()
         .read(true).write(true).create(true).share_mode(0)
+        .custom_flags(OPEN_REPARSE_POINT)
         .open(&path).map_err(|error|format!(
             "Another Shuvi instance may already own Windows desktop control, or the lease is inaccessible: {error}"
         ))?;
@@ -143,6 +162,23 @@ mod tests {
         drop(owned);
         let again=claim_single_execution(&instance_b).expect("OS lease released after owner dropped");
         drop(again);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn rejects_windows_lease_lock_directory_without_creating_or_overwriting_any_file(){
+        let path=std::env::temp_dir().join(format!(
+            "shuvi-a09-lease-boundary-{}",uuid::Uuid::new_v4()
+        ));
+        fs::create_dir(&path).expect("isolated fake lock directory");
+        assert!(validate_windows_lock_entry(&path).is_err(),
+            "a directory must never be treated as a lock file");
+        fs::remove_dir(&path).expect("remove fake lock directory");
+        assert!(validate_windows_lock_entry(&path).is_ok(),
+            "a missing future lock file is a valid creation candidate");
+        fs::write(&path,b"existing test lock").expect("regular lock fixture");
+        assert!(validate_windows_lock_entry(&path).is_ok(),
+            "a regular existing lock file remains eligible");
+        fs::remove_file(&path).expect("remove lock fixture");
     }
     #[cfg(windows)]
     #[test]
