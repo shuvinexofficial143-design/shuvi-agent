@@ -1,20 +1,89 @@
-//! Central fail-closed native execution lease (A09, phase-1 baseline).
-//! Until resource-scoped leases and a queued dispatcher are verified, allow
-//! only one native action through the approved execution entry point at a time.
+//! Fail-closed native execution ownership for Shuvi desktop commands.
+//! A09: intra-process atomic ownership PLUS Windows user-session shared
+//! file-handle exclusion, so two Shuvi application instances cannot drive
+//! the same desktop concurrently. No browser-side worker constant is trusted.
 use std::sync::atomic::{AtomicBool,Ordering};
 
-pub(crate) struct NativeExecutionLease<'a>(&'a AtomicBool);
-impl Drop for NativeExecutionLease<'_> {
-    fn drop(&mut self) {
-        self.0.store(false,Ordering::Release);
+#[cfg(windows)]
+use std::{fs::{self,File,OpenOptions},path::PathBuf,os::windows::fs::OpenOptionsExt};
+
+pub(crate) struct NativeExecutionLease<'a>{
+    active:&'a AtomicBool,
+    #[cfg(windows)]
+    cross_process:Option<File>,
+}
+impl Drop for NativeExecutionLease<'_>{
+    fn drop(&mut self){
+        // Windows release must happen BEFORE the in-process slot is released.
+        // Otherwise a new caller can acquire the atomic lock while the old
+        // operating-system file handle still rejects exclusive ownership.
+        #[cfg(windows)]
+        { drop(self.cross_process.take()); }
+        self.active.store(false,Ordering::Release);
     }
 }
 
-pub(crate) fn claim_single_execution<'a>(active: &'a AtomicBool)
-    -> Result<NativeExecutionLease<'a>,String> {
+#[cfg(windows)]
+fn windows_lease_path()->Result<PathBuf,String>{
+    let local=std::env::var_os("LOCALAPPDATA")
+        .filter(|value|!value.is_empty())
+        .ok_or_else(||"Windows local user profile is unavailable; desktop execution is blocked.".to_string())?;
+    let folder=PathBuf::from(local).join("Shuvi");
+    fs::create_dir_all(&folder)
+        .map_err(|error|format!("Could not prepare Windows desktop lease folder: {error}"))?;
+    let folder_meta=fs::symlink_metadata(&folder)
+        .map_err(|error|format!("Could not inspect Windows desktop lease folder: {error}"))?;
+    if !folder_meta.is_dir()||is_windows_reparse_point(&folder_meta){
+        return Err("Windows Shuvi lease folder cannot be a symlink or junction.".into());
+    }
+    Ok(folder.join("native-desktop-action-v1.lock"))
+}
+#[cfg(windows)]
+fn is_windows_reparse_point(meta:&fs::Metadata)->bool{
+    use std::os::windows::fs::MetadataExt;
+    meta.is_symlink()||meta.file_attributes() & 0x400 !=0
+}
+#[cfg(windows)]
+fn claim_windows_desktop_lease()->Result<File,String>{
+    let path=windows_lease_path()?;
+    if let Ok(meta)=fs::symlink_metadata(&path){
+        if !meta.is_file()||is_windows_reparse_point(&meta){
+            return Err("Shuvi desktop lease path is not a regular unlinked file.".into());
+        }
+    }
+    // Windows share_mode(0) requests exclusive sharing. Unlike a Win32
+    // mutex, the ownership is tied to File and can safely survive an async
+    // Rust future moving to a different executor thread.
+    let file=OpenOptions::new()
+        .read(true).write(true).create(true).share_mode(0)
+        .open(&path).map_err(|error|format!(
+            "Another Shuvi instance may already own Windows desktop control, or the lease is inaccessible: {error}"
+        ))?;
+    let meta=file.metadata().map_err(|error|format!("Could not verify Shuvi desktop lease: {error}"))?;
+    if !meta.is_file()||is_windows_reparse_point(&meta){
+        return Err("Shuvi desktop lease verification failed.".into());
+    }
+    Ok(file)
+}
+
+pub(crate) fn claim_single_execution<'a>(active:&'a AtomicBool)->Result<NativeExecutionLease<'a>,String>{
     active.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire)
         .map_err(|_|"Another Shuvi native action owns the execution slot. Wait for it to finish or stop safely; do not run competing desktop actions.".to_string())?;
-    Ok(NativeExecutionLease(active))
+    #[cfg(windows)]
+    {
+        match claim_windows_desktop_lease(){
+            Ok(file)=>Ok(NativeExecutionLease{active,cross_process:Some(file)}),
+            Err(error)=>{
+                // Failure to acquire OS-wide ownership MUST release local slot.
+                active.store(false,Ordering::Release);
+                Err(error)
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(NativeExecutionLease{active})
+    }
 }
 
 #[cfg(test)]
@@ -61,4 +130,33 @@ mod tests {
         worker.join().unwrap();
         assert!(claim_single_execution(&lock).is_ok(),"lease released after worker");
     }
+    #[cfg(windows)]
+    #[test]
+    fn two_independent_shuvi_instances_cannot_acquire_windows_desktop_simultaneously(){
+        // Separate atomics emulate two independent Tauri application states.
+        // Exclusive Windows File handles cover both even across processes.
+        let instance_a=AtomicBool::new(false);
+        let instance_b=AtomicBool::new(false);
+        let owned=claim_single_execution(&instance_a).expect("first instance obtains OS lease");
+        assert!(claim_single_execution(&instance_b).is_err(),"second instance must fail closed");
+        assert!(!instance_b.load(Ordering::Acquire),"a failed Windows OS lease cannot leave local state locked");
+        drop(owned);
+        let again=claim_single_execution(&instance_b).expect("OS lease released after owner dropped");
+        drop(again);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn a_denied_cross_process_claim_cannot_poison_existing_instance(){
+        let a=AtomicBool::new(false);
+        let b=AtomicBool::new(false);
+        let lease=claim_single_execution(&a).unwrap();
+        for _ in 0..4{
+            assert!(claim_single_execution(&b).is_err());
+            assert!(!b.load(Ordering::Acquire));
+        }
+        assert!(a.load(Ordering::Acquire));
+        drop(lease);
+        assert!(claim_single_execution(&b).is_ok());
+    }
+
 }

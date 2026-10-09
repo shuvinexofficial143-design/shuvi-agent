@@ -78,6 +78,11 @@ Date: 2026-10-09. Deployment is explicitly forbidden during this phase.
 - Rust module declarations similarly retain the declared source module union from both baselines. A new Node regression suite fails if a baseline module or command is dropped or duplicated on the unified candidate.
 - This is **registry/source parity**, NOT a completed live merge or runtime acceptance; Phase 1 A01 remains open until the exact release candidate passes Windows/Adobe real integration and authenticated bridge acceptance.
 
+## A09 Windows cross-instance native desktop lease (pending exact Windows CI)
+- Native actions and five Adobe bridge start/stop commands now share both the existing process-local atomic guard and a per-Windows-user exclusive File handle (`%LOCALAPPDATA%/Shuvi/native-desktop-action-v1.lock`). A second Shuvi process in the same Windows user profile fails closed while the first owns the lease.
+- The exclusive handle is thread-migration safe, unlike an OS mutex held by a thread across async Rust awaits. Guard drop releases the Windows handle before releasing the atomic slot. Windows Rust tests exercise independent per-instance atomics and repeated conflict/recovery; the lease folder and target reject junction/reparse points.
+- A09 remains OPEN: this excludes **multiple Shuvi instances under the same Windows user profile**, not independent other desktop-control programs or every Adobe/IPC side channel. OS ownership and live Windows acceptance must be confirmed on the exact candidate.
+
 ## Priority
 A10 atomic write and A08 cancellation before any destructive Windows acceptance;
 A01 baseline before per-module integration; A09 before real parallel workers;
