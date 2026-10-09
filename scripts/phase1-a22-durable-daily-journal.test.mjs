@@ -25,6 +25,6 @@ test("A22 runtime and daily safety limits are different from money budgets",()=>
  assert.match(guard,/MAX_PAID_REQUEST_ATTEMPTS_PER_RUNTIME:usize=48/);
  assert.match(guard,/MAX_DAILY_PAID_ATTEMPTS:usize=48/);
  assert.match(guard,/NOT a dollar budget/);
- assert.match(guard,/This is NOT a USD or daily budget/);
+ assert.match(guard,/NOT a USD budget or a guarantee about provider pricing/);
  assert.match(guard,/durable_journal_rejects_partial_or_edited_records/);
 });
