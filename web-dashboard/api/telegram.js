@@ -1,6 +1,7 @@
 import { safeEqual, httpJson, parseObjectBody, generateOnlineReply, chunks, onlineConfigured } from "../server/online-core.mjs";
 import { redisConfigured, takeUpdateOnce, getTelegramHistory, saveTelegramHistory, clearTelegramHistory } from "../server/redis-history.mjs";
 import {useDailyChatQuota} from "../server/chat-quota.mjs";
+import {persistTelegramInbound} from "../server/telegram-inbox-store.mjs";
 
 export function telegramConfigured(env=process.env) {
   const token=env.TELEGRAM_BOT_TOKEN||"";
@@ -102,6 +103,10 @@ export default async function handler(req,res) {
   try {update=parseObjectBody(req);}catch{return httpJson(res,400,{error:"Invalid update"});}
   if(!Number.isSafeInteger(update.update_id) || update.update_id<0)return httpJson(res,400,{error:"Invalid update ID"});
   try {
+    // Save the inbound Telegram event BEFORE any AI reply or command handling.
+    // An AI error must not hide a successfully delivered Telegram message.
+    const incoming=telegramInput(update);
+    if(incoming && redisConfigured())await persistTelegramInbound(update,incoming);
     const outcome=await runTelegramUpdate(update);
     return httpJson(res,200,{ok:true,ignored:!!outcome.ignored});
   } catch {
