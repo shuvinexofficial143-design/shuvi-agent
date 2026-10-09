@@ -8128,17 +8128,9 @@ $graphics.Dispose()
 $bitmap.Dispose()"#
         );
 
-        let output = Command::new("powershell.exe")
-            .args([
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-WindowStyle",
-                "Hidden",
-                "-Command",
-                &script,
-            ])
-            .output()
+        // Screen capture is UIA-like host work: reuse the bounded 30-second
+        // child helper instead of an unbounded blocking PowerShell output wait.
+        let output = run_hidden_powershell(&script)
             .map_err(|error| format!("Could not capture screen: {error}"))?;
 
         if !output.status.success() || !path.exists() {
