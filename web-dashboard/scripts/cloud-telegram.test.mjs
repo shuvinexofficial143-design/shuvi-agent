@@ -15,6 +15,7 @@ const env={
   TELEGRAM_OWNER_CHAT_ID:"123456789",
   OPENROUTER_API_KEY:"dummy-server-only-key",
   SHUVI_CHAT_MODEL:"openai/gpt-4.1-mini",
+  SHUVI_AI_CALLS_ENABLED:"true",
   SHUVI_OWNER_ACCESS_KEY:"B".repeat(40),
   UPSTASH_REDIS_REST_URL:"https://sample.upstash.io",
   UPSTASH_REDIS_REST_TOKEN:"dummy-redis-token"
@@ -136,4 +137,70 @@ test("Online chat and setup UI never expose provider/token secrets to public JS"
   const main=source("main.ts");
   assert.match(main,/mountOnlineChat\(\)/);
   assert.match(main,/mountCloudTelegramSetup\(\)/);
+});
+
+
+test("Telegram connects before any AI model key is installed",async()=>{
+  const withoutAI={...env,OPENROUTER_API_KEY:"",SHUVI_CHAT_MODEL:"",SHUVI_AI_CALLS_ENABLED:"false"};
+  assert.equal(onlineConfigured(withoutAI),false);
+  assert.equal(telegramConfigured(withoutAI),true);
+  const sent=[],calls={quota:0,model:0,memory:0};
+  const deps={
+    send:async(id,text)=>sent.push(text),
+    once:async()=>true,
+    load:async()=>{calls.memory++;return [];},
+    save:async()=>{throw Error("AI disabled: should not persist history");},
+    clear:async()=>{},
+    quota:async()=>{calls.quota++;throw Error("AI disabled: no paid quota");},
+    reply:async()=>{calls.model++;throw Error("AI disabled: must never call provider");}
+  };
+  const first=await runTelegramUpdate(message("/start"),withoutAI,deps);
+  const status=await runTelegramUpdate(message("/status"),withoutAI,deps);
+  const normal=await runTelegramUpdate(message("कैसे हो, Shuvi?"),withoutAI,deps);
+  assert.equal(first.command,"/start");
+  assert.equal(status.command,"/status");
+  assert.equal(normal.aiPaused,true);
+  assert.match(sent.at(-1),/AI मॉडल बंद/);
+  assert.match(sent[1],/सुरक्षित रूप से बंद/);
+  assert.deepEqual(calls,{quota:0,model:0,memory:0});
+});
+
+test("Explicit server-side AI switch blocks provider HTTP even when key/model exist",async()=>{
+  const envOff={...env,SHUVI_AI_CALLS_ENABLED:"false"};
+  assert.equal(telegramConfigured(envOff),true);
+  assert.equal(onlineConfigured(envOff),false);
+  let httpCalls=0;
+  await assert.rejects(
+    generateOnlineReply({prompt:"नमस्ते",env:envOff,fetcher:async()=>{
+      httpCalls++;
+      throw Error("This must never be called");
+    }}),
+    /not configured/
+  );
+  assert.equal(httpCalls,0);
+});
+
+
+test("Bot /start and /status work without Redis OR paid AI configuration",async()=>{
+  const basicEnv={
+    TELEGRAM_BOT_TOKEN:env.TELEGRAM_BOT_TOKEN,
+    TELEGRAM_WEBHOOK_SECRET:env.TELEGRAM_WEBHOOK_SECRET,
+    TELEGRAM_OWNER_CHAT_ID:env.TELEGRAM_OWNER_CHAT_ID,
+    SHUVI_AI_CALLS_ENABLED:"false"
+  };
+  assert.equal(telegramConfigured(basicEnv),true);
+  assert.equal(redisConfigured(basicEnv),false);
+  assert.equal(onlineConfigured(basicEnv),false);
+  const sent=[];
+  const opts={send:async(_chat,text)=>sent.push(text),
+    reply:async()=>{throw Error("Provider must not be called")},
+    quota:async()=>{throw Error("Paid quota must not be touched")}};
+  assert.equal((await runTelegramUpdate(message("/start"),basicEnv,opts)).command,"/start");
+  assert.equal((await runTelegramUpdate(message("/status"),basicEnv,opts)).command,"/status");
+  assert.equal((await runTelegramUpdate(message("Shuvi, hello"),basicEnv,opts)).aiPaused,true);
+  assert.equal((await runTelegramUpdate(message("/reset"),basicEnv,opts)).command,"/reset");
+  assert.equal(sent.length,4);
+  assert.match(sent[3],/कोई Cloud Memory/);
+  const paidEnv={...basicEnv,SHUVI_AI_CALLS_ENABLED:"true",OPENROUTER_API_KEY:"demo-key",SHUVI_CHAT_MODEL:"example"};
+  assert.equal(telegramConfigured(paidEnv),false,"Paid AI mode must fail closed without Redis");
 });

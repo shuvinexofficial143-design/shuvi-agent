@@ -17,23 +17,26 @@ The existing native Telegram feature uses Bot API getUpdates long polling from W
 - web-dashboard/src/online-chat.ts: Online AI tab in Multi-Chat, styled chat bubbles, locally saved messages, private access key held in browser tab memory only.
 - web-dashboard/src/cloud-telegram-setup.ts: Settings cloud activation wizard without any Bot Token input.
 
-## PC-free one-time setup
-1. Create your own Telegram bot with verified @BotFather, or reuse one only while its native Telegram polling is OFF. Never paste the Bot Token into ChatGPT.
-2. In shuvi-control-center Vercel project Settings > Environment Variables > Production, add:
-   TELEGRAM_BOT_TOKEN = private BotFather token
-   TELEGRAM_WEBHOOK_SECRET = fresh random 32+ character A-Z/a-z/0-9/_/- webhook secret
-   SHUVI_OWNER_ACCESS_KEY = DIFFERENT random 32+ character owner access key, used to unlock private online chat and setup
-   OPENROUTER_API_KEY = private OpenRouter API key with a provider-side spending ceiling
-   SHUVI_CHAT_MODEL = actual enabled OpenRouter text model ID (example openai/gpt-4.1-mini must be verified)
-   UPSTASH_REDIS_REST_URL = your HTTPS Upstash Redis REST URL
-   UPSTASH_REDIS_REST_TOKEN = matching private Upstash REST token
-   Optional SHUVI_DAILY_MESSAGE_LIMIT = positive integer up to 5000, default 100
-3. Redeploy production ui-dashboard branch to load new environment variables. The key names must NOT have a VITE_ prefix.
-4. Send /start to your own bot in a private Telegram chat before registering a webhook.
-5. Shuvi Web > Settings > Telegram Cloud: enter ONLY the SHUVI_OWNER_ACCESS_KEY in its password field. Click Find my Chat ID. The result is the latest private /start candidate, which might not be yours if others messaged the bot. Verify it belongs to YOUR account. Add verified TELEGRAM_OWNER_CHAT_ID to Vercel Production Environment Variables, then redeploy.
-6. In Settings, re-enter private owner access key, click Activate Cloud Telegram, explicitly confirm you are switching to webhook mode. This action deliberately drops old queued messages.
-7. Send /start again, a simple Hindi message, then /status and /reset. Check a real AI reply before claiming Connected. Unknown/private nonowner chats and Telegram groups must get no reply.
-8. In Multi-Chat > Online AI Chat, enter the private owner access key again after refreshing the page, then send a normal message. This website chat has its own locally stored history, separate from Telegram Redis history. Old Local Drafts remain available.
+## Stage A — Connect Telegram WITHOUT paying for AI (do this first)
+1. Create your own bot with verified @BotFather. Do **not** start xKiro's 5-hour test or buy credits. Keep Windows-native Telegram polling **OFF** for the same bot.
+2. In Vercel shuvi-control-center > Settings > Environment Variables (Production), configure ONLY:
+   - TELEGRAM_BOT_TOKEN: private BotFather token.
+   - TELEGRAM_WEBHOOK_SECRET: random strong 32+ character letters/numbers/underscore/hyphen.
+   - SHUVI_OWNER_ACCESS_KEY: **different** random high-entropy 32+ character value.
+   - UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN: **optional at this stage**. Configure later for real AI chat history and duplicate suppression.
+   - SHUVI_AI_CALLS_ENABLED = false (or leave unset); **do not configure the paid AI provider yet**.
+3. Redeploy production ui-dashboard. These are **server-only** variables, not VITE_-prefixed variables.
+4. In Telegram send /start to your bot in a private chat. In Shuvi Web Settings > Telegram Cloud, enter **only** your owner access key and click Find my Chat ID. Confirm the candidate belongs to YOU, then set TELEGRAM_OWNER_CHAT_ID on Vercel Production and redeploy.
+5. In Shuvi Settings > Telegram Cloud, click Activate Cloud Telegram (native Windows polling must stay OFF). Then send /start, /status, /reset and a simple normal message.
+6. Expected **no-cost AI mode**: /start and /status acknowledge the bot; ordinary chat gives an honest "AI is paused" response, **without any model call or inference charge**. Do not claim a real AI response has been tested yet.
+7. Confirm Telegram owner's private chat can message the bot, an unrelated chat/group gets no response and /approve CODE or /run cannot execute desktop actions. Check only source tests and safe Telegram/network status; do not spend AI credits.
+
+## Stage B — Enable conversational AI ONLY after setup and bugs pass
+1. Select a real available low-cost OpenRouter text model and provider-side dollar spend cap. Set OPENROUTER_API_KEY and SHUVI_CHAT_MODEL privately in Vercel.
+2. Keep SHUVI_AI_CALLS_ENABLED=false until the explicit final go-ahead. All /start, /status and no-cost tests must work before proceeding.
+3. Only when ready, set SHUVI_AI_CALLS_ENABLED=true in Production, redeploy, and send ONE short controlled message. This enables paid inference — do not do it accidentally.
+4. Separately test Multi-Chat > Online AI Chat using the private owner access key. Local browser chat storage does not sync with Telegram's Redis context.
+5. This Cloud AI setup uses OpenRouter, **not xKiro automatically**. Nothing here should trigger the rented xKiro five-hour access window.
 
 ## Security and limits
 - The provider key, bot token, webhook secret and Redis token are server-only Vercel environment variables, never public UI fields or code constants.
@@ -42,5 +45,5 @@ The existing native Telegram feature uses Bot API getUpdates long polling from W
 - A Telegram update ID is accepted once using atomic Redis SET NX with expiry to reduce retries; a failed delivery can still require the user to resend.
 - Message history is limited and can be cleared with Telegram /reset; browser online chat text is locally saved until New Conversation. Do not enter passwords or confidential medical records into cloud chat.
 - Provider token prices and free credits are NOT assumed. The chat quota counts attempted model calls, not money. Add an OpenRouter-side dollar spending limit separately.
-- Serverless chat is dependent on Vercel, Telegram, OpenRouter and Upstash being active. It is NOT a fully built always-on Windows agent.
-- Webhook setup cannot be performed until secrets are set in Vercel. No AI call, bot pairing, webhook activation or remote computer task is implied by a successful GitHub build.
+- Telegram connectivity-only mode depends on Vercel, Telegram and Upstash; real AI chat additionally depends on OpenRouter and explicit SHUVI_AI_CALLS_ENABLED=true. It is NOT a fully built always-on Windows agent.
+- Webhook setup needs Telegram + owner secrets only in connection-only mode; Redis and AI provider keys are added **later**. Without Redis, simple Telegram commands have no persistent duplicate suppression; safe no-cost status tests remain possible. No AI call, bot pairing, webhook activation or remote computer task is implied by a successful GitHub build.

@@ -15,7 +15,7 @@ export default async function handler(req,res) {
   const authorization=req.headers?.authorization;
   const key=typeof authorization==="string" && authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
   if(!safeEqual(key,process.env.SHUVI_OWNER_ACCESS_KEY))return httpJson(res,401,{error:"Invalid owner access key"});
-  if(!telegramConfigured())return httpJson(res,503,{error:"Telegram/cloud AI/Redis environment incomplete"});
+  if(!telegramConfigured())return httpJson(res,503,{error:"Telegram owner, bot token or webhook secret missing (Redis needed only for paid AI mode)"});
   const endpoint="https://shuvi-control-center.vercel.app/api/telegram";
   if(!safeWebhookUrl(endpoint))return httpJson(res,500,{error:"Invalid webhook configuration"});
   try {
