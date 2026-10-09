@@ -15,8 +15,8 @@ test("provider identity fields are bounded and validated in Rust",()=>{
   assert.match(block,/model\.chars\(\)\.any\(char::is_control\)/);
   assert.match(block,/provider == "custom" && base_url\.is_none\(\)/);
   assert.match(block,/url\.len\(\) > MAX_PROVIDER_BASE_URL_BYTES/);
-  assert.match(block,/https:\/\//);
-  assert.match(block,/http:\/\//);
+  assert.match(block,/matches!\(parsed\.scheme\(\), "http" \| "https"\)/);
+  assert.match(block,/parsed\.host_str\(\)\.is_none\(\)/);
 });
 
 test("chat and tool preparation both enforce provider field validation",()=>{

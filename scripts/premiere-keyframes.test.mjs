@@ -8,6 +8,7 @@ vm.runInContext(readFileSync(new URL("../integrations/premiere-uxp/recipe-plans.
 
 const audioPlans = {module: {exports: {}}}; vm.createContext(audioPlans);
 vm.runInContext(readFileSync(new URL("../integrations/premiere-uxp/audio-plans.js", import.meta.url), "utf8"), audioPlans);
+const uxp = readFileSync(new URL("../integrations/premiere-uxp/main.js", import.meta.url), "utf8");
 
 function fixture(kind = "video") {
   const actions = [];
@@ -33,6 +34,7 @@ function fixture(kind = "video") {
   const track = { getTrackItems: async () => [item] };
   const sequence = { guid: { toString: () => "sequence-id" }, getVideoTrack: async () => track, getAudioTrack: async () => track };
   const project = { guid: { toString: () => "project-id" }, getActiveSequence: async () => sequence,
+    getSequences: async () => [sequence],
     lockedAccess: callback => callback(), executeTransaction: callback => { callback({ addAction: action => actions.push(action) }); return true; } };
   const premiere = { Project: { getActiveProject: async () => project }, ProjectItem: { cast: item => item },
     Constants: { TrackItemType: { CLIP: 1 }, InterpolationMode: { LINEAR: 0, HOLD: 1, BEZIER: 2 }, TransitionPosition: { START: 0, END: 1 } } };
@@ -214,12 +216,16 @@ test("timeline produces inspectable signatures and plain project/sequence expect
   assert.equal(timeline.videoTracks[0].items[0].targetSignature, (await expectedTarget(f)).clips[0].signature);
 });
 
-test("timeline capability report refuses to infer vertical move, links, nesting or multicam", async () => {
+test("timeline capability report distinguishes unavailable writes from observational link audit", async () => {
   const f = fixture(); const report = await f.panel.executeCommand({action: "timeline_capabilities", arguments: {}});
-  for (const name of ["verticalMove", "nativeLinkInspection", "replacementNesting", "multicam"]) {
-    assert.equal(report[name].supported, false); assert.equal(report[name].fallbackImplemented, false);
-  }
   assert.equal(report.verticalClone.supported, false);
+  assert.equal(report.verticalMove.supported, false);
+  assert.equal(report.replacementNesting.supported, false);
+  assert.equal(report.nativeLinkInspection.supported, true);
+  assert.equal(report.nativeLinkInspection.membershipVerified, false);
+  assert.equal(report.nativeLinkInspection.nativeGetterAvailable, false);
+  assert.equal(report.multicam.supported, false);
+  assert.equal(report.multicam.fallbackImplemented, false);
   assert.equal(f.actions.length, 0);
 });
 
@@ -240,7 +246,11 @@ test("clone rejects nonexistent vertical destination before creating native acti
 test("subsequence restores selection even if setting the temporary selection fails", async () => {
   const f = fixture(); const sequence = await f.project.getActiveSequence();
   const previous = {name: "previous"}; let selected = [previous]; let calls = 0;
-  sequence.getSelection = async () => ({getTrackItems: async () => [...selected], removeItem: item => {selected = selected.filter(x => x !== item);}, addItem: item => selected.push(item)});
+  sequence.getSelection = async () => ({
+    getTrackItems: async () => [...selected],
+    removeItem: item => { selected = selected.filter(x => x !== item); return true; },
+    addItem: item => { selected.push(item); return true; }
+  });
   sequence.setSelection = () => ++calls > 1;
   await assert.rejects(f.panel.createSubsequence({targets: [{kind: "video", track: 0, clipIndex: 0}]}), /could not set/);
   assert.equal(calls, 2); assert.deepEqual(selected, [previous]);
@@ -248,9 +258,22 @@ test("subsequence restores selection even if setting the temporary selection fai
 
 test("subsequence reports failed restoration without claiming selected-only content", async () => {
   const f = fixture(); const sequence = await f.project.getActiveSequence(); let calls = 0;
-  sequence.getSelection = async () => ({getTrackItems: async () => [], removeItem() {}, addItem() {}});
+  sequence.getSelection = async () => ({
+    getTrackItems: async () => [],
+    removeItem() { return true; },
+    addItem() { return true; }
+  });
   sequence.setSelection = () => ++calls === 1;
-  sequence.createSubsequence = async () => ({guid: "new-sequence", getProjectItem: async () => ({getId: async () => "new-item"})});
+  const nested = {
+    guid: "new-sequence",
+    getProjectItem: async () => ({getId: async () => "new-item"}),
+    getVideoTrackCount: async () => 0,
+    getAudioTrackCount: async () => 0,
+    getVideoTrack: async () => null,
+    getAudioTrack: async () => null
+  };
+  sequence.createSubsequence = async () => nested;
+  f.project.getSequences = async () => [sequence, nested];
   const result = await f.panel.createSubsequence({targets: [{kind: "video", track: 0, clipIndex: 0}]});
   assert.equal(result.created, true); assert.equal(result.selectionRestored, false); assert.equal(result.selectionSemanticsVerified, false);
 });
@@ -271,7 +294,7 @@ for (const kind of ["video", "audio"]) test(kind + ": inspected component remova
 });
 test("component lifecycle rejects ambiguity and changed chain before edits", async () => {
   const f = effectFixture(); const inspected = await f.panel.inspectEffectLifecycle(f.args);
-  f.components.unshift({getMatchName: () => "different", getDisplayName: () => "Different"});
+  f.components.unshift({getMatchName: () => "different", getDisplayName: () => "Different", getParamCount: () => 0});
   await assert.rejects(f.panel.removeEffect({...f.args, expectedSignature: inspected.targetSignature}), /chain changed/);
   f.components.push(f.components[1]);
   await assert.rejects(f.panel.inspectEffectLifecycle(f.args), /2 components/);
@@ -340,7 +363,7 @@ test("static video and audio parameter writes require native value readback",()=
   assert.match(uxp,/async function readStaticEffectValue/);
   assert.match(uxp,/param\.getStartValue\(\)/);
   assert.match(uxp,/verificationStatus:equivalentStaticEffectValue\(expected,observed\) \? "verified_readback" : "accepted_unverified"/);
-  assert.match(uxp,/Math\.max\(0\.000001,Math\.abs\(expected\)\*0\.000001\)/);
+  assert.match(uxp,/Math\.max\(0\.000001,Math\.abs\(a\)\*0\.000001\)/);
   for(const [name,next] of [
     ["setEffectParam","addEffectKeyframe"],
     ["setVideoParamNamed","addVideoKeyframeNamed"],
@@ -384,12 +407,13 @@ test("keyframe edits and range removal require exact native post-state",()=>{
   assert.match(edit,/verificationStatus:verified \? "verified_keyframe_edit" : "accepted_unverified"/);
 });
 
-test("subsequence requires new sequence and project-item identity without claiming content semantics",()=>{
+test("subsequence requires identity, restored selection and exact selected-content semantics",()=>{
   const section=uxp.slice(uxp.indexOf("async function createSubsequence"),uxp.indexOf("async function captionTracks"));
   assert.match(section,/beforeSequenceGuids/);
   assert.match(section,/sequenceMatches\.length === 1/);
   assert.match(section,/projectItemResolved = Boolean\(await findProjectItemById/);
-  assert.match(section,/selectionSemanticsVerified: false/);
+  assert.match(section,/selectionSemanticsVerified=requestedNormalized\.length===observedNormalized\.length/);
+  assert.match(section,/sequenceIdentityVerified && projectItemResolved && selectionRestored && selectionSemanticsVerified/);
   assert.match(section,/verificationStatus: verified \? "verified_creation_identity" : "accepted_unverified"/);
   assert.match(section,/retrySafe: false/);
 });

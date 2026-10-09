@@ -65,7 +65,7 @@ test("successful commit invalidates pre-commit validation and can bind validatio
   const push=proposal("git_push",{expected_head:HEAD_C});
   let pushDecision=agent.evaluateProposal(s,push);
   assert.equal(pushDecision.allowed,false);
-  assert.match(pushDecision.reason,/exact committed HEAD before git_push/);
+  assert.match(pushDecision.reason,/exact committed HEAD.*before git_push/);
   assert.equal(agent.evaluateProposal(s,proposal("git_push",{expected_head:HEAD_A,expected_worktree_fingerprint:WORKTREE_A})).allowed,false);
 
   s=done(s,proposal("run_project_task",{task:"test"}),gitResult("run_project_task",HEAD_C,"main","observed",true));

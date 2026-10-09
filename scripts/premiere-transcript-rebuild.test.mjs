@@ -114,6 +114,14 @@ function nativeFixture(options={}) {
   const tick=n=>({seconds:n,ticks:String(n*1000)});
   const media=(id,name,start=0,end=60,flags={takeVideo:true,takeAudio:true})=>({id,name,start,end,flags,getId:async()=>id,
     isOffline:async()=>false,isSequence:async()=>false,isMergedClip:async()=>false,isMulticamClip:async()=>false,
+    getInPoint:async mediaType=>{
+      if (mediaType===1 && flags.takeVideo || mediaType===2 && flags.takeAudio) return tick(start);
+      throw Error('media type unavailable');
+    },
+    getOutPoint:async mediaType=>{
+      if (mediaType===1 && flags.takeVideo || mediaType===2 && flags.takeAudio) return tick(end);
+      throw Error('media type unavailable');
+    },
     createSubClipAction:(name,a,b,hard,flags)=>()=>{assert.equal(hard,true);items.push(media('created-'+items.length,name,a.seconds,b.seconds,flags));if(options.ambiguous)items.push(media('duplicate',name,a.seconds,b.seconds,flags));}});
   const master=media('media','Original');items.push(master);
   const clip=(m,start,input=0,output=m.end-m.start)=>({getName:async()=>m.name,getStartTime:async()=>tick(start),getEndTime:async()=>tick(start+output-input),getInPoint:async()=>tick(input),getOutPoint:async()=>tick(output),getProjectItem:async()=>m,getSpeed:async()=>1,isSpeedReversed:async()=>false});
@@ -124,7 +132,7 @@ function nativeFixture(options={}) {
   const root={getItems:async()=>items,getId:async()=>'root'};
   const project={guid:'project',path:'C:/test.prproj',getActiveSequence:async()=>source,getSequences:async()=>[source,dest],getRootItem:async()=>root,
     lockedAccess:fn=>fn(),executeTransaction:(fn,label)=>{const actions=[];fn({addAction:a=>actions.push(a)});actions.forEach(a=>a());transactions.push(label);return true;}};
-  const native={Project:{getActiveProject:async()=>project},ProjectItem:{cast:i=>i},ClipProjectItem:{cast:i=>{if(!i.id)throw Error('not clip');return i;}},FolderItem:{cast:i=>{if(!i.getItems)throw Error('not folder');return i;}},TickTime:{createWithSeconds:tick},Constants:{TrackItemType:{CLIP:1}},
+  const native={Project:{getActiveProject:async()=>project},ProjectItem:{cast:i=>i},ClipProjectItem:{cast:i=>{if(!i.id)throw Error('not clip');return i;}},FolderItem:{cast:i=>{if(!i.getItems)throw Error('not folder');return i;}},TickTime:{createWithSeconds:tick},Constants:{TrackItemType:{CLIP:1},MediaType:{VIDEO:1,AUDIO:2,DATA:3}},
     SequenceEditor:{getEditor:sequence=>({createOverwriteItemAction:(m,time)=>()=>{assert.equal(sequence,dest);video.push(clip(m,time.seconds));if(m.flags.takeAudio)audio.push(clip(m,time.seconds));}})}};
   const panel={document:{getElementById:()=>null},require:name=>name==='premierepro'?native:name==='uxp'?{entrypoints:{setup(){}}}:name==='./transcript-rebuild.js'?rebuild:{}};
   vm.createContext(panel);vm.runInContext(read('main.js'),panel);

@@ -5,7 +5,8 @@ test('native preflight checks exact items and existing tracks before insertion',
 test('assembly uses bounded existing insert/overwrite and chapter tool, checkpoint, native post-inspection, cancellation',()=>{for(const n of ['premiere_plan_assembly','premiere_apply_assembly','premiere_cancel_assembly'])assert.match(rust,new RegExp(`"${n}" =>`));for(const p of [/backup_premiere_project\(&premiere_bridge\)\.await\?/,/request\(\s*"insert_project_item"/,/request\(\s*"add_marker"/,/assembly_cancelled\.load/,/request\(\s*"inspect_timeline"/,/uncertain=true/,/expected\.sequence_guid\.is_none\(\)/])assert.match(rust,p)});
 
 test('assembly stops when project-item insertion is not an exact verified insert delta',()=>{
- const arm=rust.slice(rust.indexOf('ToolAction::PremiereAssembly{assembly,apply}'),rust.indexOf('ToolAction::PremiereFinishMediaBatch'));
+ const start=rust.indexOf('ToolAction::PremiereAssembly{assembly,apply}');
+ const arm=rust.slice(start,rust.indexOf('ToolAction::PremiereFinishMediaBatch',start));
  assert.match(arm,/verified_insert_delta/);
  assert.match(arm,/"status":if verified\{"verified"\}else\{"uncertain"\}/);
  assert.match(arm,/if !verified \{uncertain=true;break;\}/);

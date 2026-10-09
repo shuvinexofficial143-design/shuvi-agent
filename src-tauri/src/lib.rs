@@ -2,6 +2,7 @@
 
 mod web_bridge;
 mod atomic_file;
+
 mod premiere_execution;
 mod premiere_store;
 mod after_effects;
@@ -83,6 +84,18 @@ use premiere_bridge::{PremiereBridgeShared, PremiereBridgeStatus};
 
 mod audition;
 mod audition_acceptance;
+mod animate;
+mod animate_checkpoint;
+mod character_animator;
+mod substance_3d;
+mod frame_io;
+mod illustrator;
+mod illustrator_checkpoint;
+mod illustrator_bridge_queue;
+mod illustrator_bridge;
+use illustrator_bridge::{IllustratorBridgeShared,IllustratorBridgeStatus};
+mod photoshop;
+mod photoshop_checkpoint;
 mod motion_graphics;
 mod motion_graphics_provider;
 mod motion_graphics_review;
@@ -94,6 +107,12 @@ mod motion_graphics_remotion_runtime;
 mod audition_bridge_queue;
 mod audition_bridge;
 use audition_bridge::{AuditionBridgeShared, AuditionBridgeStatus};
+mod animate_bridge_queue;
+mod animate_bridge;
+use animate_bridge::{AnimateBridgeShared, AnimateBridgeStatus};
+mod photoshop_bridge_queue;
+mod photoshop_bridge;
+use photoshop_bridge::{PhotoshopBridgeShared,PhotoshopBridgeStatus};
 
 const KEYRING_SERVICE: &str = "Shuvi";
 const SOFT_LIMIT_MB: f64 = 3584.0;
@@ -248,14 +267,19 @@ Available tools:
 - premiere_review_frames: {"seconds":[0,5,10],"prompt":"compare continuity, color, framing and edit quality across these Premiere frames"}
 - premiere_review_session_start: {"objective":"clean talking-head edit","sample_times":[0,5],"reference":"optional brief","max_iterations":4}
 - premiere_review_session_status: {"session_id":"exact returned ID"}
+- premiere_review_session_summary: {"session_id":"exact returned ID"}
 - premiere_review_session_next: {"session_id":"exact returned ID"}
+- premiere_review_session_continue: {"session_id":"exact returned ID"}
+- premiere_review_session_recovery: {"session_id":"stagnated review session ID"}
 - premiere_review_session_record_fix: {"session_id":"ID","issue_id":"inspected issue ID","target":"exact inspected clip target","planner":"premiere_plan_video_recipe","settings":{"exact":"approved typed settings"},"approved_action_id":"exact successful Shuvi audit action ID"}
+- premiere_plan_review_correction: {"session_id":"ID","issue_id":"inspected issue ID","frame_seconds":2,"kind":"video|audio","track":0,"clip_index":0,"target_signature":"exact inspected targetSignature","component_match_name":"exact inspected native component","param_display_name":"exact inspected native parameter","desired_value":"same primitive type as current value"}
 - premiere_review_session_cancel: {"session_id":"exact returned ID"}
 - premiere_plan_edit_recipe: {"preset":"social_reel|cinematic_reel|talking_head|product_ad|wedding_highlight|long_form_youtube|story_explainer|clean_corporate","targets":{},"inputs":{},"options":{}}
 - premiere_edit_job_start: {"schema_version":1,"job_type":"talking_head|social_reel|product_ad|wedding_highlight|corporate|custom","talking_head_strategy":"optional direct_cut|source_rebuild","media_prep":null,"scene_detection":null,"transcript_cuts":null,"transcript_rebuild":null,"assembly":null,"track_organization":null,"layering":null,"finishing":null,"work_area":null,"review":null,"frame_delivery":null,"interchange_export":null,"export":null}
 - premiere_edit_job_status: {"job_id":"exact returned UUID"}
 - premiere_edit_job_next: {"job_id":"exact returned UUID"}
 - premiere_edit_job_record_action: {"job_id":"UUID","phase_id":"exact current phase id","action_id":"exact executed Shuvi audit action UUID"}
+- premiere_edit_job_record_review: {"job_id":"UUID","phase_id":"review","review_session_id":"completed bounded review session UUID"}
 - premiere_edit_job_cancel: {"job_id":"exact returned UUID"}
 - premiere_list_items: {}
 - premiere_project_tree: {}
@@ -383,6 +407,59 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - after_effects_run: {"afterfx_exe":"absolute path to AfterFX.exe","timeout_ms":30000,"request":{"schema_version":1,"request_id":"fresh-id","action":"inspect_context","expected_project_file":null,"expected_project_revision":null,"args":{}}} — for every mutating action copy exact expected_project_file + expected_project_revision from the latest inspect_context receipt
 - after_effects_plan_hand_track: {"plan":{"property":{"target":{"comp_id":1,"layer_id":2},"path":[{"match_name":"ADBE Transform Group","property_index":1},{"match_name":"ADBE Position","property_index":2}]},"samples":[{"time_seconds":0.0,"point":[100,200],"confidence":0.9}],"coordinate_space":"comp_pixels"}}
 - after_effects_plan_hand_track_rig: {"plan":{"comp_id":1,"target_layer_id":2,"samples":[{"time_seconds":0.0,"point":[100,200],"confidence":0.95}],"coordinate_space":"comp_pixels","name":"Shuvi Hand Track","preserve_visual":true,"min_confidence":0.5,"smoothing_alpha":0.35,"max_gap_seconds":0.25}}
+
+- character_animator_capability_report: {}
+- character_animator_readiness_report: {}
+- character_animator_detect: {}
+- character_animator_launch: {"character_animator_exe":"exact absolute Character Animator.exe path returned by character_animator_detect"}
+- character_animator_control_catalog: {}
+- character_animator_plan_control: {"request":{"control_kind":"application_shortcut|trigger_key|midi_note","command":"record_take_work_area|export_png_wav|export_frame when application_shortcut","key":"single project trigger key when trigger_key","midi_note":"0..127 when midi_note","acknowledge_project_mapping":false}}
+- character_animator_runtime_preflight: {"request":{"control":{"control_kind":"application_shortcut","command":"record_take_work_area","key":null,"midi_note":null,"acknowledge_project_mapping":false},"character_animator_exe":"exact detected Character Animator.exe","expected_pid":1234,"explicit_user_approval":true}} — verifies the exact Shuvi-managed foreground process only; sends no input
+- character_animator_execute_application_shortcut: {"request":{"control":{"control_kind":"application_shortcut","command":"record_take_work_area|export_png_wav|export_frame","key":null,"midi_note":null,"acknowledge_project_mapping":false},"character_animator_exe":"exact detected Character Animator.exe","expected_pid":1234,"explicit_user_approval":true}} — high-risk bounded delivery for only the three documented shortcuts; requires exact managed-process identity and immediate foreground PID/path recheck; effect success is not inferred from input dispatch
+- character_animator_plan_interchange: {"request":{"route":"dynamic_link_after_effects|dynamic_link_premiere|media_encoder_export","project_path":"absolute .chproj path","scene_name":"exact scene name"}} — planning only; no import/export execution
+- character_animator_acceptance_summary: {} — canonical 100% bounded source-scope completion summary; runtime verification remains false until a real Windows Character Animator acceptance run
+- substance_3d_capability_report: {}
+- substance_3d_readiness_report: {}
+- substance_3d_detect: {}
+- substance_3d_launch: {"app_id":"painter|designer|sampler|stager|modeler","substance_exe":"exact absolute executable path returned by substance_3d_detect"} — launches only a freshly detected exact Substance 3D candidate; no project open, host scripting or content mutation
+- substance_3d_automation_catalog: {} — read-only documented automation surface matrix; Painter remote scripting, Designer Python plugin and Sampler Python script planning are recognized while Stager/Modeler stay blocked without an authoritative scripting surface
+- substance_3d_plan_automation: {"request":{"app_id":"painter|designer|sampler","automation_kind":"remote_scripting|python_plugin|python_script","script_path":"absolute .py/.sdplugin when required","acknowledge_in_app_install":false}} — planning only; no script/plugin execution or project mutation
+- substance_3d_painter_remote_launch: {"request":{"painter_exe":"exact detected Painter executable","explicit_user_approval":true}} — high-risk exact Painter launch with only Adobe's documented --enable-remote-scripting flag; no remote command is sent
+- substance_3d_painter_remote_preflight: {"request":{"painter_exe":"exact detected Painter executable","expected_pid":1234,"explicit_user_approval":true}} — verifies exact Shuvi-managed process identity plus documented localhost:60041 reachability; endpoint ownership and host readiness remain unverified
+- substance_3d_sampler_script_fingerprint: {"script_path":"absolute .py file"} — read-only canonical path, size and SHA-256 receipt; executes nothing
+- substance_3d_sampler_script_launch: {"request":{"sampler_exe":"exact detected Sampler executable","script_path":"absolute .py file","expected_script_sha256":"exact prior fingerprint","explicit_user_approval":true,"receipt_path":"optional absolute .json target that must not already exist","request_id":"optional exact receipt request id"}} — high-risk hash-bound launch using Adobe's documented --run-script surface; optional Shuvi receipt environment is injected only when both receipt fields are supplied
+- substance_3d_painter_read_only: {"request":{"painter_exe":"exact detected Painter executable","expected_pid":1234,"query":"api_version","explicit_user_approval":true}} — verifies exact managed Painter PID owns localhost:60041, then sends only Adobe's fixed documented alg.version.painter JavaScript through /run.json; arbitrary commands are impossible
+- substance_3d_sampler_verify_receipt: {"request":{"receipt_path":"exact absolute .json receipt","expected_request_id":"exact launch request id","expected_script_sha256":"exact approved script SHA-256"}} — verifies a Shuvi completion receipt emitted by the approved hash-bound script; does not prove specific material/render effects
+- frame_io_capability_report: {}
+- frame_io_readiness_report: {}
+- frame_io_credential_status: {} — returns only whether a Frame.io access token is stored; never exposes the token
+- frame_io_identity_preflight: {} — read-only V4 calls to /v4/me and /v4/accounts using the securely stored Bearer token; no projects/files/comments/uploads or mutations
+- frame_io_oauth_begin: {} — generate Adobe IMS Native App PKCE authorization URL; state and code_verifier are stored in Windows keyring and the verifier is never returned
+- frame_io_oauth_complete: {"callback_url":"exact Adobe IMS redirect URI including code and state"} — validate exact configured redirect + state + 15-minute pending lifetime, exchange code with PKCE at Adobe IMS, securely store the access token and a refresh token only when Adobe IMS issues one; tokens are never returned
+- frame_io_oauth_refresh: {} — explicitly refresh the access token only when a refresh token was issued and securely stored; otherwise fail closed and require re-authentication; no client secret
+- frame_io_list_workspaces: {"account_id":"exact account id from frame_io_identity_preflight","after":"optional opaque cursor returned by prior response","page_size":50} — read-only GET /v4/accounts/:account_id/workspaces with bounded explicit cursor pagination
+- frame_io_list_projects: {"account_id":"exact account id","workspace_id":"exact workspace id from frame_io_list_workspaces","after":"optional opaque cursor returned by prior response","page_size":50} — read-only GET /v4/accounts/:account_id/workspaces/:workspace_id/projects with bounded explicit cursor pagination
+- frame_io_list_folder_children: {"account_id":"exact account id","folder_id":"exact root/subfolder id","after":"optional opaque cursor returned by prior response","page_size":50} — read-only folder-child inspection with bounded explicit cursor pagination; signed media/download links omitted
+- frame_io_show_file: {"account_id":"exact account id","file_id":"exact file id from folder inspection"} — read-only GET /v4/accounts/:account_id/files/:file_id; bounded metadata only, view/download/media links omitted
+- frame_io_list_comments: {"account_id":"exact account id","file_id":"exact file id","after":"optional opaque cursor returned by prior response","page_size":50} — read-only GET /v4/accounts/:account_id/files/:file_id/comments; comment text/time/reviewer summary only, attachments and external links omitted
+- frame_io_show_comment: {"account_id":"exact account id","comment_id":"exact comment id from frame_io_list_comments"} — read-only GET /v4/accounts/:account_id/comments/:comment_id; bounded comment metadata only
+- frame_io_acceptance_summary: {} — canonical 100% bounded source-scope summary; explicitly lists implemented reads, unclaimed writes, credential safety and real Windows/Frame.io runtime handoff
+- photoshop_capability_report: {}
+- photoshop_readiness_report: {}
+- photoshop_detect: {}
+- photoshop_launch: {"photoshop_exe":"exact absolute Photoshop.exe path returned by photoshop_detect"}
+- photoshop_bridge_start: {}
+- photoshop_bridge_status: {}
+- photoshop_bridge_stop: {}
+- photoshop_context: {} — paired UXP read-only active document identity
+- photoshop_layers: {} — paired UXP bounded layer inventory
+- photoshop_set_layer_property: {"expected_document_id":123,"layer_id":456,"operation":"rename|visible|opacity","expected_value":"exact value from latest photoshop_layers","value":"new primitive value"} — guarded high-risk write; fresh pre-inspection + modal history guard + independent post-write readback
+- photoshop_set_text_layer: {"expected_document_id":123,"layer_id":456,"expected_contents":"exact latest text","expected_size":24,"contents":"optional replacement","size":30} — high-risk checkpointed text content/font-size edit
+- photoshop_transform_layer: {"expected_document_id":123,"layer_id":456,"operation":"translate|scale|rotate","expected_bounds":{"left":0,"top":0,"right":100,"bottom":100},"x":10,"y":20,"width_percent":80,"height_percent":80,"angle_degrees":15} — high-risk checkpointed bounded transform; include only fields relevant to the chosen operation
+- photoshop_verify_checkpoint: {"backup_path":"exact Shuvi checkpoint backup","expected_source_path":"exact saved PSD/PSB path","expected_document_id":123} — read-only checkpoint integrity/recovery evidence; never restores automatically
+- photoshop_set_layer_mask: {"expected_document_id":123,"layer_id":456,"operation":"layer_mask_density|layer_mask_feather","expected_value":100,"value":75} — high-risk checkpointed layer-mask control using exact inspected value
+- photoshop_save_document: {"expected_document_id":123,"expected_document_path":"exact current PSD/PSB path","expected_saved":false} — high-risk checkpointed save of the exact existing local PSD/PSB; no Save As dialog/path inference
+- photoshop_acceptance_summary: {} — canonical source-scope completion summary; runtime verification remains false until a real Photoshop host run
 - workspace_scan: {"path":"absolute workspace path"}
 - search_text: {"path":"absolute workspace path","query":"text to find"}
 - replace_text: {"path":"absolute file path","old":"exact old text","new":"replacement text"}
@@ -599,6 +676,77 @@ enum ToolAction {
     AuditionCommandEnabled { command: audition::InspectedCommand },
     AuditionSetPlayhead { percent: f64, expected_document_signature: String },
     AuditionInvokeCommand { command: audition::InspectedCommand, expected_document_signature: String },
+    AnimateCapabilityReport,
+    AnimateReadinessReport,
+    AnimateDetect,
+    AnimateLaunch { animate_exe:String },
+    AnimateBridgeStart,
+    AnimateBridgeStatus,
+    AnimateBridgeStop,
+    AnimateContext,
+    AnimateTimeline,
+    AnimateLibrary,
+    AnimateSelection,
+    AnimateIdentityCheck { expected_document_signature:String, expected_timeline_signature:String },
+    AnimateSetLayerProperty { request:animate::LayerWriteRequest },
+    AnimateVerifyCheckpoint { backup_path:String, expected_source_path:String, expected_document_signature:String },
+    AnimatePlanRecovery { backup_path:String, expected_source_path:String, expected_document_signature:String },
+    AnimatePlanPublish { request:animate::PublishPlanRequest },
+    AnimateAcceptanceSummary,
+    IllustratorCapabilityReport,
+    IllustratorReadinessReport,
+    IllustratorDetect,
+    IllustratorLaunch { illustrator_exe:String },
+    IllustratorBridgeStart,
+    IllustratorBridgeStatus,
+    IllustratorBridgeStop,
+    IllustratorContext,
+    IllustratorArtboards,
+    IllustratorLayers,
+    IllustratorPageItems,
+    IllustratorSelection,
+    IllustratorIdentityCheck { expected_document_signature:String },
+    IllustratorSetLayerProperty { request:illustrator::LayerWriteRequest },
+    IllustratorVerifyCheckpoint { backup_path:String, expected_source_path:String, expected_document_signature:String },
+    IllustratorPlanRecovery { backup_path:String, expected_source_path:String, expected_document_signature:String },
+    IllustratorPlanExport { request:illustrator::ExportPlanRequest },
+    IllustratorAcceptanceSummary,
+    CharacterAnimatorCapabilityReport,
+    CharacterAnimatorReadinessReport,
+    CharacterAnimatorDetect,
+    CharacterAnimatorLaunch { character_animator_exe:String },
+    CharacterAnimatorControlCatalog,
+    CharacterAnimatorPlanControl { request:character_animator::ControlPlanRequest },
+    CharacterAnimatorRuntimePreflight { request:character_animator::RuntimeControlPreflightRequest },
+    CharacterAnimatorExecuteApplicationShortcut { request:character_animator::RuntimeControlPreflightRequest },
+    CharacterAnimatorPlanInterchange { request:character_animator::InterchangePlanRequest },
+    CharacterAnimatorAcceptanceSummary,
+    Substance3DCapabilityReport,
+    Substance3DReadinessReport,
+    Substance3DDetect,
+    Substance3DLaunch { app_id:String, substance_exe:String },
+    Substance3DAutomationCatalog,
+    Substance3DPlanAutomation { request:substance_3d::AutomationPlanRequest },
+    Substance3DPainterRemoteLaunch { request:substance_3d::PainterRemoteLaunchRequest },
+    Substance3DPainterRemotePreflight { request:substance_3d::PainterRemotePreflightRequest },
+    Substance3DSamplerScriptFingerprint { script_path:String },
+    Substance3DSamplerScriptLaunch { request:substance_3d::SamplerScriptLaunchRequest },
+    Substance3DPainterReadOnly { request:substance_3d::PainterReadRequest },
+    Substance3DSamplerVerifyReceipt { request:substance_3d::SamplerReceiptVerifyRequest },
+    FrameIoCapabilityReport,
+    FrameIoReadinessReport,
+    FrameIoCredentialStatus,
+    FrameIoIdentityPreflight,
+    FrameIoOauthBegin,
+    FrameIoOauthComplete { callback_url:String },
+    FrameIoOauthRefresh,
+    FrameIoListWorkspaces { account_id:String, after:Option<String>, page_size:Option<u32> },
+    FrameIoListProjects { account_id:String, workspace_id:String, after:Option<String>, page_size:Option<u32> },
+    FrameIoListFolderChildren { account_id:String, folder_id:String, after:Option<String>, page_size:Option<u32> },
+    FrameIoShowFile { account_id:String, file_id:String },
+    FrameIoListComments { account_id:String, file_id:String, after:Option<String>, page_size:Option<u32> },
+    FrameIoShowComment { account_id:String, comment_id:String },
+    FrameIoAcceptanceSummary,
     PremiereDetect,
     PremiereLaunch { project: Option<String> },
     PremiereBridgeStart,
@@ -630,12 +778,16 @@ enum ToolAction {
     PremiereReviewFrames { seconds: Vec<f64>, prompt: String, provider: ProviderContext },
     PremiereReviewSessionStart { objective: String, reference: String, sample_times: Vec<f64>, max_iterations: u8 },
     PremiereReviewSessionStatus { session_id: String },
+    PremiereReviewSessionSummary { session_id:String },
     PremiereReviewSessionNext { session_id: String, provider: ProviderContext },
+    PremiereReviewSessionContinue { session_id: String },
+    PremiereReviewSessionRecovery { session_id:String },
     PremiereReviewSessionRecordFix { session_id: String, issue_id: String, target: String, planner: String, settings: Value, approved_action_id: String },
     PremiereReviewSessionCancel { session_id: String },
     PremierePlanEditRecipe { request: premiere_editorial::Request },
     PremiereResolveReviewTarget { session_id: String, issue_id: String, frame_seconds: f64 },
     PremiereBindReviewFix { session_id: String, issue_id: String, frame_seconds: f64, kind: String, track: u32, clip_index: u32, target_signature: String, component_match_name: Option<String>, param_display_name: Option<String> },
+    PremierePlanReviewCorrection { session_id:String, issue_id:String, frame_seconds:f64, kind:String, track:u32, clip_index:u32, target_signature:String, component_match_name:String, param_display_name:String, desired_value:Value },
     PremiereEditSessionStart { request: premiere_editorial::Request },
     PremiereEditSessionStatus { session_id: String },
     PremiereEditSessionNext { session_id: String },
@@ -646,6 +798,7 @@ enum ToolAction {
     PremiereEditJobStatus { job_id: String },
     PremiereEditJobNext { job_id: String },
     PremiereEditJobRecordAction { job_id: String, phase_id: String, action_id: String },
+    PremiereEditJobRecordReview { job_id:String, phase_id:String, review_session_id:String },
     PremiereEditJobCancel { job_id: String },
     PremiereSetTrackMute { kind: String, track: u32, muted: bool },
     PremiereSetClipEnabled { kind: String, track: u32, clip_index: u32, enabled: bool },
@@ -782,6 +935,22 @@ enum ToolAction {
     AfterEffectsRun { afterfx_exe:String, timeout_ms:u64, request:after_effects_transport::Request },
     AfterEffectsPlanHandTrack { plan: after_effects::HandTrackPlan },
     AfterEffectsPlanHandTrackRig { plan: after_effects::HandTrackRigPlan },
+    PhotoshopCapabilityReport,
+    PhotoshopReadinessReport,
+    PhotoshopDetect,
+    PhotoshopLaunch { photoshop_exe:String },
+    PhotoshopBridgeStart,
+    PhotoshopBridgeStatus,
+    PhotoshopBridgeStop,
+    PhotoshopContext,
+    PhotoshopLayers,
+    PhotoshopSetLayerProperty { request:photoshop::LayerWriteRequest },
+    PhotoshopSetTextLayer { request:photoshop::TextWriteRequest },
+    PhotoshopTransformLayer { request:photoshop::TransformRequest },
+    PhotoshopVerifyCheckpoint { backup_path:String, expected_source_path:String, expected_document_id:u32 },
+    PhotoshopSetLayerMask { request:photoshop::MaskWriteRequest },
+    PhotoshopSaveDocument { request:photoshop::SaveRequest },
+    PhotoshopAcceptanceSummary,
     WorkspaceScan { path: String },
     SearchText { path: String, query: String },
     ReplaceText { path: String, old: String, new_value: String },
@@ -861,6 +1030,9 @@ struct ActionState {
     browser_sessions: Mutex<HashMap<u32, BrowserSession>>,
     premiere_bridge: Arc<PremiereBridgeShared>,
     audition_bridge: Arc<AuditionBridgeShared>,
+    animate_bridge: Arc<AnimateBridgeShared>,
+    illustrator_bridge: Arc<IllustratorBridgeShared>,
+    photoshop_bridge: Arc<PhotoshopBridgeShared>,
     premiere_export_jobs_io: Mutex<()>,
     acceptance_probe_running: AtomicBool,
     finishing_running: premiere_execution::Execution,
@@ -1013,6 +1185,170 @@ fn load_api_key(provider_id: &str) -> Result<Option<String>, String> {
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(error) => Err(format!("Could not read credential: {error}")),
     }
+}
+
+fn frame_io_entry(name:&str)->Result<Entry,String>{
+    Entry::new(KEYRING_SERVICE,&format!("integration:frame_io:{name}"))
+        .map_err(|error|format!("Frame.io credential store unavailable: {error}"))
+}
+
+fn load_frame_io_secret(name:&str)->Result<Option<String>,String>{
+    let entry=frame_io_entry(name)?;
+    match entry.get_password(){
+        Ok(value)=>Ok(Some(value)),
+        Err(keyring::Error::NoEntry)=>Ok(None),
+        Err(error)=>Err(format!("Could not read Frame.io secure state: {error}"))
+    }
+}
+
+fn clear_frame_io_secret(name:&str)->Result<(),String>{
+    let entry=frame_io_entry(name)?;
+    match entry.delete_credential(){
+        Ok(())|Err(keyring::Error::NoEntry)=>Ok(()),
+        Err(error)=>Err(format!("Could not clear Frame.io secure state: {error}"))
+    }
+}
+
+fn load_frame_io_access_token()->Result<Option<String>,String>{
+    let value=load_frame_io_secret("access_token")?;
+    if let Some(token)=value.as_deref(){frame_io::validate_access_token(token)?;}
+    Ok(value)
+}
+
+fn load_frame_io_refresh_token()->Result<Option<String>,String>{
+    let value=load_frame_io_secret("refresh_token")?;
+    if let Some(token)=value.as_deref(){frame_io::validate_refresh_token(token)?;}
+    Ok(value)
+}
+
+fn load_frame_io_access_expires_at()->Result<Option<u64>,String>{
+    let Some(raw)=load_frame_io_secret("access_expires_at")? else{return Ok(None);};
+    let value=raw.parse::<u64>().map_err(|_|"Stored Frame.io access-token expiry is invalid.".to_string())?;
+    if value==0{return Err("Stored Frame.io access-token expiry is invalid.".into());}
+    Ok(Some(value))
+}
+
+fn load_frame_io_oauth_config()->Result<Option<frame_io::OAuthConfig>,String>{
+    let Some(raw)=load_frame_io_secret("oauth_config")? else{return Ok(None);};
+    let config:frame_io::OAuthConfig=serde_json::from_str(&raw)
+        .map_err(|_|"Stored Frame.io OAuth config is invalid.".to_string())?;
+    config.validate()?;
+    Ok(Some(config))
+}
+
+fn load_frame_io_oauth_pending()->Result<Option<frame_io::OAuthPending>,String>{
+    let Some(raw)=load_frame_io_secret("oauth_pending")? else{return Ok(None);};
+    let pending:frame_io::OAuthPending=serde_json::from_str(&raw)
+        .map_err(|_|"Stored Frame.io OAuth pending state is invalid.".to_string())?;
+    pending.validate()?;
+    Ok(Some(pending))
+}
+
+fn store_frame_io_tokens(tokens:&frame_io::OAuthTokens,preserve_refresh:Option<&str>,issued_at_unix:u64)->Result<(),String>{
+    frame_io::validate_access_token(&tokens.access_token)?;
+    let refresh=tokens.refresh_token.as_deref().or(preserve_refresh);
+    if let Some(value)=refresh{frame_io::validate_refresh_token(value)?;}
+    if let Some(value)=refresh{
+        frame_io_entry("refresh_token")?.set_password(value)
+            .map_err(|error|format!("Could not securely save Frame.io refresh token: {error}"))?;
+    }else{
+        clear_frame_io_secret("refresh_token")?;
+    }
+    if let Err(error)=frame_io_entry("access_token")?.set_password(&tokens.access_token){
+        let _=clear_frame_io_secret("refresh_token");
+        return Err(format!("Could not securely save Frame.io access token: {error}"));
+    }
+    let expires_at=frame_io::token_expiry_from(issued_at_unix,tokens.expires_in)?;
+    if let Err(error)=frame_io_entry("access_expires_at")?.set_password(&expires_at.to_string()){
+        let _=clear_frame_io_secret("access_token"); let _=clear_frame_io_secret("refresh_token");
+        return Err(format!("Could not securely save Frame.io access-token expiry: {error}"));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn save_frame_io_access_token(access_token:String)->Result<(),String>{
+    frame_io::validate_access_token(&access_token)?;
+    frame_io_entry("access_token")?.set_password(&access_token)
+        .map_err(|error|format!("Could not save Frame.io access token: {error}"))?;
+    clear_frame_io_secret("refresh_token")?;
+    clear_frame_io_secret("access_expires_at")?;
+    clear_frame_io_secret("oauth_pending")
+}
+
+#[tauri::command]
+fn delete_frame_io_access_token()->Result<(),String>{
+    clear_frame_io_secret("access_token")?;
+    clear_frame_io_secret("refresh_token")?;
+    clear_frame_io_secret("access_expires_at")?;
+    clear_frame_io_secret("oauth_pending")
+}
+
+#[tauri::command]
+fn save_frame_io_oauth_config(client_id:String,redirect_uri:String)->Result<(),String>{
+    let config=frame_io::OAuthConfig{client_id,redirect_uri};
+    config.validate()?;
+    let encoded=serde_json::to_string(&config).map_err(|e|format!("Could not encode Frame.io OAuth config: {e}"))?;
+    frame_io_entry("oauth_config")?.set_password(&encoded)
+        .map_err(|error|format!("Could not save Frame.io OAuth config: {error}"))?;
+    clear_frame_io_secret("oauth_pending")
+}
+
+#[tauri::command]
+fn delete_frame_io_oauth_config()->Result<(),String>{
+    clear_frame_io_secret("oauth_config")?;
+    clear_frame_io_secret("oauth_pending")
+}
+
+#[tauri::command]
+fn frame_io_credential_status()->Result<Value,String>{
+    let credential_configured=load_frame_io_access_token()?.is_some();
+    let expires_at=load_frame_io_access_expires_at()?;
+    let now=now_ms()/1000;
+    let token_freshness=match expires_at{
+        Some(value) if frame_io::access_token_needs_refresh(value,now)=>"refresh_required",
+        Some(_)=>"fresh",
+        None if credential_configured=>"unknown_manual_token",
+        None=>"not_configured"
+    };
+    Ok(json!({
+        "integration":"frame_io","credential_configured":credential_configured,
+        "refresh_token_configured":load_frame_io_refresh_token()?.is_some(),
+        "oauth_configured":load_frame_io_oauth_config()?.is_some(),"oauth_pending":load_frame_io_oauth_pending()?.is_some(),
+        "token_freshness":token_freshness,"expiry_tracking_configured":expires_at.is_some(),
+        "credential_value_exposed":false,"pkce_verifier_exposed":false,"refresh_token_exposed":false
+    }))
+}
+
+
+async fn refresh_frame_io_stored_access_token()->Result<(String,bool,u64),String>{
+    let config=load_frame_io_oauth_config()?.ok_or_else(||"Frame.io Native App OAuth config is not set.".to_string())?;
+    let refresh=load_frame_io_refresh_token()?.ok_or_else(||"No Frame.io refresh token is securely configured.".to_string())?;
+    let response=http_client()?.post(frame_io::oauth_token_url(&config.client_id)?)
+        .form(&[("grant_type","refresh_token"),("refresh_token",refresh.as_str())]).send().await
+        .map_err(|e|format!("Adobe IMS Frame.io refresh failed before a verified response: {e}"))?;
+    let (status,body)=bounded_provider_json(response,"Adobe IMS Frame.io refresh").await?;
+    if !status.is_success(){return Err(format!("Adobe IMS Frame.io refresh returned {status}: {}",compact_error(&body)));}
+    let tokens=frame_io::parse_oauth_token_response(&body)?;
+    let rotated=tokens.refresh_token.is_some();
+    let expires_in=tokens.expires_in;
+    let access=tokens.access_token.clone();
+    store_frame_io_tokens(&tokens,Some(&refresh),now_ms()/1000)?;
+    Ok((access,rotated,expires_in))
+}
+
+async fn load_frame_io_fresh_access_token()->Result<(String,bool),String>{
+    let token=load_frame_io_access_token()?.ok_or_else(||"No Frame.io access token is securely configured.".to_string())?;
+    let Some(expires_at)=load_frame_io_access_expires_at()? else{return Ok((token,false));};
+    if !frame_io::access_token_needs_refresh(expires_at,now_ms()/1000){return Ok((token,false));}
+    if load_frame_io_refresh_token()?.is_none(){return Err("Frame.io access token is expired or near expiry and no refresh token is configured; re-authenticate.".into());}
+    let (refreshed,_,_)=refresh_frame_io_stored_access_token().await?;
+    Ok((refreshed,true))
+}
+
+fn annotate_frame_io_refresh(mut value:Value,refreshed:bool)->Value{
+    if let Some(object)=value.as_object_mut(){object.insert("access_token_auto_refreshed".into(),Value::Bool(refreshed));}
+    value
 }
 
 fn http_client() -> Result<Client, String> {
@@ -1292,12 +1628,16 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_review_frames"
         | "premiere_review_session_start"
         | "premiere_review_session_status"
+        | "premiere_review_session_summary"
         | "premiere_review_session_next"
+        | "premiere_review_session_continue"
+        | "premiere_review_session_recovery"
         | "premiere_review_session_record_fix"
         | "premiere_review_session_cancel"
         | "premiere_plan_edit_recipe"
         | "premiere_resolve_review_target"
         | "premiere_bind_review_fix"
+        | "premiere_plan_review_correction"
         | "premiere_edit_session_start"
         | "premiere_edit_session_status"
         | "premiere_edit_session_next"
@@ -1308,6 +1648,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_edit_job_status"
         | "premiere_edit_job_next"
         | "premiere_edit_job_record_action"
+        | "premiere_edit_job_record_review"
         | "premiere_edit_job_cancel"
         | "premiere_set_track_mute"
         | "premiere_set_clip_enabled"
@@ -1435,6 +1776,58 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "after_effects_run"
         | "after_effects_plan_hand_track"
         | "after_effects_plan_hand_track_rig"
+        | "character_animator_capability_report"
+        | "character_animator_readiness_report"
+        | "character_animator_detect"
+        | "character_animator_launch"
+        | "character_animator_control_catalog"
+        | "character_animator_plan_control"
+        | "character_animator_runtime_preflight"
+        | "character_animator_execute_application_shortcut"
+        | "character_animator_plan_interchange"
+        | "character_animator_acceptance_summary"
+        | "substance_3d_capability_report"
+        | "substance_3d_readiness_report"
+        | "substance_3d_detect"
+        | "substance_3d_launch"
+        | "substance_3d_automation_catalog"
+        | "substance_3d_plan_automation"
+        | "substance_3d_painter_remote_launch"
+        | "substance_3d_painter_remote_preflight"
+        | "substance_3d_sampler_script_fingerprint"
+        | "substance_3d_sampler_script_launch"
+        | "substance_3d_painter_read_only"
+        | "substance_3d_sampler_verify_receipt"
+        | "frame_io_capability_report"
+        | "frame_io_readiness_report"
+        | "frame_io_credential_status"
+        | "frame_io_identity_preflight"
+        | "frame_io_oauth_begin"
+        | "frame_io_oauth_complete"
+        | "frame_io_oauth_refresh"
+        | "frame_io_list_workspaces"
+        | "frame_io_list_projects"
+        | "frame_io_list_folder_children"
+        | "frame_io_show_file"
+        | "frame_io_list_comments"
+        | "frame_io_show_comment"
+        | "frame_io_acceptance_summary"
+        | "photoshop_capability_report"
+        | "photoshop_readiness_report"
+        | "photoshop_detect"
+        | "photoshop_launch"
+        | "photoshop_bridge_start"
+        | "photoshop_bridge_status"
+        | "photoshop_bridge_stop"
+        | "photoshop_context"
+        | "photoshop_layers"
+        | "photoshop_set_layer_property"
+        | "photoshop_set_text_layer"
+        | "photoshop_transform_layer"
+        | "photoshop_verify_checkpoint"
+        | "photoshop_set_layer_mask"
+        | "photoshop_save_document"
+        | "photoshop_acceptance_summary"
         | "workspace_scan"
         | "search_text"
         | "replace_text"
@@ -2178,6 +2571,7 @@ fn read_utf8_open_file_bounded(
     String::from_utf8(bytes)
         .map_err(|error| format!("{label} is not valid UTF-8: {error}"))
 }
+
 
 fn read_utf8_file_bounded(path: &Path, max_bytes: usize, label: &str) -> Result<String, String> {
     let file = fs::File::open(path)
@@ -3189,6 +3583,586 @@ fn stage_tool(
                 "Read persisted final motion acceptance and return a normal premiere_insert_media proposal. No Premiere mutation.".into(),
                 RiskLevel::Low)
         }
+        "character_animator_capability_report" => (
+            ToolAction::CharacterAnimatorCapabilityReport,
+            "Read Character Animator source capability report".into(),
+            "Source milestone declaration only; does not claim a live Character Animator host or project automation capability.".into(),
+            RiskLevel::Low,
+        ),
+        "character_animator_readiness_report" => (
+            ToolAction::CharacterAnimatorReadinessReport,
+            "Read Character Animator readiness report".into(),
+            "Report the current Character Animator bounded source milestone and explicit runtime gaps.".into(),
+            RiskLevel::Low,
+        ),
+        "character_animator_detect" => (
+            ToolAction::CharacterAnimatorDetect,
+            "Detect installed Adobe Character Animator".into(),
+            "Read-only bounded Program Files/Adobe inspection; does not launch Character Animator.".into(),
+            RiskLevel::Low,
+        ),
+        "character_animator_launch" => {
+            let character_animator_exe=arg_string(&proposal.arguments,"character_animator_exe")?;
+            character_animator::validate_requested_executable(&character_animator_exe)?;
+            (ToolAction::CharacterAnimatorLaunch {character_animator_exe:character_animator_exe.clone()},
+                "Launch detected Adobe Character Animator".into(),
+                format!("Launch exact freshly detected Adobe Character Animator executable {character_animator_exe}; no project open, recording, script execution, or host mutation."),
+                RiskLevel::Medium)
+        }
+        "character_animator_control_catalog" => (
+            ToolAction::CharacterAnimatorControlCatalog,
+            "Read Character Animator supported control catalog".into(),
+            "Read the bounded source contract for documented Character Animator keyboard shortcuts, project trigger keys, MIDI notes, Dynamic Link and Media Encoder handoff. No input is sent.".into(),
+            RiskLevel::Low,
+        ),
+        "character_animator_plan_control" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"character_animator_plan_control requires request.".to_string())?;
+            let request:character_animator::ControlPlanRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Character Animator control plan request: {e}"))?;
+            request.validate()?;
+            (ToolAction::CharacterAnimatorPlanControl {request},
+                "Plan Character Animator control input".into(),
+                "Build a bounded plan for a documented Character Animator application shortcut, user-mapped trigger key, or user-mapped MIDI note. Planning only; no key/MIDI input is sent.".into(),
+                RiskLevel::Low)
+        }
+
+        "character_animator_runtime_preflight" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"character_animator_runtime_preflight requires request.".to_string())?;
+            let request:character_animator::RuntimeControlPreflightRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Character Animator runtime preflight request: {e}"))?;
+            request.validate()?;
+            (ToolAction::CharacterAnimatorRuntimePreflight {request},
+                "Verify Character Animator runtime control target".into(),
+                "Permission-first preflight only: require explicit approval, an exact Shuvi-managed process identity, and exact foreground Character Animator executable/PID verification. No keyboard or MIDI input is sent.".into(),
+                RiskLevel::Medium)
+        }
+
+        "character_animator_execute_application_shortcut" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"character_animator_execute_application_shortcut requires request.".to_string())?;
+            let request:character_animator::RuntimeControlPreflightRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Character Animator application shortcut request: {e}"))?;
+            request.validate()?;
+            if request.control.control_kind!="application_shortcut"{
+                return Err("Character Animator runtime execution currently supports only application_shortcut controls.".into());
+            }
+            (ToolAction::CharacterAnimatorExecuteApplicationShortcut {request},
+                "Execute bounded Character Animator application shortcut".into(),
+                "Send one fixed documented Character Animator shortcut only after normal high-risk approval, exact Shuvi-managed process identity verification, fresh install-path binding, and immediate foreground PID/path recheck. Trigger-key and MIDI delivery remain blocked; input dispatch does not prove the requested Character Animator effect succeeded.".into(),
+                RiskLevel::High)
+        }
+        "character_animator_plan_interchange" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"character_animator_plan_interchange requires request.".to_string())?;
+            let request:character_animator::InterchangePlanRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Character Animator interchange plan request: {e}"))?;
+            request.validate()?;
+            (ToolAction::CharacterAnimatorPlanInterchange {request},
+                "Plan Character Animator interchange workflow".into(),
+                "Build a bounded planning-only workflow for Dynamic Link to After Effects/Premiere or Character Animator to Adobe Media Encoder handoff. No project or export mutation.".into(),
+                RiskLevel::Low)
+        }
+        "character_animator_acceptance_summary" => (
+            ToolAction::CharacterAnimatorAcceptanceSummary,
+            "Read canonical Character Animator source completion summary".into(),
+            "Report the declared 100% bounded Character Animator source scope, safety gates, explicit unclaimed capabilities, runtime-acceptance gap and production-readiness boundary.".into(),
+            RiskLevel::Low,
+        ),
+        "substance_3d_capability_report" => (
+            ToolAction::Substance3DCapabilityReport,
+            "Read Substance 3D source capability report".into(),
+            "Source milestone declaration only; does not claim project/material/model automation or a live Substance host transport.".into(),
+            RiskLevel::Low,
+        ),
+        "substance_3d_readiness_report" => (
+            ToolAction::Substance3DReadinessReport,
+            "Read Substance 3D readiness report".into(),
+            "Report the current bounded desktop foundation and explicit host/runtime gaps.".into(),
+            RiskLevel::Low,
+        ),
+        "substance_3d_detect" => (
+            ToolAction::Substance3DDetect,
+            "Detect installed Adobe Substance 3D apps".into(),
+            "Read-only bounded Program Files/Adobe inspection for recognized Painter, Designer, Sampler, Stager and Modeler installs; does not launch an app.".into(),
+            RiskLevel::Low,
+        ),
+        "substance_3d_launch" => {
+            let app_id=arg_string(&proposal.arguments,"app_id")?;
+            let substance_exe=arg_string(&proposal.arguments,"substance_exe")?;
+            substance_3d::validate_requested_executable(&app_id,&substance_exe)?;
+            (ToolAction::Substance3DLaunch {app_id:app_id.clone(),substance_exe:substance_exe.clone()},
+                "Launch detected Adobe Substance 3D app".into(),
+                format!("Launch exact freshly detected Substance 3D app_id={app_id} executable {substance_exe}; no project open, host scripting, render, import/export or content mutation."),
+                RiskLevel::Medium)
+        }
+        "substance_3d_automation_catalog" => (
+            ToolAction::Substance3DAutomationCatalog,
+            "Read Substance 3D documented automation catalog".into(),
+            "Read-only matrix of separately verified Adobe automation surfaces. It does not execute scripts, plugins, remote commands or project mutations.".into(),
+            RiskLevel::Low,
+        ),
+        "substance_3d_plan_automation" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"substance_3d_plan_automation requires request.".to_string())?;
+            let request:substance_3d::AutomationPlanRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Substance 3D automation plan request: {e}"))?;
+            request.validate()?;
+            (ToolAction::Substance3DPlanAutomation {request},
+                "Plan documented Substance 3D automation surface".into(),
+                "Planning only for Painter remote scripting, Designer Python plugin, or Sampler Python script surfaces. Stager/Modeler remain blocked and no automation is executed.".into(),
+                RiskLevel::Low)
+        }
+        "substance_3d_painter_remote_launch" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"substance_3d_painter_remote_launch requires request.".to_string())?;
+            let request:substance_3d::PainterRemoteLaunchRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Substance 3D Painter remote launch request: {e}"))?;
+            request.validate()?;
+            (ToolAction::Substance3DPainterRemoteLaunch {request},
+                "Launch Painter with documented remote scripting enabled".into(),
+                "High-risk launch of the exact freshly detected Painter executable with only --enable-remote-scripting after explicit approval. This exposes Painter's documented localhost scripting endpoint; no remote command is sent by this action.".into(),
+                RiskLevel::High)
+        }
+        "substance_3d_painter_remote_preflight" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"substance_3d_painter_remote_preflight requires request.".to_string())?;
+            let request:substance_3d::PainterRemotePreflightRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Substance 3D Painter remote preflight request: {e}"))?;
+            request.validate()?;
+            (ToolAction::Substance3DPainterRemotePreflight {request},
+                "Check Painter remote scripting readiness boundary".into(),
+                "Permission-first preflight: require exact live Shuvi-managed Painter identity, fresh executable binding and localhost:60041 connectivity. It sends no script and does not claim endpoint-process ownership or host readiness.".into(),
+                RiskLevel::Medium)
+        }
+        "substance_3d_sampler_script_fingerprint" => {
+            let script_path=arg_string(&proposal.arguments,"script_path")?;
+            let value=substance_3d::sampler_script_fingerprint(&script_path)?;
+            let canonical=value.get("canonical_script_path").and_then(Value::as_str)
+                .ok_or_else(||"Sampler fingerprint did not return canonical_script_path.".to_string())?.to_string();
+            (ToolAction::Substance3DSamplerScriptFingerprint {script_path:canonical},
+                "Fingerprint Substance 3D Sampler script".into(),
+                "Read-only canonicalization, size check and SHA-256 receipt for one absolute .py script; executes nothing.".into(),
+                RiskLevel::Low)
+        }
+        "substance_3d_sampler_script_launch" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"substance_3d_sampler_script_launch requires request.".to_string())?;
+            let request:substance_3d::SamplerScriptLaunchRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Substance 3D Sampler script launch request: {e}"))?;
+            request.validate()?;
+            (ToolAction::Substance3DSamplerScriptLaunch {request},
+                "Launch approved Sampler Python script".into(),
+                "High-risk launch using Adobe's documented --run-script surface. The exact .py file is freshly canonicalized and SHA-256 matched to the approved fingerprint immediately before launch; optional Shuvi receipt binding does not itself prove script effects.".into(),
+                RiskLevel::High)
+        }
+        "substance_3d_painter_read_only" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"substance_3d_painter_read_only requires request.".to_string())?;
+            let request:substance_3d::PainterReadRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Substance 3D Painter read-only request: {e}"))?;
+            request.validate()?;
+            (ToolAction::Substance3DPainterReadOnly {request},
+                "Read fixed Painter API version receipt".into(),
+                "Medium-risk remote read: require explicit approval, exact managed Painter process, fresh executable binding and proof that the expected PID owns localhost:60041; only fixed alg.version.painter is allowed, with no arbitrary script input.".into(),
+                RiskLevel::Medium)
+        }
+        "substance_3d_sampler_verify_receipt" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"substance_3d_sampler_verify_receipt requires request.".to_string())?;
+            let request:substance_3d::SamplerReceiptVerifyRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Substance 3D Sampler receipt verification request: {e}"))?;
+            request.validate()?;
+            (ToolAction::Substance3DSamplerVerifyReceipt {request},
+                "Verify Sampler script completion receipt".into(),
+                "Read-only verification of an exact JSON completion receipt bound to the expected request ID and approved script SHA-256. It verifies the Shuvi receipt contract, not a native Sampler completion signal or specific effect.".into(),
+                RiskLevel::Low)
+        }
+        "frame_io_capability_report" => (
+            ToolAction::FrameIoCapabilityReport,
+            "Read Frame.io source capability report".into(),
+            "Read the bounded Frame.io V4 source milestone and explicit unsupported surfaces. No network request or mutation.".into(),
+            RiskLevel::Low,
+        ),
+        "frame_io_readiness_report" => (
+            ToolAction::FrameIoReadinessReport,
+            "Read Frame.io readiness report".into(),
+            "Read the Frame.io V4 API/auth foundation status without exposing credentials.".into(),
+            RiskLevel::Low,
+        ),
+        "frame_io_credential_status" => (
+            ToolAction::FrameIoCredentialStatus,
+            "Check Frame.io credential status".into(),
+            "Report only whether an access token is securely configured. The credential value is never returned.".into(),
+            RiskLevel::Low,
+        ),
+        "frame_io_identity_preflight" => (
+            ToolAction::FrameIoIdentityPreflight,
+            "Verify Frame.io V4 identity and accessible accounts".into(),
+            "Read-only GET requests to the official Frame.io V4 /me and /accounts endpoints using the securely stored Bearer token. No project/file/comment/upload/share mutation.".into(),
+            RiskLevel::Low,
+        ),
+        "frame_io_oauth_begin" => (
+            ToolAction::FrameIoOauthBegin,
+            "Begin Frame.io Native App OAuth PKCE".into(),
+            "Generate an Adobe IMS authorization URL using the configured Native App client ID and redirect URI. PKCE verifier/state are securely stored and the verifier is never exposed.".into(),
+            RiskLevel::Low,
+        ),
+        "frame_io_oauth_complete" => {
+            let callback_url=arg_string(&proposal.arguments,"callback_url")?;
+            if callback_url.len()>4096||callback_url.chars().any(char::is_control){
+                return Err("Frame.io OAuth callback_url is oversized or contains control characters.".into());
+            }
+            (ToolAction::FrameIoOauthComplete {callback_url},
+                "Complete Frame.io Native App OAuth PKCE".into(),
+                "Validate the exact configured redirect and OAuth state, then exchange the one-time authorization code at Adobe IMS with the securely stored PKCE verifier. Access/refresh tokens are saved to Windows keyring and never returned.".into(),
+                RiskLevel::Medium)
+        }
+        "frame_io_oauth_refresh" => (
+            ToolAction::FrameIoOauthRefresh,
+            "Refresh Frame.io OAuth access token".into(),
+            "Use the securely stored refresh token and configured public client ID to request a fresh Adobe IMS access token. No client secret is used or exposed.".into(),
+            RiskLevel::Medium,
+        ),
+        "frame_io_list_workspaces" => {
+            let account_id=arg_string(&proposal.arguments,"account_id")?;
+            let after=arg_optional_string(&proposal.arguments,"after");
+            let page_size=proposal.arguments.get("page_size").and_then(Value::as_u64).map(|v|u32::try_from(v).map_err(|_|"Frame.io page_size is too large.".to_string())).transpose()?;
+            frame_io::workspaces_page_url(&account_id,after.as_deref(),page_size)?;
+            (ToolAction::FrameIoListWorkspaces {account_id,after,page_size},
+                "List accessible Frame.io workspaces".into(),
+                "Read-only bounded workspace page under the exact account ID. Only an opaque cursor returned by a prior Frame.io response may advance pagination; no next URL is followed directly.".into(),
+                RiskLevel::Low)
+        }
+        "frame_io_list_projects" => {
+            let account_id=arg_string(&proposal.arguments,"account_id")?;
+            let workspace_id=arg_string(&proposal.arguments,"workspace_id")?;
+            let after=arg_optional_string(&proposal.arguments,"after");
+            let page_size=proposal.arguments.get("page_size").and_then(Value::as_u64).map(|v|u32::try_from(v).map_err(|_|"Frame.io page_size is too large.".to_string())).transpose()?;
+            frame_io::projects_page_url(&account_id,&workspace_id,after.as_deref(),page_size)?;
+            (ToolAction::FrameIoListProjects {account_id,workspace_id,after,page_size},
+                "List accessible Frame.io projects".into(),
+                "Read-only bounded project page under the exact account/workspace IDs with explicit opaque-cursor pagination.".into(),
+                RiskLevel::Low)
+        }
+        "frame_io_list_folder_children" => {
+            let account_id=arg_string(&proposal.arguments,"account_id")?;
+            let folder_id=arg_string(&proposal.arguments,"folder_id")?;
+            let after=arg_optional_string(&proposal.arguments,"after");
+            let page_size=proposal.arguments.get("page_size").and_then(Value::as_u64).map(|v|u32::try_from(v).map_err(|_|"Frame.io page_size is too large.".to_string())).transpose()?;
+            frame_io::folder_children_page_url(&account_id,&folder_id,after.as_deref(),page_size)?;
+            (ToolAction::FrameIoListFolderChildren {account_id,folder_id,after,page_size},"Inspect Frame.io folder children".into(),
+                "Read-only bounded folder-child page with explicit opaque-cursor pagination; signed media/download links are omitted.".into(),RiskLevel::Low)
+        }
+        "frame_io_show_file" => {
+            let account_id=arg_string(&proposal.arguments,"account_id")?;
+            let file_id=arg_string(&proposal.arguments,"file_id")?;
+            frame_io::file_url(&account_id,&file_id)?;
+            (ToolAction::FrameIoShowFile {account_id,file_id},"Inspect Frame.io file metadata".into(),
+                "Read-only exact-file metadata lookup; signed media links, view URLs and download URLs are omitted.".into(),RiskLevel::Low)
+        }
+        "frame_io_list_comments" => {
+            let account_id=arg_string(&proposal.arguments,"account_id")?;
+            let file_id=arg_string(&proposal.arguments,"file_id")?;
+            let after=arg_optional_string(&proposal.arguments,"after");
+            let page_size=proposal.arguments.get("page_size").and_then(Value::as_u64).map(|v|u32::try_from(v).map_err(|_|"Frame.io page_size is too large.".to_string())).transpose()?;
+            frame_io::comments_url(&account_id,&file_id,after.as_deref(),page_size)?;
+            (ToolAction::FrameIoListComments {account_id,file_id,after,page_size},"List Frame.io review comments".into(),
+                "Read-only bounded comments page for the exact file. Attachments, signed URLs and arbitrary external links are deliberately omitted.".into(),RiskLevel::Low)
+        }
+        "frame_io_show_comment" => {
+            let account_id=arg_string(&proposal.arguments,"account_id")?;
+            let comment_id=arg_string(&proposal.arguments,"comment_id")?;
+            frame_io::comment_url(&account_id,&comment_id)?;
+            (ToolAction::FrameIoShowComment {account_id,comment_id},"Inspect Frame.io review comment".into(),
+                "Read-only exact-comment lookup with bounded text/time/reviewer metadata; no attachments, external links or writes.".into(),RiskLevel::Low)
+        }
+        "frame_io_acceptance_summary" => (
+            ToolAction::FrameIoAcceptanceSummary,
+            "Read Frame.io canonical source acceptance summary".into(),
+            "Read-only declaration of the completed bounded Frame.io source scope, explicit unclaimed writes, credential safety and pending real runtime acceptance.".into(),
+            RiskLevel::Low,
+        ),
+        "illustrator_capability_report" => (
+            ToolAction::IllustratorCapabilityReport,
+            "Read Illustrator source capability report".into(),
+            "Source milestone declaration only; does not claim a live Illustrator host, CEP bridge, or document automation capability.".into(),
+            RiskLevel::Low,
+        ),
+        "illustrator_readiness_report" => (
+            ToolAction::IllustratorReadinessReport,
+            "Read Illustrator readiness report".into(),
+            "Report the current Illustrator bounded source milestone and explicit runtime gaps without promoting untested capabilities.".into(),
+            RiskLevel::Low,
+        ),
+        "illustrator_detect" => (
+            ToolAction::IllustratorDetect,
+            "Detect installed Adobe Illustrator".into(),
+            "Read-only bounded Program Files/Adobe inspection; does not launch Illustrator.".into(),
+            RiskLevel::Low,
+        ),
+        "illustrator_launch" => {
+            let illustrator_exe=arg_string(&proposal.arguments,"illustrator_exe")?;
+            illustrator::validate_requested_executable(&illustrator_exe)?;
+            (ToolAction::IllustratorLaunch {illustrator_exe:illustrator_exe.clone()},
+                "Launch detected Adobe Illustrator".into(),
+                format!("Launch exact freshly detected Adobe Illustrator executable {illustrator_exe}; no document open, script execution, or host mutation."),
+                RiskLevel::Medium)
+        }
+        "illustrator_bridge_start" => (
+            ToolAction::IllustratorBridgeStart,
+            "Start Illustrator read-only bridge".into(),
+            "Start Shuvi's authenticated localhost CEP/ExtendScript bridge for Adobe Illustrator. The bridge exposes bounded inspection plus a separately approved typed layer-metadata mutation action.".into(),
+            RiskLevel::Medium,
+        ),
+        "illustrator_bridge_status" => (
+            ToolAction::IllustratorBridgeStatus,
+            "Read Illustrator bridge status".into(),
+            "Check whether the Illustrator CEP panel is enabled and paired; no host mutation.".into(),
+            RiskLevel::Low,
+        ),
+        "illustrator_bridge_stop" => (
+            ToolAction::IllustratorBridgeStop,
+            "Stop Illustrator bridge".into(),
+            "Disable the Illustrator pairing token and clear queued read-only commands.".into(),
+            RiskLevel::Low,
+        ),
+        "illustrator_context" => (
+            ToolAction::IllustratorContext,
+            "Inspect Illustrator document context".into(),
+            "Read-only active Illustrator document and active artboard context through the paired CEP/ExtendScript bridge.".into(),
+            RiskLevel::Low,
+        ),
+        "illustrator_artboards" => (
+            ToolAction::IllustratorArtboards,
+            "Inspect Illustrator artboards".into(),
+            "Read-only bounded Illustrator artboard names and rectangles through the paired CEP/ExtendScript bridge.".into(),
+            RiskLevel::Low,
+        ),
+        "illustrator_layers" => (
+            ToolAction::IllustratorLayers,
+            "Inspect Illustrator layers".into(),
+            "Read-only bounded top-level Illustrator layer metadata and observational layer signatures.".into(),
+            RiskLevel::Low,
+        ),
+        "illustrator_page_items" => (
+            ToolAction::IllustratorPageItems,
+            "Inspect Illustrator page items".into(),
+            "Read-only bounded document page-item metadata and observational target signatures.".into(),
+            RiskLevel::Low,
+        ),
+        "illustrator_selection" => (
+            ToolAction::IllustratorSelection,
+            "Inspect Illustrator selection".into(),
+            "Read-only bounded selected-object metadata; selection signatures are observational snapshots, not stable object IDs.".into(),
+            RiskLevel::Low,
+        ),
+        "illustrator_identity_check" => {
+            let expected_document_signature=arg_string(&proposal.arguments,"expected_document_signature")?;
+            illustrator::validate_identity_signature(&expected_document_signature)?;
+            (ToolAction::IllustratorIdentityCheck {expected_document_signature:expected_document_signature.clone()},
+                "Recheck Illustrator document identity".into(),
+                "Read-only fresh host recheck of the exact inspected document signature. It does not authorize mutation.".into(),
+                RiskLevel::Low)
+        }
+        "illustrator_set_layer_property" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"illustrator_set_layer_property requires request.".to_string())?;
+            let request:illustrator::LayerWriteRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Illustrator layer-write request: {e}"))?;
+            request.validate()?;
+            let operation=request.operation.clone();
+            let layer_index=request.layer_index;
+            (ToolAction::IllustratorSetLayerProperty {request},
+                "Modify guarded Illustrator layer property".into(),
+                format!("High-risk typed Illustrator layer {operation} on exact layer index {layer_index}. Requires fresh saved document/layer state, a verified local AI checkpoint, separate approval, and independent post-write readback. No arbitrary ExtendScript."),
+                RiskLevel::High)
+        }
+        "illustrator_verify_checkpoint" => {
+            let backup_path=arg_string(&proposal.arguments,"backup_path")?;
+            let expected_source_path=arg_string(&proposal.arguments,"expected_source_path")?;
+            let expected_document_signature=arg_string(&proposal.arguments,"expected_document_signature")?;
+            illustrator::validate_identity_signature(&expected_document_signature)?;
+            (ToolAction::IllustratorVerifyCheckpoint {
+                    backup_path:backup_path.clone(),
+                    expected_source_path:expected_source_path.clone(),
+                    expected_document_signature:expected_document_signature.clone()
+                },
+                "Verify Illustrator checkpoint".into(),
+                "Read-only integrity verification for a Shuvi Illustrator AI checkpoint. Does not restore or overwrite the document.".into(),
+                RiskLevel::Low)
+        }
+        "illustrator_plan_recovery" => {
+            let backup_path=arg_string(&proposal.arguments,"backup_path")?;
+            let expected_source_path=arg_string(&proposal.arguments,"expected_source_path")?;
+            let expected_document_signature=arg_string(&proposal.arguments,"expected_document_signature")?;
+            illustrator::validate_identity_signature(&expected_document_signature)?;
+            (ToolAction::IllustratorPlanRecovery {
+                    backup_path:backup_path.clone(),
+                    expected_source_path:expected_source_path.clone(),
+                    expected_document_signature:expected_document_signature.clone()
+                },
+                "Plan Illustrator checkpoint recovery".into(),
+                "Read-only recovery handoff: verify exact AI checkpoint evidence and return a manual restore plan. It never overwrites the current document automatically.".into(),
+                RiskLevel::Low)
+        }
+        "illustrator_plan_export" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"illustrator_plan_export requires request.".to_string())?;
+            let request:illustrator::ExportPlanRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Illustrator export-plan request: {e}"))?;
+            request.validate()?;
+            (ToolAction::IllustratorPlanExport {request},
+                "Plan Illustrator export".into(),
+                "Read-only bounded export preflight. It validates exact saved-document identity and output intent but deliberately does not execute Illustrator export.".into(),
+                RiskLevel::Low)
+        }
+        "illustrator_acceptance_summary" => (
+            ToolAction::IllustratorAcceptanceSummary,
+            "Read canonical Illustrator source completion summary".into(),
+            "Report the declared 100% bounded source scope, explicit unclaimed capabilities, runtime gaps and production-readiness boundary.".into(),
+            RiskLevel::Low,
+        ),
+        "animate_capability_report" => (
+            ToolAction::AnimateCapabilityReport,
+            "Read Animate source capability report".into(),
+            "Source milestone declaration only; does not claim a live Adobe Animate host or document automation capability.".into(),
+            RiskLevel::Low,
+        ),
+        "animate_readiness_report" => (
+            ToolAction::AnimateReadinessReport,
+            "Read Animate readiness report".into(),
+            "Report the current 20% Animate source foundation and explicit runtime gaps without promoting untested capabilities.".into(),
+            RiskLevel::Low,
+        ),
+        "animate_detect" => (
+            ToolAction::AnimateDetect,
+            "Detect installed Adobe Animate".into(),
+            "Read-only bounded Program Files/Adobe inspection; does not launch Animate.".into(),
+            RiskLevel::Low,
+        ),
+        "animate_launch" => {
+            let animate_exe=arg_string(&proposal.arguments,"animate_exe")?;
+            animate::validate_requested_executable(&animate_exe)?;
+            (ToolAction::AnimateLaunch {animate_exe:animate_exe.clone()},
+                "Launch detected Adobe Animate".into(),
+                format!("Launch exact freshly detected Adobe Animate executable {animate_exe}; no document open, script execution, or host mutation."),
+                RiskLevel::Medium)
+        }
+        "animate_bridge_start" => (
+            ToolAction::AnimateBridgeStart,
+            "Start Animate read-only bridge".into(),
+            "Start Shuvi's authenticated localhost CEP/JSFL bridge for Adobe Animate. The 40% allowlist is read-only only.".into(),
+            RiskLevel::Medium,
+        ),
+        "animate_bridge_status" => (
+            ToolAction::AnimateBridgeStatus,
+            "Read Animate bridge status".into(),
+            "Check whether the Animate CEP panel is enabled and paired; no host mutation.".into(),
+            RiskLevel::Low,
+        ),
+        "animate_bridge_stop" => (
+            ToolAction::AnimateBridgeStop,
+            "Stop Animate bridge".into(),
+            "Disable the Animate pairing token and clear queued read-only commands.".into(),
+            RiskLevel::Low,
+        ),
+        "animate_context" => (
+            ToolAction::AnimateContext,
+            "Inspect Animate document context".into(),
+            "Read-only active FLA/document and current timeline identity through the paired Animate CEP/JSFL bridge.".into(),
+            RiskLevel::Low,
+        ),
+        "animate_timeline" => (
+            ToolAction::AnimateTimeline,
+            "Inspect Animate timeline".into(),
+            "Read-only bounded current timeline/layer/frame summary through the paired Animate CEP/JSFL bridge.".into(),
+            RiskLevel::Low,
+        ),
+        "animate_library" => (
+            ToolAction::AnimateLibrary,
+            "Inspect Animate library".into(),
+            "Read-only bounded Animate library/symbol metadata through the paired CEP/JSFL bridge; no library mutation.".into(),
+            RiskLevel::Low,
+        ),
+        "animate_selection" => (
+            ToolAction::AnimateSelection,
+            "Inspect Animate selection".into(),
+            "Read-only bounded selected-stage-element metadata; selection signatures are observational snapshots, not stable object IDs.".into(),
+            RiskLevel::Low,
+        ),
+        "animate_identity_check" => {
+            let expected_document_signature=arg_string(&proposal.arguments,"expected_document_signature")?;
+            let expected_timeline_signature=arg_string(&proposal.arguments,"expected_timeline_signature")?;
+            animate::validate_identity_signature(&expected_document_signature,"document")?;
+            animate::validate_identity_signature(&expected_timeline_signature,"timeline")?;
+            (ToolAction::AnimateIdentityCheck {
+                    expected_document_signature:expected_document_signature.clone(),
+                    expected_timeline_signature:expected_timeline_signature.clone()
+                },
+                "Recheck Animate document/timeline identity".into(),
+                "Read-only fresh host recheck of exact inspected document and timeline signatures. It does not authorize mutation.".into(),
+                RiskLevel::Low)
+        }
+        "animate_set_layer_property" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"animate_set_layer_property requires request.".to_string())?;
+            let request:animate::LayerWriteRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Animate layer-write request: {e}"))?;
+            request.validate()?;
+            let operation=request.operation.clone();
+            let layer_index=request.layer_index;
+            (ToolAction::AnimateSetLayerProperty {request},
+                "Modify guarded Animate layer property".into(),
+                format!("High-risk typed Animate layer {operation} on exact layer index {layer_index}. Requires fresh document/timeline/layer state, a verified local FLA checkpoint, separate approval, and independent post-write readback. No arbitrary JSFL."),
+                RiskLevel::High)
+        }
+        "animate_verify_checkpoint" => {
+            let backup_path=arg_string(&proposal.arguments,"backup_path")?;
+            let expected_source_path=arg_string(&proposal.arguments,"expected_source_path")?;
+            let expected_document_signature=arg_string(&proposal.arguments,"expected_document_signature")?;
+            animate::validate_identity_signature(&expected_document_signature,"document")?;
+            (ToolAction::AnimateVerifyCheckpoint {
+                    backup_path:backup_path.clone(),
+                    expected_source_path:expected_source_path.clone(),
+                    expected_document_signature:expected_document_signature.clone()
+                },
+                "Verify Animate checkpoint".into(),
+                "Read-only integrity verification for a Shuvi Animate FLA checkpoint. Does not restore or overwrite the project.".into(),
+                RiskLevel::Low)
+        }
+        "animate_plan_recovery" => {
+            let backup_path=arg_string(&proposal.arguments,"backup_path")?;
+            let expected_source_path=arg_string(&proposal.arguments,"expected_source_path")?;
+            let expected_document_signature=arg_string(&proposal.arguments,"expected_document_signature")?;
+            animate::validate_identity_signature(&expected_document_signature,"document")?;
+            (ToolAction::AnimatePlanRecovery {
+                    backup_path:backup_path.clone(),
+                    expected_source_path:expected_source_path.clone(),
+                    expected_document_signature:expected_document_signature.clone()
+                },
+                "Plan Animate checkpoint recovery".into(),
+                "Read-only recovery handoff: verify exact checkpoint evidence and return a manual restore plan. It never overwrites the current FLA automatically.".into(),
+                RiskLevel::Low)
+        }
+        "animate_plan_publish" => {
+            let value=proposal.arguments.get("request").cloned()
+                .ok_or_else(||"animate_plan_publish requires request.".to_string())?;
+            let request:animate::PublishPlanRequest=serde_json::from_value(value)
+                .map_err(|e|format!("Invalid Animate publish-plan request: {e}"))?;
+            request.validate()?;
+            (ToolAction::AnimatePlanPublish {request},
+                "Plan Animate publish/export".into(),
+                "Read-only bounded publish/export preflight. It validates exact document identity and output intent but deliberately does not call Animate publish/export in the source-complete milestone.".into(),
+                RiskLevel::Low)
+        }
+        "animate_acceptance_summary" => (
+            ToolAction::AnimateAcceptanceSummary,
+            "Read canonical Animate source completion summary".into(),
+            "Report the declared 100% bounded source scope, explicit unclaimed capabilities, runtime gaps and production-readiness boundary.".into(),
+            RiskLevel::Low,
+        ),
         "audition_detect" => (
             ToolAction::AuditionDetect,
             "Detect Adobe Audition".into(),
@@ -4036,6 +5010,38 @@ fn stage_tool(
                 "Record professional edit-job phase receipt".into(),
                 "Advance only after a matching recent typed action audit receipt; this command performs no Premiere mutation.".into(),RiskLevel::Low)
         }
+        "premiere_plan_review_correction" => {
+            let session_id=arg_string(&proposal.arguments,"session_id")?;
+            Uuid::parse_str(&session_id).map_err(|_|"Invalid review session ID.")?;
+            let issue_id=arg_string(&proposal.arguments,"issue_id")?;
+            let frame_seconds=proposal.arguments.get("frame_seconds").and_then(Value::as_f64)
+                .filter(|n|n.is_finite()&&(0.0..=86400.0).contains(n)).ok_or("Exact grounded frame timestamp required.")?;
+            let kind=arg_string(&proposal.arguments,"kind")?;
+            if !matches!(kind.as_str(),"video"|"audio"){return Err("Exact video/audio kind required.".into());}
+            let track=proposal.arguments.get("track").and_then(Value::as_u64).filter(|n|*n<=128).ok_or("Invalid track.")? as u32;
+            let clip_index=proposal.arguments.get("clip_index").and_then(Value::as_u64).filter(|n|*n<=10000).ok_or("Invalid clip index.")? as u32;
+            let target_signature=arg_string(&proposal.arguments,"target_signature")?;
+            if target_signature.is_empty()||target_signature.len()>4096{return Err("Invalid target signature.".into());}
+            let component_match_name=arg_string(&proposal.arguments,"component_match_name")?;
+            let param_display_name=arg_string(&proposal.arguments,"param_display_name")?;
+            let desired_value=proposal.arguments.get("desired_value").cloned().ok_or("desired_value is required.")?;
+            if !(desired_value.is_boolean()||desired_value.is_number()||desired_value.is_string()){
+                return Err("Review correction desired_value must be a primitive boolean, number, or string.".into());
+            }
+            (ToolAction::PremierePlanReviewCorrection{session_id,issue_id,frame_seconds,kind,track,clip_index,target_signature,component_match_name,param_display_name,desired_value},
+                "Plan exact Premiere review correction".into(),
+                "Reinspect the exact target and native parameter, preserve its fresh expectation, and return one separately approved typed correction proposal; no edit.".into(),RiskLevel::Low)
+        }
+        "premiere_edit_job_record_review" => {
+            let job_id=arg_string(&proposal.arguments,"job_id")?;
+            Uuid::parse_str(&job_id).map_err(|_|"Invalid edit job ID.")?;
+            let phase_id=arg_string(&proposal.arguments,"phase_id")?;
+            let review_session_id=arg_string(&proposal.arguments,"review_session_id")?;
+            Uuid::parse_str(&review_session_id).map_err(|_|"Invalid review session ID.")?;
+            (ToolAction::PremiereEditJobRecordReview{job_id,phase_id,review_session_id},
+                "Record completed iterative Premiere review".into(),
+                "Advance the edit job only from acceptable bounded review-session evidence on the same project/sequence.".into(),RiskLevel::Low)
+        }
         "premiere_edit_session_start" => {
             let request:premiere_editorial::Request=serde_json::from_value(proposal.arguments.clone())
                 .map_err(|e|format!("Invalid editorial session request: {e}"))?;
@@ -4101,15 +5107,18 @@ fn stage_tool(
             (ToolAction::PremiereReviewSessionStart {objective,reference,sample_times,max_iterations},
                 "Start bounded Premiere review session".into(), "Inspect active project and sequence before storing bounded session.".into(), RiskLevel::Low)
         }
-        "premiere_review_session_status" | "premiere_review_session_cancel" | "premiere_review_session_next" => {
+        "premiere_review_session_status" | "premiere_review_session_summary" | "premiere_review_session_cancel" | "premiere_review_session_next" | "premiere_review_session_continue" | "premiere_review_session_recovery" => {
             let session_id = arg_string(&proposal.arguments,"session_id")?;
             Uuid::parse_str(&session_id).map_err(|_| "Invalid Premiere review session ID.")?;
             let (action, risk) = match proposal.tool.as_str() {
                 "premiere_review_session_status" => (ToolAction::PremiereReviewSessionStatus {session_id},RiskLevel::Low),
+                "premiere_review_session_summary" => (ToolAction::PremiereReviewSessionSummary {session_id},RiskLevel::Low),
                 "premiere_review_session_cancel" => (ToolAction::PremiereReviewSessionCancel {session_id},RiskLevel::Low),
+                "premiere_review_session_continue" => (ToolAction::PremiereReviewSessionContinue {session_id},RiskLevel::Low),
+                "premiere_review_session_recovery" => (ToolAction::PremiereReviewSessionRecovery {session_id},RiskLevel::Low),
                 _ => (ToolAction::PremiereReviewSessionNext {session_id,provider:provider_context.ok_or("Review requires active vision provider.")?},RiskLevel::Medium),
             };
-            (action,"Advance Premiere review session".into(),"Read-only review; does not launch an edit.".into(),risk)
+            (action,"Advance Premiere review session".into(),"Bounded review/correction orchestration; recovery is read-only and no correction/restore is auto-executed.".into(),risk)
         }
         "premiere_review_session_record_fix" => {
             let session_id=arg_string(&proposal.arguments,"session_id")?;
@@ -6397,6 +7406,123 @@ fn stage_tool(
                 "Filter grounded detector samples by confidence, apply deterministic EMA smoothing, reject oversized gaps, and return apply_hand_track_rig args without mutating After Effects.".into(),
                 RiskLevel::Low)
         }
+        "photoshop_capability_report" => (
+            ToolAction::PhotoshopCapabilityReport,
+            "Read Photoshop source capability report".into(),
+            "Source milestone declaration only; does not claim a live Photoshop host or editing capability.".into(),
+            RiskLevel::Low,
+        ),
+        "photoshop_readiness_report" => (
+            ToolAction::PhotoshopReadinessReport,
+            "Read Photoshop readiness report".into(),
+            "Report the current 20% source foundation and explicit runtime gaps without promoting untested capabilities.".into(),
+            RiskLevel::Low,
+        ),
+        "photoshop_detect" => (
+            ToolAction::PhotoshopDetect,
+            "Detect installed Photoshop".into(),
+            "Read-only bounded Program Files/Adobe inspection; does not launch Photoshop.".into(),
+            RiskLevel::Low,
+        ),
+        "photoshop_launch" => {
+            let photoshop_exe=arg_string(&proposal.arguments,"photoshop_exe")?;
+            photoshop::validate_requested_executable(&photoshop_exe)?;
+            (ToolAction::PhotoshopLaunch {photoshop_exe:photoshop_exe.clone()},
+                "Launch detected Photoshop".into(),
+                format!("Launch exact freshly detected Photoshop executable {photoshop_exe}; no command-line arguments, document mutation or host bridge action."),
+                RiskLevel::Medium)
+        }
+        "photoshop_bridge_start" => (
+            ToolAction::PhotoshopBridgeStart,
+            "Start Photoshop read-only bridge".into(),
+            "Start Shuvi's authenticated localhost bridge for the Photoshop UXP panel; current allowlist is read-only only.".into(),
+            RiskLevel::Medium,
+        ),
+        "photoshop_bridge_status" => (
+            ToolAction::PhotoshopBridgeStatus,
+            "Read Photoshop bridge status".into(),
+            "Check whether the Photoshop UXP read-only bridge is enabled and paired.".into(),
+            RiskLevel::Low,
+        ),
+        "photoshop_bridge_stop" => (
+            ToolAction::PhotoshopBridgeStop,
+            "Stop Photoshop bridge".into(),
+            "Disable the pairing token and clear queued read-only Photoshop commands.".into(),
+            RiskLevel::Low,
+        ),
+        "photoshop_context" => (
+            ToolAction::PhotoshopContext,
+            "Inspect Photoshop active document".into(),
+            "Read-only active-document identity and bounded metadata through the paired UXP bridge.".into(),
+            RiskLevel::Low,
+        ),
+        "photoshop_layers" => (
+            ToolAction::PhotoshopLayers,
+            "Inspect Photoshop layers".into(),
+            "Read-only bounded layer inventory (max 256 layers, depth 8) through the paired UXP bridge.".into(),
+            RiskLevel::Low,
+        ),
+        "photoshop_set_layer_property" => {
+            let request:photoshop::LayerWriteRequest=serde_json::from_value(proposal.arguments.clone())
+                .map_err(|e|format!("Invalid Photoshop layer write request: {e}"))?;
+            request.validate()?;
+            (ToolAction::PhotoshopSetLayerProperty {request:request.clone()},
+                "Edit exact Photoshop layer property".into(),
+                format!("High risk guarded Photoshop write: document_id={}, layer_id={}, operation={}. Shuvi will refresh context/layers, require the exact expected current value, execute one modal history-guarded property write, then independently read back the layer inventory. Never blindly retry execution_status_unknown.",request.expected_document_id,request.layer_id,request.operation),
+                RiskLevel::High)
+        }
+        "photoshop_set_text_layer" => {
+            let request:photoshop::TextWriteRequest=serde_json::from_value(proposal.arguments.clone())
+                .map_err(|e|format!("Invalid Photoshop text write request: {e}"))?;
+            request.validate()?;
+            (ToolAction::PhotoshopSetTextLayer {request:request.clone()},
+                "Edit exact Photoshop text layer".into(),
+                format!("High risk checkpointed Photoshop text edit: document_id={}, layer_id={}. Shuvi requires saved local PSD/PSB state, creates an integrity-verified checkpoint, refreshes exact text identity, executes one modal history-guarded write, and independently reads text back.",request.expected_document_id,request.layer_id),
+                RiskLevel::High)
+        }
+        "photoshop_transform_layer" => {
+            let request:photoshop::TransformRequest=serde_json::from_value(proposal.arguments.clone())
+                .map_err(|e|format!("Invalid Photoshop transform request: {e}"))?;
+            request.validate()?;
+            (ToolAction::PhotoshopTransformLayer {request:request.clone()},
+                "Transform exact Photoshop layer".into(),
+                format!("High risk checkpointed Photoshop transform: document_id={}, layer_id={}, operation={}. Requires saved local PSD/PSB checkpoint, exact fresh bounds, modal history guard and independent geometry readback.",request.expected_document_id,request.layer_id,request.operation),
+                RiskLevel::High)
+        }
+        "photoshop_verify_checkpoint" => {
+            let backup_path=arg_string(&proposal.arguments,"backup_path")?;
+            let expected_source_path=arg_string(&proposal.arguments,"expected_source_path")?;
+            let expected_document_id=proposal.arguments.get("expected_document_id").and_then(Value::as_u64)
+                .filter(|v|*v>0&&*v<=u32::MAX as u64).ok_or("Invalid Photoshop expected_document_id.")? as u32;
+            (ToolAction::PhotoshopVerifyCheckpoint {backup_path,expected_source_path,expected_document_id},
+                "Verify Photoshop checkpoint".into(),
+                "Read-only integrity verification of an exact Shuvi PSD/PSB checkpoint and sidecar; no automatic restore.".into(),
+                RiskLevel::Low)
+        }
+        "photoshop_set_layer_mask" => {
+            let request:photoshop::MaskWriteRequest=serde_json::from_value(proposal.arguments.clone())
+                .map_err(|e|format!("Invalid Photoshop layer-mask request: {e}"))?;
+            request.validate()?;
+            (ToolAction::PhotoshopSetLayerMask {request:request.clone()},
+                "Edit exact Photoshop layer mask property".into(),
+                format!("High risk checkpointed Photoshop layer-mask edit: document_id={}, layer_id={}, operation={}. Requires exact inspected mask value, saved local PSD/PSB checkpoint, modal history guard and independent post-write readback.",request.expected_document_id,request.layer_id,request.operation),
+                RiskLevel::High)
+        }
+        "photoshop_save_document" => {
+            let request:photoshop::SaveRequest=serde_json::from_value(proposal.arguments.clone())
+                .map_err(|e|format!("Invalid Photoshop save request: {e}"))?;
+            request.validate()?;
+            (ToolAction::PhotoshopSaveDocument {request:request.clone()},
+                "Save exact Photoshop document".into(),
+                format!("High risk disk write for document_id={} at exact existing path {}. Shuvi requires expected_saved=false, creates a pre-save PSD/PSB checkpoint, rechecks active document/path, invokes Document.save once, then verifies saved=true.",request.expected_document_id,request.expected_document_path),
+                RiskLevel::High)
+        }
+        "photoshop_acceptance_summary" => (
+            ToolAction::PhotoshopAcceptanceSummary,
+            "Read Photoshop source acceptance summary".into(),
+            "Canonical source-scope completion report. It explicitly keeps runtime_verified and production_ready false until live Photoshop acceptance exists.".into(),
+            RiskLevel::Low,
+        ),
         "workspace_scan" => {
             let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
             (
@@ -6683,6 +7809,14 @@ fn successful_execution_audit_detail(tool:&str,base:&str,result:&ActionResult)->
             let verdict=review.get("verdict").and_then(Value::as_str).unwrap_or("");
             format!("{base} | review_result_sha256={review_sha} | review_plan_snapshot={plan_snapshot} | review_manifest_sha256={manifest_sha} | review_verdict={verdict}")
         }
+        "premiere_apply_video_recipe"|"premiere_apply_audio_recipe"|"premiere_apply_saved_recipe"=>{
+            let checkpoint=value.get("backup").or_else(||value.get("checkpoint")).and_then(Value::as_str)
+                .filter(|path|!path.trim().is_empty()&&path.len()<=32768&&!path.contains('|'));
+            match checkpoint{
+                Some(path)=>format!("{base} | premiere_checkpoint={path}"),
+                None=>format!("{base} | premiere_checkpoint_unavailable"),
+            }
+        }
         _=>base.to_string(),
     }
 }
@@ -6901,6 +8035,11 @@ fn read_action_audit_receipt(
     }
     Ok(matched)
 }
+fn premiere_checkpoint_from_audit(entry:&AuditEntry)->Option<&str>{
+    entry.detail.split(" | ").find_map(|token|token.strip_prefix("premiere_checkpoint="))
+        .filter(|path|!path.trim().is_empty()&&path.len()<=32768&&!path.contains('|'))
+}
+
 fn verify_remotion_action_receipt_binding(
     app:&AppHandle,
     action_id:&str,
@@ -9781,6 +10920,878 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
                 stderr:String::new(),exit_code:Some(0)})
         }
+        ToolAction::CharacterAnimatorCapabilityReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&character_animator::capability_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::CharacterAnimatorReadinessReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&character_animator::readiness_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::CharacterAnimatorDetect => {
+            let value=character_animator::detect_installs()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::CharacterAnimatorLaunch {character_animator_exe} => {
+            let detection=character_animator::detect_installs()?;
+            let exact=character_animator::exact_detected_executable(&detection,&character_animator_exe)?;
+            let mut child=Command::new(&exact).spawn()
+                .map_err(|e|format!("Could not launch detected Adobe Character Animator: {e}"))?;
+            let pid=child.id();
+            if let Err(error)=register_managed_process(state,pid){
+                let _=child.kill();
+                let _=child.wait();
+                return Err(format!("Adobe Character Animator was stopped before Shuvi could register the managed process: {error}"));
+            }
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "character_animator_exe":exact,
+                    "pid":pid,
+                    "launch_dispatched":true,
+                    "host_ready_verified":false,
+                    "host_transport":"not_implemented",
+                    "source_runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::CharacterAnimatorControlCatalog => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&character_animator::control_catalog()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::CharacterAnimatorPlanControl {request} => {
+            let value=character_animator::plan_control(&request)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+
+        ToolAction::CharacterAnimatorRuntimePreflight {request} => {
+            if !managed_process_identity_matches(state,request.expected_pid)?{
+                return Err("Character Animator runtime preflight requires the exact live Shuvi-managed process instance.".into());
+            }
+            let detection=character_animator::detect_installs()?;
+            character_animator::exact_detected_executable(&detection,&request.character_animator_exe)?;
+            let value=character_animator::runtime_control_preflight(&request,true)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+
+        ToolAction::CharacterAnimatorExecuteApplicationShortcut {request} => {
+            if !managed_process_identity_matches(state,request.expected_pid)?{
+                return Err("Character Animator shortcut delivery requires the exact live Shuvi-managed process instance.".into());
+            }
+            let detection=character_animator::detect_installs()?;
+            character_animator::exact_detected_executable(&detection,&request.character_animator_exe)?;
+            let value=character_animator::execute_application_shortcut(&request,true)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::CharacterAnimatorPlanInterchange {request} => {
+            let value=character_animator::plan_interchange(&request)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::CharacterAnimatorAcceptanceSummary => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&character_animator::completion_summary()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DCapabilityReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&substance_3d::capability_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DReadinessReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&substance_3d::readiness_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DDetect => {
+            let value=substance_3d::detect_installs()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DLaunch {app_id,substance_exe} => {
+            let detection=substance_3d::detect_installs()?;
+            let exact=substance_3d::exact_detected_executable(&detection,&app_id,&substance_exe)?;
+            let mut child=Command::new(&exact).spawn()
+                .map_err(|e|format!("Could not launch detected Adobe Substance 3D {app_id}: {e}"))?;
+            let pid=child.id();
+            if let Err(error)=register_managed_process(state,pid){
+                let _=child.kill();
+                let _=child.wait();
+                return Err(format!("Adobe Substance 3D was stopped before Shuvi could register the managed process: {error}"));
+            }
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "app_id":app_id,
+                    "substance_exe":exact,
+                    "pid":pid,
+                    "launch_dispatched":true,
+                    "host_ready_verified":false,
+                    "host_transport":"not_implemented",
+                    "source_runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DAutomationCatalog => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&substance_3d::automation_catalog()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DPlanAutomation {request} => {
+            let value=substance_3d::plan_automation(&request)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DPainterRemoteLaunch {request} => {
+            let detection=substance_3d::detect_installs()?;
+            let exact=substance_3d::exact_detected_executable(&detection,"painter",&request.painter_exe)?;
+            let mut child=Command::new(&exact).arg("--enable-remote-scripting").spawn()
+                .map_err(|e|format!("Could not launch detected Substance 3D Painter with remote scripting enabled: {e}"))?;
+            let pid=child.id();
+            if let Err(error)=register_managed_process(state,pid){
+                let _=child.kill();
+                let _=child.wait();
+                return Err(format!("Painter remote-enabled process was stopped before Shuvi could register its identity: {error}"));
+            }
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "app_id":"painter",
+                    "painter_exe":exact,
+                    "pid":pid,
+                    "launch_args":["--enable-remote-scripting"],
+                    "launch_dispatched":true,
+                    "remote_host":"127.0.0.1",
+                    "remote_port":60041,
+                    "remote_endpoint_ready_verified":false,
+                    "remote_command_dispatch_supported":false,
+                    "source_runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DPainterRemotePreflight {request} => {
+            if !managed_process_identity_matches(state,request.expected_pid)?{
+                return Err("Painter remote preflight requires the exact live Shuvi-managed process instance.".into());
+            }
+            let detection=substance_3d::detect_installs()?;
+            substance_3d::exact_detected_executable(&detection,"painter",&request.painter_exe)?;
+            let value=substance_3d::painter_remote_preflight(&request,true)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DSamplerScriptFingerprint {script_path} => {
+            let value=substance_3d::sampler_script_fingerprint(&script_path)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DSamplerScriptLaunch {request} => {
+            let detection=substance_3d::detect_installs()?;
+            let exact=substance_3d::exact_detected_executable(&detection,"sampler",&request.sampler_exe)?;
+            let binding=substance_3d::verify_sampler_script_binding(&request)?;
+            let receipt_contract=substance_3d::prepare_sampler_receipt_target(&request)?;
+            let script_path=binding.get("canonical_script_path").and_then(Value::as_str)
+                .ok_or_else(||"Sampler script binding is missing canonical_script_path.".to_string())?;
+            let script_sha256=binding.get("script_sha256").and_then(Value::as_str)
+                .ok_or_else(||"Sampler script binding is missing script_sha256.".to_string())?;
+            let receipt_path=receipt_contract.as_ref().and_then(|v|v.get("receipt_path")).and_then(Value::as_str).map(str::to_string);
+            let request_id=receipt_contract.as_ref().and_then(|v|v.get("request_id")).and_then(Value::as_str).map(str::to_string);
+            let mut command=Command::new(&exact);
+            command.arg("--run-script").arg(script_path);
+            if let (Some(receipt_path),Some(request_id))=(receipt_path.as_deref(),request_id.as_deref()){
+                command.env("SHUVI_SAMPLER_RECEIPT_PATH",receipt_path)
+                    .env("SHUVI_SAMPLER_REQUEST_ID",request_id)
+                    .env("SHUVI_SAMPLER_SCRIPT_SHA256",script_sha256);
+            }
+            let mut child=command.spawn()
+                .map_err(|e|format!("Could not launch approved Substance 3D Sampler script: {e}"))?;
+            let pid=child.id();
+            if let Err(error)=register_managed_process(state,pid){
+                let _=child.kill();
+                let _=child.wait();
+                return Err(format!("Sampler script process was stopped before Shuvi could register its identity: {error}"));
+            }
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "app_id":"sampler",
+                    "sampler_exe":exact,
+                    "pid":pid,
+                    "launch_args":["--run-script",script_path],
+                    "script_sha256":script_sha256,
+                    "script_launch_dispatched":true,
+                    "completion_receipt_expected":receipt_contract.is_some(),
+                    "receipt_path":receipt_path,
+                    "request_id":request_id,
+                    "script_effect_verified":false,
+                    "script_completion_verified":false,
+                    "no_blind_retry":true,
+                    "source_runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DPainterReadOnly {request} => {
+            if !managed_process_identity_matches(state,request.expected_pid)?{
+                return Err("Painter read-only request requires the exact live Shuvi-managed process instance.".into());
+            }
+            let detection=substance_3d::detect_installs()?;
+            substance_3d::exact_detected_executable(&detection,"painter",&request.painter_exe)?;
+            let value=substance_3d::painter_read_only_receipt(&request,true)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DSamplerVerifyReceipt {request} => {
+            let value=substance_3d::verify_sampler_completion_receipt(&request)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::FrameIoCapabilityReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&frame_io::capability_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::FrameIoReadinessReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&frame_io::readiness_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::FrameIoCredentialStatus => {
+            let value=frame_io_credential_status()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::FrameIoIdentityPreflight => {
+            let (token,auto_refreshed)=load_frame_io_fresh_access_token().await?;
+            let client=http_client()?;
+            let me_response=send_with_retry(
+                client.get(frame_io::api_url(frame_io::ME_PATH)?).bearer_auth(&token),
+                "Frame.io /v4/me"
+            ).await?;
+            let (me_status,me_body)=bounded_provider_json(me_response,"Frame.io /v4/me").await?;
+            if !me_status.is_success(){
+                return Err(format!("Frame.io /v4/me returned {me_status}: {}",compact_error(&me_body)));
+            }
+            let accounts_response=send_with_retry(
+                client.get(frame_io::api_url(frame_io::ACCOUNTS_PATH)?).bearer_auth(&token),
+                "Frame.io /v4/accounts"
+            ).await?;
+            let (accounts_status,accounts_body)=bounded_provider_json(accounts_response,"Frame.io /v4/accounts").await?;
+            if !accounts_status.is_success(){
+                return Err(format!("Frame.io /v4/accounts returned {accounts_status}: {}",compact_error(&accounts_body)));
+            }
+            let value=annotate_frame_io_refresh(frame_io::summarize_identity(&me_body,&accounts_body)?,auto_refreshed);
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::FrameIoOauthBegin => {
+            let config=load_frame_io_oauth_config()?
+                .ok_or_else(||"Frame.io Native App OAuth config is not set.".to_string())?;
+            let (pending,authorization_url)=frame_io::generate_oauth_begin(&config,now_ms()/1000)?;
+            let encoded=serde_json::to_string(&pending)
+                .map_err(|e|format!("Could not encode Frame.io OAuth pending state: {e}"))?;
+            frame_io_entry("oauth_pending")?.set_password(&encoded)
+                .map_err(|e|format!("Could not securely save Frame.io OAuth pending state: {e}"))?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "integration":"frame_io",
+                    "flow":"native_app_pkce",
+                    "authorization_url":authorization_url,
+                    "pkce_verifier_exposed":false,
+                    "client_secret_used":false,
+                    "pending_lifetime_seconds":900,
+                    "callback_completion":"pass the exact Adobe redirect URI to frame_io_oauth_complete"
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::FrameIoOauthComplete {callback_url} => {
+            let config=load_frame_io_oauth_config()?
+                .ok_or_else(||"Frame.io Native App OAuth config is not set.".to_string())?;
+            let pending=load_frame_io_oauth_pending()?
+                .ok_or_else(||"No pending Frame.io OAuth authorization exists.".to_string())?;
+            let code=frame_io::validate_oauth_callback(&config,&pending,&callback_url,now_ms()/1000)?;
+            let token_url=frame_io::oauth_token_url(&config.client_id)?;
+            let response=http_client()?.post(token_url)
+                .form(&[
+                    ("code",code.as_str()),
+                    ("grant_type","authorization_code"),
+                    ("code_verifier",pending.code_verifier.as_str())
+                ])
+                .send().await
+                .map_err(|e|format!("Adobe IMS Frame.io token exchange failed before a verified response: {e}"))?;
+            let (status,body)=bounded_provider_json(response,"Adobe IMS Frame.io token exchange").await?;
+            if !status.is_success(){
+                return Err(format!("Adobe IMS Frame.io token exchange returned {status}: {}",compact_error(&body)));
+            }
+            let tokens=frame_io::parse_oauth_token_response(&body)?;
+            let has_refresh=tokens.refresh_token.is_some();
+            store_frame_io_tokens(&tokens,None,now_ms()/1000)?;
+            clear_frame_io_secret("oauth_pending")?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "integration":"frame_io",
+                    "oauth_authenticated":true,
+                    "state_verified":true,
+                    "pkce_exchange_verified":true,
+                    "access_token_stored":true,
+                    "refresh_token_stored":has_refresh,
+                    "refresh_token_optional":true,
+                    "reauthentication_required_when_refresh_unavailable":!has_refresh,
+                    "expires_in":tokens.expires_in,
+                    "token_values_exposed":false,
+                    "source_runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::FrameIoOauthRefresh => {
+            let (_access_token,rotated,expires_in)=refresh_frame_io_stored_access_token().await?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "integration":"frame_io","access_token_refreshed":true,"refresh_token_rotated":rotated,
+                    "expires_in":expires_in,"expiry_tracking_configured":true,"token_values_exposed":false,
+                    "source_runtime_verified":false,"production_ready":false
+                })).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::FrameIoListWorkspaces {account_id,after,page_size} => {
+            let (token,auto_refreshed)=load_frame_io_fresh_access_token().await?;
+            let response=send_with_retry(
+                http_client()?.get(frame_io::workspaces_page_url(&account_id,after.as_deref(),page_size)?).bearer_auth(&token),
+                "Frame.io workspaces"
+            ).await?;
+            let (status,body)=bounded_provider_json(response,"Frame.io workspaces").await?;
+            if !status.is_success(){
+                return Err(format!("Frame.io workspaces returned {status}: {}",compact_error(&body)));
+            }
+            let value=annotate_frame_io_refresh(frame_io::summarize_workspaces(&account_id,&body)?,auto_refreshed);
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::FrameIoListProjects {account_id,workspace_id,after,page_size} => {
+            let (token,auto_refreshed)=load_frame_io_fresh_access_token().await?;
+            let response=send_with_retry(
+                http_client()?.get(frame_io::projects_page_url(&account_id,&workspace_id,after.as_deref(),page_size)?).bearer_auth(&token),
+                "Frame.io projects"
+            ).await?;
+            let (status,body)=bounded_provider_json(response,"Frame.io projects").await?;
+            if !status.is_success(){
+                return Err(format!("Frame.io projects returned {status}: {}",compact_error(&body)));
+            }
+            let value=annotate_frame_io_refresh(frame_io::summarize_projects(&account_id,&workspace_id,&body)?,auto_refreshed);
+            Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::FrameIoListFolderChildren {account_id,folder_id,after,page_size} => {
+            let (token,auto_refreshed)=load_frame_io_fresh_access_token().await?;
+            let response=send_with_retry(http_client()?.get(frame_io::folder_children_page_url(&account_id,&folder_id,after.as_deref(),page_size)?).bearer_auth(&token),"Frame.io folder children").await?;
+            let (status,body)=bounded_provider_json(response,"Frame.io folder children").await?;
+            if !status.is_success(){return Err(format!("Frame.io folder children returned {status}: {}",compact_error(&body)));}
+            let value=annotate_frame_io_refresh(frame_io::summarize_folder_children(&account_id,&folder_id,&body)?,auto_refreshed);
+            Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::FrameIoShowFile {account_id,file_id} => {
+            let (token,auto_refreshed)=load_frame_io_fresh_access_token().await?;
+            let response=send_with_retry(http_client()?.get(frame_io::file_url(&account_id,&file_id)?).bearer_auth(&token),"Frame.io file").await?;
+            let (status,body)=bounded_provider_json(response,"Frame.io file").await?;
+            if !status.is_success(){return Err(format!("Frame.io file returned {status}: {}",compact_error(&body)));}
+            let value=annotate_frame_io_refresh(frame_io::summarize_file(&account_id,&file_id,&body)?,auto_refreshed);
+            Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::FrameIoListComments {account_id,file_id,after,page_size} => {
+            let (token,auto_refreshed)=load_frame_io_fresh_access_token().await?;
+            let response=send_with_retry(http_client()?.get(frame_io::comments_url(&account_id,&file_id,after.as_deref(),page_size)?).bearer_auth(&token),"Frame.io comments").await?;
+            let (status,body)=bounded_provider_json(response,"Frame.io comments").await?;
+            if !status.is_success(){return Err(format!("Frame.io comments returned {status}: {}",compact_error(&body)));}
+            let value=annotate_frame_io_refresh(frame_io::summarize_comments(&account_id,&file_id,&body)?,auto_refreshed);
+            Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::FrameIoShowComment {account_id,comment_id} => {
+            let (token,auto_refreshed)=load_frame_io_fresh_access_token().await?;
+            let response=send_with_retry(http_client()?.get(frame_io::comment_url(&account_id,&comment_id)?).bearer_auth(&token),"Frame.io comment").await?;
+            let (status,body)=bounded_provider_json(response,"Frame.io comment").await?;
+            if !status.is_success(){return Err(format!("Frame.io comment returned {status}: {}",compact_error(&body)));}
+            let value=annotate_frame_io_refresh(frame_io::summarize_comment(&account_id,&comment_id,&body)?,auto_refreshed);
+            Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::FrameIoAcceptanceSummary => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&frame_io::completion_summary()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::IllustratorCapabilityReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&illustrator::capability_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::IllustratorReadinessReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&illustrator::readiness_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::IllustratorDetect => {
+            let value=illustrator::detect_installs()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::IllustratorLaunch {illustrator_exe} => {
+            let detection=illustrator::detect_installs()?;
+            let exact=illustrator::exact_detected_executable(&detection,&illustrator_exe)?;
+            let mut child=Command::new(&exact).spawn()
+                .map_err(|e|format!("Could not launch detected Adobe Illustrator: {e}"))?;
+            let pid=child.id();
+            if let Err(error)=register_managed_process(state,pid){
+                let _=child.kill();
+                let _=child.wait();
+                return Err(format!("Adobe Illustrator was stopped before Shuvi could register the managed process: {error}"));
+            }
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "illustrator_exe":exact,
+                    "pid":pid,
+                    "launch_dispatched":true,
+                    "host_ready_verified":false,
+                    "host_transport":"not_implemented",
+                    "source_runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::IllustratorBridgeStart => {
+            let status=state.illustrator_bridge.start()?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&json!({
+                "enabled":status.enabled,"server_started":status.server_started,"paired":status.paired,
+                "port":status.port,"pairing_token":status.token,
+                "read_only_allowlist":["inspect_context","inspect_artboards","inspect_layers","inspect_page_items","inspect_selection","verify_identity"],
+                "mutating_allowlist":["set_layer_property"],
+                "source_runtime_verified":false,"production_ready":false
+            })).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::IllustratorBridgeStatus => {
+            let status=state.illustrator_bridge.status()?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&status).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::IllustratorBridgeStop => {
+            let status=state.illustrator_bridge.stop()?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&status).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::IllustratorContext => {
+            let value=state.illustrator_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let validated=illustrator::validate_context_receipt(&value)?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::IllustratorArtboards => {
+            let value=state.illustrator_bridge.request("inspect_artboards",json!({"maxArtboards":128}),Duration::from_secs(10)).await?;
+            let validated=illustrator::validate_artboard_receipt(&value)?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::IllustratorLayers => {
+            let value=state.illustrator_bridge.request("inspect_layers",json!({"maxLayers":128}),Duration::from_secs(10)).await?;
+            let validated=illustrator::validate_layer_receipt(&value)?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::IllustratorPageItems => {
+            let value=state.illustrator_bridge.request("inspect_page_items",json!({"maxItems":256}),Duration::from_secs(12)).await?;
+            let validated=illustrator::validate_page_item_receipt(&value)?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::IllustratorSelection => {
+            let value=state.illustrator_bridge.request("inspect_selection",json!({"maxItems":64}),Duration::from_secs(10)).await?;
+            let validated=illustrator::validate_selection_receipt(&value)?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::IllustratorIdentityCheck {expected_document_signature} => {
+            let value=state.illustrator_bridge.request("verify_identity",json!({
+                "expectedDocumentSignature":expected_document_signature
+            }),Duration::from_secs(8)).await?;
+            let validated=illustrator::validate_identity_receipt(&value)?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::IllustratorSetLayerProperty {request} => {
+            request.validate()?;
+            let raw_context=state.illustrator_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let context=illustrator::validate_context_receipt(&raw_context)?;
+            let raw_layers=state.illustrator_bridge.request("inspect_layers",json!({"maxLayers":256}),Duration::from_secs(10)).await?;
+            let layers=illustrator::validate_layer_receipt(&raw_layers)?;
+            illustrator::validate_layer_write_precondition(&request,&context,&layers)?;
+            let checkpoint=illustrator_checkpoint::create(
+                &request.expected_document_path,
+                &request.expected_document_signature,
+                &format!("layer_{}",request.operation)
+            )?;
+            let host_result=state.illustrator_bridge.request(
+                "set_layer_property",
+                request.bridge_arguments()?,
+                Duration::from_secs(12)
+            ).await;
+            let host_result=match host_result {
+                Ok(value)=>value,
+                Err(error)=>{
+                    return Err(format!(
+                        "execution_status_unknown: Illustrator layer write did not return a trusted receipt. Checkpoint backup: {}. Do not blindly retry. {error}",
+                        checkpoint.get("backup_path").and_then(Value::as_str).unwrap_or("unavailable")
+                    ));
+                }
+            };
+            let receipt=illustrator::validate_layer_write_receipt(&request,&host_result)?;
+            let post_raw_context=state.illustrator_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let post_context=illustrator::validate_context_receipt(&post_raw_context)?;
+            let post_raw_layers=state.illustrator_bridge.request("inspect_layers",json!({"maxLayers":256}),Duration::from_secs(10)).await?;
+            let post_layers=illustrator::validate_layer_receipt(&post_raw_layers)?;
+            let post=illustrator::validate_layer_write_post_readback(&request,&post_context,&post_layers)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "checkpoint":checkpoint,
+                    "host_receipt":receipt,
+                    "post_readback":post,
+                    "automatic_retry_allowed":false,
+                    "automatic_restore":false,
+                    "source_runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::IllustratorVerifyCheckpoint {backup_path,expected_source_path,expected_document_signature} => {
+            let value=illustrator_checkpoint::verify(&backup_path,&expected_source_path,&expected_document_signature)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::IllustratorPlanRecovery {backup_path,expected_source_path,expected_document_signature} => {
+            let value=illustrator_checkpoint::plan_recovery(&backup_path,&expected_source_path,&expected_document_signature)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::IllustratorPlanExport {request} => {
+            let raw_context=state.illustrator_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let context=illustrator::validate_context_receipt(&raw_context)?;
+            let value=illustrator::plan_export(&request,&context)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::IllustratorAcceptanceSummary => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&illustrator::completion_summary()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateCapabilityReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&animate::capability_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateReadinessReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&animate::readiness_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateDetect => {
+            let value=animate::detect_installs()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateLaunch {animate_exe} => {
+            let detection=animate::detect_installs()?;
+            let exact=animate::exact_detected_executable(&detection,&animate_exe)?;
+            let mut child=Command::new(&exact).spawn()
+                .map_err(|e|format!("Could not launch detected Adobe Animate: {e}"))?;
+            let pid=child.id();
+            if let Err(error)=register_managed_process(state,pid){
+                let _=child.kill();
+                let _=child.wait();
+                return Err(format!("Adobe Animate was stopped before Shuvi could register the managed process: {error}"));
+            }
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "animate_exe":exact,
+                    "pid":pid,
+                    "launch_dispatched":true,
+                    "host_ready_verified":false,
+                    "host_transport":"not_implemented",
+                    "runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateBridgeStart => {
+            let status=state.animate_bridge.start()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "enabled":status.enabled,
+                    "server_started":status.server_started,
+                    "paired":status.paired,
+                    "port":status.port,
+                    "pairing_token":status.token,
+                    "read_only_allowlist":["inspect_context","inspect_timeline"],
+                    "source_runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateBridgeStatus => {
+            let status=state.animate_bridge.status()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&status).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateBridgeStop => {
+            let status=state.animate_bridge.stop()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&status).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateContext => {
+            let value=state.animate_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let validated=animate::validate_context_receipt(&value)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateTimeline => {
+            let value=state.animate_bridge.request("inspect_timeline",json!({"maxLayers":128}),Duration::from_secs(10)).await?;
+            let validated=animate::validate_timeline_receipt(&value)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateLibrary => {
+            let value=state.animate_bridge.request("inspect_library",json!({"maxItems":256}),Duration::from_secs(12)).await?;
+            let validated=animate::validate_library_receipt(&value)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateSelection => {
+            let value=state.animate_bridge.request("inspect_selection",json!({"maxElements":64}),Duration::from_secs(10)).await?;
+            let validated=animate::validate_selection_receipt(&value)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateIdentityCheck {expected_document_signature,expected_timeline_signature} => {
+            let value=state.animate_bridge.request("verify_identity",json!({
+                "expectedDocumentSignature":expected_document_signature,
+                "expectedTimelineSignature":expected_timeline_signature
+            }),Duration::from_secs(8)).await?;
+            let validated=animate::validate_identity_receipt(&value)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateSetLayerProperty {request} => {
+            request.validate()?;
+            let raw_context=state.animate_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let context=animate::validate_context_receipt(&raw_context)?;
+            let raw_timeline=state.animate_bridge.request("inspect_timeline",json!({"maxLayers":256}),Duration::from_secs(10)).await?;
+            let timeline=animate::validate_timeline_receipt(&raw_timeline)?;
+            animate::validate_layer_write_precondition(&request,&context,&timeline)?;
+            let checkpoint=animate_checkpoint::create(
+                &request.expected_document_path,
+                &request.expected_document_signature,
+                &request.expected_timeline_signature,
+                &format!("layer_{}",request.operation)
+            )?;
+            let host_result=state.animate_bridge.request(
+                "set_layer_property",
+                request.bridge_arguments()?,
+                Duration::from_secs(12)
+            ).await;
+            let host_result=match host_result {
+                Ok(value)=>value,
+                Err(error)=>{
+                    return Err(format!(
+                        "execution_status_unknown: Animate layer write did not return a trusted receipt. Checkpoint backup: {}. Do not blindly retry. {error}",
+                        checkpoint.get("backup_path").and_then(Value::as_str).unwrap_or("unavailable")
+                    ));
+                }
+            };
+            let receipt=animate::validate_layer_write_receipt(&request,&host_result)?;
+            let post_raw_context=state.animate_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let post_context=animate::validate_context_receipt(&post_raw_context)?;
+            let post_raw_timeline=state.animate_bridge.request("inspect_timeline",json!({"maxLayers":256}),Duration::from_secs(10)).await?;
+            let post_timeline=animate::validate_timeline_receipt(&post_raw_timeline)?;
+            let post=animate::validate_layer_write_post_readback(&request,&post_context,&post_timeline)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "checkpoint":checkpoint,
+                    "host_receipt":receipt,
+                    "post_readback":post,
+                    "automatic_retry_allowed":false,
+                    "automatic_restore":false,
+                    "source_runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateVerifyCheckpoint {backup_path,expected_source_path,expected_document_signature} => {
+            let value=animate_checkpoint::verify(&backup_path,&expected_source_path,&expected_document_signature)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimatePlanRecovery {backup_path,expected_source_path,expected_document_signature} => {
+            let value=animate_checkpoint::plan_recovery(&backup_path,&expected_source_path,&expected_document_signature)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimatePlanPublish {request} => {
+            let raw_context=state.animate_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let context=animate::validate_context_receipt(&raw_context)?;
+            let raw_timeline=state.animate_bridge.request("inspect_timeline",json!({"maxLayers":256}),Duration::from_secs(10)).await?;
+            let timeline=animate::validate_timeline_receipt(&raw_timeline)?;
+            let value=animate::plan_publish(&request,&context,&timeline)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateAcceptanceSummary => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&animate::completion_summary()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
         ToolAction::AuditionDetect => {
             let value=audition::detect_installs()?;
             Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
@@ -11061,6 +13072,22 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
         ToolAction::PremiereBatchFinish{targets} => {
             let _guard = state.finishing_running.begin(&state.finishing_cancelled)?;
             let expected=premiere_bridge.expected.ok_or("Batch requires inspected Premiere expectation.")?;
+            if targets.is_empty()||targets.len()>32 {
+                return Err("Batch finishing requires 1–32 explicit video targets.".into());
+            }
+            if expected.clips.len()!=targets.len() {
+                return Err("Batch expectation must cover every requested target exactly.".into());
+            }
+            let mut seen_targets=HashSet::new();
+            for target in &targets {
+                let track=target["track"].as_u64().ok_or("Invalid batch track.")? as u32;
+                let index=target["clip_index"].as_u64().ok_or("Invalid batch index.")? as u32;
+                if !seen_targets.insert((track,index))
+                    || !expected.clips.iter().any(|c|c.kind=="video"&&c.track==track&&c.clip_index==index)
+                {
+                    return Err("Duplicate or uninspected video batch target.".into());
+                }
+            }
             let mut results=Vec::new();let mut checkpoint:Option<String>=None;
             let requested = targets.len();
             let mut uncertain = false;
@@ -11657,8 +13684,18 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }
                 "review" => {
                     let review=job.request.review.clone().ok_or("Edit job review payload is missing.")?;
-                    (json!({"seconds":review.seconds,"prompt":review.prompt}),
-                        "Run the existing bounded multi-frame Premiere vision review; this does not auto-fix or guarantee artistic quality.".to_string())
+                    if review.iterative {
+                        (json!({
+                            "objective":review.prompt,
+                            "sample_times":review.seconds,
+                            "reference":review.reference.clone().unwrap_or_default(),
+                            "max_iterations":review.iteration_limit()
+                        }),
+                        "Start the bounded iterative edit-review-correction session. Every correction still requires its own typed approval and the edit job advances only after acceptable completed review evidence.".to_string())
+                    } else {
+                        (json!({"seconds":review.seconds,"prompt":review.prompt}),
+                            "Run the existing bounded multi-frame Premiere vision review; this does not auto-fix or guarantee artistic quality.".to_string())
+                    }
                 }
                 "frame_delivery" => {
                     let batch=job.request.frame_delivery.clone().ok_or("Edit job frame_delivery payload is missing.")?;
@@ -11690,6 +13727,22 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 _=>return Err("Unknown edit-job phase.".into()),
             };
 
+            let iterative_review=phase.id=="review" && phase.tool=="premiere_review_session_start";
+            let after_execution=if iterative_review {
+                json!({
+                    "first":"Run the returned premiere_review_session_start proposal and copy its review session ID.",
+                    "then":"Call premiere_review_session_continue until the review session reaches an acceptable completed state; execute any correction proposals only through normal separate approvals.",
+                    "record":{
+                        "tool":"premiere_edit_job_record_review",
+                        "arguments":{"job_id":job_id,"phase_id":phase.id,"review_session_id":"COPY_COMPLETED_REVIEW_SESSION_ID"}
+                    }
+                })
+            } else {
+                json!({
+                    "tool":"premiere_edit_job_record_action",
+                    "arguments":{"job_id":job_id,"phase_id":phase.id,"action_id":"COPY_EXECUTED_ACTION_ID"}
+                })
+            };
             Ok(ActionResult{
                 success:true,tool,
                 stdout:json!({
@@ -11702,10 +13755,8 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                         "reason":reason
                     },
                     "requires_separate_approval":true,
-                    "after_execution":{
-                        "tool":"premiere_edit_job_record_action",
-                        "arguments":{"job_id":job_id,"phase_id":phase.id,"action_id":"COPY_EXECUTED_ACTION_ID"}
-                    },
+                    "after_execution":after_execution,
+                    "iterative_review":iterative_review,
                     "no_hidden_mutation":true
                 }).to_string(),
                 stderr:String::new(),exit_code:Some(0)
@@ -11718,6 +13769,9 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             job.identity(&context)?;
             let pending=job.pending().cloned().ok_or("Edit job has no pending phase.")?;
             if pending.id!=phase_id{return Err("Receipt phase is not the current edit-job phase.".into());}
+            if pending.id=="review" && pending.tool=="premiere_review_session_start" {
+                return Err("Iterative review cannot be completed from the start-action receipt; finish the bounded review loop and use premiere_edit_job_record_review.".into());
+            }
             let receipt=read_action_audit_receipt(app,&action_id)?
                 .filter(|entry|
                     entry.timestamp_ms>=job.created_at_ms
@@ -11744,6 +13798,100 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 }).to_string(),
                 stderr:String::new(),
                 exit_code:Some(if success{0}else{1})
+            })
+        }
+        ToolAction::PremierePlanReviewCorrection {session_id,issue_id,frame_seconds,kind,track,clip_index,target_signature,component_match_name,param_display_name,desired_value} => {
+            let session=premiere_review::load(&premiere_review_path(app,&session_id)?)?;
+            let issue=premiere_review_binding::issue(&session,&issue_id,frame_seconds)?;
+            if !matches!(issue.category.as_str(),"framing"|"motion"|"color"|"exposure"|"audio_visual"){
+                return Err("This review issue does not support a static primitive correction proposal.".into());
+            }
+            if (issue.category=="audio_visual" && kind!="audio") || (issue.category!="audio_visual" && kind!="video") {
+                return Err("Review issue category does not match the requested media kind.".into());
+            }
+            let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+            let inspected=premiere_bridge.request(
+                if kind=="audio"{"inspect_audio_clip_effects"}else{"inspect_clip_effects"},
+                json!({"track":track,"clipIndex":clip_index}),
+                Duration::from_secs(20)
+            ).await?;
+            let bound=premiere_review_binding::bind(
+                &session,issue,frame_seconds,&timeline,&kind,track,clip_index,&target_signature,
+                Some((&component_match_name,&param_display_name)),&inspected
+            )?;
+            let proposal=premiere_review_binding::static_correction_proposal(
+                &bound,&kind,track,clip_index,&component_match_name,&param_display_name,&desired_value
+            )?;
+            let target=format!("{kind}/{track}/{clip_index}/{}/{}",
+                component_match_name.chars().take(80).collect::<String>(),
+                param_display_name.chars().take(80).collect::<String>());
+            let planner=proposal.get("tool").and_then(Value::as_str).unwrap_or("").to_string();
+            let settings=proposal.pointer("/arguments/settings").cloned().unwrap_or(Value::Null);
+            Ok(ActionResult{
+                success:true,tool,
+                stdout:json!({
+                    "session_id":session_id,
+                    "issue_id":issue_id,
+                    "frame_seconds":frame_seconds,
+                    "binding":bound,
+                    "correction_proposal":proposal,
+                    "requires_separate_approval":true,
+                    "after_execution":{
+                        "tool":"premiere_review_session_record_fix",
+                        "arguments":{
+                            "session_id":session_id,
+                            "issue_id":issue_id,
+                            "target":target,
+                            "planner":planner,
+                            "settings":settings,
+                            "approved_action_id":"COPY_EXECUTED_ACTION_ID"
+                        }
+                    },
+                    "then":"premiere_review_session_continue",
+                    "automatic_mutation":false,
+                    "runtime_verified":false
+                }).to_string(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PremiereEditJobRecordReview {job_id,phase_id,review_session_id} => {
+            let path=premiere_edit_job_path(app,&job_id)?;
+            let mut job=premiere_edit_job::load(&path)?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            job.identity(&context)?;
+            let pending=job.pending().cloned().ok_or("Edit job has no pending phase.")?;
+            if pending.id!=phase_id || pending.tool!="premiere_review_session_start" {
+                return Err("Completed review does not match the current iterative edit-job phase.".into());
+            }
+            let spec=job.request.review.as_ref().filter(|review|review.iterative)
+                .ok_or("Edit job has no iterative review specification.")?;
+            let review=premiere_review::load(&premiere_review_path(app,&review_session_id)?)?;
+            if review.created_at_ms<job.created_at_ms || review.project_guid!=job.project_guid
+                || review.sequence_guid!=job.sequence_guid || review.objective!=spec.prompt
+                || review.reference!=spec.reference.clone().unwrap_or_default()
+                || review.sample_times!=spec.seconds || review.max_iterations!=spec.iteration_limit()
+                || review.status!="completed" {
+                return Err("Review session is incomplete or does not exactly match this edit job review phase.".into());
+            }
+            let review_summary=premiere_review::completion_summary(&review)?;
+            if review_summary.get("accepted").and_then(Value::as_bool)!=Some(true) {
+                return Err("Review session failed the canonical completion gate; start a fresh bounded review session before advancing.".into());
+            }
+            job.record_review(&phase_id,&review_session_id,now_ms())?;
+            premiere_edit_job::save(&path,&job)?;
+            Ok(ActionResult{
+                success:true,tool,
+                stdout:json!({
+                    "job_id":job_id,
+                    "phase_id":phase_id,
+                    "review_session_id":review_session_id,
+                    "acceptable":true,
+                    "review_summary":review_summary,
+                    "job_status":job.status,
+                    "next_tool":if job.status=="running"{Some("premiere_edit_job_next")}else{None},
+                    "production_ready":false
+                }).to_string(),
+                stderr:String::new(),exit_code:Some(0)
             })
         }
         ToolAction::PremiereEditSessionStart {request} => {
@@ -11852,18 +14000,172 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let id=Uuid::new_v4().to_string();
             let session=premiere_review::Session::new(id.clone(),project.into(),sequence.into(),objective,reference,sample_times,max_iterations,now_ms().max(1))?;
             premiere_review::save(&premiere_review_path(app,&id)?,&session)?;
-            Ok(ActionResult {success:true,tool,stdout:json!({"session":session,"next":"premiere_review_session_next"}).to_string(),stderr:String::new(),exit_code:Some(0)})
+            Ok(ActionResult {success:true,tool,stdout:json!({"session":session,"next":"premiere_review_session_continue","execution_model":"bounded review -> exact target resolution -> separately approved correction -> re-review"}).to_string(),stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::PremiereReviewSessionStatus {session_id} => {
             let session=premiere_review::load(&premiere_review_path(app,&session_id)?)?;
             Ok(ActionResult {success:true,tool,stdout:serde_json::to_string(&session).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
         }
-        ToolAction::PremiereReviewSessionCancel {session_id} => {
+        ToolAction::PremiereReviewSessionSummary {session_id} => {
+            let session=premiere_review::load(&premiere_review_path(app,&session_id)?)?;
+            let summary=premiere_review::completion_summary(&session)?;
+            Ok(ActionResult {success:true,tool,stdout:summary.to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+                ToolAction::PremiereReviewSessionCancel {session_id} => {
             let path=premiere_review_path(app,&session_id)?;
             let mut session=premiere_review::load(&path)?;
             session.cancel();
             premiere_review::save(&path,&session)?;
             Ok(ActionResult {success:true,tool,stdout:json!({"status":"cancelled","session_id":session_id}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereReviewSessionContinue {session_id} => {
+            let path=premiere_review_path(app,&session_id)?;
+            let mut session=premiere_review::load(&path)?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            if let Err(error)=session.check_identity(
+                context.get("projectGuid").and_then(Value::as_str).unwrap_or(""),
+                context.pointer("/activeSequence/guid").and_then(Value::as_str).unwrap_or("")
+            ) {
+                premiere_review::save(&path,&session)?;
+                return Err(error);
+            }
+
+            let state=session.status.clone();
+            if state=="reviewing" {
+                return Ok(ActionResult {
+                    success:true,tool,
+                    stdout:json!({
+                        "session_id":session_id,
+                        "status":state,
+                        "iteration":session.iteration,
+                        "next_proposal":{
+                            "tool":"premiere_review_session_next",
+                            "arguments":{"session_id":session_id},
+                            "reason":"Capture the bounded review samples and obtain grounded structured vision evidence for the current iteration."
+                        },
+                        "requires_separate_approval":true,
+                        "automatic_mutation":false
+                    }).to_string(),
+                    stderr:String::new(),exit_code:Some(0)
+                });
+            }
+
+            if state=="awaiting_approval" {
+                let Some(issue)=premiere_review::next_actionable_issue(&session)? else {
+                    session.status="stagnated".into();
+                    premiere_review::save(&path,&session)?;
+                    return Ok(ActionResult {
+                        success:true,tool,
+                        stdout:json!({
+                            "session_id":session_id,
+                            "status":"stagnated",
+                            "reason":"No medium/high-confidence issue maps to a currently supported typed correction family.",
+                            "automatic_mutation":false
+                        }).to_string(),
+                        stderr:String::new(),exit_code:Some(0)
+                    });
+                };
+                let seconds=*issue.frame_seconds.first().ok_or("Selected review issue has no grounded sample time.")?;
+                let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+                let resolved=premiere_review_binding::resolve(&session,&issue,seconds,&timeline)?;
+                let candidates=resolved.get("candidates").and_then(Value::as_array).cloned().unwrap_or_default();
+                let proposal=if candidates.len()==1 {
+                    let candidate=&candidates[0];
+                    Some(json!({
+                        "tool":"premiere_bind_review_fix",
+                        "arguments":{
+                            "session_id":session_id,
+                            "issue_id":issue.id,
+                            "frame_seconds":seconds,
+                            "kind":candidate.get("kind"),
+                            "track":candidate.get("track"),
+                            "clip_index":candidate.get("clip_index"),
+                            "target_signature":candidate.get("target_signature")
+                        },
+                        "reason":"The reviewed frame overlaps one exact fresh native target. Inspect/bind the editable native parameter before proposing any correction value."
+                    }))
+                } else { None };
+                return Ok(ActionResult {
+                    success:true,tool,
+                    stdout:json!({
+                        "session_id":session_id,
+                        "status":state,
+                        "iteration":session.iteration,
+                        "selected_issue":issue,
+                        "target_resolution":resolved,
+                        "next_proposal":proposal,
+                        "requires_target_selection":candidates.len()!=1,
+                        "requires_separate_approval":true,
+                        "correction_execution":"Use only the returned exact target with premiere_bind_review_fix, then a normal typed planner/edit approval. After a successful edit call premiere_review_session_record_fix; the coordinator will schedule re-review.",
+                        "automatic_mutation":false
+                    }).to_string(),
+                    stderr:String::new(),exit_code:Some(0)
+                });
+            }
+
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:json!({
+                    "session_id":session_id,
+                    "status":state,
+                    "iteration":session.iteration,
+                    "stop_reason":session.stop_reason.clone(),
+                    "latest_fix_evaluation":session.attempted_fixes.last().filter(|attempt|attempt.after.is_some()),
+                    "terminal":matches!(state.as_str(),"completed"|"stagnated"|"cancelled"|"failed"),
+                    "recovery_tool":if state=="stagnated"&&session.stop_reason.as_deref()==Some("correction_regressed")
+                        {Some("premiere_review_session_recovery")}else{None},
+                    "summary_tool":if matches!(state.as_str(),"completed"|"stagnated"|"cancelled"|"failed")
+                        {Some("premiere_review_session_summary")}else{None},
+                    "next_proposal":Value::Null,
+                    "automatic_mutation":false
+                }).to_string(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PremiereReviewSessionRecovery {session_id} => {
+            let session=premiere_review::load(&premiere_review_path(app,&session_id)?)?;
+            if session.status!="stagnated" || session.stop_reason.as_deref()!=Some("correction_regressed") {
+                return Err("Recovery handoff is available only after a grounded correction regression.".into());
+            }
+            let attempt=session.attempted_fixes.last()
+                .filter(|attempt|attempt.outcome=="regressed")
+                .ok_or("Regressed review session has no matching correction attempt evidence.")?;
+            let action_id=attempt.approved_action_id.as_deref().ok_or("Regressed correction has no approved action binding.")?;
+            let checkpoint=attempt.checkpoint_path.as_deref().ok_or("Regressed correction has no pre-edit checkpoint binding.")?;
+            let receipt=read_action_audit_receipt(app,action_id)?
+                .filter(|entry|entry.success&&entry.event=="executed"
+                    && matches!(entry.tool.as_str(),"premiere_apply_video_recipe"|"premiere_apply_audio_recipe"|"premiere_apply_saved_recipe"))
+                .ok_or("Approved correction audit receipt is unavailable for recovery.")?;
+            if premiere_checkpoint_from_audit(&receipt)!=Some(checkpoint) {
+                return Err("Recovery checkpoint no longer matches the approved correction audit receipt.".into());
+            }
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let project=context.get("projectGuid").and_then(Value::as_str).unwrap_or("");
+            let sequence=context.pointer("/activeSequence/guid").and_then(Value::as_str).unwrap_or("");
+            if project!=session.project_guid || sequence!=session.sequence_guid {
+                return Err("Premiere project/sequence changed after regression; no recovery action may be inferred.".into());
+            }
+            let project_path=context.get("projectPath").and_then(Value::as_str).filter(|value|!value.trim().is_empty())
+                .ok_or("Current saved Premiere project path is unavailable for recovery verification.")?;
+            let checkpoint_evidence=premiere_checkpoint::verify_checkpoint(Path::new(checkpoint),Path::new(project_path))?;
+            Ok(ActionResult{
+                success:true,tool,
+                stdout:json!({
+                    "session_id":session_id,
+                    "status":session.status.clone(),
+                    "stop_reason":session.stop_reason.clone(),
+                    "regressed_attempt":attempt,
+                    "approved_action_id":action_id,
+                    "checkpoint_evidence":checkpoint_evidence,
+                    "recovery_ready":true,
+                    "automatic_restore":false,
+                    "restore_tool":Value::Null,
+                    "manual_decision_required":true,
+                    "recommended_next_step":"Inspect the verified pre-edit checkpoint and current project, then explicitly choose whether to open/restore that checkpoint. Shuvi will not overwrite the current project automatically.",
+                    "production_ready":false
+                }).to_string(),
+                stderr:String::new(),exit_code:Some(0)
+            })
         }
         ToolAction::PremiereReviewSessionRecordFix {session_id,issue_id,target,planner,settings,approved_action_id} => {
             let path=premiere_review_path(app,&session_id)?;
@@ -11872,20 +14174,25 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let project=context.get("projectGuid").and_then(Value::as_str).unwrap_or("");
             let sequence=context.pointer("/activeSequence/guid").and_then(Value::as_str).unwrap_or("");
             if let Err(error)=session.check_identity(project,sequence) { premiere_review::save(&path,&session)?; return Err(error); }
-            let approved_receipt=read_action_audit_receipt(app,&approved_action_id)?;
-            if !approved_receipt.as_ref().is_some_and(|entry|
-                entry.timestamp_ms >= session.created_at_ms
-                && entry.success && entry.event=="executed" && matches!(entry.tool.as_str(),
-                "premiere_apply_video_recipe"|"premiere_apply_audio_recipe"|"premiere_add_video_transition"|"premiere_apply_saved_recipe")) {
-                return Err("No successful approved typed Premiere edit from this review session with this action ID in audit evidence.".into());
-            }
+            let approved_receipt=read_action_audit_receipt(app,&approved_action_id)?
+                .filter(|entry| entry.timestamp_ms >= session.created_at_ms && entry.success && entry.event=="executed"
+                    && matches!(entry.tool.as_str(),"premiere_apply_video_recipe"|"premiere_apply_audio_recipe"|"premiere_apply_saved_recipe"))
+                .ok_or("No successful approved typed Premiere recipe edit from this review session with this action ID in audit evidence.")?;
+            let checkpoint=premiere_checkpoint_from_audit(&approved_receipt)
+                .ok_or("Approved correction audit receipt is missing its exact pre-edit Premiere checkpoint.")?;
+            let project_path=context.get("projectPath").and_then(Value::as_str).filter(|value|!value.trim().is_empty())
+                .ok_or("Current saved Premiere project path is unavailable for checkpoint verification.")?;
+            let checkpoint_evidence=premiere_checkpoint::verify_checkpoint(Path::new(checkpoint),Path::new(project_path))?;
             let issue=session.reviews.last().and_then(|r| r.issues.iter().find(|i| i.id==issue_id))
                 .ok_or("Unknown review issue.")?;
             let fingerprint=premiere_review::fingerprint(&issue.category,&target,&planner,&settings)?;
             let before=issue.observation.clone();
-            session.record_fix(&issue_id,&fingerprint,&before)?;
+            session.record_fix_evidence(&issue_id,&fingerprint,&before,Some(&approved_action_id),Some(checkpoint))?;
             premiere_review::save(&path,&session)?;
-            Ok(ActionResult {success:true,tool,stdout:json!({"status":session.status,"fingerprint":fingerprint,"iteration":session.iteration}).to_string(),stderr:String::new(),exit_code:Some(0)})
+            Ok(ActionResult {success:true,tool,stdout:json!({"status":session.status,"fingerprint":fingerprint,"iteration":session.iteration,
+                "approved_action_id":approved_action_id,"checkpoint_evidence":checkpoint_evidence,
+                "next_tool":"premiere_review_session_continue",
+                "next_reason":"Re-review the exact same bounded samples after the approved correction. If the grounded result regresses, use premiere_review_session_recovery for a verified read-only recovery handoff."}).to_string(),stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::PremiereReviewSessionNext {session_id,provider} => {
             let path=premiere_review_path(app,&session_id)?;
@@ -11932,7 +14239,7 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             let proposals=issues.iter().map(premiere_review::proposal).collect::<Vec<_>>();
             let result=session.add_review(premiere_review::Review {iteration:session.iteration,issues,overall_confidence:confidence,stop_recommended:stop})?;
             premiere_review::save(&path,&session)?;
-            Ok(ActionResult {success:true,tool,stdout:json!({"result":result,"review":session.reviews.last(),"proposals":proposals,"note":"Use inspected typed tools through normal approval and checkpoint; vision never executes edits."}).to_string(),stderr:String::new(),exit_code:Some(0)})
+            Ok(ActionResult {success:true,tool,stdout:json!({"result":result,"review":session.reviews.last(),"latest_fix_evaluation":session.attempted_fixes.last().filter(|attempt|attempt.after.is_some()),"proposals":proposals,"next_tool":if session.status=="awaiting_approval"{Some("premiere_review_session_continue")}else{None},"note":"Use premiere_review_session_continue to prioritize and resolve the next grounded issue. Re-review now evaluates the same category at the same grounded sample as resolved/improved/unchanged/regressed/uncertain; corrections still require exact native binding, normal approval/checkpoint and an audit receipt."}).to_string(),stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::PremiereSetTrackMute { kind, track, muted } => {
             let checkpoint = backup_premiere_project(&premiere_bridge).await?;
@@ -14558,6 +16865,314 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
                 exit_code:Some(0),
             })
         }
+        ToolAction::PhotoshopCapabilityReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&photoshop::capability_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopReadinessReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&photoshop::readiness_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopDetect => {
+            let value=photoshop::detect_installs()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopLaunch {photoshop_exe} => {
+            let detection=photoshop::detect_installs()?;
+            let exact=photoshop::exact_detected_executable(&detection,&photoshop_exe)?;
+            let mut child=Command::new(&exact).spawn()
+                .map_err(|e|format!("Could not launch detected Photoshop: {e}"))?;
+            let pid=child.id();
+            if let Err(error)=register_managed_process(state,pid){
+                let _=child.kill();
+                let _=child.wait();
+                return Err(format!("Photoshop was stopped before Shuvi could register the managed process: {error}"));
+            }
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "photoshop_exe":exact,
+                    "pid":pid,
+                    "launch_dispatched":true,
+                    "host_ready_verified":false,
+                    "uxp_bridge_available":false,
+                    "runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopBridgeStart => {
+            let status=state.photoshop_bridge.start()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "enabled":status.enabled,
+                    "server_started":status.server_started,
+                    "paired":status.paired,
+                    "port":status.port,
+                    "pairing_token":status.token,
+                    "queued_commands":status.queued_commands,
+                    "read_only":status.read_only,
+                    "read_only_actions":photoshop_bridge::READ_ONLY_ACTIONS,
+                    "guarded_mutation_actions":photoshop_bridge::MUTATING_ACTIONS,
+                    "runtime_verified":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopBridgeStatus => {
+            let status=state.photoshop_bridge.status()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&status).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopBridgeStop => {
+            let status=state.photoshop_bridge.stop()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&status).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopContext => {
+            let raw=state.photoshop_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let value=photoshop::validate_context_receipt(&raw)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "context":value,
+                    "host_receipt_validated":true,
+                    "mutation_performed":false,
+                    "runtime_verified":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopLayers => {
+            let raw=state.photoshop_bridge.request("list_layers",json!({}),Duration::from_secs(8)).await?;
+            let value=photoshop::validate_layer_inventory(&raw)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "inventory":value,
+                    "host_receipt_validated":true,
+                    "mutation_performed":false,
+                    "runtime_verified":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopSetLayerProperty {request} => {
+            let raw_context=state.photoshop_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let context=photoshop::validate_context_receipt(&raw_context)?;
+            let raw_inventory=state.photoshop_bridge.request("list_layers",json!({}),Duration::from_secs(8)).await?;
+            let inventory=photoshop::validate_layer_inventory(&raw_inventory)?;
+            let precondition=photoshop::validate_write_precondition(&request,&context,&inventory)?;
+
+            let raw_receipt=state.photoshop_bridge.request(
+                "set_layer_property",
+                request.bridge_arguments()?,
+                Duration::from_secs(15)
+            ).await?;
+            let mutation_receipt=photoshop::validate_write_receipt(&request,&raw_receipt)?;
+
+            let post_raw=state.photoshop_bridge.request("list_layers",json!({}),Duration::from_secs(8)).await?;
+            let post_inventory=photoshop::validate_layer_inventory(&post_raw)?;
+            let post_readback=photoshop::validate_post_write_readback(&request,&post_inventory)?;
+
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "precondition":precondition,
+                    "mutation_receipt":mutation_receipt,
+                    "post_readback":post_readback,
+                    "post_state_verified":true,
+                    "history_guarded":true,
+                    "automatic_retry_allowed":false,
+                    "destructive_operation":false,
+                    "runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopSetTextLayer {request} => {
+            let raw_context=state.photoshop_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let context=photoshop::validate_context_receipt(&raw_context)?;
+            let raw_inventory=state.photoshop_bridge.request("list_layers",json!({}),Duration::from_secs(8)).await?;
+            let inventory=photoshop::validate_layer_inventory(&raw_inventory)?;
+            let precondition=photoshop::validate_text_precondition(&request,&context,&inventory)?;
+            let source_path=context.get("document_path").and_then(Value::as_str).ok_or("Photoshop text edit requires a saved local document path.")?;
+            let checkpoint=photoshop_checkpoint::create(
+                request.expected_document_id,source_path,
+                context.get("saved").and_then(Value::as_bool)==Some(true),
+                context.get("cloud_document").and_then(Value::as_bool)==Some(true),
+                "text_layer_edit"
+            )?;
+
+            let raw_receipt=state.photoshop_bridge.request("set_text_layer",request.bridge_arguments()?,Duration::from_secs(20)).await?;
+            let mutation_receipt=photoshop::validate_text_receipt(&request,&raw_receipt)?;
+            let post_raw=state.photoshop_bridge.request("list_layers",json!({}),Duration::from_secs(8)).await?;
+            let post_inventory=photoshop::validate_layer_inventory(&post_raw)?;
+            let post_readback=photoshop::validate_text_post_readback(&request,&post_inventory)?;
+
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "checkpoint":checkpoint,
+                    "precondition":precondition,
+                    "mutation_receipt":mutation_receipt,
+                    "post_readback":post_readback,
+                    "post_state_verified":true,
+                    "checkpoint_bound":true,
+                    "automatic_restore":false,
+                    "automatic_retry_allowed":false,
+                    "runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopTransformLayer {request} => {
+            let raw_context=state.photoshop_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let context=photoshop::validate_context_receipt(&raw_context)?;
+            let raw_inventory=state.photoshop_bridge.request("list_layers",json!({}),Duration::from_secs(8)).await?;
+            let inventory=photoshop::validate_layer_inventory(&raw_inventory)?;
+            let precondition=photoshop::validate_transform_precondition(&request,&context,&inventory)?;
+            let source_path=context.get("document_path").and_then(Value::as_str).ok_or("Photoshop transform requires a saved local document path.")?;
+            let checkpoint=photoshop_checkpoint::create(
+                request.expected_document_id,source_path,
+                context.get("saved").and_then(Value::as_bool)==Some(true),
+                context.get("cloud_document").and_then(Value::as_bool)==Some(true),
+                "layer_transform"
+            )?;
+
+            let raw_receipt=state.photoshop_bridge.request("transform_layer",request.bridge_arguments()?,Duration::from_secs(25)).await?;
+            let mutation_receipt=photoshop::validate_transform_receipt(&request,&raw_receipt)?;
+            let post_raw=state.photoshop_bridge.request("list_layers",json!({}),Duration::from_secs(8)).await?;
+            let post_inventory=photoshop::validate_layer_inventory(&post_raw)?;
+            let post_readback=photoshop::validate_transform_post_readback(&request,&mutation_receipt,&post_inventory)?;
+
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "checkpoint":checkpoint,
+                    "precondition":precondition,
+                    "mutation_receipt":mutation_receipt,
+                    "post_readback":post_readback,
+                    "post_state_verified":true,
+                    "checkpoint_bound":true,
+                    "automatic_restore":false,
+                    "automatic_retry_allowed":false,
+                    "runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopVerifyCheckpoint {backup_path,expected_source_path,expected_document_id} => {
+            let evidence=photoshop_checkpoint::verify(&backup_path,&expected_source_path,expected_document_id)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&evidence).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopSetLayerMask {request} => {
+            let raw_context=state.photoshop_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let context=photoshop::validate_context_receipt(&raw_context)?;
+            let raw_inventory=state.photoshop_bridge.request("list_layers",json!({}),Duration::from_secs(8)).await?;
+            let inventory=photoshop::validate_layer_inventory(&raw_inventory)?;
+            let precondition=photoshop::validate_mask_precondition(&request,&context,&inventory)?;
+            let source_path=context.get("document_path").and_then(Value::as_str)
+                .ok_or("Photoshop layer-mask edit requires a saved local document path.")?;
+            let checkpoint=photoshop_checkpoint::create(
+                request.expected_document_id,source_path,
+                context.get("saved").and_then(Value::as_bool)==Some(true),
+                context.get("cloud_document").and_then(Value::as_bool)==Some(true),
+                "layer_mask_edit"
+            )?;
+
+            let raw_receipt=state.photoshop_bridge.request("set_layer_mask",request.bridge_arguments()?,Duration::from_secs(20)).await?;
+            let mutation_receipt=photoshop::validate_mask_receipt(&request,&raw_receipt)?;
+            let post_raw=state.photoshop_bridge.request("list_layers",json!({}),Duration::from_secs(8)).await?;
+            let post_inventory=photoshop::validate_layer_inventory(&post_raw)?;
+            let post_readback=photoshop::validate_mask_post_readback(&request,&post_inventory)?;
+
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "checkpoint":checkpoint,
+                    "precondition":precondition,
+                    "mutation_receipt":mutation_receipt,
+                    "post_readback":post_readback,
+                    "post_state_verified":true,
+                    "checkpoint_bound":true,
+                    "automatic_restore":false,
+                    "automatic_retry_allowed":false,
+                    "runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopSaveDocument {request} => {
+            let raw_context=state.photoshop_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let context=photoshop::validate_context_receipt(&raw_context)?;
+            let precondition=photoshop::validate_save_precondition(&request,&context)?;
+            let checkpoint=photoshop_checkpoint::create_before_save(
+                request.expected_document_id,
+                &request.expected_document_path,
+                context.get("cloud_document").and_then(Value::as_bool)==Some(true)
+            )?;
+
+            let raw_receipt=state.photoshop_bridge.request("save_document",request.bridge_arguments()?,Duration::from_secs(30)).await?;
+            let save_receipt=photoshop::validate_save_receipt(&request,&raw_receipt)?;
+            let post_raw=state.photoshop_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let post_context=photoshop::validate_context_receipt(&post_raw)?;
+            if post_context.get("document_id").and_then(Value::as_u64)!=Some(request.expected_document_id as u64)
+                ||post_context.get("document_path").and_then(Value::as_str)!=Some(request.expected_document_path.as_str())
+                ||post_context.get("saved").and_then(Value::as_bool)!=Some(true){
+                return Err("Photoshop independent post-save context did not confirm the exact document/path saved state.".into());
+            }
+
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "checkpoint":checkpoint,
+                    "precondition":precondition,
+                    "save_receipt":save_receipt,
+                    "post_context":post_context,
+                    "post_state_verified":true,
+                    "checkpoint_bound":true,
+                    "automatic_restore":false,
+                    "automatic_retry_allowed":false,
+                    "runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopAcceptanceSummary => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&photoshop::completion_summary()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
         ToolAction::WorkspaceScan { path } => {
             let root = Path::new(&path);
             if !root.is_dir() {
@@ -15434,6 +18049,69 @@ fn clear_session_checkpoint(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn photoshop_bridge_start(
+    state: State<'_, ActionState>,
+) -> Result<PhotoshopBridgeStatus,String> {
+    state.photoshop_bridge.start()
+}
+
+#[tauri::command]
+fn photoshop_bridge_status(
+    state: State<'_, ActionState>,
+) -> Result<PhotoshopBridgeStatus,String> {
+    state.photoshop_bridge.status()
+}
+
+#[tauri::command]
+fn photoshop_bridge_stop(
+    state: State<'_, ActionState>,
+) -> Result<PhotoshopBridgeStatus,String> {
+    state.photoshop_bridge.stop()
+}
+
+#[tauri::command]
+fn illustrator_bridge_start(
+    state: State<'_, ActionState>,
+) -> Result<IllustratorBridgeStatus, String> {
+    state.illustrator_bridge.start()
+}
+
+#[tauri::command]
+fn illustrator_bridge_status(
+    state: State<'_, ActionState>,
+) -> Result<IllustratorBridgeStatus, String> {
+    state.illustrator_bridge.status()
+}
+
+#[tauri::command]
+fn illustrator_bridge_stop(
+    state: State<'_, ActionState>,
+) -> Result<IllustratorBridgeStatus, String> {
+    state.illustrator_bridge.stop()
+}
+
+#[tauri::command]
+fn animate_bridge_start(
+    state: State<'_, ActionState>,
+) -> Result<AnimateBridgeStatus, String> {
+    state.animate_bridge.start()
+}
+
+#[tauri::command]
+fn animate_bridge_status(
+    state: State<'_, ActionState>,
+) -> Result<AnimateBridgeStatus, String> {
+    state.animate_bridge.status()
+}
+
+#[tauri::command]
+fn animate_bridge_stop(
+    state: State<'_, ActionState>,
+) -> Result<AnimateBridgeStatus, String> {
+    state.animate_bridge.stop()
+}
+
+#[tauri::command]
 fn audition_bridge_start(
     state: State<'_, ActionState>,
 ) -> Result<AuditionBridgeStatus, String> {
@@ -15596,6 +18274,11 @@ pub fn run() {
             list_providers,
             save_api_key,
             delete_api_key,
+            save_frame_io_access_token,
+            delete_frame_io_access_token,
+            save_frame_io_oauth_config,
+            delete_frame_io_oauth_config,
+            frame_io_credential_status,
             chat,
             runtime_status,
             prepare_tool,
@@ -15618,6 +18301,15 @@ pub fn run() {
             audition_bridge_start,
             audition_bridge_status,
             audition_bridge_stop,
+            animate_bridge_start,
+            animate_bridge_status,
+            animate_bridge_stop,
+            illustrator_bridge_start,
+            illustrator_bridge_status,
+            illustrator_bridge_stop,
+            photoshop_bridge_start,
+            photoshop_bridge_status,
+            photoshop_bridge_stop,
             export_diagnostics,
             web_bridge::web_bridge_start,
             web_bridge::web_bridge_stop,

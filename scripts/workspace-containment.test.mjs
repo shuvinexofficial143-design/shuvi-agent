@@ -20,7 +20,7 @@ test("workspace discovery stays inside the canonical selected root",()=>{
   }
   assert.match(scan,/workspace_scan_recursive\(root, &canonical/);
   assert.match(search,/search_text_recursive\(root, &canonical/);
-  assert.match(search,/read_utf8_file_bounded\(&canonical,\s*768 \* 1024,\s*"search candidate"\)/);
+  assert.match(search,/read_utf8_file_bounded\(&canonical, 768 \* 1024, "search candidate"\)/);
 });
 
 test("workspace and search entry points canonicalize roots before recursion",()=>{
@@ -34,7 +34,7 @@ test("workspace and search entry points canonicalize roots before recursion",()=
     rust.indexOf("ToolAction::ReplaceText",searchStart)
   );
   assert.match(scanExec,/let canonical_root = root\.canonicalize\(\)/);
-  assert.match(scanExec,/workspace_scan_recursive\(\s*&canonical_root,\s*&canonical_root/);
+  assert.match(scanExec,/workspace_scan_recursive\(&canonical_root, &canonical_root/);
   assert.match(searchExec,/let canonical_root = root\.canonicalize\(\)/);
   assert.match(searchExec,/search_text_recursive\(\s*&canonical_root,\s*&canonical_root/);
 });

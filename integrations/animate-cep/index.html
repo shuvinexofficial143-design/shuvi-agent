@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Shuvi Animate Bridge</title>
+  <style>
+    body{font-family:Arial,sans-serif;background:#202020;color:#f3f3f3;margin:16px;font-size:13px}
+    h2{margin:0 0 12px;font-size:17px} input,button{font:inherit}
+    input{box-sizing:border-box;width:100%;padding:8px;margin:6px 0 10px;background:#2b2b2b;color:#fff;border:1px solid #555;border-radius:4px}
+    button{padding:7px 10px;margin:0 6px 8px 0;background:#3a3a3a;color:#fff;border:1px solid #666;border-radius:4px}
+    #bridgeStatus{margin:4px 0 12px;color:#f0b56a} #bridgeStatus.connected{color:#73d982}
+    pre{white-space:pre-wrap;word-break:break-word;background:#151515;border:1px solid #444;padding:10px;min-height:110px;max-height:210px;overflow:auto}
+    .note{color:#bbb;line-height:1.4}
+  </style>
+  <script src="./main.js"></script>
+</head>
+<body>
+  <h2>Shuvi Animate Bridge</h2>
+  <div class="note">40% milestone: authenticated read-only CEP → JSFL inspection only.</div>
+  <input id="tokenInput" type="password" autocomplete="off" placeholder="Shuvi pairing token">
+  <div>
+    <button id="connect">Connect</button><button id="disconnect">Disconnect</button>
+    <button id="inspect">Inspect document</button><button id="timeline">Inspect timeline</button>
+  </div>
+  <div id="bridgeStatus">Disconnected</div>
+  <pre id="output">No host inspection yet.</pre>
+  <div class="note">No timeline, drawing, library, symbol, publish, or file mutation is allowed in this milestone.</div>
+</body>
+</html>
