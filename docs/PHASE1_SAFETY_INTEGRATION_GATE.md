@@ -88,6 +88,11 @@ Date: 2026-10-09. Deployment is explicitly forbidden during this phase.
 - Daily append events use a 2-byte verified format, bounded reads, Windows exclusive cross-instance file ownership and `sync_all`; an inaccessible, partial, tampered, or saturated journal fails closed. It prevents an ordinary application restart from resetting the daily attempt allowance.
 - This is still NOT a verified dollar/rupee spend budget. The Windows system clock, per-user local files, external concurrent usage, provider prices, token billing and remote APIs are not reconciled. Persisted attempt quotas are an interim protection; **A22 remains OPEN** until user-approved monetary ceilings, pricing validation and provider-side usage reconciliation exist.
 
+## A01 / A17 UI-to-native command contract (pending exact candidate CI)
+- Checked the current local desktop UI `src/main.ts`: 33 statically named `invoke` sites, 24 unique commands. Added a regression gate that maps Rust `generate_handler!` entries to unqualified Tauri command aliases (including `web_bridge::web_bridge_start`/stop) and fails on dynamic or missing UI IPC command targets.
+- Explicit action preparation, execution, cancellation, denial and audit-receipt commands remain required; native execution slot is still the authority.
+- This is contract/source consistency, **not** proof that the full Windows packaged UI works correctly. A01/A17 remain OPEN until compiled Windows/Adobe live acceptance.
+
 ## Priority
 A10 atomic write and A08 cancellation before any destructive Windows acceptance;
 A01 baseline before per-module integration; A09 before real parallel workers;
