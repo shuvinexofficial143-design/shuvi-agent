@@ -8,7 +8,7 @@ export function telegramConfigured(env=process.env) {
   const owner=env.TELEGRAM_OWNER_CHAT_ID||"";
   return /^[0-9]{5,20}:[A-Za-z0-9_-]{25,}$/.test(token) &&
     /^[A-Za-z0-9_-]{32,256}$/.test(secret) &&
-    /^[1-9][0-9]{3,18}$/.test(owner) && redisConfigured(env);
+    /^[1-9][0-9]{3,18}$/.test(owner) && (!onlineConfigured(env) || redisConfigured(env));
 }
 
 export function telegramInput(update,env=process.env) {
@@ -40,7 +40,8 @@ export async function runTelegramUpdate(update,env=process.env,dependencies={}) 
   const incoming=telegramInput(update,env);
   if(!incoming)return {ignored:true};
   const send=dependencies.send||((chatId,text)=>sendTelegram(chatId,text,env));
-  const once=dependencies.once||((id)=>takeUpdateOnce(id,env));
+  // Connection-only Telegram tests need no database; AI mode requires Redis dedupe.
+  const once=dependencies.once||(redisConfigured(env)?((id)=>takeUpdateOnce(id,env)):(async()=>true));
   const load=dependencies.load||((id)=>getTelegramHistory(id,env));
   const save=dependencies.save||((id,h)=>saveTelegramHistory(id,h,env));
   const clear=dependencies.clear||((id)=>clearTelegramHistory(id,env));
@@ -61,8 +62,8 @@ export async function runTelegramUpdate(update,env=process.env,dependencies={}) 
     return {command};
   }
   if(command==="/reset") {
-    await clear(chatId);
-    await send(chatId,"इस Telegram बातचीत की याद साफ कर दी है। अब नया विषय शुरू कर सकते हैं।");
+    if(redisConfigured(env)) await clear(chatId);
+    await send(chatId,redisConfigured(env)?"इस Telegram बातचीत की याद साफ कर दी है। अब नया विषय शुरू कर सकते हैं।":"अभी AI बंद है; कोई Cloud Memory या Paid Model चालू नहीं है।");
     return {command};
   }
   if(["/approve","/deny","/cancel","/resume","/run","/task","/pair","/desktop"].includes(command)) {
