@@ -32,6 +32,12 @@ Date: 2026-10-09. Deployment is explicitly forbidden during this phase.
 - No merges to ui-dashboard or main during Phase 1; source changes only in staging branch.
 - Do NOT redeploy, alter AI providers or touch user Adobe projects.
 
+## 2026-10-09 incremental source fixes (do NOT treat as release clearance)
+- A08: Git process wrappers now enforce 90-second local and 180-second fetch/push deadlines; stdin is capped at 8 MiB and stdout/stderr is bounded. A hung-child Rust regression is included. Cancel/timeout can leave an **unknown external outcome**; inspect the Git/workspace state before retrying.
+- A22 partial: native single-image and multi-frame vision prompts are capped by MAX_CHAT_MESSAGE_BYTES, and Gemini/OpenAI-compatible vision output payloads now carry explicit MAX_PROVIDER_OUTPUT_TOKENS. Existing Anthropic limits remain. **These byte/token bounds are NOT a monetary budget, quota accounting, pricing guard or guarantee against provider billing.** A22 is still OPEN pending a separately enforced request/spend policy and unknown-price rejection.
+- Stage-specific GitHub CI must run on the exact candidate SHA after these changes. Last fully completed predecessor: 08ab75f00dbd270ac33f1f5ee8bc6596ade450e7 (frontend + Windows Rust + source workflows passed).
+- No Windows/Adobe live acceptance has been performed by these source changes. No Vercel preview, production deployment or protected branch merge is authorized.
+
 ## Priority
 A10 atomic write and A08 cancellation before any destructive Windows acceptance;
 A01 baseline before per-module integration; A09 before real parallel workers;

@@ -8173,6 +8173,9 @@ async fn analyze_png_bytes_with_provider(
     if bytes.len()<8 || &bytes[..8]!=b"\x89PNG\r\n\x1a\n" {
         return Err("Vision image bytes do not have a valid PNG signature.".into());
     }
+    if prompt.len() > MAX_CHAT_MESSAGE_BYTES {
+        return Err("Vision prompt exceeds Shuvi's 256 KB native request limit.".into());
+    }
     let encoded = BASE64.encode(bytes);
     let key = load_api_key(&context.provider)?;
 
@@ -8201,7 +8204,8 @@ async fn analyze_png_bytes_with_provider(
                                 }
                             }
                         ]
-                    }]
+                    }],
+                    "generationConfig":{"maxOutputTokens":MAX_PROVIDER_OUTPUT_TOKENS}
                 }))
                 .send()
                 .await
@@ -8307,7 +8311,7 @@ async fn analyze_png_bytes_with_provider(
                 _ => unreachable!(),
             };
 
-            let mut request = http_client()?.post(url).json(&json!({
+            let mut payload = json!({
                 "model": context.model,
                 "messages": [{
                     "role": "user",
@@ -8321,7 +8325,12 @@ async fn analyze_png_bytes_with_provider(
                         }
                     ]
                 }]
-            }));
+            });
+            let output_key = if context.provider == "openai" {
+                "max_completion_tokens"
+            } else { "max_tokens" };
+            payload[output_key] = json!(MAX_PROVIDER_OUTPUT_TOKENS);
+            let mut request = http_client()?.post(url).json(&payload);
 
             if let Some(api_key) = key.filter(|value| !value.is_empty()) {
                 request = request.bearer_auth(api_key);
@@ -8359,6 +8368,9 @@ async fn analyze_png_frames_with_provider(
     const MAX_FRAMES:usize=8;
     const MAX_FRAME_BYTES:usize=8*1024*1024;
     const MAX_TOTAL_BYTES:usize=32*1024*1024;
+    if prompt.len()>MAX_CHAT_MESSAGE_BYTES{
+        return Err("Multi-frame vision prompt exceeds Shuvi's 256 KB native request limit.".into());
+    }
     if frames.len()<2||frames.len()>MAX_FRAMES{
         return Err(format!("Multi-frame vision requires 2..={MAX_FRAMES} PNG frames."));
     }
@@ -8399,7 +8411,8 @@ async fn analyze_png_frames_with_provider(
                 parts.push(json!({"inlineData":{"mimeType":"image/png","data":data}}));
             }
             let response=http_client()?.post(url).json(&json!({
-                "contents":[{"role":"user","parts":parts}]
+                "contents":[{"role":"user","parts":parts}],
+                "generationConfig":{"maxOutputTokens":MAX_PROVIDER_OUTPUT_TOKENS}
             })).send().await.map_err(|error|format!("Gemini multi-frame vision request failed: {error}"))?;
             let (status,body)=bounded_provider_json(response,"Gemini multi-frame vision").await?;
             if !status.is_success(){
@@ -8468,10 +8481,15 @@ async fn analyze_png_frames_with_provider(
                     "image_url":{"url":format!("data:image/png;base64,{data}")}
                 }));
             }
-            let mut request=http_client()?.post(url).json(&json!({
+            let mut payload=json!({
                 "model":context.model,
                 "messages":[{"role":"user","content":content}]
-            }));
+            });
+            let output_key=if context.provider=="openai"{
+                "max_completion_tokens"
+            }else{"max_tokens"};
+            payload[output_key]=json!(MAX_PROVIDER_OUTPUT_TOKENS);
+            let mut request=http_client()?.post(url).json(&payload);
             if let Some(api_key)=key.filter(|value|!value.is_empty()){
                 request=request.bearer_auth(api_key);
             }else if context.provider!="ollama"{
@@ -8636,17 +8654,25 @@ fn search_text_recursive(
     Ok(())
 }
 
+// A08: A command wrapper's apparent termination is not proof that a remote
+// Git operation was rolled back. Never auto-retry ambiguous Git writes.
 fn run_git(path: &str, args: &[&str]) -> Result<std::process::Output, String> {
     if !Path::new(path).join(".git").exists() {
         return Err("The selected path does not contain a .git repository.".into());
     }
-
-    Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .args(args)
-        .output()
-        .map_err(|error| format!("Could not run Git: {error}"))
+    let deadline=match args.first().copied(){
+        Some("fetch") | Some("push")=>Duration::from_secs(180),
+        _=>Duration::from_secs(90),
+    };
+    let child=Command::new("git")
+        .arg("-C").arg(path).args(args)
+        .env("GIT_TERMINAL_PROMPT","0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped()).stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error|format!("Could not start Git: {error}"))?;
+    bounded_child::collect_with_deadline(child, deadline)
+        .map_err(|error|format!("Git execution failed or timed out: {error}. Git operation outcome may be unknown; inspect repository before retrying."))
 }
 
 fn run_git_with_bytes(
@@ -8655,29 +8681,37 @@ fn run_git_with_bytes(
     input: &[u8],
     label: &str,
 ) -> Result<std::process::Output, String> {
+    const MAX_GIT_STDIN_BYTES:usize=8*1024*1024;
     if !Path::new(path).join(".git").exists() {
         return Err("The selected path does not contain a .git repository.".into());
     }
-
-    let mut child = Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("Could not run Git: {error}"))?;
-
-    if let Some(stdin) = child.stdin.as_mut() {
-        stdin
-            .write_all(input)
-            .map_err(|error| format!("Could not send {label} to Git: {error}"))?;
+    if input.len()>MAX_GIT_STDIN_BYTES {
+        return Err("Git input exceeds Shuvi's 8 MiB process safety limit.".into());
     }
-
-    child
-        .wait_with_output()
-        .map_err(|error| format!("Could not wait for Git: {error}"))
+    let mut child=Command::new("git")
+        .arg("-C").arg(path).args(args)
+        .env("GIT_TERMINAL_PROMPT","0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped()).stderr(Stdio::piped())
+        .spawn().map_err(|error|format!("Could not start Git: {error}"))?;
+    let mut stdin=child.stdin.take()
+        .ok_or_else(||"Git stdin was not piped.".to_string())?;
+    // Send data concurrently with stdout/stderr draining. Writing before
+    // reading pipes can deadlock a subprocess that emits a full output buffer.
+    let owned_input=input.to_vec();
+    let (tx,rx)=std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move||{
+        let sent=stdin.write_all(&owned_input)
+            .map_err(|error|format!("Could not send bounded Git input: {error}"));
+        drop(stdin);
+        let _=tx.send(sent);
+    });
+    let output=bounded_child::collect_with_deadline(child,Duration::from_secs(120))
+        .map_err(|error|format!("Git operation timed out or returned unbounded output: {error}. Inspect external Git state before retrying."))?;
+    let sent=rx.recv_timeout(Duration::from_secs(1))
+        .map_err(|_|"Git stdin writer did not finish; outcome unknown and no automatic retry is safe.".to_string())?;
+    sent.map_err(|error|format!("Could not send {label} to Git: {error}"))?;
+    Ok(output)
 }
 
 fn run_git_with_stdin(

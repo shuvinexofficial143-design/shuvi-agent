@@ -128,4 +128,22 @@ mod tests{
         assert!(error.contains("bounded stream size"));
         assert!(started.elapsed()<Duration::from_secs(14));
     }
+    #[test]
+    fn hung_child_returns_on_absolute_deadline_without_unbounded_wait(){
+        #[cfg(windows)]
+        let child=std::process::Command::new("powershell.exe")
+            .args(["-NoProfile","-NonInteractive","-Command","Start-Sleep -Seconds 20"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped()).spawn().unwrap();
+        #[cfg(not(windows))]
+        let child=std::process::Command::new("sleep")
+            .arg("20")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped()).spawn().unwrap();
+        let now=Instant::now();
+        let outcome=collect_with_deadline(child,Duration::from_millis(250));
+        assert!(outcome.is_err(),"hung child should hit deadline");
+        assert!(outcome.unwrap_err().contains("outcome of any external action is unknown"));
+        assert!(now.elapsed()<Duration::from_secs(5),"helper must return promptly after deadline");
+    }
 }
