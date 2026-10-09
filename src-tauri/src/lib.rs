@@ -2036,7 +2036,10 @@ fn ui_root_script(window: Option<&str>) -> String {
 fn run_hidden_powershell(script: &str) -> Result<std::process::Output, String> {
     #[cfg(target_os = "windows")]
     {
-        Command::new("powershell.exe")
+        // A PowerShell/UIA/CDP host call can stop answering indefinitely.
+        // Bound the entire child lifetime rather than waiting in .output().
+        const POWER_SHELL_DEADLINE: Duration = Duration::from_secs(30);
+        let mut child = Command::new("powershell.exe")
             .args([
                 "-NoLogo",
                 "-NoProfile",
@@ -2046,8 +2049,31 @@ fn run_hidden_powershell(script: &str) -> Result<std::process::Output, String> {
                 "-Command",
                 script,
             ])
-            .output()
-            .map_err(|error| format!("Failed to start PowerShell: {error}"))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("Failed to start PowerShell: {error}"))?;
+        let started = std::time::Instant::now();
+        loop {
+            match child.try_wait() {
+                Ok(Some(_status)) => break,
+                Ok(None) => {
+                    if started.elapsed() >= POWER_SHELL_DEADLINE {
+                        let _ = child.kill();
+                        let _ = child.wait_with_output();
+                        return Err("PowerShell/UI Automation timed out after 30 seconds. The outcome of any external action is unknown; inspect it before retrying.".into());
+                    }
+                    std::thread::sleep(Duration::from_millis(40));
+                }
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("Could not poll hidden PowerShell: {error}"));
+                }
+            }
+        }
+        child.wait_with_output()
+            .map_err(|error| format!("Could not read hidden PowerShell output: {error}"))
     }
 
     #[cfg(not(target_os = "windows"))]
