@@ -22,11 +22,12 @@ test("public Vercel origin does not accept or retain native pairing code", () =>
   assert.doesNotMatch(notice, /localStorage|sessionStorage|fetch\(/);
 });
 
-test("remote runtime labels are honest and offer native Telegram setup", () => {
+test("remote runtime labels are honest and keep pairing local", () => {
   const notice = src("remote-runtime-notice.ts");
   assert.match(notice, /Remote relay not configured/);
   assert.match(notice, /Remote control is not enabled/);
-  assert.match(notice, /Settings → Telegram Connection/);
+  assert.doesNotMatch(notice, /Telegram/);
+  assert.match(notice, /Shuvi Desktop on Windows/);
   assert.match(notice, /\[data-action="connect-local"\]/);
   assert.match(notice, /Runtime setup/);
   assert.doesNotMatch(notice, /Connected successfully|Remote agent online/);
