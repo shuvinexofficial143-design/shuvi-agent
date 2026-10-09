@@ -97,3 +97,12 @@ Date: 2026-10-09. Deployment is explicitly forbidden during this phase.
 A10 atomic write and A08 cancellation before any destructive Windows acceptance;
 A01 baseline before per-module integration; A09 before real parallel workers;
 A17 exact candidate test review before installer/host acceptance.
+
+## 2026-10-09 continuation: A08 fixture and A22 outcome receipts
+- A08: replaced the expensive Windows PowerShell overflow fixture with a small cmd producer through the same capped collector. Production retains its 8 MiB stream cap and absolute deadline. Pushed A08 candidate: `6dc08afb4779eddadb2203540cb3e616afe95b53`.
+- A22: text adapter failures now append `request_failed_or_unknown` receipts. Tokens and billed USD remain null; no raw errors, API keys, prompts or responses are persisted. Existing reservations are not refunded. Pushed outcome candidate: `10672ed7340cc87d677feed68f4187536489507b`.
+- A22: journal reads now validate the complete v1 schema, identities, endpoint digest, nonnegative integer token fields and count/status consistency; missing or unknown fields and non-null billed amounts are rejected.
+- Local evidence: 893 Node tests and desktop frontend build pass after the outcome change; 9 actual Rust unit tests pass using the repository collector/receipt modules in a disposable Linux harness (including corruption and failed-outcome tests). The Windows file-journal implementation is not exercised by that harness; exact Windows CI is still required.
+- Read-only npm audits of root, web-dashboard and remotion-runtime report zero advisories on 2026-10-09. This does not establish Rust advisory status.
+- A22 remains open: per-request correlation with reservations, vision outcome/usage accounting, missing-receipt reconciliation, crash recovery and an authenticated provider billing reconciliation interface. A failed pre-network adapter validation is conservatively recorded as unknown; it is not a claim that a charge occurred.
+- No merge, deployment, paid API call or live Windows/Adobe acceptance was performed.

@@ -1,11 +1,13 @@
 //! A22: durable provider-reported token usage for successful text responses.
 //! NOT a receipt from billing, monetary price reconciliation or invoice proof.
+#[cfg(windows)]
 use std::{fs::OpenOptions,io::{Read,Seek,SeekFrom,Write},os::windows::fs::OpenOptionsExt,path::PathBuf,time::{SystemTime,UNIX_EPOCH}};
 use serde_json::{Value,json};
 use sha2::{Sha256,Digest};
 const MAX_RECORD_BYTES:usize=2048;
 const MAX_LEDGER_BYTES:usize=64*1024;
 const MAX_RECORDS:usize=64;
+#[cfg(windows)]
 fn path()->Result<PathBuf,String>{
     let attempt=super::daily_journal_path()?;
     let dir=attempt.parent().ok_or("A22 usage-receipt folder unavailable.")?;
@@ -46,18 +48,45 @@ fn count_prior_receipts(data:&[u8])->Result<usize,String>{
         if row.len()>MAX_RECORD_BYTES{return Err("A22 reported usage journal has oversized line.".into());}
         let val:Value=serde_json::from_slice(&row[..row.len()-1])
             .map_err(|_|"A22 reported usage journal contains malformed JSON.")?;
-        if val.get("v").and_then(Value::as_u64)!=Some(1)
-          || val.get("status").and_then(Value::as_str).is_none()
-          || val.get("utc_seconds").and_then(Value::as_u64).is_none()
-          || val.get("provider").and_then(Value::as_str).is_none()
-          || val.get("model").and_then(Value::as_str).is_none(){
-            return Err("A22 reported usage journal contains an invalid record.".into());
-        }
+        validate_receipt(&val)?;
         count+=1;
         if count>MAX_RECORDS{return Err("A22 reported usage journal exceeds entry limit.".into());}
     }
     Ok(count)
 }
+fn validate_receipt(val:&Value)->Result<(),String>{
+    let invalid=||"A22 reported usage journal contains an invalid record.".to_string();
+    let fields=["v","utc_seconds","provider","model","endpoint_sha256","status",
+        "input_tokens","output_tokens","total_tokens","usd_billed"];
+    let obj=val.as_object().ok_or_else(invalid)?;
+    if obj.len()!=fields.len()||fields.iter().any(|field|!obj.contains_key(*field))
+        ||val["v"].as_u64()!=Some(1)||!val["usd_billed"].is_null(){return Err(invalid());}
+    let utc=val["utc_seconds"].as_u64().ok_or_else(invalid)?;
+    let provider=val["provider"].as_str().ok_or_else(invalid)?;
+    let model=val["model"].as_str().ok_or_else(invalid)?;
+    if !val["endpoint_sha256"].is_null(){
+        let hash=val["endpoint_sha256"].as_str().ok_or_else(invalid)?;
+        if hash.len()!=64||!hash.bytes().all(|b|b.is_ascii_digit()||(b'a'..=b'f').contains(&b)){
+            return Err(invalid());
+        }
+    }
+    let reported=if ["input_tokens","output_tokens","total_tokens"].iter().all(|f|val[*f].is_null()){
+        None
+    }else{
+        Some((val["input_tokens"].as_u64().ok_or_else(invalid)?,
+            val["output_tokens"].as_u64().ok_or_else(invalid)?,
+            val["total_tokens"].as_u64().ok_or_else(invalid)?))
+    };
+    // Derive the only valid usage status from the counts, applying the same
+    // identity validation as newly written records. Unknown failures have no counts.
+    let expected:Value=serde_json::from_slice(&create_receipt(provider,model,None,reported,utc)?)
+        .map_err(|_|invalid())?;
+    if val["status"]=="request_failed_or_unknown"{
+        if reported.is_some(){return Err(invalid());}
+    }else if val["status"]!=expected["status"]{return Err(invalid());}
+    Ok(())
+}
+#[cfg(windows)]
 pub(super) fn append_receipt(provider:&str,model:&str,endpoint:Option<&str>,reported:Option<(u64,u64,u64)>)->Result<(),String>{
     append_outcome(provider,model,endpoint,reported,false)
 }
@@ -72,9 +101,11 @@ fn create_unknown_receipt(provider:&str,model:&str,endpoint:Option<&str>,utc:u64
     if line.len()>MAX_RECORD_BYTES{return Err("A22 outcome receipt exceeds allowed size.".into());}
     Ok(line)
 }
+#[cfg(windows)]
 pub(super) fn append_unknown_outcome(provider:&str,model:&str,endpoint:Option<&str>)->Result<(),String>{
     append_outcome(provider,model,endpoint,None,true)
 }
+#[cfg(windows)]
 fn append_outcome(provider:&str,model:&str,endpoint:Option<&str>,reported:Option<(u64,u64,u64)>,unknown:bool)->Result<(),String>{
     let out=path()?;
     super::verify_journal_file_candidate(&out)?;
@@ -143,5 +174,25 @@ mod tests{
         assert!(count_prior_receipts(b"not json\n").is_err());
         let mut second=good.clone();second.extend_from_slice(&good);
         assert_eq!(count_prior_receipts(&second).unwrap(),2);
+    }
+    #[test] fn rejects_semantically_corrupted_receipts(){
+        let good:Value=serde_json::from_slice(&create_receipt("openai","model",None,Some((2,1,3)),21).unwrap()).unwrap();
+        for (field,bad) in [
+            ("status",json!("invented")),("status",json!("request_failed_or_unknown")),
+            ("input_tokens",json!(-1)),("output_tokens",Value::Null),
+            ("total_tokens",json!(0)),("usd_billed",json!(0)),
+            ("provider",json!("")),("model",json!("bad\nmodel")),
+            ("endpoint_sha256",json!("not-a-hash")),("utc_seconds",json!(-1)),
+        ]{
+            let mut bad_row=good.clone();bad_row[field]=bad;
+            assert!(validate_receipt(&bad_row).is_err(),"accepted corrupt {field}");
+        }
+        for field in good.as_object().unwrap().keys(){
+            let mut missing=good.clone();missing.as_object_mut().unwrap().remove(field);
+            assert!(validate_receipt(&missing).is_err(),"accepted missing {field}");
+        }
+        let mut extra=good.clone();extra["raw_error"]=json!("private");
+        assert!(validate_receipt(&extra).is_err());
+        assert!(validate_receipt(&good).is_ok());
     }
 }
