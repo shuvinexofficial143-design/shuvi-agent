@@ -9497,8 +9497,65 @@ fn write_workspace(app: &AppHandle, path: &str) -> Result<(), String> {
         return Err("Workspace must be an existing absolute directory without control characters and within Shuvi's path-size limit.".into());
     }
 
-    fs::write(workspace_config_path(app)?, path.as_bytes())
-        .map_err(|error| format!("Could not save workspace setting: {error}"))
+    persist_workspace_setting(&workspace_config_path(app)?, path.as_bytes())
+}
+
+// A10: Workspace selection is a file mutation just like a project edit.
+// Do not truncate the previously saved setting on crash or interrupted write.
+// Atomic publication keeps the complete previous bytes in a recovery backup.
+fn persist_workspace_setting(target: &Path, contents: &[u8]) -> Result<(), String> {
+    match fs::symlink_metadata(target) {
+        Ok(_) => {
+            let _recovery_backup=atomic_file::replace_existing(
+                target, contents, None, "workspace setting"
+            )?;
+            Ok(())
+        }
+        Err(error) if error.kind()==std::io::ErrorKind::NotFound => {
+            atomic_file::create_new_verified(target, contents, "workspace setting")
+        }
+        Err(error) => Err(format!("Could not inspect saved workspace setting: {error}")),
+    }
+}
+
+#[cfg(test)]
+mod workspace_setting_persistence_tests {
+    use super::*;
+    #[test]
+    fn initial_setting_is_fully_published_without_a_stage_file(){
+        let dir=std::env::temp_dir().join(format!("shuvi-workspace-{}",Uuid::new_v4()));
+        fs::create_dir(&dir).unwrap();
+        let target=dir.join("workspace.txt");
+        persist_workspace_setting(&target,b"C:\\Shuvi\\First").unwrap();
+        assert_eq!(fs::read(&target).unwrap(),b"C:\\Shuvi\\First");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(),1);
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn previous_workspace_setting_survives_replacement_as_verified_backup(){
+        let dir=std::env::temp_dir().join(format!("shuvi-workspace-{}",Uuid::new_v4()));
+        fs::create_dir(&dir).unwrap();
+        let target=dir.join("workspace.txt");
+        fs::write(&target,b"C:\\Shuvi\\Old").unwrap();
+        persist_workspace_setting(&target,b"C:\\Shuvi\\New").unwrap();
+        assert_eq!(fs::read(&target).unwrap(),b"C:\\Shuvi\\New");
+        let backups=fs::read_dir(&dir).unwrap().flatten()
+            .filter(|entry|entry.path()!=target).map(|entry|entry.path())
+            .collect::<Vec<_>>();
+        assert_eq!(backups.len(),1,"one safe recovery backup must remain");
+        assert_eq!(fs::read(&backups[0]).unwrap(),b"C:\\Shuvi\\Old");
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn workspace_setting_refuses_to_overwrite_a_directory(){
+        let dir=std::env::temp_dir().join(format!("shuvi-workspace-{}",Uuid::new_v4()));
+        fs::create_dir(&dir).unwrap();
+        let target=dir.join("workspace.txt");
+        fs::create_dir(&target).unwrap();
+        assert!(persist_workspace_setting(&target,b"unsafe").is_err());
+        assert!(target.is_dir());
+        fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 async fn backup_premiere_project(premiere_bridge: &PremiereClient<'_>) -> Result<String, String> {
