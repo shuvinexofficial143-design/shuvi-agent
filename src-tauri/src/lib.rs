@@ -2295,17 +2295,26 @@ fn terminate_managed_process_tree(pid: u32) -> Result<bool, String> {
     let pid_string = pid.to_string();
 
     #[cfg(target_os = "windows")]
-    let output = Command::new("taskkill")
+    let killer = Command::new("taskkill")
         .args(["/PID", pid_string.as_str(), "/T", "/F"])
-        .output()
-        .map_err(|error| format!("Could not stop managed process tree at the RAM hard ceiling: {error}"))?;
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Could not start managed process termination: {error}"))?;
 
     #[cfg(not(target_os = "windows"))]
-    let output = Command::new("kill")
+    let killer = Command::new("kill")
         .args(["-TERM", pid_string.as_str()])
-        .output()
-        .map_err(|error| format!("Could not stop managed process at the RAM hard ceiling: {error}"))?;
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Could not start managed process termination: {error}"))?;
 
+    // A08: a malfunctioning OS termination helper must not block the desktop
+    // or accumulate unbounded output. Success only means a kill was requested;
+    // callers needing confirmed exit must independently check the process.
+    let output = bounded_child::collect_with_deadline(killer, Duration::from_secs(10))
+        .map_err(|error| format!("Managed process termination outcome is unknown: {error}"))?;
     Ok(output.status.success())
 }
 
@@ -17911,6 +17920,14 @@ fn cancel_running_action(
                 return Ok(false);
             }
 
+            // Capture PID + process start time before sending a kill signal.
+            // A post-kill check against the *original* identity is essential:
+            // another thread may unregister the action while cancellation runs.
+            let expected_start = state.managed_process_started_at
+                .lock()
+                .map_err(|_| "Managed-process identity state is unavailable.".to_string())?
+                .get(&pid).copied()
+                .ok_or_else(|| "Running action lost its process identity; cancellation outcome is unknown.".to_string())?;
             let pid_string = pid.to_string();
             #[cfg(target_os = "windows")]
             let killer = Command::new("taskkill")
@@ -17931,14 +17948,22 @@ fn cancel_running_action(
             let output = bounded_child::collect_with_deadline(killer, Duration::from_secs(10))
                 .map_err(|error| format!("Cancellation command did not finish safely: {error}. External action outcome is unknown."))?;
 
-            if output.status.success() {
-                unregister_managed_process(state.inner(), pid);
-                if let Ok(mut running) = state.running_action_children.lock() {
-                    running.remove(&action_id);
-                }
-                return Ok(true);
+            if !output.status.success() {
+                return Err("Managed cancellation command failed; the external action may still be running. Inspect before retrying.".into());
             }
-            return Ok(false);
+            // A successful taskkill/kill exit code is NOT proof the requested
+            // process has actually stopped. Check the original process identity.
+            for _ in 0..25 {
+                if observed_process_start_time(pid) != Some(expected_start) {
+                    unregister_managed_process(state.inner(), pid);
+                    if let Ok(mut running) = state.running_action_children.lock() {
+                        running.remove(&action_id);
+                    }
+                    return Ok(true);
+                }
+                std::thread::sleep(Duration::from_millis(40));
+            }
+            Err("Termination was requested, but the original process is still visible. Cancellation outcome is unknown; inspect before retrying.".into())
         }
         std::thread::sleep(Duration::from_millis(20));
     }

@@ -63,6 +63,11 @@ Date: 2026-10-09. Deployment is explicitly forbidden during this phase.
 - Existing pre-publish fault injection remains fail-closed. Added safe temporary-directory Rust tests for binary-byte restoration, missing targets, pre-publish failure and symlinked file paths, plus a Windows disposable junction-ancestor test.
 - This is not a complete defense against a malicious same-user process racing filesystem paths, and a successful CI on Windows is not proof of durable power-failure recovery. Real Windows/Adobe acceptance remains explicitly pending.
 
+## 2026-10-09 A08 managed process cancellation exit confirmation (pending CI)
+- Do not claim a running action was cancelled simply because `taskkill` or `kill` returned success: the native backend captures the original PID/start-time identity, observes process disappearance/identity change for up to one second and only then returns confirmed cancellation.
+- The shared managed-process termination command is bounded to 10 seconds with capped stdout/stderr. An unconfirmed termination explicitly reports an unknown outcome, rather than automatically retrying an external action.
+- This does NOT prove rollback of file/project mutations or kill every unrelated descendant retaining handles; real Windows acceptance still required.
+
 ## Priority
 A10 atomic write and A08 cancellation before any destructive Windows acceptance;
 A01 baseline before per-module integration; A09 before real parallel workers;
