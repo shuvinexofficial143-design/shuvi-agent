@@ -133,6 +133,9 @@ const MAX_CHAT_MESSAGES: usize = 120;
 const MAX_CHAT_MESSAGE_BYTES: usize = 256 * 1024;
 const MAX_CHAT_CONTEXT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_PROVIDER_RESPONSE_BYTES: u64 = 8 * 1024 * 1024;
+// Prevent unbounded billable output on native cloud chat calls.
+// This is NOT a dollar-denominated spend limit: input tokens and model rates vary.
+const MAX_PROVIDER_OUTPUT_TOKENS: u32 = 4096;
 const MAX_ASSISTANT_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_PROVIDER_MODEL_BYTES: usize = 256;
 const MAX_PROVIDER_BASE_URL_BYTES: usize = 4 * 1024;
@@ -1951,10 +1954,19 @@ async fn openai_compatible_chat(
         return Err("No API key saved for this provider.".into());
     }
 
-    let mut request = http_client()?.post(&url).json(&json!({
+    let mut payload = json!({
         "model": input.model,
         "messages": input.messages
-    }));
+    });
+    // OpenAI's recent models require max_completion_tokens; OpenAI-compatible
+    // backends including xKiro custom/OpenRouter support max_tokens.
+    let output_key = if input.provider == "openai" {
+        "max_completion_tokens"
+    } else {
+        "max_tokens"
+    };
+    payload[output_key] = json!(MAX_PROVIDER_OUTPUT_TOKENS);
+    let mut request = http_client()?.post(&url).json(&payload);
 
     if let Some(key) = api_key.filter(|key| !key.is_empty()) {
         request = request.bearer_auth(key);
@@ -2005,7 +2017,10 @@ async fn gemini_chat(input: ChatInput, api_key: Option<String>) -> Result<ChatRe
         }
     }
 
-    let mut payload = json!({ "contents": contents });
+    let mut payload = json!({
+        "contents": contents,
+        "generationConfig": { "maxOutputTokens": MAX_PROVIDER_OUTPUT_TOKENS }
+    });
     if !system_parts.is_empty() {
         payload["systemInstruction"] = json!({ "parts": system_parts });
     }
