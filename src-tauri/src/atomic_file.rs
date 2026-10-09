@@ -11,10 +11,32 @@ use std::{
 };
 use uuid::Uuid;
 
+fn is_link_or_reparse(metadata:&std::fs::Metadata)->bool{
+    if metadata.file_type().is_symlink(){return true;}
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT:u32=0x400;
+        if metadata.file_attributes()&FILE_ATTRIBUTE_REPARSE_POINT!=0{return true;}
+    }
+    false
+}
+fn ensure_real_directory_ancestors(parent:&Path)->Result<(),String>{
+    for ancestor in parent.ancestors(){
+        if ancestor.as_os_str().is_empty(){continue;}
+        let metadata=fs::symlink_metadata(ancestor)
+            .map_err(|error|format!("Could not inspect file directory ancestor: {error}"))?;
+        if !metadata.is_dir()||is_link_or_reparse(&metadata){
+            return Err("File directory path contains a non-directory, link or reparse point.".into());
+        }
+    }
+    Ok(())
+}
+
 fn source_fingerprint(path: &Path, label: &str) -> Result<([u8; 32], u64), String> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| format!("Could not inspect {label} target: {error}"))?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
+    if is_link_or_reparse(&metadata) || !metadata.is_file() {
         return Err(format!("{label} target must be a regular non-link file."));
     }
     let mut opened = File::open(path)
@@ -92,11 +114,7 @@ fn replace_impl(
     let parent = target.parent().ok_or_else(|| format!("{label} has no parent directory."))?;
     // Refuse parent-directory symlinks, including junction-like Windows links.
     // We intentionally do not traverse or auto-create any directory here.
-    let dir_metadata = fs::symlink_metadata(parent)
-        .map_err(|error| format!("Could not inspect parent directory: {error}"))?;
-    if dir_metadata.file_type().is_symlink() || !dir_metadata.is_dir() {
-        return Err("File parent must be an existing real directory.".into());
-    }
+    ensure_real_directory_ancestors(parent)?;
     let before = source_fingerprint(target, label)?;
     if let Some(expected) = expected_original {
         let expected_hash: [u8; 32] = Sha256::digest(expected).into();
@@ -106,6 +124,7 @@ fn replace_impl(
     }
     let stage = private_sibling(parent, "stage");
     let backup = private_sibling(parent, "backup");
+    let mut publication_attempted=false;
     let result = (|| {
         let mut file = OpenOptions::new().write(true).create_new(true).open(&stage)
             .map_err(|error| format!("Could not create staged replacement: {error}"))?;
@@ -114,18 +133,27 @@ fn replace_impl(
         file.sync_all()
             .map_err(|error| format!("Could not flush staged replacement: {error}"))?;
         drop(file);
+        ensure_real_directory_ancestors(parent)?;
         if source_fingerprint(target, label)? != before {
             return Err(format!("{label} changed while replacement was staged; refusing to overwrite."));
         }
         if fail_before_publish {
             return Err("Injected pre-publish failure; original file must survive.".into());
         }
+        publication_attempted=true;
         publish_replacement(target, &stage, &backup)?;
         Ok(backup.clone())
     })();
-    // Do not leave an untrusted stage file after any failed publication attempt.
-    let _ = fs::remove_file(&stage);
-    result
+    // A failed OS publication may be partial. Keep staged and backup evidence
+    // so the user can inspect/recover instead of destroying remaining bytes.
+    if !publication_attempted || result.is_ok(){
+        let _=fs::remove_file(&stage);
+    }
+    result.map_err(|error|{
+        if publication_attempted{
+            format!("{error} Replacement attempt had an uncertain outcome; inspect target {target:?}, staged {stage:?} and backup {backup:?} before retrying.")
+        }else{error}
+    })
 }
 
 /// Existing regular file only: no creation, no in-place truncation.
@@ -170,6 +198,20 @@ mod tests {
         let backup=replace_existing(&target,b"new bytes",Some(b"original content"),"test").unwrap();
         assert_eq!(fs::read(&target).unwrap(),b"new bytes");
         assert_eq!(fs::read(&backup).unwrap(),b"original content");
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn intermediate_symlink_directory_is_rejected(){
+        use std::os::unix::fs::symlink;
+        let (dir,target)=fixture();
+        let real=dir.join("real").join("nested");
+        fs::create_dir_all(&real).unwrap();
+        fs::copy(&target,real.join("note.txt")).unwrap();
+        symlink(dir.join("real"),dir.join("alias")).unwrap();
+        let nested=dir.join("alias").join("nested").join("note.txt");
+        assert!(replace_existing(&nested,b"new bytes",None,"test").is_err());
+        assert_eq!(fs::read(real.join("note.txt")).unwrap(),b"original content");
         fs::remove_dir_all(dir).unwrap();
     }
 }

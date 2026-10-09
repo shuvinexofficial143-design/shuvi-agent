@@ -41,4 +41,24 @@ mod tests {
         assert!(outcome.is_err());
         assert!(claim_single_execution(&active).is_ok());
     }
+    #[test]
+    fn two_real_threads_cannot_both_edit_desktop_at_once(){
+        use std::sync::{Arc,Barrier};
+        let lock=Arc::new(AtomicBool::new(false));
+        let started=Arc::new(Barrier::new(2));
+        let release=Arc::new(Barrier::new(2));
+        let held=Arc::clone(&lock);
+        let ready=Arc::clone(&started);
+        let finish=Arc::clone(&release);
+        let worker=std::thread::spawn(move||{
+            let _lease=claim_single_execution(&held).expect("worker owns desktop");
+            ready.wait();
+            finish.wait();
+        });
+        started.wait();
+        assert!(claim_single_execution(&lock).is_err(),"second action must fail closed");
+        release.wait();
+        worker.join().unwrap();
+        assert!(claim_single_execution(&lock).is_ok(),"lease released after worker");
+    }
 }
