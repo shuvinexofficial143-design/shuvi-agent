@@ -29,6 +29,7 @@ import {
 } from "./agent-orchestrator";
 
 import { taskGraphProgress, type GraphAuditEvent } from "./task-graph.mjs";
+import { orchestrationWithMasterEditor } from "./master-editor.mjs";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("Missing app root");
@@ -1321,7 +1322,7 @@ async function runAgentStep(): Promise<void> {
         model: modelInput.value.trim(),
         base_url: baseUrlInput.value.trim() || null,
         messages: providerMessageWindow(messages),
-        orchestration_context: orchestrationContext(orchestration)
+        orchestration_context: orchestrationWithMasterEditor(orchestrationContext(orchestration), messages)
       }
     });
 
