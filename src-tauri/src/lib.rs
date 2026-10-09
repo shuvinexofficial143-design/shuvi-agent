@@ -2,6 +2,7 @@
 
 mod web_bridge;
 mod atomic_file;
+mod execution_lease;
 
 mod premiere_execution;
 mod premiere_store;
@@ -1022,6 +1023,7 @@ struct BrowserSession {
 
 #[derive(Default)]
 struct ActionState {
+    native_execution_owned: AtomicBool,
     pending: Mutex<HashMap<String, PendingAction>>,
     managed_children: Mutex<HashSet<u32>>,
     managed_process_started_at: Mutex<HashMap<u32, u64>>,
@@ -17881,6 +17883,9 @@ async fn execute_action(
     app: AppHandle,
 ) -> Result<ActionResult, String> {
     ensure_memory_budget(state.inner())?;
+    // Serialize native typed-tool execution. A plan's browser-only worker
+    // count is not an execution lock; the Rust guard is the authority.
+    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
 
     let (action, expired_action) = {
         let mut pending = state
