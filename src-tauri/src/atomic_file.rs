@@ -87,7 +87,7 @@ fn replace_impl(
     replacement: &[u8],
     expected_original: Option<&[u8]>,
     label: &str,
-    #[cfg(test)] fail_before_publish: bool,
+    fail_before_publish: bool,
 ) -> Result<PathBuf, String> {
     let parent = target.parent().ok_or_else(|| format!("{label} has no parent directory."))?;
     // Refuse parent-directory symlinks, including junction-like Windows links.
@@ -117,7 +117,6 @@ fn replace_impl(
         if source_fingerprint(target, label)? != before {
             return Err(format!("{label} changed while replacement was staged; refusing to overwrite."));
         }
-        #[cfg(test)]
         if fail_before_publish {
             return Err("Injected pre-publish failure; original file must survive.".into());
         }
@@ -137,7 +136,7 @@ pub(crate) fn replace_existing(
     expected_original: Option<&[u8]>,
     label: &str,
 ) -> Result<PathBuf, String> {
-    replace_impl(target, replacement, expected_original, label, #[cfg(test)] false)
+    replace_impl(target, replacement, expected_original, label, false)
 }
 
 #[cfg(test)]
