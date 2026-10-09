@@ -43,6 +43,24 @@ let orchestration: AgentOrchestrationState = createAgentOrchestrationState();
 let busy = false;
 let manualActionRunning = false;
 let cancelRequested = false;
+type RemoteInboundMessage = {
+  ownerId:string; deviceId:string; threadId:string; messageId:string; taskId:string;
+  text:string; expiresAt:number;
+};
+type RemoteActiveTask = {
+  message:RemoteInboundMessage; revision:number; status:string;
+  evidenceActionId:string|null; hadFailure:boolean;
+};
+type RemoteInbox = {
+ messages:RemoteInboundMessage[];
+ decisions:Array<{taskId:string;approvalId:string;decision:string}>;
+ pending:Array<{taskId:string;request:string}>;
+};
+let remoteAgentEnabled = false;
+let remotePolling = false;
+let remoteTask:RemoteActiveTask|null = null;
+let remoteApproval:{id:string;expiresAt:number;proposal:ToolProposal;actionId:string}|null = null;
+
 let sessionInputTokens = 0;
 let sessionOutputTokens = 0;
 let sessionTotalTokens = 0;
@@ -268,6 +286,18 @@ root.innerHTML = `
           </label>
           <p id="webPairingStatus" class="muted" role="status">Bridge disabled. Nothing is listening on 127.0.0.1:47771.</p>
           <p class="muted">Web URL: http://127.0.0.1:1423 — code is session-only and must not be pasted into chat or shared publicly.</p>
+        </section>
+        <section class="panel" aria-label="Windows outbound remote agent">
+          <h3>Windows Remote Agent · Secure outbound control</h3>
+          <p class="muted">Opt in to commands from your Shuvi mobile dashboard. No public Windows port is opened. Native tool permission and exact audit receipts remain required.</p>
+          <label>Windows agent pairing code (not the mobile owner code)
+            <input id="remoteAgentAccess" type="password" autocomplete="off" spellcheck="false" maxlength="64" placeholder="64-character private agent code" />
+          </label>
+          <div class="button-row">
+            <button id="remoteAgentConnect" class="primary" type="button">Connect Windows Agent</button>
+            <button id="remoteAgentDisconnect" type="button">Disconnect and revoke on this PC</button>
+          </div>
+          <p id="remoteAgentStatus" class="muted" role="status">Remote agent disabled. No command polling.</p>
         </section>
     </section>
   </main>
@@ -625,6 +655,8 @@ async function boot(): Promise<void> {
     await refreshRam();
     await refreshAudit();
     await refreshPremiereBridge();
+    await refreshRemoteAgent();
+    window.setInterval(() => void tickRemoteAgent(), 4000);
     window.setInterval(() => void refreshRam(), 5000);
   } catch (error) {
     settingsStatus.textContent = String(error);
@@ -819,6 +851,7 @@ async function recordOrchestrationAudit(
 }
 
 async function stopAgentForSafety(reason: string): Promise<void> {
+  if (remoteTask) await closeRemoteTask("stopped");
   orchestration = { ...orchestration, recovery_mode: "stopped", stop_reason: reason.slice(0, 800) };
   if (orchestration.task_graph) await recordOrchestrationAudit("task_graph_stopped", reason.slice(0, 1200));
   renderOrchestrationStatus();
@@ -912,6 +945,7 @@ async function stageProposal(proposal: ToolProposal): Promise<void> {
     }
 
     if (
+      !remoteTask &&
       pendingAction.risk === "low" &&
       sessionAllowedScopes.has(sessionPermissionKey(proposal)) &&
       !cancelRequested
@@ -920,7 +954,27 @@ async function stageProposal(proposal: ToolProposal): Promise<void> {
       return;
     }
 
+    if (remoteTask) {
+      const approvalId = crypto.randomUUID();
+      const approvalExpiresAt = Date.now() + 90_000;
+      try {
+        await sendRemoteReceipt("requires_approval", {approvalId,approvalExpiresAt});
+        remoteApproval = {id:approvalId,expiresAt:approvalExpiresAt,proposal,actionId:preparedId};
+      } catch {
+        try { await invoke("deny_action", {actionId:preparedId}); } catch { /* fail closed */ }
+        clearChatPermission();
+        await closeRemoteTask("outcome_unknown");
+        await stopAgentForSafety("Remote approval could not be securely requested. The native action was not authorized.");
+        return;
+      }
+    }
     renderChatPermission(proposal, step);
+    if (remoteTask) {
+      const approve = chatPermission.querySelector<HTMLButtonElement>("#chatApprove");
+      if(approve){approve.disabled=true;approve.textContent="Approve on mobile";}
+      const allowSession = chatPermission.querySelector<HTMLButtonElement>("#chatAllowSession");
+      if(allowSession)allowSession.disabled=true;
+    }
   } catch (error) {
     orchestration = recordToolOutcome(orchestration, proposal, "failure", undefined, false);
     await auditGraphOutcome(proposal);
@@ -1024,6 +1078,10 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
       }
     }
     void refreshAudit();
+    if (remoteTask) {
+      if (!cancelledByUser && result.success && receiptMatches) remoteTask.evidenceActionId=actionId;
+      if (cancelledByUser || !result.success || !receiptMatches) remoteTask.hadFailure=true;
+    }
     orchestration = recordToolOutcome(
       orchestration,
       proposal,
@@ -1054,6 +1112,7 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
     const receipt = await readActionAuditReceipt(actionId);
     const cancelledByUser = await actionCancellationConfirmed(actionId);
     const confirmedFailure = exactActionReceipt(receipt, actionId, proposal.tool, "failed", false);
+    if(remoteTask)remoteTask.hadFailure=true;
     orchestration = recordToolOutcome(
       orchestration,
       proposal,
@@ -1203,6 +1262,7 @@ async function runAgentStep(): Promise<void> {
       await recordOrchestrationAudit("task_graph_stopped", "User stopped the task; progress retained.");
       await saveActiveCheckpoint();
     } else await clearActiveCheckpoint();
+    if(remoteTask)await closeRemoteTask("stopped");
     setBusy(false);
     return;
   }
@@ -1219,6 +1279,15 @@ async function runAgentStep(): Promise<void> {
   }
 
   setBusy(true);
+
+  if(remoteTask && remoteTask.status === "admitted"){
+    try {await sendRemoteReceipt("running");}
+    catch {
+      await closeRemoteTask("outcome_unknown");
+      setBusy(false);
+      return;
+    }
+  }
 
   // A12: A potentially billed provider request is never dispatched when the
   // recovery checkpoint cannot first be written and verified by native code.
@@ -1284,6 +1353,11 @@ async function runAgentStep(): Promise<void> {
     } else {
       await clearActiveCheckpoint();
     }
+    if(remoteTask)await closeRemoteTask(
+      remoteTask.evidenceActionId && !remoteTask.hadFailure &&
+      (!progress.total || progress.completed===progress.total)
+        ? "succeeded" : "outcome_unknown"
+    );
     setBusy(false);
   } catch {
     // A12/A14: provider errors/timeouts may occur AFTER an upstream charge.
@@ -1295,6 +1369,7 @@ async function runAgentStep(): Promise<void> {
     messages.push({ role: "assistant", content: caution });
     renderMessages();
     await saveActiveCheckpoint();
+    if(remoteTask)await closeRemoteTask("outcome_unknown");
     setBusy(false);
   }
 }
@@ -1708,5 +1783,132 @@ document.querySelectorAll<HTMLButtonElement>(".nav").forEach((button) => {
     }
   });
 });
+
+
+function remoteStatusLabel(message:string){
+  el<HTMLElement>("#remoteAgentStatus").textContent=message;
+}
+async function refreshRemoteAgent():Promise<void>{
+  try {
+    const state=await invoke<{enabled:boolean}>("remote_agent_status");
+    remoteAgentEnabled=state.enabled;
+    remoteStatusLabel(state.enabled
+      ? "Windows native outbound agent enabled · waiting for authenticated mobile tasks"
+      : "Remote agent disabled · no polling");
+  }catch{remoteAgentEnabled=false;remoteStatusLabel("Remote agent unavailable in this Windows build");}
+}
+el<HTMLButtonElement>("#remoteAgentConnect").addEventListener("click",async()=>{
+  const field=el<HTMLInputElement>("#remoteAgentAccess");
+  const code=field.value.trim(); field.value="";
+  if(!/^[a-fA-F0-9]{64}$/.test(code)){
+    remoteStatusLabel("Agent code must be 64 hexadecimal characters.");return;
+  }
+  try {
+    await invoke("remote_agent_pair",{accessCode:code});
+    await refreshRemoteAgent();
+    void tickRemoteAgent();
+  }catch{remoteStatusLabel("Remote pairing failed. Check cloud configuration and dedicated agent code.");}
+});
+el<HTMLButtonElement>("#remoteAgentDisconnect").addEventListener("click",async()=>{
+  remoteAgentEnabled=false;
+  try{await invoke("remote_agent_disconnect");}
+  catch{remoteStatusLabel("Could not revoke OS credential. Verify in Windows credential manager.");return;}
+  if(remoteTask)await closeRemoteTask("outcome_unknown");
+  await refreshRemoteAgent();
+});
+function remoteReceipt(status:string,task:RemoteActiveTask,extras:Record<string,unknown>={}){
+  const m=task.message;
+  return {
+   protocol:"shuvi.remote.v1",type:"task_receipt",
+   ownerId:m.ownerId,deviceId:m.deviceId,threadId:m.threadId,
+   messageId:m.messageId,taskId:m.taskId,
+   revision:task.revision+1,occurredAt:Date.now(),status,...extras
+  };
+}
+async function sendRemoteReceipt(status:string,extras:Record<string,unknown>={}):Promise<void>{
+  if(!remoteTask)throw Error("No remote task");
+  const receipt=remoteReceipt(status,remoteTask,extras);
+  await invoke("remote_agent_receipt",{receipt});
+  remoteTask.revision=receipt.revision;
+  remoteTask.status=status;
+}
+async function closeRemoteTask(status:"succeeded"|"failed"|"stopped"|"outcome_unknown"):Promise<void>{
+  if(!remoteTask)return;
+  const extras= status==="succeeded" && remoteTask.evidenceActionId
+    ? {evidence:{kind:"native_audit",id:remoteTask.evidenceActionId}} : {};
+  try {await sendRemoteReceipt(status,extras);}
+  catch {remoteStatusLabel("Task outcome was not accepted by server; do not retry blindly.");}
+  remoteTask=null;
+  remoteApproval=null;
+}
+async function tickRemoteAgent():Promise<void>{
+  if(!remoteAgentEnabled||remotePolling)return;
+  remotePolling=true;
+  try {
+    const inbox=await invoke<RemoteInbox>("remote_agent_poll");
+    if(remoteTask) {
+      const t=remoteTask;
+      if(inbox.pending.some(p=>p.taskId===t.message.taskId&&p.request==="cancel")){
+        if(executingActionId){
+          // Stop is a request, not proof that the OS process has stopped.
+          el<HTMLButtonElement>("#stopButton").click();
+          remoteStatusLabel("Remote stop requested; native cancellation outcome pending");
+        }else{
+          if(pendingAction) {
+            try{await invoke("deny_action",{actionId:pendingAction.id});}catch{ /* fail closed */ }
+            clearChatPermission();
+          }
+          await closeRemoteTask("stopped");
+          await stopAgentForSafety("Remote owner cancelled this task before native execution.");
+        }
+        return;
+      }
+      const a=remoteApproval;
+      if(a) {
+        if(Date.now()>=a.expiresAt){
+          try{await invoke("deny_action",{actionId:a.actionId});}catch{ /* fail closed */ }
+          clearChatPermission();
+          await closeRemoteTask("stopped");
+          await stopAgentForSafety("Mobile approval expired; no action was run.");
+          return;
+        }
+        const d=inbox.decisions.find(x=>x.taskId===t.message.taskId&&x.approvalId===a.id);
+        if(d?.decision==="deny"){
+          try{await invoke("deny_action",{actionId:a.actionId});}catch{ /* fail closed */ }
+          clearChatPermission();
+          await closeRemoteTask("stopped");
+          await stopAgentForSafety("Mobile owner denied the proposed Windows action.");
+        }else if(d?.decision==="approve"){
+          // The cloud server checks task, approval ID, deadline and single use.
+          // Native Rust still checks its own prepared action UUID.
+          try{await sendRemoteReceipt("running");}
+          catch{await closeRemoteTask("outcome_unknown");return;}
+          remoteApproval=null;
+          await executePendingProposal(a.proposal);
+        }
+      }
+      return;
+    }
+    if(busy||manualActionRunning||pendingAction||!inbox.messages.length)return;
+    const m=inbox.messages[0];
+    // The durable journal must acknowledge admission before any provider
+    // or Windows action; unknown delivery outcomes fail closed.
+    remoteTask={message:m,revision:1,status:"received",evidenceActionId:null,hadFailure:false};
+    try{await sendRemoteReceipt("admitted");}
+    catch{
+      remoteTask=null;remoteStatusLabel("Remote admission unconfirmed; no command executed.");
+      return;
+    }
+    cancelRequested=false;
+    orchestration=createAgentOrchestrationState();
+    renderOrchestrationStatus();
+    messages.push({role:"user",content:m.text});
+    renderMessages();
+    remoteStatusLabel("Remote command admitted · native execution not yet proven");
+    await runAgentStep();
+  }catch{
+    remoteStatusLabel("Remote transport unavailable; no unverified command executed.");
+  }finally{remotePolling=false;}
+}
 
 void boot();
