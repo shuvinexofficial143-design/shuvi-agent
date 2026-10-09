@@ -229,6 +229,30 @@ mod tests {
         assert!(!same_secret("a123456", "a1234567"));
     }
     #[test]
+    fn partial_header_client_cannot_hold_bridge_indefinitely() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+        let address = listener.local_addr().expect("listener address");
+        let sender = std::thread::spawn(move || {
+            let mut client = TcpStream::connect(address).expect("connect loopback");
+            // Keep making tiny progress: the old per-read timeout never expired.
+            for _ in 0..9 {
+                if client.write_all(b"x").is_err() { break; }
+                std::thread::sleep(Duration::from_millis(450));
+            }
+        });
+        let (mut accepted, _) = listener.accept().expect("accept client");
+        let start = Instant::now();
+        assert!(read_headers(&mut accepted).is_err());
+        assert!(
+            start.elapsed() < Duration::from_secs(4),
+            "slow client must be evicted by the absolute deadline"
+        );
+        drop(accepted);
+        sender.join().expect("sender terminated");
+    }
+
+    #[test]
     fn bridge_is_explicitly_local_and_read_only() {
         assert_eq!(BIND, "127.0.0.1:47771");
         assert_eq!(ORIGIN, "http://127.0.0.1:1423");
