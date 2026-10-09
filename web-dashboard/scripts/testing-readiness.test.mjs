@@ -85,7 +85,7 @@ test("Conversational Master selects specialist by task with zero tool authority"
     assert.equal(route.roleId,role,task);
     assert.equal(route.actualRunningWorkers,0);
     assert.equal(route.canExecuteWindows,false);
-    assert.ok(route.instruction.includes("Do not")||route.instruction.includes("cannot"),task);
+    assert.match(route.instruction,/do not|cannot/i,task);
   }
 });
 
