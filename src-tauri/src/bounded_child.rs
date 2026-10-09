@@ -31,14 +31,21 @@ fn terminate_owned_child(child:&mut Child){
 /// An interrupted external mutation has UNKNOWN outcome, never auto-retry.
 /// The subprocess is stopped after an absolute deadline; a stop cannot prove
 /// that external host mutations were rolled back. Never retry blindly.
-pub(crate) fn collect_with_deadline(mut child:Child,deadline:Duration)->Result<Output,String>{
+pub(crate) fn collect_with_deadline(child:Child,deadline:Duration)->Result<Output,String>{
+    collect_with_deadline_capped(child,deadline,MAX_UI_HELPER_STREAM_BYTES)
+}
+
+// Production always uses the normal 8 MiB per-stream limit. The internal
+// capped collector lets the subprocess regression exercise overflow without
+// starting a costly 9 MB PowerShell producer under parallel Windows CI load.
+fn collect_with_deadline_capped(mut child:Child,deadline:Duration,max_stream_bytes:usize)->Result<Output,String>{
     let start=Instant::now();
     let stdout=child.stdout.take().ok_or("UI helper stdout must be piped.")?;
     let stderr=child.stderr.take().ok_or("UI helper stderr must be piped.")?;
     let (tx,rx)=mpsc::sync_channel(2);
     let tx_err=tx.clone();
-    thread::spawn(move||{let _=tx.send((0,drain_limited(stdout,MAX_UI_HELPER_STREAM_BYTES)));});
-    thread::spawn(move||{let _=tx_err.send((1,drain_limited(stderr,MAX_UI_HELPER_STREAM_BYTES)));});
+    thread::spawn(move||{let _=tx.send((0,drain_limited(stdout,max_stream_bytes)));});
+    thread::spawn(move||{let _=tx_err.send((1,drain_limited(stderr,max_stream_bytes)));});
     let mut status:Option<ExitStatus>=None;
     let mut out:Option<Vec<u8>>=None;
     let mut err:Option<Vec<u8>>=None;
@@ -118,14 +125,16 @@ mod tests{
     #[test]
     fn excessive_output_is_rejected_before_process_deadline(){
         #[cfg(windows)]
-        let child=std::process::Command::new("powershell.exe").args(["-NoProfile","-NonInteractive","-Command","[Console]::Out.Write('x' * 9000000)"])
+        let child=std::process::Command::new("cmd").args(["/C","for /L %i in (1,1,150) do @echo shuvi-excess-output"])
             .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
         #[cfg(not(windows))]
         let child=std::process::Command::new("sh").args(["-c","yes 012345678901234567890123456789"])
             .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
         let started=Instant::now();
-        let error=collect_with_deadline(child,Duration::from_secs(15)).unwrap_err();
-        assert!(error.contains("bounded stream size"));
+        // Use the same code path with an isolated 256-byte fixture cap.
+        // This avoids heavy PowerShell startup/output races in parallel CI.
+        let error=collect_with_deadline_capped(child,Duration::from_secs(15),256).unwrap_err();
+        assert!(error.contains("bounded stream size"),"unexpected bounded output error: {error}");
         assert!(started.elapsed()<Duration::from_secs(14));
     }
     #[test]

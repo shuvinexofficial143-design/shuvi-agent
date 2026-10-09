@@ -34,3 +34,11 @@ test("A09 tests real concurrent ownership rejection",()=>{
   assert.match(lease,/Barrier::new\(2\)/);
   assert.match(lease,/claim_single_execution\(&lock\)\.is_err\(\)/);
 });
+
+test("A08 the overflow integration fixture is small and shares the production stream-limited collector",()=>{
+ assert.match(bounded,/collect_with_deadline_capped\(child,deadline,MAX_UI_HELPER_STREAM_BYTES\)/);
+ assert.match(bounded,/drain_limited\(stdout,max_stream_bytes\)/);
+ assert.match(bounded,/drain_limited\(stderr,max_stream_bytes\)/);
+ assert.match(bounded,/collect_with_deadline_capped\(child,Duration::from_secs\(15\),256\)/);
+ assert.doesNotMatch(bounded,/Console\]::Out\.Write\('x' \* 9000000\)/);
+});
