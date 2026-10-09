@@ -1217,6 +1217,22 @@ async function runAgentStep(): Promise<void> {
 
   setBusy(true);
 
+  // A12: A potentially billed provider request is never dispatched when the
+  // recovery checkpoint cannot first be written and verified by native code.
+  // A failed preflight is not a provider failure, so no charge is implied.
+  try {
+    await invoke("save_session_checkpoint", { checkpoint: currentCheckpoint() });
+  } catch {
+    messages.push({ role: "assistant", content: "Shuvi could not safely save task progress. No AI provider request was sent. Check local storage before trying again." });
+    renderMessages();
+    setBusy(false);
+    return;
+  }
+  if (cancelRequested) {
+    setBusy(false);
+    return;
+  }
+
   try {
     const response = await invoke<ChatResponse>("chat", {
       input: {
