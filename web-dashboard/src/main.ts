@@ -24,6 +24,8 @@ import { initializeAppearance } from "./appearance";
 import { mountChatWorkspace, type ChatWorkspace } from "./chat-workspace";
 import { mountOnlineChat } from "./online-chat";
 import "./online-chat.css";
+import "./testing-readiness.css";
+import {mountReadinessPanel} from "./testing-readiness";
 import { loadChatLibrary } from "./chat-store";
 import { buildPlanningOverview } from "./planning-overview";
 import {
@@ -1166,6 +1168,7 @@ mountCreativeStudio({
   navigate: (name) => setView(name)
 });
 mountAITeamWebPlanner();
+mountReadinessPanel();
 masterAgentUI = mountMasterAgentUI({
   drafts: readDraftTasks,
   navigate: (name) => setView(name),

@@ -129,12 +129,15 @@ export function mountOnlineChat():void {
         signal:AbortSignal.timeout(28000)
       });
       const data:unknown=await response.json();
-      const result=data as {reply?:unknown;error?:unknown};
+      const result=data as {reply?:unknown;error?:unknown;role?:unknown;tier?:unknown};
       if(!response.ok || typeof result.reply!=="string")throw new Error(
         response.status===401?"Wrong access key. Check your Vercel secret.":"Online AI is not configured or temporarily unavailable.");
       messages=[...messages,{role:"assistant",content:result.reply.slice(0,9000)}].slice(-24);
       try{localStorage.setItem(CHAT_KEY,JSON.stringify(messages));}catch{}
-      draw();status.textContent="Online AI replied · Windows offline";
+      draw();
+      const role=typeof result.role==="string" && /^[a-z_]{1,24}$/.test(result.role)?result.role:"assistant";
+      const tier=typeof result.tier==="string" && /^(fast|balanced|heavy)$/.test(result.tier)?result.tier:"balanced";
+      status.textContent=`Shuvi ${role} · ${tier} response · Windows not connected`;
     }catch(err){
       error.textContent=err instanceof Error?err.message:"Shuvi Online could not reply.";
       status.textContent="Connection not confirmed";

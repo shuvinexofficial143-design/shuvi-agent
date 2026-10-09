@@ -62,10 +62,12 @@ export function onlineConfigured(env=process.env) {
  * Completion is strictly text-only: no tools are exposed to the cloud model.
  * The provider API key is injected via server-side Vercel env vars, never JS sent to the browser.
  */
-export async function generateOnlineReply({prompt,history=[],env=process.env,fetcher=fetch}) {
+export async function generateOnlineReply({prompt,history=[],roleInstruction="",env=process.env,fetcher=fetch}) {
   if (!onlineConfigured(env)) throw new Error("AI provider not configured");
   if (typeof prompt!=="string" || !prompt.trim() || prompt.length>4000) throw new Error("Invalid message");
-  const messages=[{role:"system",content:SYSTEM},...cleanHistory(history),{role:"user",content:prompt.trim()}];
+  const messages=[{role:"system",content:SYSTEM},
+    ...(typeof roleInstruction==="string" && roleInstruction.length<=600 && roleInstruction.startsWith("You ") ? [{role:"system",content:roleInstruction}] : []),
+    ...cleanHistory(history),{role:"user",content:prompt.trim()}];
   if (env.SHUVI_CHAT_PROVIDER === "xkiro") return callXkiroFree({env,messages,fetcher});
   const model=env.SHUVI_CHAT_MODEL.trim();
   if (!model || model.length>160 || /[\r\n]/.test(model)) throw new Error("Invalid model configuration");
