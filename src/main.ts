@@ -33,6 +33,7 @@ import { editingMasterContext, orchestrationWithMasterEditor } from "./master-ed
 import { workerQueueView } from "./master-worker-queue.mjs";
 import { MODEL_ROLES, loadModelRoutes, validateModelRoute, selectTaskRoute } from "./model-routing.mjs";
 import type { ModelRoute, TaskModelRoute } from "./model-routing.mjs";
+import { chooseNativeRoute } from "../web-dashboard/src/native-model-routing.mjs";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("Missing app root");
@@ -485,6 +486,24 @@ function restoreTaskRoute(): void {
   }
 }
 function beginTaskRoute(text: string): void {
+  // The installed Dashboard and the existing native background coordinator
+  // share one non-secret model-team config. Remote mobile tasks must respect
+  // the owner's exact choices, just like commands typed in the visible UI.
+  const savedTeam = readLocalPreference("shuvi.native.model.team.v1");
+  if (savedTeam) {
+    try {
+      const team = JSON.parse(savedTeam) as {provider:string;base_url:string;roles:Record<string,string>};
+      if (team && typeof team.provider === "string" &&
+          providers.some(provider => provider.id === team.provider)) {
+        const chosen = chooseNativeRoute(text,team);
+        taskModelRoute = chosen.ok
+          ? {provider:chosen.provider,model:chosen.model,base_url:chosen.base_url,role:chosen.role}
+          : {provider:team.provider,model:"",base_url:"",role:chosen.role};
+        restoreTaskRoute();
+        return;
+      }
+    } catch { /* Fail closed into existing explicit native route checks. */ }
+  }
   taskModelRoute = selectTaskRoute(text, modelRoutes, defaultModelRoute());
   restoreTaskRoute();
 }

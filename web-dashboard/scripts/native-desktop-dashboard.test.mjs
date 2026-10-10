@@ -68,3 +68,10 @@ test("Windows Settings saves chosen models and secrets only in native keyring",(
  assert.match(lib,/fn api_key_status\(/);
  assert.match(lib,/list_xkiro_models,\s*api_key_status,\s*save_api_key,/);
 });
+
+test("background mobile agent respects visible dashboard model assignments without fallback",()=>{
+ const native=root("src/main.ts");
+ assert.match(native,/readLocalPreference\("shuvi\.native\.model\.team\.v1"\)/);
+ assert.match(native,/chooseNativeRoute\(text,team\)/);
+ assert.match(native,/provider:team\.provider,model:"",base_url:"",role:chosen\.role/);
+});

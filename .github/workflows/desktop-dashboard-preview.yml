@@ -6,6 +6,15 @@ on:
       - phase1/safety-reconciliation-oct9
     paths:
       - .github/workflows/desktop-dashboard-preview.yml
+      - web-dashboard/src/**
+      - web-dashboard/scripts/**
+      - src-tauri/src/**
+      - src/**
+      - src-tauri/tauri.conf.json
+      - src-tauri/capabilities/**
+      - vite.config.ts
+      - package.json
+      - package-lock.json
   workflow_dispatch:
 
 permissions:
