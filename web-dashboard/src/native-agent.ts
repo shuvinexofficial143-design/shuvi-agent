@@ -266,11 +266,51 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     if(verified)await continueAfterVerifiedAction(current,result);
    }
   }catch(error){
-   updateReply(current.threadId,current.promptIndex,
-    (replies.get(current.threadId)?.[current.promptIndex]||"")+
-    "\n\nNative action outcome unknown: "+String(error)+". Do not retry blindly.");
-   showActionFeedback("Native action outcome unknown. Review Activity/Audit before retrying.");
-   refreshState("Native action outcome unknown. Check Activity/Audit.");
+   const message=String(error).slice(0,1200);
+   let recoveryPrepared=false;
+   // Failure recovery is possible ONLY for a read-only UI query when an exact
+   // native action audit receipt proves failure, not an unknown outcome.
+   // No paid model retries, no auto execution, no automatic change to other apps.
+   if(["ui_find","ui_discover"].includes(current.action.kind) &&
+      /UI lookup failed:|UI discovery failed:|Requested top-level window was not found|Requested window not uniquely found|Ambiguous window identity/i.test(message)){
+    try{
+     const receipt=await invoke<{action_id:string|null;event:string;tool:string;success:boolean}|null>(
+      "action_audit_receipt",{actionId:current.action.id});
+     const proposal={tool:"ui_windows",arguments:{}};
+     const fp=fingerprint(proposal);
+     if(receipt?.action_id===current.action.id &&
+        receipt.event==="failed" && receipt.success===false &&
+        receipt.tool===current.action.kind && !current.seen.has(fp)){
+      const next=await invoke<Pending>("prepare_tool",{
+       proposal,provider:current.route.provider,
+       model:current.route.model,baseUrl:current.route.base_url||null
+      });
+      if(!next||typeof next.id!=="string"||next.kind!=="ui_windows")
+       throw Error("Read-only recovery was not staged correctly.");
+      pending={...current,action:next,step:current.step+1,
+       seen:new Set([...current.seen,fp])};
+      pendingText.textContent="Read-only UI recovery · Allow once required: "+
+       next.summary+"\\nRisk: "+next.risk+"\\n"+next.detail;
+      approval.hidden=false;
+      approval.scrollIntoView?.({block:"nearest",behavior:"smooth"});
+      appendReply(current.threadId,current.promptIndex,
+       "UI lookup failed with a verified native failure receipt: "+message+
+       "\\nPrepared read-only window discovery for separate approval. No automatic paid AI retry.");
+      showActionFeedback("Confirmed UI lookup failure. Window discovery awaits a new Allow once; no action executed automatically.");
+      refreshState("UI recovery inspection awaiting your approval.");
+      recoveryPrepared=true;
+     }
+    }catch{
+     // Missing or mismatched audit / preparation outcome stays fail-closed.
+    }
+   }
+   if(!recoveryPrepared){
+    updateReply(current.threadId,current.promptIndex,
+     (replies.get(current.threadId)?.[current.promptIndex]||"")+
+     "\\n\\nNative action outcome unknown: "+message+". Do not retry blindly.");
+    showActionFeedback("Native action outcome unknown. Review Activity/Audit before retrying.");
+    refreshState("Native action outcome unknown. Check Activity/Audit.");
+   }
   }finally{
    sending=false;
    // Do not discard the NEXT approval that the Master staged after this

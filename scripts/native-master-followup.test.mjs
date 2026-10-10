@@ -38,7 +38,7 @@ const launch={
  provider:"xkiro",model:"model/master",
  tool_proposal:{tool:"premiere_launch",arguments:{}}
 };
-function setup({first=detection,second=launch,following=[],auditOk=true}={}){
+function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false}={}){
  const nodes=new Map(),created=[],calls=[],chatInputs=[],staged=[];
  const domParent=el(),composerParent=el(),form=el(),chat=el();
  form.parentElement=composerParent;chat.parentElement=domParent;
@@ -63,8 +63,12 @@ function setup({first=detection,second=launch,following=[],auditOk=true}={}){
   if(name==="execute_action"){
    const action=staged.find(s=>s.id===params.actionId);
    if(!action)throw Error("unexpected action ID");
+   if(failFind&&action.proposal.tool==="ui_find")
+    throw Error("UI lookup failed: Requested top-level window was not found.");
    return {success:true,tool:action.proposal.tool,stdout:action.proposal.tool==="premiere_detect"?detectedPath:"Launch requested",stderr:"",exit_code:0};
   }
+  if(name==="action_audit_receipt")
+   return failFind?{action_id:params.actionId,tool:"ui_find",event:"failed",success:false}:null;
   if(name==="audit_log")return auditOk?staged.map(s=>({event:"executed",action_id:s.id,tool:s.proposal.tool,success:true})):[];
   if(name==="deny_action")return;
   throw Error("unexpected native call: "+name);
@@ -220,4 +224,21 @@ test("Premiere opening has separate detect, launch and window-inspection approva
   "window inspection must NOT happen before a third approval");
  assert.equal(s.approval.hidden,false);
  assert.match(s.chatInputs[2].messages.at(-1).content,/Launching a process is not evidence/);
+});
+
+test("audited failed read-only UI lookup stages window recovery without paying AI again",async()=>{
+ const finding={content:JSON.stringify({tool:"ui_find",arguments:{name:"New Project",window:"Adobe Premiere Pro"}}),
+  provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_find",arguments:{name:"New Project",window:"Adobe Premiere Pro"}}};
+ const s=setup({first:finding,failFind:true});
+ await until(()=>s.transport.connected(),"native IPC");
+ await s.transport.send("Create Premiere project","repair-ui",0);
+ assert.equal(s.staged.length,1);
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"read-only recovery");
+ assert.equal(s.staged[1].proposal.tool,"ui_windows");
+ assert.equal(s.chatInputs.length,1,"no second paid model request before recovery approval");
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1,"no unapproved recovery execution");
+ assert.equal(s.approval.hidden,false);
+ assert.match(s.transport.getReplies("repair-ui")[0],/No automatic paid AI retry/);
 });
