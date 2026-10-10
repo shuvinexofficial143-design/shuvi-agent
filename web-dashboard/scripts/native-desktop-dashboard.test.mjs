@@ -66,7 +66,7 @@ test("Windows Settings saves chosen models and secrets only in native keyring",(
  assert.match(lib,/async fn list_xkiro_models\(\)/);
  assert.match(lib,/https:\/\/api\.xkiro\.com\/v1\/models/);
  assert.match(lib,/fn api_key_status\(/);
- assert.match(lib,/list_xkiro_models,\s*authorize_testing_ai_budget,\s*testing_ai_budget_status,\s*api_key_status,\s*save_api_key,/);
+ assert.match(lib,/list_xkiro_models,\s*api_key_status,\s*save_api_key,/);
 });
 
 test("background mobile agent respects visible dashboard model assignments without fallback",()=>{
@@ -85,5 +85,5 @@ test("source HTML makes premium Dashboard the installed default, with legacy ent
  assert.match(premium,/id="view-settings"/);
  assert.doesNotMatch(premium,/src="\/src\/entry\.ts"/);
  assert.match(native,/src="\/src\/entry\.ts"/);
- assert.equal(conf.version,"0.1.2");
+ assert.equal(conf.version,"0.1.3");
 });

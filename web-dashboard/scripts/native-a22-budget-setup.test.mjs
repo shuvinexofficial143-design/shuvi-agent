@@ -1,33 +1,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {readFileSync} from "node:fs";
+import {readFileSync,existsSync} from "node:fs";
 const root=p=>readFileSync(new URL("../../"+p,import.meta.url),"utf8");
 const web=p=>readFileSync(new URL("../"+p,import.meta.url),"utf8");
-test("Daily $5 model approval is explicit and uses the native A22 guard",()=>{
- const ui=web("src/native-budget-setup.ts");
+test("Windows Settings lets owner choose exact AI models without mandatory billing form",()=>{
  const setup=web("src/native-model-setup.ts");
- const rust=root("src-tauri/src/provider_request_guard/usd_budget.rs");
- const lib=root("src-tauri/src/lib.rs");
- assert.match(ui,/A22 · Daily AI testing allowance/);
- assert.match(ui,/check\.checked/);
- assert.match(ui,/state\.current\.roles\.chat/);
- assert.match(ui,/invoke\("authorize_testing_ai_budget"/);
- assert.match(ui,/reservationUsdMicros:micros/);
- assert.match(ui,/actual xKiro billing cap/);
- assert.match(setup,/mountNativeBudgetSetup\(invoke,card/);
- assert.match(rust,/TEST_DAILY_ALLOWANCE_USD_MICROS:u64=5_000_000/);
- assert.match(rust,/crate::atomic_file::create_new_verified/);
- assert.match(rust,/An A22 USD policy already exists/);
- assert.match(rust,/parse_policy\(&bytes\)\?/);
- assert.match(lib,/fn authorize_testing_ai_budget/);
- assert.match(lib,/fn testing_ai_budget_status/);
- assert.match(lib,/authorize_testing_ai_budget,\s*testing_ai_budget_status/);
+ const native=web("src/native-agent.ts");
+ assert.match(setup,/window\.localStorage\.setItem\(STORAGE,JSON\.stringify\(config\)\)/);
+ assert.match(setup,/save_api_key/);
+ assert.match(setup,/api_key_status/);
+ assert.match(native,/chooseNativeRoute\(text,team\?\.current\(\)\)/);
+ assert.equal(existsSync(new URL("../src/native-budget-setup.ts",import.meta.url)),false);
 });
-test("No budget bypass, credential leakage or automatic spending approval",()=>{
- const ui=web("src/native-budget-setup.ts");
- const rust=root("src-tauri/src/provider_request_guard/usd_budget.rs");
- assert.doesNotMatch(ui,/localStorage\.setItem|save_api_key/);
- assert.doesNotMatch(ui,/window\.fetch/);
- assert.doesNotMatch(rust,/remove_file\(&policy_path\)|set_var\("LOCALAPPDATA"/);
- assert.match(ui,/approve\.addEventListener\("click"/);
+test("Native provider credentials and tool approvals remain in Windows app",()=>{
+ const lib=root("src-tauri/src/lib.rs");
+ assert.match(lib,/fn api_key_status/);
+ assert.match(lib,/fn save_api_key/);
+ assert.match(lib,/fn prepare_tool/);
+ assert.match(lib,/fn deny_action/);
 });

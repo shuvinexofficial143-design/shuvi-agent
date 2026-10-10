@@ -2158,7 +2158,7 @@ async fn anthropic_chat(
 }
 
 async fn send_chat(input: ChatInput, api_key: Option<String>) -> Result<ChatResponse, String> {
-    provider_request_guard::claim_paid_attempt(&input.provider, &input.model, input.base_url.as_deref())?;
+
     // Keep the provider identity before handing the request to its adapter.
     // This receipt is provider-reported token usage, NOT verified provider billing.
     let provider=input.provider.clone();
@@ -2175,19 +2175,20 @@ async fn send_chat(input: ChatInput, api_key: Option<String>) -> Result<ChatResp
     if let Ok(ref response)=result {
         let reported=response.usage.as_ref()
             .map(|usage|(usage.input_tokens,usage.output_tokens,usage.total_tokens));
-        provider_request_guard::record_provider_reported_usage(
+        if provider_request_guard::record_provider_reported_usage(
             &provider,&model,base_url.as_deref(),reported
-        ).map_err(|error|format!(
-            "Provider response was received, but the paid AI usage receipt could not be persisted: {error}. The external request may already have been billed; DO NOT automatically retry."
-        ))?;
+        ).is_err(){
+            eprintln!("Shuvi: optional AI usage receipt could not be written; preserving actual provider response.");
+        }
     } else {
         // Do not persist raw adapter errors: they can contain private response
         // bodies or endpoint credentials. Failure is not proof of zero charge.
-        provider_request_guard::record_provider_unknown_outcome(
+        if provider_request_guard::record_provider_unknown_outcome(
             &provider,&model,base_url.as_deref()
-        ).map_err(|error|format!(
-            "Provider request failed or its outcome is unknown, and its accounting receipt could not be persisted: {error}. The USD reservation remains consumed; DO NOT automatically retry."
-        ))?;
+        ).is_err(){
+            eprintln!("Shuvi: optional unknown-outcome AI usage receipt could not be written; original provider error is preserved.");
+        }
+        // A failed provider request may have incurred a charge; never auto-retry.
     }
     result
 }
@@ -8339,7 +8340,7 @@ async fn analyze_png_bytes_with_provider(
     }
     let encoded = BASE64.encode(bytes);
     let key = load_api_key(&context.provider)?;
-    provider_request_guard::claim_paid_attempt(&context.provider, &context.model, context.base_url.as_deref())?;
+
 
     let result:Result<(String,Option<UsageStats>),String>=async move {
     match context.provider.as_str() {
@@ -8527,20 +8528,21 @@ async fn analyze_png_bytes_with_provider(
     // provider usage UNKNOWN, never zero dollars or an invoice.
     match result {
         Ok((text,reported_usage)) => {
-            provider_request_guard::record_provider_reported_usage(
+            if provider_request_guard::record_provider_reported_usage(
                 &context.provider,&context.model,context.base_url.as_deref(),
                 reported_usage.map(|usage|(usage.input_tokens,usage.output_tokens,usage.total_tokens))
-            ).map_err(|error|format!(
-                "single vision response received, but usage receipt could not be persisted: {error}. Paid request outcome may be billed; DO NOT automatically retry."
-            ))?;
+            ).is_err(){
+                eprintln!("Shuvi: optional single vision usage receipt failed; preserving provider response.");
+            }
             Ok(text)
         }
         Err(error) => {
-            provider_request_guard::record_provider_unknown_outcome(
+            if provider_request_guard::record_provider_unknown_outcome(
                 &context.provider,&context.model,context.base_url.as_deref()
-            ).map_err(|record_error|format!(
-                "single vision failed: {error}; usage receipt could not be persisted: {record_error}. Paid request outcome UNKNOWN; DO NOT automatically retry."
-            ))?;
+            ).is_err(){
+                eprintln!("Shuvi: optional single vision failure receipt failed; original provider error is preserved.");
+            }
+            // An unknown outcome may still be billed; do not retry automatically.
             Err(error)
         }
     }
@@ -8583,7 +8585,7 @@ async fn analyze_png_frames_with_provider(
         ));
     }
     let key=load_api_key(&context.provider)?;
-    provider_request_guard::claim_paid_attempt(&context.provider, &context.model, context.base_url.as_deref())?;
+
     let result:Result<(String,Option<UsageStats>),String>=async move {
     match context.provider.as_str(){
         "gemini"=>{
@@ -8701,20 +8703,21 @@ async fn analyze_png_frames_with_provider(
     // provider usage UNKNOWN, never zero dollars or an invoice.
     match result {
         Ok((text,reported_usage)) => {
-            provider_request_guard::record_provider_reported_usage(
+            if provider_request_guard::record_provider_reported_usage(
                 &context.provider,&context.model,context.base_url.as_deref(),
                 reported_usage.map(|usage|(usage.input_tokens,usage.output_tokens,usage.total_tokens))
-            ).map_err(|error|format!(
-                "multi vision response received, but usage receipt could not be persisted: {error}. Paid request outcome may be billed; DO NOT automatically retry."
-            ))?;
+            ).is_err(){
+                eprintln!("Shuvi: optional multi vision usage receipt failed; preserving provider response.");
+            }
             Ok(text)
         }
         Err(error) => {
-            provider_request_guard::record_provider_unknown_outcome(
+            if provider_request_guard::record_provider_unknown_outcome(
                 &context.provider,&context.model,context.base_url.as_deref()
-            ).map_err(|record_error|format!(
-                "multi vision failed: {error}; usage receipt could not be persisted: {record_error}. Paid request outcome UNKNOWN; DO NOT automatically retry."
-            ))?;
+            ).is_err(){
+                eprintln!("Shuvi: optional multi vision failure receipt failed; original provider error is preserved.");
+            }
+            // An unknown outcome may still be billed; do not retry automatically.
             Err(error)
         }
     }
@@ -18127,34 +18130,6 @@ async fn list_xkiro_models() -> Result<Vec<XkiroCatalogModel>, String> {
 }
 
 #[tauri::command]
-fn authorize_testing_ai_budget(models:Vec<String>,reservation_usd_micros:u64)
- -> Result<Value,String>{
- #[cfg(windows)]
- {
-  let record=provider_request_guard::authorize_testing_budget(models,reservation_usd_micros)?;
-  return serde_json::to_value(record).map_err(|_|"Could not encode A22 policy confirmation.".into());
- }
- #[cfg(not(windows))]
- {
-  let _=(models,reservation_usd_micros);
-  Err("A22 budget approval is available only in Windows Shuvi.".into())
- }
-}
-#[tauri::command]
-fn testing_ai_budget_status()->Result<Option<Value>,String>{
- #[cfg(windows)]
- {
-  return provider_request_guard::testing_budget_status()?
-   .map(|state|serde_json::to_value(state).map_err(|_|"Could not encode A22 policy status.".to_string()))
-   .transpose();
- }
- #[cfg(not(windows))]
- {
-  Err("A22 budget status is available only in Windows Shuvi.".into())
- }
-}
-
-#[tauri::command]
 fn api_key_status(provider: String) -> Result<bool, String> {
     if provider == "ollama" { return Ok(true); }
     Ok(load_api_key(&provider)?.is_some_and(|key| !key.trim().is_empty()))
@@ -18863,8 +18838,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_providers,
             list_xkiro_models,
-            authorize_testing_ai_budget,
-            testing_ai_budget_status,
             api_key_status,
             save_api_key,
             delete_api_key,

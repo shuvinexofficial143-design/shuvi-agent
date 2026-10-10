@@ -4,7 +4,6 @@
  * Public xKiro /v1/models is retrieved through the trusted native Rust layer.
  */
 import {NATIVE_MODEL_ROLES,validModelId,safeNativeEndpoint} from "./native-model-routing.mjs";
-import {mountNativeBudgetSetup} from "./native-budget-setup";
 export type NativeInvoke = <T>(command:string,args?:Record<string,unknown>)=>Promise<T>;
 export type ProviderInfo = {id:string;name:string;default_model:string;api_key_required:boolean;custom_base_url:boolean};
 export type ModelTeamConfig = {provider:string;base_url:string;roles:Record<string,string>};
@@ -186,6 +185,5 @@ export function mountNativeModelSetup(invoke:NativeInvoke,providers:ProviderInfo
  renderRoles();
  if(providerSelect.value==="xkiro")void loadModels();
  if(current)saveStatus.textContent="Saved settings loaded. You can go straight to Chat.";
- mountNativeBudgetSetup(invoke,card,()=>({provider:providerSelect.value,current,selected:Object.fromEntries(Array.from(selections,([role,field])=>[role,field.value.trim()]))}));
  return {current:()=>current};
 }
