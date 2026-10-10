@@ -5,9 +5,9 @@ const read=p=>readFileSync(new URL("../"+p,import.meta.url),"utf8");
 const ui=read("src/remote-command-client.ts"),chat=read("src/chat-workspace.ts"),main=read("src/main.ts");
 test("same Shuvi chat uses secure relay only after explicit authentication",()=>{
  assert.match(main,/mountRemoteCommandClient/);
- assert.match(main,/mountChatWorkspace\([\s\S]*remoteChat\)/);
+ assert.match(main,/mountChatWorkspace\([\s\S]*nativeChat \?\? remoteChat \?\? undefined\)/);
  assert.match(chat,/remote\?\.connected\(\)/);
- assert.match(chat,/await remote\.send\(text,t\.id\)/);
+ assert.match(chat,/await remote\.send\(text,t\.id,t\.messages\.length\)/);
  assert.match(chat,/Draft kept/);
  assert.match(chat,/Windows agent offline · Not delivered/);
 });
