@@ -36,6 +36,7 @@ function setup(remote){
   globalThis.document={
     getElementById(id){if(!nodes.has(id))nodes.set(id,element());return nodes.get(id);},
     createElement(){return element();},
+    createTextNode(text){return String(text);},
     querySelectorAll(){return [];}
   };
   const notice=[];
