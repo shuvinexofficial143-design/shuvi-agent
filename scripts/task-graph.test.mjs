@@ -614,3 +614,18 @@ test("persisted coding step receipts can only advance the resume floor", () => {
   assert.equal(state.next_step,8);
   assert.equal(state.coding.last_mutation_step,7);
 });
+
+test("visual pointer drag is gated by fresh screen inspection before and after",()=>{
+  let state=agent.createAgentOrchestrationState();
+  const drag={tool:"pointer_drag",arguments:{x1:50,y1:80,x2:200,y2:100,duration_ms:500}};
+  const unsafe=agent.evaluateProposal(state,drag);
+  assert.equal(unsafe.allowed,false);
+  assert.match(unsafe.reason,/inspect_screen/);
+  state={...state,last_tool:"inspect_screen",last_outcome:"success"};
+  assert.equal(agent.evaluateProposal(state,drag).allowed,true);
+  state={...state,last_tool:"pointer_drag",last_outcome:"success"};
+  const premature=agent.evaluateProposal(state,{tool:"read_file",arguments:{path:"/a"}});
+  assert.equal(premature.allowed,false);
+  assert.match(premature.reason,/Verify the pointer drag/);
+  assert.equal(agent.evaluateProposal(state,{tool:"inspect_screen",arguments:{prompt:"verify result"}}).allowed,true);
+});
