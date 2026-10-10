@@ -18127,6 +18127,34 @@ async fn list_xkiro_models() -> Result<Vec<XkiroCatalogModel>, String> {
 }
 
 #[tauri::command]
+fn authorize_testing_ai_budget(models:Vec<String>,reservation_usd_micros:u64)
+ -> Result<Value,String>{
+ #[cfg(windows)]
+ {
+  let record=provider_request_guard::authorize_testing_budget(models,reservation_usd_micros)?;
+  return serde_json::to_value(record).map_err(|_|"Could not encode A22 policy confirmation.".into());
+ }
+ #[cfg(not(windows))]
+ {
+  let _=(models,reservation_usd_micros);
+  Err("A22 budget approval is available only in Windows Shuvi.".into())
+ }
+}
+#[tauri::command]
+fn testing_ai_budget_status()->Result<Option<Value>,String>{
+ #[cfg(windows)]
+ {
+  return provider_request_guard::testing_budget_status()?
+   .map(|state|serde_json::to_value(state).map_err(|_|"Could not encode A22 policy status.".to_string()))
+   .transpose();
+ }
+ #[cfg(not(windows))]
+ {
+  Err("A22 budget status is available only in Windows Shuvi.".into())
+ }
+}
+
+#[tauri::command]
 fn api_key_status(provider: String) -> Result<bool, String> {
     if provider == "ollama" { return Ok(true); }
     Ok(load_api_key(&provider)?.is_some_and(|key| !key.trim().is_empty()))
@@ -18835,6 +18863,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_providers,
             list_xkiro_models,
+            authorize_testing_ai_budget,
+            testing_ai_budget_status,
             api_key_status,
             save_api_key,
             delete_api_key,

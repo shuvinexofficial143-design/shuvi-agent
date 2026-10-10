@@ -9,6 +9,19 @@ mod usd_budget;
 mod reported_usage;
 
 #[cfg(windows)]
+pub(crate) use usd_budget::TestingBudgetStatus;
+#[cfg(windows)]
+pub(crate) fn authorize_testing_budget(models:Vec<String>,reservation:u64)
+ ->Result<usd_budget::TestingBudgetStatus,String>{
+ usd_budget::authorize_testing_budget(models,reservation)
+}
+#[cfg(windows)]
+pub(crate) fn testing_budget_status()->Result<Option<usd_budget::TestingBudgetStatus>,String>{
+ usd_budget::testing_budget_status()
+}
+
+
+#[cfg(windows)]
 use std::{
     fs::{self,File,OpenOptions},
     io::{Read,Seek,SeekFrom,Write},

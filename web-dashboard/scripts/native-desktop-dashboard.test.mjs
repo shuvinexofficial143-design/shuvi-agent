@@ -85,5 +85,5 @@ test("source HTML makes premium Dashboard the installed default, with legacy ent
  assert.match(premium,/id="view-settings"/);
  assert.doesNotMatch(premium,/src="\/src\/entry\.ts"/);
  assert.match(native,/src="\/src\/entry\.ts"/);
- assert.equal(conf.version,"0.1.1");
+ assert.equal(conf.version,"0.1.2");
 });

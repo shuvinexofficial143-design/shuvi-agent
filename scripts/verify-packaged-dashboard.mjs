@@ -9,7 +9,7 @@ const background=conf.app.windows.find(w=>w.label==="agent-runtime");
 assert.equal(main?.url,"index.html","Visible Shuvi must open the Control Center as default page");
 assert.equal(background?.url,"agent-runtime/index.html","Background coordinator must stay separate");
 assert.equal(background.visible,false,"Legacy UI must remain invisible");
-assert.equal(conf.version,"0.1.1","Do not distribute an installer with indistinguishable old version");
+assert.equal(conf.version,"0.1.2","Do not distribute an installer with indistinguishable old version");
 const root=read("dist/index.html");
 const hidden=read("dist/agent-runtime/index.html");
 assert.match(root,/<title>Shuvi Control Center<\/title>/);

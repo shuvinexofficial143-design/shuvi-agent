@@ -157,9 +157,93 @@ pub(super) fn reserve_approved_allowance(provider:&str,model:&str,endpoint:Optio
     file.sync_all().map_err(|e|format!("A22 USD reservation sync failed, outcome uncertain: {e}"))?;
     Ok(())
 }
+// Only explicit owner approval creates a NEW A22 policy. Never replace an
+// existing budget policy, reuse an absent permission, or bypass paid guards.
+const TEST_DAILY_ALLOWANCE_USD_MICROS:u64=5_000_000;
+#[derive(serde::Serialize)]
+pub(crate) struct TestingBudgetStatus {
+ pub daily_allowance_usd_micros:u64,
+ pub approved_models:Vec<String>,
+ pub reservation_usd_micros:Option<u64>,
+}
+fn trial_policy_bytes(models:&[String],reservation:u64)->Result<Vec<u8>,String>{
+ if !(10_000..=1_000_000).contains(&reservation){
+  return Err("Choose a per-request reservation between $0.01 and $1.00.".into());
+ }
+ if models.is_empty()||models.len()>MAX_MODEL_ROWS{
+  return Err("Select 1-64 specific model IDs before authorizing paid requests.".into());
+ }
+ let mut seen=HashSet::new();
+ let mut entries=Vec::new();
+ for model in models {
+  if model.len()>128||model.is_empty()||
+     !model.bytes().all(|c|c.is_ascii_alphanumeric()||b"._:/+-".contains(&c))||
+     !seen.insert(model.as_str()){
+   return Err("The requested model IDs must be unique exact xKiro models.".into());
+  }
+  entries.push(serde_json::json!({
+   "provider":"xkiro","model":model,"reserve_usd_micros":reservation
+  }));
+ }
+ let bytes=serde_json::to_vec(&serde_json::json!({
+  "version":1,"daily_allowance_usd_micros":TEST_DAILY_ALLOWANCE_USD_MICROS,
+  "models":entries
+ })).map_err(|_|"Could not encode owner-approved budget.")?;
+ parse_policy(&bytes)?;
+ Ok(bytes)
+}
+pub(super) fn authorize_testing_budget(models:Vec<String>,reservation:u64)->Result<TestingBudgetStatus,String>{
+ let bytes=trial_policy_bytes(&models,reservation)?;
+ let (policy_path,_)=paths()?;
+ // Do not silently broaden or reset an existing spending authorization.
+ match fs::symlink_metadata(&policy_path){
+  Ok(_)=>return Err("An A22 USD policy already exists. No budget was overwritten; inspect your existing policy first.".into()),
+  Err(e) if e.kind()==std::io::ErrorKind::NotFound=>{},
+  Err(e)=>return Err(format!("Cannot inspect A22 policy before saving: {e}")),
+ }
+ crate::atomic_file::create_new_verified(&policy_path,&bytes,"approved A22 USD testing policy")?;
+ let approved=read_policy(&policy_path)?;
+ Ok(TestingBudgetStatus {
+  daily_allowance_usd_micros:approved.daily_allowance_usd_micros,
+  approved_models:approved.models.into_iter().map(|m|m.model).collect(),
+  reservation_usd_micros:Some(reservation),
+ })
+}
+pub(super) fn testing_budget_status()->Result<Option<TestingBudgetStatus>,String>{
+ let (policy_path,_)=paths()?;
+ match fs::symlink_metadata(&policy_path){
+  Err(e) if e.kind()==std::io::ErrorKind::NotFound=>return Ok(None),
+  Err(e)=>return Err(format!("Cannot inspect A22 budget policy: {e}")),
+  Ok(_)=>{},
+ }
+ let existing=read_policy(&policy_path)?;
+ let common=existing.models.first().map(|m|m.reserve_usd_micros)
+  .filter(|amount|existing.models.iter().all(|m|m.reserve_usd_micros==*amount));
+ Ok(Some(TestingBudgetStatus{
+  daily_allowance_usd_micros:existing.daily_allowance_usd_micros,
+  approved_models:existing.models.into_iter().map(|m|m.model).collect(),
+  reservation_usd_micros:common,
+ }))
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]fn trial_authorization_requires_explicit_valid_models_and_reservation(){
+        assert!(trial_policy_bytes(&[],250_000).is_err());
+        assert!(trial_policy_bytes(&["google/gemini-3.6-flash".into()],0).is_err());
+        assert!(trial_policy_bytes(&["google/gemini-3.6-flash".into()],5_000_000).is_err());
+        assert!(trial_policy_bytes(&["bad model".into()],250_000).is_err());
+        assert!(trial_policy_bytes(&["same".into(),"same".into()],250_000).is_err());
+        let bytes=trial_policy_bytes(&["google/gemini-3.6-flash".into(),"openai/gpt-6.1-sol".into()],250_000).unwrap();
+        let p=parse_policy(&bytes).unwrap();
+        assert_eq!(p.daily_allowance_usd_micros,5_000_000);
+        assert_eq!(p.models.len(),2);
+        assert_eq!(p.models[0].reserve_usd_micros,250_000);
+        assert_eq!(reserve_for_model(&p,"xkiro","openai/gpt-6.1-sol",None).unwrap(),250_000);
+        assert!(reserve_for_model(&p,"xkiro","unapproved",None).is_err());
+    }
+
     fn sample()->Policy {
         parse_policy(br#"{"version":1,"daily_allowance_usd_micros":5000000,"models":[{"provider":"openrouter","model":"test","reserve_usd_micros":1000000},{"provider":"custom","model":"xkiro-test","endpoint":"https://example.test/v1","reserve_usd_micros":2000000}]}"#).unwrap()
     }
