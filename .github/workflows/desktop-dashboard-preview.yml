@@ -34,7 +34,17 @@ jobs:
         run: npm ci
 
       - name: Verify frontend source, UI contracts and safety tests
-        run: npm run verify:frontend
+        # The existing attestation wrapper uses spawnSync('npm.cmd') which is
+        # incompatible with Node 22+ on current Windows runners (EINVAL).
+        # Run the same checks directly; Linux CI still produces attestation.
+        shell: pwsh
+        run: |
+          npm run validate
+          if ($LASTEXITCODE -ne 0) { throw 'Validation failed' }
+          npm test
+          if ($LASTEXITCODE -ne 0) { throw 'Node safety tests failed' }
+          npm run build
+          if ($LASTEXITCODE -ne 0) { throw 'Frontend build failed' }
 
       - name: Compile unsigned Windows Tauri NSIS preview
         # Existing repository has Tauri Rust 2.12 vs JS API 2.11.
