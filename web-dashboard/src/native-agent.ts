@@ -278,7 +278,9 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    refreshState("Native action outcome unknown. Check Activity/Audit.");
   }finally{
    sending=false;
-   clearPending();
+   // Do not discard the NEXT approval that the Master staged after this
+   // verified action. Clear only the approval that was just decided.
+   if(pending===current)clearPending();
    refreshState();
   }
  }
