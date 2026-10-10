@@ -147,3 +147,24 @@
 .chat-delivery-failed{padding:11px 13px;border:1px solid #9d5562;border-radius:10px;color:#ffc7ce;background:#38232e;font-size:12px}
 @keyframes shuvi-wait-pulse{50%{opacity:.68}}
 @media(prefers-reduced-motion:reduce){.chat-awaiting-reply{animation:none}}
+
+/* Conversation-first Chat: optional diagnostic context stays hidden by default. */
+#view-chat .multi-chat-heading{margin:0 0 10px;gap:10px}
+#view-chat .multi-chat-heading h2{font-size:20px;margin:2px 0}
+#view-chat .multi-chat-heading .section-kicker,#view-chat #chatRuntimeIntroduction,#view-chat #chatDeliveryNotice{display:none}
+#view-chat .chat-workspace-layout{grid-template-columns:240px minmax(0,1fr);min-height:680px}
+#view-chat .chat-workspace-layout>.chat-context-panel{display:none}
+#view-chat .chat-workspace-layout.show-context{grid-template-columns:220px minmax(0,1fr) 230px}
+#view-chat .chat-workspace-layout.show-context>.chat-context-panel{display:block}
+#view-chat .chat-workspace-layout.split-mode{grid-template-columns:220px minmax(0,1fr)}
+#view-chat .chat-workspace-layout.split-mode>.chat-context-panel{display:none}
+#view-chat .chat-workspace-layout .chat-panel{min-height:680px}
+#view-chat .chat-workspace-layout .chat-messages{max-height:720px}
+#view-chat .chat-delete-all-button{border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:transparent;color:var(--muted);font-size:11px;width:100%;cursor:pointer}
+#view-chat .chat-delete-all-button:hover{border-color:#b66f7d;color:#ffc2cc}
+#view-chat .chat-delete-warning{font-size:13px;color:var(--muted);line-height:1.6}
+#view-chat #chatWhatsAppOpen[hidden]{display:none}
+#view-chat #chatWhatsAppOpen{border-color:#25754f;color:#83dab0;background:rgba(35,116,74,.14)}
+@media(max-width:1350px){#view-chat .chat-workspace-layout.show-context{grid-template-columns:215px minmax(0,1fr)}#view-chat .chat-workspace-layout.show-context>.chat-context-panel{display:none}}
+@media(max-width:860px){#view-chat .chat-workspace-layout,#view-chat .chat-workspace-layout.show-context{grid-template-columns:190px minmax(0,1fr)}}
+@media(max-width:620px){#view-chat .chat-workspace-layout,#view-chat .chat-workspace-layout.show-context{grid-template-columns:minmax(0,1fr)}#view-chat .chat-workspace-layout .conversation-rail{min-height:220px;max-height:300px}}

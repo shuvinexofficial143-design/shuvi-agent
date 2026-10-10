@@ -13,6 +13,9 @@ export type RemoteChatTransport = {
  connected():boolean;
  send(text:string,threadId:string,promptIndex?:number):Promise<{ok:boolean;error?:string;reply?:string}>;
  getReplies?(threadId:string):string[];
+ clearChat?(threadId:string):void;
+ clearAllChats?():void;
+ canClearChats?():boolean;
 };
 
 function $<T extends HTMLElement>(id: string): T {
@@ -52,6 +55,7 @@ export function mountChatWorkspace(notify: (message: string) => void, remote?: R
   let pendingDelivery: PendingDelivery | null = null;
   let failedDelivery: FailedDelivery | null = null;
   let providerRuntimeStatus = "Not yet verified";
+  let contextVisible = false;
 
   const layout = $<HTMLElement>("chatWorkspaceLayout");
   const threadList = $<HTMLElement>("chatThreads");
@@ -69,6 +73,11 @@ export function mountChatWorkspace(notify: (message: string) => void, remote?: R
   const splitSelect = $<HTMLSelectElement>("chatSplitSelect");
   const archivedNotice = $<HTMLElement>("chatArchivedNotice");
   const submit = $<HTMLButtonElement>("chatSendDraft");
+  const contextToggle = $<HTMLButtonElement>("chatContextToggle");
+  const deleteAll = $<HTMLButtonElement>("chatDeleteAll");
+  const deleteAllDialog = $<HTMLDialogElement>("chatDeleteAllDialog");
+  const deleteAllConfirm = $<HTMLInputElement>("chatDeleteAllConfirm");
+  const deleteAllExecute = $<HTMLButtonElement>("chatDeleteAllExecute");
   const error = $<HTMLElement>("chatStorageNotice");
   const dialog = $<HTMLDialogElement>("chatManageDialog");
   const rename = $<HTMLInputElement>("chatRename");
@@ -130,6 +139,8 @@ export function mountChatWorkspace(notify: (message: string) => void, remote?: R
   function renderMessages(): void {
     const t = active();
     const nativeConnected = remote?.kind === "native" && remote.connected();
+    const whatsApp = document.getElementById("chatWhatsAppOpen") as HTMLButtonElement | null;
+    if(whatsApp)whatsApp.hidden = !nativeConnected;
     const commandConnected = remote?.connected() === true;
     const awaitingThisThread = pendingDelivery?.threadId === t.id;
     // Source of truth: native IPC proves Shuvi.exe is reachable, NOT that the
@@ -311,6 +322,9 @@ export function mountChatWorkspace(notify: (message: string) => void, remote?: R
     renderThreads();
     renderMessages();
     renderSplit();
+    layout.classList.toggle("show-context", contextVisible && !split);
+    contextToggle.setAttribute("aria-pressed",String(contextVisible));
+    contextToggle.textContent=contextVisible?"ⓘ Hide details":"ⓘ Details";
   }
 
   function selectChat(id: string): void {
@@ -430,8 +444,9 @@ export function mountChatWorkspace(notify: (message: string) => void, remote?: R
     render();
   });
 
-  splitButton.addEventListener("click", () => { split = !split; renderSplit(); });
-  $<HTMLButtonElement>("chatSplitClose").addEventListener("click", () => { split = false; renderSplit(); });
+  splitButton.addEventListener("click",()=>{split=!split;render();});
+  contextToggle.addEventListener("click",()=>{contextVisible=!contextVisible;render();});
+  $<HTMLButtonElement>("chatSplitClose").addEventListener("click", () => { split = false; render(); });
   splitSelect.addEventListener("change", () => { splitId = splitSelect.value; renderSplit(); });
 
   $<HTMLButtonElement>("chatManage").addEventListener("click", () => {
@@ -481,6 +496,7 @@ export function mountChatWorkspace(notify: (message: string) => void, remote?: R
     }
     const id = active().id;
     library.threads = library.threads.filter(t => t.id !== id);
+    remote?.clearChat?.(id);
     if (!library.threads.length) library.threads.push(createChatThread());
     library.activeId = library.threads[0].id;
     filter = library.threads[0].archived ? "archived" : "active";
@@ -490,6 +506,32 @@ export function mountChatWorkspace(notify: (message: string) => void, remote?: R
     notify("Local conversation deleted.");
   });
 
+  deleteAll.addEventListener("click",()=>{
+    if(remoteSending||pendingDelivery||remote?.canClearChats?.()===false){
+      notify("Finish any active request or pending Windows approval before deleting chats.");return;
+    }
+    deleteAllConfirm.value="";
+    deleteAllExecute.disabled=true;
+    deleteAllDialog.showModal();
+  });
+  deleteAllConfirm.addEventListener("input",()=>{
+    deleteAllExecute.disabled=deleteAllConfirm.value!=="DELETE";
+  });
+  $<HTMLButtonElement>("chatDeleteAllCancel").addEventListener("click",()=>deleteAllDialog.close());
+  deleteAllExecute.addEventListener("click",()=>{
+    if(deleteAllConfirm.value!=="DELETE"||remoteSending||pendingDelivery||remote?.canClearChats?.()===false)return;
+    const thread=createChatThread();
+    const next={activeId:thread.id,threads:[thread]};
+    if(!saveChatLibrary(next)){
+      error.hidden=false;
+      notify("Could not clear browser storage. No deletion confirmed.");return;
+    }
+    remote?.clearAllChats?.();
+    library=next;pendingDelivery=null;failedDelivery=null;
+    filter="active";search="";searchInput.value="";
+    deleteAllDialog.close();render();input.focus();
+    notify("All local chats and native session replies cleared. WhatsApp and audit data untouched.");
+  });
   render();
   save();
   return {createChat, focusChat: () => input.focus(), refreshChat: renderMessages};

@@ -249,6 +249,7 @@
                 <p id="chatRuntimeIntroduction">Talk normally or write a Windows command in the same conversation. Until the native agent is connected, messages remain on this browser.</p>
               </div>
               <div class="multi-chat-actions">
+                <button id="chatWhatsAppOpen" type="button" class="chat-header-button" title="Open WhatsApp Web via Windows approval" hidden>WhatsApp</button>
                 <span id="chatRuntimePill" class="chat-offline-pill"><span class="status-dot offline"></span> Agent offline · Not delivered</span>
                 <button type="button" class="primary-button" id="chatNewTop">＋ New chat</button>
               </div>
@@ -272,7 +273,7 @@
                 <div id="chatThreads" class="conversation-list" aria-label="Conversation list"></div>
                 <div class="conversation-rail-footer">
                   <span class="status-dot offline"></span>
-                  <span>Stored on this browser only</span>
+                  <button type="button" id="chatDeleteAll" class="chat-delete-all-button">Delete all chats</button>
                 </div>
               </aside>
               <div class="chat-work-area">
@@ -288,6 +289,7 @@
                       <button type="button" class="chat-header-button" id="chatExport" title="Export this conversation as JSON">↓ Export</button>
                       <button type="button" class="chat-header-button" id="chatPin" title="Pin or unpin this chat">☆ Pin</button>
                       <button type="button" class="chat-header-button" id="chatSplit" aria-pressed="false" title="Compare two chats side by side">◫ Split</button>
+                      <button id="chatContextToggle" type="button" class="chat-header-button" aria-pressed="false">ⓘ Details</button>
                       <button type="button" class="chat-header-button" id="chatManage" title="Rename, archive or delete this conversation">···</button>
                     </div>
                   </div>
@@ -341,6 +343,19 @@
                   <button class="secondary-button" type="button" id="chatArchive">Archive</button>
                   <button class="secondary-button chat-danger" type="button" id="chatDelete">Delete</button>
                   <button class="primary-button" type="submit">Save name</button>
+                </div>
+              </form>
+            </dialog>
+            <dialog id="chatDeleteAllDialog" class="chat-manage-dialog" aria-labelledby="chatDeleteAllTitle">
+              <form id="chatDeleteAllForm" method="dialog">
+                <span class="section-kicker">LOCAL CHAT HISTORY</span>
+                <h2 id="chatDeleteAllTitle">Delete all chats?</h2>
+                <p class="chat-delete-warning">This clears all local chats, including archived conversations and in-memory AI replies. It does not delete WhatsApp messages or Windows audit records.</p>
+                <label for="chatDeleteAllConfirm">Type DELETE to confirm</label>
+                <input id="chatDeleteAllConfirm" type="text" placeholder="DELETE" maxlength="6" autocomplete="off"/>
+                <div class="chat-dialog-actions">
+                  <button id="chatDeleteAllCancel" type="button" class="secondary-button">Cancel</button>
+                  <button id="chatDeleteAllExecute" type="button" class="secondary-button chat-danger" disabled>Delete all chats</button>
                 </div>
               </form>
             </dialog>
