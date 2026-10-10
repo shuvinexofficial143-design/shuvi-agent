@@ -7,14 +7,14 @@ test("visible installed app uses the SAME web dashboard and preserves existing a
  const cfg=JSON.parse(root("src-tauri/tauri.conf.json"));
  const visible=cfg.app.windows.find(w=>w.label==="main");
  const hidden=cfg.app.windows.find(w=>w.label==="agent-runtime");
- assert.equal(visible.url,"web-dashboard/index.html");
- assert.equal(hidden.url,"index.html");
+ assert.equal(visible.url,"index.html");
+ assert.equal(hidden.url,"agent-runtime/index.html");
  assert.equal(hidden.visible,false);
  assert.equal(cfg.build.frontendDist,"../dist");
  assert.deepEqual(JSON.parse(root("src-tauri/capabilities/default.json")).windows,["main","agent-runtime"]);
  const vite=root("vite.config.ts");
- assert.match(vite,/web-dashboard\/index\.html/);
- assert.match(vite,/web-dashboard\/src\/main\.ts/);
+ assert.match(vite,/agent-runtime\/index\.html/);
+ assert.match(root("index.html"),/src="\/web-dashboard\/src\/main\.ts"/);
 });
 test("native IPC only runs in the installed Tauri process; browser never receives execution endpoints",()=>{
  const adapter=web("src/native-agent.ts");
@@ -74,4 +74,16 @@ test("background mobile agent respects visible dashboard model assignments witho
  assert.match(native,/readLocalPreference\("shuvi\.native\.model\.team\.v1"\)/);
  assert.match(native,/chooseNativeRoute\(text,team\)/);
  assert.match(native,/provider:team\.provider,model:"",base_url:"",role:chosen\.role/);
+});
+
+test("source HTML makes premium Dashboard the installed default, with legacy entry hidden",()=>{
+ const premium=root("index.html");
+ const native=root("agent-runtime/index.html");
+ const conf=JSON.parse(root("src-tauri/tauri.conf.json"));
+ assert.match(premium,/<title>Shuvi Control Center<\/title>/);
+ assert.match(premium,/id="navItems"/);
+ assert.match(premium,/id="view-settings"/);
+ assert.doesNotMatch(premium,/src="\/src\/entry\.ts"/);
+ assert.match(native,/src="\/src\/entry\.ts"/);
+ assert.equal(conf.version,"0.1.1");
 });

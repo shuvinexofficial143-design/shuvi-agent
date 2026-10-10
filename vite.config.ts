@@ -1,24 +1,24 @@
 import { defineConfig } from "vite";
 
-// Both existing frontends ship in ONE Windows installer. The hidden legacy
-// agent window keeps the original permission/remote coordinator alive while
-// the visible Shuvi window displays the approved web dashboard design.
+// The installed Shuvi window is the SAME premium Control Center at dist/index.html.
+// The legacy coordinator (approvals, remote polling and orchestration) keeps its
+// own hidden runtime webview at dist/agent-runtime/index.html.
+// Both HTML entrypoints must be bundled; never infer a pass from source config.
 export default defineConfig({
-  clearScreen: false,
+  build: {
+    rollupOptions: {
+      input: ["index.html", "agent-runtime/index.html", "web-dashboard/index.html"]
+    }
+  },
   plugins: [{
-    name: "shuvi-local-dashboard-entry",
+    name: "shuvi-web-preview-dashboard",
     enforce: "pre",
     transformIndexHtml(html, context) {
-      const filename = context.filename.replaceAll("\\", "/");
-      if (!filename.endsWith("/web-dashboard/index.html")) return html;
+      const file=context.filename.replaceAll("\\","/");
+      if (!file.endsWith("/web-dashboard/index.html")) return html;
       return html.replace('src="/src/main.ts"', 'src="/web-dashboard/src/main.ts"');
     }
   }],
-  build: {
-    rollupOptions: {
-      input: ["index.html", "web-dashboard/index.html"]
-    }
-  },
   server: {
     port: 1420,
     strictPort: true,

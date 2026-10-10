@@ -15,6 +15,9 @@ on:
       - vite.config.ts
       - package.json
       - package-lock.json
+      - index.html
+      - agent-runtime/**
+      - scripts/verify-packaged-dashboard.mjs
   workflow_dispatch:
 
 permissions:
@@ -54,6 +57,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Node safety tests failed' }
           npm run build
           if ($LASTEXITCODE -ne 0) { throw 'Frontend build failed' }
+          node scripts/verify-packaged-dashboard.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Premium Dashboard is not the packaged Windows entrypoint' }
 
       - name: Compile unsigned Windows Tauri NSIS preview
         # Existing repository has Tauri Rust 2.12 vs JS API 2.11.

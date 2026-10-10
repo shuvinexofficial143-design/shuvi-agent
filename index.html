@@ -1,13 +1,975 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#090b10" />
-  <title>Shuvi</title>
-</head>
-<body>
-  <div id="app"></div>
-  <script type="module" src="/src/entry.ts"></script>
-</body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0B1220" />
+    <meta name="description" content="Shuvi Control Center — web dashboard for the Shuvi Windows AI agent." />
+    <title>Shuvi Control Center</title>
+  </head>
+  <body>
+    <div id="app" class="app-shell">
+      <aside id="sidebar" class="sidebar">
+        <div class="brand-row">
+          <div class="brand-mark">S</div>
+          <div class="brand-copy">
+            <strong>Shuvi</strong>
+            <span>AI Control Center</span>
+          </div>
+          <button id="closeSidebar" class="icon-button mobile-only" type="button" aria-label="Close navigation">×</button>
+        </div>
+
+        <div class="workspace-pill">
+          <span class="workspace-dot"></span>
+          <div>
+            <strong>Personal workspace</strong>
+            <span>ui-dashboard</span>
+          </div>
+        </div>
+
+        <nav id="navItems" class="nav-list" aria-label="Primary navigation"></nav>
+
+        <div class="sidebar-bottom">
+          <div class="runtime-mini-card">
+            <div class="runtime-mini-head">
+              <span class="status-dot offline"></span>
+              <div>
+                <strong>Local Shuvi</strong>
+                <span id="sidebarRuntimeState">Not connected</span>
+              </div>
+            </div>
+            <p>Connect the Windows app before running local tools.</p>
+            <button class="ghost-button full" type="button" data-action="connect-local">Connect runtime</button>
+          </div>
+          <div class="profile-row">
+            <div class="avatar">VP</div>
+            <div class="profile-copy">
+              <strong>Shuvi Workspace</strong>
+              <span>Local-first agent</span>
+            </div>
+            <button class="icon-button" type="button" data-view-jump="settings" aria-label="Open settings">•••</button>
+          </div>
+        </div>
+      </aside>
+
+      <div id="sidebarBackdrop" class="sidebar-backdrop"></div>
+
+      <main class="main-area">
+        <header class="topbar">
+          <div class="topbar-left">
+            <button id="openSidebar" class="icon-button mobile-only" type="button" aria-label="Open navigation">☰</button>
+            <div>
+              <p id="pageEyebrow" class="page-eyebrow">SHUVI / CONTROL CENTER</p>
+              <h1 id="pageTitle">Dashboard</h1>
+            </div>
+          </div>
+
+          <div class="topbar-actions">
+            <span class="topbar-runtime" id="webRuntimeTopbar"><span class="status-dot offline"></span> Runtime offline</span>
+            <label class="global-search">
+              <span>⌕</span>
+              <input id="globalSearch" type="search" placeholder="Search tools and modules" autocomplete="off" />
+              <kbd>Ctrl K</kbd>
+            </label>
+            <button class="icon-button" type="button" data-action="notifications" aria-label="Notifications">◌</button>
+            <button class="primary-button compact" type="button" data-action="new-chat">＋ New chat</button>
+          </div>
+        </header>
+
+        <div class="content-wrap">
+          <section id="view-dashboard" class="view active" data-view="dashboard">
+            <div class="dashboard-heading"><div><span class="section-kicker">OVERVIEW / YOUR WORKSPACE</span><h2>Good to see you back <span aria-hidden="true">✦</span></h2><p>Creative tools, AI models and task planning—organized in one place.</p></div><span class="dashboard-phase">UI development · Level 12 / 15</span></div>
+            <div class="hero-grid">
+              <article class="hero-card">
+                <div class="hero-copy">
+                  <div class="hero-kicker">
+                    <span class="status-dot offline"></span>
+                    Interface ready · Local agent offline
+                  </div>
+                  <h2>Create with Shuvi.<br /><em>Control every workflow.</em></h2>
+                  <p>Explore your creative apps, plan work and organize agents. Real Windows, Adobe and Blender actions stay inside the permission-first local Shuvi runtime.</p>
+                  <div class="hero-actions">
+                    <button class="primary-button" type="button" data-view-jump="chat">Start a task</button>
+                    <button class="secondary-button" type="button" data-view-jump="studio">Open Creative Studio</button>
+                  </div>
+                </div>
+                <div class="hero-orbit" aria-hidden="true">
+                  <div class="orbit-ring ring-one"></div>
+                  <div class="orbit-ring ring-two"></div>
+                  <div class="orbit-core">S</div>
+                  <div class="orbit-node node-one">AI</div>
+                  <div class="orbit-node node-two">VFX</div>
+                  <div class="orbit-node node-three">PC</div>
+                </div>
+              </article>
+
+              <article class="connection-card">
+                <div class="card-heading">
+                  <div>
+                    <span class="section-kicker">RUNTIME</span>
+                    <h3>Local connection</h3>
+                  </div>
+                  <span class="badge badge-offline" id="dashboardRuntimeBadge">Offline</span>
+                </div>
+                <div class="connection-visual">
+                  <div class="connection-device">
+                    <span class="device-light"></span>
+                    <strong>Shuvi.exe</strong>
+                    <small>Windows runtime</small>
+                  </div>
+                  <div class="connection-line"><span></span></div>
+                  <div class="connection-cloud">
+                    <span>WEB</span>
+                    <strong>Dashboard</strong>
+                    <small>Vercel surface</small>
+                  </div>
+                </div>
+                <div class="connection-meta">
+                  <div><span>Agent state</span><strong id="dashboardRuntimeState">Awaiting local bridge</strong></div>
+                  <div><span>Active model</span><strong>Not synced</strong></div>
+                  <div><span>Permission mode</span><strong id="dashboardRuntimePermission">Local only</strong></div>
+                </div>
+                <button class="secondary-button full" type="button" data-action="connect-local">Configure connection</button>
+              </article>
+            </div>
+
+            <div class="metric-grid">
+              <article class="metric-card">
+                <div class="metric-icon violet">✦</div>
+                <div><span>Creative modules</span><strong id="creativeMetric">6</strong><small>tracked in dashboard</small></div>
+              </article>
+              <article class="metric-card">
+                <div class="metric-icon cyan">⌘</div>
+                <div><span>Computer tools</span><strong id="toolMetric">6</strong><small>local permission layer</small></div>
+              </article>
+              <article class="metric-card">
+                <div class="metric-icon green">AI</div>
+                <div><span>AI providers</span><strong id="providerMetric">7</strong><small>configurable in Shuvi</small></div>
+              </article>
+              <article class="metric-card">
+                <div class="metric-icon amber">●</div>
+                <div><span>Task drafts</span><strong id="draftMetric">0</strong><small>saved in this browser</small></div>
+              </article>
+            </div>
+
+            <section class="dashboard-run-summary" aria-label="Native task status">
+              <div class="dashboard-run-heading"><span class="section-kicker">DESKTOP EXECUTION</span><strong>Runtime not paired</strong><span class="dashboard-unsynced-mark">Not synced</span></div>
+              <div class="dashboard-run-grid">
+                <div><span>Running</span><strong aria-label="Not available">—</strong></div>
+                <div><span>Approvals</span><strong aria-label="Not available">—</strong></div>
+                <div><span>Completed</span><strong aria-label="Not available">—</strong></div>
+                <div><span>Failed</span><strong aria-label="Not available">—</strong></div>
+                <button type="button" class="dashboard-draft-button" data-view-jump="tasks"><span>Browser drafts</span><strong id="planDraftStatus">0</strong></button>
+              </div>
+              <p>Dash (—) means unavailable, not zero. The browser cannot inspect or execute Windows tasks until a secure runtime is connected.</p>
+            </section>
+
+            <section class="dashboard-local-overview" aria-label="Browser planning overview">
+              <div class="dashboard-local-heading">
+                <div><span class="section-kicker">YOUR SAVED WORK / THIS BROWSER</span><h2>Planning overview</h2><p>Real counts from local drafts and chats, never simulated agent runs.</p></div>
+                <span class="dashboard-local-sync" id="localPlanningUpdated">No saved activity yet</span>
+              </div>
+              <div class="dashboard-local-metrics">
+                <button type="button" data-view-jump="chat"><span>Conversations</span><strong id="planConversationCount">0</strong><small>Saved in this browser</small></button>
+                <button type="button" data-view-jump="tasks"><span>Task drafts</span><strong id="planDraftCount">0</strong><small>Not running yet</small></button>
+                <button type="button" data-view-jump="tasks"><span>High priority drafts</span><strong id="planHighPriorityCount">0</strong><small>Local planning only</small></button>
+                <button type="button" data-view-jump="activity"><span>Planning events</span><strong id="planActivityCount">0</strong><small>Browser activity log</small></button>
+              </div>
+              <div class="dashboard-local-lists">
+                <article class="panel">
+                  <div class="card-heading"><h3>Recent task drafts</h3><button class="text-button" type="button" data-view-jump="tasks">View tasks →</button></div>
+                  <div id="planRecentDrafts" class="dashboard-entries"></div>
+                </article>
+                <article class="panel">
+                  <div class="card-heading"><h3>Recent conversations</h3><button class="text-button" type="button" data-view-jump="chat">Open chats →</button></div>
+                  <div id="planRecentChats" class="dashboard-entries"></div>
+                </article>
+              </div>
+            </section>
+
+            <div class="dashboard-grid">
+              <article class="panel span-two">
+                <div class="card-heading">
+                  <div>
+                    <span class="section-kicker">CREATIVE STACK</span>
+                    <h3>Studio modules</h3>
+                  </div>
+                  <button class="text-button" type="button" data-view-jump="studio">View all →</button>
+                </div>
+                <div id="dashboardStudioModules" class="mini-module-list"></div>
+              </article>
+
+              <article class="panel">
+                <div class="card-heading">
+                  <div>
+                    <span class="section-kicker">TASK ENGINE</span>
+                    <h3>Agent readiness</h3>
+                  </div>
+                  <span class="badge badge-neutral">Local</span>
+                </div>
+                <div class="readiness-list">
+                  <div class="readiness-row"><span>Desktop task orchestration</span><strong class="readiness-status">Source available</strong></div>
+                  <div class="readiness-row"><span>Creative integrations</span><strong class="readiness-status">Runtime verification required</strong></div>
+                  <div class="readiness-row"><span>Web ↔ local bridge</span><strong class="readiness-status warning">Not connected</strong></div>
+                </div>
+                <p class="panel-note">Readiness labels reflect implementation scope, not completed live tests.</p>
+              </article>
+
+              <article class="panel span-two">
+                <div class="card-heading">
+                  <div>
+                    <span class="section-kicker">PLANNING QUEUE</span>
+                    <h3>Ready before runtime</h3>
+                  </div>
+                  <button class="text-button" type="button" data-view-jump="tasks">Manage drafts →</button>
+                </div>
+                <div id="dashboardPlanningQueue" class="planning-queue"></div>
+              </article>
+
+              <article class="panel">
+                <div class="card-heading">
+                  <div>
+                    <span class="section-kicker">QUICK ACTIONS</span>
+                    <h3>Jump back in</h3>
+                  </div>
+                </div>
+                <div class="quick-list">
+                  <button type="button" data-view-jump="chat"><span>✦</span><div><strong>Ask Shuvi</strong><small>Plan a new task</small></div><b>→</b></button>
+                  <button type="button" data-view-jump="studio"><span>▶</span><div><strong>Creative Studio</strong><small>Adobe + Blender</small></div><b>→</b></button>
+                  <button type="button" data-view-jump="models"><span>AI</span><div><strong>Model routing</strong><small>Providers & models</small></div><b>→</b></button>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <section id="view-chat" class="view" data-view="chat">
+            <div class="multi-chat-heading">
+              <div><span class="section-kicker">SHUVI / ONE COMMAND CHAT</span>
+                <h2>One Shuvi. One chat.</h2>
+                <p>Talk normally or write a Windows command in the same conversation. Until the native agent is connected, messages remain on this browser.</p>
+              </div>
+              <div class="multi-chat-actions">
+                <span class="chat-offline-pill"><span class="status-dot offline"></span> Agent offline · Not delivered</span>
+                <button type="button" class="primary-button" id="chatNewTop">＋ New chat</button>
+              </div>
+            </div>
+            <div id="chatDeliveryNotice" class="chat-command-delivery-notice" role="status">Windows command delivery is not connected. Messages stay on this browser: no AI response or PC action has happened.</div>
+            <div id="chatStorageNotice" class="chat-storage-alert" role="alert" hidden>Browser storage is unavailable or full. Your unsaved chat changes may be lost after refresh.</div>
+            <div class="chat-layout chat-workspace-layout" id="chatWorkspaceLayout">
+              <aside class="conversation-rail" aria-label="Saved conversations">
+                <div class="conversation-rail-head">
+                  <div><strong>Conversations</strong><small id="chatCount">0 chats</small></div>
+                  <button type="button" class="conversation-create" id="chatNew" aria-label="Create a new chat" title="New chat">＋</button>
+                </div>
+                <label class="conversation-search">
+                  <span class="visually-hidden">Search conversations</span>
+                  <input id="chatSearch" type="search" placeholder="Search chats..." autocomplete="off" maxlength="120" />
+                </label>
+                <div class="conversation-filters" role="group" aria-label="Conversation filters">
+                  <button type="button" class="conversation-filter active" data-chat-filter="active" aria-pressed="true">Chats</button>
+                  <button type="button" class="conversation-filter" data-chat-filter="archived" aria-pressed="false">Archived</button>
+                </div>
+                <div id="chatThreads" class="conversation-list" aria-label="Conversation list"></div>
+                <div class="conversation-rail-footer">
+                  <span class="status-dot offline"></span>
+                  <span>Stored on this browser only</span>
+                </div>
+              </aside>
+              <div class="chat-work-area">
+                <article class="chat-panel">
+                  <div class="chat-top">
+                    <div class="chat-title-block">
+                      <span class="section-kicker">SHUVI CHAT / AGENT CONNECTION REQUIRED</span>
+                      <h2 id="currentChatTitle">New chat</h2>
+                      <p id="currentChatMeta">Shuvi Windows agent offline · Nothing sent</p>
+                      <div class="chat-planning-hint" id="chatPlanningHint" role="status">xKiro Master AI uses the Windows agent once connected. This page does not make AI API calls.</div>
+                    </div>
+                    <div class="chat-header-actions">
+                      <button type="button" class="chat-header-button" id="chatExport" title="Export this conversation as JSON">↓ Export</button>
+                      <button type="button" class="chat-header-button" id="chatPin" title="Pin or unpin this chat">☆ Pin</button>
+                      <button type="button" class="chat-header-button" id="chatSplit" aria-pressed="false" title="Compare two chats side by side">◫ Split</button>
+                      <button type="button" class="chat-header-button" id="chatManage" title="Rename, archive or delete this conversation">···</button>
+                    </div>
+                  </div>
+                  <div id="chatMessages" class="chat-messages" aria-live="polite"></div>
+                  <div id="chatArchivedNotice" class="chat-archived-notice" hidden>Archived conversation. Restore it from the chat menu before adding more prompts.</div>
+                  <form id="chatForm" class="chat-composer">
+                    <label for="chatInput" class="visually-hidden">Write to Shuvi (saved locally while the native link is offline)</label>
+                    <textarea id="chatInput" rows="3" maxlength="2500" placeholder="Ask Shuvi anything, or describe a Windows task — e.g. open Premiere Pro…" required></textarea>
+                    <div class="composer-footer">
+                      <div class="composer-tools">
+                        <button type="button" data-action="attachment" aria-label="Attach file (requires desktop runtime)">＋</button>
+                        <span>Agent offline · Ctrl+Enter to save locally · No command sent</span>
+                      </div>
+                      <button class="primary-button" type="submit" id="chatSendDraft">Save locally ↗</button>
+                    </div>
+                  </form>
+                </article>
+                <aside class="split-chat-panel" id="chatSplitPanel" hidden aria-label="Secondary read-only conversation">
+                  <div class="split-panel-head">
+                    <div><span class="section-kicker">SPLIT VIEW / READ ONLY</span><strong>Compare another chat</strong></div>
+                    <button type="button" class="chat-header-button" id="chatSplitClose" aria-label="Close split view">×</button>
+                  </div>
+                  <label class="split-chat-picker-label" for="chatSplitSelect">Second conversation</label>
+                  <select id="chatSplitSelect" class="split-chat-picker"></select>
+                  <div id="chatSplitMessages" class="split-chat-messages"></div>
+                  <p class="split-note">Side-by-side planning preview. Simultaneous AI execution requires the native task scheduler.</p>
+                </aside>
+              </div>
+              <aside class="context-panel chat-context-panel">
+                <span class="section-kicker">TASK CONTEXT</span>
+                <h3>Runtime boundary</h3>
+                <div class="context-list">
+                  <div><span>Browser drafts</span><strong class="ok">Saved locally</strong></div>
+                  <div><span>AI providers</span><strong>Not connected</strong></div>
+                  <div><span>Adobe / Blender</span><strong>Disconnected</strong></div>
+                  <div><span>Computer control</span><strong>Desktop only</strong></div>
+                </div>
+                <div class="security-note"><span>◇</span><p>No prompts from this web screen are sent to a model or native app. Real tasks will require runtime pairing and permissions.</p></div>
+                <div class="chat-context-tip"><strong>Tip</strong><p>Use the split button to inspect two saved conversations side by side.</p></div>
+              </aside>
+            </div>
+            <dialog id="chatManageDialog" class="chat-manage-dialog" aria-labelledby="chatDialogTitle">
+              <form id="chatManageForm" method="dialog">
+                <span class="section-kicker">CONVERSATION SETTINGS</span>
+                <h2 id="chatDialogTitle">Manage conversation</h2>
+                <label for="chatRename">Conversation name</label>
+                <input type="text" id="chatRename" maxlength="80" required autocomplete="off" />
+                <p id="chatDialogWarning" class="chat-dialog-warning" role="status" hidden>Delete this local conversation permanently? Click Confirm delete to continue.</p>
+                <div class="chat-dialog-actions">
+                  <button class="secondary-button" type="button" id="chatCancelDialog">Cancel</button>
+                  <button class="secondary-button" type="button" id="chatArchive">Archive</button>
+                  <button class="secondary-button chat-danger" type="button" id="chatDelete">Delete</button>
+                  <button class="primary-button" type="submit">Save name</button>
+                </div>
+              </form>
+            </dialog>
+          </section>
+
+          <section id="view-studio" class="view" data-view="studio">
+            <div class="section-intro">
+              <div><span class="section-kicker">CREATIVE STUDIO</span><h2>Adobe, 3D and motion workflows</h2><p>One surface for the creative modules being integrated into Shuvi.</p></div>
+              <button class="secondary-button" type="button" data-action="connect-local">Connect local runtime</button>
+            </div>
+            <div class="studio-status-strip" aria-label="Creative apps integration scope">
+              <span class="studio-live-dot"></span>
+              <strong>Creative application control center</strong>
+              <span id="studioAppsTracked">12 apps in source catalog</span>
+              <span class="studio-separator" aria-hidden="true"></span>
+              <span>Windows runtime <b>not paired</b></span>
+              <span class="studio-source-tag">Source inventory ≠ runtime verified</span>
+            </div>
+
+            <div class="studio-console" aria-label="Individual creative application panels">
+              <aside class="studio-app-picker">
+                <div class="studio-picker-heading"><div><span class="section-kicker">APPLICATIONS</span><h3>Creative software</h3></div><span id="studioAppCount">0</span></div>
+                <label class="studio-picker-search" for="studioAppSearch"><span class="visually-hidden">Search creative applications</span>
+                  <input id="studioAppSearch" type="search" placeholder="Search apps…" autocomplete="off" maxlength="80" />
+                </label>
+                <div id="studioAppList" class="studio-app-list" role="list" aria-label="Creative app selection"></div>
+              </aside>
+              <section class="studio-details" aria-label="Selected application">
+                <div class="studio-details-header">
+                  <span id="studioHeroIcon" class="studio-large-icon">Pr</span>
+                  <div class="studio-details-heading">
+                    <span id="studioHeroCategory" class="section-kicker">VIDEO EDITING</span>
+                    <h3 id="studioHeroName">Premiere Pro</h3>
+                    <p id="studioHeroDescription">View creative capabilities and prepare a safe workflow draft.</p>
+                  </div>
+                  <span id="studioHeroSource" class="studio-src-chip">Source available</span>
+                </div>
+                <div class="studio-notice" role="status"><span>◈</span><p id="studioRuntimeSummary">Browser design view only. Connected app and host installation are not yet checked.</p></div>
+                <div class="studio-tabs" role="tablist" aria-label="Application details">
+                  <button type="button" class="studio-tab active" role="tab" id="studioTabOverview" data-studio-tab="overview" aria-selected="true">Overview</button>
+                  <button type="button" class="studio-tab" role="tab" id="studioTabCapabilities" data-studio-tab="capabilities" aria-selected="false">Capabilities</button>
+                  <button type="button" class="studio-tab" role="tab" id="studioTabWorkflow" data-studio-tab="workflow" aria-selected="false">Workflow builder</button>
+                </div>
+                <div id="studioPanelOverview" class="studio-tab-panel active" role="tabpanel" aria-labelledby="studioTabOverview">
+                  <div class="studio-panel-caption"><h4>What Shuvi is being built to do</h4><span>Source scope</span></div>
+                  <div id="studioOverviewCaps" class="studio-cap-list"></div>
+                  <div class="studio-panel-caption studio-followup-title"><h4>Popular creative workflows</h4><span>Planning templates</span></div>
+                  <div id="studioOverviewWorkflows" class="studio-workflow-pills"></div>
+                </div>
+                <div id="studioPanelCapabilities" class="studio-tab-panel" role="tabpanel" aria-labelledby="studioTabCapabilities" hidden>
+                  <div class="studio-panel-caption"><h4>Available source areas</h4><span>Not live-verified</span></div>
+                  <div id="studioFullCapabilities" class="studio-cap-list"></div>
+                  <p id="studioCapabilityLimit" class="studio-panel-help">Capability names describe the current source, not a passed native acceptance test.</p>
+                </div>
+                <div id="studioPanelWorkflow" class="studio-tab-panel" role="tabpanel" aria-labelledby="studioTabWorkflow" hidden>
+                  <div class="studio-panel-caption"><h4>Prepare a task draft</h4><span>No execution</span></div>
+                  <form id="studioPlanForm" class="studio-plan-form">
+                    <label for="studioPlanPreset">Workflow
+                      <select id="studioPlanPreset"></select>
+                    </label>
+                    <label for="studioPlanTitle">Task description
+                      <input id="studioPlanTitle" placeholder="Describe the output you want…" maxlength="150" autocomplete="off" required />
+                    </label>
+                    <label for="studioPlanPriority">Priority
+                      <select id="studioPlanPriority">
+                        <option value="Normal">Normal</option><option value="High">High</option><option value="Low">Low</option>
+                      </select>
+                    </label>
+                    <div class="studio-plan-actions">
+                      <button type="submit" class="primary-button">Save task draft →</button>
+                      <span>Saved to browser Tasks; approval and dispatch happen later in Windows.</span>
+                    </div>
+                  </form>
+                </div>
+                <div class="studio-details-footer">
+                  <button class="secondary-button" type="button" id="studioDetailsButton">Full module details</button>
+                  <button class="studio-link-button" type="button" id="studioSettingsButton">Runtime settings ↗</button>
+                </div>
+              </section>
+              <aside class="studio-context" aria-label="Local integration readiness">
+                <span class="section-kicker">CONNECTION &amp; READINESS</span>
+                <h3 id="studioContextHeading">Premiere Pro</h3>
+                <div class="studio-connection-card">
+                  <div class="studio-connection-led"><span class="studio-dot-offline"></span><strong>Desktop bridge not connected</strong></div>
+                  <p>Installed software and native host status have not been checked from this web page.</p>
+                </div>
+                <div class="studio-facts">
+                  <div><span>Source implementation</span><strong id="studioSourceState">Available</strong></div>
+                  <div><span>Host installation</span><strong>Unknown</strong></div>
+                  <div><span>Bridge pairing</span><strong>Not connected</strong></div>
+                  <div><span>Native acceptance</span><strong>Not verified here</strong></div>
+                </div>
+                <div class="studio-readiness">
+                  <h4>Before running a task</h4>
+                  <ol id="studioPreflight"></ol>
+                </div>
+                <button class="secondary-button studio-context-action" type="button" id="studioOpenTasks">View saved task drafts →</button>
+              </aside>
+            </div>
+
+            <details class="studio-library-details">
+              <summary>Browse all creative capability cards <span id="studioLibraryCount">12 modules</span></summary>
+              <div class="filter-row">
+                <button class="filter-chip active" type="button" data-filter="all">All modules</button>
+                <button class="filter-chip" type="button" data-filter="Video editing">Video</button>
+                <button class="filter-chip" type="button" data-filter="Motion & VFX">Motion &amp; VFX</button>
+                <button class="filter-chip" type="button" data-filter="3D & VFX">3D</button>
+                <button class="filter-chip" type="button" data-filter="Audio">Audio</button>
+                <button class="filter-chip" type="button" data-filter="Design & Image">Design</button>
+                <button class="filter-chip" type="button" data-filter="Animation">Animation</button>
+                <button class="filter-chip" type="button" data-filter="Delivery">Delivery</button>
+                <button class="filter-chip" type="button" data-filter="Review & Collaboration">Review</button>
+                <button class="filter-chip" type="button" data-filter="Programmatic video">Code video</button>
+              </div>
+              <div id="creativeModuleGrid" class="module-grid"></div>
+            </details>
+          </section>
+
+          <section id="view-projects" class="view" data-view="projects">
+            <div class="section-intro">
+              <div><span class="section-kicker">LEVEL 11 / PROJECT WORKSPACE</span><h2>Your creative projects, organized</h2><p>Organize browser task drafts, assigned worker plans, asset references and project notes. Files remain on your computer; nothing is uploaded or executed.</p></div>
+              <span class="badge badge-neutral">Local browser workspace</span>
+            </div>
+            <div class="project-overview">
+              <div><span>Projects</span><strong id="projectTotalCount">0</strong><small>Saved in this browser</small></div>
+              <div><span>Linked task drafts</span><strong id="projectTaskTotal">0</strong><small>Project associations</small></div>
+              <div><span>Asset references</span><strong id="projectAssetTotal">0</strong><small>Metadata only</small></div>
+              <div><span>Native file access</span><strong class="project-unsynced">—</strong><small>Not connected</small></div>
+            </div>
+            <div class="project-workspace">
+              <aside class="project-sidebar">
+                <div class="project-section-head"><div><span class="section-kicker">PROJECT LIBRARY</span><h3>My Projects</h3></div><span id="projectSidebarCount">0</span></div>
+                <div id="projectList" class="project-list" aria-label="Saved projects"></div>
+                <form id="projectCreateForm" class="project-create">
+                  <h4>New project</h4>
+                  <label for="projectCreateName">Project name
+                    <input id="projectCreateName" maxlength="80" required placeholder="E.g. Mahakal Lok 3D" autocomplete="off"/>
+                  </label>
+                  <label for="projectCreateDescription">Short description (optional)
+                    <textarea id="projectCreateDescription" maxlength="300" rows="2" placeholder="What are we building?"></textarea>
+                  </label>
+                  <button type="submit" class="primary-button full">Create project +</button>
+                </form>
+              </aside>
+              <div class="project-main">
+                <section id="projectEmpty" class="project-empty">
+                  <div class="project-empty-mark">◈</div><h3>Your project hub starts here</h3>
+                  <p>Create a project on the left. Then link your existing Shuvi task drafts, view planned agents, and save reference asset information.</p>
+                </section>
+                <div id="projectDetail" hidden>
+                  <header class="project-detail-hero">
+                    <div><span class="section-kicker">ACTIVE PROJECT / BROWSER ONLY</span><h3 id="projectActiveTitle"></h3><p id="projectActiveDescription"></p></div>
+                    <div class="project-head-actions"><button class="project-inline-button" type="button" id="projectExport">Export project JSON ↓</button><button class="project-delete-button" type="button" id="projectDelete">Delete project</button></div>
+                  </header>
+                  <div class="project-detail-metrics">
+                    <div><strong id="projectLinkedCount">0</strong><span>Linked drafts</span></div>
+                    <div><strong id="projectAgentCount">0</strong><span>Planned agents</span></div>
+                    <div><strong id="projectFileCount">0</strong><span>Asset references</span></div>
+                    <div><strong id="projectWorkflowCount">0</strong><span>Workflow plans</span></div>
+                  </div>
+                  <div class="project-tabs" role="tablist" aria-label="Project sections">
+                    <button type="button" class="project-tab active" role="tab" aria-selected="true" data-project-tab="tasks">Tasks & Agents</button>
+                    <button type="button" class="project-tab" role="tab" aria-selected="false" data-project-tab="assets">Assets & Notes</button>
+                    <button type="button" class="project-tab" role="tab" aria-selected="false" data-project-tab="workflows">Workflows</button>
+                    <button type="button" class="project-tab" role="tab" aria-selected="false" data-project-tab="history">Project History</button>
+                  </div>
+                  <section id="projectTabTasks" class="project-pane" role="tabpanel">
+                    <div class="project-section-head"><div><h4>Task drafts linked to this project</h4><p>Each link points to an existing local planning draft, not an executing job.</p></div><button type="button" class="project-inline-button" id="projectOpenTasks">Open Tasks ↗</button></div>
+                    <div id="projectTaskChecklist" class="project-task-checklist"></div>
+                    <div class="project-section-head project-subsection"><div><h4>Associated worker plans</h4><p>Delegations tied to the linked drafts; not active background agents.</p></div><button type="button" class="project-inline-button" id="projectOpenAgents">Open Agents ↗</button></div>
+                    <div id="projectDelegations" class="project-delegations"></div>
+                  </section>
+                  <section id="projectTabAssets" class="project-pane" role="tabpanel" hidden>
+                    <div class="project-section-head"><div><h4>Asset reference library</h4><p>Metadata only. Add names and optional references; Shuvi does not read or upload any file.</p></div></div>
+                    <form id="projectAssetForm" class="project-asset-form">
+                      <label for="projectAssetName">Asset name<input id="projectAssetName" maxlength="100" required placeholder="Temple reference photo" autocomplete="off"/></label>
+                      <label for="projectAssetType">Type<select id="projectAssetType"><option>Reference</option><option>Image</option><option>Video</option><option>Audio</option><option>3D Model</option><option>Document</option><option>Other</option></select></label>
+                      <label for="projectAssetRef">Optional reference / filename<input id="projectAssetRef" maxlength="220" placeholder="e.g. mahakal-overview.jpg" autocomplete="off"/></label>
+                      <button class="secondary-button" type="submit">Save asset reference</button>
+                    </form>
+                    <div id="projectAssetList" class="project-asset-list"></div>
+                    <div class="project-section-head project-subsection"><div><h4>Project Notes</h4><p>Design decisions and reminders saved locally to this project.</p></div></div>
+                    <form id="projectNoteForm" class="project-note-form"><label for="projectNoteText">Add a note<textarea id="projectNoteText" rows="3" maxlength="550" required placeholder="Project plan, design decisions, next steps…"></textarea></label><button type="submit" class="secondary-button">Save note</button></form>
+                    <div id="projectNoteList" class="project-note-list"></div>
+                  </section>
+                  <section id="projectTabWorkflows" class="project-pane" role="tabpanel" hidden>
+                    <div class="project-section-head"><div><h4>Project workflow plans</h4><p>Save proposed steps for Blender, Adobe and other applications; no workflow will execute in this browser.</p></div><button type="button" id="projectOpenVisual" class="project-inline-button">Open Visual Builder ↗</button></div>
+                    <div id="projectVisualFlows" class="project-workflow-list" aria-label="Visual workflows linked to this project"></div>
+                    <form id="projectWorkflowForm" class="project-workflow-form">
+                      <label for="projectWorkflowTitle">Workflow name<input id="projectWorkflowTitle" required maxlength="100" placeholder="Mahakal corridor blockout" autocomplete="off"/></label>
+                      <label for="projectWorkflowApp">Target software<select id="projectWorkflowApp"><option>Blender</option><option>Premiere Pro</option><option>After Effects</option><option>Photoshop</option><option>Illustrator</option><option>Coding Workspace</option><option>Browser</option><option>Other</option></select></label>
+                      <label for="projectWorkflowSteps">Planned steps<textarea id="projectWorkflowSteps" maxlength="600" rows="3" placeholder="E.g. Match Cesium footprint, block out plaza, review proportions…"></textarea></label>
+                      <button type="submit" class="secondary-button">Save workflow plan</button>
+                    </form>
+                    <div id="projectWorkflowList" class="project-workflow-list"></div>
+                  </section>
+                  <section id="projectTabHistory" class="project-pane" role="tabpanel" hidden>
+                    <div class="project-section-head"><div><h4>Project planning history</h4><p>Only changes saved in this browser. Not an execution log or Windows file version history.</p></div></div>
+                    <div id="projectHistoryList" class="project-history-list"></div>
+                  </section>
+                </div>
+              </div>
+            </div>
+            <div class="project-boundary">Real project files, file previews, checkpoints and version control remain outside this web workspace until an authenticated local runtime and per-file permission controls are implemented.</div>
+          </section>
+
+          <section id="view-workflows" class="view" data-view="workflows">
+            <div class="section-intro">
+              <div><span class="section-kicker">LEVEL 12 / VISUAL WORKFLOW BUILDER</span><h2>Design your automation</h2><p>Connect a sequence of planned steps for Blender, Premiere, After Effects or Coding. All steps are browser drafts; no application or AI worker executes them.</p></div>
+              <span class="flow-builder-badge">◌ Runtime disconnected · Planning mode</span>
+            </div>
+            <div class="flow-metrics">
+              <div><span>Saved workflows</span><strong id="flowTotalCount">0</strong><small>Browser storage</small></div>
+              <div><span>Selected steps</span><strong id="flowStepCount">0</strong><small>Editable visual sequence</small></div>
+              <div><span>Linked project</span><strong id="flowLinkedProjectCount">—</strong><small>Project metadata</small></div>
+              <div><span>Executing jobs</span><strong class="flow-unavailable">—</strong><small>Not connected</small></div>
+            </div>
+            <div class="flow-builder-layout">
+              <aside class="flow-rail" aria-label="Saved workflows and templates">
+                <div class="flow-panel-title"><span class="section-kicker">WORKFLOW LIBRARY</span><h3>Saved flows</h3></div>
+                <div id="flowSavedList" class="flow-saved-list"></div>
+                <div class="flow-panel-title flow-templates-heading"><span class="section-kicker">STARTER TEMPLATES</span><h3>Create a workflow</h3></div>
+                <div id="flowTemplateList" class="flow-template-list"></div>
+              </aside>
+              <section class="flow-canvas-panel" aria-label="Workflow visualization and sequence editor">
+                <div id="flowEmptyState" class="flow-empty-state">
+                  <span class="flow-empty-icon">◇</span><h3>Build your first workflow</h3><p>Choose a template on the left. The steps appear here as a visual sequence you can select, reorder, add or remove.</p>
+                </div>
+                <div id="flowCanvasWorkspace" hidden>
+                  <div class="flow-canvas-header">
+                    <div><span class="section-kicker">VISUAL PLAN / NOT EXECUTING</span><h3 id="flowCanvasTitle">Workflow</h3><p>Click a step to edit it. Arrows show proposed order, not background execution.</p></div>
+                    <div class="flow-canvas-actions"><button type="button" id="flowAddStep" class="secondary-button">+ Add step</button><button type="button" id="flowSaveTask" class="secondary-button">Save as task draft</button></div>
+                  </div>
+                  <div class="flow-canvas-scroll"><div id="flowNodeCanvas" class="flow-node-canvas" aria-label="Editable workflow sequence"></div></div>
+                  <div class="flow-canvas-footnote"><span>● Browser plan</span><span>◌ Native permission &amp; execution unavailable</span></div>
+                </div>
+              </section>
+              <aside class="flow-inspector" aria-label="Selected workflow and step inspector">
+                <div id="flowInspectorEmpty" class="flow-inspector-empty"><span class="section-kicker">INSPECTOR</span><h3>Nothing selected</h3><p>Choose a template to begin designing a workflow.</p></div>
+                <div id="flowInspectorWorkspace" hidden>
+                  <div class="flow-panel-title"><span class="section-kicker">WORKFLOW SETTINGS</span><h3>Properties</h3></div>
+                  <form id="flowSettingsForm" class="flow-settings-form">
+                    <label for="flowName">Workflow name<input id="flowName" maxlength="100" required autocomplete="off" /></label>
+                    <label for="flowProject">Linked project<select id="flowProject"><option value="">Unassigned</option></select></label>
+                    <button type="submit" class="secondary-button">Save workflow settings</button>
+                  </form>
+                  <div class="flow-inspector-separator"></div>
+                  <div class="flow-panel-title"><span class="section-kicker">STEP INSPECTOR</span><h3>Selected step</h3></div>
+                  <form id="flowStepForm" class="flow-step-form">
+                    <label for="flowNodeKind">Step type<select id="flowNodeKind"><option>Start</option><option>Action</option><option>Review</option><option>Approval</option><option>Export</option></select></label>
+                    <label for="flowNodeTitle">Step name<input id="flowNodeTitle" maxlength="100" required autocomplete="off" /></label>
+                    <label for="flowNodeDetails">What should happen?<textarea id="flowNodeDetails" maxlength="400" rows="4" placeholder="Describe the intended step. No native commands will run."></textarea></label>
+                    <button type="submit" class="primary-button">Save step changes</button>
+                    <div class="flow-edit-buttons">
+                      <button id="flowMoveUp" class="secondary-button" type="button">↑ Move up</button>
+                      <button id="flowMoveDown" class="secondary-button" type="button">↓ Move down</button>
+                      <button id="flowRemoveStep" class="flow-danger-button" type="button">Remove step</button>
+                    </div>
+                  </form>
+                  <div class="flow-inspector-separator"></div>
+                  <div class="flow-footer-actions">
+                    <button id="flowExport" class="secondary-button" type="button">Export JSON ↓</button>
+                    <button id="flowDelete" class="flow-danger-button" type="button">Delete workflow</button>
+                  </div>
+                  <p class="flow-safety-note">An Approval step is a planned checkpoint, not permission to modify the computer. Real execution requires an authenticated native runtime and separate approval.</p>
+                </div>
+              </aside>
+            </div>
+          </section>
+
+          <section id="view-agents" class="view" data-view="agents">
+            <div class="section-intro">
+              <div><span class="section-kicker">LEVEL 10 / MULTI-AGENT SYSTEM</span><h2>Master Agent Control Center</h2><p>Plan and supervise specialist workers from one place. Native task dispatch, agent execution and approvals are not connected yet.</p></div>
+              <button type="button" class="secondary-button" id="agentsOpenRuntime">Configure Windows runtime</button>
+            </div>
+            <div class="agent-hero">
+              <div class="agent-master-badge"><span>✦</span><div><strong>Shuvi Master</strong><small>Coordinator · Planning only</small></div></div>
+              <div class="agent-master-flow" aria-label="Planned worker hierarchy">
+                <span class="agent-flow-node">Master Agent</span><span class="agent-flow-line">→</span>
+                <span class="agent-flow-node">Task Planner</span><span class="agent-flow-line">→</span>
+                <span class="agent-flow-node">Worker Candidates</span>
+              </div>
+              <span class="agent-not-connected">◌ Native runtime offline</span>
+            </div>
+            <div class="agent-metrics">
+              <div><span>Specialist profiles</span><strong id="agentWorkerCount">6</strong><small>Source/planning catalog</small></div>
+              <div><span>Delegation plans</span><strong id="agentPlanCount">0</strong><small>Saved in this browser</small></div>
+              <div><span>Active native jobs</span><strong class="agent-no-runtime" aria-label="Unavailable">—</strong><small>Not synced</small></div>
+              <div><span>Approval requests</span><strong class="agent-no-runtime" aria-label="Unavailable">—</strong><small>Desktop only</small></div>
+            </div>
+            <div class="agent-workspace">
+              <section class="agent-worker-section">
+                <div class="agent-block-heading"><div><span class="section-kicker">WORKERS</span><h3>Specialist Agents</h3></div><span>6 planning profiles</span></div>
+                <div id="agentWorkerGrid" class="agent-worker-grid"></div>
+                <div class="agent-locks panel">
+                  <span class="section-kicker">PARALLEL EXECUTION / SAFETY RULES</span>
+                  <h3>Shared PC input must be coordinated</h3>
+                  <p>Independent workers may plan jobs, but real parallel execution needs an authenticated scheduler, per-project locks and a single owner of the shared Windows mouse and keyboard.</p>
+                  <div class="agent-lock-list"><span>◈ Desktop/UI resource lock</span><span>◈ Project + timeline locks</span><span>◈ Native approval gate</span><span>◈ Verifiable receipts</span></div>
+                </div>
+              </section>
+              <section class="agent-delegation-section">
+                <div class="agent-block-heading"><div><span class="section-kicker">DELEGATION BUILDER</span><h3>Assign a saved draft</h3></div><span>Planning only</span></div>
+                <form id="agentPlanForm" class="agent-plan-form">
+                  <label for="agentTaskSelect">Existing task draft
+                    <select id="agentTaskSelect" required><option value="">Select a saved task…</option></select>
+                  </label>
+                  <label for="agentWorkerSelect">Proposed worker
+                    <select id="agentWorkerSelect" required></select>
+                  </label>
+                  <label for="agentInstructions">Worker instructions (optional)
+                    <textarea id="agentInstructions" rows="3" maxlength="240" placeholder="Describe what this worker would do…" ></textarea>
+                  </label>
+                  <p id="agentDraftWarning" class="agent-form-note">Create a task draft on the Tasks page before planning delegation.</p>
+                  <button id="agentPlanSubmit" class="primary-button" type="submit">Save delegation plan →</button>
+                  <small>No worker will start, no API will be called, and no permission is granted.</small>
+                </form>
+                <div class="agent-planned-work">
+                  <div class="agent-block-heading"><div><span class="section-kicker">SAVED PLANS</span><h3>Delegation board</h3></div><span id="agentPlanBadge">0 planned</span></div>
+                  <div id="agentPlanList" class="agent-plan-list"></div>
+                </div>
+              </section>
+            </div>
+            <div class="agent-acceptance-note">Next runtime milestone: native task IDs → durable queue → authenticated agent dispatch → resource locks → approval → evidence-based completion. This browser screen is a planning console, not a live worker monitor.</div>
+          </section>
+
+          <section id="view-tools" class="view" data-view="tools">
+            <div class="section-intro">
+              <div><span class="section-kicker">CAPABILITIES</span><h2>Computer & agent tools</h2><p>Local-first capabilities guarded by Shuvi's permission and audit layers.</p></div>
+            </div>
+            <div id="toolModuleGrid" class="module-grid"></div>
+          </section>
+
+          <section id="view-tasks" class="view" data-view="tasks">
+            <div class="section-intro">
+              <div><span class="section-kicker">TASK MANAGER</span><h2>Runs, checkpoints and progress</h2><p>Real task state will appear here after the secure local bridge is connected.</p></div>
+              <button class="primary-button" type="button" data-view-jump="chat">New task</button>
+            </div>
+            <article class="panel task-draft-panel">
+              <div class="card-heading">
+                <div>
+                  <span class="section-kicker">BROWSER PLANNING</span>
+                  <h3>Draft a task before local execution</h3>
+                </div>
+                <span class="badge badge-neutral">Saved in this browser</span>
+              </div>
+              <form id="taskDraftForm" class="task-draft-form">
+                <label class="field">
+                  <span>Task</span>
+                  <input id="taskDraftInput" placeholder="Example: Edit a 6 minute talking-head video" autocomplete="off" required />
+                </label>
+                <label class="field">
+                  <span>Workspace</span>
+                  <select id="taskDraftType">
+                    <option value="General">General</option>
+                    <option value="Premiere Pro">Premiere Pro</option>
+                    <option value="After Effects">After Effects</option>
+                    <option value="Blender">Blender</option>
+                    <option value="Coding">Coding</option>
+                    <option value="Computer">Computer</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Priority</span>
+                  <select id="taskDraftPriority">
+                    <option value="Normal">Normal</option>
+                    <option value="High">High</option>
+                    <option value="Low">Low</option>
+                  </select>
+                </label>
+                <button class="primary-button" type="submit">Add draft</button>
+              </form>
+              <div id="draftTaskList" class="draft-task-list"></div>
+            </article>
+            <div class="task-board">
+              <article class="panel task-stage"><div class="stage-head"><span>01</span><strong>Drafts</strong><b id="draftTaskCount">0</b></div><div id="draftTaskStage" class="stage-empty">No browser drafts</div></article>
+              <article class="panel task-stage"><div class="stage-head"><span>02</span><strong>Running</strong><b aria-label="Not synced">—</b></div><div class="stage-empty">No active runtime</div></article>
+              <article class="panel task-stage"><div class="stage-head"><span>03</span><strong>Approval</strong><b aria-label="Not synced">—</b></div><div class="stage-empty">No pending permissions</div></article>
+              <article class="panel task-stage"><div class="stage-head"><span>04</span><strong>Complete</strong><b aria-label="Not synced">—</b></div><div class="stage-empty">No synced history</div></article>
+            </div>
+            <section class="task-timeline panel" aria-label="Level 8 browser planning timeline">
+              <div class="timeline-top">
+                <div>
+                  <span class="section-kicker">LEVEL 8 / ADVANCED TIMELINE</span>
+                  <h3>Task history &amp; planning activity</h3>
+                  <p>Only saved browser activity is displayed. Real agent steps, screenshots and approvals require the secure Windows runtime.</p>
+                </div>
+                <div class="timeline-top-actions">
+                  <span class="timeline-local-badge">Browser data · Not executing</span>
+                  <button class="secondary-button" type="button" id="timelineExport">Export timeline ↓</button>
+                </div>
+              </div>
+              <div class="timeline-summary">
+                <div><span>Planning events</span><strong id="timelineEventCount">0</strong></div>
+                <div><span>Task-related events</span><strong id="timelineTaskEventCount">0</strong></div>
+                <div><span>Saved drafts</span><strong id="timelineDraftCount">0</strong></div>
+                <div><span>Native task receipts</span><strong class="timeline-unknown" aria-label="Unavailable">—</strong></div>
+              </div>
+              <div class="timeline-controls">
+                <label class="timeline-filter-label" for="timelineFilter">Activity type
+                  <select id="timelineFilter">
+                    <option value="all">All events</option>
+                    <option value="Task">Tasks</option>
+                    <option value="Module">Modules</option>
+                    <option value="Model">Models</option>
+                    <option value="Routing">Routing</option>
+                    <option value="Settings">Settings</option>
+                    <option value="Export">Exports</option>
+                  </select>
+                </label>
+                <label class="timeline-filter-label timeline-search-label" for="timelineSearch">Search browser history
+                  <input id="timelineSearch" type="search" maxlength="120" placeholder="Search event text..." autocomplete="off" />
+                </label>
+                <span class="timeline-result-count" id="timelineShowingCount" role="status">No saved events</span>
+              </div>
+              <div class="timeline-layout">
+                <div class="timeline-feed-wrap">
+                  <div class="timeline-list-heading"><strong>Activity timeline</strong><span>Most recent first</span></div>
+                  <div id="timelineFeed" class="timeline-feed" aria-label="Saved planning events"></div>
+                </div>
+                <aside class="timeline-inspector" aria-label="Selected planning record">
+                  <span class="section-kicker">RECORD INSPECTOR</span>
+                  <div id="timelineInspector" class="timeline-inspector-body" aria-live="polite"></div>
+                  <div class="timeline-evidence">
+                    <strong>Desktop evidence</strong>
+                    <div><span>Agent steps</span><b>Not synced</b></div>
+                    <div><span>Tool receipts</span><b>Not synced</b></div>
+                    <div><span>Screenshot history</span><b>Not synced</b></div>
+                    <div><span>Human approvals</span><b>Desktop only</b></div>
+                  </div>
+                </aside>
+              </div>
+              <div class="timeline-draft-list-block">
+                <div class="timeline-list-heading"><strong>Saved draft inspector</strong><span>Select a draft to inspect its metadata · no execution implied</span></div>
+                <div id="timelineDraftList" class="timeline-draft-list"></div>
+              </div>
+            </section>
+          </section>
+
+          <section id="view-models" class="view" data-view="models">
+            <div class="section-intro">
+              <div><span class="section-kicker">AI ROUTING</span><h2>Models & providers</h2><p>Provider credentials remain in the local Shuvi credential store, not in this web UI.</p></div>
+              <span class="badge badge-neutral">No secrets stored here</span>
+            </div>
+            <div class="provider-summary panel">
+              <div>
+                <span class="section-kicker">WEB PLANNING PREFERENCE</span>
+                <h3 id="selectedProviderName">No provider selected</h3>
+                <p id="selectedProviderNote">Choose a provider card below. This does not change the Windows runtime yet.</p>
+              </div>
+              <span class="badge badge-neutral">Browser preference</span>
+            </div>
+            <div id="providerGrid" class="provider-grid"></div>
+            <div class="routing-grid">
+              <article class="panel model-routing-panel">
+                <div class="card-heading"><div><span class="section-kicker">ROUTING PROFILE</span><h3>Prepare a model preference</h3></div><span class="badge badge-neutral">Planning only</span></div>
+                <div id="routingPresetGrid" class="routing-preset-grid"></div>
+                <div class="routing-form">
+                  <label class="field">
+                    <span>Preferred model</span>
+                    <input id="preferredModelInput" placeholder="Example: gpt-5.6-sol" autocomplete="off" />
+                  </label>
+                  <label class="field">
+                    <span>Workload</span>
+                    <select id="workloadSelect">
+                      <option value="General">General assistant</option>
+                      <option value="Coding">Coding</option>
+                      <option value="Video Editing">Video editing</option>
+                      <option value="Motion & VFX">Motion & VFX</option>
+                      <option value="3D">3D / Blender</option>
+                      <option value="Research">Research</option>
+                    </select>
+                  </label>
+                  <button id="saveRoutingPreference" class="primary-button" type="button">Save routing preference</button>
+                </div>
+                <div id="routingPreferenceSummary" class="routing-summary">No model routing preference saved yet.</div>
+              </article>
+
+              <article class="panel model-routing-panel">
+                <div class="card-heading"><div><span class="section-kicker">RUNTIME POLICY</span><h3>Local source of truth</h3></div></div>
+                <p>This web preference is only a plan. After synchronization, Shuvi.exe decides the actual provider/model and keeps API keys in the operating-system credential store.</p>
+                <div class="policy-points">
+                  <div><span>Web dashboard</span><strong>Plans preference</strong></div>
+                  <div><span>Shuvi.exe</span><strong>Executes model call</strong></div>
+                  <div><span>Credentials</span><strong>Stay local</strong></div>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <section id="view-activity" class="view" data-view="activity">
+            <div class="section-intro">
+              <div><span class="section-kicker">AUDIT & ACTIVITY</span><h2>Planning here. Runtime truth locally.</h2><p>Browser planning events are kept separate from the future Shuvi.exe runtime audit stream.</p></div>
+              <button class="secondary-button" type="button" data-action="export-log">Export planning log</button>
+            </div>
+
+            <div class="activity-grid">
+              <article class="panel browser-activity-panel">
+                <div class="card-heading">
+                  <div><span class="section-kicker">BROWSER ACTIVITY</span><h3>Control Center planning</h3></div>
+                  <button id="clearPlanningActivity" class="text-button" type="button">Clear</button>
+                </div>
+                <div id="webActivityList" class="web-activity-list"></div>
+              </article>
+
+              <article class="panel runtime-audit-panel">
+                <div class="card-heading">
+                  <div><span class="section-kicker">LOCAL AUDIT</span><h3>Shuvi.exe activity</h3></div>
+                  <span class="badge badge-offline">Offline</span>
+                </div>
+                <div class="runtime-audit-empty">
+                  <div class="empty-icon large">◎</div>
+                  <h3>No local activity synced</h3>
+                  <p>Tool proposals, approvals, denials and execution results will appear only after the secure local runtime is connected.</p>
+                  <button class="secondary-button" type="button" data-action="connect-local">Configure local bridge</button>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <section id="view-settings" class="view" data-view="settings">
+            <div class="section-intro">
+              <div><span class="section-kicker">SETTINGS</span><h2>Dashboard & runtime connection</h2><p>Web-only preferences can be saved in this browser. Sensitive local permissions stay inside Shuvi.exe.</p></div>
+            </div>
+            <div class="settings-grid">
+              <article class="panel appearance-panel">
+                <div class="settings-heading"><div class="settings-icon">◐</div><div><h3>Appearance</h3><p>Choose Shuvi’s accent palette. Your preference stays in this browser.</p></div></div>
+                <div class="appearance-options" id="appearanceOptions" role="group" aria-label="Color palette">
+                  <button type="button" class="appearance-option active" data-palette="sapphire" aria-pressed="true"><span class="theme-swatches"><i style="background:#0B1220"></i><i style="background:#1E293B"></i><i style="background:#2563EB"></i><i style="background:#7DD3FC"></i><i style="background:#F8FAFC"></i></span><strong>Midnight Sapphire</strong><small>Recommended · Sapphire + Ice blue</small></button>
+                  <button type="button" class="appearance-option" data-palette="violet" aria-pressed="false"><span class="theme-swatches"><i style="background:#120F1F"></i><i style="background:#2A1F3D"></i><i style="background:#8B5CF6"></i><i style="background:#60A5FA"></i><i style="background:#F8FAFC"></i></span><strong>Arctic Violet</strong><small>Violet + Cool blue</small></button>
+                  <button type="button" class="appearance-option" data-palette="teal" aria-pressed="false"><span class="theme-swatches"><i style="background:#071826"></i><i style="background:#0F2A3A"></i><i style="background:#14B8A6"></i><i style="background:#38BDF8"></i><i style="background:#F1F5F9"></i></span><strong>Teal Matrix</strong><small>Deep navy + Aqua</small></button>
+                  <button type="button" class="appearance-option" data-palette="steel" aria-pressed="false"><span class="theme-swatches"><i style="background:#090B0E"></i><i style="background:#1F2937"></i><i style="background:#475569"></i><i style="background:#94A3B8"></i><i style="background:#F9FAFB"></i></span><strong>Steel Monochrome</strong><small>Graphite + Slate</small></button>
+                </div>
+                <p class="appearance-hint" id="appearanceStatus" role="status">Midnight Sapphire selected.</p>
+              </article>
+              <article class="panel">
+                <div class="settings-heading"><div class="settings-icon">↔</div><div><h3>Local bridge · Level 13</h3><p>Pair read-only with the actual Windows Shuvi process. This does not enable agent execution, file access or approvals.</p></div></div>
+                <label class="field"><span>Local endpoint (fixed, localhost only)</span><input id="bridgeEndpoint" value="http://127.0.0.1:47771" autocomplete="off" readonly /></label>
+                <label class="field"><span>Read-only pairing code from Shuvi.exe → AI Provider → Web Control Center</span>
+                  <input id="bridgePairingCode" type="password" autocomplete="off" spellcheck="false" placeholder="Paste temporary native pairing code" maxlength="64" />
+                </label>
+                <div class="field-row">
+                  <label class="field"><span>Connection mode</span><select id="bridgeMode"><option>Localhost only</option><option disabled>Remote relay — not available</option></select></label>
+                  <label class="field"><span>Status</span><div class="static-field" id="bridgeConnectionState"><span class="status-dot offline"></span>Not connected</div></label>
+                </div>
+                <div class="runtime-pair-actions">
+                  <button id="bridgeConnect" class="primary-button" type="button">Pair read-only</button>
+                  <button id="bridgeDisconnect" class="secondary-button" type="button">Disconnect browser</button>
+                </div>
+                <p id="bridgeConnectionDetail" class="runtime-connection-detail" role="status">Open the native Windows Shuvi app, start its read-only bridge, and paste the generated code here. Pairing codes are never saved to browser storage.</p>
+                <p class="runtime-readonly-warning">Authenticated status is not authority to run tools. Tasks, worker jobs, screenshots and pending approvals remain unavailable here.</p>
+              </article>
+
+              <article class="panel">
+                <div class="settings-heading"><div class="settings-icon">◇</div><div><h3>Security boundary</h3><p>Rules this dashboard should never bypass.</p></div></div>
+                <div class="security-list">
+                  <div><span>API keys</span><strong>OS credential store</strong></div>
+                  <div><span>File access</span><strong>Local permission gate</strong></div>
+                  <div><span>Shell commands</span><strong>Explicit approval</strong></div>
+                  <div><span>Adobe / Blender control</span><strong>Local bridge only</strong></div>
+                </div>
+              </article>
+            </div>
+          </section>
+        </div>
+      </main>
+
+      <div id="moduleDrawerBackdrop" class="drawer-backdrop"></div>
+      <aside id="moduleDrawer" class="module-drawer" aria-hidden="true">
+        <div class="drawer-head">
+          <div id="drawerModuleIcon" class="module-icon">S</div>
+          <button id="closeModuleDrawer" class="icon-button" type="button" aria-label="Close module details">×</button>
+        </div>
+        <span id="drawerModuleCategory" class="section-kicker">MODULE</span>
+        <h2 id="drawerModuleName">Shuvi module</h2>
+        <span id="drawerModuleStatus" class="module-status status-local">Local runtime required</span>
+        <p id="drawerModuleDescription" class="drawer-description"></p>
+
+        <div class="drawer-section">
+          <span class="section-kicker">AVAILABILITY</span>
+          <div class="drawer-facts">
+            <div><span>Dashboard surface</span><strong>Ready</strong></div>
+            <div><span>Local execution</span><strong id="drawerExecutionState">Runtime required</strong></div>
+            <div><span>Permission boundary</span><strong>Shuvi.exe</strong></div>
+          </div>
+        </div>
+
+        <div class="drawer-section">
+          <span class="section-kicker">CAPABILITIES</span>
+          <div id="drawerCapabilities" class="drawer-chip-list"></div>
+        </div>
+
+        <div class="drawer-section">
+          <span class="section-kicker">EXAMPLE WORKFLOWS</span>
+          <div id="drawerWorkflows" class="drawer-workflow-list"></div>
+        </div>
+
+        <div class="drawer-section">
+          <span class="section-kicker">REQUIREMENT</span>
+          <p id="drawerRequirement"></p>
+        </div>
+
+        <div class="drawer-section">
+          <span class="section-kicker">NEXT STEP</span>
+          <p id="drawerNextStep">Connect the local Shuvi runtime before executing this module.</p>
+        </div>
+
+        <div class="drawer-actions">
+          <button id="drawerPrepareTask" class="primary-button" type="button">Prepare task</button>
+          <button id="drawerOpenSettings" class="secondary-button" type="button">Runtime settings</button>
+        </div>
+      </aside>
+
+      <div id="commandPaletteBackdrop" class="command-palette-backdrop"></div>
+      <section id="commandPalette" class="command-palette" role="dialog" aria-modal="true" aria-hidden="true" aria-label="Shuvi command palette">
+        <div class="command-palette-head">
+          <span>⌕</span>
+          <input id="commandPaletteInput" type="search" placeholder="Jump to a page, module or action…" autocomplete="off" />
+          <kbd>Esc</kbd>
+        </div>
+        <div class="command-palette-meta">
+          <span>Quick navigation</span>
+          <small>Enter to open first result</small>
+        </div>
+        <div id="commandPaletteResults" class="command-palette-results"></div>
+      </section>
+
+      <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    </div>
+    <script type="module" src="/web-dashboard/src/main.ts"></script>
+  </body>
 </html>
