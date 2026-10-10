@@ -1514,6 +1514,58 @@ fn compact_error(body: &Value) -> String {
         .unwrap_or_else(|| body.to_string().chars().take(400).collect())
 }
 
+// Recover only unambiguous repeated model outputs; never execute a tool here.
+// Some models concatenate the SAME action JSON and append a short explanation.
+// Different tools, arguments and task-graph restrictions stay fail-closed.
+fn parse_unambiguous_tool_response(candidate: &str) -> Option<ToolProposal> {
+    if let Ok(proposal) = serde_json::from_str::<ToolProposal>(candidate) {
+        return Some(proposal);
+    }
+    if candidate.len() > 32_000 || !candidate.starts_with('{') {
+        return None;
+    }
+    let mut remaining = candidate;
+    let mut first_value: Option<Value> = None;
+    let mut first_proposal: Option<ToolProposal> = None;
+    let mut count = 0;
+    while remaining.starts_with('{') {
+        if count >= 3 {
+            return None;
+        }
+        let mut stream = serde_json::Deserializer::from_str(remaining).into_iter::<Value>();
+        let value = stream.next()?.ok()?;
+        let consumed = stream.byte_offset();
+        if consumed == 0 || !value.is_object() {
+            return None;
+        }
+        let proposal = serde_json::from_value::<ToolProposal>(value.clone()).ok()?;
+        if let Some(original) = first_value.as_ref() {
+            for key in ["tool", "arguments", "task_graph", "task_step_id", "task_recovery"] {
+                if original.get(key) != value.get(key) {
+                    return None;
+                }
+            }
+        } else {
+            first_value = Some(value);
+            first_proposal = Some(proposal);
+        }
+        count += 1;
+        remaining = remaining.get(consumed..)?.trim_start();
+    }
+    let tail = remaining.trim();
+    // Ignore only a short plain-text explanation, never another embedded JSON.
+    if tail.len() > 256
+        || tail.contains('{')
+        || tail.contains('}')
+        || tail.contains(char::from(96))
+        || tail.contains("~~~")
+        || tail.contains(r#""tool""#)
+    {
+        return None;
+    }
+    first_proposal
+}
+
 fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
     let mut candidate = text.trim();
 
@@ -1527,7 +1579,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         candidate = stripped.strip_suffix("~~~").unwrap_or(stripped).trim();
     }
 
-    let mut proposal: ToolProposal = serde_json::from_str(candidate).ok()?;
+    let mut proposal: ToolProposal = parse_unambiguous_tool_response(candidate)?;
     if proposal.plan.as_ref().is_some_and(|plan| {
         let bounded=|value:&str,max:usize| {
             let trimmed=value.trim();
@@ -19000,6 +19052,43 @@ mod task_graph_transport_tests {
         assert_eq!(proposal.task_graph, Some(json!(false)));
         assert_eq!(proposal.task_step_id, Some(json!(false)));
         assert_eq!(proposal.task_recovery, Some(json!("invalid")));
+    }
+
+    #[test]
+    fn duplicate_same_tool_json_with_explanation_is_staged_only_once() {
+        let first=json!({"tool":"premiere_detect","arguments":{},
+            "reason":"inspect installed Premiere",
+            "plan":{"objective":"open project","step":"detect","success_criteria":"found"}}).to_string();
+        let second=json!({"tool":"premiere_detect","arguments":{},
+            "reason":"confirm installed executable"}).to_string();
+        let repeated=format!("{first}{second}Premiere Pro की स्थिति जाँचने के लिए अनुरोध भेजा गया।");
+        let proposal=parse_tool_proposal(&repeated).expect("identical action can be staged");
+        assert_eq!(proposal.tool,"premiere_detect");
+        assert_eq!(proposal.arguments,json!({}));
+        // Parsing alone cannot execute: prepare_tool and Allow once remain mandatory.
+    }
+
+    #[test]
+    fn conflicting_or_malformed_repeated_json_is_rejected() {
+        let detect=json!({"tool":"premiere_detect","arguments":{}}).to_string();
+        let launch=json!({"tool":"premiere_launch","arguments":{}}).to_string();
+        assert!(parse_tool_proposal(&format!("{detect}{launch}")).is_none());
+        assert!(parse_tool_proposal(&format!("{detect}{{garbled")).is_none());
+        assert!(parse_tool_proposal(&format!("{detect}do it {{\"tool\":\"launch_app\"}}")).is_none());
+        assert!(parse_tool_proposal("Premiere Pro open karo").is_none());
+    }
+
+    #[test]
+    fn repeated_json_must_preserve_arguments_and_graph_metadata() {
+        let first=json!({"tool":"read_file","arguments":{"path":"C:/A.txt"},
+            "task_graph":{"objective":"read","revision":1,"steps":[]},"task_step_id":"read"}).to_string();
+        let changed_path=json!({"tool":"read_file","arguments":{"path":"C:/B.txt"},
+            "task_graph":{"objective":"read","revision":1,"steps":[]},"task_step_id":"read"}).to_string();
+        let changed_step=json!({"tool":"read_file","arguments":{"path":"C:/A.txt"},
+            "task_graph":{"objective":"read","revision":1,"steps":[]},"task_step_id":"write"}).to_string();
+        assert!(parse_tool_proposal(&format!("{first}{changed_path}")).is_none());
+        assert!(parse_tool_proposal(&format!("{first}{changed_step}")).is_none());
+        assert!(parse_tool_proposal(&format!("{first}{first}")).is_some());
     }
 
     #[test]
