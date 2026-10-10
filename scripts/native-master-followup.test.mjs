@@ -130,7 +130,7 @@ test("repeated identical proposal is blocked instead of staged or executed",asyn
  await until(()=>s.transport.connected(),"IPC");
  await s.transport.send("Open Premiere Pro","c4",0);
  s.allow.listeners.get("click")();
- await until(()=>s.transport.getReplies("c4")[0]?.includes("Repeated action"),"duplicate block");
+ await until(()=>s.transport.getReplies("c4")[0]?.includes("identical action"),"duplicate block");
  assert.equal(s.staged.length,1);
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
 });

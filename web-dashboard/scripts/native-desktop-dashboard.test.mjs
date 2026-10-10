@@ -54,7 +54,8 @@ test("Windows Settings saves chosen models and secrets only in native keyring",(
  const adapter=web("src/native-agent.ts");
  const ui=web("src/native-model-setup.ts");
  const lib=root("src-tauri/src/lib.rs");
- assert.match(adapter,/chooseNativeRoute\(text,team\?\.current\(\)\)/);
+ assert.match(adapter,/chooseNativeRoute\([^\n]*team\?\.current\(\)\)/);
+ assert.match(adapter,/waitingForChoice\?"@master "\+text:text/);
  assert.match(adapter,/provider:route\.provider,model:route\.model/);
  assert.match(adapter,/base_url:route\.base_url\|\|null/);
  assert.match(ui,/settings\.insertBefore\(card,settings\.firstChild\)/);

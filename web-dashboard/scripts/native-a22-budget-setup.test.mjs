@@ -9,7 +9,8 @@ test("Windows Settings lets owner choose exact AI models without mandatory billi
  assert.match(setup,/window\.localStorage\.setItem\(STORAGE,JSON\.stringify\(config\)\)/);
  assert.match(setup,/save_api_key/);
  assert.match(setup,/api_key_status/);
- assert.match(native,/chooseNativeRoute\(text,team\?\.current\(\)\)/);
+ assert.match(native,/chooseNativeRoute\([^\n]*team\?\.current\(\)\)/);
+ assert.match(native,/waitingForChoice\?"@master "\+text:text/);
  assert.equal(existsSync(new URL("../src/native-budget-setup.ts",import.meta.url)),false);
 });
 test("Native provider credentials and tool approvals remain in Windows app",()=>{
