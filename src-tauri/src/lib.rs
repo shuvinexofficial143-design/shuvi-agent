@@ -10185,7 +10185,7 @@ async fn execute_tool_with_action_id(
                 .join("blender-plan-inputs");
             let evidence=blender_plan_worker::execute(
                 &python_exe,&blender_exe,blend_file.as_deref(),&output_dir,
-                &plan,allow_render,&resource,&inputs,state
+                &plan,allow_render,&resource,&inputs,state,execution_action_id
             )?;
             Ok(ActionResult{
                 success:true,tool,
