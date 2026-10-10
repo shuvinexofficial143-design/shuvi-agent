@@ -83,6 +83,32 @@ async function until(predicate,label){
  }
  assert.fail("Timed out waiting for "+label);
 }
+test("A direct Premiere open request tells Master to launch, not only discover, with explicit approval",async()=>{
+ const s=setup({first:launch});
+ await until(()=>s.transport.connected(),"IPC");
+ const reply=await s.transport.send("Premiere Pro kholo","direct-premiere",0);
+ assert.equal(reply.ok,true);
+ assert.equal(s.chatInputs.length,1,"no additional paid call before first approval");
+ assert.equal(s.chatInputs[0].model,"model/master");
+ assert.match(s.chatInputs[0].orchestration_context,/premiere_launch with \{\} FIRST/);
+ assert.match(s.chatInputs[0].orchestration_context,/Do not stop at premiere_detect/);
+ assert.equal(s.staged.length,1);
+ assert.equal(s.staged[0].proposal.tool,"premiere_launch");
+ assert.deepEqual(s.staged[0].proposal.arguments,{});
+ assert.equal(s.approval.hidden,false);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,0);
+});
+test("short app-name clarification retains the previous open request as Master context",async()=>{
+ const clarification={content:"कौन-सा Adobe ऐप खोलूँ?",provider:"xkiro",model:"model/master",tool_proposal:null};
+ const s=setup({first:clarification,second:launch});
+ await until(()=>s.transport.connected(),"IPC");
+ await s.transport.send("adobe open karo","clarify",0);
+ await s.transport.send("Premiere Pro","clarify",1);
+ assert.equal(s.chatInputs[1].model,"model/master");
+ assert.match(s.chatInputs[1].orchestration_context,/previous opening request: adobe open karo/);
+ assert.equal(s.staged[0].proposal.tool,"premiere_launch");
+});
+
 test("Premiere: discovery audit triggers one Master continuation and a SECOND explicit launch approval",async()=>{
  const s=setup();
  await until(()=>s.transport.connected(),"native IPC");

@@ -344,8 +344,12 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    refreshState("Sending "+(route.role==="chat"?"chat":"Windows task for Master/selected specialist")+
     " to "+route.provider+" / "+route.model+"…");
    try{
-    const response=await invoke<NativeChatResponse>("chat",{
-      input:{provider:route.provider,model:route.model,base_url:route.base_url||null,messages,orchestration_context:null}
+    const firstStepGuidance=route.role==="chat"?null:
+     "Continue the user\u0027s actual desktop request, not a preliminary inspection. "+
+     (waitingForChoice&&lastRequest?"The user\u0027s current app name answers the previous opening request: "+lastRequest.content.slice(0,300)+". ":"")+
+     "For an instruction to open Premiere Pro, propose premiere_launch with {} FIRST; it already finds the installation. Do not stop at premiere_detect. After launch, verify the real window with a separately approved inspection. Each action requires Allow once and matching audit.";
+   const response=await invoke<NativeChatResponse>("chat",{
+      input:{provider:route.provider,model:route.model,base_url:route.base_url||null,messages,orchestration_context:firstStepGuidance}
     });
     if(!response||typeof response.content!=="string")throw Error("Invalid native AI response.");
     const reply=response.content.slice(0,12000);
