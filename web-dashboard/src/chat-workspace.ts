@@ -45,6 +45,7 @@ export function mountChatWorkspace(notify: (message: string) => void, remote?: R
   let splitId = "";
   let deleting = false;
   let remoteSending = false;
+  let providerRuntimeStatus = "Not yet verified";
 
   const layout = $<HTMLElement>("chatWorkspaceLayout");
   const threadList = $<HTMLElement>("chatThreads");
@@ -124,6 +125,52 @@ export function mountChatWorkspace(notify: (message: string) => void, remote?: R
     const t = active();
     const nativeConnected = remote?.kind === "native" && remote.connected();
     const commandConnected = remote?.connected() === true;
+    // Source of truth: native IPC proves Shuvi.exe is reachable, NOT that the
+    // selected paid model or Adobe/Blender bridge completed an operation.
+    const setStatus = (id: string, message: string): void => {
+      const target = document.getElementById(id);
+      if (target) target.textContent = message;
+    };
+    setStatus("chatRuntimeIntroduction", nativeConnected
+      ? "Talk to Shuvi through the installed Windows agent. AI responses depend on your selected provider; computer actions need approval."
+      : commandConnected
+        ? "Remote command link is connected. Windows execution still needs an acknowledged native result."
+        : "Talk normally or write a Windows command in the same conversation. Until the native agent is connected, messages remain on this browser.");
+    setStatus("chatRuntimeEyebrow", nativeConnected
+      ? "SHUVI CHAT / NATIVE WINDOWS IPC" : "SHUVI CHAT / AGENT CONNECTION REQUIRED");
+    setStatus("chatComposerStatus", nativeConnected
+      ? "Windows agent connected · Ctrl+Enter to send · Tool approval required"
+      : commandConnected
+        ? "Remote command link connected · Ctrl+Enter to queue"
+        : "Agent offline · Ctrl+Enter to save locally · No command sent");
+    setStatus("chatProviderStatus", nativeConnected ? providerRuntimeStatus
+      : commandConnected ? "Not verified" : "Not connected");
+    setStatus("chatCreativeStatus", nativeConnected ? "Not paired / unverified" : "Disconnected");
+    setStatus("chatComputerStatus", nativeConnected ? "Approval required" : "Desktop only");
+    setStatus("chatRuntimeSecurityNote", nativeConnected
+      ? "This Chat sends AI requests through installed Shuvi.exe. Provider success is separate from native IPC. No Windows tool is executed without an explicit approval and audited result."
+      : commandConnected
+        ? "Remote commands are queued only when authenticated. Windows execution is not proven without a matching receipt."
+        : "No prompts from this web screen are sent to a model or native app. Real tasks will require runtime pairing and permissions.");
+    const runtimePill = document.getElementById("chatRuntimePill");
+    if (runtimePill) {
+      const dot = document.createElement("span");
+      dot.className = "status-dot " + (commandConnected ? "verified" : "offline");
+      runtimePill.replaceChildren(dot, document.createTextNode(
+        nativeConnected ? "Windows Shuvi connected" :
+          commandConnected ? "Remote link connected" : "Agent offline · Not delivered"));
+      runtimePill.classList.toggle("connected", commandConnected);
+    }
+    const sidebarDot = document.getElementById("sidebarRuntimeDot");
+    if (sidebarDot) sidebarDot.className = "status-dot " + (nativeConnected ? "verified" : "offline");
+    setStatus("sidebarRuntimeHelper", nativeConnected
+      ? "Windows Shuvi.exe is connected. Model responses and desktop actions require separate verification."
+      : "Connect the Windows app before running local tools.");
+    const sidebarConnect = document.getElementById("sidebarRuntimeConnect") as HTMLButtonElement | null;
+    if (sidebarConnect) {
+      sidebarConnect.textContent = nativeConnected ? "Native IPC connected" : "Connect runtime";
+      sidebarConnect.disabled = nativeConnected;
+    }
     submit.textContent = nativeConnected ? "Send to Shuvi ↗"
       : commandConnected ? "Queue command ↗" : "Save locally ↗";
     const deliveryNotice = document.getElementById("chatDeliveryNotice");
@@ -153,7 +200,9 @@ export function mountChatWorkspace(notify: (message: string) => void, remote?: R
       empty.append(
         node("div","chat-empty-orb","S"),
         node("h3","","Start something new."),
-        node("p","","Talk normally or write a computer command here. Messages stay local until an authorized Windows command link is connected."),
+        node("p","",nativeConnected
+          ? "Talk normally or request a Windows task. Shuvi will send AI messages using your configured model; actual tool actions need approval."
+          : "Talk normally or write a computer command here. Messages stay local until an authorized Windows command link is connected."),
         node("span","chat-empty-hint","Your prompts are stored locally on this device.")
       );
       messages.append(empty);
@@ -307,9 +356,15 @@ export function mountChatWorkspace(notify: (message: string) => void, remote?: R
       try {
         const result = await remote.send(text,t.id,t.messages.length);
         if(!result.ok) {
+          if (remote.kind === "native") {
+            const providerHttp = /Provider returned\\s+([1-5][0-9]{2})\\b/i.exec(result.error || "");
+            providerRuntimeStatus = providerHttp ? "HTTP " + providerHttp[1] + " · request failed" : "Not yet verified";
+            renderMessages();
+          }
           notify((remote.kind === "native" ? "Native Shuvi request failed: " : "Remote command not queued: ") + (result.error || "Unknown error") + ". Draft kept.");
           return;
         }
+        if (remote.kind === "native") providerRuntimeStatus = "AI response received";
         // Only save as submitted after the remote journal acknowledged admission.
         const current=library.threads.find(x=>x.id===t.id);
         if(current)updateThread(addPrompt(current,text));

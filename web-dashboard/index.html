@@ -32,14 +32,14 @@
         <div class="sidebar-bottom">
           <div class="runtime-mini-card">
             <div class="runtime-mini-head">
-              <span class="status-dot offline"></span>
+              <span id="sidebarRuntimeDot" class="status-dot offline"></span>
               <div>
                 <strong>Local Shuvi</strong>
                 <span id="sidebarRuntimeState">Not connected</span>
               </div>
             </div>
-            <p>Connect the Windows app before running local tools.</p>
-            <button class="ghost-button full" type="button" data-action="connect-local">Connect runtime</button>
+            <p id="sidebarRuntimeHelper">Connect the Windows app before running local tools.</p>
+            <button id="sidebarRuntimeConnect" class="ghost-button full" type="button" data-action="connect-local">Connect runtime</button>
           </div>
           <div class="profile-row">
             <div class="avatar">VP</div>
@@ -246,10 +246,10 @@
             <div class="multi-chat-heading">
               <div><span class="section-kicker">SHUVI / ONE COMMAND CHAT</span>
                 <h2>One Shuvi. One chat.</h2>
-                <p>Talk normally or write a Windows command in the same conversation. Until the native agent is connected, messages remain on this browser.</p>
+                <p id="chatRuntimeIntroduction">Talk normally or write a Windows command in the same conversation. Until the native agent is connected, messages remain on this browser.</p>
               </div>
               <div class="multi-chat-actions">
-                <span class="chat-offline-pill"><span class="status-dot offline"></span> Agent offline · Not delivered</span>
+                <span id="chatRuntimePill" class="chat-offline-pill"><span class="status-dot offline"></span> Agent offline · Not delivered</span>
                 <button type="button" class="primary-button" id="chatNewTop">＋ New chat</button>
               </div>
             </div>
@@ -279,7 +279,7 @@
                 <article class="chat-panel">
                   <div class="chat-top">
                     <div class="chat-title-block">
-                      <span class="section-kicker">SHUVI CHAT / AGENT CONNECTION REQUIRED</span>
+                      <span class="section-kicker" id="chatRuntimeEyebrow">SHUVI CHAT / AGENT CONNECTION REQUIRED</span>
                       <h2 id="currentChatTitle">New chat</h2>
                       <p id="currentChatMeta">Shuvi Windows agent offline · Nothing sent</p>
                       <div class="chat-planning-hint" id="chatPlanningHint" role="status">xKiro Master AI uses the Windows agent once connected. This page does not make AI API calls.</div>
@@ -299,7 +299,7 @@
                     <div class="composer-footer">
                       <div class="composer-tools">
                         <button type="button" data-action="attachment" aria-label="Attach file (requires desktop runtime)">＋</button>
-                        <span>Agent offline · Ctrl+Enter to save locally · No command sent</span>
+                        <span id="chatComposerStatus">Agent offline · Ctrl+Enter to save locally · No command sent</span>
                       </div>
                       <button class="primary-button" type="submit" id="chatSendDraft">Save locally ↗</button>
                     </div>
@@ -321,11 +321,11 @@
                 <h3>Runtime boundary</h3>
                 <div class="context-list">
                   <div><span>Browser drafts</span><strong class="ok">Saved locally</strong></div>
-                  <div><span>AI providers</span><strong>Not connected</strong></div>
-                  <div><span>Adobe / Blender</span><strong>Disconnected</strong></div>
-                  <div><span>Computer control</span><strong>Desktop only</strong></div>
+                  <div><span>AI providers</span><strong id="chatProviderStatus">Not connected</strong></div>
+                  <div><span>Adobe / Blender</span><strong id="chatCreativeStatus">Disconnected</strong></div>
+                  <div><span>Computer control</span><strong id="chatComputerStatus">Desktop only</strong></div>
                 </div>
-                <div class="security-note"><span>◇</span><p>No prompts from this web screen are sent to a model or native app. Real tasks will require runtime pairing and permissions.</p></div>
+                <div class="security-note"><span>◇</span><p id="chatRuntimeSecurityNote">No prompts from this web screen are sent to a model or native app. Real tasks will require runtime pairing and permissions.</p></div>
                 <div class="chat-context-tip"><strong>Tip</strong><p>Use the split button to inspect two saved conversations side by side.</p></div>
               </aside>
             </div>
