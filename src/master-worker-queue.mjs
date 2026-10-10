@@ -17,7 +17,7 @@ const WORKER_LOCKS=Object.freeze({
 });
 export function workerForTool(tool){
   if(typeof tool!=="string")return "unsupported";
-  if(tool==="blender_inspect")return "blender";
+  if(tool==="blender_inspect"||tool==="blender_run_plan")return "blender";
   if(/^blender(?:_|$)/.test(tool))return "unsupported";
   if(/^premiere_/.test(tool)||tool==="motion_graphics_plan_premiere_insertion")return "premiere";
   if(/^after_effects_/.test(tool)||/^motion_graphics_plan_after_effects/.test(tool))return "after_effects";
