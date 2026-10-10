@@ -5,7 +5,7 @@ import {classifyNativeIntent,chooseNativeRoute} from "../web-dashboard/src/nativ
 const rust=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
 const native=readFileSync(new URL("../web-dashboard/src/native-agent.ts",import.meta.url),"utf8");
 test("WhatsApp Desktop tool is recognized and requires explicit approval",()=>{
- assert.match(rust,/\"whatsapp_desktop_open\"\s*\|/);
+ assert.match(rust,/\|\s*"whatsapp_desktop_open"/);
  assert.match(rust,/\"whatsapp_desktop_open\" => \{/);
  assert.match(rust,/ToolAction::WhatsAppDesktopOpen => \{/);
  assert.match(rust,/whatsapp_desktop_open accepts no arguments/);
