@@ -46,6 +46,9 @@ test("The plan must produce an actual verified output, not claim success after p
   assert.match(exec,/running_action_children\.lock\(\)/);
   assert.match(exec,/running\.insert\(action_id\.to_string\(\),pid\)/);
   assert.match(exec,/running\.remove\(action_id\)/);
+  assert.match(exec,/current_runtime_status\(state\)/);
+  assert.match(exec,/hard_limit_triggered/);
+  assert.match(exec,/terminate_registered_process_tree\(state,pid\)/);
   assert.match(rust,/&inputs,state,execution_action_id/);
   assert.match(exec,/unregister_managed_process\(state,pid\)/);
   assert.match(exec,/collect_with_deadline\(child,Duration::from_secs\(120\)\)/);
