@@ -221,15 +221,25 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     histories.set(threadId,[...messages,{role:"assistant",content:reply}].slice(-22));
     updateReply(threadId,promptIndex,reply);
     if(response.tool_proposal){
-     const proposed=await invoke<Pending>("prepare_tool",{
-      proposal:response.tool_proposal,provider:route.provider,model:route.model,baseUrl:route.base_url||null
-     });
-     if(!proposed||typeof proposed.id!=="string")throw Error("Tool preparation did not return a valid native action.");
-     pending={action:proposed,threadId,promptIndex};
-     pendingText.textContent="Permission required: "+proposed.summary+
-       "\nRisk: "+proposed.risk+"\n"+proposed.detail;
-     approval.hidden=false;
-     refreshState("Waiting for your explicit Allow once / Deny decision. No tool executed.");
+     try{
+      const proposed=await invoke<Pending>("prepare_tool",{
+       proposal:response.tool_proposal,provider:route.provider,model:route.model,baseUrl:route.base_url||null
+      });
+      if(!proposed||typeof proposed.id!=="string")throw Error("Tool preparation did not return a valid native action.");
+      pending={action:proposed,threadId,promptIndex};
+      pendingText.textContent="Permission required: "+proposed.summary+
+        "\nRisk: "+proposed.risk+"\n"+proposed.detail;
+      approval.hidden=false;
+      refreshState("Waiting for your explicit Allow once / Deny decision. No tool executed.");
+     }catch{
+      // The paid model response already arrived. A separate Windows prepare failure
+      // cannot turn that successful AI response into an unsent draft/retry.
+      const notice="Windows tool preparation failed or its outcome is unknown. No execute command was sent. Do not resend this paid AI message just to retry the tool.";
+      const acknowledgedReply=reply+"\n\n"+notice;
+      updateReply(threadId,promptIndex,acknowledgedReply);
+      refreshState("AI replied; Windows tool preparation needs attention. No action executed by Shuvi.");
+      return {ok:true,reply:acknowledgedReply};
+     }
     }else{
      refreshState("Native AI replied. No Windows tool action was requested.");
     }

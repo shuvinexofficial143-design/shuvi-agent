@@ -122,10 +122,22 @@ export function mountChatWorkspace(notify: (message: string) => void, remote?: R
 
   function renderMessages(): void {
     const t = active();
+    const nativeConnected = remote?.kind === "native" && remote.connected();
+    const commandConnected = remote?.connected() === true;
+    submit.textContent = nativeConnected ? "Send to Shuvi ↗"
+      : commandConnected ? "Queue command ↗" : "Save locally ↗";
+    const deliveryNotice = document.getElementById("chatDeliveryNotice");
+    if (deliveryNotice) deliveryNotice.textContent = nativeConnected
+      ? "Installed Shuvi.exe is connected. AI messages use your selected model; Windows tool actions need separate approval."
+      : commandConnected
+        ? "Remote command link is connected. Queued commands are not completed actions until Windows confirms execution."
+        : "Windows command delivery is not connected. Messages stay on this browser: no AI response or PC action has happened.";
     const preferredProvider = readPreferredProvider();
-    $<HTMLElement>("chatPlanningHint").textContent = preferredProvider
-      ? "Planning preference: " + preferredProvider + " · no AI connection or execution"
-      : "Choose a preferred AI model on the AI Models page (planning only).";
+    $<HTMLElement>("chatPlanningHint").textContent = nativeConnected
+      ? "Windows AI model: configured in Settings → AI Provider & Model Team. Windows actions still require approval."
+      : preferredProvider
+        ? "Planning preference: " + preferredProvider + " · no AI connection or execution"
+        : "Choose a preferred AI model on the AI Models page (planning only).";
     heading.textContent = t.title;
     meta.textContent = t.messages.length + " local messages · " + (t.archived ? "Archived · " : "") + (remote?.kind === "native" && remote.connected() ? "Windows Shuvi connected · native approval required" : remote?.connected() ? "Cloud link authenticated · native execution unverified" : "Windows agent offline · Not delivered");
     pinnedButton.textContent = t.pinned ? "★ Pinned" : "☆ Pin";
