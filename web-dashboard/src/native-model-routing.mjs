@@ -53,8 +53,10 @@ export function classifyNativeIntent(text) {
  const match=intents.filter(([,rule])=>rule.test(input));
  if(match.length===1)return match[0][0];
  if(match.length>1)return "master";
- // Writing scripts, ordinary questions and brainstorming stay with Chat AI.
- return /\b(?:notepad|desktop|computer|file|folder|terminal|powershell|cmd|window|keyboard|mouse|settings|app)\b|लैपटॉप|कंप्यूटर|फाइल|फ़ाइल|फोल्डर/iu.test(input)?"master":"chat";
+ // A command-like utterance with an unrecognized app/name still belongs to
+ // Master. It must see the ORIGINAL text and reason about it; a rigid list of
+ // English product names must not send imperfect Hindi to cheap Chat instead.
+ return "master";
 }
 export function safeNativeEndpoint(provider,provided) {
  const input=typeof provided==="string"?provided.trim():"";
