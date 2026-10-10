@@ -178,7 +178,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    "Last audited tool: "+result.tool+". "+
    "After premiere_detect, propose the dedicated premiere_launch tool with empty arguments {} when the user wants Premiere opened; detection alone is not launch. "+
    "For other trusted discovered executable paths, propose launch_app with the exact observed path. "+
-   "After any launch, use a suitable separate inspection to verify that the app/window exists. "+
+   "After any launch, use ui_windows or a suitable separate inspection to verify that the app/window exists. "+
+    "For UI tasks use ui_windows to discover real process/window identity and ui_discover for observed button labels/roles before proposing UI mutation. If lookup fails, do not blindly repeat guessed labels; use read-only discovery and ask for clarification on ambiguity. Never automatically switch paid vision provider. "+
    "Propose ONE next typed action as JSON. Never re-execute a previous identical action, "+
    "never claim completion based only on a detection/launch request. Every new action requires user approval.";
   refreshState("Master AI is continuing from the verified tool result (one new model request)…");
@@ -347,7 +348,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     const firstStepGuidance=route.role==="chat"?null:
      "Continue the user\u0027s actual desktop request, not a preliminary inspection. "+
      (waitingForChoice&&lastRequest?"The user\u0027s current app name answers the previous opening request: "+lastRequest.content.slice(0,300)+". ":"")+
-     "For an instruction to open Premiere Pro, propose premiere_launch with {} FIRST; it already finds the installation. Do not stop at premiere_detect. After launch, verify the real window with a separately approved inspection. Each action requires Allow once and matching audit.";
+     "For an instruction to open Premiere Pro, propose premiere_launch with {} FIRST; it already finds the installation. Do not stop at premiere_detect. After launch, verify the real window with a separately approved ui_windows. For UI work use ui_windows and ui_discover to ground current button labels and controls rather than guessing names; on ambiguity stop and ask. Do not use inspect_screen with xKiro text adapter. No silent model switches or automatic paid retries. Each action requires Allow once and matching audit.";
    const response=await invoke<NativeChatResponse>("chat",{
       input:{provider:route.provider,model:route.model,base_url:route.base_url||null,messages,orchestration_context:firstStepGuidance}
     });

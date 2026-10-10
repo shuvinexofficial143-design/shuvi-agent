@@ -162,6 +162,7 @@ If the user's request requires a computer action, choose ONE tool and respond ON
 {"tool":"tool_name","arguments":{...},"reason":"short explanation","plan":{"objective":"overall task","step":"what this one action is meant to accomplish","success_criteria":"observable result that proves this step worked"}}
 For a genuinely one-step task, plan may be omitted. For a multi-step task, keep objective stable across steps and make success_criteria observable from tool output or a follow-up inspection. Never claim future plan steps have already run.
 For a request to OPEN or LAUNCH Adobe Premiere Pro, choose premiere_launch with empty arguments {} as the FIRST tool, not premiere_detect. premiere_launch independently discovers the installed executable and launches it; a preliminary detection wastes time and a second paid model request. Use premiere_detect only when the user explicitly wants to inspect installation/path/readiness without opening Premiere. After launch, propose a separate ui_find or other non-mutating inspection to verify the actual window before claiming success. All actions must still require Allow once and a matching native audit.
+For any UI task, start with ui_windows when the app identity is uncertain, and use ui_discover to read actual UI labels, roles and AutomationIds before ui_click/ui_set_value. Interpret different button wording from observed controls rather than guessing exact selector strings. If the UI is not exposed through Accessibility, say so and ask for a separately configured supported vision provider; do not use inspect_screen with xKiro text adapter. Never silently switch paid models or repeat the same failed selector. Ambiguous controls must not be clicked.
 
 Available tools:
 - list_directory: {"path":"absolute path"}
@@ -2538,26 +2539,63 @@ fn ps_single_quote(value: &str) -> String {
     value.replace("'", "''")
 }
 
+// On an unmatched exact UIA selector, normalize only letter case, spacing
+// and punctuation. Never guess semantic synonyms for a write/click action;
+// let the Master inspect ui_discover and explicitly choose an observed label.
+const UI_ELEMENT_RESOLVE_SCRIPT: &str = r#"
+function Resolve-ShuviUiMatches {
+    param($root, $condition)
+    $found = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+    if ($found.Count -gt 0 -or [string]::IsNullOrWhiteSpace($uiRequestedName) -or $uiRequestedAutomationId) {
+        return ,$found
+    }
+    $normalize = {
+        param([string]$s)
+        (($s.ToLowerInvariant() -replace '[^\p{L}\p{Nd}]+',' ') -replace '\s+',' ').Trim()
+    }
+    $wanted = & $normalize $uiRequestedName
+    if ($wanted.Length -lt 3) { return ,$found }
+    $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+    $matchingNames = @()
+    for ($i=0; $i -lt [Math]::Min($all.Count, 2000); $i++) {
+        try {
+            $label = [string]$all.Item($i).Current.Name
+            if ([string]::IsNullOrWhiteSpace($label)) { continue }
+            if ((& $normalize $label) -eq $wanted) { $matchingNames += $label }
+        } catch {}
+    }
+    $distinct = @($matchingNames | Select-Object -Unique)
+    if ($distinct.Count -ne 1) { return ,$found }
+    $actualCondition = [System.Windows.Automation.PropertyCondition]::new(
+        [System.Windows.Automation.AutomationElement]::NameProperty, $distinct[0])
+    return ,($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $actualCondition))
+}
+"#;
+
 fn ui_condition_script(
     name: Option<&str>,
     automation_id: Option<&str>,
 ) -> Result<String, String> {
-    match (name, automation_id) {
-        (Some(name), Some(id)) => Ok(format!(
+    let requested_name = ps_single_quote(name.unwrap_or(""));
+    let requested_id = ps_single_quote(automation_id.unwrap_or(""));
+    let condition = match (name, automation_id) {
+        (Some(name), Some(id)) => format!(
             "$c1 = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, '{}')\n$c2 = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty, '{}')\n$condition = [System.Windows.Automation.AndCondition]::new($c1, $c2)",
-            ps_single_quote(name),
-            ps_single_quote(id)
-        )),
-        (Some(name), None) => Ok(format!(
+            ps_single_quote(name),ps_single_quote(id)
+        ),
+        (Some(name), None) => format!(
             "$condition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, '{}')",
             ps_single_quote(name)
-        )),
-        (None, Some(id)) => Ok(format!(
+        ),
+        (None, Some(id)) => format!(
             "$condition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty, '{}')",
             ps_single_quote(id)
-        )),
-        (None, None) => Err("Missing UI selector.".into()),
-    }
+        ),
+        (None, None) => return Err("Missing UI selector.".into())
+    };
+    Ok(format!(
+        "$uiRequestedName = '{requested_name}'\n$uiRequestedAutomationId = '{requested_id}'\n{condition}\n{UI_ELEMENT_RESOLVE_SCRIPT}"
+    ))
 }
 
 // The window argument is an app identity hint, NOT necessarily an exact UIA title.
@@ -10562,7 +10600,7 @@ ConvertTo-Json -InputObject @($items) -Compress -Depth 3"#);
                 r#"Add-Type -AssemblyName UIAutomationClient
 {condition}
 {root_script}
-$matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+$matches = Resolve-ShuviUiMatches -root $root -condition $condition
 $items = @()
 for ($i = 0; $i -lt [Math]::Min($matches.Count, 25); $i++) {{
     $e = $matches.Item($i)
@@ -10575,7 +10613,8 @@ for ($i = 0; $i -lt [Math]::Min($matches.Count, 25); $i++) {{
         Bounds = $e.Current.BoundingRectangle.ToString()
     }}
 }}
-$items | ConvertTo-Json -Compress"#
+if ($items.Count -eq 0) {{ 'No matching controls. Use ui_discover to inspect the real UI labels and roles.' }}
+else {{ $items | ConvertTo-Json -Compress }}"#
             );
 
             let output = run_hidden_powershell(&script)?;
@@ -10601,7 +10640,7 @@ $items | ConvertTo-Json -Compress"#
                 r#"Add-Type -AssemblyName UIAutomationClient
 {condition}
 {root_script}
-$matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+$matches = Resolve-ShuviUiMatches -root $root -condition $condition
 if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Use automation_id or a more specific selector.') }}
 $e = $matches.Item(0)
@@ -10642,7 +10681,7 @@ if ($e.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, 
                 r#"Add-Type -AssemblyName UIAutomationClient
 {condition}
 {root_script}
-$matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+$matches = Resolve-ShuviUiMatches -root $root -condition $condition
 if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Use automation_id or a more specific selector.') }}
 $e = $matches.Item(0)
@@ -10678,7 +10717,7 @@ if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Patte
                 r#"Add-Type -AssemblyName UIAutomationClient
 {condition}
 {root_script}
-$matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+$matches = Resolve-ShuviUiMatches -root $root -condition $condition
 if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Use automation_id, window, or a more specific selector.') }}
 $e = $matches.Item(0)
@@ -10718,7 +10757,7 @@ $e.SetFocus()
                 r#"Add-Type -AssemblyName UIAutomationClient
 {condition}
 {root_script}
-$matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+$matches = Resolve-ShuviUiMatches -root $root -condition $condition
 if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Use automation_id, window, or a more specific selector.') }}
 $e = $matches.Item(0)
@@ -10756,7 +10795,7 @@ if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ScrollPattern]::Patt
                 r#"Add-Type -AssemblyName UIAutomationClient
 {condition}
 {root_script}
-$matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+$matches = Resolve-ShuviUiMatches -root $root -condition $condition
 if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Refine the selector.') }}
 $e = $matches.Item(0)
@@ -10794,7 +10833,7 @@ if (-not $e.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Patt
                 r#"Add-Type -AssemblyName UIAutomationClient
 {condition}
 {root_script}
-$matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+$matches = Resolve-ShuviUiMatches -root $root -condition $condition
 if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Refine the selector.') }}
 $e = $matches.Item(0)
@@ -10834,7 +10873,7 @@ $expand.{method}()
 Add-Type -AssemblyName System.Windows.Forms
 {condition}
 {root_script}
-$matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+$matches = Resolve-ShuviUiMatches -root $root -condition $condition
 if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Refine the selector.') }}
 $e = $matches.Item(0)
