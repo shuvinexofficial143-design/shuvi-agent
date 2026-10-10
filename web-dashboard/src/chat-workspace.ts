@@ -309,7 +309,8 @@ export function mountChatWorkspace(notify: (message: string) => void, remote?: R
     save();
     render();
     input.focus();
-    notify("New conversation created. Windows Shuvi agent is not connected.");
+    notify(remote?.connected() ? "New conversation created. Shuvi connection is available." :
+      "New conversation created. Windows Shuvi agent is not connected.");
   }
 
   $<HTMLButtonElement>("chatNew").addEventListener("click", createChat);
@@ -357,7 +358,7 @@ export function mountChatWorkspace(notify: (message: string) => void, remote?: R
         const result = await remote.send(text,t.id,t.messages.length);
         if(!result.ok) {
           if (remote.kind === "native") {
-            const providerHttp = /Provider returned\\s+([1-5][0-9]{2})\\b/i.exec(result.error || "");
+            const providerHttp = /Provider returned\s+([1-5][0-9]{2})\b/i.exec(result.error || "");
             providerRuntimeStatus = providerHttp ? "HTTP " + providerHttp[1] + " · request failed" : "Not yet verified";
             renderMessages();
           }

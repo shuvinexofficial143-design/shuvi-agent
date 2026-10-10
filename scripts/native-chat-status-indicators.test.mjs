@@ -12,7 +12,7 @@ test("native Chat surfaces have explicit dynamic status targets instead of perma
  }
  assert.match(ui,/nativeConnected \? "Send to Shuvi/);
  assert.match(ui,/chatRuntimePill/);
- assert.match(styles,/chat-offline-pill\\.connected/);
+ assert.match(styles,/chat-offline-pill\.connected/);
 });
 test("provider 503 is distinct from healthy IPC and does not trigger automatic paid retries",()=>{
  assert.match(ui,/providerRuntimeStatus = providerHttp/);
