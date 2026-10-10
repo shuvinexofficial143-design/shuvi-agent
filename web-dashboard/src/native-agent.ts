@@ -328,7 +328,17 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   clearAllChats:()=>{histories.clear();replies.clear();},
   async send(text,threadId,promptIndex=0){
    if(!ready)return {ok:false,error:"Windows Shuvi is not connected yet."};
-   const route=chooseNativeRoute(text,team?.current());
+   // A short answer to a Master clarification is still part of the SAME
+   // computer task. Do not downgrade "Premiere Pro" to ordinary Chat after
+   // Shuvi asked which Adobe app to open. No rewriting of the user's actual
+   // prompt is sent to the provider; this only chooses the Master model.
+   const previous=histories.get(threadId)||[];
+   const lastAnswer=previous[previous.length-1];
+   const lastRequest=[...previous].reverse().find(message=>message.role==="user");
+   const waitingForChoice=Boolean(lastAnswer?.role==="assistant" &&
+    /[?？]|कौन\s*सा|कौन-सा|बताओ|which|specify|what\s+app/iu.test(lastAnswer.content) &&
+    lastRequest && chooseNativeRoute(lastRequest.content,team?.current()).role!=="chat");
+   const route=chooseNativeRoute(waitingForChoice?"@master "+text:text,team?.current());
    if(!route.ok)return {ok:false,error:route.error};
    if(pending)return {ok:false,error:"First approve or deny the existing Windows action."};
    if(sending)return {ok:false,error:"A native request is already running."};
