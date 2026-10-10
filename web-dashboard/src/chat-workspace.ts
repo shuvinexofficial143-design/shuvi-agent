@@ -7,8 +7,10 @@ import {
 type ViewFilter = "active" | "archived";
 export type ChatWorkspace = { createChat(): void; focusChat(): void; refreshChat(): void };
 export type RemoteChatTransport = {
+ kind?: "native"|"remote";
  connected():boolean;
- send(text:string,threadId:string):Promise<{ok:boolean;error?:string}>;
+ send(text:string,threadId:string,promptIndex?:number):Promise<{ok:boolean;error?:string;reply?:string}>;
+ getReplies?(threadId:string):string[];
 };
 
 function $<T extends HTMLElement>(id: string): T {
@@ -125,7 +127,7 @@ export function mountChatWorkspace(notify: (message: string) => void, remote?: R
       ? "Planning preference: " + preferredProvider + " · no AI connection or execution"
       : "Choose a preferred AI model on the AI Models page (planning only).";
     heading.textContent = t.title;
-    meta.textContent = t.messages.length + " local messages · " + (t.archived ? "Archived · " : "") + (remote?.connected() ? "Cloud link authenticated · native execution unverified" : "Windows agent offline · Not delivered");
+    meta.textContent = t.messages.length + " local messages · " + (t.archived ? "Archived · " : "") + (remote?.kind === "native" && remote.connected() ? "Windows Shuvi connected · native approval required" : remote?.connected() ? "Cloud link authenticated · native execution unverified" : "Windows agent offline · Not delivered");
     pinnedButton.textContent = t.pinned ? "★ Pinned" : "☆ Pin";
     pinnedButton.setAttribute("aria-pressed", String(t.pinned));
     archivedNotice.hidden = !t.archived;
@@ -144,8 +146,17 @@ export function mountChatWorkspace(notify: (message: string) => void, remote?: R
       );
       messages.append(empty);
     } else {
-      for (const message of t.messages) drawMessage(message, messages);
-      messages.append(node("p", "chat-safety-caption", remote?.connected() ? "Local history may include cloud-queued commands · check task status for execution evidence" : "Saved locally · Not delivered to Shuvi · No AI response or Windows action"));
+      const nativeReplies = remote?.kind === "native" ? remote.getReplies?.(t.id) ?? [] : [];
+      for (const [index, message] of t.messages.entries()) {
+        drawMessage(message, messages);
+        const reply = nativeReplies[index];
+        if (reply) {
+          const bubble = node("article", "shuvi-native-reply");
+          bubble.append(node("strong", "", "✦ Shuvi Windows"), node("p", "", reply));
+          messages.append(bubble);
+        }
+      }
+      messages.append(node("p", "chat-safety-caption", remote?.kind === "native" ? "Native AI responses are session-only; OS tool mutations require Allow once and matching audit evidence." : remote?.connected() ? "Local history may include cloud-queued commands · check task status for execution evidence" : "Saved locally · Not delivered to Shuvi · No AI response or Windows action"));
     }
     messages.scrollTop = messages.scrollHeight;
   }
@@ -282,9 +293,9 @@ export function mountChatWorkspace(notify: (message: string) => void, remote?: R
       remoteSending = true;
       submit.disabled = true;
       try {
-        const result = await remote.send(text,t.id);
+        const result = await remote.send(text,t.id,t.messages.length);
         if(!result.ok) {
-          notify("Remote command not queued: " + (result.error || "Unknown error") + ". Draft kept.");
+          notify((remote.kind === "native" ? "Native Shuvi request failed: " : "Remote command not queued: ") + (result.error || "Unknown error") + ". Draft kept.");
           return;
         }
         // Only save as submitted after the remote journal acknowledged admission.
@@ -292,7 +303,7 @@ export function mountChatWorkspace(notify: (message: string) => void, remote?: R
         if(current)updateThread(addPrompt(current,text));
         render();
         input.focus();
-        notify("Command queued in secure relay. Windows execution is not yet confirmed.");
+        notify(remote.kind === "native" ? "Native Shuvi received your message. Tool actions still require approval." : "Command queued in secure relay. Windows execution is not yet confirmed.");
       } finally {remoteSending=false;submit.disabled=active().archived;}
       return;
     }

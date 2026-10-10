@@ -1,0 +1,33 @@
+/* Shared Shuvi dashboard + installed Windows agent controls. */
+.shuvi-native-link {
+  margin: 12px 0 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--border, rgba(151,163,184,.26));
+  border-radius: 16px;
+  background: var(--surface, rgba(20,27,39,.58));
+  display: grid;
+  gap: 10px;
+}
+.shuvi-native-link strong { font-size: 14px; }
+.shuvi-native-link [role="status"] { margin: 0; font-size: 12px; opacity: .87; }
+.shuvi-native-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.shuvi-native-controls select, .shuvi-native-controls input {
+  min-height: 37px; border-radius: 9px; border: 1px solid rgba(150,160,174,.4);
+  background: transparent; color: inherit; padding: 7px 10px; flex: 1 1 160px;
+}
+.shuvi-native-controls button, .shuvi-native-approval button {
+  border-radius: 9px; padding: 8px 14px; cursor: pointer;
+}
+.shuvi-native-note { margin: 0; font-size: 12px; opacity: .7; }
+.shuvi-native-approval {
+  white-space: pre-wrap; border: 1px solid rgba(248,183,83,.6);
+  padding: 12px; border-radius: 10px;
+}
+.shuvi-native-approval[hidden] { display: none; }
+.shuvi-native-approval button { margin-right: 8px; }
+.shuvi-native-reply {
+  padding: 12px 16px; margin: 8px 0; border: 1px solid rgba(120,146,175,.28);
+  border-radius: 14px; background: rgba(110,135,174,.07);
+  overflow-wrap: anywhere;
+}
+.shuvi-native-reply p { white-space: pre-wrap; margin: 6px 0 0; line-height: 1.5; }

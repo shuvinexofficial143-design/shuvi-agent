@@ -23,6 +23,8 @@ import { mountTaskTimeline, type TaskTimelineController } from "./task-timeline"
 import { initializeAppearance } from "./appearance";
 import { mountChatWorkspace, type ChatWorkspace } from "./chat-workspace";
 import { mountRemoteCommandClient } from "./remote-command-client";
+import { isNativeShuvi, mountNativeAgent } from "./native-agent";
+import "./native-agent.css";
 import "./remote-command-client.css";
 import "./testing-readiness.css";
 import {mountReadinessPanel} from "./testing-readiness";
@@ -1182,7 +1184,7 @@ hydrateMetrics();
 restoreBridgePreference();
 readOnlyBridge = new ShuviReadOnlyBridge(renderNativeConnection);
 renderNativeConnection(readOnlyBridge.state());
-mountRemoteRuntimeNotice();
+if (!isNativeShuvi()) mountRemoteRuntimeNotice();
 restoreProviderPreference();
 restoreRoutingPreference();
 renderRoutingPresets();
@@ -1193,11 +1195,12 @@ renderLocalOverview();
 bindInteractions();
 // Same Vercel command chat. Relay is explicitly opted into; drafts remain
 // offline-safe when it is disconnected. Native execution needs agent receipts.
-const remoteChat = mountRemoteCommandClient(()=>chatWorkspace?.refreshChat());
+const nativeChat = mountNativeAgent(()=>chatWorkspace?.refreshChat());
+const remoteChat = nativeChat ? null : mountRemoteCommandClient(()=>chatWorkspace?.refreshChat());
 chatWorkspace = mountChatWorkspace(message => {
   showToast(message);
   renderLocalOverview();
-}, remoteChat);
+}, nativeChat ?? remoteChat ?? undefined);
 taskTimeline = mountTaskTimeline({
   drafts: readDraftTasks,
   events: readWebActivity,

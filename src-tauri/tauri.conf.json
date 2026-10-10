@@ -19,7 +19,17 @@
         "minWidth": 760,
         "minHeight": 600,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "url": "web-dashboard/index.html"
+      },
+      {
+        "label": "agent-runtime",
+        "title": "Shuvi Background Agent",
+        "url": "index.html",
+        "visible": false,
+        "width": 640,
+        "height": 480,
+        "resizable": false
       }
     ],
     "security": {
