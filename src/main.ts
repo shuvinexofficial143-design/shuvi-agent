@@ -1360,7 +1360,15 @@ async function runAgentStep(): Promise<void> {
     }
 
     const progress = taskGraphProgress(orchestration.task_graph);
-    if (progress.total && progress.completed < progress.total) {
+    const needsDragReview = orchestration.last_tool === "pointer_drag"
+      && orchestration.last_outcome === "success";
+    if (needsDragReview) {
+      messages.push({ role: "assistant", content:
+        "Pointer drag was dispatched, but its visual result has not been verified. The edit is NOT complete. Inspect the screen before continuing." });
+      renderMessages();
+      await saveActiveCheckpoint();
+      await loadRecoveryCheckpoint();
+    } else if (progress.total && progress.completed < progress.total) {
       messages.push({ role: "assistant", content: `Task paused with ${progress.completed}/${progress.total} steps supported by successful tool evidence. Unfinished steps remain saved.` });
       renderMessages();
       await saveActiveCheckpoint();
@@ -1374,7 +1382,7 @@ async function runAgentStep(): Promise<void> {
     const masterEditing = Boolean(editingMasterContext(messages));
     const graphSatisfied = progress.total > 0 && progress.completed === progress.total;
     if(remoteTask)await closeRemoteTask(
-      remoteTask.evidenceActionId && !remoteTask.hadFailure &&
+      remoteTask.evidenceActionId && !remoteTask.hadFailure && !needsDragReview &&
       (masterEditing ? graphSatisfied : (!progress.total || graphSatisfied))
         ? "succeeded" : "outcome_unknown"
     );
