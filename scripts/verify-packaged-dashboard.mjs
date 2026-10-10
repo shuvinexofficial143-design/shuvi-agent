@@ -16,6 +16,18 @@ assert.match(root,/<title>Shuvi Control Center<\/title>/);
 assert.match(root,/id="navItems"/);
 assert.match(root,/id="view-settings"/);
 assert.match(root,/id="chatWorkspaceLayout"/);
+const rootChatControls=[
+  "chatContextToggle","chatDeleteAll","chatDeleteAllDialog",
+  "chatDeleteAllConfirm","chatDeleteAllExecute","sidebarRuntimeDot",
+  "sidebarRuntimeHelper","sidebarRuntimeConnect","chatRuntimePill",
+  "chatRuntimeEyebrow","chatComposerStatus","chatProviderStatus",
+  "chatCreativeStatus","chatComputerStatus","chatRuntimeSecurityNote",
+  "chatNewTop","chatSendDraft"
+];
+for (const id of rootChatControls) {
+  assert.ok(root.includes('id="'+id+'"'),"Installed Shuvi UI is missing live Chat control: "+id);
+}
+assert.doesNotMatch(root,/chatWhatsAppOpen|web\.whatsapp\.com/,"Do not reintroduce the WhatsApp Web launcher");
 assert.doesNotMatch(root,/\/src\/entry\.ts/);
 assert.match(hidden,/<title>Shuvi<\/title>/);
 assert.doesNotMatch(hidden,/id="navItems"/);
