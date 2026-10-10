@@ -16,7 +16,7 @@ const { outputFiles } = await build({
       builder.onResolve({ filter: /^\.\/native-model-setup$/ }, () =>
         ({ path: "picker", namespace: "test-stub" }));
       builder.onLoad({ filter: /.*/, namespace: "test-stub" }, () => ({
-        contents: 'export function mountNativeModelSetup(){return {current:()=>({provider:"xkiro",base_url:"",roles:{chat:"openai/gpt-5.6-sol"}})}}',
+        contents: 'export function mountNativeModelSetup(){return {current:()=>({provider:"xkiro",base_url:"",roles:{chat:"openai/gpt-5.6-sol",master:"openai/gpt-5.6-sol"}})}}',
         loader: "js"
       }));
     }
