@@ -174,3 +174,23 @@ test("eight distinct stages have no fixed six-action cutoff",async()=>{
  assert.equal(s.approval.hidden,false);
  assert.doesNotMatch(s.transport.getReplies("long-task")[0],/step safety limit/);
 });
+
+test("Premiere opening has separate detect, launch and window-inspection approvals",async()=>{
+ const inspect={content:JSON.stringify({tool:"ui_find",arguments:{name:"Adobe Premiere Pro"}}),
+  provider:"xkiro",model:"model/master",tool_proposal:{tool:"ui_find",arguments:{name:"Adobe Premiere Pro"}}};
+ const s=setup({following:[inspect]});
+ await until(()=>s.transport.connected(),"IPC");
+ await s.transport.send("Premiere Pro kholo","premiere-inspect",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"Premiere launch approval");
+ assert.equal(s.staged[1].proposal.tool,"premiere_launch");
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===3,"Premiere window inspection approval");
+ assert.equal(s.staged[2].proposal.tool,"ui_find");
+ assert.deepEqual(s.staged[2].proposal.arguments,{name:"Adobe Premiere Pro"});
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,2,
+  "window inspection must NOT happen before a third approval");
+ assert.equal(s.approval.hidden,false);
+ assert.match(s.chatInputs[2].messages.at(-1).content,/Launching a process is not evidence/);
+});

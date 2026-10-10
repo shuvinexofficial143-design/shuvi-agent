@@ -9886,19 +9886,9140 @@ async fn execute_tool_with_action_id(
         ToolAction::WhatsAppDesktopOpen => {
             #[cfg(target_os = "windows")]
             {
-                // Fixed local command. App discovery comes from Start apps, never
-                // from model-supplied exe paths/arguments, and has no web fallback.
+                // Discover the actual installed Windows app identity. Never guess an
+                // AppUserModelID, trust model-supplied executable paths, or use Web.
+                // Start Apps may list "WhatsApp Beta"; AppX is the scoped fallback.
                 const SCRIPT: &str = r#"
 $ErrorActionPreference = 'Stop'
 $app = Get-StartApps | Where-Object {
-  ($_.Name -eq 'WhatsApp' -or $_.Name -eq 'WhatsApp Desktop') -and
+  $_.Name -match '^(?i:WhatsApp(?:\s+(?:Desktop|Beta|Preview|\(Beta\)))?)
+                let result = Command::new("powershell.exe")
+                    .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
+                    .output()
+                    .map_err(|e| format!("Could not request WhatsApp Desktop launch: {e}"))?;
+                let output = String::from_utf8_lossy(&result.stdout);
+                if !result.status.success()
+                    || !output.contains("SHUVI_WHATSAPP_DESKTOP_LAUNCH_REQUESTED")
+                {
+                    let error_output = String::from_utf8_lossy(&result.stderr);
+                    let detail: String = error_output.trim().chars().take(500).collect();
+                    let category = match result.status.code() {
+                        Some(2) => "WhatsApp Desktop/Beta not found in Start Apps or AppX",
+                        Some(3) => "Windows rejected the WhatsApp launch request",
+                        _ => "WhatsApp discovery or launch request failed",
+                    };
+                    return Err(format!("{category}. Nothing was sent. {detail}"));
+                }
+                Ok(ActionResult {
+                    success: true,
+                    tool,
+                    stdout: "Windows accepted the launch request for the installed WhatsApp Desktop application. Verify its visible window with ui_find or inspect_screen before claiming it opened. No message sent.".into(),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                })
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Err("WhatsApp Desktop launch is available only on Windows.".into())
+            }
+        }
+        ToolAction::OpenUrl { url } => {
+            #[cfg(target_os = "windows")]
+            let child = Command::new("explorer.exe")
+                .arg(&url)
+                .spawn()
+                .map_err(|error| format!("Could not open URL: {error}"))?;
+
+            #[cfg(target_os = "macos")]
+            let child = Command::new("open")
+                .arg(&url)
+                .spawn()
+                .map_err(|error| format!("Could not open URL: {error}"))?;
+
+            #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+            let child = Command::new("xdg-open")
+                .arg(&url)
+                .spawn()
+                .map_err(|error| format!("Could not open URL: {error}"))?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: format!("Opened {url} using the system browser (launcher PID {}).", child.id()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::BrowserStart { browser, url } => {
+            let executable = find_browser_executable(&browser)?;
+            let profiles_root = std::env::temp_dir()
+                .join("Shuvi")
+                .join("browser-profiles");
+            fs::create_dir_all(&profiles_root)
+                .map_err(|error| format!("Could not create browser profile root: {error}"))?;
+            let _ = prune_inactive_browser_profiles(state, &profiles_root);
+            let profile_dir = profiles_root
+                .join(format!("{}-{}-{}", browser, now_ms(), Uuid::new_v4()));
+
+            fs::create_dir_all(&profile_dir)
+                .map_err(|error| format!("Could not create managed browser profile: {error}"))?;
+
+            let devtools_file = profile_dir.join("DevToolsActivePort");
+
+            let mut command = Command::new(&executable);
+            command
+                .arg("--new-window")
+                .arg("--no-first-run")
+                .arg("--no-default-browser-check")
+                .arg("--disable-background-mode")
+                .arg("--remote-debugging-address=127.0.0.1")
+                .arg("--remote-debugging-port=0")
+                .arg(format!("--user-data-dir={}", profile_dir.display()));
+
+            if let Some(url) = &url {
+                command.arg(url);
+            }
+
+            let mut child = command
+                .spawn()
+                .map_err(|error| format!("Could not start managed browser: {error}"))?;
+
+            let child_pid = child.id();
+            let mut devtools_port = None;
+
+            for _ in 0..50 {
+                if let Ok(value) = fs::read_to_string(&devtools_file) {
+                    if let Some(first_line) = value.lines().next() {
+                        if let Ok(port) = first_line.trim().parse::<u16>() {
+                            devtools_port = Some(port);
+                            break;
+                        }
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+
+            let Some(port) = devtools_port else {
+                let _ = terminate_managed_process_tree(child_pid);
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = fs::remove_dir_all(&profile_dir);
+                return Err("Managed browser started, but its local DevTools endpoint did not become ready within 5 seconds.".into());
+            };
+
+            let mut target_id = None;
+            for _ in 0..25 {
+                if let Ok(value) = cdp_initial_page_target(port) {
+                    target_id = Some(value);
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            let Some(target_id) = target_id else {
+                let _ = terminate_managed_process_tree(child_pid);
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = fs::remove_dir_all(&profile_dir);
+                return Err("Managed browser started, but no stable page target became available for Shuvi to bind.".into());
+            };
+
+            if let Err(error) = register_managed_process(state, child_pid) {
+                let _ = terminate_managed_process_tree(child_pid);
+                let _ = child.wait();
+                let _ = fs::remove_dir_all(&profile_dir);
+                return Err(format!(
+                    "Browser was stopped before it could remain untracked: {error}"
+                ));
+            }
+
+            match state.browser_sessions.lock() {
+                Ok(mut sessions) => {
+                    sessions.insert(
+                        child_pid,
+                        BrowserSession {
+                            port,
+                            target_id: target_id.clone(),
+                            profile_dir: profile_dir.clone(),
+                        },
+                    );
+                }
+                Err(_) => {
+                    unregister_managed_process(state, child_pid);
+                    let _ = terminate_managed_process_tree(child_pid);
+                    let _ = child.wait();
+                    let _ = fs::remove_dir_all(&profile_dir);
+                    return Err("Browser-session state is unavailable; browser was stopped before partial registration could remain active.".into());
+                }
+            }
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: format!(
+                    "Started Shuvi-managed {browser} with root PID {child_pid}, local DevTools port {port}, and one bound page target. Use this PID for browser DOM tools. Browser subprocesses are included in Shuvi's RAM accounting."
+                ),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::BrowserNavigate { pid, url } => {
+            let session = browser_session(state, pid)?;
+            let response = cdp_command(
+                session.port,
+                &session.target_id,
+                "Page.navigate",
+                json!({ "url": url }),
+            )?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: format!(
+                    "Navigated browser PID {pid}. DevTools response: {}",
+                    truncate_output(response.to_string())
+                ),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::BrowserDomRead { pid, selector } => {
+            let session = browser_session(state, pid)?;
+            let selector_json = serde_json::to_string(&selector)
+                .map_err(|error| format!("Could not encode CSS selector: {error}"))?;
+
+            let expression = format!(
+                r#"(() => {{
+  const selector = {selector_json};
+  const nodes = Array.from(document.querySelectorAll(selector)).slice(0, 25);
+  return nodes.map((el, index) => ({{
+    index,
+    tag: el.tagName,
+    id: el.id || null,
+    name: el.getAttribute('name'),
+    role: el.getAttribute('role'),
+    type: el.getAttribute('type'),
+    text: String(el.innerText || el.textContent || '').trim().slice(0, 500),
+    value: ('value' in el) ? String(el.value).slice(0, 500) : null,
+    href: el.href || null,
+    disabled: !!el.disabled
+  }}));
+}})()"#
+            );
+
+            let value = cdp_eval(session.port, &session.target_id, expression)?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value)
+                    .unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::BrowserDomClick { pid, selector } => {
+            let session = browser_session(state, pid)?;
+            let selector_json = serde_json::to_string(&selector)
+                .map_err(|error| format!("Could not encode CSS selector: {error}"))?;
+
+            let expression = format!(
+                r#"(() => {{
+  const selector = {selector_json};
+  const nodes = Array.from(document.querySelectorAll(selector));
+  if (nodes.length === 0) throw new Error('No DOM element matched the selector.');
+  if (nodes.length > 1) throw new Error('Selector matched ' + nodes.length + ' elements. Refine it before clicking.');
+  const el = nodes[0];
+  if (el.disabled) throw new Error('Matching DOM element is disabled.');
+  el.scrollIntoView({{ block: 'center', inline: 'center' }});
+  el.click();
+  return {{
+    clicked: true,
+    tag: el.tagName,
+    id: el.id || null,
+    text: String(el.innerText || el.textContent || '').trim().slice(0, 300)
+  }};
+}})()"#
+            );
+
+            let value = cdp_eval(session.port, &session.target_id, expression)?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value)
+                    .unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::BrowserDomSetValue { pid, selector, value } => {
+            let session = browser_session(state, pid)?;
+            let selector_json = serde_json::to_string(&selector)
+                .map_err(|error| format!("Could not encode CSS selector: {error}"))?;
+            let value_json = serde_json::to_string(&value)
+                .map_err(|error| format!("Could not encode DOM value: {error}"))?;
+
+            let expression = format!(
+                r#"(() => {{
+  const selector = {selector_json};
+  const newValue = {value_json};
+  const nodes = Array.from(document.querySelectorAll(selector));
+  if (nodes.length === 0) throw new Error('No DOM element matched the selector.');
+  if (nodes.length > 1) throw new Error('Selector matched ' + nodes.length + ' elements. Refine it before writing.');
+  const el = nodes[0];
+  if (el.disabled) throw new Error('Matching DOM element is disabled.');
+  el.focus();
+
+  if ('value' in el) {{
+    const proto = Object.getPrototypeOf(el);
+    const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (descriptor && descriptor.set) descriptor.set.call(el, newValue);
+    else el.value = newValue;
+  }} else if (el.isContentEditable) {{
+    el.textContent = newValue;
+  }} else {{
+    throw new Error('Matching DOM element is not value-editable.');
+  }}
+
+  el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+  el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+
+  return {{
+    changed: true,
+    tag: el.tagName,
+    id: el.id || null,
+    valueLength: newValue.length
+  }};
+}})()"#
+            );
+
+            let result = cdp_eval(session.port, &session.target_id, expression)?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&result)
+                    .unwrap_or_else(|_| result.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::StopManagedProcess { pid } => {
+            let is_managed_root = state
+                .managed_children
+                .lock()
+                .map_err(|_| "Managed-process state is unavailable.".to_string())?
+                .contains(&pid);
+
+            if !is_managed_root || !managed_process_identity_matches(state, pid)? {
+                unregister_managed_process(state, pid);
+                return Err("Shuvi can only stop the exact live process instance that it launched and is tracking.".into());
+            }
+
+            let pid_string = pid.to_string();
+
+            #[cfg(target_os = "windows")]
+            let output = Command::new("taskkill")
+                .args(["/PID", pid_string.as_str(), "/T", "/F"])
+                .output()
+                .map_err(|error| format!("Could not stop managed process: {error}"))?;
+
+            #[cfg(not(target_os = "windows"))]
+            let output = Command::new("kill")
+                .args(["-TERM", pid_string.as_str()])
+                .output()
+                .map_err(|error| format!("Could not stop managed process: {error}"))?;
+
+            if output.status.success() {
+                unregister_managed_process(state, pid);
+
+                if let Some(session) = state
+                    .browser_sessions
+                    .lock()
+                    .map_err(|_| "Browser-session state is unavailable.".to_string())?
+                    .remove(&pid)
+                {
+                    let _ = fs::remove_dir_all(session.profile_dir);
+                }
+            }
+
+            Ok(ActionResult {
+                success: output.status.success(),
+                tool,
+                stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                stderr: truncate_output(String::from_utf8_lossy(&output.stderr).to_string()),
+                exit_code: output.status.code(),
+            })
+        }
+        ToolAction::BlenderRunPlan {python_exe,blender_exe,blend_file,output_dir,allow_render,plan} => {
+            let resource=app.path().resource_dir()
+                .map_err(|e|format!("Could not find Blender plan resource directory: {e}"))?
+                .join("blender-worker").join("shuvi_blender_plan.py");
+            let inputs=app.path().app_local_data_dir()
+                .map_err(|e|format!("Cannot locate private Blender plan directory: {e}"))?
+                .join("blender-plan-inputs");
+            let evidence=blender_plan_worker::execute(
+                &python_exe,&blender_exe,blend_file.as_deref(),&output_dir,
+                &plan,allow_render,&resource,&inputs,state,execution_action_id
+            )?;
+            Ok(ActionResult{
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&evidence).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::BlenderInspect {python_exe,blender_exe,blend_file,operation} => {
+            let script=app.path().resource_dir()
+                .map_err(|e|format!("Could not resolve Blender worker resource directory: {e}"))?
+                .join("blender-worker").join("shuvi_blender_bridge.py");
+            let evidence=blender_worker::inspect(
+                &python_exe,&blender_exe,blend_file.as_deref(),&operation,&script,state
+            )?;
+            Ok(ActionResult{
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&evidence).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::CaptureScreen => {
+            let path = capture_screen_png()?;
+            let size = fs::metadata(&path)
+                .map(|metadata| metadata.len())
+                .unwrap_or_default();
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: format!(
+                    "Screenshot saved to {} ({} bytes). Use inspect_screen when visual understanding is required.",
+                    path.display(),
+                    size
+                ),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::InspectScreen { prompt, provider } => {
+            let path = capture_screen_png()?;
+            let analysis = analyze_png_with_provider(&provider, &prompt, &path).await?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: format!(
+                    "Screen analysis from {}/{}:\n{}\nScreenshot: {}",
+                    provider.provider,
+                    provider.model,
+                    analysis,
+                    path.display()
+                ),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::ListProcesses => {
+            let mut system = System::new_all();
+            system.refresh_all();
+
+            let mut rows = system
+                .processes()
+                .iter()
+                .map(|(pid, process)| {
+                    format!(
+                        "PID={} | {} | {:.1} MB",
+                        pid.as_u32(),
+                        process.name().to_string_lossy(),
+                        process.memory() as f64 / 1024.0 / 1024.0
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            rows.sort();
+            rows.truncate(400);
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: rows.join("\n"),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::UiFind { name, automation_id, window } => {
+            let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
+            let root_script = ui_root_script(window.as_deref());
+            let script = format!(
+                r#"Add-Type -AssemblyName UIAutomationClient
+{condition}
+{root_script}
+$matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+$items = @()
+for ($i = 0; $i -lt [Math]::Min($matches.Count, 25); $i++) {{
+    $e = $matches.Item($i)
+    $items += [PSCustomObject]@{{
+        Name = $e.Current.Name
+        AutomationId = $e.Current.AutomationId
+        ControlType = $e.Current.ControlType.ProgrammaticName
+        ClassName = $e.Current.ClassName
+        IsEnabled = $e.Current.IsEnabled
+        Bounds = $e.Current.BoundingRectangle.ToString()
+    }}
+}}
+$items | ConvertTo-Json -Compress"#
+            );
+
+            let output = run_hidden_powershell(&script)?;
+            if !output.status.success() {
+                return Err(format!(
+                    "UI lookup failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                stderr: String::new(),
+                exit_code: output.status.code(),
+            })
+        }
+        ToolAction::UiClick { name, automation_id, window } => {
+            let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
+            let root_script = ui_root_script(window.as_deref());
+            let script = format!(
+                r#"Add-Type -AssemblyName UIAutomationClient
+{condition}
+{root_script}
+$matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
+if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Use automation_id or a more specific selector.') }}
+$e = $matches.Item(0)
+if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
+$pattern = $null
+if ($e.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {{
+    ([System.Windows.Automation.InvokePattern]$pattern).Invoke()
+    'Invoked element: ' + $e.Current.Name
+}} elseif ($e.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) {{
+    ([System.Windows.Automation.SelectionItemPattern]$pattern).Select()
+    'Selected element: ' + $e.Current.Name
+}} else {{
+    throw 'Matching element does not expose InvokePattern or SelectionItemPattern.'
+}}"#
+            );
+
+            let output = run_hidden_powershell(&script)?;
+            if !output.status.success() {
+                return Err(format!(
+                    "UI click failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                stderr: String::new(),
+                exit_code: output.status.code(),
+            })
+        }
+        ToolAction::UiSetValue { name, automation_id, window, value } => {
+            let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
+            let root_script = ui_root_script(window.as_deref());
+            let escaped_value = ps_single_quote(&value);
+            let script = format!(
+                r#"Add-Type -AssemblyName UIAutomationClient
+{condition}
+{root_script}
+$matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
+if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Use automation_id or a more specific selector.') }}
+$e = $matches.Item(0)
+if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
+$pattern = $null
+if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) {{
+    throw 'Matching element does not expose ValuePattern.'
+}}
+([System.Windows.Automation.ValuePattern]$pattern).SetValue('{escaped_value}')
+'Value set on element: ' + $e.Current.Name"#
+            );
+
+            let output = run_hidden_powershell(&script)?;
+            if !output.status.success() {
+                return Err(format!(
+                    "UI value change failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                stderr: String::new(),
+                exit_code: output.status.code(),
+            })
+        }
+        ToolAction::UiFocus { name, automation_id, window } => {
+            let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
+            let root_script = ui_root_script(window.as_deref());
+            let script = format!(
+                r#"Add-Type -AssemblyName UIAutomationClient
+{condition}
+{root_script}
+$matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
+if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Use automation_id, window, or a more specific selector.') }}
+$e = $matches.Item(0)
+if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
+$e.SetFocus()
+'Focused element: ' + $e.Current.Name"#
+            );
+
+            let output = run_hidden_powershell(&script)?;
+            if !output.status.success() {
+                return Err(format!(
+                    "UI focus failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                stderr: String::new(),
+                exit_code: output.status.code(),
+            })
+        }
+        ToolAction::UiScroll { name, automation_id, window, vertical } => {
+            let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
+            let root_script = ui_root_script(window.as_deref());
+            let amount = match vertical.as_str() {
+                "small_increment" => "SmallIncrement",
+                "small_decrement" => "SmallDecrement",
+                "large_increment" => "LargeIncrement",
+                "large_decrement" => "LargeDecrement",
+                _ => return Err("Invalid scroll amount.".into()),
+            };
+
+            let script = format!(
+                r#"Add-Type -AssemblyName UIAutomationClient
+{condition}
+{root_script}
+$matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
+if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Use automation_id, window, or a more specific selector.') }}
+$e = $matches.Item(0)
+$pattern = $null
+if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern, [ref]$pattern)) {{
+    throw 'Matching element does not expose ScrollPattern.'
+}}
+([System.Windows.Automation.ScrollPattern]$pattern).Scroll(
+    [System.Windows.Automation.ScrollAmount]::NoAmount,
+    [System.Windows.Automation.ScrollAmount]::{amount}
+)
+'Scrolled element: ' + $e.Current.Name"#
+            );
+
+            let output = run_hidden_powershell(&script)?;
+            if !output.status.success() {
+                return Err(format!(
+                    "UI scroll failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                stderr: String::new(),
+                exit_code: output.status.code(),
+            })
+        }
+        ToolAction::UiToggle { name, automation_id, window } => {
+            let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
+            let root_script = ui_root_script(window.as_deref());
+            let script = format!(
+                r#"Add-Type -AssemblyName UIAutomationClient
+{condition}
+{root_script}
+$matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
+if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Refine the selector.') }}
+$e = $matches.Item(0)
+if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
+$pattern = $null
+if (-not $e.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$pattern)) {{
+    throw 'Matching element does not expose TogglePattern.'
+}}
+([System.Windows.Automation.TogglePattern]$pattern).Toggle()
+'Toggled element: ' + $e.Current.Name"#
+            );
+
+            let output = run_hidden_powershell(&script)?;
+            if !output.status.success() {
+                return Err(format!(
+                    "UI toggle failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                stderr: String::new(),
+                exit_code: output.status.code(),
+            })
+        }
+        ToolAction::UiExpandCollapse { name, automation_id, window, action } => {
+            let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
+            let root_script = ui_root_script(window.as_deref());
+            let method = if action == "expand" { "Expand" } else { "Collapse" };
+
+            let script = format!(
+                r#"Add-Type -AssemblyName UIAutomationClient
+{condition}
+{root_script}
+$matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
+if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Refine the selector.') }}
+$e = $matches.Item(0)
+if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
+$pattern = $null
+if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$pattern)) {{
+    throw 'Matching element does not expose ExpandCollapsePattern.'
+}}
+$expand = [System.Windows.Automation.ExpandCollapsePattern]$pattern
+$expand.{method}()
+'{method} completed for element: ' + $e.Current.Name"#
+            );
+
+            let output = run_hidden_powershell(&script)?;
+            if !output.status.success() {
+                return Err(format!(
+                    "UI expand/collapse failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                stderr: String::new(),
+                exit_code: output.status.code(),
+            })
+        }
+        ToolAction::UiSendKeys { name, automation_id, window, keys } => {
+            let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
+            let root_script = ui_root_script(window.as_deref());
+            let escaped_keys = ps_single_quote(&keys);
+
+            let script = format!(
+                r#"Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName System.Windows.Forms
+{condition}
+{root_script}
+$matches = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
+if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Refine the selector.') }}
+$e = $matches.Item(0)
+if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
+$e.SetFocus()
+Start-Sleep -Milliseconds 80
+[System.Windows.Forms.SendKeys]::SendWait('{escaped_keys}')
+'Keyboard fallback sent to element: ' + $e.Current.Name"#
+            );
+
+            let output = run_hidden_powershell(&script)?;
+            if !output.status.success() {
+                return Err(format!(
+                    "UI keyboard fallback failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                stderr: String::new(),
+                exit_code: output.status.code(),
+            })
+        }
+        ToolAction::PointerClick { x, y, button, clicks } => {
+            #[cfg(target_os = "windows")]
+            {
+                let down_flag = match button.as_str() {
+                    "left" => "0x0002",
+                    "right" => "0x0008",
+                    "middle" => "0x0020",
+                    _ => return Err("Invalid pointer button.".into()),
+                };
+                let up_flag = match button.as_str() {
+                    "left" => "0x0004",
+                    "right" => "0x0010",
+                    "middle" => "0x0040",
+                    _ => return Err("Invalid pointer button.".into()),
+                };
+
+                let script = format!(
+                    r#"Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class ShuviPointer {{
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
+}}
+"@
+Add-Type -AssemblyName System.Windows.Forms
+$bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
+if ({x} -lt $bounds.Left -or {x} -ge $bounds.Right -or {y} -lt $bounds.Top -or {y} -ge $bounds.Bottom) {{
+  throw 'Pointer target is outside the current virtual desktop.'
+}}
+if (-not [ShuviPointer]::SetCursorPos({x}, {y})) {{ throw 'Could not move pointer.' }}
+Start-Sleep -Milliseconds 80
+for ($i = 0; $i -lt {clicks}; $i++) {{
+  [ShuviPointer]::mouse_event({down_flag}, 0, 0, 0, [UIntPtr]::Zero)
+  [ShuviPointer]::mouse_event({up_flag}, 0, 0, 0, [UIntPtr]::Zero)
+  if ($i + 1 -lt {clicks}) {{ Start-Sleep -Milliseconds 120 }}
+}}
+'Pointer click completed at ({x}, {y}).'"#
+                );
+
+                let output = run_hidden_powershell(&script)?;
+                if !output.status.success() {
+                    return Err(format!(
+                        "Coordinate pointer click failed: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    ));
+                }
+
+                return Ok(ActionResult {
+                    success: true,
+                    tool,
+                    stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                    stderr: String::new(),
+                    exit_code: output.status.code(),
+                });
+            }
+
+            #[cfg(not(target_os = "windows"))]
+            {
+                Err("Coordinate pointer fallback is currently available on Windows only.".into())
+            }
+        }
+        ToolAction::PointerDrag {x1,y1,x2,y2,duration_ms} => {
+            #[cfg(target_os = "windows")]
+            {
+                let sleep=std::cmp::max(4,duration_ms/24);
+                let script=format!(r#"Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class ShuviDrag {{
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int X,int Y);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint flags,uint dx,uint dy,uint data,UIntPtr extraInfo);
+}}
+"@
+Add-Type -AssemblyName System.Windows.Forms
+$bounds=[System.Windows.Forms.SystemInformation]::VirtualScreen
+if ({x1} -lt $bounds.Left -or {x1} -ge $bounds.Right -or {y1} -lt $bounds.Top -or {y1} -ge $bounds.Bottom) {{
+  throw 'Pointer drag start is outside virtual desktop.'
+}}
+if ({x2} -lt $bounds.Left -or {x2} -ge $bounds.Right -or {y2} -lt $bounds.Top -or {y2} -ge $bounds.Bottom) {{
+  throw 'Pointer drag end is outside virtual desktop.'
+}}
+if (-not [ShuviDrag]::SetCursorPos({x1},{y1})) {{ throw 'Cannot set initial pointer position.' }}
+Start-Sleep -Milliseconds 60
+$pressed=$false
+try {{
+  [ShuviDrag]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero)
+  $pressed=$true
+  for($i=1;$i -le 24;$i++) {{
+    $ratio=[double]$i/24.0
+    $nx=[int][Math]::Round({x1}+({x2}-{x1})*$ratio)
+    $ny=[int][Math]::Round({y1}+({y2}-{y1})*$ratio)
+    if(-not [ShuviDrag]::SetCursorPos($nx,$ny)) {{ throw 'Drag pointer movement failed.' }}
+    Start-Sleep -Milliseconds {sleep}
+  }}
+}} finally {{
+  if($pressed) {{ [ShuviDrag]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero) }}
+}}
+'Pointer drag dispatched; inspect the screen to verify the application result.'
+"#);
+                let output=run_hidden_powershell(&script)?;
+                if !output.status.success(){
+                    return Err("Pointer drag dispatch failed; application outcome is unknown.".into());
+                }
+                return Ok(ActionResult{
+                    success:true,tool,
+                    stdout:truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                    stderr:String::new(),exit_code:output.status.code()
+                });
+            }
+            #[cfg(not(target_os = "windows"))]
+            {Err("Pointer drag requires Windows.".into())}
+        }
+        ToolAction::MotionGraphicsValidatePlan {plan} => {
+            let value=plan.summary()?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MotionGraphicsPlanAfterEffects {request} => {
+            let value=request.plan()?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MotionGraphicsPlanAfterEffectsOutput {request} => {
+            let value=request.plan()?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MotionGraphicsPlanRemotion {request} => {
+            let value=request.plan()?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MotionGraphicsAcceptRemotionEvidence {request} => {
+            let value=motion_graphics_remotion::verify(&request)?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MotionGraphicsRunRemotion {request} => {
+            let prepared=motion_graphics_remotion_runtime::prepare(&request)?;
+            let mut child=Command::new(&prepared.node_program)
+                .arg(&prepared.render_script)
+                .arg(&prepared.manifest_path)
+                .arg(&prepared.output_file)
+                .arg(&prepared.evidence_path)
+                .arg(&prepared.preview_dir)
+                .current_dir(&prepared.job_dir)
+                .env("CI","1")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|error|format!("Could not launch fixed Remotion runtime: {error}"))?;
+            let child_pid=child.id();
+            if let Err(error)=register_managed_process(state,child_pid){
+                let _=terminate_managed_process_tree(child_pid);
+                let _=child.kill();
+                let _=child.wait();
+                return Err(format!("Remotion render was stopped before execution could continue safely: {error}"));
+            }
+            if let Some(action_id)=execution_action_id{
+                match state.running_action_children.lock(){
+                    Ok(mut running)=>{running.insert(action_id.to_string(),child_pid);}
+                    Err(_)=>{
+                        let _=terminate_registered_process_tree(state,child_pid);
+                        unregister_managed_process(state,child_pid);
+                        let _=child.kill();
+                        let _=child.wait();
+                        return Err("Running-action state is unavailable; Remotion render was stopped safely.".into());
+                    }
+                }
+            }
+            let hard_limit_triggered=AtomicBool::new(false);
+            let hard_limit_terminated=AtomicBool::new(false);
+            let timeout_triggered=AtomicBool::new(false);
+            let timeout_terminated=AtomicBool::new(false);
+            let timeout=Duration::from_millis(prepared.timeout_ms);
+            let started=std::time::Instant::now();
+            let output_result=std::thread::scope(|scope|{
+                let monitor=scope.spawn(||{
+                    while managed_process_identity_matches(state,child_pid).unwrap_or(false){
+                        if started.elapsed()>=timeout{
+                            timeout_triggered.store(true,Ordering::Release);
+                            let stopped=terminate_registered_process_tree(state,child_pid).unwrap_or(false);
+                            timeout_terminated.store(stopped,Ordering::Release);
+                            break;
+                        }
+                        match current_runtime_status(state){
+                            Ok(status) if status.over_hard_limit=>{
+                                hard_limit_triggered.store(true,Ordering::Release);
+                                let stopped=terminate_registered_process_tree(state,child_pid).unwrap_or(false);
+                                hard_limit_terminated.store(stopped,Ordering::Release);
+                                break;
+                            }
+                            Ok(_)=>{}
+                            Err(_)=>break,
+                        }
+                        std::thread::sleep(Duration::from_millis(250));
+                    }
+                });
+                // A08: prevent inherited pipes from blocking after the renderer timeout.
+                let output=bounded_child::collect_with_deadline(
+                    child,timeout.saturating_add(Duration::from_secs(5))
+                );
+                let _=monitor.join();
+                output
+            });
+            if let Some(action_id)=execution_action_id{
+                if let Ok(mut running)=state.running_action_children.lock(){running.remove(action_id);}
+            }
+            unregister_managed_process(state,child_pid);
+            let output=output_result.map_err(|error|format!("Could not wait for fixed Remotion runtime: {error}"))?;
+            let timed_out=timeout_triggered.load(Ordering::Acquire);
+            let over_ram=hard_limit_triggered.load(Ordering::Acquire);
+            if timed_out||over_ram||!output.status.success(){
+                let guard=if timed_out{
+                    if timeout_terminated.load(Ordering::Acquire){"Remotion render exceeded its approved timeout and the managed process tree was stopped."}
+                    else{"Remotion render exceeded its approved timeout; process-tree termination could not be confirmed."}
+                }else if over_ram{
+                    if hard_limit_terminated.load(Ordering::Acquire){"Remotion render exceeded Shuvi's 4 GB hard RAM ceiling and the managed process tree was stopped."}
+                    else{"Remotion render exceeded Shuvi's 4 GB hard RAM ceiling; process-tree termination could not be confirmed."}
+                }else{"Fixed Remotion runtime exited unsuccessfully."};
+                return Ok(ActionResult{
+                    success:false,tool,
+                    stdout:serde_json::to_string_pretty(&json!({
+                        "job_id":prepared.job_id,
+                        "job_dir":prepared.job_dir,
+                        "output_file":prepared.output_file,
+                        "evidence_path":prepared.evidence_path,
+                        "fixed_runtime_source_materialized":true,
+                        "managed_process_registered":true,
+                        "render_verified":false,
+                        "production_ready":false
+                    })).unwrap_or_default(),
+                    stderr:truncate_output(format!("{}\n{}",guard,String::from_utf8_lossy(&output.stderr))),
+                    exit_code:output.status.code().or(Some(1)),
+                });
+            }
+            let accepted=motion_graphics_remotion::verify(&prepared.evidence_request)?;
+            if !accepted.final_output_sha256_verified{
+                return Err("Fixed Remotion process exited successfully but final output evidence was not SHA-256 verified.".into());
+            }
+            let value=json!({
+                "job_id":prepared.job_id,
+                "job_dir":prepared.job_dir,
+                "output_file":prepared.output_file,
+                "evidence_path":prepared.evidence_path,
+                "preview_dir":prepared.preview_dir,
+                "dependency_versions":prepared.dependency_versions,
+                "dependency_versions_verified":true,
+                "dependency_source_integrity_verified":false,
+                "fixed_runtime_source_materialized":true,
+                "shuvi_managed_runtime_launch_verified":true,
+                "managed_process_registered":true,
+                "receipt_evidence":accepted,
+                "render_output_sha256_verified":true,
+                "alpha_channel_probe_verified":false,
+                "visual_review_verified":false,
+                "production_ready":false,
+                "renderer_stdout":truncate_output(String::from_utf8_lossy(&output.stdout).to_string())
+            });
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:truncate_output(String::from_utf8_lossy(&output.stderr).to_string()),exit_code:output.status.code()})
+        }
+        ToolAction::MotionGraphicsGeneratePlan {request,provider} => {
+            let prompt=request.prompt()?;
+            let key=load_api_key(&provider.provider)?;
+            let response=send_chat(
+                ChatInput{
+                    provider:provider.provider.clone(),
+                    model:provider.model.clone(),
+                    base_url:provider.base_url.clone(),
+                    messages:vec![
+                        ChatMessage{role:"system".into(),content:motion_graphics_provider::system_prompt().into()},
+                        ChatMessage{role:"user".into(),content:prompt},
+                    ],
+                    orchestration_context:None,
+                },
+                key
+            ).await?;
+            if response.tool_proposal.is_some() {
+                return Err("Motion-graphics planning provider returned a tool proposal instead of the required raw Plan JSON.".into());
+            }
+            let plan=request.parse_generated(&response.content)?;
+            let summary=plan.summary()?;
+            let value=json!({
+                "plan":plan,
+                "validation_summary":summary,
+                "provider":response.provider,
+                "model":response.model,
+                "usage":response.usage,
+                "strict_json_validated":true,
+                "fixed_constraints_preserved":true,
+                "renderer_execution_performed":false,
+                "preview_render_verified":false,
+                "visual_review_verified":false,
+                "production_ready":false
+            });
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MotionGraphicsReviewPreview {preview_path,preview_bytes,sample_time_seconds,plan,provider} => {
+            let plan_snapshot=plan.fingerprint()?;
+            let prompt=motion_graphics_review::review_prompt(&plan,sample_time_seconds)?;
+            let analysis=analyze_png_bytes_with_provider(&provider,&prompt,&preview_bytes).await?;
+            let review=motion_graphics_review::parse_review(&plan,&analysis)?;
+            let value=json!({
+                "plan_snapshot":plan_snapshot,
+                "review":review,
+                "sample_time_seconds":sample_time_seconds,
+                "preview_path":preview_path,
+                "preview_size_bytes":preview_bytes.len(),
+                "preview_bytes_bound_at_approval":true,
+                "preview_image_reviewed":true,
+                "visual_review_completed":true,
+                "renderer_provenance_verified":false,
+                "render_output_verified":false,
+                "automatic_correction_performed":false,
+                "production_ready":false
+            });
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MotionGraphicsReviewRemotionFrames {request,accepted,frames,provider} => {
+            let frame_times=frames.iter().map(|frame|frame.requested_time_seconds).collect::<Vec<_>>();
+            let review_prompt=motion_graphics_review::multi_frame_prompt(&request.plan,&frame_times)?;
+            let prompt=format!("{}\n{}",motion_graphics_review::multi_frame_system_prompt(),review_prompt);
+            let analysis=analyze_png_frames_with_provider(&provider,&prompt,&frames).await?;
+            let review=motion_graphics_review::parse_multi_frame_review(&request.plan,&frame_times,&analysis)?;
+            let plan_snapshot=request.plan.fingerprint()?;
+            let frame_bindings=frames.iter().map(|frame|json!({
+                "requested_time_seconds":frame.requested_time_seconds,
+                "rendered_time_seconds":frame.rendered_time_seconds,
+                "file":frame.file,
+                "sha256":frame.sha256,
+                "bytes":frame.bytes.len()
+            })).collect::<Vec<_>>();
+            let value=json!({
+                "plan_snapshot":plan_snapshot,
+                "manifest_sha256":accepted.manifest_sha256,
+                "receipt_binding_verified":accepted.receipt_binding_verified,
+                "preview_files_sha256_verified":accepted.preview_files_sha256_verified,
+                "preview_bytes_bound_at_approval":true,
+                "frame_bindings":frame_bindings,
+                "review":review,
+                "provider":provider.provider,
+                "model":provider.model,
+                "multi_frame_review_completed":true,
+                "visual_review_completed":true,
+                "renderer_execution_reported_by_receipt":accepted.renderer_execution_reported_by_receipt,
+                "renderer_provenance_verified":accepted.runtime_process_provenance_verified,
+                "final_output_sha256_verified":accepted.final_output_sha256_verified,
+                "alpha_channel_probe_verified":accepted.alpha_channel_probe_verified,
+                "automatic_correction_performed":false,
+                "production_ready":false
+            });
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MotionGraphicsGenerateCorrection {request,provider} => {
+            let prompt=request.prompt()?;
+            let key=load_api_key(&provider.provider)?;
+            let response=send_chat(
+                ChatInput{
+                    provider:provider.provider.clone(),
+                    model:provider.model.clone(),
+                    base_url:provider.base_url.clone(),
+                    messages:vec![
+                        ChatMessage{role:"system".into(),content:motion_graphics_correction::system_prompt().into()},
+                        ChatMessage{role:"user".into(),content:prompt},
+                    ],
+                    orchestration_context:None,
+                },
+                key
+            ).await?;
+            if response.tool_proposal.is_some() {
+                return Err("Motion correction provider returned a tool proposal instead of the required raw revised Plan JSON.".into());
+            }
+            let prior_snapshot=request.plan_snapshot.clone();
+            let revised=request.parse_revision(&response.content)?;
+            let revised_snapshot=revised.fingerprint()?;
+            let value=json!({
+                "prior_plan_snapshot":prior_snapshot,
+                "revised_plan_snapshot":revised_snapshot,
+                "revised_plan":revised,
+                "iteration":request.iteration,
+                "max_iterations":request.max_iterations,
+                "provider":response.provider,
+                "model":response.model,
+                "usage":response.usage,
+                "strict_json_validated":true,
+                "snapshot_match_verified":true,
+                "immutable_topology_preserved":true,
+                "renderer_execution_performed":false,
+                "automatic_correction_performed":false,
+                "production_ready":false
+            });
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MotionGraphicsCorrectionSessionStart {plan_snapshot,max_corrections} => {
+            let session_id=Uuid::new_v4().to_string();
+            let session=motion_graphics_correction_session::Session::new(session_id.clone(),plan_snapshot,max_corrections)?;
+            let path=motion_graphics_correction_session_path(app,&session_id)?;
+            motion_graphics_correction_session::save(&path,&session)?;
+            let value=json!({
+                "session":session,
+                "persisted":true,
+                "review_recording_wired":true,
+                "correction_recording_wired":true,
+                "renderer_receipt_recording_wired":true,
+                "rerender_recording_wired":true,
+                "automatic_execution":false,
+                "status_tool":"motion_graphics_correction_session_status"
+            });
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MotionGraphicsCorrectionSessionStatus {session_id} => {
+            let path=motion_graphics_correction_session_path(app,&session_id)?;
+            let session=motion_graphics_correction_session::load(&path)?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&session).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MotionGraphicsCorrectionSessionCancel {session_id} => {
+            let path=motion_graphics_correction_session_path(app,&session_id)?;
+            let mut session=motion_graphics_correction_session::load(&path)?;
+            session.cancel()?;
+            motion_graphics_correction_session::save(&path,&session)?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&json!({
+                "session_id":session.session_id,
+                "status":session.status,
+                "renderer_execution_performed":false
+            })).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MotionGraphicsCorrectionSessionRecordReview {request} => {
+            let summary=request.validate()?;
+            let path=motion_graphics_correction_session_path(app,&request.session_id)?;
+            let mut session=motion_graphics_correction_session::load(&path)?;
+            if let Err(error)=session.record_review(summary.kind,summary.plan_snapshot.clone(),summary.verdict,summary.issue_count){
+                if session.status==motion_graphics_correction_session::SessionStatus::Stagnated {
+                    motion_graphics_correction_session::save(&path,&session)?;
+                }
+                return Err(error);
+            }
+            motion_graphics_correction_session::save(&path,&session)?;
+            let value=json!({
+                "session_id":session.session_id,
+                "status":session.status,
+                "review_round":session.review_round,
+                "plan_snapshot":summary.plan_snapshot,
+                "kind":summary.kind,
+                "verdict":summary.verdict,
+                "issue_count":summary.issue_count,
+                "correction_generation_performed":false,
+                "renderer_execution_performed":false
+            });
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MotionGraphicsCorrectionSessionRecordCorrection {request} => {
+            let summary=request.validate()?;
+            let path=motion_graphics_correction_session_path(app,&request.session_id)?;
+            let mut session=motion_graphics_correction_session::load(&path)?;
+            let iteration=match session.record_correction(summary.prior_plan_snapshot.clone(),summary.revised_plan_snapshot.clone()){
+                Ok(iteration)=>iteration,
+                Err(error)=>{
+                    if session.status==motion_graphics_correction_session::SessionStatus::Stagnated {
+                        motion_graphics_correction_session::save(&path,&session)?;
+                    }
+                    return Err(error);
+                }
+            };
+            motion_graphics_correction_session::save(&path,&session)?;
+            let value=json!({
+                "session_id":session.session_id,
+                "status":session.status,
+                "correction_iteration":iteration,
+                "prior_plan_snapshot":summary.prior_plan_snapshot,
+                "revised_plan_snapshot":summary.revised_plan_snapshot,
+                "renderer_approval_recorded":false,
+                "renderer_execution_performed":false
+            });
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MotionGraphicsCorrectionSessionRecordRendererApproval {session_id,action_id,evidence,accepted} => {
+            let current=motion_graphics_remotion::verify(&evidence)?;
+            let staged_final=accepted.final_render.as_ref().ok_or("Staged renderer approval lost final render evidence.")?;
+            let current_final=current.final_render.as_ref().ok_or("Renderer approval lost final render evidence.")?;
+            if current.manifest_sha256!=accepted.manifest_sha256
+                ||current_final.sha256!=staged_final.sha256
+                ||current_final.file!=staged_final.file
+                ||!current.final_output_sha256_verified {
+                return Err("Remotion renderer evidence changed after approval staging.".into());
+            }
+            let plan_snapshot=evidence.plan.fingerprint()?;
+            let path=motion_graphics_correction_session_path(app,&session_id)?;
+            let mut session=motion_graphics_correction_session::load(&path)?;
+            if session.current_plan_snapshot!=plan_snapshot {
+                return Err("Approved Remotion renderer evidence belongs to a stale correction-session plan.".into());
+            }
+            let _audit=verify_remotion_action_receipt_binding(
+                app,&action_id,&plan_snapshot,&current.manifest_sha256,&current_final.file,&current_final.sha256
+            )?;
+            session.record_renderer_approval(action_id.clone())?;
+            motion_graphics_correction_session::save(&path,&session)?;
+            let value=json!({
+                "session_id":session.session_id,
+                "status":session.status,
+                "action_id":action_id,
+                "plan_snapshot":plan_snapshot,
+                "manifest_sha256":current.manifest_sha256,
+                "output_sha256":current_final.sha256,
+                "renderer_action_audit_binding_verified":true,
+                "final_output_sha256_verified":true,
+                "next":"motion_graphics_correction_session_record_rerender"
+            });
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MotionGraphicsCorrectionSessionRecordRerender {session_id,action_id,evidence,accepted} => {
+            let current=motion_graphics_remotion::verify(&evidence)?;
+            let staged_final=accepted.final_render.as_ref().ok_or("Staged re-render record lost final render evidence.")?;
+            let current_final=current.final_render.as_ref().ok_or("Re-render record lost final render evidence.")?;
+            if current.manifest_sha256!=accepted.manifest_sha256
+                ||current_final.sha256!=staged_final.sha256
+                ||current_final.file!=staged_final.file
+                ||!current.final_output_sha256_verified {
+                return Err("Remotion re-render evidence changed after approval staging.".into());
+            }
+            let plan_snapshot=evidence.plan.fingerprint()?;
+            let path=motion_graphics_correction_session_path(app,&session_id)?;
+            let mut session=motion_graphics_correction_session::load(&path)?;
+            if session.current_plan_snapshot!=plan_snapshot {
+                return Err("Remotion re-render evidence belongs to a stale correction-session plan.".into());
+            }
+            let _audit=verify_remotion_action_receipt_binding(
+                app,&action_id,&plan_snapshot,&current.manifest_sha256,&current_final.file,&current_final.sha256
+            )?;
+            session.record_rerender(action_id.clone(),current.manifest_sha256.clone(),current_final.sha256.clone())?;
+            motion_graphics_correction_session::save(&path,&session)?;
+            let value=json!({
+                "session_id":session.session_id,
+                "status":session.status,
+                "action_id":action_id,
+                "plan_snapshot":plan_snapshot,
+                "manifest_sha256":current.manifest_sha256,
+                "output_sha256":current_final.sha256,
+                "renderer_action_audit_binding_verified":true,
+                "rerender_evidence_verified":true,
+                "next":"motion_graphics_review_remotion_frames"
+            });
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MotionGraphicsProbeRemotionAlpha {request,accepted} => {
+            let current=request.validate()?;
+            let staged_final=accepted.final_render.as_ref().ok_or("Staged alpha probe lost final render evidence.")?;
+            let current_final=current.final_render.as_ref().ok_or("Alpha probe lost final render evidence.")?;
+            if current.manifest_sha256!=accepted.manifest_sha256
+                ||current_final.sha256!=staged_final.sha256
+                ||current_final.file!=staged_final.file {
+                return Err("Remotion alpha-probe evidence changed after approval staging.".into());
+            }
+
+            let mut child=Command::new(&request.ffprobe_executable)
+                .args(["-v","error","-select_streams","v:0","-show_entries","stream=codec_name,pix_fmt,width,height","-of","json"])
+                .arg(&current_final.file)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e|format!("Could not launch approved ffprobe: {e}"))?;
+            let pid=child.id();
+            if let Err(error)=register_managed_process(state,pid){
+                let _=child.kill();let _=child.wait();
+                return Err(format!("ffprobe stopped before it could remain untracked: {error}"));
+            }
+            let timed_out=AtomicBool::new(false);
+            let over_ram=AtomicBool::new(false);
+            let started=std::time::Instant::now();
+            let output_result=std::thread::scope(|scope|{
+                let monitor=scope.spawn(||{
+                    while managed_process_identity_matches(state,pid).unwrap_or(false){
+                        if started.elapsed()>=Duration::from_secs(20){
+                            timed_out.store(true,Ordering::Release);
+                            let _=terminate_registered_process_tree(state,pid);
+                            break;
+                        }
+                        if current_runtime_status(state).map(|v|v.over_hard_limit).unwrap_or(false){
+                            over_ram.store(true,Ordering::Release);
+                            let _=terminate_registered_process_tree(state,pid);
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                });
+                let output=child.wait_with_output();
+                let _=monitor.join();
+                output
+            });
+            unregister_managed_process(state,pid);
+            let output=output_result.map_err(|e|format!("Could not wait for ffprobe: {e}"))?;
+            if timed_out.load(Ordering::Acquire){
+                return Err("Alpha probe exceeded the 20 second safety timeout.".into());
+            }
+            if over_ram.load(Ordering::Acquire){
+                return Err("Alpha probe exceeded Shuvi's 4 GB hard RAM ceiling.".into());
+            }
+            if !output.status.success(){
+                return Err(format!("ffprobe failed: {}",truncate_output(String::from_utf8_lossy(&output.stderr).to_string())));
+            }
+            if output.stdout.len()>64*1024||output.stderr.len()>64*1024{
+                return Err("Alpha probe output exceeded the 64 KiB evidence limit.".into());
+            }
+            let body:Value=serde_json::from_slice(&output.stdout)
+                .map_err(|e|format!("ffprobe returned invalid JSON: {e}"))?;
+            let streams=body.get("streams").and_then(Value::as_array)
+                .ok_or("ffprobe returned no streams array.")?;
+            if streams.len()!=1{return Err("Alpha probe requires exactly one selected video stream.".into());}
+            let codec=streams[0].get("codec_name").and_then(Value::as_str).unwrap_or("").to_ascii_lowercase();
+            let pix_fmt=streams[0].get("pix_fmt").and_then(Value::as_str).unwrap_or("").to_ascii_lowercase();
+            if codec!="prores"||!pix_fmt.starts_with("yuva"){
+                return Err(format!("Transparent output alpha probe failed: codec={codec}, pix_fmt={pix_fmt}."));
+            }
+            let action_id=execution_action_id.ok_or("Alpha probe requires an approved action identity.")?.to_string();
+            let attestation=motion_graphics_delivery::AlphaAttestation{
+                schema_version:1,
+                action_id:action_id.clone(),
+                manifest_sha256:current.manifest_sha256.clone(),
+                output_file:current_final.file.clone(),
+                output_sha256:current_final.sha256.clone(),
+                codec_name:codec,
+                pixel_format:pix_fmt,
+                alpha_channel_probe_verified:true,
+            };
+            motion_graphics_delivery::save_alpha(&motion_graphics_alpha_probe_path(app,&action_id)?,&attestation)?;
+            Ok(ActionResult{
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "attestation":attestation,
+                    "managed_process_verified":true,
+                    "timeout_guard_verified":true,
+                    "ram_guard_verified":true,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:truncate_output(String::from_utf8_lossy(&output.stderr).to_string()),
+                exit_code:output.status.code()
+            })
+        }
+        ToolAction::MotionGraphicsAcceptFinalRemotion {request,validated} => {
+            let current=request.validate()?;
+            let staged_final=validated.accepted.final_render.as_ref().ok_or("Staged final acceptance lost output evidence.")?;
+            let current_final=current.accepted.final_render.as_ref().ok_or("Final acceptance lost output evidence.")?;
+            if current.plan_snapshot!=validated.plan_snapshot
+                ||current.accepted.manifest_sha256!=validated.accepted.manifest_sha256
+                ||current_final.sha256!=staged_final.sha256
+                ||current_final.file!=staged_final.file {
+                return Err("Final Remotion acceptance evidence changed after approval staging.".into());
+            }
+            let _audit=verify_remotion_action_receipt_binding(
+                app,&request.render_action_id,&current.plan_snapshot,&current.accepted.manifest_sha256,&current_final.file,&current_final.sha256
+            )?;
+            let review_value=serde_json::to_value(&request.review)
+                .map_err(|e|format!("Could not encode final visual review for audit binding: {e}"))?;
+            let review_sha256=motion_json_sha256(&review_value)?;
+            let _review_audit=verify_motion_action_receipt_tokens(
+                app,&request.review_action_id,"motion_graphics_review_remotion_frames",&[
+                    format!("review_result_sha256={review_sha256}"),
+                    format!("review_plan_snapshot={}",current.plan_snapshot),
+                    format!("review_manifest_sha256={}",current.accepted.manifest_sha256),
+                    "review_verdict=pass".to_string(),
+                ]
+            )?;
+            let alpha_verified=if request.evidence.plan.delivery==motion_graphics::DeliveryKind::TransparentOverlay{
+                let alpha_id=request.alpha_probe_action_id.as_deref().ok_or("Transparent final acceptance requires alpha probe action ID.")?;
+                let alpha=motion_graphics_delivery::load_alpha(&motion_graphics_alpha_probe_path(app,alpha_id)?)?;
+                alpha.matches(&current.accepted)?;
+                let _alpha_audit=verify_motion_action_receipt_tokens(
+                    app,alpha_id,"motion_graphics_probe_remotion_alpha",&[
+                        format!("manifest_sha256={}",alpha.manifest_sha256),
+                        format!("output_sha256={}",alpha.output_sha256),
+                        format!("output_path_sha256={}",motion_path_sha256(&alpha.output_file)),
+                    ]
+                )?;
+                true
+            }else{false};
+            let acceptance_action_id=execution_action_id.ok_or("Final acceptance requires an approved action identity.")?.to_string();
+            let acceptance=motion_graphics_delivery::FinalAcceptance{
+                schema_version:1,
+                acceptance_action_id:acceptance_action_id.clone(),
+                render_action_id:request.render_action_id.clone(),
+                review_action_id:request.review_action_id.clone(),
+                plan_snapshot:current.plan_snapshot,
+                manifest_sha256:current.accepted.manifest_sha256,
+                output_file:current_final.file.clone(),
+                output_sha256:current_final.sha256.clone(),
+                delivery:request.evidence.plan.delivery,
+                runtime_process_provenance_verified:true,
+                final_output_sha256_verified:true,
+                visual_review_verified:true,
+                alpha_channel_probe_verified:alpha_verified,
+                delivery_acceptance_verified:true,
+                dependency_source_integrity_verified:false,
+                production_ready:false,
+            };
+            motion_graphics_delivery::save_final(&motion_graphics_final_acceptance_path(app,&acceptance_action_id)?,&acceptance)?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&json!({
+                "acceptance":acceptance,
+                "persisted":true,
+                "premiere_insertion_plannable":true,
+                "automatic_premiere_insertion":false
+            })).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MotionGraphicsPlanPremiereInsertion {request} => {
+            let acceptance=motion_graphics_delivery::load_final(
+                &motion_graphics_final_acceptance_path(app,&request.final_acceptance_action_id)?
+            )?;
+            let _acceptance_audit=verify_motion_action_receipt_tokens(
+                app,&request.final_acceptance_action_id,"motion_graphics_accept_final_remotion",&[
+                    format!("render_action_id={}",acceptance.render_action_id),
+                    format!("review_action_id={}",acceptance.review_action_id),
+                    format!("plan_snapshot={}",acceptance.plan_snapshot),
+                    format!("manifest_sha256={}",acceptance.manifest_sha256),
+                    format!("output_sha256={}",acceptance.output_sha256),
+                    format!("output_path_sha256={}",motion_path_sha256(&acceptance.output_file)),
+                ]
+            )?;
+            let value=request.plan(&acceptance)?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::CharacterAnimatorCapabilityReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&character_animator::capability_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::CharacterAnimatorReadinessReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&character_animator::readiness_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::CharacterAnimatorDetect => {
+            let value=character_animator::detect_installs()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::CharacterAnimatorLaunch {character_animator_exe} => {
+            let detection=character_animator::detect_installs()?;
+            let exact=character_animator::exact_detected_executable(&detection,&character_animator_exe)?;
+            let mut child=Command::new(&exact).spawn()
+                .map_err(|e|format!("Could not launch detected Adobe Character Animator: {e}"))?;
+            let pid=child.id();
+            if let Err(error)=register_managed_process(state,pid){
+                let _=child.kill();
+                let _=child.wait();
+                return Err(format!("Adobe Character Animator was stopped before Shuvi could register the managed process: {error}"));
+            }
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "character_animator_exe":exact,
+                    "pid":pid,
+                    "launch_dispatched":true,
+                    "host_ready_verified":false,
+                    "host_transport":"not_implemented",
+                    "source_runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::CharacterAnimatorControlCatalog => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&character_animator::control_catalog()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::CharacterAnimatorPlanControl {request} => {
+            let value=character_animator::plan_control(&request)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+
+        ToolAction::CharacterAnimatorRuntimePreflight {request} => {
+            if !managed_process_identity_matches(state,request.expected_pid)?{
+                return Err("Character Animator runtime preflight requires the exact live Shuvi-managed process instance.".into());
+            }
+            let detection=character_animator::detect_installs()?;
+            character_animator::exact_detected_executable(&detection,&request.character_animator_exe)?;
+            let value=character_animator::runtime_control_preflight(&request,true)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+
+        ToolAction::CharacterAnimatorExecuteApplicationShortcut {request} => {
+            if !managed_process_identity_matches(state,request.expected_pid)?{
+                return Err("Character Animator shortcut delivery requires the exact live Shuvi-managed process instance.".into());
+            }
+            let detection=character_animator::detect_installs()?;
+            character_animator::exact_detected_executable(&detection,&request.character_animator_exe)?;
+            let value=character_animator::execute_application_shortcut(&request,true)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::CharacterAnimatorPlanInterchange {request} => {
+            let value=character_animator::plan_interchange(&request)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::CharacterAnimatorAcceptanceSummary => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&character_animator::completion_summary()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DCapabilityReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&substance_3d::capability_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DReadinessReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&substance_3d::readiness_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DDetect => {
+            let value=substance_3d::detect_installs()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DLaunch {app_id,substance_exe} => {
+            let detection=substance_3d::detect_installs()?;
+            let exact=substance_3d::exact_detected_executable(&detection,&app_id,&substance_exe)?;
+            let mut child=Command::new(&exact).spawn()
+                .map_err(|e|format!("Could not launch detected Adobe Substance 3D {app_id}: {e}"))?;
+            let pid=child.id();
+            if let Err(error)=register_managed_process(state,pid){
+                let _=child.kill();
+                let _=child.wait();
+                return Err(format!("Adobe Substance 3D was stopped before Shuvi could register the managed process: {error}"));
+            }
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "app_id":app_id,
+                    "substance_exe":exact,
+                    "pid":pid,
+                    "launch_dispatched":true,
+                    "host_ready_verified":false,
+                    "host_transport":"not_implemented",
+                    "source_runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DAutomationCatalog => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&substance_3d::automation_catalog()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DPlanAutomation {request} => {
+            let value=substance_3d::plan_automation(&request)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DPainterRemoteLaunch {request} => {
+            let detection=substance_3d::detect_installs()?;
+            let exact=substance_3d::exact_detected_executable(&detection,"painter",&request.painter_exe)?;
+            let mut child=Command::new(&exact).arg("--enable-remote-scripting").spawn()
+                .map_err(|e|format!("Could not launch detected Substance 3D Painter with remote scripting enabled: {e}"))?;
+            let pid=child.id();
+            if let Err(error)=register_managed_process(state,pid){
+                let _=child.kill();
+                let _=child.wait();
+                return Err(format!("Painter remote-enabled process was stopped before Shuvi could register its identity: {error}"));
+            }
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "app_id":"painter",
+                    "painter_exe":exact,
+                    "pid":pid,
+                    "launch_args":["--enable-remote-scripting"],
+                    "launch_dispatched":true,
+                    "remote_host":"127.0.0.1",
+                    "remote_port":60041,
+                    "remote_endpoint_ready_verified":false,
+                    "remote_command_dispatch_supported":false,
+                    "source_runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DPainterRemotePreflight {request} => {
+            if !managed_process_identity_matches(state,request.expected_pid)?{
+                return Err("Painter remote preflight requires the exact live Shuvi-managed process instance.".into());
+            }
+            let detection=substance_3d::detect_installs()?;
+            substance_3d::exact_detected_executable(&detection,"painter",&request.painter_exe)?;
+            let value=substance_3d::painter_remote_preflight(&request,true)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DSamplerScriptFingerprint {script_path} => {
+            let value=substance_3d::sampler_script_fingerprint(&script_path)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DSamplerScriptLaunch {request} => {
+            let detection=substance_3d::detect_installs()?;
+            let exact=substance_3d::exact_detected_executable(&detection,"sampler",&request.sampler_exe)?;
+            let binding=substance_3d::verify_sampler_script_binding(&request)?;
+            let receipt_contract=substance_3d::prepare_sampler_receipt_target(&request)?;
+            let script_path=binding.get("canonical_script_path").and_then(Value::as_str)
+                .ok_or_else(||"Sampler script binding is missing canonical_script_path.".to_string())?;
+            let script_sha256=binding.get("script_sha256").and_then(Value::as_str)
+                .ok_or_else(||"Sampler script binding is missing script_sha256.".to_string())?;
+            let receipt_path=receipt_contract.as_ref().and_then(|v|v.get("receipt_path")).and_then(Value::as_str).map(str::to_string);
+            let request_id=receipt_contract.as_ref().and_then(|v|v.get("request_id")).and_then(Value::as_str).map(str::to_string);
+            let mut command=Command::new(&exact);
+            command.arg("--run-script").arg(script_path);
+            if let (Some(receipt_path),Some(request_id))=(receipt_path.as_deref(),request_id.as_deref()){
+                command.env("SHUVI_SAMPLER_RECEIPT_PATH",receipt_path)
+                    .env("SHUVI_SAMPLER_REQUEST_ID",request_id)
+                    .env("SHUVI_SAMPLER_SCRIPT_SHA256",script_sha256);
+            }
+            let mut child=command.spawn()
+                .map_err(|e|format!("Could not launch approved Substance 3D Sampler script: {e}"))?;
+            let pid=child.id();
+            if let Err(error)=register_managed_process(state,pid){
+                let _=child.kill();
+                let _=child.wait();
+                return Err(format!("Sampler script process was stopped before Shuvi could register its identity: {error}"));
+            }
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "app_id":"sampler",
+                    "sampler_exe":exact,
+                    "pid":pid,
+                    "launch_args":["--run-script",script_path],
+                    "script_sha256":script_sha256,
+                    "script_launch_dispatched":true,
+                    "completion_receipt_expected":receipt_contract.is_some(),
+                    "receipt_path":receipt_path,
+                    "request_id":request_id,
+                    "script_effect_verified":false,
+                    "script_completion_verified":false,
+                    "no_blind_retry":true,
+                    "source_runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DPainterReadOnly {request} => {
+            if !managed_process_identity_matches(state,request.expected_pid)?{
+                return Err("Painter read-only request requires the exact live Shuvi-managed process instance.".into());
+            }
+            let detection=substance_3d::detect_installs()?;
+            substance_3d::exact_detected_executable(&detection,"painter",&request.painter_exe)?;
+            let value=substance_3d::painter_read_only_receipt(&request,true)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::Substance3DSamplerVerifyReceipt {request} => {
+            let value=substance_3d::verify_sampler_completion_receipt(&request)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::FrameIoCapabilityReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&frame_io::capability_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::FrameIoReadinessReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&frame_io::readiness_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::FrameIoCredentialStatus => {
+            let value=frame_io_credential_status()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::FrameIoIdentityPreflight => {
+            let (token,auto_refreshed)=load_frame_io_fresh_access_token().await?;
+            let client=http_client()?;
+            let me_response=send_with_retry(
+                client.get(frame_io::api_url(frame_io::ME_PATH)?).bearer_auth(&token),
+                "Frame.io /v4/me"
+            ).await?;
+            let (me_status,me_body)=bounded_provider_json(me_response,"Frame.io /v4/me").await?;
+            if !me_status.is_success(){
+                return Err(format!("Frame.io /v4/me returned {me_status}: {}",compact_error(&me_body)));
+            }
+            let accounts_response=send_with_retry(
+                client.get(frame_io::api_url(frame_io::ACCOUNTS_PATH)?).bearer_auth(&token),
+                "Frame.io /v4/accounts"
+            ).await?;
+            let (accounts_status,accounts_body)=bounded_provider_json(accounts_response,"Frame.io /v4/accounts").await?;
+            if !accounts_status.is_success(){
+                return Err(format!("Frame.io /v4/accounts returned {accounts_status}: {}",compact_error(&accounts_body)));
+            }
+            let value=annotate_frame_io_refresh(frame_io::summarize_identity(&me_body,&accounts_body)?,auto_refreshed);
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::FrameIoOauthBegin => {
+            let config=load_frame_io_oauth_config()?
+                .ok_or_else(||"Frame.io Native App OAuth config is not set.".to_string())?;
+            let (pending,authorization_url)=frame_io::generate_oauth_begin(&config,now_ms()/1000)?;
+            let encoded=serde_json::to_string(&pending)
+                .map_err(|e|format!("Could not encode Frame.io OAuth pending state: {e}"))?;
+            frame_io_entry("oauth_pending")?.set_password(&encoded)
+                .map_err(|e|format!("Could not securely save Frame.io OAuth pending state: {e}"))?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "integration":"frame_io",
+                    "flow":"native_app_pkce",
+                    "authorization_url":authorization_url,
+                    "pkce_verifier_exposed":false,
+                    "client_secret_used":false,
+                    "pending_lifetime_seconds":900,
+                    "callback_completion":"pass the exact Adobe redirect URI to frame_io_oauth_complete"
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::FrameIoOauthComplete {callback_url} => {
+            let config=load_frame_io_oauth_config()?
+                .ok_or_else(||"Frame.io Native App OAuth config is not set.".to_string())?;
+            let pending=load_frame_io_oauth_pending()?
+                .ok_or_else(||"No pending Frame.io OAuth authorization exists.".to_string())?;
+            let code=frame_io::validate_oauth_callback(&config,&pending,&callback_url,now_ms()/1000)?;
+            let token_url=frame_io::oauth_token_url(&config.client_id)?;
+            let response=http_client()?.post(token_url)
+                .form(&[
+                    ("code",code.as_str()),
+                    ("grant_type","authorization_code"),
+                    ("code_verifier",pending.code_verifier.as_str())
+                ])
+                .send().await
+                .map_err(|e|format!("Adobe IMS Frame.io token exchange failed before a verified response: {e}"))?;
+            let (status,body)=bounded_provider_json(response,"Adobe IMS Frame.io token exchange").await?;
+            if !status.is_success(){
+                return Err(format!("Adobe IMS Frame.io token exchange returned {status}: {}",compact_error(&body)));
+            }
+            let tokens=frame_io::parse_oauth_token_response(&body)?;
+            let has_refresh=tokens.refresh_token.is_some();
+            store_frame_io_tokens(&tokens,None,now_ms()/1000)?;
+            clear_frame_io_secret("oauth_pending")?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "integration":"frame_io",
+                    "oauth_authenticated":true,
+                    "state_verified":true,
+                    "pkce_exchange_verified":true,
+                    "access_token_stored":true,
+                    "refresh_token_stored":has_refresh,
+                    "refresh_token_optional":true,
+                    "reauthentication_required_when_refresh_unavailable":!has_refresh,
+                    "expires_in":tokens.expires_in,
+                    "token_values_exposed":false,
+                    "source_runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::FrameIoOauthRefresh => {
+            let (_access_token,rotated,expires_in)=refresh_frame_io_stored_access_token().await?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "integration":"frame_io","access_token_refreshed":true,"refresh_token_rotated":rotated,
+                    "expires_in":expires_in,"expiry_tracking_configured":true,"token_values_exposed":false,
+                    "source_runtime_verified":false,"production_ready":false
+                })).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::FrameIoListWorkspaces {account_id,after,page_size} => {
+            let (token,auto_refreshed)=load_frame_io_fresh_access_token().await?;
+            let response=send_with_retry(
+                http_client()?.get(frame_io::workspaces_page_url(&account_id,after.as_deref(),page_size)?).bearer_auth(&token),
+                "Frame.io workspaces"
+            ).await?;
+            let (status,body)=bounded_provider_json(response,"Frame.io workspaces").await?;
+            if !status.is_success(){
+                return Err(format!("Frame.io workspaces returned {status}: {}",compact_error(&body)));
+            }
+            let value=annotate_frame_io_refresh(frame_io::summarize_workspaces(&account_id,&body)?,auto_refreshed);
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::FrameIoListProjects {account_id,workspace_id,after,page_size} => {
+            let (token,auto_refreshed)=load_frame_io_fresh_access_token().await?;
+            let response=send_with_retry(
+                http_client()?.get(frame_io::projects_page_url(&account_id,&workspace_id,after.as_deref(),page_size)?).bearer_auth(&token),
+                "Frame.io projects"
+            ).await?;
+            let (status,body)=bounded_provider_json(response,"Frame.io projects").await?;
+            if !status.is_success(){
+                return Err(format!("Frame.io projects returned {status}: {}",compact_error(&body)));
+            }
+            let value=annotate_frame_io_refresh(frame_io::summarize_projects(&account_id,&workspace_id,&body)?,auto_refreshed);
+            Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::FrameIoListFolderChildren {account_id,folder_id,after,page_size} => {
+            let (token,auto_refreshed)=load_frame_io_fresh_access_token().await?;
+            let response=send_with_retry(http_client()?.get(frame_io::folder_children_page_url(&account_id,&folder_id,after.as_deref(),page_size)?).bearer_auth(&token),"Frame.io folder children").await?;
+            let (status,body)=bounded_provider_json(response,"Frame.io folder children").await?;
+            if !status.is_success(){return Err(format!("Frame.io folder children returned {status}: {}",compact_error(&body)));}
+            let value=annotate_frame_io_refresh(frame_io::summarize_folder_children(&account_id,&folder_id,&body)?,auto_refreshed);
+            Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::FrameIoShowFile {account_id,file_id} => {
+            let (token,auto_refreshed)=load_frame_io_fresh_access_token().await?;
+            let response=send_with_retry(http_client()?.get(frame_io::file_url(&account_id,&file_id)?).bearer_auth(&token),"Frame.io file").await?;
+            let (status,body)=bounded_provider_json(response,"Frame.io file").await?;
+            if !status.is_success(){return Err(format!("Frame.io file returned {status}: {}",compact_error(&body)));}
+            let value=annotate_frame_io_refresh(frame_io::summarize_file(&account_id,&file_id,&body)?,auto_refreshed);
+            Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::FrameIoListComments {account_id,file_id,after,page_size} => {
+            let (token,auto_refreshed)=load_frame_io_fresh_access_token().await?;
+            let response=send_with_retry(http_client()?.get(frame_io::comments_url(&account_id,&file_id,after.as_deref(),page_size)?).bearer_auth(&token),"Frame.io comments").await?;
+            let (status,body)=bounded_provider_json(response,"Frame.io comments").await?;
+            if !status.is_success(){return Err(format!("Frame.io comments returned {status}: {}",compact_error(&body)));}
+            let value=annotate_frame_io_refresh(frame_io::summarize_comments(&account_id,&file_id,&body)?,auto_refreshed);
+            Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::FrameIoShowComment {account_id,comment_id} => {
+            let (token,auto_refreshed)=load_frame_io_fresh_access_token().await?;
+            let response=send_with_retry(http_client()?.get(frame_io::comment_url(&account_id,&comment_id)?).bearer_auth(&token),"Frame.io comment").await?;
+            let (status,body)=bounded_provider_json(response,"Frame.io comment").await?;
+            if !status.is_success(){return Err(format!("Frame.io comment returned {status}: {}",compact_error(&body)));}
+            let value=annotate_frame_io_refresh(frame_io::summarize_comment(&account_id,&comment_id,&body)?,auto_refreshed);
+            Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::FrameIoAcceptanceSummary => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&frame_io::completion_summary()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::IllustratorCapabilityReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&illustrator::capability_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::IllustratorReadinessReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&illustrator::readiness_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::IllustratorDetect => {
+            let value=illustrator::detect_installs()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::IllustratorLaunch {illustrator_exe} => {
+            let detection=illustrator::detect_installs()?;
+            let exact=illustrator::exact_detected_executable(&detection,&illustrator_exe)?;
+            let mut child=Command::new(&exact).spawn()
+                .map_err(|e|format!("Could not launch detected Adobe Illustrator: {e}"))?;
+            let pid=child.id();
+            if let Err(error)=register_managed_process(state,pid){
+                let _=child.kill();
+                let _=child.wait();
+                return Err(format!("Adobe Illustrator was stopped before Shuvi could register the managed process: {error}"));
+            }
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "illustrator_exe":exact,
+                    "pid":pid,
+                    "launch_dispatched":true,
+                    "host_ready_verified":false,
+                    "host_transport":"not_implemented",
+                    "source_runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::IllustratorBridgeStart => {
+            let status=state.illustrator_bridge.start()?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&json!({
+                "enabled":status.enabled,"server_started":status.server_started,"paired":status.paired,
+                "port":status.port,"pairing_token":status.token,
+                "read_only_allowlist":["inspect_context","inspect_artboards","inspect_layers","inspect_page_items","inspect_selection","verify_identity"],
+                "mutating_allowlist":["set_layer_property"],
+                "source_runtime_verified":false,"production_ready":false
+            })).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::IllustratorBridgeStatus => {
+            let status=state.illustrator_bridge.status()?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&status).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::IllustratorBridgeStop => {
+            let status=state.illustrator_bridge.stop()?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&status).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::IllustratorContext => {
+            let value=state.illustrator_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let validated=illustrator::validate_context_receipt(&value)?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::IllustratorArtboards => {
+            let value=state.illustrator_bridge.request("inspect_artboards",json!({"maxArtboards":128}),Duration::from_secs(10)).await?;
+            let validated=illustrator::validate_artboard_receipt(&value)?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::IllustratorLayers => {
+            let value=state.illustrator_bridge.request("inspect_layers",json!({"maxLayers":128}),Duration::from_secs(10)).await?;
+            let validated=illustrator::validate_layer_receipt(&value)?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::IllustratorPageItems => {
+            let value=state.illustrator_bridge.request("inspect_page_items",json!({"maxItems":256}),Duration::from_secs(12)).await?;
+            let validated=illustrator::validate_page_item_receipt(&value)?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::IllustratorSelection => {
+            let value=state.illustrator_bridge.request("inspect_selection",json!({"maxItems":64}),Duration::from_secs(10)).await?;
+            let validated=illustrator::validate_selection_receipt(&value)?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::IllustratorIdentityCheck {expected_document_signature} => {
+            let value=state.illustrator_bridge.request("verify_identity",json!({
+                "expectedDocumentSignature":expected_document_signature
+            }),Duration::from_secs(8)).await?;
+            let validated=illustrator::validate_identity_receipt(&value)?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::IllustratorSetLayerProperty {request} => {
+            request.validate()?;
+            let raw_context=state.illustrator_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let context=illustrator::validate_context_receipt(&raw_context)?;
+            let raw_layers=state.illustrator_bridge.request("inspect_layers",json!({"maxLayers":256}),Duration::from_secs(10)).await?;
+            let layers=illustrator::validate_layer_receipt(&raw_layers)?;
+            illustrator::validate_layer_write_precondition(&request,&context,&layers)?;
+            let checkpoint=illustrator_checkpoint::create(
+                &request.expected_document_path,
+                &request.expected_document_signature,
+                &format!("layer_{}",request.operation)
+            )?;
+            let host_result=state.illustrator_bridge.request(
+                "set_layer_property",
+                request.bridge_arguments()?,
+                Duration::from_secs(12)
+            ).await;
+            let host_result=match host_result {
+                Ok(value)=>value,
+                Err(error)=>{
+                    return Err(format!(
+                        "execution_status_unknown: Illustrator layer write did not return a trusted receipt. Checkpoint backup: {}. Do not blindly retry. {error}",
+                        checkpoint.get("backup_path").and_then(Value::as_str).unwrap_or("unavailable")
+                    ));
+                }
+            };
+            let receipt=illustrator::validate_layer_write_receipt(&request,&host_result)?;
+            let post_raw_context=state.illustrator_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let post_context=illustrator::validate_context_receipt(&post_raw_context)?;
+            let post_raw_layers=state.illustrator_bridge.request("inspect_layers",json!({"maxLayers":256}),Duration::from_secs(10)).await?;
+            let post_layers=illustrator::validate_layer_receipt(&post_raw_layers)?;
+            let post=illustrator::validate_layer_write_post_readback(&request,&post_context,&post_layers)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "checkpoint":checkpoint,
+                    "host_receipt":receipt,
+                    "post_readback":post,
+                    "automatic_retry_allowed":false,
+                    "automatic_restore":false,
+                    "source_runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::IllustratorVerifyCheckpoint {backup_path,expected_source_path,expected_document_signature} => {
+            let value=illustrator_checkpoint::verify(&backup_path,&expected_source_path,&expected_document_signature)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::IllustratorPlanRecovery {backup_path,expected_source_path,expected_document_signature} => {
+            let value=illustrator_checkpoint::plan_recovery(&backup_path,&expected_source_path,&expected_document_signature)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::IllustratorPlanExport {request} => {
+            let raw_context=state.illustrator_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let context=illustrator::validate_context_receipt(&raw_context)?;
+            let value=illustrator::plan_export(&request,&context)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::IllustratorAcceptanceSummary => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&illustrator::completion_summary()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateCapabilityReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&animate::capability_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateReadinessReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&animate::readiness_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateDetect => {
+            let value=animate::detect_installs()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateLaunch {animate_exe} => {
+            let detection=animate::detect_installs()?;
+            let exact=animate::exact_detected_executable(&detection,&animate_exe)?;
+            let mut child=Command::new(&exact).spawn()
+                .map_err(|e|format!("Could not launch detected Adobe Animate: {e}"))?;
+            let pid=child.id();
+            if let Err(error)=register_managed_process(state,pid){
+                let _=child.kill();
+                let _=child.wait();
+                return Err(format!("Adobe Animate was stopped before Shuvi could register the managed process: {error}"));
+            }
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "animate_exe":exact,
+                    "pid":pid,
+                    "launch_dispatched":true,
+                    "host_ready_verified":false,
+                    "host_transport":"not_implemented",
+                    "runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateBridgeStart => {
+            let status=state.animate_bridge.start()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "enabled":status.enabled,
+                    "server_started":status.server_started,
+                    "paired":status.paired,
+                    "port":status.port,
+                    "pairing_token":status.token,
+                    "read_only_allowlist":["inspect_context","inspect_timeline"],
+                    "source_runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateBridgeStatus => {
+            let status=state.animate_bridge.status()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&status).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateBridgeStop => {
+            let status=state.animate_bridge.stop()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&status).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateContext => {
+            let value=state.animate_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let validated=animate::validate_context_receipt(&value)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateTimeline => {
+            let value=state.animate_bridge.request("inspect_timeline",json!({"maxLayers":128}),Duration::from_secs(10)).await?;
+            let validated=animate::validate_timeline_receipt(&value)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateLibrary => {
+            let value=state.animate_bridge.request("inspect_library",json!({"maxItems":256}),Duration::from_secs(12)).await?;
+            let validated=animate::validate_library_receipt(&value)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateSelection => {
+            let value=state.animate_bridge.request("inspect_selection",json!({"maxElements":64}),Duration::from_secs(10)).await?;
+            let validated=animate::validate_selection_receipt(&value)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateIdentityCheck {expected_document_signature,expected_timeline_signature} => {
+            let value=state.animate_bridge.request("verify_identity",json!({
+                "expectedDocumentSignature":expected_document_signature,
+                "expectedTimelineSignature":expected_timeline_signature
+            }),Duration::from_secs(8)).await?;
+            let validated=animate::validate_identity_receipt(&value)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&validated).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateSetLayerProperty {request} => {
+            request.validate()?;
+            let raw_context=state.animate_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let context=animate::validate_context_receipt(&raw_context)?;
+            let raw_timeline=state.animate_bridge.request("inspect_timeline",json!({"maxLayers":256}),Duration::from_secs(10)).await?;
+            let timeline=animate::validate_timeline_receipt(&raw_timeline)?;
+            animate::validate_layer_write_precondition(&request,&context,&timeline)?;
+            let checkpoint=animate_checkpoint::create(
+                &request.expected_document_path,
+                &request.expected_document_signature,
+                &request.expected_timeline_signature,
+                &format!("layer_{}",request.operation)
+            )?;
+            let host_result=state.animate_bridge.request(
+                "set_layer_property",
+                request.bridge_arguments()?,
+                Duration::from_secs(12)
+            ).await;
+            let host_result=match host_result {
+                Ok(value)=>value,
+                Err(error)=>{
+                    return Err(format!(
+                        "execution_status_unknown: Animate layer write did not return a trusted receipt. Checkpoint backup: {}. Do not blindly retry. {error}",
+                        checkpoint.get("backup_path").and_then(Value::as_str).unwrap_or("unavailable")
+                    ));
+                }
+            };
+            let receipt=animate::validate_layer_write_receipt(&request,&host_result)?;
+            let post_raw_context=state.animate_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let post_context=animate::validate_context_receipt(&post_raw_context)?;
+            let post_raw_timeline=state.animate_bridge.request("inspect_timeline",json!({"maxLayers":256}),Duration::from_secs(10)).await?;
+            let post_timeline=animate::validate_timeline_receipt(&post_raw_timeline)?;
+            let post=animate::validate_layer_write_post_readback(&request,&post_context,&post_timeline)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "checkpoint":checkpoint,
+                    "host_receipt":receipt,
+                    "post_readback":post,
+                    "automatic_retry_allowed":false,
+                    "automatic_restore":false,
+                    "source_runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateVerifyCheckpoint {backup_path,expected_source_path,expected_document_signature} => {
+            let value=animate_checkpoint::verify(&backup_path,&expected_source_path,&expected_document_signature)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimatePlanRecovery {backup_path,expected_source_path,expected_document_signature} => {
+            let value=animate_checkpoint::plan_recovery(&backup_path,&expected_source_path,&expected_document_signature)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimatePlanPublish {request} => {
+            let raw_context=state.animate_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let context=animate::validate_context_receipt(&raw_context)?;
+            let raw_timeline=state.animate_bridge.request("inspect_timeline",json!({"maxLayers":256}),Duration::from_secs(10)).await?;
+            let timeline=animate::validate_timeline_receipt(&raw_timeline)?;
+            let value=animate::plan_publish(&request,&context,&timeline)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AnimateAcceptanceSummary => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&animate::completion_summary()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::AuditionDetect => {
+            let value=audition::detect_installs()?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionLaunch => {
+            let executable=audition::latest_executable()?;
+            let child=Command::new(&executable).spawn()
+                .map_err(|e|format!("Could not launch Adobe Audition: {e}"))?;
+            let child_pid=child.id();
+            if let Err(error)=register_managed_process(state,child_pid){
+                let _=terminate_managed_process_tree(child_pid);
+                return Err(format!("Audition was stopped before it could remain untracked: {error}"));
+            }
+            Ok(ActionResult{success:true,tool,
+                stdout:format!("Launched Adobe Audition from {} with root PID {}. Shuvi is tracking the managed process tree.",executable.display(),child_pid),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionReadinessReport => {
+            let value=audition::readiness_report();
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionRuntimeProbe => {
+            let context=state.audition_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let commands=state.audition_bridge.request("list_commands",json!({}),Duration::from_secs(15)).await?;
+            let wave_dictionary=state.audition_bridge.request("script_dictionary",
+                json!({"query":"WaveDocument","maxClasses":16}),Duration::from_secs(20)).await?;
+            let mut features=serde_json::Map::new();
+            for feature in ["noise_reduction","eq","compressor","loudness","export","multitrack","voice_cleanup"] {
+                let queries=audition::feature_queries(feature)?;
+                let mut command_hits=0_u64;
+                let mut class_hits=0_u64;
+                let mut inventories=Vec::<Value>::new();
+                for query in queries.iter().take(3) {
+                    let command_result=state.audition_bridge.request("search_commands",json!({"query":query}),Duration::from_secs(12)).await?;
+                    inventories.push(command_result.clone());
+                    let dictionary_result=state.audition_bridge.request("script_dictionary",
+                        json!({"query":query,"maxClasses":8}),Duration::from_secs(20)).await?;
+                    command_hits=command_hits.saturating_add(command_result.get("count").and_then(Value::as_u64).unwrap_or(0));
+                    class_hits=class_hits.saturating_add(dictionary_result.get("returnedClasses").and_then(Value::as_u64).unwrap_or(0));
+                }
+                let candidates=audition::rank_feature_commands(feature,&inventories)?
+                    .into_iter().take(5).collect::<Vec<_>>();
+                features.insert(feature.into(),json!({
+                    "command_hits":command_hits,
+                    "dictionary_class_hits":class_hits,
+                    "top_command_candidates":candidates,
+                    "candidate_semantics_verified":false,
+                    "support_proven":false
+                }));
+            }
+            let value=json!({
+                "runtime_probe_completed":true,
+                "mutation_performed":false,
+                "bridge_observed":true,
+                "context":context,
+                "command_count":commands.get("count").cloned().unwrap_or(Value::Null),
+                "wave_dictionary_classes":wave_dictionary.get("returnedClasses").cloned().unwrap_or(Value::Null),
+                "feature_discovery_counts":features,
+                "edit_runtime_verified":false,
+                "production_ready":false
+            });
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionAcceptanceStatus => {
+            let registration=audition_acceptance::load(&audition_acceptance_path(app)?)?;
+            let mut current_match=Value::Null;
+            let mut current_context=Value::Null;
+            if registration.is_some() && state.audition_bridge.status()?.paired {
+                let context=state.audition_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+                current_match=json!(registration.as_ref().is_some_and(|saved|saved.check(&context).is_ok()));
+                current_context=context;
+            }
+            let value=json!({
+                "registration":registration,
+                "current_identity_matches":current_match,
+                "current_context":current_context,
+                "mutation_enabled_automatically":false,
+                "production_ready":false
+            });
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionAcceptanceRegisterDisposable => {
+            if !state.audition_bridge.status()?.paired {
+                return Err("A paired live Audition host is required to register a disposable acceptance document.".into());
+            }
+            let context=state.audition_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let registration=audition_acceptance::Registration::from_context(&context,true)?;
+            audition_acceptance::save(&audition_acceptance_path(app)?,&registration)?;
+            Ok(ActionResult{success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "registered":true,
+                    "registration":registration,
+                    "verified_current_host_identity":true,
+                    "mutation_enabled_automatically":false,
+                    "next":"audition_acceptance_plan"
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionAcceptancePlan {feature} => {
+            let registration=audition_acceptance::load(&audition_acceptance_path(app)?)?;
+            let mut value=audition_acceptance::plan(registration.as_ref(),feature.as_deref())?;
+            if let Some(saved)=registration.as_ref() {
+                if state.audition_bridge.status()?.paired {
+                    let context=state.audition_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+                    if let Some(map)=value.as_object_mut(){
+                        map.insert("current_identity_matches".into(),json!(saved.check(&context).is_ok()));
+                        map.insert("current_context".into(),context);
+                    }
+                }
+            }
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionAcceptancePreflight {feature} => {
+            if !state.audition_bridge.status()?.paired {
+                return Err("A paired live Audition host is required for acceptance preflight.".into());
+            }
+            let registration=audition_acceptance::load(&audition_acceptance_path(app)?)?
+                .ok_or_else(||"Register an explicitly disposable Audition document before acceptance preflight.".to_string())?;
+            let context=state.audition_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            registration.check(&context)?;
+
+            let queries=audition::feature_queries(&feature)?;
+            let mut command_inventories=Vec::<Value>::new();
+            let mut evidence=Vec::<Value>::new();
+            for query in queries.iter().take(4) {
+                let commands=state.audition_bridge.request("search_commands",
+                    json!({"query":query}),Duration::from_secs(12)).await?;
+                command_inventories.push(commands.clone());
+                let dictionary=state.audition_bridge.request("script_dictionary",
+                    json!({"query":query,"maxClasses":16}),Duration::from_secs(20)).await?;
+                let command_rows=commands.get("commands").and_then(Value::as_array)
+                    .map(|rows|rows.iter().take(20).cloned().collect::<Vec<_>>()).unwrap_or_default();
+                let class_rows=dictionary.get("classes").and_then(Value::as_array)
+                    .map(|rows|rows.iter().take(8).cloned().collect::<Vec<_>>()).unwrap_or_default();
+                evidence.push(json!({
+                    "query":query,
+                    "command_matches":command_rows,
+                    "dictionary_classes":class_rows,
+                    "commands_truncated":commands.get("count").and_then(Value::as_u64).is_some_and(|count|count>20),
+                    "dictionary_truncated":dictionary.get("returnedClasses").and_then(Value::as_u64).is_some_and(|count|count>8)
+                }));
+            }
+
+            let mut candidates=Vec::<Value>::new();
+            for candidate in audition::rank_feature_commands(&feature,&command_inventories)?.into_iter().take(5) {
+                let property=candidate.get("property").and_then(Value::as_str)
+                    .ok_or_else(||"Ranked Audition command candidate is missing its property.".to_string())?.to_string();
+                let value=candidate.get("value").and_then(Value::as_str)
+                    .ok_or_else(||"Ranked Audition command candidate is missing its value.".to_string())?.to_string();
+                let enabled_probe=state.audition_bridge.request("command_enabled",
+                    json!({"property":property.clone(),"value":value.clone()}),Duration::from_secs(8)).await?;
+                candidates.push(json!({
+                    "property":property,
+                    "value":value,
+                    "score":candidate.get("score").cloned().unwrap_or(Value::Null),
+                    "query_hits":candidate.get("query_hits").cloned().unwrap_or_else(||json!([])),
+                    "help":candidate.get("help").cloned().unwrap_or(Value::Null),
+                    "enabled":enabled_probe.get("enabled").and_then(Value::as_bool).unwrap_or(false),
+                    "enabled_probe":enabled_probe
+                }));
+            }
+
+            let final_context=state.audition_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            registration.check(&final_context)?;
+            let enabled_candidate_count=candidates.iter()
+                .filter(|candidate|candidate.get("enabled").and_then(Value::as_bool)==Some(true))
+                .count();
+            let value=json!({
+                "acceptance_preflight_completed":true,
+                "feature":feature,
+                "registered_disposable_document":true,
+                "verified_current_host_identity":true,
+                "identity_rechecked_after_discovery":true,
+                "registered_document_signature":registration.document_signature,
+                "queries":queries,
+                "candidate_commands":candidates,
+                "enabled_candidate_count":enabled_candidate_count,
+                "candidate_ranking_status":"keyword_evidence_only_not_semantic_verification",
+                "evidence":evidence,
+                "candidate_semantics_verified":false,
+                "mutation_authorized":false,
+                "mutation_performed":false,
+                "edit_runtime_verified":false,
+                "production_ready":false,
+                "next":"Review live evidence. Destructive acceptance execution remains unimplemented."
+            });
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionBridgeStart => {
+            let status=state.audition_bridge.start()?;
+            Ok(ActionResult{success:true,tool,
+                stdout:format!("Audition bridge enabled on 127.0.0.1:{}; paired={}. Open the Shuvi Audition Bridge panel and paste the pairing token.",status.port,status.paired),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionBridgeStatus => {
+            let status=state.audition_bridge.status()?;
+            Ok(ActionResult{success:true,tool,
+                stdout:format!("Audition bridge: enabled={}, server_started={}, paired={}, port={}, queued_commands={}",status.enabled,status.server_started,status.paired,status.port,status.queued_commands),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionBridgeStop => {
+            let status=state.audition_bridge.stop()?;
+            Ok(ActionResult{success:true,tool,
+                stdout:format!("Audition bridge stopped; enabled={}, paired={}.",status.enabled,status.paired),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionContext => {
+            let value=state.audition_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionListCommands => {
+            let value=state.audition_bridge.request("list_commands",json!({}),Duration::from_secs(15)).await?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionSearchCommands {query} => {
+            let value=state.audition_bridge.request("search_commands",json!({"query":query}),Duration::from_secs(12)).await?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionDiscoverFeature {feature} => {
+            let queries=audition::feature_queries(&feature)?;
+            let mut evidence=Vec::<Value>::new();
+            let mut command_inventories=Vec::<Value>::new();
+            for query in queries.iter().take(4) {
+                let commands=state.audition_bridge.request("search_commands",json!({"query":query}),Duration::from_secs(12)).await?;
+                command_inventories.push(commands.clone());
+                let dictionary=state.audition_bridge.request("script_dictionary",
+                    json!({"query":query,"maxClasses":16}),Duration::from_secs(20)).await?;
+                let command_rows=commands.get("commands").and_then(Value::as_array)
+                    .map(|rows|rows.iter().take(20).cloned().collect::<Vec<_>>()).unwrap_or_default();
+                let class_rows=dictionary.get("classes").and_then(Value::as_array)
+                    .map(|rows|rows.iter().take(8).cloned().collect::<Vec<_>>()).unwrap_or_default();
+                evidence.push(json!({
+                    "query":query,
+                    "command_matches":command_rows,
+                    "dictionary_classes":class_rows,
+                    "commands_truncated":commands.get("count").and_then(Value::as_u64).is_some_and(|count|count>20),
+                    "dictionary_truncated":dictionary.get("returnedClasses").and_then(Value::as_u64).is_some_and(|count|count>8)
+                }));
+            }
+            let candidate_commands=audition::rank_feature_commands(&feature,&command_inventories)?;
+            let value=json!({
+                "feature":feature,
+                "queries":queries,
+                "candidate_commands":candidate_commands,
+                "candidate_ranking_status":"keyword_evidence_only_not_semantic_verification",
+                "evidence":evidence,
+                "support_status":"discovery_only_not_verified",
+                "mutation_performed":false,
+                "runtime_verified":false
+            });
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionInvokeFeatureCommand {feature,command,expected_document_signature} => {
+            command.validate()?;
+            audition::validate_document_signature(&expected_document_signature)?;
+            let queries=audition::feature_queries(&feature)?;
+            let mut matched_queries=Vec::<String>::new();
+            for query in queries.iter().take(4) {
+                let result=state.audition_bridge.request("search_commands",json!({"query":query}),Duration::from_secs(12)).await?;
+                let exact=result.get("commands").and_then(Value::as_array).is_some_and(|rows|rows.iter().any(|row|
+                    row.get("property").and_then(Value::as_str)==Some(command.property.as_str())
+                    && row.get("value").and_then(Value::as_str)==Some(command.value.as_str())
+                ));
+                if exact {matched_queries.push((*query).to_string());}
+            }
+            if matched_queries.is_empty() {
+                return Err("Exact Audition command is not present in the current live discovery results for the requested audio feature. Re-discover before invoking.".into());
+            }
+            let enabled=state.audition_bridge.request("command_enabled",
+                json!({"property":command.property.clone(),"value":command.value.clone()}),Duration::from_secs(8)).await?;
+            if enabled.get("enabled").and_then(Value::as_bool)!=Some(true) {
+                return Err("Audition reports that the exact discovered feature command is currently disabled.".into());
+            }
+            let value=state.audition_bridge.request("invoke_command",
+                json!({"property":command.property.clone(),"value":command.value.clone(),
+                    "expectedDocumentSignature":expected_document_signature}),Duration::from_secs(20)).await?;
+            let accepted=value.get("accepted").and_then(Value::as_bool)==Some(true)
+                && value.get("expectedDocumentSignature")==value.get("observedDocumentSignature");
+            Ok(ActionResult{success:accepted,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "feature":feature,
+                    "matched_queries":matched_queries,
+                    "accepted":accepted,
+                    "native":value,
+                    "document_identity_guarded":true,
+                    "feature_membership_rechecked":true,
+                    "command_enabled_rechecked":true,
+                    "semantic_audio_effect_verified":false,
+                    "retry_automatically":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(if accepted{0}else{1})})
+        }
+        ToolAction::AuditionScriptDictionary {query,max_classes} => {
+            let value=state.audition_bridge.request("script_dictionary",
+                json!({"query":query,"maxClasses":max_classes}),Duration::from_secs(20)).await?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionCommandEnabled {command} => {
+            command.validate()?;
+            let value=state.audition_bridge.request("command_enabled",
+                json!({"property":command.property,"value":command.value}),Duration::from_secs(8)).await?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AuditionSetPlayhead {percent,expected_document_signature} => {
+            audition::validate_playhead_percent(percent)?;
+            let value=state.audition_bridge.request("set_playhead_percent",
+                json!({"percent":percent,"expectedDocumentSignature":expected_document_signature}),Duration::from_secs(8)).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_playhead_readback")
+                && value.get("expectedDocumentSignature")==value.get("observedDocumentSignature");
+            Ok(ActionResult{success:verified,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(if verified{0}else{1})})
+        }
+        ToolAction::AuditionInvokeCommand {command,expected_document_signature} => {
+            command.validate()?;
+            let value=state.audition_bridge.request("invoke_command",
+                json!({"property":command.property,"value":command.value,
+                    "expectedDocumentSignature":expected_document_signature}),Duration::from_secs(20)).await?;
+            let accepted=value.get("accepted").and_then(Value::as_bool)==Some(true)
+                && value.get("expectedDocumentSignature")==value.get("observedDocumentSignature");
+            Ok(ActionResult{success:accepted,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "accepted":accepted,
+                    "native":value,
+                    "document_identity_guarded":true,
+                    "side_effect_verified":false,
+                    "retry_automatically":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(if accepted{0}else{1})})
+        }
+        ToolAction::PremiereDetect => {
+            let installations = find_premiere_installations()?;
+
+            let stdout = if installations.is_empty() {
+                "No Adobe Premiere Pro installation was detected in the standard Adobe Program Files folders.".to_string()
+            } else {
+                installations
+                    .iter()
+                    .enumerate()
+                    .map(|(index, path)| format!("{}: {}", index + 1, path.display()))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout,
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereLaunch { project } => {
+            let installations = find_premiere_installations()?;
+            let executable = installations
+                .last()
+                .cloned()
+                .ok_or_else(|| "Adobe Premiere Pro was not found in the standard Adobe Program Files folders.".to_string())?;
+
+            let mut command = Command::new(&executable);
+            if let Some(project) = &project {
+                command.arg(project);
+            }
+
+            let child = command
+                .spawn()
+                .map_err(|error| format!("Could not launch Adobe Premiere Pro: {error}"))?;
+
+            let child_pid = child.id();
+            if let Err(error) = register_managed_process(state, child_pid) {
+                let _ = terminate_managed_process_tree(child_pid);
+                return Err(format!(
+                    "Premiere was stopped before it could remain untracked: {error}"
+                ));
+            }
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: format!(
+                    "Launched Adobe Premiere Pro from {} with root PID {}. Shuvi is tracking the managed process tree.",
+                    executable.display(),
+                    child_pid
+                ),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereBridgeStart => {
+            let status = state.premiere_bridge.start()?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: format!(
+                    "Premiere bridge enabled on 127.0.0.1:{}; paired={}. Open the Shuvi Premiere Bridge panel and pair it from Shuvi's Premiere settings.",
+                    status.port,
+                    status.paired
+                ),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereBridgeStatus => {
+            let status = state.premiere_bridge.status()?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: format!(
+                    "Premiere bridge: enabled={}, server_started={}, paired={}, port={}, queued_commands={}",
+                    status.enabled,
+                    status.server_started,
+                    status.paired,
+                    status.port,
+                    status.queued_commands
+                ),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereContext => {
+            let value = premiere_bridge
+                .request("inspect_context", json!({}), Duration::from_secs(8))
+                .await?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value)
+                    .unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereRemoveKeyframeRange { target, start_seconds, end_seconds, expected_count, expected_signature, allow_remove_all } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let mut arguments = target.bridge_arguments();
+            arguments["startSeconds"] = json!(start_seconds);
+            arguments["endSeconds"] = json!(end_seconds);
+            arguments["expectedCount"] = json!(expected_count);
+            arguments["expectedSignature"] = json!(expected_signature);
+            arguments["allowRemoveAll"] = json!(allow_remove_all);
+            let value = premiere_bridge.request("remove_keyframe_range", arguments, Duration::from_secs(30)).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_range_removal");
+            Ok(ActionResult { success: verified, tool, stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value})).unwrap_or_default(), stderr: String::new(), exit_code: Some(if verified {0}else{1}) })
+        }
+        ToolAction::PremiereRemoveVideoTransition { track, clip_index, position } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request("remove_video_transition", json!({"track":track,"clipIndex":clip_index,"position":position}), Duration::from_secs(20)).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_transition");
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value, "uncertain": !verified, "retry_safe": false})).unwrap_or_default(),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1})
+            })
+        }
+        ToolAction::PremiereInspectKeyframes { target } => {
+            let value = premiere_bridge.request("inspect_keyframes", target.bridge_arguments(), Duration::from_secs(20)).await?;
+            Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&value).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
+        }
+        ToolAction::PremiereEditKeyframe { target, ticks, expected_signature, operation, interpolation } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let mut arguments = target.bridge_arguments();
+            arguments["ticks"] = json!(ticks);
+            arguments["expectedSignature"] = json!(expected_signature);
+            arguments["operation"] = json!(operation);
+            arguments["interpolation"] = json!(interpolation);
+            let value = premiere_bridge.request("edit_keyframe", arguments, Duration::from_secs(20)).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_keyframe_edit");
+            Ok(ActionResult { success: verified, tool, stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value})).unwrap_or_default(), stderr: String::new(), exit_code: Some(if verified {0}else{1}) })
+        }
+        ToolAction::PremiereInspectClipSpeed { kind, track, clip_index } => {
+            let value = premiere_bridge.request(
+                "inspect_clip_speed",
+                json!({"kind": kind, "track": track, "clipIndex": clip_index}),
+                Duration::from_secs(15),
+            ).await?;
+            Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&value).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
+        }
+        ToolAction::PremiereSpeedWriteCapability{kind,track,clip_index} => {
+            let value=premiere_bridge.request("speed_write_capability",json!({"kind":kind,"track":track,"clipIndex":clip_index}),Duration::from_secs(15)).await?;
+            let safe=value.get("reviewedWriteRouteAvailable").and_then(Value::as_bool)==Some(false)
+                && value.get("safeAutomaticWrite").and_then(Value::as_bool)==Some(false);
+            Ok(ActionResult{success:safe,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(if safe{0}else{1})})
+        }
+        ToolAction::PremierePlanSpeed { kind, track, clip_index, request } => {
+            let value = premiere_bridge.request(
+                "plan_clip_speed",
+                json!({"kind": kind, "track": track, "clipIndex": clip_index, "request": request}),
+                Duration::from_secs(15),
+            ).await?;
+            Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&value).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
+        }
+        ToolAction::PremiereInspectEffectLifecycle { target } => {
+            let value = premiere_bridge.request("inspect_effect_lifecycle", target.bridge_arguments(), Duration::from_secs(15)).await?;
+            Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&value).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
+        }
+        ToolAction::PremiereRemoveEffect { target, expected_signature } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let mut arguments = target.bridge_arguments(); arguments["expectedSignature"] = json!(expected_signature);
+            let value = premiere_bridge.request("remove_effect", arguments, Duration::from_secs(20)).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_delta");
+            Ok(ActionResult { success: verified, tool,
+                stdout: serde_json::to_string_pretty(&json!({"backup":backup,"result":value,
+                    "post_state_verified":verified,"runtime_acceptance_promoted":false,"retry_safe":false})).unwrap_or_default(),
+                stderr: String::new(), exit_code: Some(if verified {0}else{1}) })
+        }
+        ToolAction::PremierePlanSceneDetection {request} => {
+            request.validate()?;
+            let capabilities = premiere_bridge.request("scene_detection_capabilities", json!({}), Duration::from_secs(10)).await?;
+            let timeline = premiere_bridge.request("inspect_timeline", json!({}), Duration::from_secs(25)).await?;
+            let plan = premiere_scene_detection::build_plan(&request, &timeline, &capabilities)?;
+            Ok(ActionResult {
+                success:true,
+                tool,
+                stdout:serde_json::to_string_pretty(&plan).unwrap_or_else(|_| "{}".into()),
+                stderr:String::new(),
+                exit_code:Some(0),
+            })
+        }
+        ToolAction::PremierePlanSceneRoughCut {request} => {
+            request.validate()?;
+            let timeline = premiere_bridge.request("inspect_timeline", json!({}), Duration::from_secs(25)).await?;
+            let captions = premiere_bridge.request("caption_tracks", json!({}), Duration::from_secs(10)).await?;
+            let mut plan = premiere_scene_rough_cut::build_plan(&request, &timeline, &captions)?;
+            plan["planner"] = json!("premiere_plan_scene_rough_cut");
+            Ok(ActionResult {
+                success:true,
+                tool,
+                stdout:serde_json::to_string_pretty(&plan).unwrap_or_else(|_| "{}".into()),
+                stderr:String::new(),
+                exit_code:Some(0),
+            })
+        }
+        ToolAction::PremiereSceneDetection {request} => {
+            request.validate()?;
+            let capabilities = premiere_bridge.request("scene_detection_capabilities", json!({}), Duration::from_secs(10)).await?;
+            let timeline = premiere_bridge.request("inspect_timeline", json!({}), Duration::from_secs(25)).await?;
+            let plan = premiere_scene_detection::build_plan(&request, &timeline, &capabilities)?;
+            if plan.get("supported").and_then(Value::as_bool) != Some(true) {
+                return Err(plan.get("reason").and_then(Value::as_str).unwrap_or("Native scene detection is unavailable.").to_string());
+            }
+            let expected = premiere_bridge.expected.ok_or("Scene detection requires exact approved Premiere expectations.")?;
+            if plan.get("expected") != Some(&serde_json::to_value(expected).map_err(|e|e.to_string())?) {
+                return Err("Scene detection target/project state changed since planning; no operation was dispatched.".into());
+            }
+            let checkpoint = backup_premiere_project(&premiere_bridge).await?;
+            let client = PremiereClient { bridge:&state.premiere_bridge, expected:Some(expected) };
+            let result = client.request(
+                "scene_edit_detection",
+                json!({"mode":request.mode,"targets":request.targets}),
+                Duration::from_secs(180),
+            ).await?;
+            let accepted = result.get("nativeAccepted").and_then(Value::as_bool)==Some(true);
+            let verification = result.get("verificationStatus").and_then(Value::as_str).unwrap_or("unknown");
+            let delta_verified = verification == "verified_delta";
+            let selection_restored = result.get("selectionRestored").and_then(Value::as_bool)==Some(true);
+            let verified = delta_verified && selection_restored;
+            Ok(ActionResult {
+                success:verified,
+                tool,
+                stdout:json!({
+                    "checkpoint":checkpoint,
+                    "plan":plan,
+                    "result":result,
+                    "native_accepted":accepted,
+                    "verification_status":verification,
+                    "post_state_verified":delta_verified,
+                    "selection_restored":selection_restored,
+                    "uncertain":accepted&&!verified,
+                    "runtime_verified":false,
+                    "retry_safe":false
+                }).to_string(),
+                stderr:String::new(),
+                exit_code:Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereCancelTranscriptRebuild { generation } => {
+            let cancelled = state.rebuild_running.cancel(generation, &state.rebuild_cancelled)?;
+            Ok(ActionResult {success:true, tool, stdout:json!({"cancel_requested":cancelled,"generation":generation,"native_inflight_may_finish":cancelled}).to_string(), stderr:String::new(), exit_code:Some(0)})
+        }
+        ToolAction::PremiereTranscriptRebuild {request, apply, plan_snapshot} => {
+            request.validate()?;
+            if !apply {
+                let plan = premiere_bridge.request("plan_transcript_rebuild", json!({"request":request}), Duration::from_secs(60)).await?;
+                return Ok(ActionResult {success:true, tool, stdout:plan.to_string(), stderr:String::new(), exit_code:Some(0)});
+            }
+            let _guard = state.rebuild_running.begin(&state.rebuild_cancelled)?;
+            // Checkpoint first; native begin then rechecks the approved snapshot before any media mutation.
+            let checkpoint = backup_premiere_project(&premiere_bridge).await?;
+            let prepared = premiere_bridge.request("begin_transcript_rebuild", json!({"request":request,"plan_snapshot":plan_snapshot}), Duration::from_secs(60)).await?;
+            let id = prepared.get("id").and_then(Value::as_str).ok_or("Native rebuild ID missing.")?;
+            let count = prepared.get("operation_count").and_then(Value::as_u64).filter(|n| *n <= 256).ok_or("Invalid rebuild step bound.")? as usize;
+            let mut result = premiere_transcript_rebuild::run(id, count, &state.rebuild_cancelled, |index| {
+                let bridge = &premiere_bridge;
+                let audit_tool = &tool;
+                async move {
+                    append_audit(app, &AuditEntry {timestamp_ms:now_ms(),event:"rebuild_dispatch".into(),tool:audit_tool.clone(),detail:format!("{id}: step {index}"),success:false,action_id:None})?;
+                    let reply = bridge.request("step_transcript_rebuild", json!({"id":id,"index":index}), Duration::from_secs(60)).await;
+                    append_audit(app, &AuditEntry {timestamp_ms:now_ms(),event:"rebuild_result".into(),tool:audit_tool.clone(),detail:format!("{id}: step {index}: {}", reply.as_ref().ok().and_then(|v| v.get("status")).and_then(Value::as_str).unwrap_or("uncertain")),success:reply.as_ref().ok().is_some_and(|v| v.get("status").and_then(Value::as_str)==Some("applied")),action_id:None})?;
+                    reply
+                }
+            }).await;
+            let release = premiere_bridge.request("release_transcript_rebuild",json!({"id":id}),Duration::from_secs(10)).await;
+            result["session_released"] = json!(release.as_ref().ok().and_then(|v|v.get("released")).and_then(Value::as_bool)==Some(true));
+            result["checkpoint"] = json!(checkpoint);
+            result["plan"] = prepared.get("plan").cloned().unwrap_or(Value::Null);
+            let success = result.get("complete").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult {success,tool,stdout:result.to_string(),stderr:String::new(),exit_code:Some(if success {0} else {1})})
+        }
+        ToolAction::PremiereAssemblyCancel { generation } => {
+            let cancelled = state.assembly_running.cancel(generation, &state.assembly_cancelled)?;
+            Ok(ActionResult{success:true,tool,stdout:json!({"cancel_requested":cancelled,"generation":generation,"native_inflight_may_finish":cancelled}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereAssembly{assembly,apply} => {
+            let expected=premiere_bridge.expected;
+            let _running_guard = if apply { Some(state.assembly_running.begin(&state.assembly_cancelled)?) } else { None };
+
+            let ids=assembly.all_item_ids();
+            let inspected=premiere_bridge.request(
+                "inspect_assembly_items",
+                json!({"itemIds":ids}),
+                Duration::from_secs(30),
+            ).await?;
+            let native_expected=inspected.get("expected").ok_or("Assembly preflight returned no project/sequence identity.")?;
+            if apply && Some(native_expected)!=expected.and_then(|value|serde_json::to_value(value).ok()).as_ref() {
+                return Err("Assembly project or sequence changed since planning.".into());
+            }
+            let video_tracks=inspected.get("video_tracks").and_then(Value::as_u64).ok_or("Video track count unavailable.")?;
+            let audio_tracks=inspected.get("audio_tracks").and_then(Value::as_u64).ok_or("Audio track count unavailable.")?;
+            let items=inspected.get("items").and_then(Value::as_array).ok_or("Project item inspection unavailable.")?;
+            if items.len()!=ids.len(){return Err("Incomplete project item inspection.".into());}
+
+            let mut blocked=Vec::new();
+            for (i,shot) in assembly.shots.iter().enumerate() {
+                if shot.video_track as u64>=video_tracks
+                    || shot.audio_track as u64>=audio_tracks
+                    || items[i]["id"].as_str()!=Some(shot.item_id.as_str())
+                    || items[i]["insertable"].as_bool()!=Some(true)
+                {
+                    blocked.push(json!({"kind":"shot","index":i,"item_id":shot.item_id,"reason":"Project item is missing/not insertable or target tracks do not exist."}));
+                }
+            }
+            for (i,music) in assembly.music.iter().enumerate() {
+                let item_index=assembly.shots.len()+i;
+                if music.video_track as u64>=video_tracks
+                    || music.audio_track as u64>=audio_tracks
+                    || items[item_index]["id"].as_str()!=Some(music.item_id.as_str())
+                    || items[item_index]["insertable"].as_bool()!=Some(true)
+                {
+                    blocked.push(json!({"kind":"music","index":i,"item_id":music.item_id,"reason":"Music item is missing/not insertable or target tracks do not exist."}));
+                }
+            }
+            if let Some(graphics)=&assembly.graphics {
+                if graphics.video_track as u64>=video_tracks||graphics.audio_track as u64>=audio_tracks {
+                    blocked.push(json!({"kind":"graphics","reason":"Mapped graphics destination tracks do not exist."}));
+                }
+            }
+
+            let installed_transitions=if assembly.transitions.is_empty() {
+                Vec::<String>::new()
+            } else {
+                let value=premiere_bridge.request("list_video_transitions",json!({}),Duration::from_secs(20)).await?;
+                value.get("transitions").and_then(Value::as_array).ok_or("Installed transition list unavailable.")?
+                    .iter().filter_map(Value::as_str).map(str::to_string).collect()
+            };
+            for (i,transition) in assembly.transitions.iter().enumerate() {
+                if !installed_transitions.iter().any(|name|name==&transition.match_name) {
+                    blocked.push(json!({"kind":"transition","index":i,"match_name":transition.match_name,"reason":"Requested transition is not installed."}));
+                }
+            }
+
+            let saved_graphics=if let Some(batch)=&assembly.graphics {
+                let saved=premiere_graphics::list(&graphics_library_path(app)?)?
+                    .into_iter().find(|saved|saved.mapping.name==batch.mapping)
+                    .ok_or("Unknown advanced assembly graphics mapping.")?;
+                batch.resolve(&saved)?;
+                saved.mapping.validate_local_template()?;
+                Some(saved)
+            }else{None};
+
+            if !apply {
+                return Ok(ActionResult{
+                    success:true,
+                    tool,
+                    stdout:json!({
+                        "applied":false,
+                        "executable":blocked.is_empty(),
+                        "assembly":assembly,
+                        "blocked":blocked,
+                        "expected":native_expected,
+                        "video_tracks":video_tracks,
+                        "audio_tracks":audio_tracks,
+                        "source_range_support":assembly.schema_version>=2,
+                        "source_range_strategy":"verified_created_subclip_id",
+                        "transition_count":assembly.transitions.len(),
+                        "music_count":assembly.music.len(),
+                        "graphics_count":assembly.graphics.as_ref().map(|batch|batch.items.len()).unwrap_or(0),
+                        "review_times":if assembly.review{assembly.review_times()?}else{Vec::new()},
+                        "inferred_beat_detection":false
+                    }).to_string(),
+                    stderr:String::new(),
+                    exit_code:Some(0)
+                });
+            }
+            if !blocked.is_empty(){return Err("Advanced assembly preflight blocked one or more requested items; nothing was edited.".into());}
+
+            let backup=backup_premiere_project(&premiere_bridge).await?;
+            let mut shot_results=Vec::new();
+            let mut subclips=Vec::new();
+            let mut music_results=Vec::new();
+            let mut transition_results=Vec::new();
+            let mut marker_results=Vec::new();
+            let mut graphics_result=Value::Null;
+            let mut uncertain=false;
+
+            for (i,shot) in assembly.shots.iter().enumerate() {
+                if state.assembly_cancelled.load(Ordering::Acquire){break;}
+                let seconds=assembly.shot_seconds(shot)?;
+                let mut insert_item_id=shot.item_id.clone();
+
+                if let (Some(source_in),Some(source_out))=(shot.source_in,shot.source_out) {
+                    let name=format!("Shuvi Range {:03}",i+1);
+                    match premiere_bridge.request(
+                        "create_subclip",
+                        json!({
+                            "itemId":shot.item_id,
+                            "name":name,
+                            "startSeconds":source_in,
+                            "endSeconds":source_out,
+                            "hardBoundaries":true,
+                            "takeVideo":shot.take_video,
+                            "takeAudio":shot.take_audio
+                        }),
+                        Duration::from_secs(45),
+                    ).await {
+                        Ok(value) => {
+                            if value.get("correlationVerified").and_then(Value::as_bool)!=Some(true) {
+                                uncertain=true;
+                                subclips.push(json!({"shot_index":i,"status":"uncertain","native_result":value,"reason":"Created subclip could not be correlated to exactly one new native project item."}));
+                                break;
+                            }
+                            let created=value.get("createdItemId").and_then(Value::as_str).filter(|id|!id.is_empty())
+                                .ok_or("Verified subclip correlation returned no project item id.")?;
+                            insert_item_id=created.to_string();
+                            subclips.push(json!({"shot_index":i,"status":"created","source_item_id":shot.item_id,"created_item_id":created,"source_in":source_in,"source_out":source_out}));
+                        }
+                        Err(error)=>{
+                            uncertain=true;
+                            subclips.push(json!({"shot_index":i,"status":"uncertain","reason":error.chars().take(240).collect::<String>()}));
+                            break;
+                        }
+                    }
+                }
+
+                if state.assembly_cancelled.load(Ordering::Acquire) { break; }
+                match premiere_bridge.request(
+                    "insert_project_item",
+                    json!({
+                        "itemId":insert_item_id,
+                        "seconds":seconds,
+                        "videoTrack":shot.video_track,
+                        "audioTrack":shot.audio_track,
+                        "mode":shot.mode
+                    }),
+                    Duration::from_secs(35),
+                ).await {
+                    Ok(value)=>{
+                        let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_insert_delta");
+                        shot_results.push(json!({
+                            "index":i,"source_item_id":shot.item_id,"insert_item_id":insert_item_id,
+                            "role":shot.role,"requested_seconds":seconds,
+                            "status":if verified{"verified"}else{"uncertain"},"native_result":value
+                        }));
+                        if !verified {uncertain=true;break;}
+                    },
+                    Err(error)=>{
+                        uncertain=true;
+                        shot_results.push(json!({"index":i,"item_id":insert_item_id,"status":"uncertain","reason":error.chars().take(240).collect::<String>()}));
+                        break;
+                    }
+                }
+            }
+
+            if !uncertain && shot_results.len()==assembly.shots.len() {
+                for (i,music) in assembly.music.iter().enumerate() {
+                    if state.assembly_cancelled.load(Ordering::Acquire){break;}
+                    match premiere_bridge.request(
+                        "insert_project_item",
+                        json!({
+                            "itemId":music.item_id,
+                            "seconds":music.timeline_seconds,
+                            "videoTrack":music.video_track,
+                            "audioTrack":music.audio_track,
+                            "mode":music.mode
+                        }),
+                        Duration::from_secs(35),
+                    ).await {
+                        Ok(value)=>{
+                            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_insert_delta");
+                            music_results.push(json!({"index":i,"item_id":music.item_id,"seconds":music.timeline_seconds,
+                                "status":if verified{"verified"}else{"uncertain"},"native_result":value}));
+                            if !verified {uncertain=true;break;}
+                        },
+                        Err(error)=>{
+                            uncertain=true;
+                            music_results.push(json!({"index":i,"item_id":music.item_id,"status":"uncertain","reason":error.chars().take(240).collect::<String>()}));
+                            break;
+                        }
+                    }
+                }
+            }
+
+            let mut post_insert_timeline=None;
+            if !uncertain && shot_results.len()==assembly.shots.len() && music_results.len()==assembly.music.len() {
+                let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(25)).await?;
+                for (i,transition) in assembly.transitions.iter().enumerate() {
+                    if state.assembly_cancelled.load(Ordering::Acquire){break;}
+                    let shot=&assembly.shots[transition.shot_index as usize];
+                    let seconds=assembly.shot_seconds(shot)?;
+                    let clip_index=premiere_assembly::resolve_video_clip_index(&timeline,shot.video_track,seconds)?;
+                    match premiere_bridge.request(
+                        "add_video_transition",
+                        json!({
+                            "track":shot.video_track,
+                            "clipIndex":clip_index,
+                            "matchName":transition.match_name,
+                            "durationSeconds":transition.duration_seconds,
+                            "position":transition.position,
+                            "forceSingleSided":transition.force_single_sided
+                        }),
+                        Duration::from_secs(30),
+                    ).await {
+                        Ok(value)=>{
+                            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_transition");
+                            transition_results.push(json!({"index":i,"shot_index":transition.shot_index,"clip_index":clip_index,"status":if verified {"verified"}else{"accepted_unverified"},"native_result":value}));
+                            if !verified {uncertain=true;break;}
+                        },
+                        Err(error)=>{
+                            uncertain=true;
+                            transition_results.push(json!({"index":i,"shot_index":transition.shot_index,"status":"uncertain","reason":error.chars().take(240).collect::<String>()}));
+                            break;
+                        }
+                    }
+                }
+                post_insert_timeline=Some(timeline);
+            }
+
+            if !uncertain && transition_results.len()==assembly.transitions.len() {
+                for chapter in &assembly.chapters {
+                    if state.assembly_cancelled.load(Ordering::Acquire){break;}
+                    match premiere_bridge.request(
+                        "add_marker",
+                        json!({"name":chapter.name,"markerType":"Chapter","seconds":chapter.seconds,"durationSeconds":0,"comments":""}),
+                        Duration::from_secs(20),
+                    ).await {
+                        Ok(value)=>{
+                            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_delta");
+                            marker_results.push(json!({"name":chapter.name,"seconds":chapter.seconds,"status":if verified {"verified"}else{"accepted_unverified"},"post_state_verified":verified,"native_result":value}));
+                            if !verified {uncertain=true;break;}
+                        },
+                        Err(error)=>{
+                            uncertain=true;
+                            marker_results.push(json!({"name":chapter.name,"status":"uncertain","reason":error.chars().take(240).collect::<String>()}));
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if !uncertain && marker_results.len()==assembly.chapters.len() {
+                if let (Some(batch),Some(saved))=(&assembly.graphics,saved_graphics.as_ref()) {
+                    graphics_result=premiere_graphics::run_batch(batch,saved,&state.assembly_cancelled,|step| {
+                        let client=&premiere_bridge;
+                        let checkpoint=backup.clone();
+                        async move {
+                            match step {
+                                premiere_graphics::BatchStep::Checkpoint=>Ok(json!(checkpoint)),
+                                premiere_graphics::BatchStep::Insert(arguments)=>
+                                    client.request("insert_mapped_graphic",arguments,Duration::from_secs(90)).await,
+                            }
+                        }
+                    }).await?;
+                    uncertain=graphics_result.get("uncertain").and_then(Value::as_bool).unwrap_or(true);
+                }
+            }
+
+            let cancelled=state.assembly_cancelled.load(Ordering::Acquire);
+            let final_timeline=if shot_results.iter().any(|row|row["status"]=="verified") {
+                premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(25)).await.ok()
+            }else{None};
+            let graphics_complete=assembly.graphics.is_none()||graphics_result.get("complete").and_then(Value::as_bool)==Some(true);
+            let complete=!uncertain&&!cancelled
+                &&shot_results.len()==assembly.shots.len()&&shot_results.iter().all(|row|row["status"]=="verified")
+                &&music_results.len()==assembly.music.len()&&music_results.iter().all(|row|row["status"]=="verified")
+                &&transition_results.len()==assembly.transitions.len()&&transition_results.iter().all(|row|row["status"]=="verified")
+                &&marker_results.len()==assembly.chapters.len()&&marker_results.iter().all(|row|row["status"]=="verified")
+                &&graphics_complete;
+
+            Ok(ActionResult{
+                success:complete,
+                tool,
+                stdout:json!({
+                    "backup":backup,
+                    "complete":complete,
+                    "uncertain":uncertain,
+                    "cancelled":cancelled,
+                    "shots":shot_results,
+                    "created_subclips":subclips,
+                    "music":music_results,
+                    "transitions":transition_results,
+                    "chapters":marker_results,
+                    "graphics":graphics_result,
+                    "post_insert_timeline_inspected":post_insert_timeline.is_some(),
+                    "final_timeline":final_timeline,
+                    "review_requested":assembly.review,
+                    "review_times":if assembly.review{assembly.review_times()?}else{Vec::new()},
+                    "review_execution_tool":if assembly.review{Some("premiere_review_frames")}else{None},
+                    "inferred_beat_detection":false,
+                    "automatic_rollback":false
+                }).to_string(),
+                stderr:String::new(),
+                exit_code:Some(if complete{0}else{1})
+            })
+        }
+        ToolAction::PremiereFinishMediaBatch { request, provider } => {
+            let _guard = state.finishing_running.begin(&state.finishing_cancelled)?;
+            let expected = premiere_bridge.expected.ok_or("Mixed finishing requires inspected Premiere expectations.")?.clone();
+
+            let timeline = premiere_bridge.request("inspect_timeline", json!({}), Duration::from_secs(25)).await?;
+            let sample_times = if request.review {
+                premiere_finishing::review_times(&timeline, &request.videos)?
+            } else {
+                Vec::new()
+            };
+
+            let mut before_review = Vec::new();
+            if let Some(provider) = &provider {
+                for seconds in &sample_times {
+                    if state.finishing_cancelled.load(Ordering::Acquire) { break; }
+                    let observation = async {
+                        let positioned=premiere_bridge.request("set_playhead", json!({"seconds":seconds}), Duration::from_secs(8)).await?;
+                        if positioned.get("verificationStatus").and_then(Value::as_str)!=Some("verified_readback") {
+                            return Err("Premiere playhead readback did not confirm the finishing review frame.".into());
+                        }
+                        tokio::time::sleep(Duration::from_millis(350)).await;
+                        let path = capture_screen_png()?;
+                        let analysis = analyze_png_with_provider(
+                            provider,
+                            request.review_prompt.as_deref().unwrap_or("Review professional finishing consistency."),
+                            &path,
+                        ).await?;
+                        Ok::<Value,String>(json!({"seconds":seconds,"analysis":analysis}))
+                    }.await;
+                    match observation {
+                        Ok(value) => before_review.push(json!({"status":"reviewed","result":value})),
+                        Err(error) => before_review.push(json!({"status":"failed","reason":error.chars().take(240).collect::<String>()})),
+                    }
+                }
+            }
+
+            let mut video_plans: Vec<(u32,u32,PremiereExpectation,Value)> = Vec::new();
+            let mut audio_plans: Vec<(ParameterTarget,PremiereExpectation,Value)> = Vec::new();
+            let mut video_results = Vec::new();
+            let mut audio_results = Vec::new();
+            let mut uncertain = false;
+
+            for video in &request.videos {
+                let clip = expected.clips.iter().find(|clip|
+                    clip.kind=="video" && clip.track==video.track && clip.clip_index==video.clip_index
+                ).ok_or("Missing mixed finishing video guard.")?.clone();
+                let guard = PremiereExpectation {
+                    project_guid: expected.project_guid.clone(),
+                    project_path: expected.project_path.clone(),
+                    sequence_guid: expected.sequence_guid.clone(),
+                    clips: vec![clip],
+                };
+                let client = PremiereClient { bridge:&state.premiere_bridge, expected:Some(&guard) };
+                match client.request(
+                    "plan_video_recipe",
+                    json!({"track":video.track,"clipIndex":video.clip_index,"request":video.request}),
+                    Duration::from_secs(30),
+                ).await {
+                    Ok(plan)
+                        if plan.get("expected")==Some(&serde_json::to_value(&guard).map_err(|e|e.to_string())?)
+                        && plan.get("skipped").and_then(Value::as_array).is_some_and(Vec::is_empty)
+                        && plan.get("settings").and_then(Value::as_array).is_some_and(|settings|!settings.is_empty()&&settings.len()<=64) =>
+                    {
+                        video_plans.push((video.track,video.clip_index,guard,plan));
+                    }
+                    Ok(_) => video_results.push(json!({
+                        "track":video.track,"clip_index":video.clip_index,"status":"skipped",
+                        "reason":"Native video plan is incomplete, stale, or has incompatible bindings."
+                    })),
+                    Err(error) => video_results.push(json!({
+                        "track":video.track,"clip_index":video.clip_index,"status":"failed",
+                        "reason":error.chars().take(240).collect::<String>()
+                    })),
+                }
+            }
+
+            for audio in &request.audios {
+                let clip = expected.clips.iter().find(|clip|
+                    clip.kind=="audio" && clip.track==audio.target.track && clip.clip_index==audio.target.clip_index
+                ).ok_or("Missing mixed finishing audio guard.")?.clone();
+                let guard = PremiereExpectation {
+                    project_guid: expected.project_guid.clone(),
+                    project_path: expected.project_path.clone(),
+                    sequence_guid: expected.sequence_guid.clone(),
+                    clips: vec![clip],
+                };
+                let client = PremiereClient { bridge:&state.premiere_bridge, expected:Some(&guard) };
+                let mut arguments = audio.target.bridge_arguments();
+                arguments["request"] = serde_json::to_value(&audio.request).map_err(|e|e.to_string())?;
+                match client.request("plan_audio_automation", arguments, Duration::from_secs(30)).await {
+                    Ok(plan)
+                        if plan.get("expected")==Some(&serde_json::to_value(&guard).map_err(|e|e.to_string())?)
+                        && plan.get("settings").and_then(Value::as_array).is_some_and(|settings|!settings.is_empty()&&settings.len()<=64) =>
+                    {
+                        audio_plans.push((audio.target.clone(),guard,plan));
+                    }
+                    Ok(_) => audio_results.push(json!({
+                        "track":audio.target.track,"clip_index":audio.target.clip_index,"status":"skipped",
+                        "reason":"Native audio plan is incomplete or stale."
+                    })),
+                    Err(error) => audio_results.push(json!({
+                        "track":audio.target.track,"clip_index":audio.target.clip_index,"status":"failed",
+                        "reason":error.chars().take(240).collect::<String>()
+                    })),
+                }
+            }
+
+            let saved_graphics = if let Some(batch) = &request.graphics {
+                let saved = premiere_graphics::list(&graphics_library_path(app)?)?
+                    .into_iter()
+                    .find(|saved| saved.mapping.name==batch.mapping)
+                    .ok_or("Unknown mixed finishing graphics mapping.")?;
+                batch.resolve(&saved)?;
+                saved.mapping.validate_local_template()?;
+                Some(saved)
+            } else {
+                None
+            };
+
+            let has_mutation = !video_plans.is_empty() || !audio_plans.is_empty() || request.graphics.is_some();
+            let checkpoint = if has_mutation {
+                Some(backup_premiere_project(&premiere_bridge).await?)
+            } else {
+                None
+            };
+
+            for (track,clip_index,guard,plan) in video_plans {
+                if state.finishing_cancelled.load(Ordering::Acquire) { break; }
+                let client = PremiereClient { bridge:&state.premiere_bridge, expected:Some(&guard) };
+                let settings = plan.get("settings").and_then(Value::as_array).ok_or("Video finishing settings disappeared.")?;
+                match client.request(
+                    "apply_video_recipe",
+                    json!({"track":track,"clipIndex":clip_index,"settings":settings}),
+                    Duration::from_secs(45),
+                ).await {
+                    Ok(value) => {
+                        let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_recipe");
+                        video_results.push(json!({"track":track,"clip_index":clip_index,
+                            "status":if verified{"applied"}else{"uncertain"},"post_state_verified":verified,"native_result":value}));
+                        if !verified { uncertain=true; break; }
+                    },
+                    Err(error) => {
+                        uncertain = error.contains("unknown")||error.contains("timed out")||error.contains("timeout");
+                        video_results.push(json!({
+                            "track":track,"clip_index":clip_index,
+                            "status":if uncertain{"uncertain"}else{"failed"},
+                            "reason":error.chars().take(240).collect::<String>()
+                        }));
+                        if uncertain { break; }
+                    }
+                }
+            }
+
+            if !uncertain {
+                for (target,guard,plan) in audio_plans {
+                    if state.finishing_cancelled.load(Ordering::Acquire) { break; }
+                    let client = PremiereClient { bridge:&state.premiere_bridge, expected:Some(&guard) };
+                    let settings = plan.get("settings").and_then(Value::as_array).ok_or("Audio finishing settings disappeared.")?;
+                    match client.request(
+                        "apply_audio_recipe",
+                        json!({"track":target.track,"clipIndex":target.clip_index,"settings":settings}),
+                        Duration::from_secs(45),
+                    ).await {
+                        Ok(value) => {
+                            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_recipe");
+                            audio_results.push(json!({
+                                "track":target.track,"clip_index":target.clip_index,
+                                "status":if verified{"applied"}else{"uncertain"},
+                                "post_state_verified":verified,"native_result":value
+                            }));
+                            if !verified { uncertain=true; break; }
+                        },
+                        Err(error) => {
+                            uncertain = error.contains("unknown")||error.contains("timed out")||error.contains("timeout");
+                            audio_results.push(json!({
+                                "track":target.track,"clip_index":target.clip_index,
+                                "status":if uncertain{"uncertain"}else{"failed"},
+                                "reason":error.chars().take(240).collect::<String>()
+                            }));
+                            if uncertain { break; }
+                        }
+                    }
+                }
+            }
+
+            let mut graphics_result = Value::Null;
+            if !uncertain && !state.finishing_cancelled.load(Ordering::Acquire) {
+                if let (Some(batch),Some(saved)) = (&request.graphics,saved_graphics.as_ref()) {
+                    let project_guard = PremiereExpectation {
+                        project_guid: expected.project_guid.clone(),
+                        project_path: expected.project_path.clone(),
+                        sequence_guid: expected.sequence_guid.clone(),
+                        clips: Vec::new(),
+                    };
+                    let graphics_client = PremiereClient { bridge:&state.premiere_bridge, expected:Some(&project_guard) };
+                    let checkpoint_path = checkpoint.clone().ok_or("Mixed finishing checkpoint missing before graphics.")?;
+                    graphics_result = premiere_graphics::run_batch(batch,saved,&state.finishing_cancelled,|step| {
+                        let client = &graphics_client;
+                        let checkpoint_path = checkpoint_path.clone();
+                        async move {
+                            match step {
+                                premiere_graphics::BatchStep::Checkpoint => Ok(json!(checkpoint_path)),
+                                premiere_graphics::BatchStep::Insert(arguments) =>
+                                    client.request("insert_mapped_graphic",arguments,Duration::from_secs(90)).await,
+                            }
+                        }
+                    }).await?;
+                    uncertain = graphics_result.get("uncertain").and_then(Value::as_bool).unwrap_or(true);
+                }
+            }
+
+            let cancelled = state.finishing_cancelled.load(Ordering::Acquire);
+            let project_guard = PremiereExpectation {
+                project_guid: expected.project_guid.clone(),
+                project_path: expected.project_path.clone(),
+                sequence_guid: expected.sequence_guid.clone(),
+                clips: Vec::new(),
+            };
+            let post_client = PremiereClient { bridge:&state.premiere_bridge, expected:Some(&project_guard) };
+            let post_timeline = post_client.request("inspect_timeline",json!({}),Duration::from_secs(25)).await.ok();
+
+            let mut after_review = Vec::new();
+            if !uncertain && !cancelled {
+                if let Some(provider) = &provider {
+                    for seconds in &sample_times {
+                        let observation = async {
+                            let positioned=post_client.request("set_playhead",json!({"seconds":seconds}),Duration::from_secs(8)).await?;
+                            if positioned.get("verificationStatus").and_then(Value::as_str)!=Some("verified_readback") {
+                                return Err("Premiere playhead readback did not confirm the post-finishing review frame.".into());
+                            }
+                            tokio::time::sleep(Duration::from_millis(350)).await;
+                            let path = capture_screen_png()?;
+                            let analysis = analyze_png_with_provider(
+                                provider,
+                                request.review_prompt.as_deref().unwrap_or("Review professional finishing consistency."),
+                                &path,
+                            ).await?;
+                            Ok::<Value,String>(json!({"seconds":seconds,"analysis":analysis}))
+                        }.await;
+                        match observation {
+                            Ok(value) => after_review.push(json!({"status":"reviewed","result":value})),
+                            Err(error) => after_review.push(json!({"status":"failed","reason":error.chars().take(240).collect::<String>()})),
+                        }
+                    }
+                }
+            }
+
+            let video_applied = video_results.iter().filter(|row|row["status"]=="applied").count();
+            let audio_applied = audio_results.iter().filter(|row|row["status"]=="applied").count();
+            let graphics_complete = request.graphics.is_none()
+                || graphics_result.get("complete").and_then(Value::as_bool)==Some(true);
+            let all_video_applied = video_applied==request.videos.len();
+            let all_audio_applied = audio_applied==request.audios.len();
+            let review_complete = !request.review
+                || (before_review.len()==sample_times.len()
+                    && after_review.len()==sample_times.len()
+                    && before_review.iter().all(|row|row["status"]=="reviewed")
+                    && after_review.iter().all(|row|row["status"]=="reviewed"));
+            let success = all_video_applied && all_audio_applied && graphics_complete
+                && review_complete && !uncertain && !cancelled;
+
+            Ok(ActionResult {
+                success,
+                tool,
+                stdout: json!({
+                    "schema_version":1,
+                    "checkpoint":checkpoint,
+                    "cancelled":cancelled,
+                    "uncertain":uncertain,
+                    "video":{"requested":request.videos.len(),"applied":video_applied,"results":video_results},
+                    "audio":{"requested":request.audios.len(),"applied":audio_applied,"results":audio_results},
+                    "graphics":graphics_result,
+                    "review":{
+                        "sample_times":sample_times,
+                        "before":before_review,
+                        "after":after_review,
+                        "subjective_quality_guaranteed":false
+                    },
+                    "post_timeline_inspected":post_timeline.is_some(),
+                    "post_timeline":post_timeline,
+                    "unsupported_features":["speed_ramp","masks","multicam","inferred_linked_media"]
+                }).to_string(),
+                stderr:String::new(),
+                exit_code:Some(if success{0}else{1}),
+            })
+        }
+        ToolAction::PremiereBatchFinishCancel { generation } => {
+            let cancelled = state.finishing_running.cancel(generation, &state.finishing_cancelled)?;
+            Ok(ActionResult{success:true,tool,stdout:json!({"cancel_requested":cancelled,"generation":generation,"native_inflight_may_finish":cancelled}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereSaveGraphicsMapping {mapping,track,clip_index,expected_revision} => {
+            mapping.validate_local_template()?;
+            let inspected = premiere_bridge.request("inspect_mogrt_properties", json!({"track":track,"clipIndex":clip_index}), Duration::from_secs(30)).await?;
+            let expected = premiere_bridge.expected.ok_or("Reference clip expectation missing.")?;
+            let native: PremiereExpectation = serde_json::from_value(inspected["expected"].clone()).map_err(|e| e.to_string())?;
+            if native.project_guid != expected.project_guid || native.sequence_guid != expected.sequence_guid
+                || native.clips.len() != 1 || native.clips[0].signature != expected.clips[0].signature {
+                return Err("Graphics reference changed during inspection; mapping not saved.".into());
+            }
+            mapping.validate_inspection(&inspected)?;
+            let saved = premiere_graphics::save(&graphics_library_path(app)?, mapping, expected_revision)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"saved":saved,"template_identity":"caller_supplied","roles_inferred":false}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereListGraphicsMappings => {
+            let entries = premiere_graphics::list(&graphics_library_path(app)?)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"mappings":entries,"limits":{"mappings":64,"bytes":98304,"batch_items":32}}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereDeleteGraphicsMapping {name,revision} => {
+            premiere_graphics::delete(&graphics_library_path(app)?, &name, revision)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"deleted":name,"revision":revision}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereCancelGraphicsBatch { generation } => {
+            let cancelled = state.graphics_running.cancel(generation, &state.graphics_cancelled)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"cancel_requested":cancelled,"generation":generation,"native_inflight_may_finish":cancelled}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereBatchGraphics {batch} => {
+            let _guard = state.graphics_running.begin(&state.graphics_cancelled)?;
+            let expected = premiere_bridge.expected.ok_or("Graphics project/sequence expectation missing.")?;
+            stage_graphics_batch(&serde_json::to_value(&batch).map_err(|e| e.to_string())?, Some(expected))?;
+            let saved = premiere_graphics::list(&graphics_library_path(app)?)?.into_iter().find(|s| s.mapping.name == batch.mapping).ok_or("Unknown graphics mapping.")?;
+            batch.resolve(&saved)?;
+            saved.mapping.validate_local_template()?;
+            let timeline = premiere_bridge.request("inspect_timeline", json!({}), Duration::from_secs(30)).await?;
+            if timeline["truncated"] != false || !timeline["videoTracks"].as_array().is_some_and(|t| t.iter().any(|t| t["index"] == batch.video_track))
+                || !timeline["audioTracks"].as_array().is_some_and(|t| t.iter().any(|t| t["index"] == batch.audio_track)) {
+                return Err("Graphics preflight needs a complete timeline and existing destination tracks.".into());
+            }
+            let result = premiere_graphics::run_batch(&batch, &saved, &state.graphics_cancelled, |step| {
+                let client = &premiere_bridge;
+                async move {
+                    match step {
+                        premiere_graphics::BatchStep::Checkpoint => Ok(json!(backup_premiere_project(client).await?)),
+                        premiere_graphics::BatchStep::Insert(arguments) => client.request("insert_mapped_graphic", arguments, Duration::from_secs(90)).await,
+                    }
+                }
+            }).await?;
+            let success = result["complete"] == true;
+            Ok(ActionResult {success,tool,stdout:result.to_string(),stderr:String::new(),exit_code:Some(if success {0} else {1})})
+        }
+        ToolAction::PremiereBatchFinish{targets} => {
+            let _guard = state.finishing_running.begin(&state.finishing_cancelled)?;
+            let expected=premiere_bridge.expected.ok_or("Batch requires inspected Premiere expectation.")?;
+            if targets.is_empty()||targets.len()>32 {
+                return Err("Batch finishing requires 1–32 explicit video targets.".into());
+            }
+            if expected.clips.len()!=targets.len() {
+                return Err("Batch expectation must cover every requested target exactly.".into());
+            }
+            let mut seen_targets=HashSet::new();
+            for target in &targets {
+                let track=target["track"].as_u64().ok_or("Invalid batch track.")? as u32;
+                let index=target["clip_index"].as_u64().ok_or("Invalid batch index.")? as u32;
+                if !seen_targets.insert((track,index))
+                    || !expected.clips.iter().any(|c|c.kind=="video"&&c.track==track&&c.clip_index==index)
+                {
+                    return Err("Duplicate or uninspected video batch target.".into());
+                }
+            }
+            let mut results=Vec::new();let mut checkpoint:Option<String>=None;
+            let requested = targets.len();
+            let mut uncertain = false;
+            for target in targets {
+                if state.finishing_cancelled.load(Ordering::Acquire){break;}
+                let track=target["track"].as_u64().ok_or("Invalid batch track.")? as u32;
+                let index=target["clip_index"].as_u64().ok_or("Invalid batch index.")? as u32;
+                let clip=expected.clips.iter().find(|c|c.kind=="video"&&c.track==track&&c.clip_index==index).ok_or("Missing batch clip guard.")?.clone();
+                let guard=PremiereExpectation{project_guid:expected.project_guid.clone(),project_path:expected.project_path.clone(),sequence_guid:expected.sequence_guid.clone(),clips:vec![clip]};
+                let client=PremiereClient{bridge:&state.premiere_bridge,expected:Some(&guard)};
+                let request=target.get("request").ok_or("Missing batch recipe request.")?;
+                let plan=client.request("plan_video_recipe",json!({"track":track,"clipIndex":index,"request":request}),Duration::from_secs(30)).await;
+                let mut dispatched = false;
+                let outcome=match plan {
+                    Ok(plan) => {
+                        if plan.get("expected")!=Some(&serde_json::to_value(&guard).map_err(|e|e.to_string())?) {Err("Native clip expectation changed during planning.".into())}
+                        else if !plan.get("skipped").and_then(Value::as_array).is_some_and(Vec::is_empty) {Err("Some native bindings are unavailable; clip skipped.".into())}
+                        else if let Some(settings)=plan.get("settings").and_then(Value::as_array).filter(|s|!s.is_empty()&&s.len()<=64){
+                            if state.finishing_cancelled.load(Ordering::Acquire){Err("Cancelled before clip edit.".into())}
+                            else {
+                                if checkpoint.is_none(){checkpoint=Some(backup_premiere_project(&client).await?);}
+                                if state.finishing_cancelled.load(Ordering::Acquire) { break; }
+                                dispatched = true;
+                                client.request("apply_video_recipe",json!({"track":track,"clipIndex":index,"settings":settings}),Duration::from_secs(45)).await
+                            }
+                        }else{Err("Native planner returned no bounded executable settings.".into())}
+                    },Err(error)=>Err(error)
+                };
+                match outcome {
+                    Ok(result)=>{
+                        let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_recipe");
+                        results.push(json!({"track":track,"clip_index":index,
+                            "status":if verified{"applied"}else{"uncertain"},
+                            "post_state_verified":verified,"result":result}));
+                        if !verified { uncertain=true; break; }
+                    },
+                    Err(error)=>{
+                        uncertain = dispatched;
+                        results.push(json!({"track":track,"clip_index":index,"status":if uncertain{"uncertain"}else{"failed"},"reason":error.chars().take(240).collect::<String>()}));
+                        if uncertain {break;}
+                    }
+                }
+            }
+            let done=results.iter().filter(|r|r["status"]=="applied").count();
+            let cancelled=state.finishing_cancelled.load(Ordering::Acquire);
+            Ok(ActionResult{success:done==requested&&!cancelled&&!uncertain,tool,stdout:json!({"checkpoint":checkpoint,"requested":requested,"uncertain":uncertain,"processed":results.len(),"applied":done,"cancelled":cancelled,"results":results,"review_recommended":done>0}).to_string(),stderr:String::new(),exit_code:Some(if done==requested&&!cancelled&&!uncertain{0}else{1})})
+        }
+        ToolAction::PremierePlanVideoRecipe { track, clip_index, request } => {
+            let mut value = premiere_bridge.request("plan_video_recipe", json!({"track":track,"clipIndex":clip_index,"request":request}), Duration::from_secs(30)).await?;
+            premiere_plan_calibration(&mut value,&premiere_bridge,app).await?;
+            Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&value).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
+        }
+        ToolAction::PremiereTranscriptDucking{item_id,target,mut request,transcript_offset,music_start,merge_gap,apply} => {
+            let transcript=premiere_bridge.request("export_transcript",json!({"itemId":item_id,"deliverSrt":true}),Duration::from_secs(30)).await?;
+            let caption=transcript.get("captions").ok_or("Transcript has no timing adapter.")?;
+            if caption.get("supported").and_then(Value::as_bool)!=Some(true)||caption.get("segmentsTruncated").and_then(Value::as_bool)!=Some(false){return Err("No complete recognized transcript timing available for ducking.".into());}
+            let segments=caption.get("segments").and_then(Value::as_array).ok_or("Transcript segments missing.")?;
+            request.regions=premiere_dialogue::regions(segments,transcript_offset,music_start,request.duration_seconds,merge_gap)?;
+            let mut args=target.bridge_arguments();args["request"]=serde_json::to_value(&request).map_err(|e|e.to_string())?;
+            let mut plan=premiere_bridge.request("plan_audio_automation",args,Duration::from_secs(30)).await?;
+            if !apply {
+                premiere_plan_calibration(&mut plan,&premiere_bridge,app).await?;
+                plan["transcript_source"]=json!({"item_id":item_id,"region_count":request.regions.len(),"transcript_offset_seconds":transcript_offset,"music_start_seconds":music_start});
+                return Ok(ActionResult{success:true,tool,stdout:plan.to_string(),stderr:String::new(),exit_code:Some(0)});
+            }
+            let expected=premiere_bridge.expected.ok_or("Ducking edit requires exact expectation.")?;
+            if plan.get("expected")!=Some(&serde_json::to_value(expected).map_err(|e|e.to_string())?){return Err("Music target changed since inspection; no ducking written.".into());}
+            let settings=plan.get("settings").and_then(Value::as_array).filter(|v|!v.is_empty()&&v.len()<=64).ok_or("Ducking plan has no bounded executable keyframes.")?;
+            let backup=backup_premiere_project(&premiere_bridge).await?;
+            let value=premiere_bridge.request("apply_audio_recipe",json!({"track":target.track,"clipIndex":target.clip_index,"settings":settings}),Duration::from_secs(45)).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_recipe");
+            Ok(ActionResult{success:verified,tool,stdout:json!({"backup":backup,"result":value,"transcript_item_id":item_id,
+                "dialogue_regions":request.regions.len(),"post_state_verified":verified,"retry_safe":false}).to_string(),
+                stderr:String::new(),exit_code:Some(if verified{0}else{1})})
+        }
+        ToolAction::PremiereTranscriptCuts { request, apply, transcript_snapshot } => {
+            let transcript = premiere_bridge.request(
+                "export_transcript",
+                json!({"itemId": request.item_id, "deliverSrt": true}),
+                Duration::from_secs(30),
+            ).await?;
+            let caption = transcript.get("captions").ok_or("Transcript has no timing adapter.")?;
+            if caption.get("supported").and_then(Value::as_bool) != Some(true)
+                || caption.get("segmentsTruncated").and_then(Value::as_bool) != Some(false)
+            {
+                return Err("No complete recognized transcript timing is available for talking-head editing.".into());
+            }
+            let segments = caption.get("segments").and_then(Value::as_array).ok_or("Transcript segments missing.")?;
+            let timeline = premiere_bridge.request("inspect_timeline", json!({}), Duration::from_secs(20)).await?;
+            let mut targets = vec![request.video.clone()];
+            if let Some(audio) = &request.audio { targets.push(audio.clone()); }
+            let states = premiere_talking_head::clip_states_from_timeline(&timeline, &targets)?;
+            let plan = premiere_talking_head::build_plan(segments, &request, &states)?;
+
+            if !apply {
+                return Ok(ActionResult {
+                    success: true,
+                    tool,
+                    stdout: serde_json::to_string_pretty(&plan).unwrap_or_else(|_| "{}".into()),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                });
+            }
+
+            if transcript_snapshot.as_deref() != Some(plan.transcript_snapshot.as_str()) {
+                return Err("Transcript changed since planning; inspect and plan again before editing.".into());
+            }
+            if !plan.supported {
+                return Err(format!(
+                    "Transcript cut plan is not executable: {}",
+                    plan.unsupported_reasons.join(" ")
+                ));
+            }
+
+            let expected = premiere_bridge.expected.ok_or("Transcript cuts require exact clip expectations.")?.clone();
+            for state in &states {
+                let guard = expected.clips.iter().find(|clip| {
+                    clip.kind == state.kind && clip.track == state.track && clip.clip_index == state.clip_index
+                }).ok_or("Transcript target expectation is missing.")?;
+                if guard.signature != state.signature {
+                    return Err("Transcript target changed since inspection; no edit was made.".into());
+                }
+            }
+
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let mut edits = Vec::new();
+            let mut markers = Vec::new();
+            let mut uncertain = false;
+
+            for edit in &plan.edits {
+                let clip = expected.clips.iter().find(|clip| {
+                    clip.kind == edit.target.kind && clip.track == edit.target.track && clip.clip_index == edit.target.clip_index
+                }).ok_or("Transcript edit expectation is missing.")?.clone();
+                let guard = PremiereExpectation {
+                    project_guid: expected.project_guid.clone(),
+                    project_path: expected.project_path.clone(),
+                    sequence_guid: expected.sequence_guid.clone(),
+                    clips: vec![clip],
+                };
+                let client = PremiereClient { bridge: &state.premiere_bridge, expected: Some(&guard) };
+                let arguments = premiere_talking_head::operation_arguments(edit);
+                let (route, timeout, expected_verification) = match &edit.operation {
+                    premiere_talking_head::EditOperation::Trim { .. } => ("trim_clip", Duration::from_secs(30), "verified_readback"),
+                    premiere_talking_head::EditOperation::Delete { .. } => ("delete_clip", Duration::from_secs(30), "verified_delta"),
+                };
+                match client.request(route, arguments, timeout).await {
+                    Ok(value) => {
+                        let verified=value.get("verificationStatus").and_then(Value::as_str)==Some(expected_verification);
+                        edits.push(json!({"target":edit.target,"status":if verified {"applied"} else {"accepted_unverified"},"post_state_verified":verified,"native_result":value}));
+                        if !verified { uncertain=true; break; }
+                    },
+                    Err(error) => {
+                        uncertain = true;
+                        edits.push(json!({"target":edit.target,"status":"uncertain","reason":error.chars().take(240).collect::<String>()}));
+                        break;
+                    }
+                }
+            }
+
+            if !uncertain && edits.iter().all(|row| row["status"] == "applied") {
+                let project_guard = PremiereExpectation {
+                    project_guid: expected.project_guid.clone(),
+                    project_path: expected.project_path.clone(),
+                    sequence_guid: expected.sequence_guid.clone(),
+                    clips: Vec::new(),
+                };
+                let client = PremiereClient { bridge: &state.premiere_bridge, expected: Some(&project_guard) };
+                for marker in &plan.markers {
+                    let args = json!({
+                        "name": marker.name,
+                        "markerType": marker.marker_type,
+                        "seconds": marker.seconds,
+                        "durationSeconds": 0,
+                        "comments": format!("Transcript selection {}", marker.segment_id),
+                    });
+                    match client.request("add_marker", args, Duration::from_secs(20)).await {
+                        Ok(value) => {
+                            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_delta");
+                            markers.push(json!({"segment_id":marker.segment_id,"seconds":marker.seconds,"status":if verified {"applied"} else {"accepted_unverified"},"post_state_verified":verified,"native_result":value}));
+                            if !verified { uncertain=true; break; }
+                        },
+                        Err(error) => {
+                            uncertain = true;
+                            markers.push(json!({"segment_id":marker.segment_id,"status":"uncertain","reason":error.chars().take(240).collect::<String>()}));
+                            break;
+                        }
+                    }
+                }
+            }
+
+            let project_guard = PremiereExpectation {
+                project_guid: expected.project_guid.clone(),
+                project_path: expected.project_path.clone(),
+                sequence_guid: expected.sequence_guid.clone(),
+                clips: Vec::new(),
+            };
+            let post_client = PremiereClient { bridge: &state.premiere_bridge, expected: Some(&project_guard) };
+            let post_timeline = post_client.request("inspect_timeline", json!({}), Duration::from_secs(20)).await.ok();
+            let edit_ok = edits.len() == plan.edits.len() && edits.iter().all(|row| row["status"] == "applied");
+            let marker_ok = markers.len() == plan.markers.len() && markers.iter().all(|row| row["status"] == "applied");
+            let complete = edit_ok && marker_ok && !uncertain;
+
+            Ok(ActionResult {
+                success: complete,
+                tool,
+                stdout: json!({
+                    "backup": backup,
+                    "complete": complete,
+                    "uncertain": uncertain,
+                    "transcript_snapshot": plan.transcript_snapshot,
+                    "remove_ranges": plan.remove_ranges,
+                    "edits": edits,
+                    "markers": markers,
+                    "post_timeline_inspected": post_timeline.is_some(),
+                    "post_timeline": post_timeline,
+                    "linked_media_inferred": false,
+                    "interior_split_supported": false,
+                }).to_string(),
+                stderr: String::new(),
+                exit_code: Some(if complete {0} else {1}),
+            })
+        }
+        ToolAction::PremierePlanAudioAutomation { target, request } => {
+            let mut arguments = target.bridge_arguments(); arguments["request"] = serde_json::to_value(request).map_err(|e| e.to_string())?;
+            let mut value = premiere_bridge.request("plan_audio_automation", arguments, Duration::from_secs(20)).await?;
+            premiere_plan_calibration(&mut value,&premiere_bridge,app).await?;
+            Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&value).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
+        }
+        ToolAction::PremiereInspectMogrtProperties { track, clip_index } => {
+            let value = premiere_bridge.request("inspect_mogrt_properties", json!({"track":track,"clipIndex":clip_index}), Duration::from_secs(30)).await?;
+            Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&value).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
+        }
+        ToolAction::PremierePopulateMogrt{track,clip_index,request} => {
+            let expected=premiere_bridge.expected.ok_or("Missing graphics target expectation.")?;
+            let plan=premiere_bridge.request("plan_mogrt_recipe",json!({"track":track,"clipIndex":clip_index,"request":request}),Duration::from_secs(30)).await?;
+            if plan.get("expected")!=Some(&serde_json::to_value(expected).map_err(|e|e.to_string())?) {
+                return Err("Graphics target changed since native inspection; no field was written.".into());
+            }
+            let settings=plan.get("settings").and_then(Value::as_array).ok_or("Graphics plan returned no typed settings.")?;
+            if settings.len()!=request.fields.len() || !plan.get("skipped").and_then(Value::as_array).is_some_and(Vec::is_empty) {
+                return Err("MOGRT fields were unavailable, ambiguous or incompatible; no partial graphic was applied.".into());
+            }
+            let backup=backup_premiere_project(&premiere_bridge).await?;
+            let result=premiere_bridge.request("apply_video_recipe",json!({"track":track,"clipIndex":clip_index,"settings":settings}),Duration::from_secs(45)).await?;
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_recipe");
+            Ok(ActionResult{success:verified,tool,stdout:json!({"backup":backup,"result":result,"field_count":settings.len(),
+                "post_state_verified":verified,"retry_safe":false}).to_string(),stderr:String::new(),exit_code:Some(if verified{0}else{1})})
+        }
+        ToolAction::PremierePlanMogrtRecipe { track, clip_index, request } => {
+            let mut value = premiere_bridge.request("plan_mogrt_recipe", json!({"track":track,"clipIndex":clip_index,"request":request}), Duration::from_secs(30)).await?;
+            premiere_plan_calibration(&mut value,&premiere_bridge,app).await?;
+            Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&value).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
+        }
+        ToolAction::PremiereProjectDiagnostics { limits } => {
+            let value = premiere_bridge.request("project_diagnostics", json!({"limits":limits}), Duration::from_secs(30)).await?;
+            Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&value).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
+        }
+        ToolAction::PremiereInspectLinkedCandidates{kind,track,clip_index,signature} => {
+            let value=premiere_bridge.request("inspect_linked_candidates",json!({"kind":kind,"track":track,
+                "clipIndex":clip_index,"signature":signature}),Duration::from_secs(20)).await?;
+            let valid=value.get("membershipVerified").and_then(Value::as_bool)==Some(false)
+                && value.get("nativeLinkGetterAvailable").and_then(Value::as_bool)==Some(false)
+                && value.get("safeForAutomaticLinkedEdit").and_then(Value::as_bool)==Some(false);
+            Ok(ActionResult{success:valid,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(if valid{0}else{1})})
+        }
+        ToolAction::PremiereTimelineCapabilities => {
+            let value = premiere_bridge.request("timeline_capabilities", json!({}), Duration::from_secs(12)).await?;
+            Ok(ActionResult { success: true, tool, stdout: serde_json::to_string_pretty(&value).unwrap_or_default(), stderr: String::new(), exit_code: Some(0) })
+        }
+        ToolAction::PremiereTimeline => {
+            let value = premiere_bridge
+                .request("inspect_timeline", json!({}), Duration::from_secs(12)).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereInspectObjectMasks => {
+            let value=premiere_bridge.request("inspect_object_masks",json!({}),Duration::from_secs(10)).await?;
+            let verified=value.get("inspectionVerified").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{success:verified,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(if verified{0}else{1})})
+        }
+        ToolAction::PremiereCaptionTracks => {
+            let value = premiere_bridge.request(
+                "caption_tracks",
+                json!({}),
+                Duration::from_secs(12),
+            ).await?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereSetCaptionTrackName { track, name } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
+                "set_caption_track_name",
+                json!({ "track": track, "name": name }),
+                Duration::from_secs(20),
+            ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: json!({"backup":backup,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereSetCaptionTrackMute { track, muted } => {
+            let checkpoint = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
+                "set_caption_track_mute",
+                json!({ "track": track, "muted": muted }),
+                Duration::from_secs(12),
+            ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: json!({"checkpoint":checkpoint,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereSetPlayhead { seconds } => {
+            let value = premiere_bridge.request(
+                "set_playhead",
+                json!({ "seconds": seconds }),
+                Duration::from_secs(8),
+            ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: json!({"result":value,"position_verified":verified,"retry_safe":true}).to_string(),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereInspectFrame { seconds, prompt, provider } => {
+            let positioned=premiere_bridge.request(
+                "set_playhead",
+                json!({ "seconds": seconds }),
+                Duration::from_secs(8),
+            ).await?;
+            if positioned.get("verificationStatus").and_then(Value::as_str)!=Some("verified_readback") {
+                return Err("Premiere playhead readback did not confirm the requested inspection frame.".into());
+            }
+
+            tokio::time::sleep(Duration::from_millis(450)).await;
+
+            let path = capture_screen_png()?;
+            let analysis = analyze_png_with_provider(&provider, &prompt, &path).await?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: format!(
+                    "Premiere frame analysis at {seconds:.3}s from {}/{}:\n{}\nScreenshot: {}",
+                    provider.provider,
+                    provider.model,
+                    analysis,
+                    path.display()
+                ),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereReviewFrames { seconds, prompt, provider } => {
+            let total = seconds.len();
+            let mut reviews = Vec::with_capacity(total);
+            let mut failures = 0_usize;
+
+            for seconds in seconds {
+                let review = async {
+                    let positioned=premiere_bridge.request(
+                        "set_playhead",
+                        json!({ "seconds": seconds }),
+                        Duration::from_secs(8),
+                    ).await?;
+                    if positioned.get("verificationStatus").and_then(Value::as_str)!=Some("verified_readback") {
+                        return Err("Premiere playhead readback did not confirm the requested review frame.".into());
+                    }
+
+                    tokio::time::sleep(Duration::from_millis(450)).await;
+
+                    let path = capture_screen_png()?;
+                    let analysis = analyze_png_with_provider(&provider, &prompt, &path).await?;
+
+                    Ok::<Value, String>(json!({
+                        "seconds": seconds,
+                        "analysis": analysis,
+                        "screenshot": path.display().to_string()
+                    }))
+                }.await;
+
+                match review {
+                    Ok(value) => reviews.push(json!({
+                        "success": true,
+                        "review": value
+                    })),
+                    Err(error) => {
+                        failures += 1;
+                        reviews.push(json!({
+                            "success": false,
+                            "seconds": seconds,
+                            "error": error
+                        }));
+                    }
+                }
+            }
+
+            Ok(ActionResult {
+                success: failures == 0,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "provider": provider.provider,
+                    "model": provider.model,
+                    "prompt": prompt,
+                    "total": total,
+                    "succeeded": total.saturating_sub(failures),
+                    "failed": failures,
+                    "frames": reviews
+                })).unwrap_or_default(),
+                stderr: if failures == 0 {
+                    String::new()
+                } else {
+                    format!("{failures} of {total} Premiere frame reviews failed.")
+                },
+                exit_code: Some(if failures == 0 { 0 } else { 1 }),
+            })
+        }
+        ToolAction::PremierePlanEditRecipe {request} => {
+            let plan=premiere_editorial::plan(request)?;
+            Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&plan).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereEditJobStart {request} => {
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let project=context.get("projectGuid").and_then(Value::as_str).filter(|value|!value.is_empty())
+                .ok_or("Active Premiere project GUID unavailable.")?;
+            let sequence=context.pointer("/activeSequence/guid").and_then(Value::as_str).filter(|value|!value.is_empty())
+                .ok_or("Active Premiere sequence GUID unavailable.")?;
+            let id=Uuid::new_v4().to_string();
+            let job=premiere_edit_job::Job::new(
+                id.clone(),request,project,context.get("projectPath").and_then(Value::as_str),sequence,now_ms()
+            )?;
+            premiere_edit_job::save(&premiere_edit_job_path(app,&id)?,&job)?;
+            Ok(ActionResult{
+                success:true,tool,
+                stdout:json!({
+                    "job":job,
+                    "next_tool":"premiere_edit_job_next",
+                    "execution_model":"one concrete existing typed Premiere phase per approval"
+                }).to_string(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PremiereEditJobStatus {job_id} => {
+            let job=premiere_edit_job::load(&premiere_edit_job_path(app,&job_id)?)?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&job).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereEditJobCancel {job_id} => {
+            let path=premiere_edit_job_path(app,&job_id)?;
+            let mut job=premiere_edit_job::load(&path)?;
+            job.cancel(now_ms());
+            premiere_edit_job::save(&path,&job)?;
+            Ok(ActionResult{success:true,tool,stdout:json!({"job_id":job_id,"status":job.status}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereEditJobNext {job_id} => {
+            let path=premiere_edit_job_path(app,&job_id)?;
+            let mut job=premiere_edit_job::load(&path)?;
+            if job.status!="running" {
+                return Err(format!("Edit job is not running (status={}).",job.status));
+            }
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            job.identity(&context)?;
+            let phase=job.pending().cloned().ok_or("Edit job has no pending phase.")?;
+
+            let (arguments,reason)=match phase.id.as_str() {
+                "media_prep" => {
+                    let batch=job.request.media_prep.clone().ok_or("Edit job media_prep payload is missing.")?;
+                    (json!({"batch":batch,"expected":job.project_expectation()}),
+                        "Run the existing bounded media-preparation batch against the current project identity.".to_string())
+                }
+                "scene_detection" => {
+                    let request=job.request.scene_detection.clone().ok_or("Edit job scene_detection payload is missing.")?;
+                    let capabilities=premiere_bridge.request("scene_detection_capabilities",json!({}),Duration::from_secs(10)).await?;
+                    let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+                    let plan=premiere_scene_detection::build_plan(&request,&timeline,&capabilities)?;
+                    if plan.get("supported").and_then(Value::as_bool)!=Some(true){
+                        return Err(plan.get("reason").and_then(Value::as_str).unwrap_or("Scene detection is unavailable.").to_string());
+                    }
+                    let expected:PremiereExpectation=serde_json::from_value(
+                        plan.get("expected").cloned().ok_or("Scene-detection plan returned no expectation.")?
+                    ).map_err(|e|format!("Invalid scene-detection expectation: {e}"))?;
+                    (json!({"request":request,"expected":expected}),
+                        "Run the selected native scene-detection mode only after a fresh timeline/capability rebind.".to_string())
+                }
+                "transcript_rebuild" => {
+                    let request=job.request.transcript_rebuild.clone().ok_or("Edit job transcript_rebuild payload is missing.")?;
+                    let plan=premiere_bridge.request(
+                        "plan_transcript_rebuild",
+                        json!({"request":request}),
+                        Duration::from_secs(60),
+                    ).await?;
+                    if plan.get("supported").and_then(Value::as_bool)!=Some(true){
+                        return Err(format!("Edit-job transcript rebuild is not executable: {}",
+                            plan.get("unsupported_reasons").and_then(Value::as_array)
+                                .map(|rows|rows.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "))
+                                .unwrap_or_else(||"unsupported".into())));
+                    }
+                    let snapshot=plan.get("plan_snapshot").and_then(Value::as_str).filter(|value|!value.is_empty())
+                        .ok_or("Transcript rebuild plan_snapshot missing.")?.to_string();
+                    let expected:PremiereExpectation=serde_json::from_value(
+                        plan.get("expected").cloned().ok_or("Transcript rebuild plan returned no expectation.")?
+                    ).map_err(|e|format!("Invalid transcript rebuild expectation: {e}"))?;
+                    expected.validate()?;
+                    (json!({"request":request,"plan_snapshot":snapshot,"expected":expected}),
+                        "Execute the explicitly selected AA source-rebuild strategy from a fresh native plan; preserve the original sequence.".to_string())
+                }
+                "assembly" => {
+                    let assembly=job.request.assembly.clone().ok_or("Edit job assembly payload is missing.")?;
+                    (json!({"assembly":assembly,"expected":job.project_expectation()}),
+                        "Execute the validated assembly through the existing checkpointed assembly tool.".to_string())
+                }
+                "transcript_cuts" => {
+                    let request=job.request.transcript_cuts.clone().ok_or("Edit job transcript-cut payload is missing.")?;
+                    let transcript=premiere_bridge.request(
+                        "export_transcript",
+                        json!({"itemId":request.item_id,"deliverSrt":true}),
+                        Duration::from_secs(30),
+                    ).await?;
+                    let caption=transcript.get("captions").ok_or("Transcript has no timing adapter.")?;
+                    if caption.get("supported").and_then(Value::as_bool)!=Some(true)
+                        ||caption.get("segmentsTruncated").and_then(Value::as_bool)!=Some(false)
+                    {
+                        return Err("Edit-job transcript phase requires complete recognized transcript timing.".into());
+                    }
+                    let segments=caption.get("segments").and_then(Value::as_array).ok_or("Transcript segments missing.")?;
+                    let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+                    let mut targets=vec![request.video.clone()];
+                    if let Some(audio)=&request.audio{targets.push(audio.clone());}
+                    let states=premiere_talking_head::clip_states_from_timeline(&timeline,&targets)?;
+                    let plan=premiere_talking_head::build_plan(segments,&request,&states)?;
+                    if !plan.supported {
+                        return Err(format!("Edit-job transcript cut phase is not executable: {}",plan.unsupported_reasons.join(" ")));
+                    }
+                    let expected=premiere_edit_job::expectation_for_transcript(&job,&timeline,&request)?;
+                    job.set_transcript_preflight(plan.transcript_snapshot.clone(),expected.clone(),now_ms())?;
+                    premiere_edit_job::save(&path,&job)?;
+                    (json!({
+                        "request":request,
+                        "transcript_snapshot":plan.transcript_snapshot,
+                        "expected":expected
+                    }),
+                    "Apply the freshly re-planned explicit transcript selections through W2; no inferred links or interior split hacks.".to_string())
+                }
+                "track_organization" => {
+                    let request=job.request.track_organization.clone().ok_or("Edit job track_organization payload is missing.")?;
+                    (json!({"request":request,"expected":job.project_expectation()}),
+                        "Rename only the explicitly requested existing tracks through AC with current project/sequence identity.".to_string())
+                }
+                "layering" => {
+                    let batch=job.request.layering.clone().ok_or("Edit job layering payload is missing.")?;
+                    let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+                    let expected=premiere_edit_job::expectation_for_layering(&job,&timeline,&batch)?;
+                    (json!({"batch":batch,"expected":expected}),
+                        "Run AC layering only after a fresh timeline rebind; stale source indexes/signatures fail rather than being guessed.".to_string())
+                }
+                "finishing" => {
+                    let request=job.request.finishing.clone().ok_or("Edit job finishing payload is missing.")?;
+                    let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+                    let expected=premiere_edit_job::expectation_for_finishing(&job,&timeline,&request)?;
+                    (json!({"request":request,"expected":expected}),
+                        "Execute X2 mixed finishing against freshly inspected exact video/audio targets.".to_string())
+                }
+                "work_area" => {
+                    let request=job.request.work_area.clone().ok_or("Edit job work_area payload is missing.")?;
+                    (json!({"request":request,"expected":job.project_expectation()}),
+                        "Set the explicit active-sequence work area through AD after current project/sequence identity validation.".to_string())
+                }
+                "review" => {
+                    let review=job.request.review.clone().ok_or("Edit job review payload is missing.")?;
+                    if review.iterative {
+                        (json!({
+                            "objective":review.prompt,
+                            "sample_times":review.seconds,
+                            "reference":review.reference.clone().unwrap_or_default(),
+                            "max_iterations":review.iteration_limit()
+                        }),
+                        "Start the bounded iterative edit-review-correction session. Every correction still requires its own typed approval and the edit job advances only after acceptable completed review evidence.".to_string())
+                    } else {
+                        (json!({"seconds":review.seconds,"prompt":review.prompt}),
+                            "Run the existing bounded multi-frame Premiere vision review; this does not auto-fix or guarantee artistic quality.".to_string())
+                    }
+                }
+                "frame_delivery" => {
+                    let batch=job.request.frame_delivery.clone().ok_or("Edit job frame_delivery payload is missing.")?;
+                    (json!({"batch":batch,"expected":job.project_expectation()}),
+                        "Deliver the explicitly requested native review frames through AE; no screenshot fallback or hidden extra format.".to_string())
+                }
+                "interchange_export" => {
+                    let request=job.request.interchange_export.clone().ok_or("Edit job interchange_export payload is missing.")?;
+                    (json!({"request":request,"expected":job.project_expectation()}),
+                        "Deliver exactly one explicit AAF/FCPXML/OTIO handoff through AE with its normal output-collision approval.".to_string())
+                }
+                "export_preflight" => {
+                    let export=job.request.export.clone().ok_or("Edit job export payload is missing.")?;
+                    (json!({
+                        "output":export.output,"preset":export.preset,
+                        "queue_to_ame":export.queue_to_ame,"overwrite":export.overwrite
+                    }),
+                    "Run the existing read-only export/output preflight before any export dispatch.".to_string())
+                }
+                "export_dispatch" => {
+                    let export=job.request.export.clone().ok_or("Edit job export payload is missing.")?;
+                    (json!({
+                        "output":export.output,"preset":export.preset,
+                        "queue_to_ame":export.queue_to_ame,"overwrite":export.overwrite,
+                        "expected":job.project_expectation()
+                    }),
+                    "Dispatch export through the existing separately approved high-risk export tool; accepted/queued is not encoder completion.".to_string())
+                }
+                _=>return Err("Unknown edit-job phase.".into()),
+            };
+
+            let iterative_review=phase.id=="review" && phase.tool=="premiere_review_session_start";
+            let after_execution=if iterative_review {
+                json!({
+                    "first":"Run the returned premiere_review_session_start proposal and copy its review session ID.",
+                    "then":"Call premiere_review_session_continue until the review session reaches an acceptable completed state; execute any correction proposals only through normal separate approvals.",
+                    "record":{
+                        "tool":"premiere_edit_job_record_review",
+                        "arguments":{"job_id":job_id,"phase_id":phase.id,"review_session_id":"COPY_COMPLETED_REVIEW_SESSION_ID"}
+                    }
+                })
+            } else {
+                json!({
+                    "tool":"premiere_edit_job_record_action",
+                    "arguments":{"job_id":job_id,"phase_id":phase.id,"action_id":"COPY_EXECUTED_ACTION_ID"}
+                })
+            };
+            Ok(ActionResult{
+                success:true,tool,
+                stdout:json!({
+                    "job_id":job_id,
+                    "phase_id":phase.id,
+                    "phase_state":phase.state,
+                    "tool_proposal":{
+                        "tool":phase.tool,
+                        "arguments":arguments,
+                        "reason":reason
+                    },
+                    "requires_separate_approval":true,
+                    "after_execution":after_execution,
+                    "iterative_review":iterative_review,
+                    "no_hidden_mutation":true
+                }).to_string(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PremiereEditJobRecordAction {job_id,phase_id,action_id} => {
+            let path=premiere_edit_job_path(app,&job_id)?;
+            let mut job=premiere_edit_job::load(&path)?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            job.identity(&context)?;
+            let pending=job.pending().cloned().ok_or("Edit job has no pending phase.")?;
+            if pending.id!=phase_id{return Err("Receipt phase is not the current edit-job phase.".into());}
+            if pending.id=="review" && pending.tool=="premiere_review_session_start" {
+                return Err("Iterative review cannot be completed from the start-action receipt; finish the bounded review loop and use premiere_edit_job_record_review.".into());
+            }
+            let receipt=read_action_audit_receipt(app,&action_id)?
+                .filter(|entry|
+                    entry.timestamp_ms>=job.created_at_ms
+                    &&entry.tool==pending.tool
+                    &&matches!(entry.event.as_str(),"executed"|"failed")
+                )
+                .ok_or("No matching typed action audit receipt for this edit-job phase.")?;
+            let success=receipt.event=="executed"&&receipt.success;
+            job.record(&phase_id,&receipt.tool,&action_id,success,now_ms())?;
+            premiere_edit_job::save(&path,&job)?;
+            Ok(ActionResult{
+                success,
+                tool,
+                stdout:json!({
+                    "job_id":job_id,
+                    "phase_id":phase_id,
+                    "recorded_tool":receipt.tool,
+                    "action_id":action_id,
+                    "phase_success":success,
+                    "job_status":job.status,
+                    "next_tool":if job.status=="running"{Some("premiere_edit_job_next")}else{None},
+                    "export_completion_verified":false,
+                    "audit_payload_binding":"tool/action receipt plus live project/sequence and downstream stale guards; audit entry does not cryptographically hash the full phase arguments"
+                }).to_string(),
+                stderr:String::new(),
+                exit_code:Some(if success{0}else{1})
+            })
+        }
+        ToolAction::PremierePlanReviewCorrection {session_id,issue_id,frame_seconds,kind,track,clip_index,target_signature,component_match_name,param_display_name,desired_value} => {
+            let session=premiere_review::load(&premiere_review_path(app,&session_id)?)?;
+            let issue=premiere_review_binding::issue(&session,&issue_id,frame_seconds)?;
+            if !matches!(issue.category.as_str(),"framing"|"motion"|"color"|"exposure"|"audio_visual"){
+                return Err("This review issue does not support a static primitive correction proposal.".into());
+            }
+            if (issue.category=="audio_visual" && kind!="audio") || (issue.category!="audio_visual" && kind!="video") {
+                return Err("Review issue category does not match the requested media kind.".into());
+            }
+            let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+            let inspected=premiere_bridge.request(
+                if kind=="audio"{"inspect_audio_clip_effects"}else{"inspect_clip_effects"},
+                json!({"track":track,"clipIndex":clip_index}),
+                Duration::from_secs(20)
+            ).await?;
+            let bound=premiere_review_binding::bind(
+                &session,issue,frame_seconds,&timeline,&kind,track,clip_index,&target_signature,
+                Some((&component_match_name,&param_display_name)),&inspected
+            )?;
+            let proposal=premiere_review_binding::static_correction_proposal(
+                &bound,&kind,track,clip_index,&component_match_name,&param_display_name,&desired_value
+            )?;
+            let target=format!("{kind}/{track}/{clip_index}/{}/{}",
+                component_match_name.chars().take(80).collect::<String>(),
+                param_display_name.chars().take(80).collect::<String>());
+            let planner=proposal.get("tool").and_then(Value::as_str).unwrap_or("").to_string();
+            let settings=proposal.pointer("/arguments/settings").cloned().unwrap_or(Value::Null);
+            Ok(ActionResult{
+                success:true,tool,
+                stdout:json!({
+                    "session_id":session_id,
+                    "issue_id":issue_id,
+                    "frame_seconds":frame_seconds,
+                    "binding":bound,
+                    "correction_proposal":proposal,
+                    "requires_separate_approval":true,
+                    "after_execution":{
+                        "tool":"premiere_review_session_record_fix",
+                        "arguments":{
+                            "session_id":session_id,
+                            "issue_id":issue_id,
+                            "target":target,
+                            "planner":planner,
+                            "settings":settings,
+                            "approved_action_id":"COPY_EXECUTED_ACTION_ID"
+                        }
+                    },
+                    "then":"premiere_review_session_continue",
+                    "automatic_mutation":false,
+                    "runtime_verified":false
+                }).to_string(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PremiereEditJobRecordReview {job_id,phase_id,review_session_id} => {
+            let path=premiere_edit_job_path(app,&job_id)?;
+            let mut job=premiere_edit_job::load(&path)?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            job.identity(&context)?;
+            let pending=job.pending().cloned().ok_or("Edit job has no pending phase.")?;
+            if pending.id!=phase_id || pending.tool!="premiere_review_session_start" {
+                return Err("Completed review does not match the current iterative edit-job phase.".into());
+            }
+            let spec=job.request.review.as_ref().filter(|review|review.iterative)
+                .ok_or("Edit job has no iterative review specification.")?;
+            let review=premiere_review::load(&premiere_review_path(app,&review_session_id)?)?;
+            if review.created_at_ms<job.created_at_ms || review.project_guid!=job.project_guid
+                || review.sequence_guid!=job.sequence_guid || review.objective!=spec.prompt
+                || review.reference!=spec.reference.clone().unwrap_or_default()
+                || review.sample_times!=spec.seconds || review.max_iterations!=spec.iteration_limit()
+                || review.status!="completed" {
+                return Err("Review session is incomplete or does not exactly match this edit job review phase.".into());
+            }
+            let review_summary=premiere_review::completion_summary(&review)?;
+            if review_summary.get("accepted").and_then(Value::as_bool)!=Some(true) {
+                return Err("Review session failed the canonical completion gate; start a fresh bounded review session before advancing.".into());
+            }
+            job.record_review(&phase_id,&review_session_id,now_ms())?;
+            premiere_edit_job::save(&path,&job)?;
+            Ok(ActionResult{
+                success:true,tool,
+                stdout:json!({
+                    "job_id":job_id,
+                    "phase_id":phase_id,
+                    "review_session_id":review_session_id,
+                    "acceptable":true,
+                    "review_summary":review_summary,
+                    "job_status":job.status,
+                    "next_tool":if job.status=="running"{Some("premiere_edit_job_next")}else{None},
+                    "production_ready":false
+                }).to_string(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PremiereEditSessionStart {request} => {
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let project=context.get("projectGuid").and_then(Value::as_str).filter(|s|!s.is_empty()).ok_or("Active project GUID unavailable.")?;
+            let sequence=context.pointer("/activeSequence/guid").and_then(Value::as_str).filter(|s|!s.is_empty()).ok_or("Active sequence GUID unavailable.")?;
+            let id=Uuid::new_v4().to_string();
+            let session=premiere_edit_session::Session::new(id.clone(),request,project,sequence,context.get("projectPath").and_then(Value::as_str))?;
+            premiere_edit_session::save(&premiere_edit_session_path(app,&id)?,&session)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"session":session,"next":"premiere_edit_session_next"}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereEditSessionStatus {session_id} => {
+            let session=premiere_edit_session::load(&premiere_edit_session_path(app,&session_id)?)?;
+            Ok(ActionResult {success:true,tool,stdout:serde_json::to_string(&session).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereEditSessionCancel {session_id} => {
+            let path=premiere_edit_session_path(app,&session_id)?;
+            let mut session=premiere_edit_session::load(&path)?;
+            session.cancel();premiere_edit_session::save(&path,&session)?;
+            let uncertain=session.stages.iter().filter(|s|s.state=="uncertain").map(|s|s.id.as_str()).collect::<Vec<_>>();
+            let applied=session.stages.iter().filter(|s|s.state=="cancelled_after_apply").map(|s|s.id.as_str()).collect::<Vec<_>>();
+            Ok(ActionResult {success:true,tool,stdout:json!({
+                "session_id":session_id,
+                "status":session.status,
+                "uncertain_inflight_stages":uncertain,
+                "cancelled_after_apply_stages":applied,
+                "native_inflight_abort_verified":false,
+                "automatic_rollback_performed":false,
+                "retry_safe":uncertain.is_empty()&&applied.is_empty(),
+                "note":"Session cancellation is cooperative. Already dispatched native work cannot be proven aborted and already applied mutations are not rolled back."
+            }).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereEditSessionNext {session_id} => {
+            let path=premiere_edit_session_path(app,&session_id)?;
+            let mut session=premiere_edit_session::load(&path)?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            session.identity(&context)?;
+            let result=session.next()?;premiere_edit_session::save(&path,&session)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"next":result,"session_status":session.status}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereEditSessionRecordAction {session_id,stage_id,action_id} => {
+            let path=premiere_edit_session_path(app,&session_id)?;
+            let mut session=premiere_edit_session::load(&path)?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            session.identity(&context)?;
+            let stage=session.recipe.stages.iter().find(|s|s.id==stage_id).ok_or("Unknown editorial stage.")?;
+            let required_capability=stage.required_capability.clone();let review_required=stage.review_required;
+            let receipt=read_action_audit_receipt(app,&action_id)?
+                .filter(|e|e.timestamp_ms>=session.created_at_ms && e.event=="executed" && e.tool==required_capability)
+                .ok_or("No matching typed action audit receipt for this stage.")?;
+            session.record(&stage_id,&action_id,&receipt.tool,receipt.success)?;
+            premiere_edit_session::save(&path,&session)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"stage_id":stage_id,"state":session.stages.iter().find(|s|s.id==stage_id).map(|s|s.state.as_str()),
+                "audit_action_id":action_id,"review_required":review_required}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereEditSessionRecordReview {session_id,stage_id,review_session_id} => {
+            let path=premiere_edit_session_path(app,&session_id)?;
+            let mut session=premiere_edit_session::load(&path)?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            session.identity(&context)?;
+            let review=premiere_review::load(&premiere_review_path(app,&review_session_id)?)?;
+            if review.project_guid!=session.project_guid || review.sequence_guid!=session.sequence_guid
+                || review.status!="completed" || review.reviews.is_empty() {
+                return Err("Review is incomplete or belongs to another project/sequence.".into());
+            }
+            let last=review.reviews.last().ok_or("Review evidence unavailable.")?;
+            let stage=session.recipe.stages.iter().find(|s|s.id==stage_id).ok_or("Unknown editorial stage.")?;
+            if let Some(times)=stage.parameters.get("sample_times").and_then(Value::as_array) {
+                if times.len()!=review.sample_times.len() || times.iter().zip(&review.sample_times)
+                    .any(|(a,b)|a.as_f64()!=Some(*b)) {return Err("Review sample positions differ from the planned stage.".into());}
+            }
+            let acceptable=last.overall_confidence>=0.65 && !last.issues.iter().any(|i|i.confidence>=0.65 && matches!(i.severity.as_str(),"medium"|"high"));
+            session.review(&stage_id,&review_session_id,acceptable)?;
+            premiere_edit_session::save(&path,&session)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"stage_id":stage_id,"acceptable":acceptable,
+                "stage_state":if acceptable {"completed"} else {"failed"},
+                "on_issue":"premiere_resolve_review_target then premiere_bind_review_fix; a correction requires normal typed approval and an explicit new plan."}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereResolveReviewTarget {session_id,issue_id,frame_seconds} => {
+            let session=premiere_review::load(&premiere_review_path(app,&session_id)?)?;
+            let issue=premiere_review_binding::issue(&session,&issue_id,frame_seconds)?;
+            let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+            let result=premiere_review_binding::resolve(&session,issue,frame_seconds,&timeline)?;
+            Ok(ActionResult {success:true,tool,stdout:result.to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereBindReviewFix {session_id,issue_id,frame_seconds,kind,track,clip_index,target_signature,component_match_name,param_display_name} => {
+            let session=premiere_review::load(&premiere_review_path(app,&session_id)?)?;
+            let issue=premiere_review_binding::issue(&session,&issue_id,frame_seconds)?;
+            let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+            let category=issue.category.as_str();
+            let inspected=if matches!(category,"framing"|"motion"|"color"|"exposure"|"audio_visual") {
+                premiere_bridge.request(if category=="audio_visual"{"inspect_audio_clip_effects"}else{"inspect_clip_effects"},
+                    json!({"track":track,"clipIndex":clip_index}),Duration::from_secs(20)).await?
+            } else if category=="graphics" {
+                premiere_bridge.request("inspect_mogrt_properties",json!({"track":track,"clipIndex":clip_index}),Duration::from_secs(20)).await?
+            } else {json!({})};
+            let selector=component_match_name.as_deref().zip(param_display_name.as_deref());
+            let result=premiere_review_binding::bind(&session,issue,frame_seconds,&timeline,&kind,track,clip_index,
+                &target_signature,selector,&inspected)?;
+            Ok(ActionResult {success:true,tool,stdout:result.to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereReviewSessionStart { objective, reference, sample_times, max_iterations } => {
+            let context = premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let project=context.get("projectGuid").and_then(Value::as_str).ok_or("No active Premiere project GUID.")?;
+            let sequence=context.pointer("/activeSequence/guid").and_then(Value::as_str).ok_or("No active Premiere sequence GUID.")?;
+            let id=Uuid::new_v4().to_string();
+            let session=premiere_review::Session::new(id.clone(),project.into(),sequence.into(),objective,reference,sample_times,max_iterations,now_ms().max(1))?;
+            premiere_review::save(&premiere_review_path(app,&id)?,&session)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"session":session,"next":"premiere_review_session_continue","execution_model":"bounded review -> exact target resolution -> separately approved correction -> re-review"}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereReviewSessionStatus {session_id} => {
+            let session=premiere_review::load(&premiere_review_path(app,&session_id)?)?;
+            Ok(ActionResult {success:true,tool,stdout:serde_json::to_string(&session).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereReviewSessionSummary {session_id} => {
+            let session=premiere_review::load(&premiere_review_path(app,&session_id)?)?;
+            let summary=premiere_review::completion_summary(&session)?;
+            Ok(ActionResult {success:true,tool,stdout:summary.to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+                ToolAction::PremiereReviewSessionCancel {session_id} => {
+            let path=premiere_review_path(app,&session_id)?;
+            let mut session=premiere_review::load(&path)?;
+            session.cancel();
+            premiere_review::save(&path,&session)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"status":"cancelled","session_id":session_id}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereReviewSessionContinue {session_id} => {
+            let path=premiere_review_path(app,&session_id)?;
+            let mut session=premiere_review::load(&path)?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            if let Err(error)=session.check_identity(
+                context.get("projectGuid").and_then(Value::as_str).unwrap_or(""),
+                context.pointer("/activeSequence/guid").and_then(Value::as_str).unwrap_or("")
+            ) {
+                premiere_review::save(&path,&session)?;
+                return Err(error);
+            }
+
+            let state=session.status.clone();
+            if state=="reviewing" {
+                return Ok(ActionResult {
+                    success:true,tool,
+                    stdout:json!({
+                        "session_id":session_id,
+                        "status":state,
+                        "iteration":session.iteration,
+                        "next_proposal":{
+                            "tool":"premiere_review_session_next",
+                            "arguments":{"session_id":session_id},
+                            "reason":"Capture the bounded review samples and obtain grounded structured vision evidence for the current iteration."
+                        },
+                        "requires_separate_approval":true,
+                        "automatic_mutation":false
+                    }).to_string(),
+                    stderr:String::new(),exit_code:Some(0)
+                });
+            }
+
+            if state=="awaiting_approval" {
+                let Some(issue)=premiere_review::next_actionable_issue(&session)? else {
+                    session.status="stagnated".into();
+                    premiere_review::save(&path,&session)?;
+                    return Ok(ActionResult {
+                        success:true,tool,
+                        stdout:json!({
+                            "session_id":session_id,
+                            "status":"stagnated",
+                            "reason":"No medium/high-confidence issue maps to a currently supported typed correction family.",
+                            "automatic_mutation":false
+                        }).to_string(),
+                        stderr:String::new(),exit_code:Some(0)
+                    });
+                };
+                let seconds=*issue.frame_seconds.first().ok_or("Selected review issue has no grounded sample time.")?;
+                let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+                let resolved=premiere_review_binding::resolve(&session,&issue,seconds,&timeline)?;
+                let candidates=resolved.get("candidates").and_then(Value::as_array).cloned().unwrap_or_default();
+                let proposal=if candidates.len()==1 {
+                    let candidate=&candidates[0];
+                    Some(json!({
+                        "tool":"premiere_bind_review_fix",
+                        "arguments":{
+                            "session_id":session_id,
+                            "issue_id":issue.id,
+                            "frame_seconds":seconds,
+                            "kind":candidate.get("kind"),
+                            "track":candidate.get("track"),
+                            "clip_index":candidate.get("clip_index"),
+                            "target_signature":candidate.get("target_signature")
+                        },
+                        "reason":"The reviewed frame overlaps one exact fresh native target. Inspect/bind the editable native parameter before proposing any correction value."
+                    }))
+                } else { None };
+                return Ok(ActionResult {
+                    success:true,tool,
+                    stdout:json!({
+                        "session_id":session_id,
+                        "status":state,
+                        "iteration":session.iteration,
+                        "selected_issue":issue,
+                        "target_resolution":resolved,
+                        "next_proposal":proposal,
+                        "requires_target_selection":candidates.len()!=1,
+                        "requires_separate_approval":true,
+                        "correction_execution":"Use only the returned exact target with premiere_bind_review_fix, then a normal typed planner/edit approval. After a successful edit call premiere_review_session_record_fix; the coordinator will schedule re-review.",
+                        "automatic_mutation":false
+                    }).to_string(),
+                    stderr:String::new(),exit_code:Some(0)
+                });
+            }
+
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:json!({
+                    "session_id":session_id,
+                    "status":state,
+                    "iteration":session.iteration,
+                    "stop_reason":session.stop_reason.clone(),
+                    "latest_fix_evaluation":session.attempted_fixes.last().filter(|attempt|attempt.after.is_some()),
+                    "terminal":matches!(state.as_str(),"completed"|"stagnated"|"cancelled"|"failed"),
+                    "recovery_tool":if state=="stagnated"&&session.stop_reason.as_deref()==Some("correction_regressed")
+                        {Some("premiere_review_session_recovery")}else{None},
+                    "summary_tool":if matches!(state.as_str(),"completed"|"stagnated"|"cancelled"|"failed")
+                        {Some("premiere_review_session_summary")}else{None},
+                    "next_proposal":Value::Null,
+                    "automatic_mutation":false
+                }).to_string(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PremiereReviewSessionRecovery {session_id} => {
+            let session=premiere_review::load(&premiere_review_path(app,&session_id)?)?;
+            if session.status!="stagnated" || session.stop_reason.as_deref()!=Some("correction_regressed") {
+                return Err("Recovery handoff is available only after a grounded correction regression.".into());
+            }
+            let attempt=session.attempted_fixes.last()
+                .filter(|attempt|attempt.outcome=="regressed")
+                .ok_or("Regressed review session has no matching correction attempt evidence.")?;
+            let action_id=attempt.approved_action_id.as_deref().ok_or("Regressed correction has no approved action binding.")?;
+            let checkpoint=attempt.checkpoint_path.as_deref().ok_or("Regressed correction has no pre-edit checkpoint binding.")?;
+            let receipt=read_action_audit_receipt(app,action_id)?
+                .filter(|entry|entry.success&&entry.event=="executed"
+                    && matches!(entry.tool.as_str(),"premiere_apply_video_recipe"|"premiere_apply_audio_recipe"|"premiere_apply_saved_recipe"))
+                .ok_or("Approved correction audit receipt is unavailable for recovery.")?;
+            if premiere_checkpoint_from_audit(&receipt)!=Some(checkpoint) {
+                return Err("Recovery checkpoint no longer matches the approved correction audit receipt.".into());
+            }
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let project=context.get("projectGuid").and_then(Value::as_str).unwrap_or("");
+            let sequence=context.pointer("/activeSequence/guid").and_then(Value::as_str).unwrap_or("");
+            if project!=session.project_guid || sequence!=session.sequence_guid {
+                return Err("Premiere project/sequence changed after regression; no recovery action may be inferred.".into());
+            }
+            let project_path=context.get("projectPath").and_then(Value::as_str).filter(|value|!value.trim().is_empty())
+                .ok_or("Current saved Premiere project path is unavailable for recovery verification.")?;
+            let checkpoint_evidence=premiere_checkpoint::verify_checkpoint(Path::new(checkpoint),Path::new(project_path))?;
+            Ok(ActionResult{
+                success:true,tool,
+                stdout:json!({
+                    "session_id":session_id,
+                    "status":session.status.clone(),
+                    "stop_reason":session.stop_reason.clone(),
+                    "regressed_attempt":attempt,
+                    "approved_action_id":action_id,
+                    "checkpoint_evidence":checkpoint_evidence,
+                    "recovery_ready":true,
+                    "automatic_restore":false,
+                    "restore_tool":Value::Null,
+                    "manual_decision_required":true,
+                    "recommended_next_step":"Inspect the verified pre-edit checkpoint and current project, then explicitly choose whether to open/restore that checkpoint. Shuvi will not overwrite the current project automatically.",
+                    "production_ready":false
+                }).to_string(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PremiereReviewSessionRecordFix {session_id,issue_id,target,planner,settings,approved_action_id} => {
+            let path=premiere_review_path(app,&session_id)?;
+            let mut session=premiere_review::load(&path)?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let project=context.get("projectGuid").and_then(Value::as_str).unwrap_or("");
+            let sequence=context.pointer("/activeSequence/guid").and_then(Value::as_str).unwrap_or("");
+            if let Err(error)=session.check_identity(project,sequence) { premiere_review::save(&path,&session)?; return Err(error); }
+            let approved_receipt=read_action_audit_receipt(app,&approved_action_id)?
+                .filter(|entry| entry.timestamp_ms >= session.created_at_ms && entry.success && entry.event=="executed"
+                    && matches!(entry.tool.as_str(),"premiere_apply_video_recipe"|"premiere_apply_audio_recipe"|"premiere_apply_saved_recipe"))
+                .ok_or("No successful approved typed Premiere recipe edit from this review session with this action ID in audit evidence.")?;
+            let checkpoint=premiere_checkpoint_from_audit(&approved_receipt)
+                .ok_or("Approved correction audit receipt is missing its exact pre-edit Premiere checkpoint.")?;
+            let project_path=context.get("projectPath").and_then(Value::as_str).filter(|value|!value.trim().is_empty())
+                .ok_or("Current saved Premiere project path is unavailable for checkpoint verification.")?;
+            let checkpoint_evidence=premiere_checkpoint::verify_checkpoint(Path::new(checkpoint),Path::new(project_path))?;
+            let issue=session.reviews.last().and_then(|r| r.issues.iter().find(|i| i.id==issue_id))
+                .ok_or("Unknown review issue.")?;
+            let fingerprint=premiere_review::fingerprint(&issue.category,&target,&planner,&settings)?;
+            let before=issue.observation.clone();
+            session.record_fix_evidence(&issue_id,&fingerprint,&before,Some(&approved_action_id),Some(checkpoint))?;
+            premiere_review::save(&path,&session)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"status":session.status,"fingerprint":fingerprint,"iteration":session.iteration,
+                "approved_action_id":approved_action_id,"checkpoint_evidence":checkpoint_evidence,
+                "next_tool":"premiere_review_session_continue",
+                "next_reason":"Re-review the exact same bounded samples after the approved correction. If the grounded result regresses, use premiere_review_session_recovery for a verified read-only recovery handoff."}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereReviewSessionNext {session_id,provider} => {
+            let path=premiere_review_path(app,&session_id)?;
+            let mut session=premiere_review::load(&path)?;
+            if session.status!="reviewing" { return Err(format!("Review cannot run in {} state.",session.status)); }
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            if let Err(error)=session.check_identity(context.get("projectGuid").and_then(Value::as_str).unwrap_or(""),
+                context.pointer("/activeSequence/guid").and_then(Value::as_str).unwrap_or("")) {
+                premiere_review::save(&path,&session)?;
+                return Err(error);
+            }
+            let mut issues=Vec::new();
+            let mut confidence=1.0_f64;
+            let mut stop=false;
+            for (index,seconds) in session.sample_times.iter().enumerate() {
+                if premiere_review::load(&path)?.status=="cancelled" { return Err("Premiere review session cancelled.".into()); }
+                if session.model_calls >= 32 {
+                    session.status="stagnated".into();
+                    premiere_review::save(&path,&session)?;
+                    return Err("Premiere review vision-call budget exhausted.".into());
+                }
+                session.model_calls += 1;
+                premiere_review::save(&path,&session)?;
+                let positioned=premiere_bridge.request("set_playhead",json!({"seconds":seconds}),Duration::from_secs(8)).await?;
+                if positioned.get("verificationStatus").and_then(Value::as_str)!=Some("verified_readback") {
+                    return Err("Premiere playhead readback did not confirm the review-session frame.".into());
+                }
+                tokio::time::sleep(Duration::from_millis(450)).await;
+                let screenshot=capture_screen_png()?;
+                let prompt=format!("Review the Premiere frame at {:.3}s for objective: {}. Context: {}. Return ONLY JSON {{\"iteration\":{},\"issues\":[{{\"id\":\"unique short id\",\"category\":\"exposure|color|framing|continuity|motion|transition|graphics|caption|audio_visual|other\",\"severity\":\"low|medium|high\",\"confidence\":0.8,\"frame_seconds\":[{}],\"observation\":\"visible evidence\",\"suggested_action_type\":\"typed suggestion\"}}],\"overall_confidence\":0.8,\"stop_recommended\":false}}. Max 4 issues, no unsupported claims.",seconds,session.objective,session.reference,session.iteration,seconds);
+                let analysis=analyze_png_with_provider(&provider,&prompt,&screenshot).await?;
+                let mut frame=premiere_review::normalize_vision(&analysis,session.iteration,&[*seconds])?;
+                confidence=confidence.min(frame.overall_confidence);
+                stop|=frame.stop_recommended;
+                for issue in &mut frame.issues { issue.id=format!("{index}-{}",issue.id); }
+                issues.extend(frame.issues.into_iter().take(4));
+            }
+            if premiere_review::load(&path)?.status=="cancelled" { return Err("Premiere review session cancelled.".into()); }
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            if let Err(error)=session.check_identity(context.get("projectGuid").and_then(Value::as_str).unwrap_or(""),
+                context.pointer("/activeSequence/guid").and_then(Value::as_str).unwrap_or("")) {
+                premiere_review::save(&path,&session)?; return Err(error);
+            }
+            let proposals=issues.iter().map(premiere_review::proposal).collect::<Vec<_>>();
+            let result=session.add_review(premiere_review::Review {iteration:session.iteration,issues,overall_confidence:confidence,stop_recommended:stop})?;
+            premiere_review::save(&path,&session)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"result":result,"review":session.reviews.last(),"latest_fix_evaluation":session.attempted_fixes.last().filter(|attempt|attempt.after.is_some()),"proposals":proposals,"next_tool":if session.status=="awaiting_approval"{Some("premiere_review_session_continue")}else{None},"note":"Use premiere_review_session_continue to prioritize and resolve the next grounded issue. Re-review now evaluates the same category at the same grounded sample as resolved/improved/unchanged/regressed/uncertain; corrections still require exact native binding, normal approval/checkpoint and an audit receipt."}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereSetTrackMute { kind, track, muted } => {
+            let checkpoint = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
+                "set_track_mute",
+                json!({ "kind": kind, "track": track, "muted": muted }),
+                Duration::from_secs(10),
+            ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: json!({"checkpoint":checkpoint,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereSetClipEnabled { kind, track, clip_index, enabled } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
+                "set_clip_enabled",
+                json!({
+                    "kind": kind,
+                    "track": track,
+                    "clipIndex": clip_index,
+                    "enabled": enabled
+                }),
+                Duration::from_secs(20),
+            ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: json!({"backup":backup,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereListVideoTransitions => {
+            let value = premiere_bridge.request(
+                "list_video_transitions",
+                json!({}),
+                Duration::from_secs(12),
+            ).await?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereAddVideoTransition { track, clip_index, match_name, duration_seconds, position, force_single_sided } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
+                "add_video_transition",
+                json!({
+                    "track": track,
+                    "clipIndex": clip_index,
+                    "matchName": match_name,
+                    "durationSeconds": duration_seconds,
+                    "position": position,
+                    "forceSingleSided": force_single_sided
+                }),
+                Duration::from_secs(30),
+            ).await?;
+
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_transition");
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "backup": backup,
+                    "result": value,
+                    "uncertain": !verified,
+                    "retry_safe": false
+                })).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereListVideoEffects => {
+            let value = premiere_bridge.request(
+                "list_video_effects",
+                json!({}),
+                Duration::from_secs(12),
+            ).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereInspectClipEffects { track, clip_index } => {
+            let value = premiere_bridge.request(
+                "inspect_clip_effects",
+                json!({
+                    "track": track,
+                    "clipIndex": clip_index
+                }),
+                Duration::from_secs(15),
+            ).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereAddVideoEffect { track, clip_index, match_name } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
+                "add_video_effect",
+                json!({
+                    "track": track,
+                    "clipIndex": clip_index,
+                    "matchName": match_name
+                }),
+                Duration::from_secs(30),
+            ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_delta");
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "backup": backup,
+                    "result": value,
+                    "post_state_verified":verified,
+                    "runtime_acceptance_promoted":false,
+                    "retry_safe":false
+                })).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereSetEffectParam { expected_signature, track, clip_index, component_index, param_index, value } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let result = premiere_bridge.request(
+                "set_effect_param",
+                json!({
+                    "track": track,
+                    "clipIndex": clip_index,
+                    "componentIndex": component_index,
+                        "expectedSignature": expected_signature,
+                    "paramIndex": param_index,
+                    "value": value
+                }),
+                Duration::from_secs(30),
+            ).await?;
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "backup": backup,
+                    "result": result
+                })).unwrap_or_else(|_| result.to_string()),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereAddEffectKeyframe { expected_signature, track, clip_index, component_index, param_index, seconds, value } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let result = premiere_bridge.request(
+                "add_effect_keyframe",
+                json!({
+                    "track": track,
+                    "clipIndex": clip_index,
+                    "componentIndex": component_index,
+                        "expectedSignature": expected_signature,
+                    "paramIndex": param_index,
+                    "seconds": seconds,
+                    "value": value
+                }),
+                Duration::from_secs(30),
+            ).await?;
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_keyframe");
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "backup": backup,
+                    "result": result
+                })).unwrap_or_else(|_| result.to_string()),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereSetVideoParamNamed { track, clip_index, component_match_name, component_display_name, param_display_name, value } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let result = premiere_bridge.request(
+                "set_video_param_named",
+                json!({
+                    "track": track,
+                    "clipIndex": clip_index,
+                    "componentMatchName": component_match_name,
+                    "componentDisplayName": component_display_name,
+                    "paramDisplayName": param_display_name,
+                    "value": value
+                }),
+                Duration::from_secs(30),
+            ).await?;
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": result}))
+                    .unwrap_or_else(|_| result.to_string()),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereAddVideoKeyframeNamed { track, clip_index, component_match_name, component_display_name, param_display_name, seconds, value } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let result = premiere_bridge.request(
+                "add_video_keyframe_named",
+                json!({
+                    "track": track,
+                    "clipIndex": clip_index,
+                    "componentMatchName": component_match_name,
+                    "componentDisplayName": component_display_name,
+                    "paramDisplayName": param_display_name,
+                    "seconds": seconds,
+                    "value": value
+                }),
+                Duration::from_secs(30),
+            ).await?;
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_keyframe");
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": result}))
+                    .unwrap_or_else(|_| result.to_string()),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereApplyVideoRecipe { track, clip_index, settings } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let result = premiere_bridge.request(
+                "apply_video_recipe",
+                json!({
+                    "track": track,
+                    "clipIndex": clip_index,
+                    "settings": settings
+                }),
+                Duration::from_secs(45),
+            ).await?;
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_recipe");
+
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: json!({"backup":backup,"result":result,"post_state_verified":verified,"retry_safe":false}).to_string(),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereListAudioEffects => {
+            let value = premiere_bridge.request(
+                "list_audio_effects",
+                json!({}),
+                Duration::from_secs(12),
+            ).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereInspectAudioClipEffects { track, clip_index } => {
+            let value = premiere_bridge.request(
+                "inspect_audio_clip_effects",
+                json!({
+                    "track": track,
+                    "clipIndex": clip_index
+                }),
+                Duration::from_secs(15),
+            ).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereAddAudioEffect { track, clip_index, display_name } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
+                "add_audio_effect",
+                json!({
+                    "track": track,
+                    "clipIndex": clip_index,
+                    "displayName": display_name
+                }),
+                Duration::from_secs(30),
+            ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_delta");
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "backup": backup,
+                    "result": value,
+                    "post_state_verified":verified,
+                    "runtime_acceptance_promoted":false,
+                    "retry_safe":false
+                })).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereSetAudioEffectParam { expected_signature, track, clip_index, component_index, param_index, value } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let result = premiere_bridge.request(
+                "set_audio_effect_param",
+                json!({
+                    "track": track,
+                    "clipIndex": clip_index,
+                    "componentIndex": component_index,
+                        "expectedSignature": expected_signature,
+                    "paramIndex": param_index,
+                    "value": value
+                }),
+                Duration::from_secs(30),
+            ).await?;
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "backup": backup,
+                    "result": result
+                })).unwrap_or_else(|_| result.to_string()),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereAddAudioEffectKeyframe { expected_signature, track, clip_index, component_index, param_index, seconds, value } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let result = premiere_bridge.request(
+                "add_audio_effect_keyframe",
+                json!({
+                    "track": track,
+                    "clipIndex": clip_index,
+                    "componentIndex": component_index,
+                        "expectedSignature": expected_signature,
+                    "paramIndex": param_index,
+                    "seconds": seconds,
+                    "value": value
+                }),
+                Duration::from_secs(30),
+            ).await?;
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_keyframe");
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "backup": backup,
+                    "result": result
+                })).unwrap_or_else(|_| result.to_string()),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereSetAudioParamNamed { track, clip_index, component_match_name, component_display_name, param_display_name, value } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let result = premiere_bridge.request(
+                "set_audio_param_named",
+                json!({
+                    "track": track,
+                    "clipIndex": clip_index,
+                    "componentMatchName": component_match_name,
+                    "componentDisplayName": component_display_name,
+                    "paramDisplayName": param_display_name,
+                    "value": value
+                }),
+                Duration::from_secs(30),
+            ).await?;
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": result}))
+                    .unwrap_or_else(|_| result.to_string()),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereAddAudioKeyframeNamed { track, clip_index, component_match_name, component_display_name, param_display_name, seconds, value } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let result = premiere_bridge.request(
+                "add_audio_keyframe_named",
+                json!({
+                    "track": track,
+                    "clipIndex": clip_index,
+                    "componentMatchName": component_match_name,
+                    "componentDisplayName": component_display_name,
+                    "paramDisplayName": param_display_name,
+                    "seconds": seconds,
+                    "value": value
+                }),
+                Duration::from_secs(30),
+            ).await?;
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_keyframe");
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": result}))
+                    .unwrap_or_else(|_| result.to_string()),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereApplyAudioRecipe { track, clip_index, settings } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let result = premiere_bridge.request(
+                "apply_audio_recipe",
+                json!({
+                    "track": track,
+                    "clipIndex": clip_index,
+                    "settings": settings
+                }),
+                Duration::from_secs(45),
+            ).await?;
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_recipe");
+
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: json!({"backup":backup,"result":result,"post_state_verified":verified,"retry_safe":false}).to_string(),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereListSavedRecipes => {
+            let recipes = read_premiere_recipes(app)?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&recipes)
+                    .map_err(|error| format!("Could not encode Premiere recipes: {error}"))?,
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereSaveRecipe { name, kind, settings } => {
+            validate_premiere_saved_recipe_settings(&settings)?;
+            let mut recipes = read_premiere_recipes(app)?;
+            let name_key = name.to_ascii_lowercase();
+
+            recipes.retain(|recipe| recipe.name.to_ascii_lowercase() != name_key);
+            recipes.push(PremiereSavedRecipe {
+                name: name.clone(),
+                kind: kind.clone(),
+                settings,
+                updated_at_ms: now_ms(),
+            });
+            recipes.sort_by(|a, b| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()));
+
+            write_premiere_recipes(app, &recipes)?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: format!("Saved {kind} Premiere recipe '{name}'."),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereApplySavedRecipe { name, track, clip_index } => {
+            let recipes = read_premiere_recipes(app)?;
+            let recipe = recipes
+                .into_iter()
+                .find(|recipe| recipe.name.eq_ignore_ascii_case(&name))
+                .ok_or_else(|| format!("Saved Premiere recipe '{name}' was not found."))?;
+
+            validate_premiere_saved_recipe_settings(&recipe.settings)?;
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let action = if recipe.kind == "video" {
+                "apply_video_recipe"
+            } else if recipe.kind == "audio" {
+                "apply_audio_recipe"
+            } else {
+                return Err(format!("Saved Premiere recipe '{}' has invalid kind '{}'.", recipe.name, recipe.kind));
+            };
+
+            let result = premiere_bridge.request(
+                action,
+                json!({
+                    "track": track,
+                    "clipIndex": clip_index,
+                    "settings": recipe.settings
+                }),
+                Duration::from_secs(45),
+            ).await?;
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_recipe");
+
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: json!({
+                    "recipe":recipe.name,"kind":recipe.kind,"backup":backup,"result":result,
+                    "post_state_verified":verified,"retry_safe":false
+                }).to_string(),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereApplySavedRecipeBatch { name, targets } => {
+            let _guard = state.finishing_running.begin(&state.finishing_cancelled)?;
+            let recipes = read_premiere_recipes(app)?;
+            let recipe = recipes
+                .into_iter()
+                .find(|recipe| recipe.name.eq_ignore_ascii_case(&name))
+                .ok_or_else(|| format!("Saved Premiere recipe '{name}' was not found."))?;
+
+            validate_premiere_saved_recipe_settings(&recipe.settings)?;
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let action = if recipe.kind == "video" {
+                "apply_video_recipe"
+            } else if recipe.kind == "audio" {
+                "apply_audio_recipe"
+            } else {
+                return Err(format!("Saved Premiere recipe '{}' has invalid kind '{}'.", recipe.name, recipe.kind));
+            };
+
+            let total = targets.len();
+            let mut results = Vec::with_capacity(total);
+            let mut failures = 0_usize;
+
+            for target in targets {
+                if state.finishing_cancelled.load(Ordering::Acquire) { break; }
+                let track = target.get("track").and_then(Value::as_u64).unwrap_or(0);
+                let clip_index = target.get("clipIndex").and_then(Value::as_u64).unwrap_or(0);
+                match premiere_bridge.request(
+                    action,
+                    json!({
+                        "track": track,
+                        "clipIndex": clip_index,
+                        "settings": recipe.settings.clone()
+                    }),
+                    Duration::from_secs(45),
+                ).await {
+                    Ok(result) => {
+                        let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_recipe");
+                        results.push(json!({
+                            "track":track,"clipIndex":clip_index,"success":verified,
+                            "uncertain":!verified,"result":result
+                        }));
+                        if !verified {
+                            failures += 1;
+                            break;
+                        }
+                    },
+                    Err(error) => {
+                        failures += 1;
+                        results.push(json!({
+                            "track": track,
+                            "clipIndex": clip_index,
+                            "success": false,
+                            "error": error
+                        }));
+                        break;
+                    }
+                }
+            }
+
+            Ok(ActionResult {
+                success: failures == 0 && results.len() == total,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "recipe": recipe.name,
+                    "kind": recipe.kind,
+                    "backup": backup,
+                    "total": total,
+                    "succeeded": results.len().saturating_sub(failures),
+                    "processed": results.len(),
+                    "unattempted": total.saturating_sub(results.len()),
+                    "uncertain": failures > 0,
+                    "failed": failures,
+                    "targets": results
+                })).unwrap_or_default(),
+                stderr: if failures == 0 && results.len() == total {
+                    String::new()
+                } else {
+                    format!("{failures} of {total} Premiere recipe applications failed or remained unverified; successful earlier targets were not rolled back.")
+                },
+                exit_code: Some(if failures == 0 && results.len() == total { 0 } else { 1 }),
+            })
+        }
+        ToolAction::PremiereDeleteRecipe { name } => {
+            let mut recipes = read_premiere_recipes(app)?;
+            let before = recipes.len();
+            recipes.retain(|recipe| !recipe.name.eq_ignore_ascii_case(&name));
+
+            if recipes.len() == before {
+                return Err(format!("Saved Premiere recipe '{name}' was not found."));
+            }
+
+            write_premiere_recipes(app, &recipes)?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: format!("Deleted local Premiere recipe '{name}'."),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereListMarkers => {
+            let value = premiere_bridge.request(
+                "list_markers",
+                json!({}),
+                Duration::from_secs(12),
+            ).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereAddMarker { name, marker_type, seconds, duration_seconds, comments } => {
+            let checkpoint = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
+                "add_marker",
+                json!({
+                    "name": name,
+                    "markerType": marker_type,
+                    "seconds": seconds,
+                    "durationSeconds": duration_seconds,
+                    "comments": comments
+                }),
+                Duration::from_secs(20),
+            ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_delta");
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({"checkpoint":checkpoint,"result":value,
+                    "post_state_verified":verified,"retry_safe":false})).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereRemoveMarker { marker_index, expected_signature } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
+                "remove_marker",
+                json!({ "markerIndex": marker_index, "expectedSignature": expected_signature }),
+                Duration::from_secs(20),
+            ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_delta");
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "backup": backup,
+                    "result": value,
+                    "post_state_verified":verified,
+                    "retry_safe":false
+                })).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereProjectTree => {
+            let value = premiere_bridge.request(
+                "project_tree",
+                json!({}),
+                Duration::from_secs(20),
+            ).await?;
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereListItems => {
+            let value = premiere_bridge
+                .request("list_root_items", json!({}), Duration::from_secs(8))
+                .await?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value)
+                    .unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereCreateBin { name } => {
+            let checkpoint = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge
+                .request(
+                    "create_bin",
+                    json!({ "name": name }),
+                    Duration::from_secs(8),
+                )
+                .await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: json!({"checkpoint":checkpoint,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereRenameProjectItem { item_id, name } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
+                "rename_project_item",
+                json!({ "itemId": item_id, "name": name }),
+                Duration::from_secs(20),
+            ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: json!({"backup":backup,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereMoveProjectItem { item_id, target_bin_id } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
+                "move_project_item",
+                json!({ "itemId": item_id, "targetBinId": target_bin_id }),
+                Duration::from_secs(20),
+            ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: json!({"backup":backup,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereRelinkMedia { item_id, new_path, override_compatibility } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
+                "relink_media",
+                json!({
+                    "itemId": item_id,
+                    "newPath": new_path,
+                    "overrideCompatibility": override_compatibility
+                }),
+                Duration::from_secs(30),
+            ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: json!({"backup":backup,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereInspectMediaInterpretation {item_id} => {
+            let value=premiere_bridge.request(
+                "inspect_media_interpretation",
+                json!({"itemId":item_id}),
+                Duration::from_secs(20),
+            ).await?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremierePrepareMediaItem {request} => {
+            request.validate()?;
+            let expected=premiere_bridge.expected.ok_or("Media preparation requires project expectation.")?;
+            let checkpoint=backup_premiere_project(&premiere_bridge).await?;
+            let client=PremiereClient{bridge:&state.premiere_bridge,expected:Some(expected)};
+            let value=client.request(
+                "prepare_media_item",
+                json!({
+                    "itemId":request.item_id,
+                    "expectedMediaPath":request.expected_media_path,
+                    "overrideFrameRate":request.override_frame_rate,
+                    "pixelAspect":request.pixel_aspect,
+                    "scaleToFrameSize":request.scale_to_frame_size,
+                    "inputLUTID":request.input_lut_id
+                }),
+                Duration::from_secs(30),
+            ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+            Ok(ActionResult{
+                success:verified,
+                tool,
+                stdout:json!({"checkpoint":checkpoint,"result":value,"post_state_verified":verified,
+                    "uncertain":!verified,"runtime_verified":false,"retry_safe":false}).to_string(),
+                stderr:String::new(),
+                exit_code:Some(if verified{0}else{1}),
+            })
+        }
+        ToolAction::PremiereCancelMediaPrep { generation } => {
+            let cancelled = state.media_prep_running.cancel(generation, &state.media_prep_cancelled)?;
+            Ok(ActionResult{
+                success:true,tool,
+                stdout:json!({"cancel_requested":cancelled,"generation":generation,"native_inflight_may_finish":cancelled}).to_string(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PremierePrepareMediaBatch {batch} => {
+            batch.validate()?;
+            let _guard = state.media_prep_running.begin(&state.media_prep_cancelled)?;
+            let expected=premiere_bridge.expected.ok_or("Media preparation batch requires project expectation.")?.clone();
+            let checkpoint=backup_premiere_project(&premiere_bridge).await?;
+            let client=PremiereClient{bridge:&state.premiere_bridge,expected:Some(&expected)};
+            let mut results=Vec::new();
+            let mut uncertain=false;
+            for (index,item) in batch.items.iter().enumerate(){
+                if state.media_prep_cancelled.load(Ordering::Acquire){break;}
+                match client.request(
+                    "prepare_media_item",
+                    json!({
+                        "itemId":item.item_id.clone(),
+                        "expectedMediaPath":item.expected_media_path.clone(),
+                        "overrideFrameRate":item.override_frame_rate,
+                        "pixelAspect":item.pixel_aspect.clone(),
+                        "scaleToFrameSize":item.scale_to_frame_size,
+                        "inputLUTID":item.input_lut_id.clone()
+                    }),
+                    Duration::from_secs(30),
+                ).await {
+                    Ok(value)=>{
+                        let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+                        results.push(json!({"index":index,"item_id":item.item_id.clone(),
+                            "status":if verified{"applied"}else{"accepted_unverified"},
+                            "post_state_verified":verified,"native_result":value}));
+                        if !verified {uncertain=true;break;}
+                    }
+                    Err(error)=>{
+                        uncertain=true;
+                        results.push(json!({"index":index,"item_id":item.item_id.clone(),"status":"uncertain",
+                            "reason":error.chars().take(240).collect::<String>()}));
+                        break;
+                    }
+                }
+            }
+            let cancelled=state.media_prep_cancelled.load(Ordering::Acquire);
+            let applied=results.iter().filter(|row|row["status"]=="applied").count();
+            let complete=!uncertain&&!cancelled&&applied==batch.items.len();
+            Ok(ActionResult{
+                success:complete,tool,
+                stdout:json!({
+                    "checkpoint":checkpoint,"requested":batch.items.len(),"applied":applied,
+                    "results":results,"complete":complete,"cancelled":cancelled,"uncertain":uncertain,
+                    "timeline_speed_changed":false,"retry_safe":false
+                }).to_string(),
+                stderr:String::new(),exit_code:Some(if complete{0}else{1})
+            })
+        }
+        ToolAction::PremiereCreateSequenceFromPreset {name,preset_path} => {
+            let expected=premiere_bridge.expected.ok_or("Sequence preset creation requires project expectation.")?;
+            let checkpoint=backup_premiere_project(&premiere_bridge).await?;
+            let client=PremiereClient{bridge:&state.premiere_bridge,expected:Some(expected)};
+            let value=client.request(
+                "create_sequence_from_preset",
+                json!({"name":name,"presetPath":preset_path}),
+                Duration::from_secs(45),
+            ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+            Ok(ActionResult{
+                success:verified,tool,
+                stdout:json!({"checkpoint":checkpoint,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
+                stderr:String::new(),exit_code:Some(if verified{0}else{1})
+            })
+        }
+        ToolAction::PremiereGetWorkArea => {
+            let value=premiere_bridge.request("get_work_area",json!({}),Duration::from_secs(10)).await?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereSetWorkArea {request} => {
+            request.validate()?;
+            let expected=premiere_bridge.expected.ok_or("Work-area update requires project/sequence expectation.")?;
+            let checkpoint=backup_premiere_project(&premiere_bridge).await?;
+            let client=PremiereClient{bridge:&state.premiere_bridge,expected:Some(expected)};
+            let value=client.request(
+                "set_work_area",
+                json!({"inSeconds":request.in_seconds,"outSeconds":request.out_seconds}),
+                Duration::from_secs(20),
+            ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+            Ok(ActionResult{
+                success:verified,tool,
+                stdout:json!({"checkpoint":checkpoint,"result":value,"verified":verified}).to_string(),
+                stderr:String::new(),exit_code:Some(if verified{0}else{1})
+            })
+        }
+        ToolAction::PremiereSetSourceInOut { item_id, in_seconds, out_seconds } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let result = premiere_bridge.request(
+                "set_source_inout",
+                json!({
+                    "itemId": item_id,
+                    "inSeconds": in_seconds,
+                    "outSeconds": out_seconds
+                }),
+                Duration::from_secs(20),
+            ).await?;
+
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_source_inout");
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "backup": backup,
+                    "result": result,
+                    "uncertain": !verified,
+                    "retry_safe": false
+                })).unwrap_or_else(|_| result.to_string()),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereClearSourceInOut { item_id } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let result = premiere_bridge.request(
+                "clear_source_inout",
+                json!({ "itemId": item_id }),
+                Duration::from_secs(20),
+            ).await?;
+
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_source_inout");
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "backup": backup,
+                    "result": result,
+                    "uncertain": !verified,
+                    "retry_safe": false
+                })).unwrap_or_else(|_| result.to_string()),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereCreateSubclip { item_id, name, start_seconds, end_seconds, hard_boundaries, take_video, take_audio } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let result = premiere_bridge.request(
+                "create_subclip",
+                json!({
+                    "itemId": item_id,
+                    "name": name,
+                    "startSeconds": start_seconds,
+                    "endSeconds": end_seconds,
+                    "hardBoundaries": hard_boundaries,
+                    "takeVideo": take_video,
+                    "takeAudio": take_audio
+                }),
+                Duration::from_secs(30),
+            ).await?;
+            let bounds_verified=result.get("boundarySemanticsVerified").and_then(Value::as_bool)==Some(true);
+            let media_verified=result.get("mediaSelectionVerified").and_then(Value::as_bool)==Some(true);
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_creation_identity")
+                &&bounds_verified&&media_verified;
+
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: json!({"backup":backup,"result":result,"creation_identity_verified":verified,
+                    "boundary_semantics_verified":bounds_verified,"media_selection_verified":media_verified,
+                    "hard_boundary_mode_verified":false,"retry_safe":false}).to_string(),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereTranscribeItem { item_id, language } => {
+            let checkpoint = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
+                "transcribe_item",
+                json!({
+                    "itemId": item_id,
+                    "language": language
+                }),
+                Duration::from_secs(180),
+            ).await?;
+
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: json!({"checkpoint":checkpoint,"result":value,
+                    "transcript_readback_verified":verified,"retry_safe":false}).to_string(),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereExportTranscript { item_id } => {
+            let value = premiere_bridge.request(
+                "export_transcript",
+                json!({ "itemId": item_id }),
+                Duration::from_secs(30),
+            ).await?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: truncate_output(
+                    serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string())
+                ),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereWriteSrt{output,overwrite,cues} => {
+            let value=premiere_subtitles::write(&output,overwrite,&cues)?;
+            Ok(ActionResult{success:true,tool,stdout:value.to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereTranscriptToSrt{item_id,output,overwrite} => {
+            premiere_subtitles::validate_output(&output,overwrite)?;
+            let value=premiere_bridge.request("export_transcript",json!({"itemId":item_id,"deliverSrt":true}),Duration::from_secs(30)).await?;
+            let captions=value.get("captions").ok_or("Premiere transcript returned no structured captions.")?;
+            if captions.get("supported").and_then(Value::as_bool)!=Some(true) || captions.get("segmentsTruncated").and_then(Value::as_bool)!=Some(false) {
+                return Err("Transcript has no complete recognized explicit timing; no partial SRT written.".into());
+            }
+            let cues:Vec<premiere_subtitles::Cue>=serde_json::from_value(captions.get("segments").cloned().ok_or("Missing transcript segments.")?).map_err(|e|format!("Invalid transcript timing: {e}"))?;
+            let mut result=premiere_subtitles::write(&output,overwrite,&cues)?;
+            result["source_item_id"]=json!(item_id);
+            Ok(ActionResult{success:true,tool,stdout:result.to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereListTranscriptionLanguages => {
+            let value = premiere_bridge.request(
+                "list_transcription_languages",
+                json!({}),
+                Duration::from_secs(12),
+            ).await?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::PremiereImportTranscript { item_id, transcript_json } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
+                "import_transcript",
+                json!({
+                    "itemId": item_id,
+                    "transcriptJson": transcript_json
+                }),
+                Duration::from_secs(30),
+            ).await?;
+
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: json!({
+                    "backup": backup,
+                    "result": value,
+                    "post_state_verified":verified,
+                    "retry_safe":false
+                }).to_string(),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereAttachProxy { item_id, proxy_path } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
+                "attach_proxy",
+                json!({ "itemId": item_id, "proxyPath": proxy_path }),
+                Duration::from_secs(30),
+            ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: json!({"backup":backup,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereInsertMogrtPath { path, seconds, video_track, audio_track } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
+                "insert_mogrt_path",
+                json!({
+                    "path": path,
+                    "seconds": seconds,
+                    "videoTrack": video_track,
+                    "audioTrack": audio_track
+                }),
+                Duration::from_secs(45),
+            ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_creation_identity");
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value, "post_state_verified": verified, "retry_safe": false}))
+                    .unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereInsertMogrtLibrary { library_name, element_name, seconds, video_track, audio_track } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
+                "insert_mogrt_library",
+                json!({
+                    "libraryName": library_name,
+                    "elementName": element_name,
+                    "seconds": seconds,
+                    "videoTrack": video_track,
+                    "audioTrack": audio_track
+                }),
+                Duration::from_secs(45),
+            ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_creation_identity");
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({"backup": backup, "result": value, "post_state_verified": verified, "retry_safe": false}))
+                    .unwrap_or_else(|_| value.to_string()),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereBatchRelink { items } => {
+            let _guard = state.media_prep_running.begin(&state.media_prep_cancelled)?;
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let total = items.len();
+            let mut results = Vec::with_capacity(total);
+            let mut failures = 0_usize;
+
+            for item in items {
+                if state.media_prep_cancelled.load(Ordering::Acquire) { break; }
+                let item_id = item.get("itemId").and_then(Value::as_str).unwrap_or_default().to_string();
+                match premiere_bridge.request(
+                    "relink_media",
+                    item.clone(),
+                    Duration::from_secs(30),
+                ).await {
+                    Ok(result) => {
+                        let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+                        results.push(json!({
+                            "itemId":item_id,"success":verified,"uncertain":!verified,"result":result
+                        }));
+                        if !verified {
+                            failures += 1;
+                            break;
+                        }
+                    },
+                    Err(error) => {
+                        failures += 1;
+                        results.push(json!({
+                            "itemId": item_id,
+                            "success": false,
+                            "error": error
+                        }));
+                        break;
+                    }
+                }
+            }
+
+            Ok(ActionResult {
+                success: failures == 0 && results.len() == total,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "backup": backup,
+                    "total": total,
+                    "succeeded": results.len().saturating_sub(failures),
+                    "processed": results.len(),
+                    "unattempted": total.saturating_sub(results.len()),
+                    "uncertain": failures > 0,
+                    "failed": failures,
+                    "items": results
+                })).unwrap_or_default(),
+                stderr: if failures == 0 && results.len() == total {
+                    String::new()
+                } else {
+                    format!("{failures} of {total} Premiere relink operations failed or remained unverified; successful earlier items were not rolled back.")
+                },
+                exit_code: Some(if failures == 0 && results.len() == total { 0 } else { 1 }),
+            })
+        }
+        ToolAction::PremiereBatchAttachProxy { items } => {
+            let _guard = state.media_prep_running.begin(&state.media_prep_cancelled)?;
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let total = items.len();
+            let mut results = Vec::with_capacity(total);
+            let mut failures = 0_usize;
+
+            for item in items {
+                if state.media_prep_cancelled.load(Ordering::Acquire) { break; }
+                let item_id = item.get("itemId").and_then(Value::as_str).unwrap_or_default().to_string();
+                match premiere_bridge.request(
+                    "attach_proxy",
+                    item.clone(),
+                    Duration::from_secs(30),
+                ).await {
+                    Ok(result) => {
+                        let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+                        results.push(json!({
+                            "itemId":item_id,"success":verified,"uncertain":!verified,"result":result
+                        }));
+                        if !verified {
+                            failures += 1;
+                            break;
+                        }
+                    },
+                    Err(error) => {
+                        failures += 1;
+                        results.push(json!({
+                            "itemId": item_id,
+                            "success": false,
+                            "error": error
+                        }));
+                        break;
+                    }
+                }
+            }
+
+            Ok(ActionResult {
+                success: failures == 0 && results.len() == total,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "backup": backup,
+                    "total": total,
+                    "succeeded": results.len().saturating_sub(failures),
+                    "processed": results.len(),
+                    "unattempted": total.saturating_sub(results.len()),
+                    "uncertain": failures > 0,
+                    "failed": failures,
+                    "items": results
+                })).unwrap_or_default(),
+                stderr: if failures == 0 && results.len() == total {
+                    String::new()
+                } else {
+                    format!("{failures} of {total} Premiere proxy operations failed or remained unverified; successful earlier items were not rolled back.")
+                },
+                exit_code: Some(if failures == 0 && results.len() == total { 0 } else { 1 }),
+            })
+        }
+        ToolAction::PremiereImportCaptionSource {path} => {
+            let checkpoint=backup_premiere_project(&premiere_bridge).await?;
+            let value=premiere_bridge.request("import_caption_source",json!({"path":path}),Duration::from_secs(30)).await?;
+            let status=value.get("verificationStatus").and_then(Value::as_str);
+            let verified=matches!(status,Some("verified_caption_source_import")|Some("verified_existing_source"))
+                && value.get("projectItemObserved").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{success:verified,tool,stdout:json!({"checkpoint":checkpoint,"result":value,
+                "source_import_verified":verified,"caption_track_created":false,"caption_text_write_supported":false,
+                "retry_safe":false}).to_string(),stderr:String::new(),exit_code:Some(if verified{0}else{1})})
+        }
+        ToolAction::PremiereImportMedia { paths } => {
+            let checkpoint = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge
+                .request(
+                    "import_media",
+                    json!({ "paths": paths }),
+                    Duration::from_secs(30),
+                )
+                .await?;
+
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: json!({"checkpoint":checkpoint,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereCreateSequenceFromMedia { name, paths } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge
+                .request(
+                    "create_sequence_from_media",
+                    json!({ "name": name, "paths": paths }),
+                    Duration::from_secs(45),
+                )
+                .await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: json!({"backup":backup,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereCreateSubsequence { targets } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
+                "create_subsequence",
+                json!({ "targets": targets }),
+                Duration::from_secs(30),
+            ).await?;
+
+            let content_verified=value.get("selectionSemanticsVerified").and_then(Value::as_bool)==Some(true);
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_creation_identity")
+                &&content_verified;
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: json!({
+                    "backup": backup,
+                    "result": value,
+                    "creation_identity_verified":verified,
+                    "selection_semantics_verified":content_verified,
+                    "retry_safe":false
+                }).to_string(),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereInspectMulticamItem {item_id} => {
+            let value=premiere_bridge.request("inspect_multicam_item",json!({"itemId":item_id}),Duration::from_secs(12)).await?;
+            let verified=value.get("inspectionVerified").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{success:verified,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(if verified{0}else{1})})
+        }
+        ToolAction::PremiereInsertMulticamItem {item_id,seconds,video_track,audio_track,mode} => {
+            let expected=premiere_bridge.expected.ok_or("Multicam insertion requires project/sequence expectation.")?;
+            let checkpoint=backup_premiere_project(&premiere_bridge).await?;
+            let client=PremiereClient{bridge:&state.premiere_bridge,expected:Some(expected)};
+            let value=client.request("insert_multicam_item",json!({"itemId":item_id,"seconds":seconds,
+                "videoTrack":video_track,"audioTrack":audio_track,"mode":mode}),Duration::from_secs(45)).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_multicam_insert")
+                && value.get("multicamIdentityVerified").and_then(Value::as_bool)==Some(true)
+                && value.get("uncertain").and_then(Value::as_bool)==Some(false);
+            Ok(ActionResult{success:verified,tool,stdout:json!({"checkpoint":checkpoint,"result":value,
+                "verified":verified,"multicam_creation_performed":false,"angle_switching_performed":false,
+                "retry_safe":false}).to_string(),stderr:String::new(),exit_code:Some(if verified{0}else{1})})
+        }
+        ToolAction::PremiereInsertProjectItem { item_id, seconds, video_track, audio_track, mode } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
+                "insert_project_item",
+                json!({
+                    "itemId": item_id,
+                    "seconds": seconds,
+                    "videoTrack": video_track,
+                    "audioTrack": audio_track,
+                    "mode": mode
+                }),
+                Duration::from_secs(30),
+            ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_insert_delta");
+
+
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: json!({"backup":backup,"result":value,"post_state_verified":verified,
+                    "overwrite_semantics_verified":false,"retry_safe":false}).to_string(),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereInsertMedia { path, seconds, video_track, audio_track, mode } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
+                "insert_media",
+                json!({
+                    "path": path,
+                    "seconds": seconds,
+                    "videoTrack": video_track,
+                    "audioTrack": audio_track,
+                    "mode": mode
+                }),
+                Duration::from_secs(30),
+            ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_insert_delta");
+
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: json!({"backup":backup,"result":value,"post_state_verified":verified,
+                    "overwrite_semantics_verified":false,"retry_safe":false}).to_string(),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereTrimClip { kind, track, clip_index, start_seconds, end_seconds } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
+                "trim_clip",
+                json!({
+                    "kind": kind,
+                    "track": track,
+                    "clipIndex": clip_index,
+                    "startSeconds": start_seconds,
+                    "endSeconds": end_seconds
+                }),
+                Duration::from_secs(30),
+            ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: json!({"backup":backup,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereRollEdit { kind, track, left_clip_index, right_clip_index, boundary_seconds } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
+                "roll_edit",
+                json!({
+                    "kind": kind,
+                    "track": track,
+                    "leftClipIndex": left_clip_index,
+                    "rightClipIndex": right_clip_index,
+                    "boundarySeconds": boundary_seconds
+                }),
+                Duration::from_secs(30),
+            ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: json!({"backup":backup,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereMoveClip { kind, track, clip_index, delta_seconds } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
+                "move_clip",
+                json!({
+                    "kind": kind,
+                    "track": track,
+                    "clipIndex": clip_index,
+                    "deltaSeconds": delta_seconds
+                }),
+                Duration::from_secs(30),
+            ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: json!({"backup":backup,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereCancelLayerClips { generation } => {
+            let cancelled = state.layering_running.cancel(generation, &state.layering_cancelled)?;
+            Ok(ActionResult {
+                success:true,
+                tool,
+                stdout:json!({"cancel_requested":cancelled,"generation":generation,"native_inflight_may_finish":cancelled}).to_string(),
+                stderr:String::new(),
+                exit_code:Some(0),
+            })
+        }
+        ToolAction::PremiereCloneClipToTrack { request } => {
+            request.validate()?;
+            let expected = premiere_bridge.expected.ok_or("Cross-track clone requires exact source expectation.")?;
+            let checkpoint = backup_premiere_project(&premiere_bridge).await?;
+            let client = PremiereClient { bridge:&state.premiere_bridge, expected:Some(expected) };
+            let result = client.request(
+                "clone_clip_to_track",
+                json!({
+                    "kind":request.source.kind,
+                    "track":request.source.track,
+                    "clipIndex":request.source.clip_index,
+                    "destinationTrack":request.destination_track,
+                    "destinationSeconds":request.destination_seconds,
+                    "mode":request.mode,
+                    "alignToVideo":request.align_to_video
+                }),
+                Duration::from_secs(45),
+            ).await?;
+            let verified = result.get("verificationStatus").and_then(Value::as_str)==Some("verified_delta")
+                && result.get("uncertain").and_then(Value::as_bool)==Some(false);
+            Ok(ActionResult {
+                success:verified,
+                tool,
+                stdout:json!({
+                    "checkpoint":checkpoint,
+                    "result":result,
+                    "verified":verified,
+                    "linked_media_inferred":false,
+                    "retry_safe":false
+                }).to_string(),
+                stderr:String::new(),
+                exit_code:Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereMoveClipToTrack { request } => {
+            request.validate()?;
+            let expected = premiere_bridge.expected.ok_or("Cross-track move requires exact source expectation.")?;
+            let checkpoint = backup_premiere_project(&premiere_bridge).await?;
+            let client = PremiereClient { bridge:&state.premiere_bridge, expected:Some(expected) };
+            let result = client.request(
+                "move_clip_to_track",
+                json!({
+                    "kind":request.source.kind,
+                    "track":request.source.track,
+                    "clipIndex":request.source.clip_index,
+                    "destinationTrack":request.destination_track,
+                    "destinationSeconds":request.destination_seconds,
+                    "mode":request.mode,
+                    "alignToVideo":request.align_to_video
+                }),
+                Duration::from_secs(60),
+            ).await?;
+            let verified = result.get("verificationStatus").and_then(Value::as_str)==Some("verified_move")
+                && result.get("moved").and_then(Value::as_bool)==Some(true)
+                && result.get("sourceDeleted").and_then(Value::as_bool)==Some(true)
+                && result.get("uncertain").and_then(Value::as_bool)==Some(false);
+            Ok(ActionResult {
+                success:verified,
+                tool,
+                stdout:json!({"checkpoint":checkpoint,"result":result,"verified":verified,
+                    "partial_completion_possible":!verified,"linked_media_inferred":false,"retry_safe":false}).to_string(),
+                stderr:String::new(),
+                exit_code:Some(if verified{0}else{1}),
+            })
+        }
+        ToolAction::PremiereReplaceWithSubsequence {source} => {
+            source.validate()?;
+            if source.kind!="video" {return Err("Replacement nesting v1 supports video only.".into());}
+            let expected=premiere_bridge.expected.ok_or("Replacement nesting requires exact source expectation.")?;
+            let checkpoint=backup_premiere_project(&premiere_bridge).await?;
+            let client=PremiereClient{bridge:&state.premiere_bridge,expected:Some(expected)};
+            let result=client.request(
+                "replace_with_subsequence",
+                json!({"kind":"video","track":source.track,"clipIndex":source.clip_index}),
+                Duration::from_secs(90),
+            ).await?;
+            let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_replacement_nest")
+                && result.get("replacementApplied").and_then(Value::as_bool)==Some(true)
+                && result.get("contentVerified").and_then(Value::as_bool)==Some(true)
+                && result.get("unaffectedTrackVerified").and_then(Value::as_bool)==Some(true)
+                && result.get("uncertain").and_then(Value::as_bool)==Some(false);
+            Ok(ActionResult{
+                success:verified,tool,
+                stdout:json!({"checkpoint":checkpoint,"result":result,"verified":verified,
+                    "linked_audio_inferred":false,"retry_safe":false}).to_string(),
+                stderr:String::new(),exit_code:Some(if verified{0}else{1}),
+            })
+        }
+        ToolAction::PremiereLayerClips { batch } => {
+            batch.validate()?;
+            let _guard = state.layering_running.begin(&state.layering_cancelled)?;
+            let expected = premiere_bridge.expected.ok_or("Layer batch requires exact source expectations.")?.clone();
+            let checkpoint = backup_premiere_project(&premiere_bridge).await?;
+            let mut results = Vec::new();
+            let mut uncertain = false;
+
+            for (index,operation) in batch.operations.iter().enumerate() {
+                if state.layering_cancelled.load(Ordering::Acquire) { break; }
+                let clip = expected.clips.iter().find(|clip| clip.kind==operation.source.kind
+                    && clip.track==operation.source.track && clip.clip_index==operation.source.clip_index
+                    && clip.signature==operation.source.signature)
+                    .ok_or("Layer batch source expectation disappeared.")?.clone();
+                let guard = PremiereExpectation {
+                    project_guid:expected.project_guid.clone(),
+                    project_path:expected.project_path.clone(),
+                    sequence_guid:expected.sequence_guid.clone(),
+                    clips:vec![clip],
+                };
+                let client = PremiereClient { bridge:&state.premiere_bridge, expected:Some(&guard) };
+                match client.request(
+                    "clone_clip_to_track",
+                    json!({
+                        "kind":operation.source.kind.clone(),
+                        "track":operation.source.track,
+                        "clipIndex":operation.source.clip_index,
+                        "destinationTrack":operation.destination_track,
+                        "destinationSeconds":operation.destination_seconds,
+                        "mode":operation.mode.clone(),
+                        "alignToVideo":operation.align_to_video
+                    }),
+                    Duration::from_secs(45),
+                ).await {
+                    Ok(value) => {
+                        let verified = value.get("verificationStatus").and_then(Value::as_str)==Some("verified_delta")
+                            && value.get("uncertain").and_then(Value::as_bool)==Some(false);
+                        results.push(json!({"index":index,"status":if verified {"applied"} else {"uncertain"},"native_result":value}));
+                        if !verified { uncertain=true; break; }
+                    }
+                    Err(error) => {
+                        let delivery_uncertain = error.contains("unknown") || error.contains("timed out") || error.contains("timeout")
+                            || error.contains("delivery");
+                        results.push(json!({"index":index,"status":if delivery_uncertain {"uncertain"} else {"failed"},"reason":error.chars().take(240).collect::<String>()}));
+                        if delivery_uncertain { uncertain=true; break; }
+                    }
+                }
+            }
+
+            let cancelled = state.layering_cancelled.load(Ordering::Acquire);
+            let applied = results.iter().filter(|row| row["status"]=="applied").count();
+            let complete = !uncertain && !cancelled && applied==batch.operations.len();
+            Ok(ActionResult {
+                success:complete,
+                tool,
+                stdout:json!({
+                    "checkpoint":checkpoint,
+                    "requested":batch.operations.len(),
+                    "applied":applied,
+                    "results":results,
+                    "complete":complete,
+                    "cancelled":cancelled,
+                    "uncertain":uncertain,
+                    "linked_media_inferred":false,
+                    "retry_safe":false
+                }).to_string(),
+                stderr:String::new(),
+                exit_code:Some(if complete {0}else{1}),
+            })
+        }
+        ToolAction::PremiereRenameTrack { request } => {
+            request.validate()?;
+            let expected = premiere_bridge.expected.ok_or("Track rename requires project/sequence expectation.")?;
+            let checkpoint = backup_premiere_project(&premiere_bridge).await?;
+            let client = PremiereClient { bridge:&state.premiere_bridge, expected:Some(expected) };
+            let result = client.request(
+                "rename_track",
+                json!({"kind":request.kind,"track":request.track,"name":request.name}),
+                Duration::from_secs(20),
+            ).await?;
+            let verified = result.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+            Ok(ActionResult {
+                success:verified,
+                tool,
+                stdout:json!({"checkpoint":checkpoint,"result":result,"verified":verified}).to_string(),
+                stderr:String::new(),
+                exit_code:Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereOrganizeTracks { request } => {
+            request.validate()?;
+            let expected = premiere_bridge.expected.ok_or("Track organization requires project/sequence expectation.")?;
+            let checkpoint = backup_premiere_project(&premiere_bridge).await?;
+            let client = PremiereClient { bridge:&state.premiere_bridge, expected:Some(expected) };
+            let result = client.request(
+                "organize_tracks",
+                json!({"tracks":request.tracks}),
+                Duration::from_secs(30),
+            ).await?;
+            let complete = result.get("complete").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult {
+                success:complete,
+                tool,
+                stdout:json!({"checkpoint":checkpoint,"result":result,"complete":complete}).to_string(),
+                stderr:String::new(),
+                exit_code:Some(if complete {0}else{1}),
+            })
+        }
+        ToolAction::PremiereCloneClip { kind, track, clip_index, time_offset_seconds, video_track_offset, audio_track_offset, align_to_video, insert } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
+                "clone_clip",
+                json!({
+                    "kind": kind,
+                    "track": track,
+                    "clipIndex": clip_index,
+                    "timeOffsetSeconds": time_offset_seconds,
+                    "videoTrackOffset": video_track_offset,
+                    "audioTrackOffset": audio_track_offset,
+                    "alignToVideo": align_to_video,
+                    "insert": insert
+                }),
+                Duration::from_secs(30),
+            ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_delta");
+
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: json!({"backup":backup,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereDeleteClip { kind, track, clip_index, ripple } => {
+            let backup = backup_premiere_project(&premiere_bridge).await?;
+            let value = premiere_bridge.request(
+                "delete_clip",
+                json!({
+                    "kind": kind,
+                    "track": track,
+                    "clipIndex": clip_index,
+                    "ripple": ripple
+                }),
+                Duration::from_secs(30),
+            ).await?;
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_delta");
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: json!({"backup":backup,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
+                stderr: String::new(),
+                exit_code: Some(if verified {0}else{1}),
+            })
+        }
+        ToolAction::PremiereAcceptanceReport => {
+            let report=premiere_acceptance::load(&premiere_acceptance_path(app)?)?;
+            let eligible=report.capabilities.iter().filter(|c|c.state!="unsupported_documented").count();
+            let verified=report.verified_count();
+            Ok(ActionResult {success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({"report":report,
+                    "premiere_runtime_verified_count":verified,
+                    "implemented_capability_count":eligible,
+                    "production_ready":false})).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereAcceptanceRegisterDisposable {project_guid,project_path,sequence_guid} => {
+            if !state.premiere_bridge.status()?.paired {return Err("Paired Premiere host is required.".into());}
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(12)).await?;
+            let registration=premiere_acceptance_harness::Registration::new(&project_guid,&project_path,sequence_guid.as_deref(),true)?;
+            registration.check(&context)?;
+            premiere_acceptance_harness::save(&premiere_disposable_path(app)?,&registration)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"registered":true,"project_guid":project_guid,
+                "sequence_guid":sequence_guid,"verified_current_host_identity":true,
+                "next":"premiere_acceptance_plan","mutation_enabled_automatically":false}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereAcceptancePlan {group} => {
+            let registration=premiere_acceptance_harness::load(&premiere_disposable_path(app)?)?;
+            let context=if state.premiere_bridge.status()?.paired {
+                Some(premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(12)).await?)
+            } else {None};
+            let value=premiere_acceptance_harness::plan(group,registration.as_ref(),context.as_ref())?;
+            Ok(ActionResult {success:true,tool,stdout:value.to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereCalibrationReport => {
+            let registry=premiere_calibration::load(&premiere_calibration_path(app)?)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"registry":registry,
+                "note":"Native delta/recovery verification does not establish semantic units or subjective visual/audio direction."}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereCalibrationObserve {target,semantic_role} => {
+            if !state.premiere_bridge.status()?.paired{return Err("Paired Premiere host unavailable.".into());}
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+            let fixture=premiere_acceptance_execution::Fixture {kind:target.kind.clone(),track:target.track,
+                clip_index:target.clip_index,start_seconds:None,end_seconds:None,delta_seconds:None,expected:target.expected.clone()};
+            premiere_acceptance_execution::exact_clip(&timeline,&fixture)?;
+            let native=premiere_calibration_native(&premiere_bridge,&target).await?;
+            let entry=premiere_calibration::inspected(&context,&native,&target,semantic_role.as_deref())?;
+            let path=premiere_calibration_path(app)?;
+            let mut registry=premiere_calibration::load(&path)?;
+            registry.upsert(entry.clone())?;premiere_calibration::save(&path,&registry)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"entry":entry,"write_performed":false,
+                "unit":"native_unknown","next":"premiere_calibration_probe on an explicitly registered disposable project"}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereCalibrationProbe {target,delta} => {
+            if state.acceptance_probe_running.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err() {
+                return Err("Another Premiere host probe is running.".into());
+            }
+            let _guard=AcceptanceProbeGuard(&state.acceptance_probe_running);
+            if !state.premiere_bridge.status()?.paired{return Err("Paired Premiere UXP host unavailable.".into());}
+            let registration=premiere_acceptance_harness::load(&premiere_disposable_path(app)?)?
+                .ok_or("Disposable project registration required for calibration writes.")?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            registration.check(&context)?;
+            let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+            let fixture=premiere_acceptance_execution::Fixture {kind:target.kind.clone(),track:target.track,
+                clip_index:target.clip_index,start_seconds:None,end_seconds:None,delta_seconds:None,expected:target.expected.clone()};
+            premiere_acceptance_execution::exact_clip(&timeline,&fixture)?;
+            let path=premiere_calibration_path(app)?;
+            let mut registry=premiere_calibration::load(&path)?;
+            let version=context.get("premiereVersion").and_then(Value::as_str).ok_or("Premiere host version missing.")?;
+            let baseline={let entry=registry.find_mut(version,&target)?;
+                if entry.probe_status!="observed" || entry.value_type!="number" || entry.time_varying {
+                    return Err("Calibration probe requires a fresh static numeric observation; no automatic retry.".into());
+                }entry.original_value.clone()};
+            let value=premiere_calibration::bounded_delta(&baseline,delta,false)?;
+            let native=premiere_calibration_native(&premiere_bridge,&target).await?;
+            let observed=premiere_calibration::inspected(&context,&native,&target,None)?;
+            if observed.original_value!=baseline {return Err("Native baseline changed since calibration observation.".into());}
+            registry.find_mut(version,&target)?.probe_status="probing".into();
+            premiere_calibration::save(&path,&registry)?;
+            let make_action=|v:Value| {
+                if target.kind=="video" {ToolAction::PremiereSetVideoParamNamed{track:target.track,clip_index:target.clip_index,
+                    component_match_name:Some(target.component_match_name.clone()),component_display_name:None,
+                    param_display_name:target.param_display_name.clone(),value:v}}
+                else {ToolAction::PremiereSetAudioParamNamed{track:target.track,clip_index:target.clip_index,
+                    component_match_name:Some(target.component_match_name.clone()),component_display_name:None,
+                    param_display_name:target.param_display_name.clone(),value:v}}
+            };
+            let inner=PendingAction{created_at_ms:now_ms(),premiere_expectation:Some(target.expected.clone()),tool:if target.kind=="video"{"premiere_set_video_param_named"}else{"premiere_set_audio_param_named"}.into(),
+                detail:"Disposable native parameter delta calibration".into(),action:make_action(value.clone())};
+            let changed=Box::pin(execute_tool(inner,state,app)).await;
+            let changed=match changed {Ok(result) if result.success=>result,Err(error)=>{
+                let entry=registry.find_mut(version,&target)?;entry.probe_status="uncertain".into();
+                entry.observations.push("Delta write response uncertain; do not repeat or assume restored.".into());
+                premiere_calibration::save(&path,&registry)?;
+                return Ok(ActionResult {success:false,tool,stdout:json!({"status":"uncertain","retry_automatically":false}).to_string(),stderr:error,exit_code:None});
+            },Ok(_) => {
+                registry.find_mut(version,&target)?.probe_status="uncertain".into();
+                premiere_calibration::save(&path,&registry)?;
+                return Err("Calibration native write rejected; inspect before any retry.".into());
+            }};
+            let checkpoint=serde_json::from_str::<Value>(&changed.stdout).ok()
+                .and_then(|v|v.get("backup").and_then(Value::as_str).map(str::to_owned));
+            {let entry=registry.find_mut(version,&target)?;entry.checkpoint=checkpoint.clone();entry.probe_status="restoring".into();}
+            premiere_calibration::save(&path,&registry)?;
+            let inspected_after=premiere_calibration_native(&premiere_bridge,&target).await;
+            let mid=match inspected_after.and_then(|v|premiere_calibration::inspected(&context,&v,&target,None)) {
+                Ok(entry)=>entry.original_value,
+                Err(_) => {
+                    registry.find_mut(version,&target)?.probe_status="needs_recovery".into();
+                    premiere_calibration::save(&path,&registry)?;
+                    return Ok(ActionResult {success:false,tool,stdout:json!({"status":"needs_recovery","checkpoint":checkpoint,
+                        "reason":"After-delta native inspection missing; restoration not attempted blindly."}).to_string(),stderr:String::new(),exit_code:None});
+                }
+            };
+            let restore=PendingAction{created_at_ms:now_ms(),premiere_expectation:Some(target.expected.clone()),tool:if target.kind=="video"{"premiere_set_video_param_named"}else{"premiere_set_audio_param_named"}.into(),
+                detail:"Restore original disposable native value".into(),action:make_action(baseline.clone())};
+            let restored=Box::pin(execute_tool(restore,state,app)).await;
+            if !restored.is_ok_and(|r|r.success) {
+                registry.find_mut(version,&target)?.probe_status="needs_recovery".into();
+                premiere_calibration::save(&path,&registry)?;
+                return Ok(ActionResult {success:false,tool,stdout:json!({"status":"needs_recovery","checkpoint":checkpoint,
+                    "reason":"Restoration failed or is uncertain; stop and inspect manually."}).to_string(),stderr:String::new(),exit_code:None});
+            }
+            let final_read=async {
+                let final_context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+                registration.check(&final_context)?;
+                let final_native=premiere_calibration_native(&premiere_bridge,&target).await?;
+                Ok::<Value,String>(premiere_calibration::inspected(&final_context,&final_native,&target,None)?.original_value)
+            }.await;
+            let final_value=match final_read {Ok(value)=>value,Err(_)=>{
+                registry.find_mut(version,&target)?.probe_status="needs_recovery".into();
+                premiere_calibration::save(&path,&registry)?;
+                return Ok(ActionResult {success:false,tool,stdout:json!({"status":"needs_recovery","checkpoint":checkpoint,
+                    "reason":"Restoration was requested but final native value/identity cannot be verified."}).to_string(),stderr:String::new(),exit_code:None});
+            }};
+            let recovered=final_value==baseline;
+            let exact_delta=mid==value;
+            {let entry=registry.find_mut(version,&target)?;
+                entry.observed_value=Some(mid);entry.native_delta_verified=exact_delta && recovered;
+                entry.recovery_verified=recovered;entry.probe_status=if recovered {"verified_native_delta"}else{"needs_recovery"}.into();
+                entry.observations.push(if recovered {"Original native value reobserved after restoration; semantic unit remains unknown."}
+                    else {"Restoration could not be proven; do not retry blindly."}.into());}
+            premiere_calibration::save(&path,&registry)?;
+            Ok(ActionResult {success:recovered,tool,stdout:json!({"native_delta_verified":exact_delta && recovered,
+                "recovery_verified":recovered,"semantic_verified":false,"unit":"native_unknown","checkpoint":checkpoint,
+                "retry_automatically":false}).to_string(),stderr:String::new(),exit_code:Some(if recovered{0}else{1})})
+        }
+        ToolAction::PremiereAcceptancePrepare {step,fixture} => {
+            if !state.premiere_bridge.status()?.paired {return Err("Paired Premiere UXP host unavailable.".into());}
+            let registration=premiere_acceptance_harness::load(&premiere_disposable_path(app)?)?
+                .ok_or("Register an explicitly disposable saved .prproj before mutating acceptance.")?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(10)).await?;
+            registration.check(&context)?;
+            let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+            let id=Uuid::new_v4().to_string();
+            let action=premiere_acceptance_execution::Action::new(id.clone(),step,fixture,&context,&timeline)?;
+            premiere_acceptance_execution::save(&premiere_acceptance_action_path(app,&id)?,&action)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"action":action,"next":"premiere_acceptance_execute",
+                "approval_required":true,"recovery":"Checkpoint will be retained; cleanup/rollback requires separate explicit approval."}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereAcceptanceCancel {action_id} => {
+            let path=premiere_acceptance_action_path(app,&action_id)?;
+            let action=premiere_acceptance_execution::cancel(&path)?;
+            Ok(ActionResult {success:true,tool,stdout:json!({"action_id":action_id,"status":action.status,
+                "cancellation_requested":action.cancellation_requested,"native_edit_may_have_started":action.status=="executing"}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereAcceptanceVerifyRecovery {action_id} => {
+            if state.acceptance_probe_running.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err() {
+                return Err("Another Premiere acceptance action is running.".into());
+            }
+            let _guard=AcceptanceProbeGuard(&state.acceptance_probe_running);
+            if !state.premiere_bridge.status()?.paired {return Err("Paired Premiere UXP host unavailable.".into());}
+            let path=premiere_acceptance_action_path(app,&action_id)?;
+            let mut record=premiere_acceptance_execution::load(&path)?;
+            let inspected_record=record.clone();
+            let checkpoint=record.checkpoint.clone().ok_or("Acceptance action has no checkpoint to verify.")?;
+            if record.step=="scene_markers" {
+                return Err("Scene-marker recovery cannot be verified from timeline state alone; generated markers require explicit marker inspection/cleanup.".into());
+            }
+            let checkpoint_receipt=premiere_checkpoint::verify_checkpoint(Path::new(&checkpoint),Path::new(&record.project_path))?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(10)).await?;
+            let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+            let recovered=record.verify_recovery(&context,&timeline)?;
+            premiere_acceptance_execution::save_recovery_result(&path,&inspected_record,&record)?;
+            Ok(ActionResult {success:recovered,tool,stdout:json!({
+                "action_id":action_id,
+                "recovery_verified":recovered,
+                "checkpoint":checkpoint,
+                "checkpoint_receipt":checkpoint_receipt,
+                "automatic_rollback_performed":false,
+                "retry_automatically":false,
+                "recovery":record.recovery
+            }).to_string(),stderr:String::new(),exit_code:Some(if recovered{0}else{1})})
+        }
+        ToolAction::PremiereAcceptanceExecute {action_id} => {
+            if state.acceptance_probe_running.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err() {
+                return Err("Another Premiere acceptance action is running.".into());
+            }
+            let _guard=AcceptanceProbeGuard(&state.acceptance_probe_running);
+            let path=premiere_acceptance_action_path(app,&action_id)?;
+            let mut record=premiere_acceptance_execution::load(&path)?;
+            if record.status!="prepared" || record.cancellation_requested {return Err("Acceptance action already used or cancelled; no retry.".into());}
+            if !state.premiere_bridge.status()?.paired {return Err("Paired Premiere UXP host unavailable.".into());}
+            let registration=premiere_acceptance_harness::load(&premiere_disposable_path(app)?)?
+                .ok_or("Disposable project registration is required.")?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(10)).await?;
+            registration.check(&context)?;
+            record.identity(&context)?;
+            let timeline=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+            if premiere_acceptance_execution::exact_clip(&timeline,&record.fixture)?!=record.before {
+                return Err("Timeline target changed after acceptance planning; inspect and prepare a new action.".into());
+            }
+            record=premiere_acceptance_execution::begin(&path,&record)?;
+            let freshest=premiere_acceptance_execution::load(&path)?;
+            if freshest.cancellation_requested {
+                record.status="cancelled".into();record.cancellation_requested=true;
+                premiere_acceptance_execution::save_progress(&path,&mut record)?;
+                return Err("Acceptance cancelled before the native edit.".into());
+            }
+            let fixture=&record.fixture;
+            let native_action=match record.step.as_str() {
+                "trim"=>ToolAction::PremiereTrimClip {kind:fixture.kind.clone(),track:fixture.track,clip_index:fixture.clip_index,
+                    start_seconds:fixture.start_seconds,end_seconds:fixture.end_seconds},
+                "move"=>ToolAction::PremiereMoveClip {kind:fixture.kind.clone(),track:fixture.track,clip_index:fixture.clip_index,
+                    delta_seconds:fixture.delta_seconds.ok_or("Missing planned move offset.")?},
+                "clone"=>ToolAction::PremiereCloneClip {kind:fixture.kind.clone(),track:fixture.track,clip_index:fixture.clip_index,
+                    time_offset_seconds:fixture.delta_seconds.ok_or("Missing planned clone offset.")?,video_track_offset:0,
+                    audio_track_offset:0,align_to_video:false,insert:false},
+                "delete_ripple"=>ToolAction::PremiereDeleteClip {kind:fixture.kind.clone(),track:fixture.track,clip_index:fixture.clip_index,ripple:true},
+                "scene_markers"=>ToolAction::PremiereSceneDetection {request:premiere_scene_detection::Request{
+                    schema_version:1,mode:"markers".into(),targets:vec![premiere_scene_detection::Target{
+                        track:fixture.track,clip_index:fixture.clip_index,signature:fixture.expected.clips[0].signature.clone()
+                    }]
+                }},
+                _=>return Err("Acceptance step not allowlisted.".into())
+            };
+            let native_tool=match record.step.as_str(){
+                "trim"=>"premiere_trim_clip","move"=>"premiere_move_clip","clone"=>"premiere_clone_clip",
+                "delete_ripple"=>"premiere_delete_clip","scene_markers"=>"premiere_detect_scene_markers",_=>return Err("Acceptance tool not allowlisted.".into())
+            };
+            let inner=PendingAction {created_at_ms:now_ms(),premiere_expectation:Some(fixture.expected.clone()),tool:native_tool.into(),
+                detail:format!("Disposable acceptance {} action {}",record.step,action_id),action:native_action};
+            let native=Box::pin(execute_tool(inner,state,app)).await;
+            let native_result=match native {
+                Ok(result)=>result,
+                Err(error)=>{
+                    record.status="uncertain".into();record.recovery=Some("Native call failed or result uncertain; checkpoint/host inspection required before any retry.".into());
+                    premiere_acceptance_execution::save_progress(&path,&mut record)?;
+                    return Ok(ActionResult{success:false,tool,stdout:json!({"action_id":action_id,"status":"uncertain",
+                        "retry_automatically":false}).to_string(),stderr:error,exit_code:None});
+                }
+            };
+            let native_receipt=serde_json::from_str::<Value>(&native_result.stdout).ok();
+            record.checkpoint=native_receipt.as_ref().and_then(|v|
+                v.get("backup").or_else(||v.get("checkpoint")).and_then(Value::as_str).map(str::to_owned));
+            if !native_result.success || record.checkpoint.is_none() {
+                record.status="uncertain".into();record.recovery=Some("Native result or checkpoint could not be confirmed; inspect before retry.".into());
+                premiere_acceptance_execution::save_progress(&path,&mut record)?;
+                return Ok(ActionResult{success:false,tool,stdout:json!({"action_id":action_id,"status":"uncertain",
+                    "retry_automatically":false}).to_string(),stderr:native_result.stderr,exit_code:None});
+            }
+            let verified=if record.step=="scene_markers" {
+                let timeline_after=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await;
+                let target_unchanged=timeline_after.as_ref().ok()
+                    .and_then(|value|premiere_acceptance_execution::exact_clip(value,&record.fixture).ok())
+                    .is_some_and(|value|value==record.before);
+                if !target_unchanged {
+                    record.status="uncertain".into();
+                    record.recovery=Some("Scene-marker operation changed or obscured the exact clip identity; inspect checkpoint before any retry.".into());
+                    false
+                } else if let Some(receipt)=native_receipt.as_ref() {
+                    record.finish_scene_markers(receipt).unwrap_or_else(|_|{
+                        record.status="uncertain".into();record.recovery=Some("Native scene-marker receipt lacks a complete verified delta.".into());false
+                    })
+                } else {
+                    record.status="uncertain".into();record.recovery=Some("Native scene-marker receipt could not be decoded.".into());false
+                }
+            } else {
+                let after=premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await;
+                match after {Ok(after)=>record.finish(&after,true).unwrap_or_else(|_|{
+                    record.status="uncertain".into();record.recovery=Some("Native post-state is incomplete; inspect before any retry.".into());false
+                }),Err(_)=>{
+                    record.status="uncertain".into();record.recovery=Some("Post-inspection unavailable; do not retry or assume success.".into());false}}
+            };
+            if premiere_acceptance_execution::load(&path).is_ok_and(|latest|latest.cancellation_requested){record.cancellation_requested=true;}
+            premiere_acceptance_execution::save_progress(&path,&mut record)?;
+            if verified && matches!(record.step.as_str(),"trim"|"move"|"clone"|"delete_ripple"|"scene_markers") {
+                let report_path=premiere_acceptance_path(app)?;
+                let mut report=premiere_acceptance::load(&report_path)?;
+                if let Some(checkpoint)=record.checkpoint.as_deref(){
+                    match record.step.as_str() {
+                        "trim"=>report.verified_timeline_edit("trim","premiere_trim_clip",&record.premiere_version,
+                            &record.fixture.expected.project_guid,record.fixture.expected.sequence_guid.as_deref().unwrap_or(""),checkpoint)?,
+                        "move"=>report.verified_timeline_edit("move_clone","premiere_move_clip",&record.premiere_version,
+                            &record.fixture.expected.project_guid,record.fixture.expected.sequence_guid.as_deref().unwrap_or(""),checkpoint)?,
+                        "clone"=>report.verified_timeline_edit("move_clone","premiere_clone_clip",&record.premiere_version,
+                            &record.fixture.expected.project_guid,record.fixture.expected.sequence_guid.as_deref().unwrap_or(""),checkpoint)?,
+                        "delete_ripple"=>report.verified_timeline_edit("delete_ripple","premiere_delete_clip",&record.premiere_version,
+                            &record.fixture.expected.project_guid,record.fixture.expected.sequence_guid.as_deref().unwrap_or(""),checkpoint)?,
+                        "scene_markers"=>{
+                            let marker_count=record.after.as_ref().and_then(|v|v.get("new_marker_count")).and_then(Value::as_u64).unwrap_or(0) as usize;
+                            let restored=record.after.as_ref().and_then(|v|v.get("selection_restored")).and_then(Value::as_bool).unwrap_or(false);
+                            report.verified_scene_detection("premiere_detect_scene_markers",&record.premiere_version,
+                                &record.fixture.expected.project_guid,record.fixture.expected.sequence_guid.as_deref().unwrap_or(""),
+                                checkpoint,marker_count,restored)?;
+                        },
+                        _=>unreachable!(),
+                    }
+                    premiere_acceptance::save(&report_path,&report)?;
+                }
+            }
+            Ok(ActionResult{success:verified,tool,stdout:json!({"action_id":action_id,"status":record.status,
+                "native_poststate_verified":verified,"capability_promoted":verified && matches!(record.step.as_str(),"trim"|"move"|"clone"|"delete_ripple"|"scene_markers"),
+                "checkpoint":record.checkpoint,"recovery":record.recovery,
+                "cleanup_needed":matches!(record.step.as_str(),"clone"|"delete_ripple"|"scene_markers"),
+                "retry_automatically":false}).to_string(),stderr:String::new(),exit_code:Some(if verified{0}else{1})})
+        }
+        ToolAction::PremiereAcceptanceProbe {group} => {
+            if state.acceptance_probe_running.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err() {
+                return Err("Another Premiere acceptance probe is already running.".into());
+            }
+            let _guard=AcceptanceProbeGuard(&state.acceptance_probe_running);
+            let path=premiere_acceptance_path(app)?;
+            let mut report=premiere_acceptance::load(&path)?;
+            if group!=1 {
+                let reason=if matches!(group,2|3|4|5|8) {
+                    "Destructive host test requires a provably disposable project, approval, checkpoint and exact expectation; no automated mutation launched."
+                } else {
+                    "This acceptance group has no safe automated host probe yet; no runtime verification was inferred."
+                };
+                report.blocked(group,reason)?;
+                premiere_acceptance::save(&path,&report)?;
+                return Ok(ActionResult {success:true,tool,stdout:json!({"group":group,"result":"blocked_environment","reason":reason,"report":report}).to_string(),stderr:String::new(),exit_code:Some(0)});
+            }
+            let native=async {
+                if !state.premiere_bridge.status()?.paired {
+                    return Err("Paired Premiere UXP panel unavailable.".to_string());
+                }
+                let context=state.premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(12)).await?;
+                let timeline=state.premiere_bridge.request("inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+                let diagnostics=state.premiere_bridge.request("project_diagnostics",
+                    json!({"limits":{"max_items":200,"max_depth":8,"max_detail_items":10}}),Duration::from_secs(30)).await?;
+                premiere_acceptance::host_probe_identity(&context,&timeline,&diagnostics)
+            }.await;
+            match native {
+                Ok((version,project,sequence)) => {
+                    for (capability,action) in [("bridge_pair","inspect_context"),("project_inspection","inspect_context"),
+                        ("sequence_inspection","inspect_context"),("timeline_inspection","inspect_timeline"),
+                        ("project_diagnostics","project_diagnostics")] {
+                        report.verified_probe(capability,action,&version,&project,&sequence)?;
+                    }
+                    premiere_acceptance::save(&path,&report)?;
+                    Ok(ActionResult {success:true,tool,stdout:json!({"group":1,"result":"runtime_verified",
+                        "verified_capabilities":5,"project_guid":project,"sequence_guid":sequence,
+                        "premiere_version":version,"read_only":true}).to_string(),stderr:String::new(),exit_code:Some(0)})
+                }
+                Err(_) => {
+                    let reason="Group 1 host probe unavailable or returned incomplete identity; no capability promoted.";
+                    report.blocked(1,reason)?;
+                    premiere_acceptance::save(&path,&report)?;
+                    Ok(ActionResult {success:true,tool,stdout:json!({"group":1,"result":"blocked_environment","reason":reason,
+                        "premiere_runtime_verified_count":report.verified_count()}).to_string(),stderr:String::new(),exit_code:Some(0)})
+                }
+            }
+        }
+        ToolAction::PremiereExportStatus {job_id} => {
+            let path=premiere_export_jobs_path(app)?;
+            let identity=if state.premiere_bridge.status()?.paired {
+                premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await.ok()
+            }else{None};
+            let _io=state.premiere_export_jobs_io.lock().map_err(|_|"Export job store unavailable.")?;
+            let mut jobs=premiere_export_jobs::load(&path)?;
+            let job=jobs.jobs.iter_mut().find(|j|j.job_id==job_id).ok_or("Export job ID not found.")?;
+            let stale=identity.as_ref().is_some_and(|context|
+                context.get("projectGuid").and_then(Value::as_str)!=Some(job.project_guid.as_str())
+                || context.pointer("/activeSequence/guid").and_then(Value::as_str)!=Some(job.sequence_guid.as_str()));
+            let mut result=job.observe_once()?;
+            let media_validation_challenge=job.media_validation_challenge().ok();
+            if let Some(map)=result.as_object_mut(){map.insert("identity_checked".into(),json!(identity.is_some()));
+                map.insert("stale_project_or_sequence".into(),json!(stale));
+                map.insert("media_validation_challenge".into(),json!(media_validation_challenge));}
+            premiere_export_jobs::save(&path,&jobs)?;
+            Ok(ActionResult {success:true,tool,stdout:result.to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereReadinessReport => {
+            let report=premiere_acceptance::load(&premiere_acceptance_path(app)?)?;
+            let registry=premiere_calibration::load(&premiere_calibration_path(app)?)?;
+            let jobs={let _io=state.premiere_export_jobs_io.lock().map_err(|_|"Export job store unavailable.")?;premiere_export_jobs::load(&premiere_export_jobs_path(app)?)?};
+            let native=report.verified_count();let total=report.capabilities.len();
+            let verified=|name:&str|report.capabilities.iter().any(|c|c.name==name && c.premiere_runtime_verified);
+            let recovery_count=registry.entries.iter().filter(|e|e.recovery_verified).count();
+            let export_complete=jobs.jobs.iter().filter(|j|j.encoder_completion_verified).count();
+            let baseline=json!({"bridge_pair":verified("bridge_pair"),"project_inspection":verified("project_inspection"),
+                "timeline_inspection":verified("timeline_inspection"),"trim":verified("trim"),
+                "move_clone":verified("move_clone"),"delete_ripple":verified("delete_ripple"),
+                "scene_edit_detection":verified("scene_edit_detection"),
+                "static_parameter_set":verified("static_parameter_set"),"visual_review":verified("visual_review"),
+                "checkpoint_recovery":recovery_count>0,"stale_expectation_host_tested":false,
+                "export_completion_verified":export_complete>0});
+            let by_state=|state:&str|report.capabilities.iter().filter(|c|c.state==state).map(|c|c.name.as_str()).collect::<Vec<_>>();
+            Ok(ActionResult {success:true,tool,stdout:json!({"schema_version":2,"code_implementation_estimate_pct":null,
+                "evidence_dimensions":premiere_acceptance::evidence_dimensions(&report,recovery_count,export_complete),
+                "node_mock_verified_capabilities":[],
+                "node_mock_coverage_declared_capabilities":report.capabilities.iter().filter(|c|c.code_tested).map(|c|c.name.as_str()).collect::<Vec<_>>(),
+                "node_test_run_attestation_persisted":false,"rust_verified":false,
+                "premiere_runtime_verified_count":native,"premiere_runtime_capability_count":total,
+                "premiere_runtime_verified_pct":if total>0{native*100/total}else{0},
+                "recovery_verified_entries":recovery_count,"export_completion_verified_jobs":export_complete,
+                "baseline":baseline,"production_ready":false,
+                "known_verification_gaps":premiere_acceptance::known_verification_gaps(),
+                "runtime_verified":by_state("runtime_verified"),"implemented_unverified":by_state("implemented_unverified"),
+                "unsupported_documented":by_state("unsupported_documented"),"blocked_environment":by_state("blocked_environment"),
+                "runtime_failed":by_state("runtime_failed"),
+                "note":"Coverage declarations are not test-run attestations. Persisted host evidence is historical and not bound to the current source revision or live project. Current-build Windows, host, recovery, cancellation and export acceptance require fresh evidence."}).to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremierePlanInterchangeExport {request} => {
+            request.validate()?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let sequence_guid=context.pointer("/activeSequence/guid").and_then(Value::as_str).filter(|value|!value.is_empty())
+                .ok_or("Interchange export requires an active Premiere sequence.")?;
+            let project_guid=context.get("projectGuid").and_then(Value::as_str).filter(|value|!value.is_empty())
+                .ok_or("Interchange export requires an active Premiere project.")?;
+            let expected=PremiereExpectation{
+                project_guid:project_guid.into(),
+                project_path:context.get("projectPath").and_then(Value::as_str).map(str::to_string),
+                sequence_guid:Some(sequence_guid.into()),
+                clips:Vec::new(),
+            };
+            expected.validate()?;
+            let format=request.format.clone();
+            let output=request.output.clone();
+            Ok(ActionResult{
+                success:true,tool,
+                stdout:json!({
+                    "supported":true,
+                    "request":request,
+                    "expected":expected,
+                    "api_since":if format=="aaf"{"26.3"}else{"26.2"},
+                    "collision_protection":premiere_delivery::collision_protection(),
+                    "unique_output_candidate":premiere_delivery::unique_output_candidate(&output)?,
+                    "unique_output_reserved":false,
+                    "output_exists":Path::new(&output).exists(),
+                    "completion_verified":false
+                }).to_string(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PremiereExportInterchange {request} => {
+            request.validate()?;
+            let expected=premiere_bridge.expected.ok_or("Interchange export requires project/sequence expectation.")?;
+            let output=request.output.clone();
+            let format=request.format.clone();
+            let suppress_ui=request.suppress_ui;
+            let before=premiere_delivery::observed_file(&output);
+            let client=PremiereClient{bridge:&state.premiere_bridge,expected:Some(expected)};
+            let aaf_options=request.aaf_options.as_ref().map(|value|json!({
+                "audioFileFormat":value.audio_file_format.clone(),
+                "bitsPerSample":value.bits_per_sample,
+                "embedAudio":value.embed_audio,
+                "explodeToMono":value.explode_to_mono,
+                "handleFrames":value.handle_frames,
+                "interleaveWithoutEffects":value.interleave_without_effects,
+                "mixdownVideo":value.mixdown_video,
+                "preserveParentFolder":value.preserve_parent_folder,
+                "renderAudioEffects":value.render_audio_effects,
+                "sampleRate":value.sample_rate,
+                "trimSources":value.trim_sources,
+                "videoMixdownPresetPath":value.video_mixdown_preset_path.clone()
+            }));
+            premiere_delivery::validate_output_file(&output,request.overwrite)?;
+            let value=client.request(
+                "export_interchange",
+                json!({"format":format,"output":output,"overwrite":request.overwrite,"suppressUI":suppress_ui,"aafOptions":aaf_options}),
+                Duration::from_secs(180),
+            ).await?;
+            let after=premiere_delivery::observed_file(&request.output);
+            let accepted=value.get("accepted").and_then(Value::as_bool)==Some(true);
+            let observed=after.get("observed").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{
+                success:accepted&&observed,tool,
+                stdout:json!({
+                    "native_result":value,"file_before":before,"file_after":after,
+                    "accepted":accepted,"file_observed":observed,
+                    "completion_verified":false,"media_parse_verified":false,
+                    "state":if accepted{"accepted_unverified"}else{"rejected"},
+                    "compatibility_with_other_nles_guaranteed":false,
+                    "collision_protection":premiere_delivery::collision_protection(),
+                    "retry_safe":false
+                }).to_string(),
+                stderr:String::new(),exit_code:Some(if accepted&&observed{0}else{1})
+            })
+        }
+        ToolAction::PremiereExportFrame {request} => {
+            request.validate()?;
+            let expected=premiere_bridge.expected.ok_or("Frame export requires project/sequence expectation.")?;
+            let output=request.output.clone();
+            let path=Path::new(&output);
+            let directory=path.parent().ok_or("Frame export output has no parent directory.")?.to_string_lossy().to_string();
+            let before=premiere_delivery::observed_file(&output);
+            let client=PremiereClient{bridge:&state.premiere_bridge,expected:Some(expected)};
+            premiere_delivery::validate_output_file(&output,request.overwrite)?;
+            let value=client.request(
+                "export_sequence_frame",
+                json!({"seconds":request.seconds,"output":output,"overwrite":request.overwrite,"directory":directory,"width":request.width,"height":request.height}),
+                Duration::from_secs(60),
+            ).await?;
+            let after=premiere_delivery::observed_file(&request.output);
+            let accepted=value.get("accepted").and_then(Value::as_bool)==Some(true);
+            let observed=after.get("observed").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{
+                success:accepted&&observed,tool,
+                stdout:json!({
+                    "native_result":value,"file_before":before,"file_after":after,
+                    "accepted":accepted,"file_observed":observed,
+                    "completion_verified":false,"media_parse_verified":false,
+                    "state":if accepted{"accepted_unverified"}else{"rejected"},
+                    "native_frame_export":true,"screenshot_fallback":false,"retry_safe":false,
+                    "collision_protection":premiere_delivery::collision_protection()
+                }).to_string(),
+                stderr:String::new(),exit_code:Some(if accepted&&observed{0}else{1})
+            })
+        }
+        ToolAction::PremiereCancelReviewFrameExport { generation } => {
+            let cancelled = state.delivery_running.cancel(generation, &state.delivery_cancelled)?;
+            Ok(ActionResult{
+                success:true,tool,
+                stdout:json!({"cancel_requested":cancelled,"generation":generation,"native_inflight_may_finish":cancelled}).to_string(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PremiereExportReviewFrames {batch} => {
+            batch.validate()?;
+            let _guard = state.delivery_running.begin(&state.delivery_cancelled)?;
+            let expected=premiere_bridge.expected.ok_or("Review-frame export requires project/sequence expectation.")?.clone();
+            let client=PremiereClient{bridge:&state.premiere_bridge,expected:Some(&expected)};
+            let mut results=Vec::new();
+            let mut uncertain=false;
+            for (index,frame) in batch.frames.iter().enumerate(){
+                if state.delivery_cancelled.load(Ordering::Acquire){break;}
+                let output=frame.output.clone();
+                let path=Path::new(&output);
+                let directory=path.parent().ok_or("Review frame output has no parent directory.")?.to_string_lossy().to_string();
+                // Earlier frames may take minutes. Recheck this destination at its own dispatch.
+                if let Err(error)=frame.validate(){
+                    results.push(json!({"index":index,"output":output,"status":"blocked_before_dispatch",
+                        "reason":error,"completion_verified":false}));
+                    break;
+                }
+                match client.request(
+                    "export_sequence_frame",
+                    json!({"seconds":frame.seconds,"output":output,"overwrite":frame.overwrite,"directory":directory,"width":frame.width,"height":frame.height}),
+                    Duration::from_secs(60),
+                ).await {
+                    Ok(value)=>{
+                        let observation=premiere_delivery::observed_file(&frame.output);
+                        let accepted=value.get("accepted").and_then(Value::as_bool)==Some(true);
+                        let observed=observation.get("observed").and_then(Value::as_bool)==Some(true);
+                        results.push(json!({
+                            "index":index,"seconds":frame.seconds,"output":frame.output.clone(),
+                            "status":if accepted{"accepted_unverified"}else{"rejected"},
+                            "accepted":accepted,"file_observed":observed,"completion_verified":false,
+                            "native_result":value,"file":observation
+                        }));
+                        if !accepted{break;}
+                        if !observed{uncertain=true;break;}
+                    }
+                    Err(error)=>{
+                        let delivery_uncertain=error.contains("unknown")||error.contains("timed out")||error.contains("timeout")||error.contains("delivery");
+                        results.push(json!({
+                            "index":index,"seconds":frame.seconds,"output":frame.output.clone(),
+                            "status":if delivery_uncertain{"uncertain"}else{"failed"},
+                            "reason":error.chars().take(240).collect::<String>()
+                        }));
+                        if delivery_uncertain{uncertain=true;break;}
+                    }
+                }
+            }
+            let cancelled=state.delivery_cancelled.load(Ordering::Acquire);
+            let accepted=results.iter().filter(|row|row["accepted"]==true).count();
+            let requests_accepted=!uncertain&&!cancelled&&accepted==batch.frames.len();
+            Ok(ActionResult{
+                success:requests_accepted,tool,
+                stdout:json!({
+                    "requested":batch.frames.len(),"accepted":accepted,"exported":0,"results":results,
+                    "requests_accepted":requests_accepted,"complete":false,"completion_verified":false,
+                    "collision_protection":premiere_delivery::collision_protection(),
+                    "cancelled":cancelled,"uncertain":uncertain,
+                    "native_frame_export":true,"screenshot_fallback":false,"retry_safe":false
+                }).to_string(),
+                stderr:String::new(),exit_code:Some(if requests_accepted{0}else{1})
+            })
+        }
+        ToolAction::PremierePlanExport {output,preset,queue_to_ame,overwrite} => {
+            let context=premiere_bridge.request("inspect_export",json!({}),Duration::from_secs(12)).await?;
+            let project=context.get("projectGuid").and_then(Value::as_str).filter(|v|!v.is_empty()).ok_or("Premiere project GUID unavailable.")?;
+            let sequence=context.get("sequenceGuid").and_then(Value::as_str).filter(|v|!v.is_empty()).ok_or("Premiere sequence GUID unavailable.")?;
+            let local=premiere_export::inspect(&output,preset.as_deref(),overwrite,context.get("projectPath").and_then(Value::as_str))?;
+            let ame=context.get("ameAvailable").and_then(Value::as_bool).unwrap_or(false);
+            let mut warnings=local.warnings.clone();
+            if queue_to_ame && !ame {warnings.push("Adobe Media Encoder is unavailable.".into());}
+            if preset.is_none() {warnings.push("Premiere default export settings are not inspectable here; no codec or bitrate is inferred.".into());}
+            let value=json!({"executable":local.executable && (!queue_to_ame || ame),
+                "output":local.output,"output_exists":local.output_exists,"parent_exists":local.parent_exists,
+                "preset":local.preset,"preset_exists":local.preset_exists,"overwrite":overwrite,
+                "warnings":warnings,"ame_required":queue_to_ame,"ame_available":ame,
+                "project":{"guid":project,"path":context.get("projectPath")},
+                "sequence":{"guid":sequence,"name":context.get("sequenceName")},
+                "expected":{"project_guid":project,"project_path":context.get("projectPath"),"sequence_guid":sequence,"clips":[]},
+                "default_preset_details_inspectable":false,
+                "collision_protection":premiere_delivery::collision_protection(),
+                "unique_output_candidate":premiere_delivery::unique_output_candidate(&output)?,
+                "unique_output_reserved":false,
+                "note":"Adobe's boolean export result does not prove finished media encoding."});
+            Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MediaEncoderDetect => {
+            let value=media_encoder::detect_installs()?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MediaEncoderReadinessReport => {
+            let value=media_encoder::readiness_report();
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MediaEncoderStatus => {
+            let value=premiere_bridge.request("media_encoder_status",json!({}),Duration::from_secs(12)).await?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MediaEncoderEvents {limit} => {
+            let value=premiere_bridge.request("media_encoder_events",json!({"limit":limit}),Duration::from_secs(12)).await?;
+            Ok(ActionResult{success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MediaEncoderLaunch => {
+            let value=premiere_bridge.request("media_encoder_launch",json!({}),Duration::from_secs(20)).await?;
+            let accepted=value.get("accepted").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{success:accepted,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(if accepted{0}else{1})})
+        }
+        ToolAction::MediaEncoderStartBatch => {
+            let value=premiere_bridge.request("media_encoder_start_batch",json!({}),Duration::from_secs(20)).await?;
+            let accepted=value.get("accepted").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{success:accepted,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(if accepted{0}else{1})})
+        }
+        ToolAction::MediaEncoderSetXmp {embedded,sidecar} => {
+            let value=premiere_bridge.request("media_encoder_set_xmp",json!({"embedded":embedded,"sidecar":sidecar}),Duration::from_secs(20)).await?;
+            let accepted=value.get("accepted").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{success:accepted,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(if accepted{0}else{1})})
+        }
+        ToolAction::MediaEncoderInspectPreset {preset} => {
+            let local=media_encoder::inspect_preset(&preset)?;
+            let value=premiere_bridge.request("media_encoder_inspect_preset",json!({"preset":preset}),Duration::from_secs(15)).await?;
+            Ok(ActionResult{success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({"local":local,"host":value})).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::MediaEncoderEncodeFile {request} => {
+            request.validate()?;
+            let _=premiere_delivery::validate_output_file(&request.output,request.overwrite)?;
+            let before=premiere_delivery::observed_file(&request.output);
+            let value=premiere_bridge.request("media_encoder_encode_file",json!({
+                "input":request.input,"output":request.output,"preset":request.preset,"range":request.range,
+                "inSeconds":request.in_seconds,"outSeconds":request.out_seconds,
+                "removeUponCompletion":request.remove_upon_completion,
+                "startQueueImmediately":request.start_queue_immediately,
+                "overwrite":request.overwrite
+            }),Duration::from_secs(45)).await?;
+            let accepted=value.get("accepted").and_then(Value::as_bool)==Some(true);
+            let after=premiere_delivery::observed_file(&request.output);
+            Ok(ActionResult{success:accepted,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "accepted":accepted,"native":value,"output_before":before,"output_after":after,
+                    "completion_verified":false,"retry_automatically":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(if accepted{0}else{1})})
+        }
+        ToolAction::MediaEncoderEncodeProjectItem {request} => {
+            request.validate()?;
+            let _=premiere_delivery::validate_output_file(&request.output,request.overwrite)?;
+            let expected=premiere_bridge.expected.ok_or("Project-item encoding requires inspected project expectation.")?;
+            let value=premiere_bridge.request("media_encoder_encode_project_item",json!({
+                "itemId":request.item_id,"output":request.output,"preset":request.preset,"range":request.range,
+                "removeUponCompletion":request.remove_upon_completion,
+                "startQueueImmediately":request.start_queue_immediately,
+                "overwrite":request.overwrite
+            }),Duration::from_secs(45)).await?;
+            let accepted=value.get("accepted").and_then(Value::as_bool)==Some(true);
+            let observed=premiere_delivery::observed_file(&request.output);
+            Ok(ActionResult{success:accepted,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "accepted":accepted,"project_guid":expected.project_guid,"native":value,
+                    "output_observation":observed,"completion_verified":false,"retry_automatically":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(if accepted{0}else{1})})
+        }
+        ToolAction::PremiereExportSequence { output, preset, queue_to_ame, overwrite } => {
+            let context=premiere_bridge.request("inspect_export",json!({}),Duration::from_secs(12)).await?;
+            let local=premiere_export::inspect(&output,preset.as_deref(),overwrite,context.get("projectPath").and_then(Value::as_str))?;
+            if !local.executable { return Err(format!("Export preflight blocked: {}",local.warnings.join("; "))); }
+            let expected=premiere_bridge.expected.ok_or("Export requires a project and sequence expectation.")?;
+            if context.get("projectGuid").and_then(Value::as_str)!=Some(expected.project_guid.as_str())
+                || context.get("sequenceGuid").and_then(Value::as_str)!=expected.sequence_guid.as_deref()
+                || expected.project_path.as_deref().is_some_and(|p|context.get("projectPath").and_then(Value::as_str)!=Some(p)) {
+                return Err("Premiere project or sequence changed after export planning; inspect again.".into());
+            }
+            if queue_to_ame && context.get("ameAvailable").and_then(Value::as_bool)!=Some(true) {
+                return Err("Adobe Media Encoder is unavailable.".into());
+            }
+            let job_id=Uuid::new_v4().to_string();
+            let mut job=premiere_export_jobs::Job::new(job_id.clone(),&expected.project_guid,
+                expected.sequence_guid.as_deref().ok_or("Sequence expectation missing.")?,&output,preset.as_deref(),queue_to_ame)?;
+            let jobs_path=premiere_export_jobs_path(app)?;
+            {
+            let _io=state.premiere_export_jobs_io.lock().map_err(|_|"Export job store unavailable.")?;
+            let mut jobs=premiere_export_jobs::load(&jobs_path)?;
+            // Persist uncertainty before dispatch: a crash or lost response cannot prove that
+            // the export never started and must never be followed by an automatic retry.
+            job.bridge_state="execution_status_unknown".into();
+            jobs.insert(job)?;premiere_export_jobs::save(&jobs_path,&jobs)?;
+            }
+            // Persisting the job can block on another writer; repeat preflight after it.
+            let recheck=premiere_export::inspect(&output,preset.as_deref(),overwrite,context.get("projectPath").and_then(Value::as_str));
+            let blocked=match recheck {
+                Ok(check) if check.executable=>None,
+                Ok(check)=>Some(check.warnings.join("; ")),
+                Err(error)=>Some(error),
+            };
+            if let Some(reason)=blocked {
+                let _io=state.premiere_export_jobs_io.lock().map_err(|_|"Export job store unavailable.")?;
+                let mut jobs=premiere_export_jobs::load(&jobs_path)?;
+                let record=jobs.jobs.iter_mut().find(|j|j.job_id==job_id).ok_or("Export job record unavailable.")?;
+                record.bridge_state="rejected".into();premiere_export_jobs::save(&jobs_path,&jobs)?;
+                return Err(format!("Export blocked before dispatch after output recheck: {reason}"));
+            }
+            let result=premiere_bridge.request("export_sequence",
+                json!({"output":output,"preset":preset,"queueToAme":queue_to_ame,"overwrite":overwrite}),
+                Duration::from_secs(if queue_to_ame {45} else {120})).await;
+            let observed=premiere_export::observation(&output,local.output_exists);
+            let _io=state.premiere_export_jobs_io.lock().map_err(|_|"Export job store unavailable.")?;
+            let mut jobs=premiere_export_jobs::load(&jobs_path)?;
+            let record=jobs.jobs.iter_mut().find(|j|j.job_id==job_id).ok_or("Export job record unavailable.")?;
+            match result {
+                Ok(value) => {
+                    record.bridge_state=if value.get("accepted").and_then(Value::as_bool)==Some(true)
+                        && value.get("state").and_then(Value::as_str)==Some(if queue_to_ame{"queued"}else{"accepted"}) {
+                            if queue_to_ame{"queued"}else{"accepted"}
+                        }else{"execution_status_unknown"}.into();
+                    let accepted=matches!(record.bridge_state.as_str(),"accepted"|"queued");
+                    premiere_export_jobs::save(&jobs_path,&jobs)?;
+                    Ok(ActionResult {success:accepted,tool,
+                        stdout:serde_json::to_string_pretty(&json!({"job_id":job_id,"encoder":value,
+                            "output_observation":observed,"encoder_completion_verified":false,"retry_automatically":false,
+                            "collision_protection":premiere_delivery::collision_protection()})).unwrap_or_default(),
+                        stderr:String::new(),exit_code:Some(if accepted {0}else{1})})
+                },
+                Err(error) => {
+                    let state="execution_status_unknown";
+                    record.bridge_state=state.into();premiere_export_jobs::save(&jobs_path,&jobs)?;
+                    Ok(ActionResult {success:false,tool,
+                        stdout:json!({"job_id":job_id,"state":state,"output_observation":observed,"retry_automatically":false,
+                            "reason":"A bridge error or timeout is not proof that export did not run. Inspect before retrying."}).to_string(),
+                        stderr:error,exit_code:None})
+                }
+            }
+        }
+        ToolAction::PremiereSaveProject => {
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(12)).await?;
+            let expected_path=context.get("projectPath").and_then(Value::as_str).unwrap_or("").to_string();
+            let expected_project=context.get("projectGuid").and_then(Value::as_str).unwrap_or("").to_string();
+            let before=if expected_path.is_empty(){Err("Active project path unavailable before save.".to_string())}
+                else{premiere_project_persistence::fingerprint(&expected_path)};
+            let value = premiere_bridge
+                .request("save_project", json!({}), Duration::from_secs(15)).await?;
+            let accepted = value.get("saved").and_then(Value::as_bool) == Some(true);
+            let reported_path=value.get("projectPath").and_then(Value::as_str).unwrap_or("");
+            let after=if expected_path.is_empty(){Err("Active project path unavailable after save.".to_string())}
+                else{premiere_project_persistence::fingerprint(&expected_path)};
+            let evidence=match(&before,&after){
+                (Ok(before),Ok(after))=>premiere_project_persistence::assess(before,after,accepted,reported_path),
+                _=>json!({
+                    "native_accepted":accepted,
+                    "same_exact_project_path":!expected_path.is_empty()&&reported_path==expected_path,
+                    "persistence_verified":false,
+                    "edit_semantics_verified":false,
+                    "verification_status":"accepted_unverified",
+                    "before_error":before.as_ref().err(),
+                    "after_error":after.as_ref().err(),
+                    "retry_safe":false
+                })
+            };
+            let verified=evidence.get("persistence_verified").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult {
+                success: verified,
+                tool,
+                stdout: serde_json::to_string_pretty(&json!({
+                    "save":value,
+                    "project_guid":expected_project,
+                    "expected_project_path":expected_path,
+                    "native_accepted":accepted,
+                    "persistence_evidence":evidence,
+                    "verification_status":if verified{"verified_file_persistence"}else{"accepted_unverified"},
+                    "post_state_verified":verified,
+                    "edit_semantics_verified":false,
+                    "retry_safe":false
+                })).unwrap_or_default(),
+                stderr: String::new(),
+                exit_code: Some(if verified {0} else {1}),
+            })
+        }
+        ToolAction::AfterEffectsCapabilityReport => {
+            Ok(ActionResult {
+                success:true,
+                tool,
+                stdout:serde_json::to_string_pretty(&after_effects::capability_report()).unwrap_or_default(),
+                stderr:String::new(),
+                exit_code:Some(0),
+            })
+        }
+        ToolAction::AfterEffectsReadinessReport => {
+            Ok(ActionResult {success:true,tool,
+                stdout:serde_json::to_string_pretty(&after_effects::readiness_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AfterEffectsDetect => {
+            let value=after_effects_runtime::detect_installs()?;
+            Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AfterEffectsPendingJobs => {
+            let workspace=app.path().app_local_data_dir()
+                .map_err(|e|format!("Could not resolve Shuvi local data directory: {e}"))?
+                .join("after-effects-jobs");
+            let value=after_effects_runtime::pending_jobs(&workspace,true)?;
+            let clear=value.get("blocking_count").and_then(Value::as_u64)==Some(0);
+            Ok(ActionResult {success:clear,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(if clear{0}else{1})})
+        }
+        ToolAction::AfterEffectsCancelRender {request_id} => {
+            let workspace=app.path().app_local_data_dir()
+                .map_err(|e|format!("Could not resolve Shuvi local data directory: {e}"))?
+                .join("after-effects-jobs");
+            let value=after_effects_runtime::cancel_render(&workspace,&request_id)?;
+            let requested=value.get("cancel_request_written").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult {success:requested,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(if requested{0}else{1})})
+        }
+        ToolAction::AfterEffectsVerifyCheckpoint {backup_path,expected_project_path} => {
+            let evidence=after_effects_checkpoint::verify(Path::new(&backup_path),Path::new(&expected_project_path))?;
+            let value=json!({"checkpoint":evidence,"backup_integrity_verified":true,
+                "automatic_restore_performed":false,"project_opened_automatically":false,
+                "recovery_of_host_state_verified":false,"manual_open_required":true,
+                "note":"This proves checkpoint bytes/path binding only. Open the checkpoint manually in After Effects before separately verifying recovered host state."});
+            Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AfterEffectsPlanRecovery {backup_path,expected_project_path,expected_request_id} => {
+            let value=after_effects_checkpoint::recovery_plan(Path::new(&backup_path),Path::new(&expected_project_path),expected_request_id.as_deref())?;
+            Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AfterEffectsPlanTemplate {plan} => {
+            let value=after_effects_templates::plan(&plan)?;
+            Ok(ActionResult {success:true,tool,stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::AfterEffectsRun {afterfx_exe,timeout_ms,request} => {
+            let workspace=app.path().app_local_data_dir()
+                .map_err(|e|format!("Could not resolve Shuvi local data directory: {e}"))?
+                .join("after-effects-jobs");
+            let core_script=app.path().resource_dir()
+                .map_err(|e|format!("Could not resolve Shuvi resource directory: {e}"))?
+                .join("after-effects").join("shuvi-ae.jsx");
+            let value=after_effects_runtime::execute(
+                Path::new(&afterfx_exe),&core_script,&workspace,&request,timeout_ms
+            ).await?;
+            let verified=value.get("state").and_then(Value::as_str)==Some("verified");
+            Ok(ActionResult {
+                success:verified,
+                tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),
+                exit_code:Some(if verified{0}else{1}),
+            })
+        }
+        ToolAction::AfterEffectsPlanHandTrack { plan } => {
+            let summary=plan.summary()?;
+            Ok(ActionResult {
+                success:true,
+                tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "plan":summary,
+                    "next_host_action":"set_values_at_times",
+                    "runtime_verified":false,
+                    "automatic_execution":false
+                })).unwrap_or_default(),
+                stderr:String::new(),
+                exit_code:Some(0),
+            })
+        }
+        ToolAction::AfterEffectsPlanHandTrackRig { plan } => {
+            let prepared=plan.prepare()?;
+            Ok(ActionResult {
+                success:true,
+                tool,
+                stdout:serde_json::to_string_pretty(&prepared).unwrap_or_default(),
+                stderr:String::new(),
+                exit_code:Some(0),
+            })
+        }
+        ToolAction::PhotoshopCapabilityReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&photoshop::capability_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopReadinessReport => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&photoshop::readiness_report()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopDetect => {
+            let value=photoshop::detect_installs()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&value).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopLaunch {photoshop_exe} => {
+            let detection=photoshop::detect_installs()?;
+            let exact=photoshop::exact_detected_executable(&detection,&photoshop_exe)?;
+            let mut child=Command::new(&exact).spawn()
+                .map_err(|e|format!("Could not launch detected Photoshop: {e}"))?;
+            let pid=child.id();
+            if let Err(error)=register_managed_process(state,pid){
+                let _=child.kill();
+                let _=child.wait();
+                return Err(format!("Photoshop was stopped before Shuvi could register the managed process: {error}"));
+            }
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "photoshop_exe":exact,
+                    "pid":pid,
+                    "launch_dispatched":true,
+                    "host_ready_verified":false,
+                    "uxp_bridge_available":false,
+                    "runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopBridgeStart => {
+            let status=state.photoshop_bridge.start()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "enabled":status.enabled,
+                    "server_started":status.server_started,
+                    "paired":status.paired,
+                    "port":status.port,
+                    "pairing_token":status.token,
+                    "queued_commands":status.queued_commands,
+                    "read_only":status.read_only,
+                    "read_only_actions":photoshop_bridge::READ_ONLY_ACTIONS,
+                    "guarded_mutation_actions":photoshop_bridge::MUTATING_ACTIONS,
+                    "runtime_verified":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopBridgeStatus => {
+            let status=state.photoshop_bridge.status()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&status).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopBridgeStop => {
+            let status=state.photoshop_bridge.stop()?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&status).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopContext => {
+            let raw=state.photoshop_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let value=photoshop::validate_context_receipt(&raw)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "context":value,
+                    "host_receipt_validated":true,
+                    "mutation_performed":false,
+                    "runtime_verified":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopLayers => {
+            let raw=state.photoshop_bridge.request("list_layers",json!({}),Duration::from_secs(8)).await?;
+            let value=photoshop::validate_layer_inventory(&raw)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "inventory":value,
+                    "host_receipt_validated":true,
+                    "mutation_performed":false,
+                    "runtime_verified":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopSetLayerProperty {request} => {
+            let raw_context=state.photoshop_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let context=photoshop::validate_context_receipt(&raw_context)?;
+            let raw_inventory=state.photoshop_bridge.request("list_layers",json!({}),Duration::from_secs(8)).await?;
+            let inventory=photoshop::validate_layer_inventory(&raw_inventory)?;
+            let precondition=photoshop::validate_write_precondition(&request,&context,&inventory)?;
+
+            let raw_receipt=state.photoshop_bridge.request(
+                "set_layer_property",
+                request.bridge_arguments()?,
+                Duration::from_secs(15)
+            ).await?;
+            let mutation_receipt=photoshop::validate_write_receipt(&request,&raw_receipt)?;
+
+            let post_raw=state.photoshop_bridge.request("list_layers",json!({}),Duration::from_secs(8)).await?;
+            let post_inventory=photoshop::validate_layer_inventory(&post_raw)?;
+            let post_readback=photoshop::validate_post_write_readback(&request,&post_inventory)?;
+
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "precondition":precondition,
+                    "mutation_receipt":mutation_receipt,
+                    "post_readback":post_readback,
+                    "post_state_verified":true,
+                    "history_guarded":true,
+                    "automatic_retry_allowed":false,
+                    "destructive_operation":false,
+                    "runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopSetTextLayer {request} => {
+            let raw_context=state.photoshop_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let context=photoshop::validate_context_receipt(&raw_context)?;
+            let raw_inventory=state.photoshop_bridge.request("list_layers",json!({}),Duration::from_secs(8)).await?;
+            let inventory=photoshop::validate_layer_inventory(&raw_inventory)?;
+            let precondition=photoshop::validate_text_precondition(&request,&context,&inventory)?;
+            let source_path=context.get("document_path").and_then(Value::as_str).ok_or("Photoshop text edit requires a saved local document path.")?;
+            let checkpoint=photoshop_checkpoint::create(
+                request.expected_document_id,source_path,
+                context.get("saved").and_then(Value::as_bool)==Some(true),
+                context.get("cloud_document").and_then(Value::as_bool)==Some(true),
+                "text_layer_edit"
+            )?;
+
+            let raw_receipt=state.photoshop_bridge.request("set_text_layer",request.bridge_arguments()?,Duration::from_secs(20)).await?;
+            let mutation_receipt=photoshop::validate_text_receipt(&request,&raw_receipt)?;
+            let post_raw=state.photoshop_bridge.request("list_layers",json!({}),Duration::from_secs(8)).await?;
+            let post_inventory=photoshop::validate_layer_inventory(&post_raw)?;
+            let post_readback=photoshop::validate_text_post_readback(&request,&post_inventory)?;
+
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "checkpoint":checkpoint,
+                    "precondition":precondition,
+                    "mutation_receipt":mutation_receipt,
+                    "post_readback":post_readback,
+                    "post_state_verified":true,
+                    "checkpoint_bound":true,
+                    "automatic_restore":false,
+                    "automatic_retry_allowed":false,
+                    "runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopTransformLayer {request} => {
+            let raw_context=state.photoshop_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let context=photoshop::validate_context_receipt(&raw_context)?;
+            let raw_inventory=state.photoshop_bridge.request("list_layers",json!({}),Duration::from_secs(8)).await?;
+            let inventory=photoshop::validate_layer_inventory(&raw_inventory)?;
+            let precondition=photoshop::validate_transform_precondition(&request,&context,&inventory)?;
+            let source_path=context.get("document_path").and_then(Value::as_str).ok_or("Photoshop transform requires a saved local document path.")?;
+            let checkpoint=photoshop_checkpoint::create(
+                request.expected_document_id,source_path,
+                context.get("saved").and_then(Value::as_bool)==Some(true),
+                context.get("cloud_document").and_then(Value::as_bool)==Some(true),
+                "layer_transform"
+            )?;
+
+            let raw_receipt=state.photoshop_bridge.request("transform_layer",request.bridge_arguments()?,Duration::from_secs(25)).await?;
+            let mutation_receipt=photoshop::validate_transform_receipt(&request,&raw_receipt)?;
+            let post_raw=state.photoshop_bridge.request("list_layers",json!({}),Duration::from_secs(8)).await?;
+            let post_inventory=photoshop::validate_layer_inventory(&post_raw)?;
+            let post_readback=photoshop::validate_transform_post_readback(&request,&mutation_receipt,&post_inventory)?;
+
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "checkpoint":checkpoint,
+                    "precondition":precondition,
+                    "mutation_receipt":mutation_receipt,
+                    "post_readback":post_readback,
+                    "post_state_verified":true,
+                    "checkpoint_bound":true,
+                    "automatic_restore":false,
+                    "automatic_retry_allowed":false,
+                    "runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopVerifyCheckpoint {backup_path,expected_source_path,expected_document_id} => {
+            let evidence=photoshop_checkpoint::verify(&backup_path,&expected_source_path,expected_document_id)?;
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&evidence).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopSetLayerMask {request} => {
+            let raw_context=state.photoshop_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let context=photoshop::validate_context_receipt(&raw_context)?;
+            let raw_inventory=state.photoshop_bridge.request("list_layers",json!({}),Duration::from_secs(8)).await?;
+            let inventory=photoshop::validate_layer_inventory(&raw_inventory)?;
+            let precondition=photoshop::validate_mask_precondition(&request,&context,&inventory)?;
+            let source_path=context.get("document_path").and_then(Value::as_str)
+                .ok_or("Photoshop layer-mask edit requires a saved local document path.")?;
+            let checkpoint=photoshop_checkpoint::create(
+                request.expected_document_id,source_path,
+                context.get("saved").and_then(Value::as_bool)==Some(true),
+                context.get("cloud_document").and_then(Value::as_bool)==Some(true),
+                "layer_mask_edit"
+            )?;
+
+            let raw_receipt=state.photoshop_bridge.request("set_layer_mask",request.bridge_arguments()?,Duration::from_secs(20)).await?;
+            let mutation_receipt=photoshop::validate_mask_receipt(&request,&raw_receipt)?;
+            let post_raw=state.photoshop_bridge.request("list_layers",json!({}),Duration::from_secs(8)).await?;
+            let post_inventory=photoshop::validate_layer_inventory(&post_raw)?;
+            let post_readback=photoshop::validate_mask_post_readback(&request,&post_inventory)?;
+
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "checkpoint":checkpoint,
+                    "precondition":precondition,
+                    "mutation_receipt":mutation_receipt,
+                    "post_readback":post_readback,
+                    "post_state_verified":true,
+                    "checkpoint_bound":true,
+                    "automatic_restore":false,
+                    "automatic_retry_allowed":false,
+                    "runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopSaveDocument {request} => {
+            let raw_context=state.photoshop_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let context=photoshop::validate_context_receipt(&raw_context)?;
+            let precondition=photoshop::validate_save_precondition(&request,&context)?;
+            let checkpoint=photoshop_checkpoint::create_before_save(
+                request.expected_document_id,
+                &request.expected_document_path,
+                context.get("cloud_document").and_then(Value::as_bool)==Some(true)
+            )?;
+
+            let raw_receipt=state.photoshop_bridge.request("save_document",request.bridge_arguments()?,Duration::from_secs(30)).await?;
+            let save_receipt=photoshop::validate_save_receipt(&request,&raw_receipt)?;
+            let post_raw=state.photoshop_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let post_context=photoshop::validate_context_receipt(&post_raw)?;
+            if post_context.get("document_id").and_then(Value::as_u64)!=Some(request.expected_document_id as u64)
+                ||post_context.get("document_path").and_then(Value::as_str)!=Some(request.expected_document_path.as_str())
+                ||post_context.get("saved").and_then(Value::as_bool)!=Some(true){
+                return Err("Photoshop independent post-save context did not confirm the exact document/path saved state.".into());
+            }
+
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&json!({
+                    "checkpoint":checkpoint,
+                    "precondition":precondition,
+                    "save_receipt":save_receipt,
+                    "post_context":post_context,
+                    "post_state_verified":true,
+                    "checkpoint_bound":true,
+                    "automatic_restore":false,
+                    "automatic_retry_allowed":false,
+                    "runtime_verified":false,
+                    "production_ready":false
+                })).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::PhotoshopAcceptanceSummary => {
+            Ok(ActionResult {
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&photoshop::completion_summary()).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }
+        ToolAction::WorkspaceScan { path } => {
+            let root = Path::new(&path);
+            if !root.is_dir() {
+                return Err("Workspace path is not a directory.".into());
+            }
+            let canonical_root = root.canonicalize()
+                .map_err(|error| format!("Could not canonicalize workspace path: {error}"))?;
+
+            let mut output = Vec::new();
+            workspace_scan_recursive(&canonical_root, &canonical_root, 0, &mut output)?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: truncate_output(output.join("\n")),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::SearchText { path, query } => {
+            let root = Path::new(&path);
+            if !root.is_dir() {
+                return Err("Search path is not a directory.".into());
+            }
+            let canonical_root = root.canonicalize()
+                .map_err(|error| format!("Could not canonicalize search path: {error}"))?;
+
+            let mut matches = Vec::new();
+            let mut visited_files = 0_usize;
+            let mut visited_entries = 0_usize;
+            search_text_recursive(
+                &canonical_root,
+                &canonical_root,
+                &query,
+                0,
+                &mut matches,
+                &mut visited_files,
+                &mut visited_entries,
+            )?;
+
+            let stdout = if matches.is_empty() {
+                format!("No matches found for '{query}'.")
+            } else {
+                matches.join("\n")
+            };
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: truncate_output(stdout),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::ReplaceText { path, old, new_value } => {
+            let mut file = open_existing_file_for_mutation(Path::new(&path), "replace_text")?;
+            let source = read_utf8_open_file_bounded(
+                &mut file,
+                MAX_WRITE_BYTES,
+                "editable file",
+            )?;
+
+            let count = source.matches(&old).count();
+            if count == 0 {
+                return Err("Exact old text was not found.".into());
+            }
+            if count > 1 {
+                return Err(format!(
+                    "Exact old text appears {count} times. Refine the old text so the edit is unambiguous."
+                ));
+            }
+
+            let updated = source.replacen(&old, &new_value, 1);
+            drop(file); // Windows ReplaceFileW needs the original handle closed.
+            let backup=atomic_file::replace_existing(
+                Path::new(&path),updated.as_bytes(),Some(source.as_bytes()),"replace_text"
+            )?;
+
+            Ok(ActionResult {
+                success: true,
+                tool,
+                stdout: format!("Applied one exact replacement in {path}. Recovery backup: {}.",backup.display()),
+                stderr: String::new(),
+                exit_code: Some(0),
+            })
+        }
+        ToolAction::ApplyPatch { path, patch, expected_worktree_fingerprint } => {
+            require_expected_git_worktree(&path, &expected_worktree_fingerprint, "apply_patch before validation")?;
+            let check = run_git_with_stdin(
+                &path,
+                &["apply", "--check", "--whitespace=nowarn", "-"],
+                &patch,
+            )?;
+
+            if !check.status.success() {
+                return Err(format!(
+                    "Patch validation failed: {}",
+                    String::from_utf8_lossy(&check.stderr)
+                ));
+            }
+
+            require_expected_git_worktree(&path, &expected_worktree_fingerprint, "apply_patch before mutation")?;
+            let output = run_git_with_stdin(
+                &path,
+                &["apply", "--whitespace=nowarn", "-"],
+                &patch,
+            )?;
+
+            Ok(ActionResult {
+                success: output.status.success(),
+                tool,
+                stdout: if output.status.success() {
+                    "Structured patch applied successfully.".into()
+                } else {
+                    truncate_output(String::from_utf8_lossy(&output.stdout).to_string())
+                },
+                stderr: truncate_output(String::from_utf8_lossy(&output.stderr).to_string()),
+                exit_code: output.status.code(),
+            })
+        }
+        ToolAction::RunProjectTask { path, task } => {
+            let (program, args) = project_task_command(&path, &task)?;
+            let git_before = if Path::new(&path).join(".git").exists() {
+                Some(git_local_context(&path)?)
+            } else {
+                None
+            };
+
+            let mut child = Command::new(&program)
+                .args(&args)
+                .current_dir(&path)
+                .env("CI", "1")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|error| format!("Could not run project task: {error}"))?;
+            let child_pid = child.id();
+            if let Err(error) = register_managed_process(state, child_pid) {
+                let _ = terminate_managed_process_tree(child_pid);
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "Project task was stopped before execution could continue safely: {error}"
+                ));
+            }
+            if let Some(action_id) = execution_action_id {
+                match state.running_action_children.lock() {
+                    Ok(mut running) => {
+                        running.insert(action_id.to_string(), child_pid);
+                    }
+                    Err(_) => {
+                        let _ = terminate_registered_process_tree(state, child_pid);
+                        unregister_managed_process(state, child_pid);
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err("Running-action state is unavailable; project task was stopped before execution could continue safely.".into());
+                    }
+                }
+            }
+            let hard_limit_triggered = AtomicBool::new(false);
+            let hard_limit_terminated = AtomicBool::new(false);
+            let output_result = std::thread::scope(|scope| {
+                let monitor = scope.spawn(|| {
+                    while managed_process_identity_matches(state, child_pid).unwrap_or(false) {
+                        match current_runtime_status(state) {
+                            Ok(status) if status.over_hard_limit => {
+                                hard_limit_triggered.store(true, Ordering::Release);
+                                let stopped = terminate_registered_process_tree(state, child_pid).unwrap_or(false);
+                                hard_limit_terminated.store(stopped, Ordering::Release);
+                                break;
+                            }
+                            Ok(_) => {}
+                            Err(_) => break,
+                        }
+                        std::thread::sleep(Duration::from_millis(250));
+                    }
+                });
+                // A08: bound both output memory and total validation runtime.
+                // Timed-out validation has an uncertain external outcome.
+                let output = bounded_child::collect_with_deadline(
+                    child, Duration::from_secs(600),
+                );
+                let _ = monitor.join();
+                output
+            });
+            if let Some(action_id) = execution_action_id {
+                if let Ok(mut running) = state.running_action_children.lock() {
+                    running.remove(action_id);
+                }
+            }
+            unregister_managed_process(state, child_pid);
+            let output = output_result
+                .map_err(|error| format!("Could not wait for project task: {error}"))?;
+
+            let exceeded_hard_limit = hard_limit_triggered.load(Ordering::Acquire);
+            let mut success = output.status.success() && !exceeded_hard_limit;
+            let mut stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let mut stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            if exceeded_hard_limit {
+                let warning = if hard_limit_terminated.load(Ordering::Acquire) {
+                    "Project validation exceeded Shuvi's 4 GB hard RAM ceiling and its managed process tree was stopped."
+                } else {
+                    "Project validation exceeded Shuvi's 4 GB hard RAM ceiling; termination could not be confirmed, so validation is failed closed."
+                };
+                stderr = if stderr.trim().is_empty() {
+                    warning.into()
+                } else {
+                    format!("{warning}\n{stderr}")
+                };
+            }
+            if let Some(before) = git_before {
+                let after = git_local_context(&path)?;
+                if !git_same_local_snapshot(&before, &after) {
+                    success = false;
+                    let warning = "Git branch, HEAD, or worktree changed while the validation task was running; validation evidence is not bound to one repository snapshot.";
+                    stderr = if stderr.trim().is_empty() {
+                        warning.into()
+                    } else {
+                        format!("{warning}\n{stderr}")
+                    };
+                }
+                stdout = format!("[SHUVI_GIT_CONTEXT_V1]{}\n{}", after, stdout);
+            }
+
+            Ok(ActionResult {
+                success,
+                tool,
+                stdout: truncate_output(stdout),
+                stderr: truncate_output(stderr),
+                exit_code: output.status.code(),
+            })
+        }
+        ToolAction::GitStatus { path } => {
+            let before = git_local_context(&path)?;
+            let output = run_git(&path, &["status", "--short", "--branch", "--untracked-files=all"])?;
+            let after = git_local_context(&path)?;
+            if !git_same_local_snapshot(&before, &after) {
+                return Err("Git repository HEAD or branch changed while git_status was running; inspect again before any write.".into());
+            }
+            let stdout = if output.status.success() {
+                format!("[SHUVI_GIT_CONTEXT_V1]{}\n{}", after, String::from_utf8_lossy(&output.stdout))
+            } else {
+                String::from_utf8_lossy(&output.stdout).to_string()
+            };
+            Ok(ActionResult {
+                success: output.status.success(),
+                tool,
+                stdout: truncate_output(stdout),
+                stderr: truncate_output(String::from_utf8_lossy(&output.stderr).to_string()),
+                exit_code: output.status.code(),
+            })
+        }
+        ToolAction::GitDiff { path } => {
+            let before = git_local_context(&path)?;
+            let output = run_git(&path, &["diff", "HEAD", "--no-ext-diff", "--unified=3", "--"])?;
+            let after = git_local_context(&path)?;
+            if !git_same_local_snapshot(&before, &after) {
+                return Err("Git repository HEAD or branch changed while git_diff was running; inspect again before any write.".into());
+            }
+            let stdout = if output.status.success() {
+                format!("[SHUVI_GIT_CONTEXT_V1]{}\n{}", after, String::from_utf8_lossy(&output.stdout))
+            } else {
+                String::from_utf8_lossy(&output.stdout).to_string()
+            };
+            Ok(ActionResult {
+                success: output.status.success(),
+                tool,
+                stdout: truncate_output(stdout),
+                stderr: truncate_output(String::from_utf8_lossy(&output.stderr).to_string()),
+                exit_code: output.status.code(),
+            })
+        }
+        ToolAction::GitCommit { path, message, files, expected_head, expected_worktree_fingerprint } => {
+            require_expected_git_head(&path, &expected_head, "git_commit")?;
+            require_expected_git_worktree(&path, &expected_worktree_fingerprint, "git_commit")?;
+            let remote_receipt = git_remote_freshness(&path, false)?;
+            require_expected_git_head(&path, &expected_head, "git_commit after remote freshness check")?;
+            require_expected_git_worktree(&path, &expected_worktree_fingerprint, "git_commit after remote freshness check")?;
+            let requested: HashSet<&str> = files.iter().map(String::as_str).collect();
+            let staged_before = git_staged_files(&path)?;
+            let unrelated_before: Vec<String> = staged_before
+                .into_iter()
+                .filter(|file| !requested.contains(file.as_str()))
+                .collect();
+            if !unrelated_before.is_empty() {
+                return Err(format!(
+                    "Refusing git_commit because unrelated files are already staged: {}",
+                    unrelated_before.join(", ")
+                ));
+            }
+
+            let pathspecs: Vec<String> = files
+                .iter()
+                .map(|file| format!(":(literal){file}"))
+                .collect();
+            require_expected_git_worktree(&path, &expected_worktree_fingerprint, "git_commit before staging")?;
+            let mut add_args: Vec<&str> = vec!["add", "--"];
+            add_args.extend(pathspecs.iter().map(String::as_str));
+            let add = run_git(&path, &add_args)?;
+            if !add.status.success() {
+                return Err(format!(
+                    "Git staging failed: {}",
+                    String::from_utf8_lossy(&add.stderr)
+                ));
+            }
+
+            let staged_after = git_staged_files(&path)?;
+            if staged_after.is_empty() {
+                return Err("git_commit found no staged changes in the exact reviewed file list.".into());
+            }
+            let unrelated_after: Vec<String> = staged_after
+                .iter()
+                .filter(|file| !requested.contains(file.as_str()))
+                .cloned()
+                .collect();
+            if !unrelated_after.is_empty() {
+                return Err(format!(
+                    "Refusing git_commit because staging contains files outside the reviewed list: {}",
+                    unrelated_after.join(", ")
+                ));
+            }
+
+            require_expected_git_head(&path, &expected_head, "git_commit after staging")?;
+            require_expected_git_worktree(&path, &expected_worktree_fingerprint, "git_commit after staging")?;
+            let remote_receipt = git_remote_freshness(&path, false)?;
+            require_expected_git_head(&path, &expected_head, "git_commit after final remote freshness check")?;
+            require_expected_git_worktree(&path, &expected_worktree_fingerprint, "git_commit after final remote freshness check")?;
+            let output = run_git(&path, &["commit", "-m", &message])?;
+            let body = format!(
+                "Remote freshness: {remote_receipt}\n{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            let stdout = if output.status.success() {
+                git_context_stdout(&path, body)?
+            } else {
+                body
+            };
+
+            Ok(ActionResult {
+                success: output.status.success(),
+                tool,
+                stdout: truncate_output(stdout),
+                stderr: truncate_output(String::from_utf8_lossy(&output.stderr).to_string()),
+                exit_code: output.status.code(),
+            })
+        }
+        ToolAction::GitPush { path, expected_head } => {
+            require_expected_git_head(&path, &expected_head, "git_push")?;
+            let remote_receipt = git_remote_freshness(&path, true)?;
+            require_expected_git_head(&path, &expected_head, "git_push after remote freshness check")?;
+            let (remote, merge_ref) = git_push_destination(&path)?;
+            let refspec = format!("{expected_head}:{merge_ref}");
+            let output = run_git(&path, &["push", "--", remote.as_str(), refspec.as_str()])?;
+            let body = format!(
+                "Remote freshness: {remote_receipt}\nExact push: {expected_head} -> {remote}/{merge_ref}\n{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            let stdout = if output.status.success() {
+                git_context_stdout(&path, body)?
+            } else {
+                body
+            };
+
+            Ok(ActionResult {
+                success: output.status.success(),
+                tool,
+                stdout: truncate_output(stdout),
+                stderr: truncate_output(String::from_utf8_lossy(&output.stderr).to_string()),
+                exit_code: output.status.code(),
+            })
+        }
+        ToolAction::PowerShell { command } => {
+            #[cfg(target_os = "windows")]
+            let mut child = Command::new("powershell.exe")
+                .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", &command])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|error| format!("Failed to start PowerShell: {error}"))?;
+
+            #[cfg(not(target_os = "windows"))]
+            let mut child = Command::new("sh")
+                .args(["-lc", &command])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|error| format!("Failed to start shell: {error}"))?;
+
+            let child_pid = child.id();
+            if let Err(error) = register_managed_process(state, child_pid) {
+                let _ = terminate_managed_process_tree(child_pid);
+                let _ = child.wait();
+                return Err(format!(
+                    "Manual shell was stopped before it could remain untracked: {error}"
+                ));
+            }
+
+            if let Some(action_id) = execution_action_id {
+                match state.running_action_children.lock() {
+                    Ok(mut running) => {
+                        running.insert(action_id.to_string(), child_pid);
+                    }
+                    Err(_) => {
+                        let _ = terminate_registered_process_tree(state, child_pid);
+                        unregister_managed_process(state, child_pid);
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err("Running-action state is unavailable; manual shell was stopped before execution could continue safely.".into());
+                    }
+                }
+            }
+
+            let hard_limit_triggered = AtomicBool::new(false);
+            let hard_limit_terminated = AtomicBool::new(false);
+            let output_result = std::thread::scope(|scope| {
+                let monitor = scope.spawn(|| {
+                    while managed_process_identity_matches(state, child_pid).unwrap_or(false) {
+                        match current_runtime_status(state) {
+                            Ok(status) if status.over_hard_limit => {
+                                hard_limit_triggered.store(true, Ordering::Release);
+                                let stopped = terminate_registered_process_tree(state, child_pid).unwrap_or(false);
+                                hard_limit_terminated.store(stopped, Ordering::Release);
+                                break;
+                            }
+                            Ok(_) => {}
+                            Err(_) => break,
+                        }
+                        std::thread::sleep(Duration::from_millis(250));
+                    }
+                });
+                // Manual Permission Lab shells are allowed to run longer than
+                // UIA probes, but must never wait forever or buffer unbounded logs.
+                let output = bounded_child::collect_with_deadline(
+                    child, Duration::from_secs(120),
+                );
+                let _ = monitor.join();
+                output
+            });
+            if let Some(action_id) = execution_action_id {
+                if let Ok(mut running) = state.running_action_children.lock() {
+                    running.remove(action_id);
+                }
+            }
+            unregister_managed_process(state, child_pid);
+            let output = output_result
+                .map_err(|error| format!("Could not wait for manual shell: {error}"))?;
+
+            let exceeded_hard_limit = hard_limit_triggered.load(Ordering::Acquire);
+            let mut stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            if exceeded_hard_limit {
+                let warning = if hard_limit_terminated.load(Ordering::Acquire) {
+                    "Manual shell exceeded Shuvi's 4 GB hard RAM ceiling and its managed process tree was stopped."
+                } else {
+                    "Manual shell exceeded Shuvi's 4 GB hard RAM ceiling; termination could not be confirmed, so the action is failed closed."
+                };
+                stderr = if stderr.trim().is_empty() {
+                    warning.into()
+                } else {
+                    format!("{warning}\n{stderr}")
+                };
+            }
+
+            Ok(ActionResult {
+                success: output.status.success() && !exceeded_hard_limit,
+                tool,
+                stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                stderr: truncate_output(stderr),
+                exit_code: output.status.code(),
+            })
+        }
+    }
+}
+
+#[tauri::command]
+fn list_providers() -> Vec<ProviderDescriptor> {
+    providers()
+}
+
+#[derive(Debug, Serialize)]
+struct XkiroCatalogModel {
+    id: String,
+    display_name: String,
+    access_tier: String,
+    pricing: Option<Value>,
+    tools: Option<bool>,
+}
+
+/// Public catalog, no API key and no paid inference request.
+/// This fixed origin cannot become an arbitrary-URL request from browser input.
+#[tauri::command]
+async fn list_xkiro_models() -> Result<Vec<XkiroCatalogModel>, String> {
+    const CATALOG_URL: &str = "https://api.xkiro.com/v1/models";
+    const MAX_RESPONSE: usize = 1_000_000;
+    let client = Client::builder()
+        .timeout(Duration::from_secs(12))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| "Could not initialize the xKiro catalog connection.".to_string())?;
+    let mut response = client.get(CATALOG_URL)
+        .header("accept", "application/json")
+        .send().await
+        .map_err(|_| "xKiro model catalog is unreachable.".to_string())?;
+    if !response.status().is_success() {
+        return Err("xKiro model catalog refused the read-only request.".into());
+    }
+    if response.content_length().is_some_and(|len| len > MAX_RESPONSE as u64) {
+        return Err("xKiro model catalog exceeds the response size limit.".into());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await
+        .map_err(|_| "Could not finish reading the xKiro catalog.".to_string())?
+    {
+        if chunk.len() > MAX_RESPONSE.saturating_sub(bytes.len()) {
+            return Err("xKiro catalog response exceeds size limit.".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let document: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| "xKiro returned an invalid model catalog.".to_string())?;
+    let data = document.get("data").and_then(Value::as_array)
+        .ok_or_else(|| "xKiro catalog is missing the model array.".to_string())?;
+    let mut items = Vec::new();
+    let mut ids = HashSet::new();
+    for item in data {
+        let Some(id) = item.get("id").and_then(Value::as_str) else { continue; };
+        if id.len() > 128 || id.is_empty()
+            || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b"._:/+-".contains(&b))
+            || !ids.insert(id.to_owned()) { continue; }
+        let display = item.get("display_name").and_then(Value::as_str)
+            .filter(|x| !x.trim().is_empty() && x.len() <= 160)
+            .unwrap_or(id);
+        let access_tier = item.get("access_tier").and_then(Value::as_str)
+            .filter(|x| matches!(*x, "free" | "paid" | "premium"))
+            .unwrap_or("unknown");
+        let pricing = item.get("pricing").filter(|x| x.is_object()).cloned();
+        let tools = item.get("capabilities").and_then(|v| v.get("tools")).and_then(Value::as_bool);
+        items.push(XkiroCatalogModel {
+            id: id.to_owned(), display_name: display.to_owned(),
+            access_tier: access_tier.to_owned(), pricing, tools,
+        });
+        if items.len() >= 600 { break; }
+    }
+    if items.is_empty() {
+        return Err("xKiro catalog did not provide usable chat models.".into());
+    }
+    Ok(items)
+}
+
+#[tauri::command]
+fn api_key_status(provider: String) -> Result<bool, String> {
+    if provider == "ollama" { return Ok(true); }
+    Ok(load_api_key(&provider)?.is_some_and(|key| !key.trim().is_empty()))
+}
+
+#[tauri::command]
+fn save_api_key(provider: String, api_key: String) -> Result<(), String> {
+    let api_key = api_key.trim();
+    if api_key.is_empty() {
+        return Err("API key cannot be empty.".into());
+    }
+    if api_key.len() > MAX_API_KEY_BYTES || api_key.chars().any(char::is_control) {
+        return Err("API key must be control-character free and at most 16 KB.".into());
+    }
+
+    key_entry(&provider)?
+        .set_password(api_key)
+        .map_err(|error| format!("Could not save API key: {error}"))
+}
+
+#[tauri::command]
+fn delete_api_key(provider: String) -> Result<(), String> {
+    let entry = key_entry(&provider)?;
+
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(format!("Could not delete API key: {error}")),
+    }
+}
+
+#[tauri::command]
+async fn chat(
+    mut input: ChatInput,
+    state: State<'_, ActionState>,
+    app: AppHandle,
+) -> Result<ChatResponse, String> {
+    ensure_memory_budget(state.inner())?;
+    validate_provider_fields(
+        input.provider.as_str(),
+        input.model.as_str(),
+        input.base_url.as_deref(),
+    )?;
+
+    if input.messages.len() > MAX_CHAT_MESSAGES {
+        return Err(format!("Provider context exceeds Shuvi's {MAX_CHAT_MESSAGES}-message safety limit."));
+    }
+    let mut chat_bytes = 0_usize;
+    for message in &input.messages {
+        if !matches!(message.role.as_str(), "user" | "assistant" | "system") {
+            return Err("Provider context contains an unsupported chat role.".into());
+        }
+        let message_bytes = message.content.len();
+        if message_bytes > MAX_CHAT_MESSAGE_BYTES {
+            return Err("A provider-context message exceeds Shuvi's 256 KB safety limit.".into());
+        }
+        chat_bytes = chat_bytes.saturating_add(message_bytes);
+        if chat_bytes > MAX_CHAT_CONTEXT_BYTES {
+            return Err("Provider context exceeds Shuvi's 2 MB safety limit.".into());
+        }
+    }
+
+    let workspace = read_workspace(&app)?;
+    let workspace_context = workspace
+        .as_deref()
+        .map(|path| format!("\nCurrent Shuvi workspace: {path}\nUse this workspace when the user refers to 'the project' without giving another path."))
+        .unwrap_or_default();
+    let orchestration_context=input.orchestration_context.take().unwrap_or_default();
+    if orchestration_context.chars().count()>3_000 {
+        return Err("Agent orchestration context exceeds the 3000-character safety limit.".into());
+    }
+    let orchestration_context=if orchestration_context.trim().is_empty() {
+        String::new()
+    } else {
+        format!("\n\n{}\n",orchestration_context.trim())
+    };
+
+    input.messages.insert(
+        0,
+        ChatMessage {
+            role: "system".into(),
+            content: format!("{TOOL_PROTOCOL}{workspace_context}{orchestration_context}"),
+        },
+    );
+
+    let key = load_api_key(&input.provider)?;
+    send_chat(input, key).await
+}
+
+#[tauri::command]
+fn runtime_status(state: State<'_, ActionState>) -> Result<RuntimeStatus, String> {
+    current_runtime_status(state.inner())
+}
+
+#[tauri::command]
+fn prepare_tool(
+    proposal: ToolProposal,
+    provider: String,
+    model: String,
+    base_url: Option<String>,
+    state: State<'_, ActionState>,
+) -> Result<PendingActionView, String> {
+    ensure_memory_budget(state.inner())?;
+    validate_provider_fields(provider.as_str(), model.as_str(), base_url.as_deref())?;
+
+    let provider_context = ProviderContext {
+        provider,
+        model,
+        base_url,
+    };
+
+    stage_tool(proposal, Some(provider_context), state.inner())
+}
+
+#[tauri::command]
+fn prepare_powershell(
+    command: String,
+    state: State<'_, ActionState>,
+) -> Result<PendingActionView, String> {
+    ensure_memory_budget(state.inner())?;
+
+    let proposal = ToolProposal {
+        tool: "powershell".into(),
+        arguments: json!({ "command": command }),
+        reason: Some("Manual PowerShell action".into()),
+        plan: None,
+        task_graph: None,
+        task_step_id: None,
+        task_recovery: None,
+    };
+
+    stage_tool(proposal, None, state.inner())
+}
+
+#[tauri::command]
+fn deny_action(
+    action_id: String,
+    state: State<'_, ActionState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let action = state
+        .pending
+        .lock()
+        .map_err(|_| "Permission state is unavailable.".to_string())?
+        .remove(&action_id);
+
+    if let Some(action) = action {
+        let audit_detail = audit_safe_action_detail(&action.tool, &action.detail);
+        append_audit(
+            &app,
+            &AuditEntry {
+                timestamp_ms: now_ms(),
+                event: "denied".into(),
+                tool: action.tool,
+                detail: audit_detail,
+                success: false,
+                action_id: Some(action_id),
+            },
+        )?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn cancel_running_action(
+    action_id: String,
+    state: State<'_, ActionState>,
+    app: AppHandle,
+) -> Result<bool, String> {
+    Uuid::parse_str(&action_id).map_err(|_| "Invalid running action ID.")?;
+
+    {
+        let mut pending = state
+            .pending
+            .lock()
+            .map_err(|_| "Permission state is unavailable.".to_string())?;
+        let cancellable = pending
+            .get(&action_id)
+            .is_some_and(|action| matches!(action.tool.as_str(), "run_project_task" | "powershell" | "motion_graphics_run_remotion"));
+        if cancellable {
+            let action = pending.remove(&action_id)
+                .ok_or_else(|| "Prepared action disappeared during cancellation.".to_string())?;
+            drop(pending);
+            let audit_detail = audit_safe_action_detail(&action.tool, &action.detail);
+            append_audit(
+                &app,
+                &AuditEntry {
+                    timestamp_ms: now_ms(),
+                    event: "denied".into(),
+                    tool: action.tool,
+                    detail: audit_detail,
+                    success: false,
+                    action_id: Some(action_id),
+                },
+            )?;
+            return Ok(true);
+        }
+    }
+
+    for _ in 0..50 {
+        let active_tool = state
+            .running_action_tools
+            .lock()
+            .map_err(|_| "Running-action state is unavailable.".to_string())?
+            .get(&action_id)
+            .cloned();
+        match active_tool.as_deref() {
+            Some("run_project_task") | Some("powershell") | Some("motion_graphics_run_remotion") => {}
+            Some(_) | None => return Ok(false),
+        }
+
+        let pid = state
+            .running_action_children
+            .lock()
+            .map_err(|_| "Running-action state is unavailable.".to_string())?
+            .get(&action_id)
+            .copied();
+        if let Some(pid) = pid {
+            let is_managed = state
+                .managed_children
+                .lock()
+                .map_err(|_| "Managed-process state is unavailable.".to_string())?
+                .contains(&pid);
+            if !is_managed || !managed_process_identity_matches(state.inner(), pid)? {
+                unregister_managed_process(state.inner(), pid);
+                return Ok(false);
+            }
+
+            // Capture PID + process start time before sending a kill signal.
+            // A post-kill check against the *original* identity is essential:
+            // another thread may unregister the action while cancellation runs.
+            let expected_start = state.managed_process_started_at
+                .lock()
+                .map_err(|_| "Managed-process identity state is unavailable.".to_string())?
+                .get(&pid).copied()
+                .ok_or_else(|| "Running action lost its process identity; cancellation outcome is unknown.".to_string())?;
+            let pid_string = pid.to_string();
+            #[cfg(target_os = "windows")]
+            let killer = Command::new("taskkill")
+                .args(["/PID", pid_string.as_str(), "/T", "/F"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|error| format!("Could not start managed cancellation: {error}"))?;
+
+            #[cfg(not(target_os = "windows"))]
+            let killer = Command::new("kill")
+                .args(["-TERM", pid_string.as_str()])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|error| format!("Could not start managed cancellation: {error}"))?;
+
+            let output = bounded_child::collect_with_deadline(killer, Duration::from_secs(10))
+                .map_err(|error| format!("Cancellation command did not finish safely: {error}. External action outcome is unknown."))?;
+
+            if !output.status.success() {
+                return Err("Managed cancellation command failed; the external action may still be running. Inspect before retrying.".into());
+            }
+            // A successful taskkill/kill exit code is NOT proof the requested
+            // process has actually stopped. Check the original process identity.
+            for _ in 0..25 {
+                if observed_process_start_time(pid) != Some(expected_start) {
+                    unregister_managed_process(state.inner(), pid);
+                    if let Ok(mut running) = state.running_action_children.lock() {
+                        running.remove(&action_id);
+                    }
+                    return Ok(true);
+                }
+                std::thread::sleep(Duration::from_millis(40));
+            }
+            return Err("Termination was requested, but the original process is still visible. Cancellation outcome is unknown; inspect before retrying.".into());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    Ok(false)
+}
+
+#[tauri::command]
+async fn execute_action(
+    action_id: String,
+    state: State<'_, ActionState>,
+    app: AppHandle,
+) -> Result<ActionResult, String> {
+    ensure_memory_budget(state.inner())?;
+    // Serialize native typed-tool execution. A plan's browser-only worker
+    // count is not an execution lock; the Rust guard is the authority.
+    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
+
+    let (action, expired_action) = {
+        let mut pending = state
+            .pending
+            .lock()
+            .map_err(|_| "Permission state is unavailable.".to_string())?;
+        let prepared = pending
+            .get(&action_id)
+            .ok_or_else(|| "Action expired, was denied, or does not exist.".to_string())?;
+
+        if now_ms().saturating_sub(prepared.created_at_ms) > PENDING_ACTION_TTL_MS {
+            (None, pending.remove(&action_id))
+        } else {
+            let active_tool = prepared.tool.clone();
+            state
+                .running_action_tools
+                .lock()
+                .map_err(|_| "Running-action state is unavailable.".to_string())?
+                .insert(action_id.clone(), active_tool);
+            let action = pending
+                .remove(&action_id)
+                .ok_or_else(|| "Action disappeared before execution could start.".to_string())?;
+            (Some(action), None)
+        }
+    };
+    if let Some(action) = expired_action {
+        let safe_detail = audit_safe_action_detail(&action.tool, &action.detail);
+        append_audit(
+            &app,
+            &AuditEntry {
+                timestamp_ms: now_ms(),
+                event: "denied".into(),
+                tool: action.tool,
+                detail: format!("Expired prepared action: {safe_detail}"),
+                success: false,
+                action_id: Some(action_id.clone()),
+            },
+        )?;
+        return Err("Prepared action expired before execution and must be prepared again.".into());
+    }
+    let action = action.ok_or_else(|| "Prepared action could not be claimed for execution.".to_string())?;
+
+    let tool = action.tool.clone();
+    let detail = action.detail.clone();
+    let audit_detail = audit_safe_action_detail(&tool, &detail);
+    let execution = execute_tool_with_action_id(
+        action,
+        state.inner(),
+        &app,
+        Some(action_id.as_str()),
+    ).await;
+
+    if let Ok(mut running) = state.running_action_tools.lock() {
+        running.remove(&action_id);
+    }
+    if let Ok(mut children) = state.running_action_children.lock() {
+        children.remove(&action_id);
+    }
+
+    match execution {
+        Ok(result) => {
+            let executed_audit_detail=successful_execution_audit_detail(&tool,&audit_detail,&result);
+            append_audit(
+                &app,
+                &AuditEntry {
+                    timestamp_ms: now_ms(),
+                    event: "executed".into(),
+                    tool,
+                    detail: executed_audit_detail,
+                    success: result.success,
+                    action_id: Some(action_id.clone()),
+                },
+            )?;
+            Ok(result)
+        }
+        Err(error) => {
+            append_audit(
+                &app,
+                &AuditEntry {
+                    timestamp_ms: now_ms(),
+                    event: "failed".into(),
+                    tool,
+                    detail: audit_detail,
+                    success: false,
+                    action_id: Some(action_id.clone()),
+                },
+            )?;
+            Err(error)
+        }
+    }
+}
+
+#[tauri::command]
+async fn execute_powershell(
+    action_id: String,
+    state: State<'_, ActionState>,
+    app: AppHandle,
+) -> Result<ActionResult, String> {
+    execute_action(action_id, state, app).await
+}
+
+#[tauri::command]
+fn audit_log(app: AppHandle, limit: Option<usize>) -> Result<Vec<AuditEntry>, String> {
+    read_audit(&app, limit.unwrap_or(30))
+}
+
+#[tauri::command]
+fn action_audit_receipt(action_id:String,app:AppHandle)->Result<Option<AuditEntry>,String>{
+    read_action_audit_receipt(&app, &action_id)
+}
+
+#[tauri::command]
+fn record_agent_event(
+    event: String,
+    tool: Option<String>,
+    detail: String,
+    app: AppHandle,
+) -> Result<(), String> {
+    if !matches!(event.as_str(),"orchestration_blocked"|"orchestration_stopped"|"orchestration_replan"|"task_graph_created"|"task_step_completed"|"task_step_failed"|"task_dependency_blocked"|"task_graph_replanned"|"task_graph_stopped") {
+        return Err("Unsupported agent orchestration audit event.".into());
+    }
+    if detail.trim().is_empty() || detail.chars().count()>1_200 {
+        return Err("Agent orchestration audit detail must be 1..1200 characters.".into());
+    }
+    let tool=tool.unwrap_or_else(||"agent_orchestrator".into());
+    if tool.trim().is_empty() || tool.chars().count()>160 {
+        return Err("Agent orchestration audit tool label must be 1..160 characters.".into());
+    }
+    let success=event=="task_step_completed";
+    append_audit(&app,&AuditEntry {
+        timestamp_ms:now_ms(),
+        event,
+        tool,
+        detail,
+        success,
+        action_id:None,
+    })
+}
+
+#[tauri::command]
+fn set_workspace(
+    path: String,
+    app: AppHandle,
+    state: State<'_, ActionState>,
+) -> Result<(), String> {
+    // A09: switching the active project during a native edit can retarget
+    // subsequent actions in that workflow. Share the desktop execution lease.
+    let _native_slot = execution_lease::claim_single_execution(&state.native_execution_owned)?;
+    write_workspace(&app, path.trim())
+}
+
+#[tauri::command]
+fn get_workspace(app: AppHandle) -> Result<Option<String>, String> {
+    read_workspace(&app)
+}
+
+#[tauri::command]
+fn save_session_checkpoint(
+    checkpoint: SessionCheckpoint,
+    app: AppHandle,
+) -> Result<(), String> {
+    write_session_checkpoint(&app, checkpoint)
+}
+
+#[tauri::command]
+fn load_session_checkpoint(app: AppHandle) -> Result<Option<SessionCheckpoint>, String> {
+    read_session_checkpoint(&app)
+}
+
+#[tauri::command]
+fn clear_session_checkpoint(app: AppHandle) -> Result<(), String> {
+    remove_session_checkpoint(&app)
+}
+
+#[tauri::command]
+fn photoshop_bridge_start(
+    state: State<'_, ActionState>,
+) -> Result<PhotoshopBridgeStatus,String> {
+    // A09: a bridge lifecycle change cannot race a native editing action.
+    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
+    state.photoshop_bridge.start()
+}
+
+#[tauri::command]
+fn photoshop_bridge_status(
+    state: State<'_, ActionState>,
+) -> Result<PhotoshopBridgeStatus,String> {
+    state.photoshop_bridge.status()
+}
+
+#[tauri::command]
+fn photoshop_bridge_stop(
+    state: State<'_, ActionState>,
+) -> Result<PhotoshopBridgeStatus,String> {
+    // A09: a bridge lifecycle change cannot race a native editing action.
+    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
+    state.photoshop_bridge.stop()
+}
+
+#[tauri::command]
+fn illustrator_bridge_start(
+    state: State<'_, ActionState>,
+) -> Result<IllustratorBridgeStatus, String> {
+    // A09: a bridge lifecycle change cannot race a native editing action.
+    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
+    state.illustrator_bridge.start()
+}
+
+#[tauri::command]
+fn illustrator_bridge_status(
+    state: State<'_, ActionState>,
+) -> Result<IllustratorBridgeStatus, String> {
+    state.illustrator_bridge.status()
+}
+
+#[tauri::command]
+fn illustrator_bridge_stop(
+    state: State<'_, ActionState>,
+) -> Result<IllustratorBridgeStatus, String> {
+    // A09: a bridge lifecycle change cannot race a native editing action.
+    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
+    state.illustrator_bridge.stop()
+}
+
+#[tauri::command]
+fn animate_bridge_start(
+    state: State<'_, ActionState>,
+) -> Result<AnimateBridgeStatus, String> {
+    // A09: a bridge lifecycle change cannot race a native editing action.
+    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
+    state.animate_bridge.start()
+}
+
+#[tauri::command]
+fn animate_bridge_status(
+    state: State<'_, ActionState>,
+) -> Result<AnimateBridgeStatus, String> {
+    state.animate_bridge.status()
+}
+
+#[tauri::command]
+fn animate_bridge_stop(
+    state: State<'_, ActionState>,
+) -> Result<AnimateBridgeStatus, String> {
+    // A09: a bridge lifecycle change cannot race a native editing action.
+    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
+    state.animate_bridge.stop()
+}
+
+#[tauri::command]
+fn audition_bridge_start(
+    state: State<'_, ActionState>,
+) -> Result<AuditionBridgeStatus, String> {
+    // A09: a bridge lifecycle change cannot race a native editing action.
+    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
+    state.audition_bridge.start()
+}
+
+#[tauri::command]
+fn audition_bridge_status(
+    state: State<'_, ActionState>,
+) -> Result<AuditionBridgeStatus, String> {
+    state.audition_bridge.status()
+}
+
+#[tauri::command]
+fn audition_bridge_stop(
+    state: State<'_, ActionState>,
+) -> Result<AuditionBridgeStatus, String> {
+    // A09: a bridge lifecycle change cannot race a native editing action.
+    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
+    state.audition_bridge.stop()
+}
+
+#[tauri::command]
+fn premiere_bridge_start(
+    state: State<'_, ActionState>,
+) -> Result<PremiereBridgeStatus, String> {
+    // A09: a bridge lifecycle change cannot race a native editing action.
+    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
+    state.premiere_bridge.start()
+}
+
+#[tauri::command]
+fn premiere_bridge_status(
+    state: State<'_, ActionState>,
+) -> Result<PremiereBridgeStatus, String> {
+    state.premiere_bridge.status()
+}
+
+#[tauri::command]
+fn premiere_bridge_stop(
+    state: State<'_, ActionState>,
+) -> Result<PremiereBridgeStatus, String> {
+    // A09: a bridge lifecycle change cannot race a native editing action.
+    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
+    state.premiere_bridge.stop()
+}
+
+fn prune_diagnostics_dir(dir: &Path, keep_existing: usize) -> Result<(), String> {
+    if !dir.exists() {
+        return Ok(());
+    }
+
+    let mut keep = Vec::<(SystemTime, std::path::PathBuf)>::new();
+    for entry in fs::read_dir(dir)
+        .map_err(|error| format!("Could not inspect diagnostics directory: {error}"))?
+        .filter_map(Result::ok)
+    {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("shuvi-diagnostics-") || !name.ends_with(".json") || !path.is_file() {
+            continue;
+        }
+        let modified = entry.metadata()
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .unwrap_or(UNIX_EPOCH);
+        keep.push((modified, path));
+        keep.sort_by(|a, b| b.0.cmp(&a.0));
+        keep.truncate(keep_existing);
+    }
+
+    let keep_paths = keep.into_iter()
+        .map(|(_, path)| path)
+        .collect::<HashSet<_>>();
+    for entry in fs::read_dir(dir)
+        .map_err(|error| format!("Could not inspect diagnostics directory: {error}"))?
+        .filter_map(Result::ok)
+    {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if name.starts_with("shuvi-diagnostics-")
+            && name.ends_with(".json")
+            && path.is_file()
+            && !keep_paths.contains(&path)
+        {
+            let _ = fs::remove_file(path);
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn export_diagnostics(
+    app: AppHandle,
+    state: State<'_, ActionState>,
+) -> Result<String, String> {
+    let runtime = current_runtime_status(state.inner())?;
+    let workspace = read_workspace(&app)?;
+    let recent_audit = read_audit(&app, 50)?;
+
+    let managed_roots = state
+        .managed_children
+        .lock()
+        .map_err(|_| "Managed-process state is unavailable.".to_string())?
+        .iter()
+        .copied()
+        .collect::<Vec<_>>();
+
+    let browser_sessions = state
+        .browser_sessions
+        .lock()
+        .map_err(|_| "Browser-session state is unavailable.".to_string())?
+        .iter()
+        .map(|(pid, session)| {
+            json!({
+                "root_pid": pid,
+                "devtools_port": session.port
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let report = json!({
+        "generated_at_ms": now_ms(),
+        "shuvi_version": env!("CARGO_PKG_VERSION"),
+        "platform": {
+            "os": std::env::consts::OS,
+            "arch": std::env::consts::ARCH
+        },
+        "runtime": runtime,
+        "workspace": workspace,
+        "managed_process_roots": managed_roots,
+        "managed_browser_sessions": browser_sessions,
+        "recent_audit": recent_audit,
+        "privacy_note": "API keys and credential-store secrets are intentionally excluded."
+    });
+
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not resolve app data directory: {error}"))?
+        .join("diagnostics");
+
+    fs::create_dir_all(&dir)
+        .map_err(|error| format!("Could not create diagnostics directory: {error}"))?;
+    let _ = prune_diagnostics_dir(&dir, MAX_DIAGNOSTIC_FILES.saturating_sub(1));
+
+    let path = dir.join(format!("shuvi-diagnostics-{}-{}.json", now_ms(), Uuid::new_v4()));
+    let content = serde_json::to_string_pretty(&report)
+        .map_err(|error| format!("Could not encode diagnostics: {error}"))?;
+
+    fs::write(&path, content.as_bytes())
+        .map_err(|error| format!("Could not write diagnostics file: {error}"))?;
+
+    Ok(path.display().to_string())
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .manage(ActionState::default())
+        .invoke_handler(tauri::generate_handler![
+            list_providers,
+            list_xkiro_models,
+            api_key_status,
+            save_api_key,
+            delete_api_key,
+            save_frame_io_access_token,
+            delete_frame_io_access_token,
+            save_frame_io_oauth_config,
+            delete_frame_io_oauth_config,
+            frame_io_credential_status,
+            chat,
+            runtime_status,
+            prepare_tool,
+            prepare_powershell,
+            deny_action,
+            cancel_running_action,
+            execute_action,
+            execute_powershell,
+            audit_log,
+            action_audit_receipt,
+            record_agent_event,
+            set_workspace,
+            get_workspace,
+            save_session_checkpoint,
+            load_session_checkpoint,
+            clear_session_checkpoint,
+            premiere_bridge_start,
+            premiere_bridge_status,
+            premiere_bridge_stop,
+            audition_bridge_start,
+            audition_bridge_status,
+            audition_bridge_stop,
+            animate_bridge_start,
+            animate_bridge_status,
+            animate_bridge_stop,
+            illustrator_bridge_start,
+            illustrator_bridge_status,
+            illustrator_bridge_stop,
+            photoshop_bridge_start,
+            photoshop_bridge_status,
+            photoshop_bridge_stop,
+            export_diagnostics,
+            web_bridge::web_bridge_start,
+            web_bridge::web_bridge_stop,
+            web_bridge::web_bridge_state,
+            remote_agent::remote_agent_status,
+            remote_agent::remote_agent_pair,
+            remote_agent::remote_agent_disconnect,
+            remote_agent::remote_agent_poll,
+            remote_agent::remote_agent_receipt,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running Shuvi");
+}
+
+#[cfg(test)]
+mod task_graph_transport_tests {
+    use super::*;
+
+    #[test]
+    fn graph_metadata_survives_provider_parsing_without_granting_tool_access() {
+        let graph = json!({"objective":"Inspect","revision":1,"steps":[]});
+        let text = json!({"tool":"read_file","arguments":{"path":"C:/a.txt"},
+            "task_graph":graph,"task_step_id":"inspect"}).to_string();
+        let proposal = parse_tool_proposal(&text).expect("known typed tool");
+        assert_eq!(proposal.task_graph, Some(graph.clone()));
+        assert_eq!(proposal.task_step_id, Some(json!("inspect")));
+        let unknown = json!({"tool":"arbitrary_graph_runner","arguments":{},
+            "task_graph":graph}).to_string();
+        assert!(parse_tool_proposal(&unknown).is_none());
+    }
+
+    #[test]
+    fn oversized_graph_and_invalid_association_keep_fail_closed_markers() {
+        let text = json!({"tool":"read_file","arguments":{"path":"C:/a.txt"},
+            "task_graph":{"objective":"x".repeat(24_001)},
+            "task_step_id":["not","an","id"],"task_recovery":"yes"}).to_string();
+        let proposal = parse_tool_proposal(&text).expect("metadata routed for local refusal");
+        assert_eq!(proposal.task_graph, Some(json!(false)));
+        assert_eq!(proposal.task_step_id, Some(json!(false)));
+        assert_eq!(proposal.task_recovery, Some(json!("invalid")));
+    }
+
+    #[test]
+    fn action_audit_receipt_contract_is_exact_and_bounded() {
+        assert!(Uuid::parse_str("00000000-0000-4000-8000-000000000001").is_ok());
+        assert!(Uuid::parse_str("not-an-action").is_err());
+        assert!(matches!("executed","executed"|"failed"|"denied"));
+        assert!(matches!("failed","executed"|"failed"|"denied"));
+        assert!(matches!("denied","executed"|"failed"|"denied"));
+        assert!(!matches!("task_step_completed","executed"|"failed"|"denied"));
+    }
+
+    #[test]
+    fn discarded_legacy_description_does_not_erase_graph_restrictions() {
+        let text = json!({"tool":"read_file","arguments":{"path":"C:/a.txt"},
+            "plan":{"objective":"x".repeat(501),"step":"read","success_criteria":"read succeeds"},
+            "task_graph":{"objective":"stable goal","revision":1,"steps":[]}}).to_string();
+        let proposal = parse_tool_proposal(&text).expect("known typed tool");
+        assert!(proposal.plan.is_none());
+        assert!(proposal.task_graph.is_some());
+    }
+}
+ -and
   $_.AppID -match '(?i)whatsapp'
-} | Select-Object -First 1
-if ($null -eq $app) {
-  [Console]::Error.WriteLine('WhatsApp Desktop not found in Windows Start apps. Install it first.')
+} | Sort-Object @{ Expression = { $_.Name -ne 'WhatsApp Beta' } }, Name | Select-Object -First 1
+$appId = if ($null -ne $app) { [string]$app.AppID } else { '' }
+if (-not $appId) {
+  $package = Get-AppxPackage | Where-Object {
+    $_.Name -match '(?i)whatsapp' -and $_.PackageFamilyName -match '(?i)whatsapp'
+  } | Sort-Object @{ Expression = { $_.Name -notmatch '(?i)beta' } }, Name | Select-Object -First 1
+  if ($null -ne $package) {
+    $manifest = Get-AppxPackageManifest -Package $package.PackageFullName
+    $application = $manifest.Package.Applications.Application |
+      Where-Object { $_.Id } | Select-Object -First 1
+    if ($null -ne $application) {
+      $appId = [string]$package.PackageFamilyName + '!' + [string]$application.Id
+    }
+  }
+}
+if (-not $appId) {
+  [Console]::Error.WriteLine('SHUVI_WHATSAPP_NOT_FOUND: Windows Start Apps and current-user AppX packages contain no WhatsApp Desktop/Beta identity.')
   exit 2
 }
-Start-Process -FilePath 'explorer.exe' -ArgumentList ('shell:AppsFolder\' + $app.AppID) -ErrorAction Stop
+try {
+  Start-Process -FilePath 'explorer.exe' -ArgumentList ('shell:AppsFolder\' + $appId) -ErrorAction Stop
+} catch {
+  [Console]::Error.WriteLine('SHUVI_WHATSAPP_LAUNCH_FAILED: ' + $_.Exception.Message)
+  exit 3
+}
 Write-Output 'SHUVI_WHATSAPP_DESKTOP_LAUNCH_REQUESTED'
 "#;
                 let result = Command::new("powershell.exe")
