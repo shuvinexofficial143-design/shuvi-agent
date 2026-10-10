@@ -139,8 +139,6 @@ export function mountChatWorkspace(notify: (message: string) => void, remote?: R
   function renderMessages(): void {
     const t = active();
     const nativeConnected = remote?.kind === "native" && remote.connected();
-    const whatsApp = document.getElementById("chatWhatsAppOpen") as HTMLButtonElement | null;
-    if(whatsApp)whatsApp.hidden = !nativeConnected;
     const commandConnected = remote?.connected() === true;
     const awaitingThisThread = pendingDelivery?.threadId === t.id;
     // Source of truth: native IPC proves Shuvi.exe is reachable, NOT that the

@@ -22,13 +22,16 @@ test("Delete all requires typed confirmation and clears local threads plus nativ
  assert.match(native,/histories\.clear\(\);replies\.clear\(\)/);
  assert.match(chat,/remote\?\.clearChat\?\.\(id\)/);
 });
-test("WhatsApp uses a fixed browser target, explicit owner approval, and audit",()=>{
- assert.match(html,/id="chatWhatsAppOpen"/);
- assert.match(native,/invoke<Pending>\("prepare_whatsapp_open"\)/);
- assert.match(native,/No WhatsApp message is sent automatically/);
+test("WhatsApp is controlled as an installed Windows application, not a web integration",()=>{
+ assert.doesNotMatch(html,/chatWhatsAppOpen/);
+ assert.doesNotMatch(native,/prepare_whatsapp_open|__whatsapp_open__/);
+ assert.doesNotMatch(rust,/https:\/\/web\.whatsapp\.com|fn prepare_whatsapp_open/);
+ assert.match(rust,/whatsapp_desktop_open: \{\}/);
+ assert.match(rust,/ToolAction::WhatsAppDesktopOpen/);
+ assert.match(rust,/Get-StartApps/);
+ assert.match(rust,/Start-Process -FilePath 'explorer.exe'/);
+ assert.match(rust,/if !proposal\.arguments\.as_object\(\)\.is_some_and/);
+ assert.match(rust,/RiskLevel::Medium/);
+ assert.match(rust,/separately approved action/);
  assert.match(native,/audit_log/);
- assert.match(rust,/fn prepare_whatsapp_open/);
- assert.match(rust,/"browser": "edge", "url": "https:\/\/web\.whatsapp\.com\/"/);
- assert.match(rust,/stage_tool\(proposal, None, state\.inner\(\)\)/);
- assert.match(rust,/prepare_whatsapp_open,\s*prepare_powershell/);
 });

@@ -79,9 +79,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  let pending:{action:Pending;threadId:string;promptIndex:number}|null=null;
  const histories=new Map<string,NativeChatMessage[]>();
  const replies=new Map<string,string[]>();
- const whatsAppOpen=document.getElementById("chatWhatsAppOpen") as HTMLButtonElement|null;
  function updateReply(threadId:string,index:number,value:string){
-  if(threadId==="__whatsapp_open__")return;
   const records=replies.get(threadId)||[];
   records[index]=value.slice(0,14000);
   replies.set(threadId,records);
@@ -171,25 +169,6 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  }
  approve.addEventListener("click",()=>{void decide(true);});
  deny.addEventListener("click",()=>{void decide(false);});
- whatsAppOpen?.addEventListener("click",async()=>{
-  if(!ready||sending||pending){
-   refreshState("Resolve the current action before opening WhatsApp.");return;
-  }
-  whatsAppOpen.disabled=true;
-  try{
-   // Fixed WhatsApp Web target. No AI call. Approval remains mandatory.
-   const proposed=await invoke<Pending>("prepare_whatsapp_open");
-   if(!proposed||typeof proposed.id!=="string"||proposed.kind!=="browser_start")
-    throw Error("WhatsApp browser action unavailable.");
-   pending={action:proposed,threadId:"__whatsapp_open__",promptIndex:0};
-   pendingText.textContent="Open WhatsApp Web in Shuvi-managed Edge (QR login may be required)."+
-     "\n"+proposed.summary+" · Risk: "+proposed.risk+
-     "\nAllow once to open. No WhatsApp message is sent automatically.";
-   approval.hidden=false;
-   refreshState("WhatsApp launch prepared. Awaiting Allow once / Deny.");
-  }catch(error){refreshState("WhatsApp launch preparation failed: "+String(error));}
-  finally{whatsAppOpen.disabled=false;}
- });
  async function refreshMobile(){
   try{
    const state=await invoke<{enabled:boolean}>("remote_agent_status");

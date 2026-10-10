@@ -18,7 +18,7 @@ export const NATIVE_MODEL_ROLES=Object.freeze([
  ["frameio","Frame.io"],
  ["research","Research / browser"],
  ["vision","Screen / visual inspection"],
- ["whatsapp","WhatsApp Web / Windows UI (approval required)"]
+ ["whatsapp","WhatsApp Desktop / Windows UI (approval required)"]
 ]);
 const names=new Set(NATIVE_MODEL_ROLES.map(x=>x[0]));
 const modelId=/^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}$/;

@@ -168,6 +168,7 @@ Available tools:
 - write_file: {"path":"absolute path","content":"complete file content"}
 - create_directory: {"path":"absolute path"}
 - launch_app: {"program":"executable or absolute path","args":["optional","arguments"]}
+- whatsapp_desktop_open: {} — use ONLY for opening the installed Windows WhatsApp Desktop app. Discover from Windows Start apps; this does NOT use WhatsApp Web, send messages, verify the app window, or grant permanent permissions. After approval, call ui_find / inspect_screen to verify the real WhatsApp window before using generic Windows UI tools. Each UI action needs separate owner approval. Sending an actual message must be a separately approved action, never an automatic follow-up.
 - open_url: {"url":"https://example.com"}
 - browser_start: {"browser":"edge|chrome","url":"optional https:// page"}
 - browser_navigate: {"pid":1234,"url":"https://example.com"}
@@ -630,6 +631,7 @@ enum ToolAction {
     WriteFile { path: String, content: String },
     CreateDirectory { path: String },
     LaunchApp { program: String, args: Vec<String> },
+    WhatsAppDesktopOpen,
     OpenUrl { url: String },
     BrowserStart { browser: String, url: Option<String> },
     BrowserNavigate { pid: u32, url: String },
@@ -1552,6 +1554,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "write_file"
         | "create_directory"
         | "launch_app"
+        | "whatsapp_desktop_open"
         | "open_url"
         | "browser_start"
         | "browser_navigate"
@@ -3045,6 +3048,17 @@ fn stage_tool(
                 },
                 "Launch application".to_string(),
                 format!("{program} {}", args.join(" ")).trim().to_string(),
+                RiskLevel::Medium,
+            )
+        }
+        "whatsapp_desktop_open" => {
+            if !proposal.arguments.as_object().is_some_and(|fields| fields.is_empty()) {
+                return Err("whatsapp_desktop_open accepts no arguments.".into());
+            }
+            (
+                ToolAction::WhatsAppDesktopOpen,
+                "Open installed WhatsApp Desktop".to_string(),
+                "Request Windows to launch the installed WhatsApp application; no message or chat access".to_string(),
                 RiskLevel::Medium,
             )
         }
@@ -9868,6 +9882,47 @@ async fn execute_tool_with_action_id(
                 stderr: String::new(),
                 exit_code: Some(0),
             })
+        }
+        ToolAction::WhatsAppDesktopOpen => {
+            #[cfg(target_os = "windows")]
+            {
+                // Fixed local command. App discovery comes from Start apps, never
+                // from model-supplied exe paths/arguments, and has no web fallback.
+                const SCRIPT: &str = r#"
+$ErrorActionPreference = 'Stop'
+$app = Get-StartApps | Where-Object {
+  ($_.Name -eq 'WhatsApp' -or $_.Name -eq 'WhatsApp Desktop') -and
+  $_.AppID -match '(?i)whatsapp'
+} | Select-Object -First 1
+if ($null -eq $app) {
+  [Console]::Error.WriteLine('WhatsApp Desktop not found in Windows Start apps. Install it first.')
+  exit 2
+}
+Start-Process -FilePath 'explorer.exe' -ArgumentList ('shell:AppsFolder\' + $app.AppID) -ErrorAction Stop
+Write-Output 'SHUVI_WHATSAPP_DESKTOP_LAUNCH_REQUESTED'
+"#;
+                let result = Command::new("powershell.exe")
+                    .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
+                    .output()
+                    .map_err(|e| format!("Could not request WhatsApp Desktop launch: {e}"))?;
+                let output = String::from_utf8_lossy(&result.stdout);
+                if !result.status.success()
+                    || !output.contains("SHUVI_WHATSAPP_DESKTOP_LAUNCH_REQUESTED")
+                {
+                    return Err("WhatsApp Desktop launch failed or installation was not found. Nothing was sent.".into());
+                }
+                Ok(ActionResult {
+                    success: true,
+                    tool,
+                    stdout: "Windows accepted the launch request for the installed WhatsApp Desktop application. Verify its visible window with ui_find or inspect_screen before claiming it opened. No message sent.".into(),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                })
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Err("WhatsApp Desktop launch is available only on Windows.".into())
+            }
         }
         ToolAction::OpenUrl { url } => {
             #[cfg(target_os = "windows")]
@@ -18243,23 +18298,6 @@ fn prepare_tool(
     stage_tool(proposal, Some(provider_context), state.inner())
 }
 
-// Owner-triggered fixed WhatsApp Web launch via the normal approval/audit path.
-// This does NOT send messages, call paid AI or expose the local WhatsApp session.
-#[tauri::command]
-fn prepare_whatsapp_open(state: State<'_, ActionState>) -> Result<PendingActionView, String> {
-    ensure_memory_budget(state.inner())?;
-    let proposal = ToolProposal {
-        tool: "browser_start".into(),
-        arguments: json!({ "browser": "edge", "url": "https://web.whatsapp.com/" }),
-        reason: Some("Open WhatsApp Web in Shuvi-managed browser with owner approval".into()),
-        plan: None,
-        task_graph: None,
-        task_step_id: None,
-        task_recovery: None,
-    };
-    stage_tool(proposal, None, state.inner())
-}
-
 #[tauri::command]
 fn prepare_powershell(
     command: String,
@@ -18866,7 +18904,6 @@ pub fn run() {
             chat,
             runtime_status,
             prepare_tool,
-            prepare_whatsapp_open,
             prepare_powershell,
             deny_action,
             cancel_running_action,
