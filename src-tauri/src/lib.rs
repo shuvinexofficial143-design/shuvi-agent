@@ -162,7 +162,7 @@ If the user's request requires a computer action, choose ONE tool and respond ON
 {"tool":"tool_name","arguments":{...},"reason":"short explanation","plan":{"objective":"overall task","step":"what this one action is meant to accomplish","success_criteria":"observable result that proves this step worked"}}
 For a genuinely one-step task, plan may be omitted. For a multi-step task, keep objective stable across steps and make success_criteria observable from tool output or a follow-up inspection. Never claim future plan steps have already run.
 For a request to OPEN or LAUNCH Adobe Premiere Pro, choose premiere_launch with empty arguments {} as the FIRST tool, not premiere_detect. premiere_launch independently discovers the installed executable and launches it; a preliminary detection wastes time and a second paid model request. Use premiere_detect only when the user explicitly wants to inspect installation/path/readiness without opening Premiere. After launch, propose a separate ui_find or other non-mutating inspection to verify the actual window before claiming success. All actions must still require Allow once and a matching native audit.
-For any UI task, start with ui_windows when the app identity is uncertain, and use ui_discover to read actual UI labels, roles and AutomationIds before ui_click/ui_set_value. Interpret different button wording from observed controls rather than guessing exact selector strings. If the UI is not exposed through Accessibility, say so and ask for a separately configured supported vision provider; do not use inspect_screen with xKiro text adapter. Never silently switch paid models or repeat the same failed selector. Ambiguous controls must not be clicked.
+For any UI task, start with ui_windows when the app identity is uncertain, and use ui_discover to read actual UI labels, roles and AutomationIds before ui_click/ui_set_value. Interpret different button wording from observed controls rather than guessing exact selector strings. If Accessibility lacks controls, inspect_screen is available for an explicitly selected vision-capable model (including xKiro, whose public catalog must report capabilities.vision=true); never silently change paid models or repeat the same failed selector. Ambiguous controls must not be clicked.
 
 Available tools:
 - list_directory: {"path":"absolute path"}
@@ -3325,7 +3325,7 @@ fn stage_tool(
             // currently has no native screenshot/vision adapter in Shuvi.
             if !matches!(
                 provider.provider.as_str(),
-                "gemini" | "anthropic" | "openai" | "openrouter" | "ollama" | "custom"
+                "gemini" | "anthropic" | "openai" | "openrouter" | "ollama" | "custom" | "xkiro"
             ) {
                 return Err(format!(
                     "Screen vision adapter is unavailable for provider '{}'. No Windows action has been queued and no image was sent. Use ui_windows and ui_discover for read-only Accessibility inspection, or explicitly configure a supported vision provider/model. Never silently switch paid models.",
@@ -8524,6 +8524,21 @@ async fn analyze_png_bytes_with_provider(
     if prompt.len() > MAX_CHAT_MESSAGE_BYTES {
         return Err("Vision prompt exceeds Shuvi's 256 KB native request limit.".into());
     }
+    // xKiro accepts screenshots ONLY for vision-enabled catalog models.
+    // Check the PUBLIC catalog before any paid inference, because xKiro
+    // otherwise replaces images with a no-vision note instead of rejecting.
+    // A missing/unreachable capability flag must fail closed, never guess.
+    if context.provider == "xkiro" {
+        let catalog = list_xkiro_models().await?;
+        let selected = catalog.iter().find(|item| item.id == context.model)
+            .ok_or_else(||"Selected xKiro model is absent from public catalog; screenshot was not sent.".to_string())?;
+        if selected.vision != Some(true) {
+            return Err(format!(
+                "xKiro model '{}' is not marked vision-capable. No screenshot or paid vision request was sent. Explicitly choose a model marked Vision in Shuvi Settings.",
+                context.model
+            ));
+        }
+    }
     let encoded = BASE64.encode(bytes);
     let key = load_api_key(&context.provider)?;
 
@@ -8644,8 +8659,9 @@ async fn analyze_png_bytes_with_provider(
         "deepseek" => Err(
             "The selected DeepSeek text endpoint is not configured for screen vision. Choose Gemini, OpenAI, Claude, OpenRouter, Ollama vision, or a compatible vision endpoint.".into()
         ),
-        "openai" | "openrouter" | "ollama" | "custom" => {
+        "openai" | "openrouter" | "ollama" | "custom" | "xkiro" => {
             let url = match context.provider.as_str() {
+                "xkiro" => "https://api.xkiro.com/v1/chat/completions".to_string(),
                 "openai" => "https://api.openai.com/v1/chat/completions".to_string(),
                 "openrouter" => "https://openrouter.ai/api/v1/chat/completions".to_string(),
                 "ollama" => context
@@ -18380,6 +18396,7 @@ struct XkiroCatalogModel {
     access_tier: String,
     pricing: Option<Value>,
     tools: Option<bool>,
+    vision: Option<bool>,
 }
 
 /// Public catalog, no API key and no paid inference request.
@@ -18431,9 +18448,10 @@ async fn list_xkiro_models() -> Result<Vec<XkiroCatalogModel>, String> {
             .unwrap_or("unknown");
         let pricing = item.get("pricing").filter(|x| x.is_object()).cloned();
         let tools = item.get("capabilities").and_then(|v| v.get("tools")).and_then(Value::as_bool);
+        let vision = item.get("capabilities").and_then(|v| v.get("vision")).and_then(Value::as_bool);
         items.push(XkiroCatalogModel {
             id: id.to_owned(), display_name: display.to_owned(),
-            access_tier: access_tier.to_owned(), pricing, tools,
+            access_tier: access_tier.to_owned(), pricing, tools, vision,
         });
         if items.len() >= 600 { break; }
     }

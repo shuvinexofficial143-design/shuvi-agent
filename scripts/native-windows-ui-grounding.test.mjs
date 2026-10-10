@@ -31,7 +31,7 @@ test("UI mutations cannot blindly use loose synonyms or multiple matches",()=>{
 });
 test("Master discovers observed UI and does not silently switch providers",()=>{
   assert.match(agent,/use ui_windows and ui_discover to ground current button labels/);
-  assert.match(agent,/Do not use inspect_screen with xKiro text adapter/);
+  assert.match(agent,/xKiro model capability is checked against its public catalog/);
   assert.match(agent,/No silent model switches or automatic paid retries/);
 });
 test("Windows preview installer is manual-only until repairs are accepted",()=>{
@@ -39,9 +39,17 @@ test("Windows preview installer is manual-only until repairs are accepted",()=>{
   assert.doesNotMatch(preview,/^\s*push:\s*$/m);
 });
 
-test("unsupported xKiro vision fails before approval rather than consuming paid calls",()=>{
+test("unsupported xKiro vision fails before any paid screenshot request",()=>{
   const stage=src.slice(src.indexOf('"inspect_screen" => {'),src.indexOf('"list_processes" => ('));
   assert.match(stage,/"gemini" \\| "anthropic" \\| "openai" \\| "openrouter"/);
-  assert.match(stage,/No Windows action has been queued and no image was sent/);
-  assert.match(stage,/ui_windows and ui_discover/);
+  assert.match(src,/xKiro model.*is not marked vision-capable/);
+  assert.match(src,/let catalog = list_xkiro_models\(\).await\?/);
+  assert.match(src,/selected.vision != Some\(true\)/);
+  assert.match(src,/"xkiro" => "https:\/\/api.xkiro.com\/v1\/chat\/completions"/);
+});
+
+test("xKiro capability comes from the public catalogue and prevents image-stripping surprises",()=>{
+  assert.match(src,/vision: Option<bool>/);
+  assert.match(src,/v.get("vision")/);
+  assert.match(src,/No screenshot or paid vision request was sent/);
 });

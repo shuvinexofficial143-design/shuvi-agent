@@ -348,7 +348,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     const firstStepGuidance=route.role==="chat"?null:
      "Continue the user\u0027s actual desktop request, not a preliminary inspection. "+
      (waitingForChoice&&lastRequest?"The user\u0027s current app name answers the previous opening request: "+lastRequest.content.slice(0,300)+". ":"")+
-     "For an instruction to open Premiere Pro, propose premiere_launch with {} FIRST; it already finds the installation. Do not stop at premiere_detect. After launch, verify the real window with a separately approved ui_windows. For UI work use ui_windows and ui_discover to ground current button labels and controls rather than guessing names; on ambiguity stop and ask. Do not use inspect_screen with xKiro text adapter. No silent model switches or automatic paid retries. Each action requires Allow once and matching audit.";
+     "For an instruction to open Premiere Pro, propose premiere_launch with {} FIRST; it already finds the installation. Do not stop at premiere_detect. After launch, verify the real window with a separately approved ui_windows. For UI work use ui_windows and ui_discover to ground current button labels and controls rather than guessing names; on ambiguity stop and ask. Use inspect_screen only if the selected model supports Vision; xKiro model capability is checked against its public catalog before any paid screenshot request. No silent model switches or automatic paid retries. Each action requires Allow once and matching audit.";
    const response=await invoke<NativeChatResponse>("chat",{
       input:{provider:route.provider,model:route.model,base_url:route.base_url||null,messages,orchestration_context:firstStepGuidance}
     });
