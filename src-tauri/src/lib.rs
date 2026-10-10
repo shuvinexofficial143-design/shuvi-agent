@@ -18243,6 +18243,23 @@ fn prepare_tool(
     stage_tool(proposal, Some(provider_context), state.inner())
 }
 
+// Owner-triggered fixed WhatsApp Web launch via the normal approval/audit path.
+// This does NOT send messages, call paid AI or expose the local WhatsApp session.
+#[tauri::command]
+fn prepare_whatsapp_open(state: State<'_, ActionState>) -> Result<PendingActionView, String> {
+    ensure_memory_budget(state.inner())?;
+    let proposal = ToolProposal {
+        tool: "browser_start".into(),
+        arguments: json!({ "browser": "edge", "url": "https://web.whatsapp.com/" }),
+        reason: Some("Open WhatsApp Web in Shuvi-managed browser with owner approval".into()),
+        plan: None,
+        task_graph: None,
+        task_step_id: None,
+        task_recovery: None,
+    };
+    stage_tool(proposal, None, state.inner())
+}
+
 #[tauri::command]
 fn prepare_powershell(
     command: String,
@@ -18849,6 +18866,7 @@ pub fn run() {
             chat,
             runtime_status,
             prepare_tool,
+            prepare_whatsapp_open,
             prepare_powershell,
             deny_action,
             cancel_running_action,

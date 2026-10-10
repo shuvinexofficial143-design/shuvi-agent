@@ -18,7 +18,7 @@ export const NATIVE_MODEL_ROLES=Object.freeze([
  ["frameio","Frame.io"],
  ["research","Research / browser"],
  ["vision","Screen / visual inspection"],
- ["whatsapp","WhatsApp (when integration is ready)"]
+ ["whatsapp","WhatsApp Web / Windows UI (approval required)"]
 ]);
 const names=new Set(NATIVE_MODEL_ROLES.map(x=>x[0]));
 const modelId=/^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}$/;
@@ -35,7 +35,7 @@ const intents=[
  ["character-animator",/\bcharacter[\s-]?animator\b|कैरेक्टर एनिमेटर/iu],
  ["substance-3d",/\bsubstance[\s-]?3d\b|सब्सटेंस/iu],
  ["frameio",/\bframe\.?io\b/iu],
- ["whatsapp",/\bwhats\s?app\b|व्हाट्सएप|व्हाट्सऐप/iu],
+ ["whatsapp",/\bwhats\s?app\b|व्हाट्सएप|व्हाट्सऐप|व्हाट्सअप|व्हाट्सप्प/iu],
  ["coding",/\b(?:code|coding|github|repository|typescript|javascript|python|website|app development)\b|कोड|वेबसाइट/iu],
  ["research",/\b(?:browse|browser|google search|web search|research|search the web)\b|वेब पर खोज|रिसर्च/iu],
  ["vision",/\b(?:screenshot|inspect screen|screen vision)\b|स्क्रीनशॉट|स्क्रीन देख/iu]

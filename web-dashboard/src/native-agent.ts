@@ -40,7 +40,13 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  const panel=field("section");
  panel.className="shuvi-native-link";
  panel.setAttribute("aria-label","Installed Windows Shuvi Agent connection");
- const title=field("strong","Shuvi Windows Agent · Native");
+ const title=field("strong","Shuvi Agent");
+ const showDetails=field("button","Agent details");
+ showDetails.type="button";
+ showDetails.addEventListener("click",()=>{
+  const expanded=panel.classList.toggle("shuvi-native-expanded");
+  showDetails.textContent=expanded?"Hide agent details":"Agent details";
+ });
  const status=field("p","Connecting to installed Shuvi.exe...");
  status.setAttribute("role","status");
  const openSettings=field("button","Configure AI in Settings");openSettings.type="button";
@@ -65,7 +71,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  const mobileStatus=field("p","Checking optional mobile agent pairing…");
  mobileStatus.setAttribute("role","status");
  mobile.append(mobileTitle,mobileCode,mobileConnect,mobileDisconnect,mobileStatus);
- panel.append(title,status,openSettings,notes,approval);
+ panel.append(title,status,showDetails,openSettings,notes,approval);
  chat.parentElement?.insertBefore(panel,chat);
  let team:ModelTeamHandle|null=null;
  let ready=false;
@@ -73,7 +79,9 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  let pending:{action:Pending;threadId:string;promptIndex:number}|null=null;
  const histories=new Map<string,NativeChatMessage[]>();
  const replies=new Map<string,string[]>();
+ const whatsAppOpen=document.getElementById("chatWhatsAppOpen") as HTMLButtonElement|null;
  function updateReply(threadId:string,index:number,value:string){
+  if(threadId==="__whatsapp_open__")return;
   const records=replies.get(threadId)||[];
   records[index]=value.slice(0,14000);
   replies.set(threadId,records);
@@ -163,6 +171,25 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  }
  approve.addEventListener("click",()=>{void decide(true);});
  deny.addEventListener("click",()=>{void decide(false);});
+ whatsAppOpen?.addEventListener("click",async()=>{
+  if(!ready||sending||pending){
+   refreshState("Resolve the current action before opening WhatsApp.");return;
+  }
+  whatsAppOpen.disabled=true;
+  try{
+   // Fixed WhatsApp Web target. No AI call. Approval remains mandatory.
+   const proposed=await invoke<Pending>("prepare_whatsapp_open");
+   if(!proposed||typeof proposed.id!=="string"||proposed.kind!=="browser_start")
+    throw Error("WhatsApp browser action unavailable.");
+   pending={action:proposed,threadId:"__whatsapp_open__",promptIndex:0};
+   pendingText.textContent="Open WhatsApp Web in Shuvi-managed Edge (QR login may be required)."+
+     "\n"+proposed.summary+" · Risk: "+proposed.risk+
+     "\nAllow once to open. No WhatsApp message is sent automatically.";
+   approval.hidden=false;
+   refreshState("WhatsApp launch prepared. Awaiting Allow once / Deny.");
+  }catch(error){refreshState("WhatsApp launch preparation failed: "+String(error));}
+  finally{whatsAppOpen.disabled=false;}
+ });
  async function refreshMobile(){
   try{
    const state=await invoke<{enabled:boolean}>("remote_agent_status");
@@ -200,6 +227,9 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   kind:"native",
   connected:()=>ready,
   getReplies:(threadId:string)=>replies.get(threadId)||[],
+  canClearChats:()=>!pending&&!sending,
+  clearChat:(threadId:string)=>{histories.delete(threadId);replies.delete(threadId);},
+  clearAllChats:()=>{histories.clear();replies.clear();},
   async send(text,threadId,promptIndex=0){
    if(!ready)return {ok:false,error:"Windows Shuvi is not connected yet."};
    const route=chooseNativeRoute(text,team?.current());
