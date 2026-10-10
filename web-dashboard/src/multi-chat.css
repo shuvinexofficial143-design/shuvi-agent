@@ -139,3 +139,11 @@
 /* Native transport state is distinct from paid provider and host app readiness. */
 .chat-offline-pill.connected{background:var(--shuvi-accent-soft);border-color:var(--shuvi-accent-line);color:var(--shuvi-secondary)}
 .chat-offline-pill.connected .status-dot{background:var(--shuvi-secondary)}
+
+/* Native delivery UX: visible immediately, but not an admitted/persisted message until ack. */
+.chat-delivery-pending{border-style:dashed!important;opacity:.9}
+.chat-awaiting-reply{border:1px solid var(--shuvi-accent-line);background:var(--shuvi-accent-soft);animation:shuvi-wait-pulse 1.7s ease-in-out infinite}
+.chat-awaiting-reply p{color:var(--muted);font-size:12px}
+.chat-delivery-failed{padding:11px 13px;border:1px solid #9d5562;border-radius:10px;color:#ffc7ce;background:#38232e;font-size:12px}
+@keyframes shuvi-wait-pulse{50%{opacity:.68}}
+@media(prefers-reduced-motion:reduce){.chat-awaiting-reply{animation:none}}

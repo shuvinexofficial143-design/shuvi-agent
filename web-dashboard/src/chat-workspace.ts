@@ -5,6 +5,8 @@ import {
 } from "./chat-store";
 
 type ViewFilter = "active" | "archived";
+type PendingDelivery = {threadId: string; text: string; createdAt: number};
+type FailedDelivery = {threadId: string};
 export type ChatWorkspace = { createChat(): void; focusChat(): void; refreshChat(): void };
 export type RemoteChatTransport = {
  kind?: "native"|"remote";
@@ -45,6 +47,10 @@ export function mountChatWorkspace(notify: (message: string) => void, remote?: R
   let splitId = "";
   let deleting = false;
   let remoteSending = false;
+  // Temporary UI state: a sent-looking bubble is NOT persisted as an admitted
+  // message until the native/provider transport actually acknowledges success.
+  let pendingDelivery: PendingDelivery | null = null;
+  let failedDelivery: FailedDelivery | null = null;
   let providerRuntimeStatus = "Not yet verified";
 
   const layout = $<HTMLElement>("chatWorkspaceLayout");
@@ -125,6 +131,7 @@ export function mountChatWorkspace(notify: (message: string) => void, remote?: R
     const t = active();
     const nativeConnected = remote?.kind === "native" && remote.connected();
     const commandConnected = remote?.connected() === true;
+    const awaitingThisThread = pendingDelivery?.threadId === t.id;
     // Source of truth: native IPC proves Shuvi.exe is reachable, NOT that the
     // selected paid model or Adobe/Blender bridge completed an operation.
     const setStatus = (id: string, message: string): void => {
@@ -186,16 +193,16 @@ export function mountChatWorkspace(notify: (message: string) => void, remote?: R
         ? "Planning preference: " + preferredProvider + " · no AI connection or execution"
         : "Choose a preferred AI model on the AI Models page (planning only).";
     heading.textContent = t.title;
-    meta.textContent = t.messages.length + " local messages · " + (t.archived ? "Archived · " : "") + (remote?.kind === "native" && remote.connected() ? "Windows Shuvi connected · native approval required" : remote?.connected() ? "Cloud link authenticated · native execution unverified" : "Windows agent offline · Not delivered");
+    meta.textContent = t.messages.length + " local messages · " + (awaitingThisThread ? "Waiting for AI response · " : "") + (t.archived ? "Archived · " : "") + (remote?.kind === "native" && remote.connected() ? "Windows Shuvi connected · native approval required" : remote?.connected() ? "Cloud link authenticated · native execution unverified" : "Windows agent offline · Not delivered");
     pinnedButton.textContent = t.pinned ? "★ Pinned" : "☆ Pin";
     pinnedButton.setAttribute("aria-pressed", String(t.pinned));
     archivedNotice.hidden = !t.archived;
-    input.disabled = t.archived;
-    submit.disabled = t.archived;
-    input.value = t.draft;
+    input.disabled = t.archived || remoteSending;
+    submit.disabled = t.archived || remoteSending;
+    input.value = awaitingThisThread ? "" : t.draft;
 
     messages.replaceChildren();
-    if (!t.messages.length) {
+    if (!t.messages.length && !awaitingThisThread && failedDelivery?.threadId !== t.id) {
       const empty = node("div","chat-empty");
       empty.append(
         node("div","chat-empty-orb","S"),
@@ -216,6 +223,26 @@ export function mountChatWorkspace(notify: (message: string) => void, remote?: R
           bubble.append(node("strong", "", "✦ Shuvi Windows"), node("p", "", reply));
           messages.append(bubble);
         }
+      }
+      if (awaitingThisThread && pendingDelivery) {
+        // Optimistic visual only. The original draft remains locally recoverable.
+        const userBubble = node("div", "user-message chat-user-message chat-delivery-pending");
+        userBubble.append(node("strong", "", "You · awaiting confirmation"),
+          node("p", "", pendingDelivery.text),
+          node("small", "chat-message-time", new Date(pendingDelivery.createdAt).toLocaleTimeString()));
+        messages.append(userBubble);
+        const waitingBubble = node("article", "shuvi-native-reply chat-awaiting-reply");
+        waitingBubble.setAttribute("role", "status");
+        waitingBubble.append(node("strong", "", "✦ Shuvi"),
+          node("p", "", remote?.kind === "native"
+            ? "Waiting for your selected AI model to respond…"
+            : "Waiting for remote command acknowledgment…"));
+        messages.append(waitingBubble);
+      } else if (failedDelivery?.threadId === t.id) {
+        const failedBubble = node("p", "chat-delivery-failed",
+          "Request failed or outcome unknown. Your message is still in the composer; it was not automatically retried.");
+        failedBubble.setAttribute("role", "alert");
+        messages.append(failedBubble);
       }
       messages.append(node("p", "chat-safety-caption", remote?.kind === "native" ? "Native AI responses are session-only; OS tool mutations require Allow once and matching audit evidence." : remote?.connected() ? "Local history may include cloud-queued commands · check task status for execution evidence" : "Saved locally · Not delivered to Shuvi · No AI response or Windows action"));
     }
@@ -336,7 +363,8 @@ export function mountChatWorkspace(notify: (message: string) => void, remote?: R
 
   input.addEventListener("input", () => {
     const t = active();
-    if (t.archived) return;
+    if (t.archived || remoteSending) return;
+    if (failedDelivery?.threadId === t.id) failedDelivery = null;
     updateThread({...t, draft: input.value.slice(0, CHAT_MAX_MESSAGE_LENGTH)});
   });
 
@@ -353,26 +381,40 @@ export function mountChatWorkspace(notify: (message: string) => void, remote?: R
     if (remoteSending || t.archived || !text) return;
     if (remote?.connected()) {
       remoteSending = true;
-      submit.disabled = true;
+      failedDelivery = null;
+      // Preserve the draft on disk while an external, possibly billable
+      // request is in flight. Painting the message does not claim delivery.
+      updateThread({...t, draft:text});
+      pendingDelivery = {threadId:t.id, text, createdAt:Date.now()};
+      render();
       try {
         const result = await remote.send(text,t.id,t.messages.length);
-        if(!result.ok) {
+        if (!result.ok) {
+          failedDelivery = {threadId:t.id};
           if (remote.kind === "native") {
             const providerHttp = /Provider returned\s+([1-5][0-9]{2})\b/i.exec(result.error || "");
             providerRuntimeStatus = providerHttp ? "HTTP " + providerHttp[1] + " · request failed" : "Not yet verified";
-            renderMessages();
           }
-          notify((remote.kind === "native" ? "Native Shuvi request failed: " : "Remote command not queued: ") + (result.error || "Unknown error") + ". Draft kept.");
+          notify((remote.kind === "native" ? "Native Shuvi request failed: " : "Remote command not queued: ") + (result.error || "Unknown error") + ". Draft kept; no automatic retry.");
           return;
         }
         if (remote.kind === "native") providerRuntimeStatus = "AI response received";
         // Only save as submitted after the remote journal acknowledged admission.
+        // Always update the original thread, even if the user opened another.
         const current=library.threads.find(x=>x.id===t.id);
-        if(current)updateThread(addPrompt(current,text));
+        if(current) updateThread(addPrompt(current,text));
+        notify(remote.kind === "native" ? "Shuvi replied. Tool actions still require approval." : "Command queued in secure relay. Windows execution is not yet confirmed.");
+      } catch(error) {
+        // A timeout/IPC failure cannot prove the provider was not billed.
+        // Never automatically resubmit an uncertain paid POST.
+        failedDelivery = {threadId:t.id};
+        notify("Shuvi request outcome unknown: " + String(error) + ". Draft kept; do not retry blindly.");
+      } finally {
+        pendingDelivery = null;
+        remoteSending = false;
         render();
-        input.focus();
-        notify(remote.kind === "native" ? "Native Shuvi received your message. Tool actions still require approval." : "Command queued in secure relay. Windows execution is not yet confirmed.");
-      } finally {remoteSending=false;submit.disabled=active().archived;}
+        if (library.activeId === t.id) input.focus();
+      }
       return;
     }
     const updated = addPrompt(t, text);
@@ -415,6 +457,10 @@ export function mountChatWorkspace(notify: (message: string) => void, remote?: R
   });
   archiveButton.addEventListener("click", () => {
     const t = active();
+    if (pendingDelivery?.threadId === t.id) {
+      notify("Wait for the in-flight request to finish before archiving this conversation.");
+      return;
+    }
     const archived = !t.archived;
     updateThread({...t, archived, updatedAt: Date.now()});
     filter = archived ? "archived" : "active";
@@ -423,6 +469,10 @@ export function mountChatWorkspace(notify: (message: string) => void, remote?: R
     notify(archived ? "Conversation archived." : "Conversation restored.");
   });
   deleteButton.addEventListener("click", () => {
+    if (pendingDelivery?.threadId === active().id) {
+      notify("Wait for the in-flight request to finish before deleting this conversation.");
+      return;
+    }
     if (!deleting) {
       deleting = true;
       dialogWarning.hidden = false;
