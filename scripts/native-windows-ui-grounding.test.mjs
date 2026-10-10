@@ -50,7 +50,7 @@ test("unsupported xKiro vision fails before any paid screenshot request",()=>{
 
 test("xKiro capability comes from the public catalogue and prevents image-stripping surprises",()=>{
   assert.match(src,/vision: Option<bool>/);
-  assert.match(src,/v.get("vision")/);
+  assert.ok(src.includes('v.get("vision")'));
   assert.match(src,/No screenshot or paid vision request was sent/);
 });
 
