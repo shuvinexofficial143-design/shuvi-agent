@@ -31,11 +31,15 @@ import {
 import { taskGraphProgress, type GraphAuditEvent } from "./task-graph.mjs";
 import { editingMasterContext, orchestrationWithMasterEditor } from "./master-editor.mjs";
 import { workerQueueView } from "./master-worker-queue.mjs";
+import { MODEL_ROLES, loadModelRoutes, validateModelRoute, selectTaskRoute } from "./model-routing.mjs";
+import type { ModelRoute, TaskModelRoute } from "./model-routing.mjs";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("Missing app root");
 
 let providers: ProviderDescriptor[] = [];
+let modelRoutes: Record<string, ModelRoute> = {};
+let taskModelRoute: TaskModelRoute | null = null;
 let messages: ChatMessage[] = [];
 let pendingAction: PendingAction | null = null;
 let pendingChatProposal: ToolProposal | null = null;
@@ -73,16 +77,11 @@ root.innerHTML = `
   <div class="onboarding-card">
     <div class="orb onboarding-orb">S</div>
     <h1>Set up Shuvi</h1>
-    <p>Choose the AI provider Shuvi should use. Your API key is stored in the operating-system credential store.</p>
+    <p>Shuvi supports multiple AI providers and task-specific models. You can connect providers here or configure a model team later.</p>
 
     <label>
       Provider
       <select id="onboardingProvider"></select>
-    </label>
-
-    <label>
-      Model
-      <input id="onboardingModel" autocomplete="off" />
     </label>
 
     <label id="onboardingBaseUrlLabel" class="hidden">
@@ -95,7 +94,8 @@ root.innerHTML = `
       <input id="onboardingKey" type="password" placeholder="Paste provider API key" autocomplete="off" />
     </label>
 
-    <button id="completeOnboarding" class="primary onboarding-button">Start using Shuvi</button>
+    <button id="completeOnboarding" class="primary onboarding-button">Save provider and open Shuvi</button>
+    <button id="skipOnboarding" type="button" class="onboarding-button">Configure models later</button>
     <p id="onboardingStatus" class="muted"></p>
   </div>
 </div>
@@ -276,6 +276,20 @@ root.innerHTML = `
 
         <p id="settingsStatus" class="muted"></p>
       </div>
+      <section class="panel form-grid" aria-label="Model team routes">
+        <h3>Model Team · Task Routing</h3>
+        <p class="muted">Assign a verified provider and exact model ID to each role. Shuvi routes a task to one AI model at a time; independent parallel workers remain under development. Provider keys are saved separately in Windows Credential Manager above.</p>
+        <label>Task role<select id="teamRole"></select></label>
+        <label>AI provider<select id="teamProvider"></select></label>
+        <label>Exact model ID<input id="teamModel" autocomplete="off" placeholder="Enter the provider's real model ID" /></label>
+        <label id="teamBaseUrlLabel" class="hidden">Custom/Local API URL<input id="teamBaseUrl" autocomplete="off" placeholder="https://.../v1/chat/completions" /></label>
+        <div class="button-row">
+          <button id="saveTeamRoute" class="primary" type="button">Assign model to role</button>
+          <button id="deleteTeamRoute" type="button">Clear role</button>
+        </div>
+        <p id="teamStatus" class="muted" role="status"></p>
+        <div id="teamSummary" class="muted"></div>
+      </section>
         <section class="panel" aria-label="Web Control Center pairing">
           <h3>Web Control Center · Read-only connection</h3>
           <p class="muted">Start a local pairing listener manually. It only confirms that this Shuvi Windows process is running. It cannot run computer commands, inspect private data or approve actions.</p>
@@ -324,12 +338,18 @@ const workspaceInput = el<HTMLInputElement>("#workspaceInput");
 const workspaceStatus = el<HTMLElement>("#workspaceStatus");
 const onboarding = el<HTMLElement>("#onboarding");
 const onboardingProvider = el<HTMLSelectElement>("#onboardingProvider");
-const onboardingModel = el<HTMLInputElement>("#onboardingModel");
 const onboardingBaseUrl = el<HTMLInputElement>("#onboardingBaseUrl");
 const onboardingBaseUrlLabel = el<HTMLElement>("#onboardingBaseUrlLabel");
 const onboardingKey = el<HTMLInputElement>("#onboardingKey");
 const onboardingKeyLabel = el<HTMLElement>("#onboardingKeyLabel");
 const onboardingStatus = el<HTMLElement>("#onboardingStatus");
+const teamRole = el<HTMLSelectElement>("#teamRole");
+const teamProvider = el<HTMLSelectElement>("#teamProvider");
+const teamModel = el<HTMLInputElement>("#teamModel");
+const teamBaseUrl = el<HTMLInputElement>("#teamBaseUrl");
+const teamBaseUrlLabel = el<HTMLElement>("#teamBaseUrlLabel");
+const teamStatus = el<HTMLElement>("#teamStatus");
+const teamSummary = el<HTMLElement>("#teamSummary");
 const resumeBanner = el<HTMLElement>("#resumeBanner");
 const resumeSummary = el<HTMLElement>("#resumeSummary");
 const premiereBridgeState = el<HTMLElement>("#premiereBridgeState");
@@ -392,13 +412,9 @@ function selectedOnboardingProvider(): ProviderDescriptor | undefined {
   return providers.find((provider) => provider.id === onboardingProvider.value);
 }
 
-function syncOnboardingProvider(forceModel = false): void {
+function syncOnboardingProvider(): void {
   const provider = selectedOnboardingProvider();
   if (!provider) return;
-
-  if (forceModel || !onboardingModel.value) {
-    onboardingModel.value = provider.default_model;
-  }
 
   onboardingKeyLabel.classList.toggle("hidden", !provider.api_key_required);
   onboardingBaseUrlLabel.classList.toggle("hidden", !provider.custom_base_url);
@@ -418,11 +434,59 @@ function prepareOnboarding(): void {
     onboardingProvider.value = savedProvider;
   }
 
-  syncOnboardingProvider(true);
+  syncOnboardingProvider();
 
   if (readLocalPreference("shuvi.onboarded") !== "1") {
     onboarding.classList.remove("hidden");
   }
+}
+
+function defaultModelRoute(): ModelRoute {
+  return {
+    provider: providerSelect.value,
+    model: modelInput.value.trim(),
+    base_url: baseUrlInput.value.trim()
+  };
+}
+function loadConfiguredModelRoutes(): void {
+  modelRoutes = loadModelRoutes(
+    readLocalPreference("shuvi.modelRoutes"),
+    providers.map(provider => provider.id)
+  );
+  teamRole.innerHTML = MODEL_ROLES.map(([id, label]) => `<option value="${id}">${label}</option>`).join("");
+  teamProvider.innerHTML = providers.map(provider => `<option value="${provider.id}">${provider.name}</option>`).join("");
+  updateTeamForm();
+  renderModelTeam();
+}
+function updateTeamForm(): void {
+  const configured = modelRoutes[teamRole.value];
+  teamProvider.value = configured?.provider ?? providerSelect.value;
+  teamModel.value = configured?.model ?? "";
+  teamBaseUrl.value = configured?.base_url ?? "";
+  updateTeamBaseUrlVisibility();
+}
+function updateTeamBaseUrlVisibility(): void {
+  teamBaseUrlLabel.classList.toggle("hidden", !["custom", "ollama"].includes(teamProvider.value));
+}
+function renderModelTeam(): void {
+  teamSummary.replaceChildren();
+  for (const [id, label] of MODEL_ROLES) {
+    const line = document.createElement("p");
+    const route = modelRoutes[id];
+    line.textContent = route
+      ? `${label}: ${route.provider} / ${route.model}`
+      : `${label}: uses Master or default provider`;
+    teamSummary.append(line);
+  }
+}
+function restoreTaskRoute(): void {
+  if (taskModelRoute) {
+    activeProvider.textContent = `Task model [${taskModelRoute.role}] · ${taskModelRoute.provider} / ${taskModelRoute.model}`;
+  }
+}
+function beginTaskRoute(text: string): void {
+  taskModelRoute = selectTaskRoute(text, modelRoutes, defaultModelRoute());
+  restoreTaskRoute();
 }
 
 const MAX_PROVIDER_MESSAGES = 80;
@@ -461,9 +525,9 @@ function currentCheckpoint(): SessionCheckpoint {
   return {
     version: 2,
     updated_at_ms: Date.now(),
-    provider: providerSelect.value,
-    model: modelInput.value.trim(),
-    base_url: baseUrlInput.value.trim() || null,
+    provider: taskModelRoute?.provider ?? providerSelect.value,
+    model: taskModelRoute?.model ?? modelInput.value.trim(),
+    base_url: (taskModelRoute?.base_url ?? baseUrlInput.value.trim()) || null,
     messages,
     orchestration
   };
@@ -653,6 +717,7 @@ async function boot(): Promise<void> {
       .join("");
 
     loadSavedProvider();
+    loadConfiguredModelRoutes();
     prepareOnboarding();
     await loadWorkspace();
     await loadRecoveryCheckpoint();
@@ -1291,6 +1356,15 @@ async function runAgentStep(): Promise<void> {
   }
 
   setBusy(true);
+  const route = taskModelRoute ?? { ...defaultModelRoute(), role: "default" };
+  // A blank model is never sent to a paid provider and never silently replaced.
+  if (!route.model.trim()) {
+    messages.push({role:"assistant",content:"No exact AI model is configured for this task. Open Provider and assign a Master or task-specific model. No AI request was sent."});
+    renderMessages();
+    if(remoteTask)await closeRemoteTask("failed");
+    setBusy(false);
+    return;
+  }
 
   if(remoteTask && remoteTask.status === "admitted"){
     try {await sendRemoteReceipt("running");}
@@ -1322,9 +1396,9 @@ async function runAgentStep(): Promise<void> {
   try {
     const response = await invoke<ChatResponse>("chat", {
       input: {
-        provider: providerSelect.value,
-        model: modelInput.value.trim(),
-        base_url: baseUrlInput.value.trim() || null,
+        provider: route.provider,
+        model: route.model,
+        base_url: route.base_url || null,
         messages: providerMessageWindow(messages),
         orchestration_context: orchestrationWithMasterEditor(orchestrationContext(orchestration), messages)
       }
@@ -1419,6 +1493,13 @@ el<HTMLButtonElement>("#resumeTask").addEventListener("click", async () => {
     baseUrlInput.value = checkpoint.base_url ?? "";
     applyProviderDefaults();
   }
+  taskModelRoute = {
+    provider: checkpoint.provider,
+    model: checkpoint.model,
+    base_url: checkpoint.base_url ?? "",
+    role: "resumed"
+  };
+  restoreTaskRoute();
 
   messages = checkpoint.messages;
   orchestration = restored;
@@ -1442,17 +1523,23 @@ el<HTMLButtonElement>("#discardTask").addEventListener("click", async () => {
   await clearActiveCheckpoint();
 });
 
+el<HTMLButtonElement>("#skipOnboarding").addEventListener("click", () => {
+  writeLocalPreference("shuvi.onboarded", "1");
+  onboarding.classList.add("hidden");
+  settingsStatus.textContent = "Add provider keys and exact model IDs in Provider before sending AI requests.";
+});
 onboardingProvider.addEventListener("change", () => {
   onboardingKey.value = "";
   onboardingBaseUrl.value = "";
-  syncOnboardingProvider(true);
+  syncOnboardingProvider();
 });
 
 el<HTMLButtonElement>("#completeOnboarding").addEventListener("click", async () => {
   const provider = selectedOnboardingProvider();
   if (!provider) return;
 
-  const model = onboardingModel.value.trim() || provider.default_model;
+  // Model selection is not an onboarding gate: assign different models per task in the Provider tab.
+  const model = readLocalPreference("shuvi.model") ?? provider.default_model;
   const baseUrl = onboardingBaseUrl.value.trim();
   const apiKey = onboardingKey.value.trim();
 
@@ -1575,6 +1662,51 @@ modelInput.addEventListener("input", () => applyProviderDefaults());
 
 el<HTMLButtonElement>("#saveProvider").addEventListener("click", saveProviderSettings);
 
+teamRole.addEventListener("change", updateTeamForm);
+teamProvider.addEventListener("change", () => {
+  teamModel.value = "";
+  teamBaseUrl.value = "";
+  updateTeamBaseUrlVisibility();
+});
+el<HTMLButtonElement>("#saveTeamRoute").addEventListener("click", () => {
+  const role = teamRole.value;
+  const proposed = {
+    provider: teamProvider.value,
+    model: teamModel.value.trim(),
+    base_url: teamBaseUrl.value.trim()
+  };
+  const validated = validateModelRoute(role, proposed, providers.map(p => p.id));
+  if (!validated) {
+    teamStatus.textContent = "Enter a valid role, provider, exact model ID and (if custom) HTTPS API URL.";
+    return;
+  }
+  const next = { ...modelRoutes, [role]: validated };
+  const encoded = JSON.stringify(next);
+  if (!writeLocalPreference("shuvi.modelRoutes", encoded) ||
+      readLocalPreference("shuvi.modelRoutes") !== encoded) {
+    teamStatus.textContent = "Could not persist model routes. No role was changed.";
+    return;
+  }
+  modelRoutes = next;
+  teamStatus.textContent = `${role} route saved. Save that provider's API key separately above. No paid test request was made.`;
+  renderModelTeam();
+});
+el<HTMLButtonElement>("#deleteTeamRoute").addEventListener("click", () => {
+  const role = teamRole.value;
+  const next = { ...modelRoutes };
+  delete next[role];
+  const encoded = JSON.stringify(next);
+  if (!writeLocalPreference("shuvi.modelRoutes", encoded) ||
+      readLocalPreference("shuvi.modelRoutes") !== encoded) {
+    teamStatus.textContent = "Could not save removal. Previous role remains.";
+    return;
+  }
+  modelRoutes = next;
+  teamStatus.textContent = `${role} route cleared.`;
+  updateTeamForm();
+  renderModelTeam();
+});
+
 el<HTMLButtonElement>("#saveKey").addEventListener("click", async () => {
   const provider = selectedProvider();
   const apiKey = apiKeyInput.value.trim();
@@ -1620,6 +1752,7 @@ el<HTMLFormElement>("#chatForm").addEventListener("submit", async (event) => {
   prompt.setCustomValidity("");
 
   saveProviderSettings();
+  beginTaskRoute(content);
   cancelRequested = false;
   orchestration = createAgentOrchestrationState();
   renderOrchestrationStatus();
@@ -1945,6 +2078,7 @@ async function tickRemoteAgent():Promise<void>{
     orchestration=createAgentOrchestrationState();
     renderOrchestrationStatus();
     messages.push({role:"user",content:m.text});
+    beginTaskRoute(m.text);
     renderMessages();
     remoteStatusLabel("Remote command admitted · native execution not yet proven");
     await runAgentStep();
