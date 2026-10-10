@@ -1,6 +1,8 @@
-// Strict, deterministic routing for the packaged Windows Shuvi dashboard.
-// Ordinary explanation/questions use chat; explicit @role always takes priority.
-// All model IDs must be exact user choices; never silently pick or bill another.
+// Native task routing. Regex only separates ordinary Chat from likely actions;
+// it never decides WHICH Windows tool to run. The selected Master AI sees the
+// user's original text, understands the intended app/action and proposes a
+// typed Windows tool. No silent provider/model fallback or auto execution.
+// Explicit @role is an intentional user choice to call a specialist directly.
 export const NATIVE_MODEL_ROLES=Object.freeze([
  ["chat","Normal Chat"],
  ["master","Master / general computer tasks"],
@@ -40,7 +42,7 @@ const intents=[
  ["research",/\b(?:browse|browser|google search|web search|research|search the web)\b|वेब पर खोज|रिसर्च/iu],
  ["vision",/\b(?:screenshot|inspect screen|screen vision)\b|स्क्रीनशॉट|स्क्रीन देख/iu]
 ];
-const executionVerb=/\b(?:open|launch|start|create|make|build|edit|render|export|write|save|modify|design|generate|run|search|find|inspect|control|send|reply|read|download|upload|close|click|type|commit|push|install|delete|remove|update)\b|खोलो|खोलना|बनाओ|बनाना|करो|करना|लिखो|लिखना|भेजो|भेजना|सेव|एडिट|चलाओ|रेंडर|डिलीट|हटाओ|डाउनलोड|इंस्टॉल|खोजो|देखो|बदल/iu;
+const executionVerb=/\b(?:open|launch|start|create|make|build|edit|render|export|write|save|modify|design|generate|run|search|find|inspect|control|send|reply|read|download|upload|close|click|type|commit|push|install|delete|remove|update|khol(?:o|na|de|do)?|khul(?:wa|do)?|chala(?:o|do)?|chal(?:u|ao)|karo|kar\s?do|kr\s?do|bhejo|likho|dikhao)\b|खोलो|खोलना|खोल\s?दो|बनाओ|बनाना|करो|करना|लिखो|लिखना|भेजो|भेजना|सेव|एडिट|चलाओ|रेंडर|डिलीट|हटाओ|डाउनलोड|इंस्टॉल|खोजो|देखो|बदल/iu;
 export function classifyNativeIntent(text) {
  if(typeof text!=="string")return "chat";
  const input=text.trim();
@@ -75,9 +77,16 @@ export function chooseNativeRoute(text, config) {
  const role=classifyNativeIntent(text);
  if(!config||!config.provider||!config.roles||typeof config.roles!=="object")
   return {ok:false,role,error:"First set up Shuvi AI in Settings."};
- const model=config.roles[role];
+ // The Master is the one entry point for all ordinary Windows commands.
+ // Worker model selection is an explicit @role override, not a brittle regex
+ // shortcut that silently bypasses Master reasoning.
+ const explicit=typeof text==="string"&&text.trim().match(/^@([a-z0-9-]+)(?:\s|$)/i);
+ const intentionalRole=explicit&&names.has(explicit[1].toLowerCase())?explicit[1].toLowerCase():null;
+ const modelRole=intentionalRole|| (role==="chat"?"chat":"master");
+ const model=config.roles[modelRole];
  if(!validModelId(model))
-  return {ok:false,role,error:"No model assigned for "+role+". Choose it under Settings → AI Model Team. No other model was used."};
+  return {ok:false,role,error:"No model assigned for "+modelRole+". Set your selected "+
+   (modelRole==="master"?"Master AI":"task")+" model in Settings → AI Model Team. No other model was used."};
  const base_url=(config.provider==="custom"||config.provider==="ollama")?safeNativeEndpoint(config.provider,config.base_url):"";
  if(config.provider==="custom"&&!base_url)
   return {ok:false,role,error:"Custom provider URL is invalid. Fix it in Settings."};

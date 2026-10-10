@@ -244,7 +244,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    // Keep paid-request context bounded and avoid forwarding any credential.
    const messages:NativeChatMessage[]=[...prev.slice(-20),{role:"user",content:text}];
    sending=true;
-   refreshState("Sending "+route.role+" task to "+route.provider+" / "+route.model+"…");
+   refreshState("Sending "+(route.role==="chat"?"chat":"Windows task for Master/selected specialist")+
+    " to "+route.provider+" / "+route.model+"…");
    try{
     const response=await invoke<NativeChatResponse>("chat",{
       input:{provider:route.provider,model:route.model,base_url:route.base_url||null,messages,orchestration_context:null}

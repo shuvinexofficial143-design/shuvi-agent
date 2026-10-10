@@ -14,11 +14,16 @@ test("WhatsApp Desktop tool is recognized and requires explicit approval",()=>{
  assert.match(native,/invoke<ActionResult>\("execute_action"/);
  assert.match(native,/Allow once/);
 });
-test("installed WhatsApp route uses assigned model and never silently chooses another",()=>{
+test("WhatsApp commands pass to explicitly selected Master; no silent replacement",()=>{
  assert.equal(classifyNativeIntent("Open WhatsApp"),"whatsapp");
  assert.equal(classifyNativeIntent("WhatsApp खोलो"),"whatsapp");
  assert.equal(classifyNativeIntent("What is WhatsApp?"),"chat");
  assert.equal(chooseNativeRoute("Open WhatsApp",{provider:"xkiro",roles:{chat:"mistral/mistral-large"}}).ok,false);
+ const chosen=chooseNativeRoute("Open WhatsApp",{provider:"xkiro",roles:{chat:"model/chat",master:"model/master",whatsapp:"model/worker"}});
+ assert.equal(chosen.ok,true);
+ assert.equal(chosen.role,"whatsapp");
+ assert.equal(chosen.model,"model/master");
+ assert.equal(chooseNativeRoute("@whatsapp Open WhatsApp",{provider:"xkiro",roles:{chat:"model/chat",master:"model/master",whatsapp:"model/worker"}}).model,"model/worker");
 });
 test("desktop launch is fixed, local, and does not falsely claim UI window or message verified",()=>{
  assert.match(rust,/Get-StartApps/);
