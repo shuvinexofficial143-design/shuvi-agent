@@ -3321,6 +3321,17 @@ fn stage_tool(
             let prompt = arg_string(&proposal.arguments, "prompt")?;
             let provider = provider_context
                 .ok_or_else(|| "Screen inspection requires the active provider context.".to_string())?;
+            // Fail BEFORE staging a useless approval. xKiro's text endpoint
+            // currently has no native screenshot/vision adapter in Shuvi.
+            if !matches!(
+                provider.provider.as_str(),
+                "gemini" | "anthropic" | "openai" | "openrouter" | "ollama" | "custom"
+            ) {
+                return Err(format!(
+                    "Screen vision adapter is unavailable for provider '{}'. No Windows action has been queued and no image was sent. Use ui_windows and ui_discover for read-only Accessibility inspection, or explicitly configure a supported vision provider/model. Never silently switch paid models.",
+                    provider.provider
+                ));
+            }
             let detail = format!(
                 "Capture the current screen and send it to {}/{} for visual analysis: {}",
                 provider.provider, provider.model, prompt

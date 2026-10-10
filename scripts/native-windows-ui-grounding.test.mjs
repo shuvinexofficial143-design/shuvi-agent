@@ -38,3 +38,10 @@ test("Windows preview installer is manual-only until repairs are accepted",()=>{
   assert.match(preview,/workflow_dispatch:/);
   assert.doesNotMatch(preview,/^\s*push:\s*$/m);
 });
+
+test("unsupported xKiro vision fails before approval rather than consuming paid calls",()=>{
+  const stage=src.slice(src.indexOf('"inspect_screen" => {'),src.indexOf('"list_processes" => ('));
+  assert.match(stage,/"gemini" \\| "anthropic" \\| "openai" \\| "openrouter"/);
+  assert.match(stage,/No Windows action has been queued and no image was sent/);
+  assert.match(stage,/ui_windows and ui_discover/);
+});
