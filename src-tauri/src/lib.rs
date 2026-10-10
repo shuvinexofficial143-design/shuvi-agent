@@ -8682,13 +8682,13 @@ async fn analyze_png_bytes_with_provider(
                 "messages": [{
                     "role": "user",
                     "content": [
-                        { "type": "text", "text": prompt },
                         {
                             "type": "image_url",
                             "image_url": {
                                 "url": format!("data:image/png;base64,{encoded}")
                             }
-                        }
+                        },
+                        { "type": "text", "text": prompt }
                     ]
                 }]
             });

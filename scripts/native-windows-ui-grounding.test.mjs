@@ -53,3 +53,10 @@ test("xKiro capability comes from the public catalogue and prevents image-stripp
   assert.match(src,/v.get("vision")/);
   assert.match(src,/No screenshot or paid vision request was sent/);
 });
+
+test("Settings displays xKiro Vision capability before a screenshot task",()=>{
+  const settings=readFileSync(new URL("../web-dashboard/src/native-model-setup.ts",import.meta.url),"utf8");
+  assert.match(settings,/vision\?:boolean/);
+  assert.match(settings,/Vision ✓/);
+  assert.match(settings,/assign a Vision-enabled model to the Master role/);
+});

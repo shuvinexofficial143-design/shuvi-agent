@@ -8,7 +8,7 @@ export type NativeInvoke = <T>(command:string,args?:Record<string,unknown>)=>Pro
 export type ProviderInfo = {id:string;name:string;default_model:string;api_key_required:boolean;custom_base_url:boolean};
 export type ModelTeamConfig = {provider:string;base_url:string;roles:Record<string,string>};
 export type ModelTeamHandle = {current():ModelTeamConfig|null};
-type CatalogItem={id:string;display_name:string;access_tier:string;pricing?:{input?:number;output?:number};tools?:boolean};
+type CatalogItem={id:string;display_name:string;access_tier:string;pricing?:{input?:number;output?:number};tools?:boolean;vision?:boolean};
 const STORAGE="shuvi.native.model.team.v1";
 const make=<K extends keyof HTMLElementTagNameMap>(tag:K,text=""):HTMLElementTagNameMap[K]=>{
  const n=document.createElement(tag);if(text)n.textContent=text;return n;
@@ -44,7 +44,8 @@ function modelLabel(m:CatalogItem):string{
  const tier=["free","paid","premium"].includes(m.access_tier)?m.access_tier:"price unknown";
  const price=m.pricing&&typeof m.pricing.input==="number"&&typeof m.pricing.output==="number"
   ?" · $"+m.pricing.input+"/$"+m.pricing.output+" per 1M tokens":"";
- return (m.display_name||m.id)+" — "+m.id+" ["+tier+"]"+price;
+ const vision=m.vision===true?" · Vision ✓":m.vision===false?" · No Vision":" · Vision unknown";
+ return (m.display_name||m.id)+" — "+m.id+" ["+tier+"]"+vision+price;
 }
 export function mountNativeModelSetup(invoke:NativeInvoke,providers:ProviderInfo[]):ModelTeamHandle {
  const settings=document.querySelector("#view-settings .settings-grid");
@@ -77,7 +78,7 @@ export function mountNativeModelSetup(invoke:NativeInvoke,providers:ProviderInfo
  const saveStatus=make("p","Select a Chat model before sending a message.");saveStatus.setAttribute("role","status");
  const subtitle=make("h4","Assign one AI model per task");
  const models=make("div");models.className="shuvi-native-role-grid";
- const help=make("p","Select exact models for Chat, Master, Blender, Adobe and other jobs. If a task has no assigned model, Shuvi will ask you to configure it instead of charging a different model.");
+ const help=make("p","Select exact models for Chat, Master, Blender, Adobe and other jobs. For screen inspection, assign a Vision-enabled model to the Master role (xKiro public catalog marks Vision ✓). Shuvi checks that model capability before sending any screenshot; it never silently chooses a different paid model.");
  help.className="shuvi-native-help";
  card.append(heading,grid,fetchRow,catalogStatus,subtitle,help,models,saveStatus);
  settings.insertBefore(card,settings.firstChild);
