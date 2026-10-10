@@ -10670,10 +10670,11 @@ public static class ShuviDrag {{
 "@
 Add-Type -AssemblyName System.Windows.Forms
 $bounds=[System.Windows.Forms.SystemInformation]::VirtualScreen
-foreach ($p in @(@({x1},{y1}),@({x2},{y2}))) {{
-  if ($p[0] -lt $bounds.Left -or $p[0] -ge $bounds.Right -or $p[1] -lt $bounds.Top -or $p[1] -ge $bounds.Bottom) {{
-    throw 'Pointer drag endpoint is outside virtual desktop.'
-  }}
+if ({x1} -lt $bounds.Left -or {x1} -ge $bounds.Right -or {y1} -lt $bounds.Top -or {y1} -ge $bounds.Bottom) {{
+  throw 'Pointer drag start is outside virtual desktop.'
+}}
+if ({x2} -lt $bounds.Left -or {x2} -ge $bounds.Right -or {y2} -lt $bounds.Top -or {y2} -ge $bounds.Bottom) {{
+  throw 'Pointer drag end is outside virtual desktop.'
 }}
 if (-not [ShuviDrag]::SetCursorPos({x1},{y1})) {{ throw 'Cannot set initial pointer position.' }}
 Start-Sleep -Milliseconds 60
