@@ -41,7 +41,7 @@ fn verify_output(output:&Value,root:&Path)->Result<(),String>{
 pub(crate) fn execute(
     python_exe:&str,blender_exe:&str,blend_file:Option<&str>,
     output_dir:&str,plan:&Value,allow_render:bool,
-    script:&Path,work_dir:&Path,state:&ActionState
+    script:&Path,work_dir:&Path,state:&ActionState,execution_action_id:Option<&str>
 )->Result<Value,String>{
     if !script.is_file(){return Err("Fixed Blender plan adapter missing.".into());}
     let plan_bytes=serde_json::to_vec(plan).map_err(|_|"Invalid Blender JSON plan.".to_string())?;
@@ -70,10 +70,27 @@ pub(crate) fn execute(
         let _=child.wait();
         return Err(format!("Blender plan launcher was stopped before execution: {error}"));
     }
+    if let Some(action_id)=execution_action_id{
+        match state.running_action_children.lock(){
+            Ok(mut running)=>{running.insert(action_id.to_string(),pid);}
+            Err(_)=>{
+                let _=terminate_managed_process_tree(pid);
+                unregister_managed_process(state,pid);
+                let _=child.kill();
+                let _=child.wait();
+                return Err("Could not register cancellable Blender child; stopped before dispatch.".into());
+            }
+        }
+    }
+    // Track the exact registered child so remote Stop can terminate its entire
+    // owned Windows process tree (including the Blender background child).
     let output=bounded_child::collect_with_deadline(child,Duration::from_secs(120));
     if output.is_err(){let _=terminate_managed_process_tree(pid);}
+    if let Some(action_id)=execution_action_id{
+        if let Ok(mut running)=state.running_action_children.lock(){running.remove(action_id);}
+    }
     unregister_managed_process(state,pid);
-    let output=output.map_err(|_|"Blender plan outcome unknown after deadline; inspect before retry.".to_string())?;
+    let output=output.map_err(|_|"Blender plan outcome unknown after deadline or cancellation; inspect before retry.".to_string())?;
     if !output.status.success(){
         return Err("Blender plan failed or had partial/unknown results; inspect scene/output before retry.".into());
     }
