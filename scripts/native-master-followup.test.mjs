@@ -134,3 +134,21 @@ test("repeated identical proposal is blocked instead of staged or executed",asyn
  assert.equal(s.staged.length,1);
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
 });
+
+test("short answer to Master clarification stays on Master, never drops into normal Chat",async()=>{
+ const prompt={content:"कौन-सा Adobe ऐप खोलूँ? Premiere Pro या Photoshop?",provider:"xkiro",model:"model/master",tool_proposal:null};
+ const s=setup({first:prompt,second:detection});
+ await until(()=>s.transport.connected(),"IPC");
+ const first=await s.transport.send("Adobe open karo","choice-thread",0);
+ assert.equal(first.ok,true);
+ assert.equal(s.staged.length,0);
+ const second=await s.transport.send("Premiere Pro","choice-thread",1);
+ assert.equal(second.ok,true);
+ assert.equal(s.chatInputs.length,2);
+ assert.equal(s.chatInputs[0].model,"model/master");
+ assert.equal(s.chatInputs[1].model,"model/master",
+  "single app name is the answer to prior Master clarification");
+ assert.equal(s.chatInputs[1].messages.at(-1).content,"Premiere Pro");
+ assert.equal(s.staged[0].proposal.tool,"premiere_detect");
+ assert.equal(s.approval.hidden,false);
+});
