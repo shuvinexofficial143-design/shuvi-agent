@@ -56,6 +56,12 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  const notes=field("p","Windows commands use native Tauri IPC. Every proposed tool action requires your explicit approval. No automatic paid retry.");
  notes.className="shuvi-native-note";
  const approval=field("div");approval.className="shuvi-native-approval";approval.hidden=true;
+ approval.setAttribute("role","region");
+ approval.setAttribute("aria-label","Windows action needs your approval");
+ const actionFeedback=field("div");
+ actionFeedback.className="shuvi-native-action-feedback";
+ actionFeedback.setAttribute("role","status");
+ actionFeedback.hidden=true;
  const pendingText=field("p");
  const approve=field("button","Allow once");approve.type="button";
  const deny=field("button","Deny");deny.type="button";
@@ -71,8 +77,19 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  const mobileStatus=field("p","Checking optional mobile agent pairing…");
  mobileStatus.setAttribute("role","status");
  mobile.append(mobileTitle,mobileCode,mobileConnect,mobileDisconnect,mobileStatus);
- panel.append(title,status,showDetails,openSettings,notes,approval);
+ panel.append(title,status,showDetails,openSettings,notes);
  chat.parentElement?.insertBefore(panel,chat);
+ // A confirmation above the entire chat falls out of view while reading the
+ // latest reply. Keep all pending native approvals adjacent to the composer.
+ const chatForm=document.getElementById("chatForm");
+ const composerParent=chatForm?.parentElement;
+ if(composerParent){
+  composerParent.insertBefore(actionFeedback,chatForm);
+  composerParent.insertBefore(approval,chatForm);
+ }else{
+  // Defensive fallback for an incomplete preview; never lose an approval UI.
+  panel.append(actionFeedback,approval);
+ }
  let team:ModelTeamHandle|null=null;
  let ready=false;
  let sending=false;
@@ -90,6 +107,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   approve.disabled=sending;
   deny.disabled=sending;
   onChange();
+ }
+ function showActionFeedback(message:string){
+  actionFeedback.textContent=message;
+  actionFeedback.hidden=false;
  }
  function clearPending(){
   pending=null;
@@ -139,6 +160,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     await invoke<void>("deny_action",{actionId:current.action.id});
     updateReply(current.threadId,current.promptIndex,
       (replies.get(current.threadId)?.[current.promptIndex]||"")+"\n\nWindows tool denied by you. No action executed.");
+    showActionFeedback("Windows action denied by you. Nothing was executed.");
     refreshState("Action denied. Native approval journal updated.");
    }else{
     refreshState("Executing only the approved native action "+current.action.id.slice(0,8)+"…");
@@ -154,12 +176,14 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     updateReply(current.threadId,current.promptIndex,
       (replies.get(current.threadId)?.[current.promptIndex]||"")+
       "\n\n"+label+(output?"\n"+output:""));
+    showActionFeedback(label+(output?" "+output:""));
     refreshState(label);
    }
   }catch(error){
    updateReply(current.threadId,current.promptIndex,
     (replies.get(current.threadId)?.[current.promptIndex]||"")+
     "\n\nNative action outcome unknown: "+String(error)+". Do not retry blindly.");
+   showActionFeedback("Native action outcome unknown. Review Activity/Audit before retrying.");
    refreshState("Native action outcome unknown. Check Activity/Audit.");
   }finally{
    sending=false;
@@ -230,6 +254,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     histories.set(threadId,[...messages,{role:"assistant",content:reply}].slice(-22));
     updateReply(threadId,promptIndex,reply);
     if(response.tool_proposal){
+     actionFeedback.hidden=true;
      try{
       const proposed=await invoke<Pending>("prepare_tool",{
        proposal:response.tool_proposal,provider:route.provider,model:route.model,baseUrl:route.base_url||null
@@ -239,8 +264,12 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       pendingText.textContent="Permission required: "+proposed.summary+
         "\nRisk: "+proposed.risk+"\n"+proposed.detail;
       approval.hidden=false;
+      showActionFeedback("Windows action prepared. Read the approval below and select Allow once or Deny. Nothing runs before approval.");
       refreshState("Waiting for your explicit Allow once / Deny decision. No tool executed.");
-     }catch{
+      approval.scrollIntoView?.({block:"nearest",behavior:"smooth"});
+     }catch(error){
+      showActionFeedback("AI replied but Windows could not prepare its action: "+String(error)+
+       ". Nothing executed. Check the action details; do not resend this paid request blindly.");
       // The paid model response already arrived. A separate Windows prepare failure
       // cannot turn that successful AI response into an unsent draft/retry.
       const notice="Windows tool preparation failed or its outcome is unknown. No execute command was sent. Do not resend this paid AI message just to retry the tool.";
@@ -250,7 +279,16 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       return {ok:true,reply:acknowledgedReply};
      }
     }else{
-     refreshState("Native AI replied. No Windows tool action was requested.");
+     if(route.role!=="chat"){
+      const likeToolJson=/["']tool["']\s*:/.test(reply);
+      showActionFeedback(likeToolJson
+       ? "The AI wrote tool-like JSON, but it was not recognized as a valid native action. No Windows action was prepared or executed. No automatic retry."
+       : "AI replied without requesting a Windows action. No application opened or message sent. No automatic retry.");
+      refreshState("AI replied without an executable Windows tool. No action performed.");
+     }else{
+      actionFeedback.hidden=true;
+      refreshState("Native AI replied. No Windows tool action was requested.");
+     }
     }
     return {ok:true,reply};
    }catch(error){
