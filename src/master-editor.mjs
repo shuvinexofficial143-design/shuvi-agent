@@ -29,8 +29,8 @@ export const EDITOR_WORKERS = Object.freeze({
   blender: Object.freeze({
     available: true,
     inspection: "blender_inspect",
-    execution: null,
-    role: "read-only Python controller bridge; mutation/rendering not connected"
+    execution: "blender_run_plan",
+    role: "approved bounded PlanRunner with readback and saved artifact verification"
   })
 });
 const EDITING_INTENT = /(?:premiere|premire|प्रिमियर|एडिट|editing|editor|\bedit\b|blender|ब्लेंडर|after\s*effects|आफ्टर\s*इफेक्ट|remotion|motion\s*graphic|मोशन\s*ग्राफिक|cinematic|सिनेमैटिक|\bvfx\b|video|वीडियो|reel|रील)/i;
@@ -42,7 +42,7 @@ const MASTER_GUIDANCE = [
   "- Premiere: use premiere_context/premiere_timeline and current bridge evidence; use typed native editing and final export with fresh project/sequence/clip guards.",
   "- Motion asset needed? Route to existing after_effects_run with exact project/revision OR motion_graphics_generate_plan -> motion_graphics_run_remotion. A planner response is NOT a rendered asset.",
   "- For Remotion-to-Premiere handoff, require reviewed render, motion_graphics_accept_final_remotion and motion_graphics_plan_premiere_insertion before the approved premiere_insert_media step. Never infer a verified render from a path.",
-  "- Blender supports blender_inspect read-only through an explicitly approved Python background bridge. Actual 3D edits, saves and renders have no connected native worker yet; do not claim their execution.",
+  "- Blender read-only via blender_inspect; for approved modeling/animation use blender_run_plan with 1..6 typed validated operations, ending in verified file.checkpoint or render.execute. These are bounded background actions, not live GUI editing or a persistent 3D session.",
   "- Browser can research asset sources; download/permission, local path and usage rights need independent confirmation before Premiere import.",
   "- Use the existing task_graph with dependency-bound typed action receipts when useful, never model-supplied completion. Shared Windows UI actions are sequential; all mutations keep normal approval, audit and checkpoints.",
   "- A single run has an eight-action safety budget. If more work is needed, preserve progress and report unfinished stages; never mark the whole edit done because one action succeeded."
