@@ -15,10 +15,19 @@
 - Fixed helper is bundled as a Tauri resource, not an AI-created or user-provided Python source string. Rust always stages the typed tool through normal permissions and the existing native action audit.
 - Single native execution lease remains authoritative. Lock hints on the UI are **not** parallel execution guarantees.
 
+## New bounded Blender editing/rendering adapter
+
+- `blender_run_plan` accepts **one high-risk approved** declarative plan with at most 6 steps, 90-second internal plan timeout, one owned authenticated Blender session and a fixed bundled `shuvi_blender_plan.py` adapter. Python package `Plan.from_dict` validates payloads and `PlanRunner` dispatches only catalogued typed operations with independent readback.
+- The caller supplies an existing absolute `Python.exe` (Python 3.11+), `Blender.exe`, optional existing `.blend`, existing output folder, explicit boolean `allow_render`, and the typed plan. User-supplied Python source and arbitrary shell commands are not permitted.
+- The separate package's `SafetyPolicy(allow_mutations=True,allow_destructive=False,allow_file_writes=True,allow_rendering=allow_render)` authorizes normal modeling/animation within exactly the currently approved plan. It cannot perform destructive operations. Every plan must **end in** `file.checkpoint` (verified new `.blend`) or `render.execute` (bounded verified PNG).
+- The Python worker compares verified output SHA-256 and output-folder path; Rust independently streams the artifact, enforces the exact SHA-256 and a 128 MiB cap, then returns a typed success. The final output is not imported automatically; the Master must inspect the resulting path and use Premiere's separately guarded `premiere_import_media` action for PNG inputs. Blender `.blend` is not directly importable in Premiere.
+- Native Stop is bound to the worker's registered Python process and its owned Blender descendant; a 4 GB managed-RAM watchdog and 120-second process deadline guard are present. Interruptions still mean the host state or saved output may be uncertain, not automatically rolled back.
+- This is **one bounded background session per approved plan**. It is not persistent Blender UI control, unrestricted 3D rendering, multiprocess parallel authoring, or a complete professional editing acceptance test. Real Windows host tests, actual installed Python package and Blender, disposable project acceptance, and verified PNG-to-Premiere insertion are still pending.
+
 ## Not implemented or verified
 
 - No complete autonomous multi-process worker dispatcher or independent AI models per worker yet. The native master still owns model calls, and one native tool executes at a time.
-- The Blender bridge is **read-only** and launches a controlled background Blender worker, not a GUI/mouse-controlled scene. Blender mutations, saves, render outputs, task-to-task Blender session persistence and roundtrip asset import into Premiere are pending.
+- The `blender_inspect` path remains **read-only**. A separate, approved bounded `blender_run_plan` now supports catalogued mutations and new verified outputs in one background session, but host acceptance, persistent Blender sessions, unrestricted tool coverage and Premiere import remain pending.
 - A few Premiere/After Effects/Remotion tool families exist, but a complete cinematic editing workflow is not certified; actual application runtime acceptance needs an accessible Windows server and user-provided disposable sample projects.
 - Internet asset lookup does not imply download rights or local availability.
 - Work on this branch is **not** a Vercel deployment, production merge, signed installer, or AntCloud installation.
