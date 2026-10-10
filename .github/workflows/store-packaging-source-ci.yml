@@ -1,0 +1,40 @@
+name: Windows Store Packaging Source Validation
+
+on:
+  push:
+    branches:
+      - phase1/safety-reconciliation-oct9
+    paths:
+      - .github/workflows/store-packaging-source-ci.yml
+      - .github/workflows/microsoft-store-msix.yml
+      - scripts/build-store-msix.ps1
+      - scripts/store-msix-readiness.test.mjs
+
+permissions:
+  contents: read
+
+jobs:
+  windows-powershell-parse:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify MSIX packaging script parses in Windows PowerShell
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $issues = $null
+          $scriptPath = (Resolve-Path "./scripts/build-store-msix.ps1").Path
+          [void][System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$tokens, [ref]$issues)
+          if ($issues.Count -ne 0) {
+            $issues | ForEach-Object { Write-Error $_.Message }
+            throw "MSIX PowerShell syntax is invalid"
+          }
+          Write-Host "Windows PowerShell parser: PASS"
+      - name: Validate readiness tests
+        shell: pwsh
+        run: |
+          node --test scripts/store-msix-readiness.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw "Store packaging contract tests failed" }
