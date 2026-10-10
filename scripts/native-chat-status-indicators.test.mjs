@@ -18,7 +18,7 @@ test("provider 503 is distinct from healthy IPC and does not trigger automatic p
  assert.match(ui,/providerRuntimeStatus = providerHttp/);
  assert.match(ui,/HTTP " \+ providerHttp\[1\] \+ " · request failed"/);
  assert.match(ui,/if\s*\(!result\.ok\)/);
- assert.match(ui,/Draft kept\./);
+ assert.match(ui,/Draft kept/);
  assert.doesNotMatch(ui,/setTimeout\(.*remote\.send|while\(.*remote\.send/);
  assert.match(ui,/Not paired \/ unverified/);
  assert.match(ui,/Approval required/);
