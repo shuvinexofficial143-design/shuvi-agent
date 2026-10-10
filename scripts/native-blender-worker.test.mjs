@@ -40,9 +40,10 @@ test("native Blender worker never reports success without an authenticated host 
   assert.match(py,/rendering_allowed": False/);
   assert.match(mod,/value\.get\("status"\)\.and_then\(Value::as_str\)!=Some\("succeeded"\)/);
 });
-test("Blender mutation/render APIs are not added to the model allowlist",()=>{
+test("Blender plan execution is a separate explicitly permissioned native path",()=>{
   const allowlist=rust.split("fn parse_tool_proposal(")[1].split("fn chat_response(")[0];
   assert.match(allowlist,/\| "blender_inspect"/);
-  assert.doesNotMatch(allowlist,/\| "blender_(?:run|render|save|mutate)"/);
+  assert.match(allowlist,/\| "blender_run_plan"/);
+  assert.doesNotMatch(allowlist,/\| "blender_(?:render|save|mutate)"/);
   assert.ok(py.includes("No arbitrary bpy/Python, mutation, save or render."));
 });
