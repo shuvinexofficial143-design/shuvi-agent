@@ -180,7 +180,9 @@ Available tools:
 - capture_screen: {}
 - inspect_screen: {"prompt":"what should be understood from the current screen"}
 - list_processes: {}
-- ui_find: {"name":"exact visible name","automation_id":"optional exact automation id","window":"optional exact top-level window name"}
+- ui_windows: {} — enumerate current top-level Windows desktop windows with actual names, process names, PIDs and UIA class names; read only. Use when a title is unknown or a previous selector failed. Never guess window titles repeatedly.
+- ui_discover: {"window":"application name or title"} — READ ONLY: enumerate named UI elements, AutomationIds, ControlTypes and bounds within one unambiguously matched window. Use this when a button label has changed or when similar controls must be distinguished. If controls are missing, report limitations rather than inventing selectors.
+- ui_find: {"name":"element label from discovery","automation_id":"optional exact automation id","window":"app title/name (exact OR unique equivalent allowed)"} — read only. Prefer observed element labels/IDs from ui_discover before invoking an action; avoid blind guesses.
 - ui_click: {"name":"exact visible name","automation_id":"optional exact automation id","window":"optional exact top-level window name"}
 - ui_set_value: {"name":"exact visible name","automation_id":"optional exact automation id","window":"optional exact top-level window name","value":"text to enter"}
 - ui_focus: {"name":"exact visible name","automation_id":"optional exact automation id","window":"optional exact top-level window name"}
@@ -643,6 +645,8 @@ enum ToolAction {
     CaptureScreen,
     InspectScreen { prompt: String, provider: ProviderContext },
     ListProcesses,
+    UiWindows,
+    UiDiscover { window: String },
     UiFind { name: Option<String>, automation_id: Option<String>, window: Option<String> },
     UiClick { name: Option<String>, automation_id: Option<String>, window: Option<String> },
     UiSetValue { name: Option<String>, automation_id: Option<String>, window: Option<String>, value: String },
@@ -1618,6 +1622,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "capture_screen"
         | "inspect_screen"
         | "list_processes"
+        | "ui_windows"
+        | "ui_discover"
         | "ui_find"
         | "ui_click"
         | "ui_set_value"
@@ -2554,12 +2560,63 @@ fn ui_condition_script(
     }
 }
 
+// The window argument is an app identity hint, NOT necessarily an exact UIA title.
+// Prefer an exact visible title; fall back only to one unambiguous equivalent.
+// Never pick the first of multiple windows or silently escape to the desktop root.
 fn ui_root_script(window: Option<&str>) -> String {
     if let Some(window_name) = window {
         let escaped = ps_single_quote(window_name);
-        format!(
-            "$desktop = [System.Windows.Automation.AutomationElement]::RootElement\n$windowCondition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, '{escaped}')\n$windows = $desktop.FindAll([System.Windows.Automation.TreeScope]::Children, $windowCondition)\nif ($windows.Count -eq 0) {{ throw 'Requested top-level window was not found.' }}\nif ($windows.Count -gt 1) {{ throw ('Window selector matched ' + $windows.Count + ' windows. Use a more specific exact window name.') }}\n$root = $windows.Item(0)"
-        )
+        r#"
+$requestedWindow = '__SHUVI_WINDOW_NAME__'
+$desktop = [System.Windows.Automation.AutomationElement]::RootElement
+$windows = $desktop.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)
+$candidates = @()
+for ($i = 0; $i -lt [Math]::Min($windows.Count, 200); $i++) {
+    try {
+        $el = $windows.Item($i)
+        $title = [string]$el.Current.Name
+        $pidValue = [int]$el.Current.ProcessId
+        if ([string]::IsNullOrWhiteSpace($title) -and $pidValue -le 0) { continue }
+        $processName = ''
+        try { $processName = [string](Get-Process -Id $pidValue -ErrorAction Stop).ProcessName } catch {}
+        $candidates += [PSCustomObject]@{ Element = $el; Title = $title; Pid = $pidValue; Process = $processName }
+    } catch {}
+}
+$selected = @($candidates | Where-Object { $_.Title -ieq $requestedWindow })
+if ($selected.Count -eq 0) {
+    # Normalize product suffixes/version years; e.g. Adobe Premiere Pro vs Adobe Premiere.
+    $normalize = {
+        param([string]$value)
+        (($value.ToLowerInvariant() -replace '(?i)\b(adobe|pro|20\d\d)\b', ' ') -replace '[^\p{L}\p{Nd}]+', ' ' -replace '\s+', ' ').Trim()
+    }
+    $needle = & $normalize $requestedWindow
+    if ($needle.Length -ge 5) {
+        $selected = @($candidates | Where-Object {
+            $titleNormal = & $normalize $_.Title
+            $titleNormal -eq $needle -or
+            $titleNormal.StartsWith($needle + ' ') -or
+            $titleNormal.EndsWith(' ' + $needle) -or
+            $titleNormal.Contains(' ' + $needle + ' ') 
+        })
+        if ($selected.Count -eq 0) {
+            # A window can have a generic caption ("Home") while its process
+            # identifies the app. This is only permitted if exactly one match.
+            $selected = @($candidates | Where-Object {
+                $processNormal = & $normalize $_.Process
+                $processNormal -eq $needle -or $processNormal.StartsWith($needle + ' ')
+            })
+        }
+    }
+}
+if ($selected.Count -ne 1) {
+    $sample = @($candidates | Select-Object -First 12 | ForEach-Object { $_.Title + ' [PID ' + $_.Pid + ', ' + $_.Process + ']' }) -join '; '
+    if ($selected.Count -eq 0) {
+        throw ('Requested window not uniquely found: ' + $requestedWindow + '. Observed windows: ' + $sample + '. Use ui_windows to inspect actual titles.')
+    }
+    throw ('Ambiguous window identity for ' + $requestedWindow + ': ' + $selected.Count + ' matches. Use ui_windows and the full observed title to disambiguate.')
+}
+$root = $selected[0].Element
+"#.replace("__SHUVI_WINDOW_NAME__", &escaped)
     } else {
         "$root = [System.Windows.Automation.AutomationElement]::RootElement".to_string()
     }
@@ -3244,6 +3301,19 @@ fn stage_tool(
             "Read process names, PIDs and memory usage.".to_string(),
             RiskLevel::Low,
         ),
+        "ui_windows" => (
+            ToolAction::UiWindows,
+            "Discover open Windows desktop windows".to_string(),
+            "Read-only enumerate window names, process IDs and process names.".to_string(),
+            RiskLevel::Low,
+        ),
+        "ui_discover" => {
+            let window = arg_string(&proposal.arguments, "window")?;
+            if window.chars().count() > 180 { return Err("Window selector is too long.".into()); }
+            (ToolAction::UiDiscover { window: window.clone() },
+             "Discover Windows UI controls".to_string(),
+             format!("Read-only inspect controls of window: {window}"),RiskLevel::Low)
+        },
         "ui_find" => {
             let (name, automation_id, window) = ui_selector(&proposal.arguments)?;
             let detail = format!(
@@ -10425,6 +10495,65 @@ Write-Output 'SHUVI_WHATSAPP_DESKTOP_LAUNCH_REQUESTED'
                 stderr: String::new(),
                 exit_code: Some(0),
             })
+        }
+        ToolAction::UiWindows => {
+            let script = r#"Add-Type -AssemblyName UIAutomationClient
+$desktop = [System.Windows.Automation.AutomationElement]::RootElement
+$windows = $desktop.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)
+$items = @()
+for ($i = 0; $i -lt [Math]::Min($windows.Count, 100); $i++) {
+    try {
+        $e = $windows.Item($i)
+        $title = [string]$e.Current.Name
+        if ([string]::IsNullOrWhiteSpace($title)) { continue }
+        $pidValue = [int]$e.Current.ProcessId
+        $processName = ''
+        try { $processName = [string](Get-Process -Id $pidValue -ErrorAction Stop).ProcessName } catch {}
+        $items += [PSCustomObject]@{
+            Name = $title; ProcessId = $pidValue; ProcessName = $processName
+            ClassName = [string]$e.Current.ClassName
+        }
+    } catch {}
+}
+ConvertTo-Json -InputObject @($items) -Compress -Depth 3"#;
+            let output = run_hidden_powershell(script)?;
+            if !output.status.success() {
+                return Err(format!("Window enumeration failed: {}", String::from_utf8_lossy(&output.stderr)));
+            }
+            Ok(ActionResult { success:true,tool,
+                stdout:truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                stderr:String::new(),exit_code:output.status.code() })
+        }
+        ToolAction::UiDiscover { window } => {
+            let root_script = ui_root_script(Some(&window));
+            let script = format!(r#"Add-Type -AssemblyName UIAutomationClient
+{root_script}
+$all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+$items = @()
+for ($i=0; $i -lt [Math]::Min($all.Count, 1200); $i++) {{
+    try {{
+        $e = $all.Item($i)
+        $n = [string]$e.Current.Name
+        $id = [string]$e.Current.AutomationId
+        if ([string]::IsNullOrWhiteSpace($n) -and [string]::IsNullOrWhiteSpace($id)) {{ continue }}
+        $items += [PSCustomObject]@{{
+            Name=$n; AutomationId=$id
+            ControlType=[string]$e.Current.ControlType.ProgrammaticName
+            ClassName=[string]$e.Current.ClassName
+            IsEnabled=[bool]$e.Current.IsEnabled
+            Bounds=[string]$e.Current.BoundingRectangle.ToString()
+        }}
+        if ($items.Count -ge 120) {{ break }}
+    }} catch {{}}
+}}
+ConvertTo-Json -InputObject @($items) -Compress -Depth 3"#);
+            let output = run_hidden_powershell(&script)?;
+            if !output.status.success() {
+                return Err(format!("UI discovery failed: {}",String::from_utf8_lossy(&output.stderr)));
+            }
+            Ok(ActionResult { success:true,tool,
+                stdout:truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                stderr:String::new(),exit_code:output.status.code() })
         }
         ToolAction::UiFind { name, automation_id, window } => {
             let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
