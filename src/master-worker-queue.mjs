@@ -23,7 +23,7 @@ export function workerForTool(tool){
   if(/^after_effects_/.test(tool)||/^motion_graphics_plan_after_effects/.test(tool))return "after_effects";
   if(/^motion_graphics_/.test(tool))return "remotion";
   if(/^browser_/.test(tool)||tool==="open_url")return "browser";
-  if(/^ui_/.test(tool)||["pointer_click","capture_screen","inspect_screen","launch_app","list_processes"].includes(tool))return "windows";
+  if(/^ui_/.test(tool)||["pointer_click","pointer_drag","capture_screen","inspect_screen","launch_app","list_processes"].includes(tool))return "windows";
   if(/^(git_|run_project_task|workspace_scan|search_text|replace_text|apply_patch|read_file|write_file|list_directory|create_directory)/.test(tool))return "coding";
   if(/^(photoshop_|audition_|animate_|illustrator_|character_animator_|substance_)/.test(tool))return "adobe";
   return "master";
