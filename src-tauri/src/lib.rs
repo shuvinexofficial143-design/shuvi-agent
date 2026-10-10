@@ -187,6 +187,7 @@ Available tools:
 - ui_expand_collapse: {"name":"exact visible name","automation_id":"optional exact automation id","window":"optional exact top-level window name","action":"expand|collapse"}
 - ui_send_keys: {"name":"exact visible name","automation_id":"optional exact automation id","window":"optional exact top-level window name","keys":"SendKeys sequence"}
 - pointer_click: {"x":123,"y":456,"button":"left|right|middle","clicks":1}
+- pointer_drag: {"x1":200,"y1":300,"x2":550,"y2":330,"duration_ms":650} — high-risk approved visual left-drag fallback; inspect_screen first, re-inspect the visible result; input delivery does not prove editing success
 - blender_inspect: {"python_exe":"existing absolute Python.exe","blender_exe":"existing absolute Blender.exe","blend_file":"optional existing absolute .blend","operation":"scene.inspect|system.capabilities"} — starts an explicitly approved read-only owned background bridge, not a GUI mouse worker, and never edits/renders
 - blender_run_plan: {"python_exe":"absolute Python.exe","blender_exe":"absolute Blender.exe","blend_file":"optional existing absolute .blend","output_dir":"existing absolute delivery folder","allow_render":false,"plan":{"timeout_ms":90000,"steps":[{"name":"inspect","request":{"protocol_version":1,"request_id":"UUID","command_id":"UUID","operation":"scene.inspect","payload":{},"timeout_ms":10000},"bindings":[]}, ...]}} — HIGH RISK: execute 1..6 approved typed Blender operations in one authenticated owned session; final tool must be file.checkpoint or render.execute, with verified artifact SHA-256; never user-provided Python, auto-retry, or destructive ops
 - motion_graphics_validate_plan: {"plan":{"schema_version":1,"objective":"short goal","renderer":"auto|after_effects|remotion","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":true},"delivery":"standalone_video|transparent_overlay","scenes":[{"id":"scene_1","start_seconds":0,"duration_seconds":4,"layers":[{"id":"title","kind":"text|shape|image|video|group","name":"Title","text":"optional text","asset_id":"optional_asset_id","shape":{"kind":"rectangle|ellipse","size":[640,160],"position":[0,0],"roundness":24,"fill_color":[0.1,0.2,0.3,1],"stroke_color":[1,1,1,1],"stroke_width":4},"tracks":[{"property":"x|y|scale_x|scale_y|rotation_degrees|opacity","keyframes":[{"time_seconds":0,"value":0,"easing":"linear|ease_in|ease_out|ease_in_out|hold"}]}]}]}],"review":{"sample_times_seconds":[1,2,3],"criteria":["readability"]}}}
@@ -498,7 +499,7 @@ Rules:
 - Before git_commit, inspect git_status and git_diff so the user can review what will be committed.
 - Treat git_push as a remote write and request it only after a successful commit when the user asked for a push.
 - Use run_project_task instead of raw shell commands when test/build/lint/typecheck is enough.
-- For browser/app UI work, prefer a Shuvi-managed browser when isolation matters, then use window-scoped semantic UI tools first. Use ui_toggle and ui_expand_collapse for supported controls. ui_send_keys is a high-risk fallback only after an exact element is focused and semantic patterns are unavailable. pointer_click is a final high-risk coordinate fallback: inspect_screen first, use coordinates only when semantic UI/DOM control cannot target the control, and never repeat a failed coordinate click blindly.
+- For browser/app UI work, prefer a Shuvi-managed browser when isolation matters, then use window-scoped semantic UI tools first. Use ui_toggle and ui_expand_collapse for supported controls. ui_send_keys is a high-risk fallback only after an exact element is focused and semantic patterns are unavailable. pointer_click and pointer_drag are final high-risk coordinate fallbacks: inspect_screen first, use coordinates only when semantic UI/DOM control cannot target the control, then inspect_screen again to verify application outcome. A dispatched drag does not prove a Timeline or Effect change; never repeat a failed coordinate action blindly.
 - For Adobe Premiere Pro, use premiere_detect/premiere_launch for discovery and startup. Start/pair premiere_bridge_start before native project operations. Prefer premiere_context/premiere_timeline/premiere_list_items/premiere_project_tree for inspection, premiere_set_playhead for non-destructive navigation, premiere_inspect_frame for playhead-positioned visual review and premiere_create_bin/premiere_import_media/premiere_create_sequence_from_media/premiere_insert_media/premiere_save_project for native editing. premiere_insert_media, premiere_trim_clip, premiere_roll_edit, premiere_move_clip, premiere_clone_clip, premiere_delete_clip, premiere_add_video_transition, premiere_add_video_effect, premiere_set_effect_param, premiere_add_effect_keyframe, premiere_add_audio_effect, premiere_set_audio_effect_param and premiere_add_audio_effect_keyframe are high risk because they change the timeline or effect state; premiere_insert_mogrt_path and premiere_insert_mogrt_library are high risk because they add graphics to the timeline; premiere_export_sequence is high risk because it writes media and may start encoding; inspect the timeline first when practical. Unsupported native capabilities must fail clearly; never bypass their safety gates with UI automation. Use visual inspection only as observational evidence. Major sequence creation and timeline insert/overwrite actions automatically save and copy the current .prproj into a sibling 'Shuvi Backups' folder before editing; the edit is refused if a saved local project cannot be checkpointed.
 - Media Encoder control currently uses Premiere UXP EncoderManager: inspect status/events first; launch is separate from starting the queue; starting a batch is high risk and must never be blindly retried. AME queue/progress events are observational until an exact Shuvi request-to-native-job correlation is proven. Direct Media Encoder UXP remains a future adapter while Adobe's AME UXP surface is public beta.
 - Adobe Audition uses an authenticated localhost CEP + ExtendScript bridge. Start and pair audition_bridge_start before native host actions. Always call audition_list_commands before audition_command_enabled or audition_invoke_command; only exact live COMMAND_* property/value pairs are accepted by the panel. Generic command invocation is high risk and host acceptance does not prove the audio edit or saved output. Do not claim noise reduction, effect-parameter, or multitrack-write support until those APIs are observed from the live Audition Script Dictionary and separately implemented.
@@ -648,6 +649,7 @@ enum ToolAction {
     UiExpandCollapse { name: Option<String>, automation_id: Option<String>, window: Option<String>, action: String },
     UiSendKeys { name: Option<String>, automation_id: Option<String>, window: Option<String>, keys: String },
     PointerClick { x: i32, y: i32, button: String, clicks: u32 },
+    PointerDrag { x1:i32, y1:i32, x2:i32, y2:i32, duration_ms:u32 },
     BlenderInspect { python_exe:String, blender_exe:String, blend_file:Option<String>, operation:String },
     BlenderRunPlan { python_exe:String, blender_exe:String, blend_file:Option<String>, output_dir:String, allow_render:bool, plan:Value },
     MotionGraphicsValidatePlan { plan: motion_graphics::Plan },
@@ -1569,6 +1571,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "ui_expand_collapse"
         | "ui_send_keys"
         | "pointer_click"
+        | "pointer_drag"
         | "blender_inspect"
         | "blender_run_plan"
         | "motion_graphics_validate_plan"
@@ -3335,6 +3338,21 @@ fn stage_tool(
                 format!("{button} click x={x}, y={y}, clicks={clicks}"),
                 RiskLevel::High,
             )
+        }
+        "pointer_drag" => {
+            let x1=arg_i32(&proposal.arguments,"x1")?;
+            let y1=arg_i32(&proposal.arguments,"y1")?;
+            let x2=arg_i32(&proposal.arguments,"x2")?;
+            let y2=arg_i32(&proposal.arguments,"y2")?;
+            let duration_ms=arg_u32(&proposal.arguments,"duration_ms")?;
+            if !(120..=2500).contains(&duration_ms){
+                return Err("pointer_drag duration_ms must be between 120 and 2500.".into());
+            }
+            if x1==x2 && y1==y2{return Err("pointer_drag needs different start/end points.".into());}
+            (ToolAction::PointerDrag{x1,y1,x2,y2,duration_ms},
+                "Drag pointer across visible desktop".into(),
+                format!("Visual drag from ({x1},{y1}) to ({x2},{y2}), {duration_ms} ms. Delivery is NOT proof of any Premiere/Blender effect; inspect screen again."),
+                RiskLevel::High)
         }
         "blender_inspect" => {
             let python_exe=absolute_path(arg_string(&proposal.arguments,"python_exe")?)?;
@@ -10637,6 +10655,56 @@ for ($i = 0; $i -lt {clicks}; $i++) {{
             {
                 Err("Coordinate pointer fallback is currently available on Windows only.".into())
             }
+        }
+        ToolAction::PointerDrag {x1,y1,x2,y2,duration_ms} => {
+            #[cfg(target_os = "windows")]
+            {
+                let sleep=std::cmp::max(4,duration_ms/24);
+                let script=format!(r#"Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class ShuviDrag {{
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int X,int Y);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint flags,uint dx,uint dy,uint data,UIntPtr extraInfo);
+}}
+"@
+Add-Type -AssemblyName System.Windows.Forms
+$bounds=[System.Windows.Forms.SystemInformation]::VirtualScreen
+foreach ($p in @(@({x1},{y1}),@({x2},{y2}))) {{
+  if ($p[0] -lt $bounds.Left -or $p[0] -ge $bounds.Right -or $p[1] -lt $bounds.Top -or $p[1] -ge $bounds.Bottom) {{
+    throw 'Pointer drag endpoint is outside virtual desktop.'
+  }}
+}}
+if (-not [ShuviDrag]::SetCursorPos({x1},{y1})) {{ throw 'Cannot set initial pointer position.' }}
+Start-Sleep -Milliseconds 60
+$pressed=$false
+try {{
+  [ShuviDrag]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero)
+  $pressed=$true
+  for($i=1;$i -le 24;$i++) {{
+    $ratio=[double]$i/24.0
+    $nx=[int][Math]::Round({x1}+({x2}-{x1})*$ratio)
+    $ny=[int][Math]::Round({y1}+({y2}-{y1})*$ratio)
+    if(-not [ShuviDrag]::SetCursorPos($nx,$ny)) {{ throw 'Drag pointer movement failed.' }}
+    Start-Sleep -Milliseconds {sleep}
+  }}
+}} finally {{
+  if($pressed) {{ [ShuviDrag]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero) }}
+}}
+'Pointer drag dispatched; inspect the screen to verify the application result.'
+"#);
+                let output=run_hidden_powershell(&script)?;
+                if !output.status.success(){
+                    return Err("Pointer drag dispatch failed; application outcome is unknown.".into());
+                }
+                return Ok(ActionResult{
+                    success:true,tool,
+                    stdout:truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
+                    stderr:String::new(),exit_code:output.status.code()
+                });
+            }
+            #[cfg(not(target_os = "windows"))]
+            {Err("Pointer drag requires Windows.".into())}
         }
         ToolAction::MotionGraphicsValidatePlan {plan} => {
             let value=plan.summary()?;
