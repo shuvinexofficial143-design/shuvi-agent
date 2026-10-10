@@ -14,7 +14,6 @@ type Runtime = {shuvi_memory_mb:number;managed_children_count:number};
 type NativeRoute = {role:string;provider:string;model:string;base_url:string};
 type PendingTask = {action:Pending;threadId:string;promptIndex:number;
  route:NativeRoute;objective:string;step:number;seen:Set<string>};
-const MAX_NATIVE_TASK_STEPS=6;
 const evidenceText=(result:ActionResult):string =>
  [result.stdout,result.stderr].filter(Boolean).join("\n").slice(0,2500);
 const fingerprint=(proposal:Record<string,unknown>):string =>
@@ -164,12 +163,6 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  async function continueAfterVerifiedAction(task:PendingTask,result:ActionResult){
   // One provider request per confirmed, approved step. No retries for ambiguous
   // provider results and no auto execution of a newly proposed Windows action.
-  if(task.step>=MAX_NATIVE_TASK_STEPS){
-   appendReply(task.threadId,task.promptIndex,
-    "Stopped at the "+MAX_NATIVE_TASK_STEPS+"-step safety limit. Remaining work needs a new instruction.");
-   showActionFeedback("Task stopped at the approved-step limit; no further requests or actions.");
-   return;
-  }
   const toolResult=evidenceText(result);
   const report="Previously approved Windows tool "+result.tool+
    " completed with a matching audit receipt.\nOutput: "+toolResult+
@@ -181,7 +174,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   const messages:NativeChatMessage[]=[...prev.slice(-18),{role:"user",content:report.slice(0,4000)}];
   const orchestrator="Continue the ORIGINAL computer task, not just its last inspection step. "+
    "Objective: "+task.objective.slice(0,500)+". "+
-   "Current approved step: "+task.step+" of "+MAX_NATIVE_TASK_STEPS+". "+
+   "Current approved step: "+task.step+". "+
    "Last audited tool: "+result.tool+". "+
    "After premiere_detect, propose the dedicated premiere_launch tool with empty arguments {} when the user wants Premiere opened; detection alone is not launch. "+
    "For other trusted discovered executable paths, propose launch_app with the exact observed path. "+
@@ -227,7 +220,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    });
    if(!next||typeof next.id!=="string")throw Error("Next action could not be staged.");
    pending={...task,action:next,step:task.step+1,seen:new Set([...task.seen,fp])};
-   pendingText.textContent="Step "+(task.step+1)+"/"+MAX_NATIVE_TASK_STEPS+
+   pendingText.textContent="Step "+(task.step+1)+
     " · Permission required: "+next.summary+"\nRisk: "+next.risk+"\n"+next.detail;
    approval.hidden=false;
    approval.scrollIntoView?.({block:"nearest",behavior:"smooth"});

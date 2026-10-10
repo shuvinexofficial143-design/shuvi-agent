@@ -38,7 +38,7 @@ const launch={
  provider:"xkiro",model:"model/master",
  tool_proposal:{tool:"premiere_launch",arguments:{}}
 };
-function setup({first=detection,second=launch,auditOk=true}={}){
+function setup({first=detection,second=launch,following=[],auditOk=true}={}){
  const nodes=new Map(),created=[],calls=[],chatInputs=[],staged=[];
  const domParent=el(),composerParent=el(),form=el(),chat=el();
  form.parentElement=composerParent;chat.parentElement=domParent;
@@ -48,7 +48,7 @@ function setup({first=detection,second=launch,auditOk=true}={}){
   createElement(){const e=el();created.push(e);return e},
   querySelector(){return null}
  };
- const replies=[first,second];
+ const replies=[first,second,...following];
  const invoke=async(name,params={})=>{
   calls.push({name,params});
   if(name==="runtime_status")return {shuvi_memory_mb:40,managed_children_count:0};
@@ -151,4 +151,26 @@ test("short answer to Master clarification stays on Master, never drops into nor
  assert.equal(s.chatInputs[1].messages.at(-1).content,"Premiere Pro");
  assert.equal(s.staged[0].proposal.tool,"premiere_detect");
  assert.equal(s.approval.hidden,false);
+});
+
+test("eight distinct stages have no fixed six-action cutoff",async()=>{
+ const action=(i)=>({content:JSON.stringify({tool:"ui_find",arguments:{target:"window-"+i}}),
+  provider:"xkiro",model:"model/master",tool_proposal:{tool:"ui_find",arguments:{target:"window-"+i}}});
+ const s=setup({first:detection,second:action(2),
+  following:[action(3),action(4),action(5),action(6),action(7),action(8)]});
+ await until(()=>s.transport.connected(),"IPC");
+ await s.transport.send("Open Premiere and check the necessary windows","long-task",0);
+ for(let step=1;step<=7;step++){
+  await until(()=>s.staged.length===step,"stage "+step);
+  await until(()=>s.allow.disabled===false,"approval "+step);
+  assert.equal(s.approval.hidden,false);
+  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,step-1);
+  s.allow.listeners.get("click")();
+  await until(()=>s.staged.length===step+1,"next stage "+(step+1));
+ }
+ assert.equal(s.staged.length,8);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,7);
+ assert.equal(s.chatInputs.length,8);
+ assert.equal(s.approval.hidden,false);
+ assert.doesNotMatch(s.transport.getReplies("long-task")[0],/step safety limit/);
 });
