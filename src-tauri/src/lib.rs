@@ -3,6 +3,7 @@
 mod web_bridge;
 mod remote_agent;
 mod blender_worker;
+mod blender_plan_worker;
 mod atomic_file;
 mod execution_lease;
 mod bounded_child;
@@ -187,6 +188,7 @@ Available tools:
 - ui_send_keys: {"name":"exact visible name","automation_id":"optional exact automation id","window":"optional exact top-level window name","keys":"SendKeys sequence"}
 - pointer_click: {"x":123,"y":456,"button":"left|right|middle","clicks":1}
 - blender_inspect: {"python_exe":"existing absolute Python.exe","blender_exe":"existing absolute Blender.exe","blend_file":"optional existing absolute .blend","operation":"scene.inspect|system.capabilities"} — starts an explicitly approved read-only owned background bridge, not a GUI mouse worker, and never edits/renders
+- blender_run_plan: {"python_exe":"absolute Python.exe","blender_exe":"absolute Blender.exe","blend_file":"optional existing absolute .blend","output_dir":"existing absolute delivery folder","allow_render":false,"plan":{"timeout_ms":90000,"steps":[{"name":"inspect","request":{"protocol_version":1,"request_id":"UUID","command_id":"UUID","operation":"scene.inspect","payload":{},"timeout_ms":10000},"bindings":[]}, ...]}} — HIGH RISK: execute 1..6 approved typed Blender operations in one authenticated owned session; final tool must be file.checkpoint or render.execute, with verified artifact SHA-256; never user-provided Python, auto-retry, or destructive ops
 - motion_graphics_validate_plan: {"plan":{"schema_version":1,"objective":"short goal","renderer":"auto|after_effects|remotion","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":true},"delivery":"standalone_video|transparent_overlay","scenes":[{"id":"scene_1","start_seconds":0,"duration_seconds":4,"layers":[{"id":"title","kind":"text|shape|image|video|group","name":"Title","text":"optional text","asset_id":"optional_asset_id","shape":{"kind":"rectangle|ellipse","size":[640,160],"position":[0,0],"roundness":24,"fill_color":[0.1,0.2,0.3,1],"stroke_color":[1,1,1,1],"stroke_width":4},"tracks":[{"property":"x|y|scale_x|scale_y|rotation_degrees|opacity","keyframes":[{"time_seconds":0,"value":0,"easing":"linear|ease_in|ease_out|ease_in_out|hold"}]}]}]}],"review":{"sample_times_seconds":[1,2,3],"criteria":["readability"]}}}
 - motion_graphics_plan_after_effects: {"request":{"project_file":"absolute saved .aep/.aepx","composition_name":"Shuvi Motion","plan":{"schema_version":1,"objective":"...","renderer":"auto|after_effects","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":true},"delivery":"standalone_video|transparent_overlay","scenes":[...],"review":{"sample_times_seconds":[],"criteria":[]}},"asset_item_ids":{"asset_1":123}}} — read-only adapter planner; every emitted AE mutation still requires fresh inspect_context, exact project revision and normal after_effects_run approval
 - motion_graphics_plan_after_effects_output: {"request":{"project_file":"absolute saved .aep/.aepx","comp_id":123,"output_file":"absolute single-file output path","output_module_template":"caller-selected template","render_settings_template":"optional caller-selected template","transparent_required":true}} — read-only queue/evidence planner; stages add_render_queue_item then inspect_output_module, never renders, and never infers alpha from a template name
@@ -647,6 +649,7 @@ enum ToolAction {
     UiSendKeys { name: Option<String>, automation_id: Option<String>, window: Option<String>, keys: String },
     PointerClick { x: i32, y: i32, button: String, clicks: u32 },
     BlenderInspect { python_exe:String, blender_exe:String, blend_file:Option<String>, operation:String },
+    BlenderRunPlan { python_exe:String, blender_exe:String, blend_file:Option<String>, output_dir:String, allow_render:bool, plan:Value },
     MotionGraphicsValidatePlan { plan: motion_graphics::Plan },
     MotionGraphicsPlanAfterEffects { request: motion_graphics::AfterEffectsPlanRequest },
     MotionGraphicsPlanAfterEffectsOutput { request: motion_graphics::AfterEffectsOutputPlanRequest },
@@ -1567,6 +1570,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "ui_send_keys"
         | "pointer_click"
         | "blender_inspect"
+        | "blender_run_plan"
         | "motion_graphics_validate_plan"
         | "motion_graphics_plan_after_effects"
         | "motion_graphics_plan_after_effects_output"
@@ -3362,6 +3366,58 @@ fn stage_tool(
             let detail=format!("Start owned read-only Blender bridge | operation={operation} | blend_file={:?} | no host mutation",blend_file);
             (ToolAction::BlenderInspect{python_exe,blender_exe,blend_file,operation},
                 "Inspect Blender through authenticated worker".into(),detail,RiskLevel::Medium)
+        }
+        "blender_run_plan" => {
+            let python_exe=absolute_path(arg_string(&proposal.arguments,"python_exe")?)?;
+            let blender_exe=absolute_path(arg_string(&proposal.arguments,"blender_exe")?)?;
+            let pname=Path::new(&python_exe).file_name().and_then(|x|x.to_str()).unwrap_or_default();
+            let bname=Path::new(&blender_exe).file_name().and_then(|x|x.to_str()).unwrap_or_default();
+            if !Path::new(&python_exe).is_file() || !matches!(pname.to_ascii_lowercase().as_str(),"python.exe"|"python3.exe"){
+                return Err("blender_run_plan requires an existing absolute Python.exe.".into());
+            }
+            if !Path::new(&blender_exe).is_file() || !bname.eq_ignore_ascii_case("blender.exe"){
+                return Err("blender_run_plan requires an existing absolute Blender.exe.".into());
+            }
+            let blend_file=match proposal.arguments.get("blend_file"){
+                None|Some(Value::Null)=>None,
+                Some(Value::String(path))=>{
+                    let path=absolute_path(path.clone())?;
+                    if !Path::new(&path).is_file() || !path.to_ascii_lowercase().ends_with(".blend"){
+                        return Err("blender_run_plan requires an existing .blend input.".into());
+                    }
+                    Some(path)
+                }
+                _=>return Err("blender_run_plan blend_file must be an absolute .blend file.".into())
+            };
+            let output_dir=absolute_path(arg_string(&proposal.arguments,"output_dir")?)?;
+            if !Path::new(&output_dir).is_dir(){
+                return Err("blender_run_plan requires an existing delivery directory.".into());
+            }
+            let allow_render=proposal.arguments.get("allow_render").and_then(Value::as_bool)
+                .ok_or("blender_run_plan requires an explicit allow_render boolean.")?;
+            let plan=proposal.arguments.get("plan").cloned().ok_or("Blender typed plan is required.")?;
+            if plan.to_string().len()>64*1024 {
+                return Err("Blender typed plan exceeds 64 KiB.".into());
+            }
+            let steps=plan.get("steps").and_then(Value::as_array)
+                .filter(|steps| !steps.is_empty() && steps.len()<=6)
+                .ok_or("Blender plan needs 1..6 typed steps.")?;
+            let last=steps.last().and_then(|s|s.get("request"))
+                .and_then(|s|s.get("operation")).and_then(Value::as_str)
+                .ok_or("Blender plan must declare a final saved output.")?;
+            if !matches!(last,"file.checkpoint"|"render.execute") {
+                return Err("Blender plan must end with file.checkpoint or render.execute.".into());
+            }
+            if last=="render.execute" && !allow_render {
+                return Err("Blender render must have explicit allow_render=true.".into());
+            }
+            if !allow_render && steps.iter().any(|s|s.pointer("/request/operation").and_then(Value::as_str)==Some("render.execute")){
+                return Err("Blender render operation needs explicit render approval.".into());
+            }
+            (ToolAction::BlenderRunPlan{python_exe,blender_exe,blend_file,output_dir,allow_render,plan},
+                "Run approved verified Blender plan".into(),
+                format!("Execute up to 6 bounded Blender steps, save a new verified output in the selected directory; render_allowed={allow_render}. No destructive operations, shell or arbitrary Python."),
+                RiskLevel::High)
         }
         "motion_graphics_validate_plan" => {
             let plan_value=proposal.arguments.get("plan").cloned()
@@ -10118,6 +10174,23 @@ async fn execute_tool_with_action_id(
                 stdout: truncate_output(String::from_utf8_lossy(&output.stdout).to_string()),
                 stderr: truncate_output(String::from_utf8_lossy(&output.stderr).to_string()),
                 exit_code: output.status.code(),
+            })
+        }
+        ToolAction::BlenderRunPlan {python_exe,blender_exe,blend_file,output_dir,allow_render,plan} => {
+            let resource=app.path().resource_dir()
+                .map_err(|e|format!("Could not find Blender plan resource directory: {e}"))?
+                .join("blender-worker").join("shuvi_blender_plan.py");
+            let inputs=app.path().app_local_data_dir()
+                .map_err(|e|format!("Cannot locate private Blender plan directory: {e}"))?
+                .join("blender-plan-inputs");
+            let evidence=blender_plan_worker::execute(
+                &python_exe,&blender_exe,blend_file.as_deref(),&output_dir,
+                &plan,allow_render,&resource,&inputs,state
+            )?;
+            Ok(ActionResult{
+                success:true,tool,
+                stdout:serde_json::to_string_pretty(&evidence).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
             })
         }
         ToolAction::BlenderInspect {python_exe,blender_exe,blend_file,operation} => {
