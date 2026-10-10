@@ -34,3 +34,11 @@ test("coordinate delivery alone is not an accepted Premiere edit",()=>{
   assert.match(rust,/A dispatched drag does not prove a Timeline or Effect change/);
   assert.match(rust,/inspect_screen again to verify application outcome/);
 });
+
+test("remote edit cannot finish immediately after an unreviewed pointer drag",()=>{
+  const main=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
+  assert.match(main,/const needsDragReview = orchestration.last_tool === "pointer_drag"/);
+  assert.match(main,/await saveActiveCheckpoint\(\)/);
+  assert.match(main,/!needsDragReview &&/);
+  assert.match(main,/visual result has not been verified/);
+});
