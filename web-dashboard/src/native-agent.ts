@@ -183,8 +183,9 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    "Objective: "+task.objective.slice(0,500)+". "+
    "Current approved step: "+task.step+" of "+MAX_NATIVE_TASK_STEPS+". "+
    "Last audited tool: "+result.tool+". "+
-   "If an executable path was discovered, use the exact observed path with launch_app. "+
-   "After requesting a launch, use a suitable separate inspection to verify that the app/window exists. "+
+   "After premiere_detect, propose the dedicated premiere_launch tool with empty arguments {} when the user wants Premiere opened; detection alone is not launch. "+
+   "For other trusted discovered executable paths, propose launch_app with the exact observed path. "+
+   "After any launch, use a suitable separate inspection to verify that the app/window exists. "+
    "Propose ONE next typed action as JSON. Never re-execute a previous identical action, "+
    "never claim completion based only on a detection/launch request. Every new action requires user approval.";
   refreshState("Master AI is continuing from the verified tool result (one new model request)…");

@@ -34,9 +34,9 @@ const detection={
  tool_proposal:{tool:"premiere_detect",arguments:{}}
 };
 const launch={
- content:JSON.stringify({tool:"launch_app",arguments:{program:detectedPath,args:[]}}),
+ content:JSON.stringify({tool:"premiere_launch",arguments:{}}),
  provider:"xkiro",model:"model/master",
- tool_proposal:{tool:"launch_app",arguments:{program:detectedPath,args:[]}}
+ tool_proposal:{tool:"premiere_launch",arguments:{}}
 };
 function setup({first=detection,second=launch,auditOk=true}={}){
  const nodes=new Map(),created=[],calls=[],chatInputs=[],staged=[];
@@ -94,8 +94,8 @@ test("Premiere: discovery audit triggers one Master continuation and a SECOND ex
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,0);
  s.allow.listeners.get("click")();
  await until(()=>s.staged.length===2,"second prepared step");
- assert.equal(s.staged[1].proposal.tool,"launch_app");
- assert.equal(s.staged[1].proposal.arguments.program,detectedPath);
+ assert.equal(s.staged[1].proposal.tool,"premiere_launch");
+ assert.deepEqual(s.staged[1].proposal.arguments,{});
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1,
   "second app action must NOT run before another Allow once");
  assert.equal(s.approval.hidden,false,"next approval survives previous-step finally");
