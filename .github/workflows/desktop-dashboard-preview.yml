@@ -18,6 +18,7 @@ on:
       - index.html
       - agent-runtime/**
       - scripts/verify-packaged-dashboard.mjs
+      - scripts/*.test.mjs
   workflow_dispatch:
 
 permissions:
