@@ -185,6 +185,7 @@ test("Premiere opening has separate detect, launch and window-inspection approva
  await until(()=>s.staged.length===2,"Premiere launch approval");
  assert.equal(s.staged[1].proposal.tool,"premiere_launch");
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+ await until(()=>s.allow.disabled===false,"second action approval ready");
  s.allow.listeners.get("click")();
  await until(()=>s.staged.length===3,"Premiere window inspection approval");
  assert.equal(s.staged[2].proposal.tool,"ui_find");
