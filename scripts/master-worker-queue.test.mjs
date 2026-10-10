@@ -11,7 +11,7 @@ test("Worker tool routing uses actual native tool families, never phantom Blende
     ["premiere_context","premiere"],["premiere_insert_media","premiere"],
     ["after_effects_run","after_effects"],["motion_graphics_plan_after_effects","after_effects"],
     ["motion_graphics_run_remotion","remotion"],["motion_graphics_plan_premiere_insertion","premiere"],
-    ["browser_dom_read","browser"],["pointer_click","windows"],["git_status","coding"],
+    ["browser_dom_read","browser"],["pointer_click","windows"],["pointer_drag","windows"],["git_status","coding"],
     ["photoshop_layers","adobe"],["blender_inspect","blender"],["blender_run_plan","blender"],["blender_run","unsupported"]
   ])assert.equal(workerForTool(tool),expected,tool);
 });
