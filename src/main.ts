@@ -2017,9 +2017,13 @@ async function closeRemoteTask(status:"succeeded"|"failed"|"stopped"|"outcome_un
   remoteApproval=null;
 }
 async function tickRemoteAgent():Promise<void>{
-  if(!remoteAgentEnabled||remotePolling)return;
+  if(remotePolling)return;
   remotePolling=true;
   try {
+    // The visible Dashboard can pair/revoke the agent after the hidden
+    // coordinator boots. Re-read native pairing before any remote poll.
+    await refreshRemoteAgent();
+    if(!remoteAgentEnabled)return;
     const inbox=await invoke<RemoteInbox>("remote_agent_poll");
     if(remoteTask) {
       const t=remoteTask;

@@ -65,7 +65,18 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  const approve=field("button","Allow once");approve.type="button";
  const deny=field("button","Deny");deny.type="button";
  approval.append(pendingText,approve,deny);
- panel.append(title,status,controls,notes,approval);
+ const mobile=field("div");mobile.className="shuvi-native-mobile";
+ const mobileTitle=field("strong","Mobile → Windows Agent pairing");
+ const mobileCode=field("input");mobileCode.type="password";
+ mobileCode.maxLength=64;mobileCode.autocomplete="off";
+ mobileCode.placeholder="Private 64-character Windows agent code";
+ mobileCode.setAttribute("aria-label","Windows agent remote pairing code");
+ const mobileConnect=field("button","Pair Windows agent");mobileConnect.type="button";
+ const mobileDisconnect=field("button","Disconnect mobile agent");mobileDisconnect.type="button";
+ const mobileStatus=field("p","Checking optional mobile agent pairing…");
+ mobileStatus.setAttribute("role","status");
+ mobile.append(mobileTitle,mobileCode,mobileConnect,mobileDisconnect,mobileStatus);
+ panel.append(title,status,controls,notes,approval,mobile);
  chat.parentElement?.insertBefore(panel,chat);
  let providers:Provider[]=[];
  let ready=false;
@@ -205,7 +216,39 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  }
  approve.addEventListener("click",()=>{void decide(true);});
  deny.addEventListener("click",()=>{void decide(false);});
+ async function refreshMobile(){
+  try{
+   const state=await invoke<{enabled:boolean}>("remote_agent_status");
+   mobileStatus.textContent=state.enabled
+    ? "Windows outbound agent is paired on this PC. Cloud command delivery still requires separate server pairing and live verification."
+    : "Not paired. No remote command polling.";
+  }catch{mobileStatus.textContent="Mobile pairing status unavailable in this Windows build.";}
+ }
+ mobileConnect.addEventListener("click",async()=>{
+  const code=mobileCode.value.trim();
+  mobileCode.value="";
+  if(!/^[a-fA-F0-9]{64}$/.test(code)){
+   mobileStatus.textContent="Enter the dedicated 64-character Windows agent code.";
+   return;
+  }
+  mobileConnect.disabled=true;
+  try{
+   await invoke<void>("remote_agent_pair",{accessCode:code});
+   await refreshMobile();
+  }catch{
+   mobileStatus.textContent="Pairing failed. Verify server configuration and your dedicated Windows agent code.";
+  }finally{mobileConnect.disabled=false;}
+ });
+ mobileDisconnect.addEventListener("click",async()=>{
+  mobileDisconnect.disabled=true;
+  try{
+   await invoke<void>("remote_agent_disconnect");
+   await refreshMobile();
+  }catch{mobileStatus.textContent="Disconnect outcome unknown. Verify in Windows Credential Manager.";}
+  finally{mobileDisconnect.disabled=false;}
+ });
  void load();
+ void refreshMobile();
  return {
   kind:"native",
   connected:()=>ready,

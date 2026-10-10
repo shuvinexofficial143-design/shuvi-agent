@@ -40,3 +40,12 @@ test("normal web dashboard and remote mobile UI are preserved",()=>{
  assert.match(chat,/nativeReplies\[index\]/);
  assert.match(chat,/remote\.send\(text,t\.id,t\.messages\.length\)/);
 });
+
+test("Windows mobile pairing changes become visible to existing hidden agent coordinator",()=>{
+ const source=root("src/main.ts");
+ const adapter=web("src/native-agent.ts");
+ assert.match(source,/await refreshRemoteAgent\(\);\s*if\(!remoteAgentEnabled\)return;\s*const inbox/);
+ assert.match(adapter,/invoke<void>\("remote_agent_pair"/);
+ assert.match(adapter,/invoke<void>\("remote_agent_disconnect"/);
+ assert.match(adapter,/64-character Windows agent code/);
+});
