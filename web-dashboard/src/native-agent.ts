@@ -3,7 +3,8 @@
  * adds an HTTP execution endpoint or exposes desktop commands to Vercel.
  * A browser (including the Vercel deployment) has no native transport.
  */
-type NativeInvoke = <T>(command:string,args?:Record<string,unknown>)=>Promise<T>;
+import {mountNativeModelSetup, type ModelTeamHandle, type NativeInvoke} from "./native-model-setup";
+import {chooseNativeRoute} from "./native-model-routing.mjs";
 type Provider = {id:string;name:string;default_model:string;api_key_required:boolean;custom_base_url:boolean};
 type NativeChatMessage = {role:"user"|"assistant";content:string};
 type NativeChatResponse = {content:string;provider:string;model:string;tool_proposal:Record<string,unknown>|null};
@@ -42,22 +43,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  const title=field("strong","Shuvi Windows Agent · Native");
  const status=field("p","Connecting to installed Shuvi.exe...");
  status.setAttribute("role","status");
- const controls=field("div");controls.className="shuvi-native-controls";
- const provider=field("select");
- provider.setAttribute("aria-label","Local AI provider");
- const model=field("input");
- model.placeholder="Exact provider model ID";
- model.autocomplete="off";
- model.maxLength=128;
- model.setAttribute("aria-label","Model for Windows Shuvi");
- const key=field("input");
- key.type="password";
- key.placeholder="API key (saved only in Windows Credential Manager)";
- key.autocomplete="off";
- key.setAttribute("aria-label","Save provider API key securely");
- const save=field("button","Save AI settings");
- save.type="button";
- controls.append(provider,model,key,save);
+ const openSettings=field("button","Configure AI in Settings");openSettings.type="button";
+ openSettings.addEventListener("click",()=>{
+  document.querySelector<HTMLButtonElement>('[data-view-jump="settings"]')?.click();
+ });
  const notes=field("p","Windows commands use native Tauri IPC. Every proposed tool action requires your explicit approval. No automatic paid retry.");
  notes.className="shuvi-native-note";
  const approval=field("div");approval.className="shuvi-native-approval";approval.hidden=true;
@@ -76,9 +65,9 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  const mobileStatus=field("p","Checking optional mobile agent pairing…");
  mobileStatus.setAttribute("role","status");
  mobile.append(mobileTitle,mobileCode,mobileConnect,mobileDisconnect,mobileStatus);
- panel.append(title,status,controls,notes,approval,mobile);
+ panel.append(title,status,openSettings,notes,approval);
  chat.parentElement?.insertBefore(panel,chat);
- let providers:Provider[]=[];
+ let team:ModelTeamHandle|null=null;
  let ready=false;
  let sending=false;
  let pending:{action:Pending;threadId:string;promptIndex:number}|null=null;
@@ -90,14 +79,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   replies.set(threadId,records);
   onChange();
  }
- function activeProvider():Provider|undefined{return providers.find(p=>p.id===provider.value);}
- function selectionValid():boolean {
-  return ready && !!activeProvider() && model.value.trim().length>0 &&
-   model.value.length<=128 && !/[\r\n]/.test(model.value);
- }
  function refreshState(text?:string){
   if(text)status.textContent=text;
-  save.disabled=!ready||sending;
   approve.disabled=sending;
   deny.disabled=sending;
   onChange();
@@ -108,41 +91,6 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   pendingText.textContent="";
   approve.disabled=deny.disabled=false;
  }
- try{
-  const saved=window.localStorage.getItem("shuvi.native.provider");
-  if(saved)provider.dataset.previous=saved;
-  const previousModel=window.localStorage.getItem("shuvi.native.model");
-  if(previousModel)model.value=previousModel;
- }catch{ /* Native settings remain available for this session. */ }
- provider.addEventListener("change",()=>{
-  model.value="";
-  key.value="";
- });
- save.addEventListener("click",async()=>{
-  const p=activeProvider();
-  if(!p||!model.value.trim()){
-   refreshState("Select a provider and its exact model ID.");
-   return;
-  }
-  const m=model.value.trim();
-  if(m.length>128 || !/^[A-Za-z0-9][A-Za-z0-9._:/+-]*$/.test(m)){
-   refreshState("The model ID contains unsupported characters.");
-   return;
-  }
-  const apiKey=key.value.trim();
-  key.value="";
-  save.disabled=true;
-  try{
-   if(apiKey)await invoke<void>("save_api_key",{provider:p.id,apiKey});
-   try{
-    window.localStorage.setItem("shuvi.native.provider",p.id);
-    window.localStorage.setItem("shuvi.native.model",m);
-   }catch{ /* No secret is stored in browser preferences. */ }
-   refreshState(p.name+" / "+m+" configured. Keys are held only in Windows Credential Manager.");
-  }catch(error){
-   refreshState("Could not save provider key: "+String(error));
-  }
- });
  async function load(){
   try{
    // This is a real native Tauri invocation, not a web/mock readiness badge.
@@ -151,9 +99,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     invoke<Provider[]>("list_providers")
    ]);
    if(!Array.isArray(list)||!list.length)throw Error("Native provider registry unavailable.");
-   providers=list;
-   for(const p of list){const option=field("option",p.name);option.value=p.id;provider.append(option);}
-   if(providers.some(p=>p.id===provider.dataset.previous))provider.value=provider.dataset.previous!;
+   team=mountNativeModelSetup(invoke,list);
+   document.getElementById("shuvi-native-model-setup")?.append(mobile);
    ready=true;
    refreshState("Connected to installed Shuvi.exe · "+runtime.shuvi_memory_mb.toFixed(0)+" MB RAM · native approval required");
    for(const [id,text] of [
@@ -254,20 +201,20 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   connected:()=>ready,
   getReplies:(threadId:string)=>replies.get(threadId)||[],
   async send(text,threadId,promptIndex=0){
-   if(!selectionValid())return {ok:false,error:"First configure a valid AI Provider and Model in Windows Shuvi."};
+   if(!ready)return {ok:false,error:"Windows Shuvi is not connected yet."};
+   const route=chooseNativeRoute(text,team?.current());
+   if(!route.ok)return {ok:false,error:route.error};
    if(pending)return {ok:false,error:"First approve or deny the existing Windows action."};
    if(sending)return {ok:false,error:"A native request is already running."};
    if(!text.trim()||text.length>2500)return {ok:false,error:"Invalid command length."};
-   const p=activeProvider()!;
-   const m=model.value.trim();
    const prev=histories.get(threadId)||[];
    // Keep paid-request context bounded and avoid forwarding any credential.
    const messages:NativeChatMessage[]=[...prev.slice(-20),{role:"user",content:text}];
    sending=true;
-   refreshState("Sending one AI request to "+p.name+" / "+m+"…");
+   refreshState("Sending "+route.role+" task to "+route.provider+" / "+route.model+"…");
    try{
     const response=await invoke<NativeChatResponse>("chat",{
-      input:{provider:p.id,model:m,base_url:null,messages,orchestration_context:null}
+      input:{provider:route.provider,model:route.model,base_url:route.base_url||null,messages,orchestration_context:null}
     });
     if(!response||typeof response.content!=="string")throw Error("Invalid native AI response.");
     const reply=response.content.slice(0,12000);
@@ -275,7 +222,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     updateReply(threadId,promptIndex,reply);
     if(response.tool_proposal){
      const proposed=await invoke<Pending>("prepare_tool",{
-      proposal:response.tool_proposal,provider:p.id,model:m,baseUrl:null
+      proposal:response.tool_proposal,provider:route.provider,model:route.model,baseUrl:route.base_url||null
      });
      if(!proposed||typeof proposed.id!=="string")throw Error("Tool preparation did not return a valid native action.");
      pending={action:proposed,threadId,promptIndex};

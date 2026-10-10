@@ -18056,6 +18056,82 @@ fn list_providers() -> Vec<ProviderDescriptor> {
     providers()
 }
 
+#[derive(Debug, Serialize)]
+struct XkiroCatalogModel {
+    id: String,
+    display_name: String,
+    access_tier: String,
+    pricing: Option<Value>,
+    tools: Option<bool>,
+}
+
+/// Public catalog, no API key and no paid inference request.
+/// This fixed origin cannot become an arbitrary-URL request from browser input.
+#[tauri::command]
+async fn list_xkiro_models() -> Result<Vec<XkiroCatalogModel>, String> {
+    const CATALOG_URL: &str = "https://api.xkiro.com/v1/models";
+    const MAX_RESPONSE: usize = 1_000_000;
+    let client = Client::builder()
+        .timeout(Duration::from_secs(12))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| "Could not initialize the xKiro catalog connection.".to_string())?;
+    let mut response = client.get(CATALOG_URL)
+        .header("accept", "application/json")
+        .send().await
+        .map_err(|_| "xKiro model catalog is unreachable.".to_string())?;
+    if !response.status().is_success() {
+        return Err("xKiro model catalog refused the read-only request.".into());
+    }
+    if response.content_length().is_some_and(|len| len > MAX_RESPONSE as u64) {
+        return Err("xKiro model catalog exceeds the response size limit.".into());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await
+        .map_err(|_| "Could not finish reading the xKiro catalog.".to_string())?
+    {
+        if chunk.len() > MAX_RESPONSE.saturating_sub(bytes.len()) {
+            return Err("xKiro catalog response exceeds size limit.".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let document: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| "xKiro returned an invalid model catalog.".to_string())?;
+    let data = document.get("data").and_then(Value::as_array)
+        .ok_or_else(|| "xKiro catalog is missing the model array.".to_string())?;
+    let mut items = Vec::new();
+    let mut ids = HashSet::new();
+    for item in data {
+        let Some(id) = item.get("id").and_then(Value::as_str) else { continue; };
+        if id.len() > 128 || id.is_empty()
+            || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b"._:/+-".contains(&b))
+            || !ids.insert(id.to_owned()) { continue; }
+        let display = item.get("display_name").and_then(Value::as_str)
+            .filter(|x| !x.trim().is_empty() && x.len() <= 160)
+            .unwrap_or(id);
+        let access_tier = item.get("access_tier").and_then(Value::as_str)
+            .filter(|x| matches!(*x, "free" | "paid" | "premium"))
+            .unwrap_or("unknown");
+        let pricing = item.get("pricing").filter(|x| x.is_object()).cloned();
+        let tools = item.get("capabilities").and_then(|v| v.get("tools")).and_then(Value::as_bool);
+        items.push(XkiroCatalogModel {
+            id: id.to_owned(), display_name: display.to_owned(),
+            access_tier: access_tier.to_owned(), pricing, tools,
+        });
+        if items.len() >= 600 { break; }
+    }
+    if items.is_empty() {
+        return Err("xKiro catalog did not provide usable chat models.".into());
+    }
+    Ok(items)
+}
+
+#[tauri::command]
+fn api_key_status(provider: String) -> Result<bool, String> {
+    if provider == "ollama" { return Ok(true); }
+    Ok(load_api_key(&provider)?.is_some_and(|key| !key.trim().is_empty()))
+}
+
 #[tauri::command]
 fn save_api_key(provider: String, api_key: String) -> Result<(), String> {
     let api_key = api_key.trim();
@@ -18758,6 +18834,8 @@ pub fn run() {
         .manage(ActionState::default())
         .invoke_handler(tauri::generate_handler![
             list_providers,
+            list_xkiro_models,
+            api_key_status,
             save_api_key,
             delete_api_key,
             save_frame_io_access_token,

@@ -49,3 +49,22 @@ test("Windows mobile pairing changes become visible to existing hidden agent coo
  assert.match(adapter,/invoke<void>\("remote_agent_disconnect"/);
  assert.match(adapter,/64-character Windows agent code/);
 });
+
+test("Windows Settings saves chosen models and secrets only in native keyring",()=>{
+ const adapter=web("src/native-agent.ts");
+ const ui=web("src/native-model-setup.ts");
+ const lib=root("src-tauri/src/lib.rs");
+ assert.match(adapter,/chooseNativeRoute\(text,team\?\.current\(\)\)/);
+ assert.match(adapter,/provider:route\.provider,model:route\.model/);
+ assert.match(adapter,/base_url:route\.base_url\|\|null/);
+ assert.match(ui,/settings\.insertBefore\(card,settings\.firstChild\)/);
+ assert.match(ui,/invoke<void>\("save_api_key"/);
+ assert.match(ui,/invoke<boolean>\("api_key_status"/);
+ assert.match(ui,/invoke<CatalogItem\[]>\("list_xkiro_models"/);
+ assert.match(ui,/window\.localStorage\.setItem\(STORAGE,JSON\.stringify\(config\)\)/);
+ assert.doesNotMatch(ui,/localStorage\.setItem\([^\n]*(?:secret|key\.value)/);
+ assert.match(lib,/async fn list_xkiro_models\(\)/);
+ assert.match(lib,/https:\/\/api\.xkiro\.com\/v1\/models/);
+ assert.match(lib,/fn api_key_status\(/);
+ assert.match(lib,/list_xkiro_models,\s*api_key_status,\s*save_api_key,/);
+});
