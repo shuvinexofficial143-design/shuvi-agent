@@ -1,11 +1,11 @@
 //! Approved Blender declarative plan execution. The AI supplies JSON data,
 //! never Python code, CLI scripts, arbitrary shell args or Blender expressions.
 //! Every requested plan is preflighted by the separate Python Controller.
-use std::{fs::{self,OpenOptions,File},io::{Read,Write},path::{Path,PathBuf},process::{Command,Stdio},time::Duration};
+use std::{fs::{self,OpenOptions,File},io::{Read,Write},path::{Path,PathBuf},process::{Command,Stdio},sync::atomic::{AtomicBool,Ordering},thread,time::Duration};
 use serde_json::{Value,json};
 use sha2::{Digest,Sha256};
 use uuid::Uuid;
-use crate::{ActionState,register_managed_process,unregister_managed_process,terminate_managed_process_tree,bounded_child};
+use crate::{ActionState,register_managed_process,unregister_managed_process,terminate_managed_process_tree,terminate_registered_process_tree,managed_process_identity_matches,current_runtime_status,bounded_child};
 
 struct PlanFile(PathBuf);
 impl Drop for PlanFile {fn drop(&mut self){let _=fs::remove_file(&self.0);}}
@@ -82,14 +82,42 @@ pub(crate) fn execute(
             }
         }
     }
-    // Track the exact registered child so remote Stop can terminate its entire
-    // owned Windows process tree (including the Blender background child).
-    let output=bounded_child::collect_with_deadline(child,Duration::from_secs(120));
-    if output.is_err(){let _=terminate_managed_process_tree(pid);}
+    // The Python launcher owns the Blender child. Remote Stop can terminate
+    // that tree, and an independent watchdog enforces the native 4 GB ceiling.
+    let hard_limit_triggered=AtomicBool::new(false);
+    let termination_unconfirmed=AtomicBool::new(false);
+    let output=thread::scope(|scope|{
+        let monitor=scope.spawn(||{
+            while managed_process_identity_matches(state,pid).unwrap_or(false){
+                match current_runtime_status(state){
+                    Ok(status) if status.over_hard_limit=>{
+                        hard_limit_triggered.store(true,Ordering::Release);
+                        let confirmed=terminate_registered_process_tree(state,pid).unwrap_or(false);
+                        termination_unconfirmed.store(!confirmed,Ordering::Release);
+                        break;
+                    }
+                    Ok(_)=>{},
+                    Err(_)=>break,
+                }
+                thread::sleep(Duration::from_millis(250));
+            }
+        });
+        let result=bounded_child::collect_with_deadline(child,Duration::from_secs(120));
+        let _=monitor.join();
+        result
+    });
+    if output.is_err(){let _=terminate_registered_process_tree(state,pid);}
     if let Some(action_id)=execution_action_id{
         if let Ok(mut running)=state.running_action_children.lock(){running.remove(action_id);}
     }
     unregister_managed_process(state,pid);
+    if hard_limit_triggered.load(Ordering::Acquire){
+        return Err(if termination_unconfirmed.load(Ordering::Acquire){
+            "Blender plan exceeded the 4 GB hard RAM ceiling; process-tree termination is unconfirmed. Inspect before retry."
+        }else{
+            "Blender plan exceeded the 4 GB hard RAM ceiling and its managed process tree was stopped. Inspect before retry."
+        }.into());
+    }
     let output=output.map_err(|_|"Blender plan outcome unknown after deadline or cancellation; inspect before retry.".to_string())?;
     if !output.status.success(){
         return Err("Blender plan failed or had partial/unknown results; inspect scene/output before retry.".into());
