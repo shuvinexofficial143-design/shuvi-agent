@@ -45,3 +45,18 @@ test("Batch 54 independently verified window proof displays normalized safe titl
  assert.equal(proof.title,"Adobe Premiere Pro 2026");
  assert.doesNotMatch(goalEvidenceLabel("Premiere kholo",proof),/[\u202a-\u202e]/);
 });
+
+test("Batch 57 newly scoped Adobe tools only verify their own unique audited live window",()=>{
+ for(const [name,process,app] of [
+  ["Media Encoder","Adobe Media Encoder","media-encoder"],
+  ["Adobe Animate","Adobe Animate","animate"],
+  ["Character Animator","Adobe Character Animator","character-animator"],
+  ["Substance 3D","Adobe Substance 3D","substance-3d"],
+  ["Frame.io","Frame.io","frameio"]
+ ]){
+  const result={tool:"ui_windows",success:true,stdout:JSON.stringify([
+   {Name:process+" 2026",ProcessName:process,ProcessId:55,NativeWindowHandle:77}])};
+  assert.equal(windowGoalEvidence("Open "+name,result,true)?.app,app);
+  assert.equal(windowGoalEvidence("Open "+name,result,false),null);
+ }
+});

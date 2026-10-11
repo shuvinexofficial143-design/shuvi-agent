@@ -8,7 +8,12 @@ const knownApps=[
  ["after-effects",/\bafter[\s-]?effects?\b|आफ्टर इफेक्ट/iu,/\bafter[\s-]?effects?\b/i],
  ["blender",/\bblender\b|ब्लेंडर/iu,/\bblender\b/i],
  ["illustrator",/\billustrator\b|इलस्ट्रेटर/iu,/\billustrator\b/i],
- ["audition",/\baudition\b|ऑडिशन/iu,/\baudition\b/i]
+ ["audition",/\baudition\b|ऑडिशन/iu,/\baudition\b/i],
+ ["media-encoder",/\bmedia[\s-]?encoder\b|मीडिया एनकोडर/iu,/\bmedia[\s-]?encoder\b/i],
+ ["animate",/\badobe[\s-]+animate\b|एडोबी एनिमेट/iu,/\badobe[\s-]+animate\b/i],
+ ["character-animator",/\bcharacter[\s-]?animator\b|कैरेक्टर एनिमेटर/iu,/\bcharacter[\s-]?animator\b/i],
+ ["substance-3d",/\bsubstance[\s-]?3d\b|सब्सटेंस/iu,/\bsubstance[\s-]?3d\b/i],
+ ["frameio",/\bframe\.?io\b|फ्रेम डॉट आईओ/iu,/\bframe\.?io\b/i]
 ];
 export function windowGoalEvidence(objective,result,hasExactAudit){
  if(hasExactAudit!==true||result?.success!==true||result.tool!=="ui_windows"||
