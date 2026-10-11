@@ -14,6 +14,7 @@ import {taskClarificationKind,extendTaskClarification,nextClarificationRoot} fro
 import {newEvidence,recordAuditedEvidence,evidenceSummary} from "./native-task-evidence.mjs";
 import {summarizeWindowObservation} from "./native-window-observation.mjs";
 import {windowGoalEvidence,goalEvidenceLabel} from "./native-goal-evidence.mjs";
+import {observedWindowInventory,checkObservedMutationTarget} from "./native-window-target-guard.mjs";
 type Provider = {id:string;name:string;default_model:string;api_key_required:boolean;custom_base_url:boolean};
 type NativeChatMessage = {role:"user"|"assistant";content:string};
 type NativeChatResponse = {content:string;provider:string;model:string;tool_proposal:Record<string,unknown>|null};
@@ -162,6 +163,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  const taskGoalRoots=new Map<string,string>();
  const taskEvidence=new Map<string,ReturnType<typeof newEvidence>>();
  const verifiedWindows=new Map<string,NonNullable<ReturnType<typeof windowGoalEvidence>>>();
+ const observedWindows=new Map<string,NonNullable<ReturnType<typeof observedWindowInventory>>>();
  const getTask=(id:string)=>taskStates.get(id)??null;
  function updateTask(id:string,state:ReturnType<typeof createTask>|null){if(!state)return;taskStates.set(id,state);taskStatus.textContent=taskSummary(state);onChange();}
  function haltTask(id:string,why:string){const s=getTask(id);if(s)updateTask(id,pauseTask(s,why));}
@@ -293,6 +295,13 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     "Stopped: invalid or oversized tool proposal. No Windows action or automatic paid retry.");
    return;
   }
+  const gate=checkObservedMutationTarget(response.tool_proposal,observedWindows.get(task.threadId)??null);
+  if(!gate.allowed){
+   haltTask(task.threadId,"prepare_failed");
+   appendReply(task.threadId,task.promptIndex,"Unsafe or ambiguous UI target: "+gate.reason+" No Windows action prepared.");
+   showActionFeedback("UI target requires fresh observation or clarification. Nothing executed.");
+   return;
+  }
   const seen=seenAfterAuditedChange(task.seen,result.tool,true);
   if(seen.has(fp)){
    haltTask(task.threadId,"repeated_tool");
@@ -388,6 +397,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      taskEvidence.set(current.threadId,recordAuditedEvidence(
       taskEvidence.get(current.threadId)??newEvidence(),current.action.id,result,true));
      if(result.tool==="ui_windows"){
+      observedWindows.set(current.threadId,observedWindowInventory(result,true)??[]);
       const proof=windowGoalEvidence(current.objective,result,true);
       if(proof)verifiedWindows.set(current.threadId,proof);
       else verifiedWindows.delete(current.threadId);
@@ -481,8 +491,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   connected:()=>ready,
   getReplies:(threadId:string)=>replies.get(threadId)||[],
   canClearChats:()=>!pending&&!sending,
-  clearChat:(threadId:string)=>{if(pending?.threadId===threadId)return;histories.delete(threadId);replies.delete(threadId);taskStates.delete(threadId);taskGoalRoots.delete(threadId);taskEvidence.delete(threadId);verifiedWindows.delete(threadId);taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
-  clearAllChats:()=>{histories.clear();replies.clear();taskStates.clear();taskGoalRoots.clear();taskEvidence.clear();verifiedWindows.clear();taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
+  clearChat:(threadId:string)=>{if(pending?.threadId===threadId)return;histories.delete(threadId);replies.delete(threadId);taskStates.delete(threadId);taskGoalRoots.delete(threadId);taskEvidence.delete(threadId);verifiedWindows.delete(threadId);observedWindows.delete(threadId);taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
+  clearAllChats:()=>{histories.clear();replies.clear();taskStates.clear();taskGoalRoots.clear();taskEvidence.clear();verifiedWindows.clear();observedWindows.clear();taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
   async send(text,threadId,promptIndex=0){
    if(!ready)return {ok:false,error:"Windows Shuvi is not connected yet."};
    // A short answer to a Master clarification is still part of the SAME
@@ -532,6 +542,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     if(nextRoot)taskGoalRoots.set(threadId,nextRoot);
     else taskGoalRoots.delete(threadId);
     if(route.role!=="chat"){
+     if(!waitingForChoice)observedWindows.delete(threadId);
      // A new task cannot borrow a previous window verification.
      verifiedWindows.delete(threadId);
      goalStatus.textContent=taskGoalLabel(effectiveObjective);
@@ -541,6 +552,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      actionFeedback.hidden=true;
      try{
       // Validate provider output before contacting the native staging queue.
+      const gate=checkObservedMutationTarget(response.tool_proposal,observedWindows.get(threadId)??null);
+      if(!gate.allowed)throw Error("Unsafe or ambiguous UI target: "+gate.reason);
       const first=fingerprint(response.tool_proposal);
       if(!first)throw Error("Invalid or oversized native tool proposal.");
       const proposed=await invoke<Pending>("prepare_tool",{

@@ -592,3 +592,31 @@ test("Batch 11 no-tool final answer clears old clarification identity",async()=>
  await s.transport.send("Something else","scope-expiration",2);
  assert.doesNotMatch(s.chatInputs[2].orchestration_context??"",/Shuvi Test/);
 });
+
+test("Batch 13 blocks cross-app model click after audited Premiere window read",async()=>{
+ const first={content:"windows",provider:"xkiro",model:"model/master",tool_proposal:{tool:"ui_windows",arguments:{}}};
+ const second={content:"click",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_click",arguments:{window:"Adobe Photoshop 2026",name:"New"}}};
+ const s=setup({first,second,stdoutFor:{ui_windows:JSON.stringify([
+  {Name:"Adobe Premiere Pro 2026",ProcessId:200,NativeWindowHandle:44,ProcessName:"Adobe Premiere Pro"}])}});
+ await until(()=>s.transport.connected(),"native");
+ await s.transport.send("Premiere kholo","guard-cross-app",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.transport.getReplies("guard-cross-app")[0]?.includes("Unsafe or ambiguous UI target"),"unsafe blocked");
+ assert.equal(s.staged.length,1);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+});
+test("Batch 13 allows uniquely observed exact window but still requires owner Allow once",async()=>{
+ const first={content:"windows",provider:"xkiro",model:"model/master",tool_proposal:{tool:"ui_windows",arguments:{}}};
+ const second={content:"click",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_click",arguments:{window:"Adobe Premiere Pro 2026",name:"New"}}};
+ const s=setup({first,second,stdoutFor:{ui_windows:JSON.stringify([
+  {Name:"Adobe Premiere Pro 2026",ProcessId:200,NativeWindowHandle:44,ProcessName:"Adobe Premiere Pro"}])}});
+ await until(()=>s.transport.connected(),"native");
+ await s.transport.send("Premiere kholo","guard-right-app",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"approval staged");
+ assert.equal(s.staged[1].proposal.tool,"ui_click");
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+ assert.equal(s.approval.hidden,false);
+});
