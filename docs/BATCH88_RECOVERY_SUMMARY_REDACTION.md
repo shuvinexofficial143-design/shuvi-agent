@@ -1,0 +1,1 @@
+Batch 88: Display the read-only recovery prepared action summary through bounded credential redaction, matching its risk and detail. Rust tool ID and exact Allow once checks remain intact.

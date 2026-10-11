@@ -386,7 +386,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     recoveryFrom:current.action.kind as "ui_find"|"ui_discover"};
    updateTask(current.threadId,stageTask(getTask(current.threadId),next.id,next.kind,current.step+1));
    pendingText.textContent="Read-only UI recovery · Allow once required: "+
-    next.summary+"\nRisk: "+redactNativeError(next.risk)+"\n"+redactNativeError(next.detail);
+    redactNativeError(next.summary)+"\nRisk: "+redactNativeError(next.risk)+"\n"+redactNativeError(next.detail);
    approval.hidden=false;
    approval.scrollIntoView?.({block:"nearest",behavior:"smooth"});
    appendReply(current.threadId,current.promptIndex,
