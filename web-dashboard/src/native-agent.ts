@@ -7,7 +7,7 @@ import {mountNativeModelSetup, type ModelTeamHandle, type NativeInvoke} from "./
 import {chooseNativeRoute} from "./native-model-routing.mjs";
 import {masterGoalContext,resolveMasterObjective} from "./native-master-goal.mjs";
 import {createTask,stageTask,executeTask,verifyTask,pauseTask,taskSummary,taskContext} from "./native-task-progress.mjs";
-import {isRecoverableUiReadFailure,isAuditedUiReadFailure} from "./native-read-recovery.mjs";
+import {isRecoverableUiReadFailure,isAuditedUiReadFailure,uiReplanGuidance} from "./native-read-recovery.mjs";
 type Provider = {id:string;name:string;default_model:string;api_key_required:boolean;custom_base_url:boolean};
 type NativeChatMessage = {role:"user"|"assistant";content:string};
 type NativeChatResponse = {content:string;provider:string;model:string;tool_proposal:Record<string,unknown>|null};
@@ -16,7 +16,8 @@ type ActionResult = {success:boolean;tool:string;stdout:string;stderr:string;exi
 type Runtime = {shuvi_memory_mb:number;managed_children_count:number};
 type NativeRoute = {role:string;provider:string;model:string;base_url:string};
 type PendingTask = {action:Pending;threadId:string;promptIndex:number;
- route:NativeRoute;objective:string;step:number;seen:Set<string>};
+ route:NativeRoute;objective:string;step:number;seen:Set<string>;
+ recoveryFrom?:"ui_find"|"ui_discover"|null};
 // UI discovery output must reach the Master as observed data, not be silently
 // cut after the first dozen controls. Keep a bounded, compact, field allowlisted
 // inventory to avoid forwarding arbitrary control content as instructions.
@@ -230,6 +231,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    "Objective: "+task.objective.slice(0,500)+". "+
    "Current approved step: "+task.step+". "+
    "Last audited tool: "+result.tool+". "+taskContext(getTask(task.threadId))+" "+
+   uiReplanGuidance(task.recoveryFrom,result.tool)+" "+
    "After premiere_detect, propose the dedicated premiere_launch tool with empty arguments {} when the user wants Premiere opened; detection alone is not launch. "+
    "For other trusted discovered executable paths, propose launch_app with the exact observed path. "+
    "After any launch, use ui_windows or a suitable separate inspection to verify that the app/window exists. "+
@@ -280,7 +282,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     provider:task.route.provider,model:task.route.model,baseUrl:task.route.base_url||null
    });
    if(!next||typeof next.id!=="string")throw Error("Next action could not be staged.");
-   pending={...task,action:next,step:task.step+1,seen:new Set([...task.seen,fp])};
+   pending={...task,action:next,step:task.step+1,seen:new Set([...task.seen,fp]),recoveryFrom:null};
    updateTask(task.threadId,stageTask(getTask(task.threadId),next.id,next.kind,task.step+1));
    pendingText.textContent="Step "+(task.step+1)+
     " · Permission required: "+next.summary+"\nRisk: "+next.risk+"\n"+next.detail;
@@ -313,7 +315,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    });
    if(!next||typeof next.id!=="string"||next.kind!=="ui_windows")return false;
    haltTask(current.threadId,"confirmed_read_failure");
-   pending={...current,action:next,step:current.step+1,seen:new Set([...current.seen,fp])};
+   pending={...current,action:next,step:current.step+1,seen:new Set([...current.seen,fp]),
+    recoveryFrom:current.action.kind as "ui_find"|"ui_discover"};
    updateTask(current.threadId,stageTask(getTask(current.threadId),next.id,next.kind,current.step+1));
    pendingText.textContent="Read-only UI recovery · Allow once required: "+
     next.summary+"\nRisk: "+next.risk+"\n"+next.detail;

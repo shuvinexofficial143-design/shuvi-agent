@@ -70,8 +70,10 @@ test("ui_find absence is a real failure, so audit-gated recovery runs instead of
  assert.match(arm,/UI lookup failed:/);
  assert.doesNotMatch(arm,/No matching controls\. Use ui_discover/);
  const ui=readFileSync(new URL("../web-dashboard/src/native-agent.ts",import.meta.url),"utf8");
- assert.match(ui,/receipt\.event==="failed"/);
- assert.match(ui,/receipt\.success===false/);
+ const policy=readFileSync(new URL("../web-dashboard/src/native-read-recovery.mjs",import.meta.url),"utf8");
+ assert.match(policy,/receipt\.event==="failed"/);
+ assert.match(policy,/receipt\.success===false/);
+ assert.match(ui,/isAuditedUiReadFailure\(current\.action\.kind,message,current\.action\.id,receipt/);
  assert.match(ui,/tool:"ui_windows",arguments:\{\}/);
 });
 

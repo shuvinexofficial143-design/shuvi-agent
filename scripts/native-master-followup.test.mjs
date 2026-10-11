@@ -391,3 +391,31 @@ test("conflicting successful audit on typed failure blocks read-only recovery",a
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
  assert.match(s.transport.getReplies("contradictory-audit")[0],/No automatic retry/);
 });
+
+test("verified UI recovery observation causes grounded replan advice, not a blind click",async()=>{
+ const finding={content:JSON.stringify({tool:"ui_find",arguments:{name:"New Project",window:"Adobe Premiere Pro"}}),
+  provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_find",arguments:{name:"New Project",window:"Adobe Premiere Pro"}}};
+ const discovery={content:JSON.stringify({tool:"ui_discover",arguments:{window:"Adobe Premiere Pro"}}),
+  provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_discover",arguments:{window:"Adobe Premiere Pro"}}};
+ const s=setup({first:finding,second:discovery,failFind:true,
+  stdoutFor:{ui_windows:JSON.stringify([{Name:"Adobe Premiere Pro 2026",ProcessId:3500,ProcessName:"Adobe Premiere Pro",NativeWindowHandle:909}])}});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Premiere me New Project banao","safe-replan",0);
+ assert.equal(s.staged.length,1);
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"recovery windows stage");
+ assert.equal(s.staged[1].proposal.tool,"ui_windows");
+ assert.equal(s.chatInputs.length,1,"confirmed failed ui_find does not trigger paid call");
+ await until(()=>s.allow.disabled===false,"recovery permission");
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===3,"new grounded inspection stage");
+ assert.equal(s.chatInputs.length,2,"only after separately approved and audited ui_windows");
+ assert.match(s.chatInputs[1].orchestration_context,/Recovery planning: an earlier ui_find/);
+ assert.match(s.chatInputs[1].orchestration_context,/Do not repeat the unsuccessful selector/);
+ assert.match(s.chatInputs[1].messages.at(-1).content,/Adobe Premiere Pro 2026/);
+ assert.equal(s.staged[2].proposal.tool,"ui_discover");
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,2);
+ assert.equal(s.approval.hidden,false);
+});

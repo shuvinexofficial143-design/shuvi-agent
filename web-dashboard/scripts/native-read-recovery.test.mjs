@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {isRecoverableUiReadFailure,isAuditedUiReadFailure} from "../src/native-read-recovery.mjs";
+import {isRecoverableUiReadFailure,isAuditedUiReadFailure,uiReplanGuidance} from "../src/native-read-recovery.mjs";
 
 const id="action-verified-1";
 const receipt={action_id:id,tool:"ui_find",event:"failed",success:false};
@@ -27,4 +27,17 @@ test("exact native failed audit receipt is required; model text never proves fai
  assert.equal(isAuditedUiReadFailure("ui_find",msg,id,{...receipt,event:"unknown"},false),false);
  assert.equal(isAuditedUiReadFailure("ui_find",msg,id,null,false),false);
  assert.equal(isAuditedUiReadFailure("ui_find","arbitrary external failure",id,receipt,false),false);
+});
+
+test("safe replan advice appears only after the audited ui_windows observation",()=>{
+ assert.equal(uiReplanGuidance("ui_find","ui_find"),"");
+ assert.equal(uiReplanGuidance("ui_click","ui_windows"),"");
+ assert.equal(uiReplanGuidance(null,"ui_windows"),"");
+ const advice=uiReplanGuidance("ui_find","ui_windows");
+ assert.match(advice,/earlier ui_find read-only lookup failed/);
+ assert.match(advice,/separately approved ui_windows observation is now verified/);
+ assert.match(advice,/separately approved ui_discover/);
+ assert.match(advice,/Do not repeat the unsuccessful selector/);
+ assert.match(advice,/never click, type, save or modify/);
+ assert.ok(advice.length<1100);
 });

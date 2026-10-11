@@ -14,3 +14,20 @@ export function isAuditedUiReadFailure(kind, message, actionId, receipt, already
   receipt.action_id===actionId&&receipt.tool===kind&&
   receipt.event==="failed"&&receipt.success===false);
 }
+
+
+// A failed UI read is only an obstacle, not an instruction to click another
+// guessed button. This advice is offered AFTER a separately approved,
+// successful ui_windows observation in the exact same native task.
+export function uiReplanGuidance(previousFailedRead,verifiedObservationTool){
+ if(!UI_READ_TOOLS.has(previousFailedRead)||verifiedObservationTool!=="ui_windows")return "";
+ return "Recovery planning: an earlier "+previousFailedRead+
+  " read-only lookup failed with an exact native failed audit receipt. "+
+  "The separately approved ui_windows observation is now verified, but it does "+
+  "NOT mean the missing control exists or that the original task is complete. "+
+  "Use actual observed unique window/process identity. If the requested control "+
+  "is not grounded, propose a separately approved ui_discover read in that "+
+  "specific window, or ask for clarification when several windows/controls match. "+
+  "Do not repeat the unsuccessful selector or blindly substitute similar labels; "+
+  "never click, type, save or modify based only on a model guess.";
+}
