@@ -13,3 +13,9 @@ test("Batch 37 repeat inventory rows for one window title still block UI lookup"
  const two=[{title:"Premiere",pid:1,hwnd:2},{title:"Premiere",pid:1,hwnd:2}];
  assert.equal(check({tool:"ui_find",arguments:{window:"Premiere"}},two).allowed,false);
 });
+
+test("Batch 48 UI read-only lookup refuses contradictory process on same window handle",()=>{
+ const impossible=[{title:"Premiere",pid:100,hwnd:7},{title:"Photoshop",pid:101,hwnd:7}];
+ assert.equal(check({tool:"ui_find",arguments:{window:"Premiere"}},impossible).allowed,false);
+ assert.equal(check({tool:"ui_discover",arguments:{window:"Photoshop"}},impossible).allowed,false);
+});

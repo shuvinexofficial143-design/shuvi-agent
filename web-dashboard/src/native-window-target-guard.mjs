@@ -47,6 +47,9 @@ export function checkAmbiguousReadWindow(proposal,observed){
  if(typeof target!=="string"||!target.trim())return {allowed:true,reason:"native_lookup_required"};
  const matches=observed.filter(x=>typeof x.title==="string"&&
   x.title.toLocaleLowerCase("en-US")===target.trim().toLocaleLowerCase("en-US"));
+ if(matches.length===1&&observed.some(x=>x.hwnd===matches[0].hwnd&&
+  (x.pid!==matches[0].pid||x.title!==matches[0].title)))
+  return {allowed:false,reason:"Conflicting observed window-handle identity; inspect again."};
  // Repeated exact-title rows cannot uniquely identify one target.
  return matches.length>1?
   {allowed:false,reason:"Multiple audited windows have the same title. Ask which window or use a unique identity."}:
