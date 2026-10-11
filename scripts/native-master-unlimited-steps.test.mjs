@@ -10,7 +10,9 @@ test("native Master continuation has no arbitrary approved-action count cutoff",
  assert.match(doc,/no fixed six-step/);
 });
 test("new actions require explicit approval and duplicate proposals are still blocked",()=>{
- assert.match(native,/task\.seen\.has\(fp\)/);
+ assert.match(native,/seenAfterAuditedChange\(task\.seen,result\.tool,true\)/);
+ assert.match(native,/if\(seen\.has\(fp\)\)/);
+ assert.match(native,/if\(verified\)await continueAfterVerifiedAction/);
  assert.match(native,/Repeated action blocked/);
  assert.match(native,/approval\.hidden=false/);
  assert.match(native,/invoke<ActionResult>\("execute_action"/);
