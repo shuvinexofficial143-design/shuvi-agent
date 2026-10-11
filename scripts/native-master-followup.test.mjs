@@ -38,7 +38,7 @@ const launch={
  provider:"xkiro",model:"model/master",
  tool_proposal:{tool:"premiere_launch",arguments:{}}
 };
-function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null,wrongStageIndex=0}={}){
+function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null,wrongStageIndex=0,continuationRenderError=false}={}){
  const nodes=new Map(),created=[],calls=[],chatInputs=[],staged=[];
  const domParent=el(),composerParent=el(),form=el(),chat=el();
  form.parentElement=composerParent;chat.parentElement=domParent;
@@ -54,7 +54,15 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
   if(name==="runtime_status")return {shuvi_memory_mb:40,managed_children_count:0};
   if(name==="list_providers")return [{id:"xkiro",name:"xKiro"}];
   if(name==="remote_agent_status")return {enabled:false};
-  if(name==="chat"){chatInputs.push(params.input);return replies.shift()??{content:"Done",tool_proposal:null}}
+  if(name==="chat"){
+   chatInputs.push(params.input);
+   const response=replies.shift()??{content:"Done",tool_proposal:null};
+   if(continuationRenderError&&chatInputs.length===2){
+    let reads=0;
+    return {...response,get content(){reads++;if(reads>1)throw Error("UI lookup failed: synthetic continuation render failure");return "continue";}};
+   }
+   return response;
+  }
   if(name==="prepare_tool"){
    const id="action-"+(staged.length+1);
    staged.push({id,proposal:params.proposal});
@@ -619,4 +627,20 @@ test("Batch 13 allows uniquely observed exact window but still requires owner Al
  assert.equal(s.staged[1].proposal.tool,"ui_click");
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
  assert.equal(s.approval.hidden,false);
+});
+
+test("Batch 14 post-audit continuation exception does not start UI read recovery",async()=>{
+ const s=setup({first:launch,second:{content:"continue",provider:"xkiro",model:"model/master",tool_proposal:null},
+  continuationRenderError:true});
+ await until(()=>s.transport.connected(),"native");
+ await s.transport.send("Premiere kholo","audited-then-continuation-error",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.transport.getReplies("audited-then-continuation-error")[0]?.includes("Native action remained audit-verified"),"post-audit exception");
+ const reply=s.transport.getReplies("audited-then-continuation-error")[0];
+ assert.match(reply,/Master continuation errored/);
+ assert.doesNotMatch(reply,/Native action outcome unknown/);
+ assert.equal(s.calls.filter(c=>c.name==="action_audit_receipt").length,0);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
+ assert.equal(s.chatInputs.length,2);
+ assert.equal(s.staged.length,1);
 });

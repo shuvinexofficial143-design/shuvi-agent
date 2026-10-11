@@ -349,7 +349,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    const next=await invoke<Pending>("prepare_tool",{
     proposal,provider:current.route.provider,model:current.route.model,baseUrl:current.route.base_url||null
    });
-   if(!next||typeof next.id!=="string"||next.kind!=="ui_windows")return false;
+   if(!next||typeof next.id!=="string"||!next.id.trim()||next.id.length>128||next.kind!=="ui_windows")return false;
    haltTask(current.threadId,"confirmed_read_failure");
    pending={...current,action:next,step:current.step+1,seen:new Set([...current.seen,fp]),
     recoveryFrom:current.action.kind as "ui_find"|"ui_discover"};
@@ -372,6 +372,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  }
  async function decide(allowed:boolean){
   const current=pending;
+  // Tool execution and later Master planning are separate evidence phases.
+  let executionVerified=false;
   if(!current||sending)return;
   sending=true;
   approve.disabled=deny.disabled=true;
@@ -392,6 +394,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     const matched=receipts.find(r=>r.action_id===current.action.id &&
        r.tool===result.tool && r.event==="executed" && r.success===true);
     const verified=result.success && Boolean(matched);
+    executionVerified=verified;
     if(verified){
      updateTask(current.threadId,verifyTask(getTask(current.threadId),current.action.id,result.tool,true));
      taskEvidence.set(current.threadId,recordAuditedEvidence(
@@ -434,7 +437,17 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    }
   }catch(error){
    const message=String(error).slice(0,1200);
-   const recoveryPrepared=await prepareAuditedUiReadRecovery(current,message);
+   if(executionVerified){
+    // An audited success cannot become an unknown Windows outcome just
+    // because a later model response or rendering/approval step threw.
+    if(!pending||pending===current)haltTask(current.threadId,"model_failed");
+    appendReply(current.threadId,current.promptIndex,
+     "Native action remained audit-verified. Master continuation errored: "+message+
+     ". No model or Windows action was automatically retried.");
+    showActionFeedback("Native action verified. Follow-up planning failed; no automatic retry.");
+    refreshState("Master continuation failed; prior native action remains verified.");
+   }else{
+    const recoveryPrepared=await prepareAuditedUiReadRecovery(current,message);
    if(!recoveryPrepared){
     haltTask(current.threadId,"unknown_outcome");
     updateReply(current.threadId,current.promptIndex,
@@ -442,6 +455,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      "\n\nNative action outcome unknown: "+message+". Do not retry blindly.");
     showActionFeedback("Native action outcome unknown. Review Activity/Audit before retrying.");
     refreshState("Native action outcome unknown. Check Activity/Audit.");
+    }
    }
   }finally{
    sending=false;
