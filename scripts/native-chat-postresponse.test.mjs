@@ -32,12 +32,12 @@ function el() {
     parentElement: { insertBefore() {} }
   };
 }
-async function mount(invoke) {
+async function mount(invoke, storage = null) {
   globalThis.document = {
     createElement: () => el(),
     getElementById: id => id === "chatWorkspaceLayout" ? el() : null
   };
-  globalThis.window = { __TAURI_INTERNALS__: { invoke } };
+  globalThis.window = { __TAURI_INTERNALS__: { invoke }, localStorage: storage };
   const transport = mountNativeAgent(() => {});
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(transport?.connected(), true, "native IPC preflight must finish");
@@ -95,4 +95,41 @@ test("native chat labels are updated only after confirmed native connection", ()
   assert.match(source, /submit\.textContent = nativeConnected \? "Send to Shuvi/);
   assert.match(source, /"Save locally ↗"/);
   assert.match(source, /Windows tool actions need separate approval/);
+});
+
+function inMemoryRecoveryStore() {
+ const data = new Map();
+ return {
+  getItem(key){return data.get(key)??null;},
+  setItem(key,value){data.set(key,String(value));},
+  removeItem(key){data.delete(key);},
+  read(){return JSON.parse(data.get("shuvi.native.task.recovery.v1")??"null");}
+ };
+}
+test("installed native transport journals paid request before dispatch without storing original message",async()=>{
+ const store=inMemoryRecoveryStore();
+ const mock=nativeInvoke({content:"Request acknowledged.",provider:"xkiro",
+  model:"openai/gpt-5.6-sol",tool_proposal:null},false);
+ const transport=await mount(mock.invoke,store);
+ const text="Open Notepad; confidential text must not enter recovery journal";
+ const result=await transport.send(text,"journal-live",0);
+ assert.equal(result.ok,true);
+ assert.equal(mock.calls.filter(x=>x==="chat").length,1);
+ const saved=store.read();
+ assert.ok(saved);
+ assert.equal(saved.phase,"model_reserved");
+ assert.equal(saved.maxActions,8);
+ assert.equal(saved.modelRequests,1);
+ assert.equal(saved.stagedActions,0);
+ assert.equal(JSON.stringify(saved).includes("confidential text"),false);
+});
+test("native paid model call never begins when available recovery storage is unwritable",async()=>{
+ const store={getItem(){return null;},setItem(){throw Error("Storage denied");},removeItem(){}};
+ const mock=nativeInvoke({content:"Should not dispatch",tool_proposal:null},false);
+ const transport=await mount(mock.invoke,store);
+ const result=await transport.send("Open Notepad","journal-quota",0);
+ assert.equal(result.ok,false);
+ assert.match(result.error,/recovery journal could not be saved/);
+ assert.equal(mock.calls.includes("chat"),false);
+ assert.equal(mock.calls.includes("prepare_tool"),false);
 });
