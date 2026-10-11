@@ -1445,6 +1445,11 @@ async function runAgentStep(): Promise<void> {
   }
 
   setBusy(true);
+  // A model response belongs ONLY to the task that dispatched it. A Stop,
+  // Resume, or replacement task rotates/revokes this local owner identity.
+  const requestScope = activePermissionScope;
+  const staleModelRequest = () => requestScope !== activePermissionScope ||
+    requestScope.revoked || cancelRequested || orchestration.recovery_mode === "stopped";
   const route = taskModelRoute ?? { ...defaultModelRoute(), role: "default" };
   // A blank model is never sent to a paid provider and never silently replaced.
   if (!route.model.trim()) {
@@ -1464,6 +1469,7 @@ async function runAgentStep(): Promise<void> {
     }
   }
 
+  if (staleModelRequest()) return;
   // Reserve ONE potentially billed model request before dispatch. The
   // reservation persists across crash/restart and is not silently refunded
   // for cancelled requests or provider errors with uncertain billing.
@@ -1480,11 +1486,7 @@ async function runAgentStep(): Promise<void> {
     await stopAgentForSafety("Shuvi could not persist its model-request reservation. No AI provider request was sent.");
     return;
   }
-  if (cancelRequested) {
-    if(remoteTask)await closeRemoteTask("stopped");
-    setBusy(false);
-    return;
-  }
+  if (staleModelRequest()) return;
 
   try {
     const response = await invoke<ChatResponse>("chat", {
@@ -1497,6 +1499,9 @@ async function runAgentStep(): Promise<void> {
       }
     });
 
+    // Do not use a stale provider reply to mutate task history, token UI,
+    // checkpoints, or stage a tool for a different owner request.
+    if (staleModelRequest()) return;
     if (response.usage) {
       sessionInputTokens += response.usage.input_tokens;
       sessionOutputTokens += response.usage.output_tokens;
@@ -1555,6 +1560,7 @@ async function runAgentStep(): Promise<void> {
     );
     setBusy(false);
   } catch {
+    if (staleModelRequest()) return;
     // A12/A14: provider errors/timeouts may occur AFTER an upstream charge.
     // Do not store arbitrary URL/credential-bearing HTTP error strings in
     // durable chat or let the recovery flow blindly retry this attempt.
