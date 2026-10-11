@@ -26,6 +26,11 @@ export function windowGoalEvidence(objective,result,hasExactAudit){
  // A matching title can be misleading if process identity names another app.
  const process=typeof row.ProcessName==="string"?row.ProcessName:"";
  if(process&&knownApps.some(([id,,matcher])=>id!==app&&matcher.test(process)))return null;
+ // A reused native handle with contradictory process/title cannot verify
+ // a unique live app, even if exactly one title matches the requested app.
+ if(rows.some(other=>other!==row&&other&&
+  other.NativeWindowHandle===row.NativeWindowHandle&&
+  (other.ProcessId!==row.ProcessId||other.Name!==row.Name)))return null;
  if(typeof row.Name!=="string"||!row.Name.trim()||
   !Number.isSafeInteger(row.ProcessId)||row.ProcessId<=0||
   !Number.isSafeInteger(row.NativeWindowHandle)||row.NativeWindowHandle<=0)

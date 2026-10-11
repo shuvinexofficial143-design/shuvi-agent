@@ -1,0 +1,1 @@
+Batch 50: A goal's uniquely matching app title cannot establish independent window existence when another observed row claims the same native HWND under a conflicting PID/title. No overall project or export success inferred.

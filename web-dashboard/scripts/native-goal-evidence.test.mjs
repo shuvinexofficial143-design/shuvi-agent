@@ -27,3 +27,11 @@ test("Batch 41 oversized UI evidence cannot mark an app window verified",()=>{
  const huge={tool:"ui_windows",success:true,stdout:"["+" ".repeat(250001)+"]"};
  assert.equal(windowGoalEvidence("Premiere kholo",huge,true),null);
 });
+
+test("Batch 50 conflicting records sharing a HWND cannot verify a live application",()=>{
+ const contradiction={tool:"ui_windows",success:true,stdout:JSON.stringify([
+  {Name:"Adobe Premiere Pro 2026",ProcessName:"Premiere",ProcessId:12,NativeWindowHandle:5},
+  {Name:"Adobe Photoshop 2026",ProcessName:"Photoshop",ProcessId:13,NativeWindowHandle:5}
+ ])};
+ assert.equal(windowGoalEvidence("Premiere kholo",contradiction,true),null);
+});
