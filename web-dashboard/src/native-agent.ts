@@ -18,6 +18,7 @@ import {observedWindowInventory,checkObservedMutationTarget} from "./native-wind
 import {verifiedExecutionReceipt,contradictsFailureReceipt} from "./native-action-receipts.mjs";
 import {requiresNewWindowObservation} from "./native-ui-snapshot-lifetime.mjs";
 import {taskOutcomeSummary} from "./native-task-outcome.mjs";
+import {checkRequestedAppTarget} from "./native-intent-target.mjs";
 type Provider = {id:string;name:string;default_model:string;api_key_required:boolean;custom_base_url:boolean};
 type NativeChatMessage = {role:"user"|"assistant";content:string};
 type NativeChatResponse = {content:string;provider:string;model:string;tool_proposal:Record<string,unknown>|null};
@@ -297,6 +298,12 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    haltTask(task.threadId,"prepare_failed");
    appendReply(task.threadId,task.promptIndex,
     "Stopped: invalid or oversized tool proposal. No Windows action or automatic paid retry.");
+   return;
+  }
+  const appGate=checkRequestedAppTarget(task.objective,response.tool_proposal);
+  if(!appGate.allowed){
+   haltTask(task.threadId,"prepare_failed");
+   appendReply(task.threadId,task.promptIndex,"Unsafe app selection: "+appGate.reason+" Nothing staged.");
    return;
   }
   const gate=checkObservedMutationTarget(response.tool_proposal,observedWindows.get(task.threadId)??null);
@@ -585,6 +592,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      actionFeedback.hidden=true;
      try{
       // Validate provider output before contacting the native staging queue.
+      const appGate=checkRequestedAppTarget(effectiveObjective,response.tool_proposal);
+      if(!appGate.allowed)throw Error("Unsafe app selection: "+appGate.reason);
       const gate=checkObservedMutationTarget(response.tool_proposal,observedWindows.get(threadId)??null);
       if(!gate.allowed)throw Error("Unsafe or ambiguous UI target: "+gate.reason);
       const first=fingerprint(response.tool_proposal);
