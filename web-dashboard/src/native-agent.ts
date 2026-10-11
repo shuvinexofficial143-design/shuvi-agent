@@ -340,6 +340,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    if(!response||typeof response.content!=="string")
     throw Error("Invalid next-step AI response");
   }catch(error){
+   writeRecovery(taskBudget,"outcome_unknown",task.action.id);
    haltTask(task.threadId,"model_failed");
    appendReply(task.threadId,task.promptIndex,
     "Master continuation failed or its result is unknown: "+redactNativeError(error)+
@@ -355,6 +356,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   histories.set(task.threadId,[...messages,{role:"assistant",content:answer}].slice(-22));
   appendReply(task.threadId,task.promptIndex,"Master next step:\n"+answer);
   if(!response.tool_proposal){
+   writeRecovery(taskBudget,"paused",task.action.id);
    haltTask(task.threadId,followupRoot?"awaiting_clarification":"no_next_tool");
    appendReply(task.threadId,task.promptIndex,
     (followupRoot?"Task paused: waiting for your clarification; no further Windows tool is prepared. The original goal is NOT independently verified complete.\n":"Task paused: no further executable tool was proposed. The full original objective is NOT independently verified complete; check the actual application/project before claiming success.\n")+
@@ -703,7 +705,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    if(!reserveNativeModelRequest(taskBudget))return {ok:false,error:
     "Owner-selected AI request budget or task deadline exhausted. No paid AI request was sent. Start a new task to authorize more work."};
    taskBudgets.set(threadId,taskBudget);
-   if(!writeRecovery(taskBudget,"model_reserved"))return {ok:false,error:
+   if(route.role!=="chat"&&!writeRecovery(taskBudget,"model_reserved"))return {ok:false,error:
     "Native recovery journal could not be saved. No paid AI request sent."};
    // Keep paid-request context bounded and avoid forwarding any credential.
    const messages:NativeChatMessage[]=[...(waitingForChoice||route.role==="chat"?prev.slice(-20):[]),
@@ -786,6 +788,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       refreshState("Waiting for your explicit Allow once / Deny decision. No tool executed.");
       approval.scrollIntoView?.({block:"nearest",behavior:"smooth"});
      }catch(error){
+      writeRecovery(taskBudget,"outcome_unknown");
       updateTask(threadId,pauseTask(createTask(),"prepare_failed"));
       showActionFeedback("AI replied but Windows could not prepare its action: "+redactNativeError(error)+
        ". Nothing executed. Check the action details; do not resend this paid request blindly.");
@@ -799,6 +802,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      }
     }else{
      if(route.role!=="chat"){
+      writeRecovery(taskBudget,"paused");
       updateTask(threadId,pauseTask(createTask(),nextRoot?"awaiting_clarification":"no_tool"));
       const likeToolJson=/["']tool["']\s*:/.test(reply);
       showActionFeedback(nextRoot
@@ -815,6 +819,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     }
     return {ok:true,reply};
    }catch(error){
+    if(route.role!=="chat")writeRecovery(taskBudget,"outcome_unknown");
     refreshState("Native AI request failed or outcome unknown. Never retry blindly.");
     return {ok:false,error:redactNativeError(error)};
    }finally{

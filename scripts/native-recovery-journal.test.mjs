@@ -36,3 +36,15 @@ test("native transport uses journal before provider dispatch and action approval
  assert.match(text,/if\(!writeRecovery\(taskBudget,"awaiting_approval",next.id\)\)/);
  assert.match(text,/if\(verifiedBudget&&!writeRecovery\(verifiedBudget,"audit_verified"/);
 });
+
+test("a paused or uncertain task remains an inspection-only journal record",()=>{
+ const store=makeStore();
+ for(const phase of ["paused","outcome_unknown"]){
+  assert.equal(writeNativeRecovery(store,{...value,phase},1000),true);
+  assert.equal(readNativeRecovery(store,1001).phase,phase);
+ }
+ const native=readFileSync(new URL("../web-dashboard/src/native-agent.ts",import.meta.url),"utf8");
+ assert.match(native,/writeRecovery\(taskBudget,"outcome_unknown"\)/);
+ assert.match(native,/writeRecovery\(taskBudget,"paused"\)/);
+ assert.match(native,/route.role!=="chat"&&!writeRecovery\(taskBudget,"model_reserved"\)/);
+});

@@ -133,3 +133,12 @@ test("native paid model call never begins when available recovery storage is unw
  assert.equal(mock.calls.includes("chat"),false);
  assert.equal(mock.calls.includes("prepare_tool"),false);
 });
+
+test("ordinary informational Chat does not require writable Windows task recovery storage",async()=>{
+ const store={getItem(){return null;},setItem(){throw Error("Storage denied");},removeItem(){}};
+ const mock=nativeInvoke({content:"Hello from AI",tool_proposal:null},false);
+ const transport=await mount(mock.invoke,store);
+ const reply=await transport.send("Hello Shuvi","plain-chat",0);
+ assert.equal(reply.ok,true);
+ assert.equal(mock.calls.filter(x=>x==="chat").length,1);
+});
