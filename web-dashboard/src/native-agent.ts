@@ -212,6 +212,27 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   recoveryCheck.hidden=!previousRecovery.actionId;
   recoveryDismiss.hidden=false;
  }
+ recoveryCheck.addEventListener("click",async()=>{
+  const actionId=previousRecovery?.actionId;
+  if(!actionId)return;
+  recoveryCheck.disabled=true;
+  recoveryNotice.textContent="Reading previous action evidence from Rust Audit. No commands are being replayed.";
+  try{
+   const [receipt,trail]=await Promise.all([
+    invoke<{action_id:string|null;event:string;tool:string;success:boolean}|null>(
+     "action_audit_receipt",{actionId}),
+    invoke<Array<{action_id:string|null;event:string;tool:string;success:boolean}>>(
+     "audit_log",{limit:200})
+   ]);
+   const verdict=reconcileNativeActionAudit(actionId,receipt,trail);
+   recoveryNotice.textContent=recoveryAuditMessage(verdict)+
+    " The original task is NOT verified complete. No provider request or Windows action was replayed. Review native Activity before new work.";
+  }catch{
+   recoveryNotice.textContent="Rust Audit could not be read; the prior action remains UNKNOWN. No automatic retry.";
+  }finally{
+   recoveryCheck.disabled=false;
+  }
+ });
  recoveryDismiss.addEventListener("click",()=>{
   clearNativeRecovery(recoveryStorage);
   recoveryNotice.hidden=true;
