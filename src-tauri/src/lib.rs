@@ -1,6 +1,7 @@
 #![recursion_limit = "512"]
 
 mod web_bridge;
+mod target_window_capture;
 mod remote_agent;
 mod blender_worker;
 mod blender_plan_worker;
@@ -162,7 +163,7 @@ If the user's request requires a computer action, choose ONE tool and respond ON
 {"tool":"tool_name","arguments":{...},"reason":"short explanation","plan":{"objective":"overall task","step":"what this one action is meant to accomplish","success_criteria":"observable result that proves this step worked"}}
 For a genuinely one-step task, plan may be omitted. For a multi-step task, keep objective stable across steps and make success_criteria observable from tool output or a follow-up inspection. Never claim future plan steps have already run.
 For a request to OPEN or LAUNCH Adobe Premiere Pro, choose premiere_launch with empty arguments {} as the FIRST tool, not premiere_detect. premiere_launch independently discovers the installed executable and launches it; a preliminary detection wastes time and a second paid model request. Use premiere_detect only when the user explicitly wants to inspect installation/path/readiness without opening Premiere. After launch, propose a separate ui_find or other non-mutating inspection to verify the actual window before claiming success. All actions must still require Allow once and a matching native audit.
-For any UI task, start with ui_windows when the app identity is uncertain, and use ui_discover to read actual UI labels, roles and AutomationIds before ui_click/ui_set_value. Interpret different button wording from observed controls rather than guessing exact selector strings. If Accessibility lacks controls, inspect_screen is available for an explicitly selected vision-capable model (including xKiro, whose public catalog must report capabilities.vision=true); never silently change paid models or repeat the same failed selector. Ambiguous controls must not be clicked.
+For any UI task, start with ui_windows when the app identity is uncertain, and use ui_discover to read actual UI labels, roles and AutomationIds before ui_click/ui_set_value. Interpret different button wording from observed controls rather than guessing exact selector strings. If Accessibility lacks controls, inspect_screen with window set to the observed target application title is available for an explicitly selected vision-capable model (including xKiro, whose public catalog must report capabilities.vision=true); never silently change paid models or repeat the same failed selector. Ambiguous controls must not be clicked.
 
 Available tools:
 - list_directory: {"path":"absolute path"}
@@ -179,7 +180,7 @@ Available tools:
 - browser_dom_set_value: {"pid":1234,"selector":"CSS selector","value":"text"}
 - stop_managed_process: {"pid":1234}
 - capture_screen: {}
-- inspect_screen: {"prompt":"what should be understood from the current screen"}
+- inspect_screen: {"prompt":"what should be understood","window":"EXACT observed window title from ui_windows"} — for app tasks ALWAYS specify the real target application window even when Shuvi is foreground for Allow once. Use window:"desktop" ONLY if the user expressly asks to inspect the whole desktop.
 - list_processes: {}
 - ui_windows: {} — enumerate current top-level Windows desktop windows with actual names, process names, PIDs and UIA class names; read only. Use when a title is unknown or a previous selector failed. Never guess window titles repeatedly.
 - ui_discover: {"window":"application name or title"} — READ ONLY: enumerate named UI elements, AutomationIds, ControlTypes and bounds within one unambiguously matched window. Use this when a button label has changed or when similar controls must be distinguished. If controls are missing, report limitations rather than inventing selectors.
@@ -493,7 +494,7 @@ Rules:
 - Never claim an action succeeded before Shuvi returns a tool result.
 - Prefer typed file/app/browser/screen tools over PowerShell.
 - capture_screen only captures an image and returns its local path; do not infer visual contents from that path.
-- inspect_screen captures the screen and sends it to the currently selected vision-capable provider after user approval.
+- inspect_screen captures ONLY the approved window (briefly activates it, verifies its identity, captures its visible bounds, then restores previous focus). It fails closed if the specified app window is missing/ambiguous or cannot be brought forward; do not silently send Shuvi's chat screenshot. Use window:"desktop" only for user-requested whole-desktop inspection.
 - Do not put tool JSON inside markdown fences.
 - For destructive/system/security-sensitive work, explain the intent in reason.
 - Multi-step tasks may include top-level task_graph: {"objective":"stable goal","revision":1,"steps":[{"step_id":"inspect","title":"Inspect source","purpose":"Observe current implementation","success_criteria":"Typed read_file succeeds","depends_on":[],"expected_tool":"read_file"}]} and task_step_id:"inspect". Use 1..8 steps, IDs 1..48 ASCII letters/digits/_/-, title <=100, purpose <=300, success_criteria <=500, objective <=500; at most 7 unique predecessor IDs. Only exact successful typed tools complete steps; never send status/evidence or claim completion from prose. expected_tool must match the associated proposal; validation requires run_project_task with successful exit status. One graph step corresponds to one typed action, so status and diff need separate steps.
@@ -644,7 +645,7 @@ enum ToolAction {
     BrowserDomSetValue { pid: u32, selector: String, value: String },
     StopManagedProcess { pid: u32 },
     CaptureScreen,
-    InspectScreen { prompt: String, provider: ProviderContext },
+    InspectScreen { prompt: String, provider: ProviderContext, window: String },
     ListProcesses,
     UiWindows,
     UiDiscover { window: String },
@@ -3319,6 +3320,8 @@ fn stage_tool(
         ),
         "inspect_screen" => {
             let prompt = arg_string(&proposal.arguments, "prompt")?;
+            let window = arg_string(&proposal.arguments, "window")?;
+            if window.chars().count() > 180 { return Err("Window selector is too long.".into()); }
             let provider = provider_context
                 .ok_or_else(|| "Screen inspection requires the active provider context.".to_string())?;
             // Fail BEFORE staging a useless approval. xKiro's text endpoint
@@ -3333,13 +3336,13 @@ fn stage_tool(
                 ));
             }
             let detail = format!(
-                "Capture the current screen and send it to {}/{} for visual analysis: {}",
-                provider.provider, provider.model, prompt
+                "Targeted capture of '{}' (desktop only if explicitly selected) for {}/{} visual analysis: {}",
+                window, provider.provider, provider.model, prompt
             );
 
             (
-                ToolAction::InspectScreen { prompt, provider },
-                "Inspect current screen with AI vision".to_string(),
+                ToolAction::InspectScreen { prompt, provider, window },
+                "Inspect approved target window with AI vision".to_string(),
                 detail,
                 RiskLevel::Medium,
             )
@@ -10515,17 +10518,24 @@ Write-Output 'SHUVI_WHATSAPP_DESKTOP_LAUNCH_REQUESTED'
                 exit_code: Some(0),
             })
         }
-        ToolAction::InspectScreen { prompt, provider } => {
-            let path = capture_screen_png()?;
+        ToolAction::InspectScreen { prompt, provider, window } => {
+            // The consent UI (Shuvi) may be foreground while the owner presses Allow once.
+            // For app tasks capture the explicit observed target, NEVER the arbitrary foreground.
+            let (path, observed_target) = if window.eq_ignore_ascii_case("desktop") {
+                (capture_screen_png()?, "Entire desktop (explicit selection)".to_string())
+            } else {
+                target_window_capture::capture_window_png(&window)?
+            };
             let analysis = analyze_png_with_provider(&provider, &prompt, &path).await?;
 
             Ok(ActionResult {
                 success: true,
                 tool,
                 stdout: format!(
-                    "Screen analysis from {}/{}:\n{}\nScreenshot: {}",
+                    "Window-targeted analysis from {}/{}:\nTarget: {}\n{}\nScreenshot: {}",
                     provider.provider,
                     provider.model,
+                    observed_target,
                     analysis,
                     path.display()
                 ),

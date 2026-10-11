@@ -85,3 +85,25 @@ test("universal UI discovery scans past early text-only nodes and prioritizes ac
   assert.doesNotMatch(discovery,/if \(\$items.Count -ge 120\)/);
   assert.match(src,/NativeWindowHandle = \[int\]\$e.Current.NativeWindowHandle/);
 });
+
+test("Vision targets the observed application rather than Shuvi when permission UI is foreground",()=>{
+  const stage=src.slice(src.indexOf('"inspect_screen" => {'),src.indexOf('"list_processes" => ('));
+  const exec=src.slice(src.indexOf("ToolAction::InspectScreen { prompt, provider, window } => {"),
+    src.indexOf("ToolAction::ListProcesses => {"));
+  const capture=readFileSync(new URL("../src-tauri/src/target_window_capture.rs",import.meta.url),"utf8");
+  assert.match(stage,/arg_string\(&proposal\.arguments, "window"\)/);
+  assert.match(stage,/Targeted capture of/);
+  assert.match(exec,/target_window_capture::capture_window_png\(&window\)/);
+  assert.match(exec,/window\.eq_ignore_ascii_case\("desktop"\)/);
+  assert.match(capture,/ui_root_script\(Some\(window\)\)/);
+  assert.match(capture,/GetWindowThreadProcessId/);
+  assert.match(capture,/SetForegroundWindow/);
+  assert.match(capture,/GetForegroundWindow\(\) -ne \$target/);
+  assert.match(capture,/CopyFromScreen/);
+  assert.match(capture,/GetWindowRect/);
+  assert.match(capture,/No screenshot sent/);
+  assert.match(capture,/finally \{/);
+  assert.match(capture,/SetForegroundWindow\(\$previous\)/);
+  assert.doesNotMatch(exec,/let path = capture_screen_png\(\)\?/);
+  assert.match(agent,/For inspect_screen ALWAYS include window/);
+});
