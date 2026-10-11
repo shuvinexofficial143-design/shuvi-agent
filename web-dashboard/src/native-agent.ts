@@ -19,6 +19,7 @@ import {verifiedExecutionReceipt,contradictsFailureReceipt} from "./native-actio
 import {requiresNewWindowObservation} from "./native-ui-snapshot-lifetime.mjs";
 import {taskOutcomeSummary} from "./native-task-outcome.mjs";
 import {checkRequestedAppTarget} from "./native-intent-target.mjs";
+import {cleanObservedLabel} from "./native-observation-text.mjs";
 type Provider = {id:string;name:string;default_model:string;api_key_required:boolean;custom_base_url:boolean};
 type NativeChatMessage = {role:"user"|"assistant";content:string};
 type NativeChatResponse = {content:string;provider:string;model:string;tool_proposal:Record<string,unknown>|null};
@@ -54,7 +55,7 @@ function compactObservedUi(result:ActionResult):string|null {
    for(const [field,label] of pairs){
     const value=source[field];
     if(typeof value==="string")item[label]=
-     (field==="ControlType"?value.replace(/^ControlType\./,""):value).slice(0,180);
+     cleanObservedLabel(field==="ControlType"?value.replace(/^ControlType\./,""):value,180);
     else if(typeof value==="number"&&Number.isFinite(value))item[label]=value;
     else if(typeof value==="boolean")item[label]=value;
    }

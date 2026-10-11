@@ -1,0 +1,1 @@
+Batch 24: Accessibility and window text passed into the Master is normalized and length bounded, dropping invisible Unicode control and direction marks. Real observed labels and process data remain untrusted observations, never instructions or user approval. Existing Rust action permission gates untouched.
