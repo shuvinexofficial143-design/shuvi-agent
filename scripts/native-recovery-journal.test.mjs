@@ -16,7 +16,7 @@ test("recoverable journal contains only bounded metadata and can be dismissed",(
 test("corrupt or forged recovery metadata never becomes valid authority",()=>{
  const store=makeStore();
  for(const patch of [{maxActions:200},{modelRequests:-1},{stagedActions:49},{phase:"execute"},
-  {actionId:"<script>"},{updatedAt:2000},{expiresAt:99999999}]){
+  {actionId:"<script>"},{updatedAt:70000},{expiresAt:99999999}]){
   store.m.set(NATIVE_JOURNAL_KEY,JSON.stringify({version:1,updatedAt:1000,...value,...patch}));
   assert.equal(readNativeRecovery(store,1001),null,JSON.stringify(patch));
  }
