@@ -11,6 +11,7 @@ import {isRecoverableUiReadFailure,isAuditedUiReadFailure,uiReplanGuidance} from
 import {actionFingerprint,seenAfterAuditedChange,actionLoopGuidance} from "./native-action-loop.mjs";
 import {taskGoalContext,taskGoalLabel} from "./native-goal-checks.mjs";
 import {taskClarificationKind,extendTaskClarification} from "./native-task-clarification.mjs";
+import {newEvidence,recordAuditedEvidence,evidenceSummary} from "./native-task-evidence.mjs";
 type Provider = {id:string;name:string;default_model:string;api_key_required:boolean;custom_base_url:boolean};
 type NativeChatMessage = {role:"user"|"assistant";content:string};
 type NativeChatResponse = {content:string;provider:string;model:string;tool_proposal:Record<string,unknown>|null};
@@ -157,6 +158,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  const replies=new Map<string,string[]>();
  const taskStates=new Map<string,ReturnType<typeof createTask>>();
  const taskGoalRoots=new Map<string,string>();
+ const taskEvidence=new Map<string,ReturnType<typeof newEvidence>>();
  const getTask=(id:string)=>taskStates.get(id)??null;
  function updateTask(id:string,state:ReturnType<typeof createTask>|null){if(!state)return;taskStates.set(id,state);taskStatus.textContent=taskSummary(state);onChange();}
  function haltTask(id:string,why:string){const s=getTask(id);if(s)updateTask(id,pauseTask(s,why));}
@@ -236,6 +238,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    "Objective: "+task.objective.slice(0,500)+". "+
    "Current approved step: "+task.step+". "+
    "Last audited tool: "+result.tool+". "+taskContext(getTask(task.threadId))+" "+
+   evidenceSummary(taskEvidence.get(task.threadId)??null)+" "+
    uiReplanGuidance(task.recoveryFrom,result.tool)+" "+
    actionLoopGuidance()+" "+taskGoalContext(task.objective)+" "+
    "After premiere_detect, propose the dedicated premiere_launch tool with empty arguments {} when the user wants Premiere opened; detection alone is not launch. "+
@@ -371,7 +374,11 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     const matched=receipts.find(r=>r.action_id===current.action.id &&
        r.tool===result.tool && r.event==="executed" && r.success===true);
     const verified=result.success && Boolean(matched);
-    if(verified)updateTask(current.threadId,verifyTask(getTask(current.threadId),current.action.id,result.tool,true));
+    if(verified){
+     updateTask(current.threadId,verifyTask(getTask(current.threadId),current.action.id,result.tool,true));
+     taskEvidence.set(current.threadId,recordAuditedEvidence(
+      taskEvidence.get(current.threadId)??newEvidence(),current.action.id,result,true));
+    }
     else haltTask(current.threadId,"unknown_outcome");
     if(!verified && result.success===false){
      // A normal typed failure result (as opposed to a thrown exception) must
@@ -459,8 +466,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   connected:()=>ready,
   getReplies:(threadId:string)=>replies.get(threadId)||[],
   canClearChats:()=>!pending&&!sending,
-  clearChat:(threadId:string)=>{if(pending?.threadId===threadId)return;histories.delete(threadId);replies.delete(threadId);taskStates.delete(threadId);taskGoalRoots.delete(threadId);taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
-  clearAllChats:()=>{histories.clear();replies.clear();taskStates.clear();taskGoalRoots.clear();taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
+  clearChat:(threadId:string)=>{if(pending?.threadId===threadId)return;histories.delete(threadId);replies.delete(threadId);taskStates.delete(threadId);taskGoalRoots.delete(threadId);taskEvidence.delete(threadId);taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
+  clearAllChats:()=>{histories.clear();replies.clear();taskStates.clear();taskGoalRoots.clear();taskEvidence.clear();taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
   async send(text,threadId,promptIndex=0){
    if(!ready)return {ok:false,error:"Windows Shuvi is not connected yet."};
    // A short answer to a Master clarification is still part of the SAME

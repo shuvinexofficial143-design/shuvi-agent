@@ -530,3 +530,16 @@ test("Batch 08 fresh command does not inherit older clarification goal",async()=
  assert.doesNotMatch(s.chatInputs[1].orchestration_context,/Shuvi Test/);
  assert.equal(s.staged.length,1);
 });
+
+test("Batch 09 model continuation sees audit-only evidence and still requires next approval",async()=>{
+ const s=setup({first:launch,second:{content:"inspect",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_windows",arguments:{}}}});
+ await until(()=>s.transport.connected(),"native");
+ await s.transport.send("Premiere open aur new project banao","evidence-b9",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"next step");
+ assert.match(s.chatInputs[1].orchestration_context,/1 audited native action/);
+ assert.match(s.chatInputs[1].orchestration_context,/Overall application\/task goals NOT independently verified/);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
+ assert.equal(s.approval.hidden,false);
+});
