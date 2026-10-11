@@ -645,3 +645,24 @@ test("Batch 14 post-audit continuation exception does not start UI read recovery
  assert.equal(s.chatInputs.length,2);
  assert.equal(s.staged.length,1);
 });
+
+test("Batch 16 blocks a second UI mutation after first click until new audited window read",async()=>{
+ const windows={content:"windows",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_windows",arguments:{}}};
+ const click={content:"click",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_click",arguments:{window:"Adobe Premiere Pro 2026",name:"New Project"}}};
+ const secondClick={content:"click again",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_click",arguments:{window:"Adobe Premiere Pro 2026",name:"Save"}}};
+ const s=setup({first:windows,second:click,following:[secondClick],
+  stdoutFor:{ui_windows:JSON.stringify([{Name:"Adobe Premiere Pro 2026",ProcessId:111,NativeWindowHandle:222}])}});
+ await until(()=>s.transport.connected(),"native");
+ await s.transport.send("Premiere me project bana ke save karo","stale-snapshot",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"first click approval");
+ await until(()=>!s.allow.disabled,"first click clickable");
+ s.allow.listeners.get("click")();
+ await until(()=>s.transport.getReplies("stale-snapshot")[0]?.includes("Unsafe or ambiguous UI target"),"stale target blocked");
+ assert.equal(s.staged.length,2,"second click never prepared from stale snapshot");
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,2);
+ assert.equal(s.chatInputs.length,3,"no automatic paid retry");
+});

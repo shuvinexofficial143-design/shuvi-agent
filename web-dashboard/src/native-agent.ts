@@ -16,6 +16,7 @@ import {summarizeWindowObservation} from "./native-window-observation.mjs";
 import {windowGoalEvidence,goalEvidenceLabel} from "./native-goal-evidence.mjs";
 import {observedWindowInventory,checkObservedMutationTarget} from "./native-window-target-guard.mjs";
 import {verifiedExecutionReceipt,contradictsFailureReceipt} from "./native-action-receipts.mjs";
+import {requiresNewWindowObservation} from "./native-ui-snapshot-lifetime.mjs";
 type Provider = {id:string;name:string;default_model:string;api_key_required:boolean;custom_base_url:boolean};
 type NativeChatMessage = {role:"user"|"assistant";content:string};
 type NativeChatResponse = {content:string;provider:string;model:string;tool_proposal:Record<string,unknown>|null};
@@ -400,6 +401,11 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      updateTask(current.threadId,verifyTask(getTask(current.threadId),current.action.id,result.tool,true));
      taskEvidence.set(current.threadId,recordAuditedEvidence(
       taskEvidence.get(current.threadId)??newEvidence(),current.action.id,result,true));
+     if(requiresNewWindowObservation(observedWindows.has(current.threadId),result.tool)){
+      observedWindows.set(current.threadId,[]); // Stale: UI mutations need a NEW audited read.
+      verifiedWindows.delete(current.threadId);
+      goalStatus.textContent=taskGoalLabel(current.objective);
+     }
      if(result.tool==="ui_windows"){
       observedWindows.set(current.threadId,observedWindowInventory(result,true)??[]);
       const proof=windowGoalEvidence(current.objective,result,true);
