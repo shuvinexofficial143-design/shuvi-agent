@@ -1,0 +1,2 @@
+# Batch 06 — Evidence-aware original task checklist
+Native model planning and UI display now retain an informational, unverified checklist of task outcomes: live app, NEW project, imported media, edits, export artifact. Audit of a tool step does not prove completion. No action approval changes or real application tests.

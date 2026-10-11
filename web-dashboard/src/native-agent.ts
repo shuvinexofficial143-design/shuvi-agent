@@ -9,6 +9,7 @@ import {masterGoalContext,resolveMasterObjective} from "./native-master-goal.mjs
 import {createTask,stageTask,executeTask,verifyTask,pauseTask,taskSummary,taskContext} from "./native-task-progress.mjs";
 import {isRecoverableUiReadFailure,isAuditedUiReadFailure,uiReplanGuidance} from "./native-read-recovery.mjs";
 import {actionFingerprint,seenAfterAuditedChange,actionLoopGuidance} from "./native-action-loop.mjs";
+import {taskGoalContext,taskGoalLabel} from "./native-goal-checks.mjs";
 type Provider = {id:string;name:string;default_model:string;api_key_required:boolean;custom_base_url:boolean};
 type NativeChatMessage = {role:"user"|"assistant";content:string};
 type NativeChatResponse = {content:string;provider:string;model:string;tool_proposal:Record<string,unknown>|null};
@@ -108,6 +109,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  const notes=field("p","Windows commands use native Tauri IPC. Every proposed tool action requires your explicit approval. No automatic paid retry.");
  notes.className="shuvi-native-note";
  const taskStatus=field("p","No active Windows task.");
+ const goalStatus=field("p","Task outcome not independently verified.");
+ goalStatus.setAttribute("aria-label","Original goal checks");
  taskStatus.setAttribute("role","status");
  taskStatus.setAttribute("aria-label","Native task progress");
  const approval=field("div");approval.className="shuvi-native-approval";approval.hidden=true;
@@ -132,7 +135,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  const mobileStatus=field("p","Checking optional mobile agent pairing…");
  mobileStatus.setAttribute("role","status");
  mobile.append(mobileTitle,mobileCode,mobileConnect,mobileDisconnect,mobileStatus);
- panel.append(title,status,showDetails,openSettings,notes,taskStatus);
+ panel.append(title,status,showDetails,openSettings,notes,taskStatus,goalStatus);
  chat.parentElement?.insertBefore(panel,chat);
  // A confirmation above the entire chat falls out of view while reading the
  // latest reply. Keep all pending native approvals adjacent to the composer.
@@ -232,7 +235,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    "Current approved step: "+task.step+". "+
    "Last audited tool: "+result.tool+". "+taskContext(getTask(task.threadId))+" "+
    uiReplanGuidance(task.recoveryFrom,result.tool)+" "+
-   actionLoopGuidance()+" "+
+   actionLoopGuidance()+" "+taskGoalContext(task.objective)+" "+
    "After premiere_detect, propose the dedicated premiere_launch tool with empty arguments {} when the user wants Premiere opened; detection alone is not launch. "+
    "For other trusted discovered executable paths, propose launch_app with the exact observed path. "+
    "After any launch, use ui_windows or a suitable separate inspection to verify that the app/window exists. "+
@@ -452,8 +455,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   connected:()=>ready,
   getReplies:(threadId:string)=>replies.get(threadId)||[],
   canClearChats:()=>!pending&&!sending,
-  clearChat:(threadId:string)=>{if(pending?.threadId===threadId)return;histories.delete(threadId);replies.delete(threadId);taskStates.delete(threadId);taskStatus.textContent="No active Windows task.";},
-  clearAllChats:()=>{histories.clear();replies.clear();taskStates.clear();taskStatus.textContent="No active Windows task.";},
+  clearChat:(threadId:string)=>{if(pending?.threadId===threadId)return;histories.delete(threadId);replies.delete(threadId);taskStates.delete(threadId);taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
+  clearAllChats:()=>{histories.clear();replies.clear();taskStates.clear();taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
   async send(text,threadId,promptIndex=0){
    if(!ready)return {ok:false,error:"Windows Shuvi is not connected yet."};
    // A short answer to a Master clarification is still part of the SAME
@@ -489,13 +492,14 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      (waitingForChoice&&lastRequest?"The user\u0027s current app name answers the previous opening request: "+lastRequest.content.slice(0,300)+". ":"")+
      (isAppClarification?"Keep the original request as the task goal after this clarification: "+effectiveObjective.slice(0,440)+". ":"")+
      "For an instruction to open Premiere Pro, propose premiere_launch with {} FIRST; it already finds the installation. Do not stop at premiere_detect. After launch, verify the real window with a separately approved ui_windows. For UI work use ui_windows and ui_discover to ground current button labels and controls rather than guessing names; on ambiguity stop and ask. For inspect_screen always supply window with the exact real app title observed via ui_windows, even if the user returns to Shuvi to approve; use desktop only for an explicitly requested whole-screen inspection. Use inspect_screen only if the selected model supports Vision; xKiro model capability is checked against its public catalog before any paid screenshot request. No silent model switches or automatic paid retries. Each action requires Allow once and matching audit. "+
-      masterGoalContext(effectiveObjective);
+      masterGoalContext(effectiveObjective)+" "+taskGoalContext(effectiveObjective);
    const response=await invoke<NativeChatResponse>("chat",{
       input:{provider:route.provider,model:route.model,base_url:route.base_url||null,messages,orchestration_context:firstStepGuidance}
     });
     if(!response||typeof response.content!=="string")throw Error("Invalid native AI response.");
     const reply=response.content.slice(0,12000);
     histories.set(threadId,[...messages,{role:"assistant",content:reply}].slice(-22));
+    if(route.role!=="chat")goalStatus.textContent=taskGoalLabel(effectiveObjective);
     updateReply(threadId,promptIndex,reply);
     if(response.tool_proposal){
      actionFeedback.hidden=true;
