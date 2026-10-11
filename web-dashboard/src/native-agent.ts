@@ -15,6 +15,7 @@ import {newEvidence,recordAuditedEvidence,evidenceSummary} from "./native-task-e
 import {summarizeWindowObservation} from "./native-window-observation.mjs";
 import {windowGoalEvidence,goalEvidenceLabel} from "./native-goal-evidence.mjs";
 import {observedWindowInventory,checkObservedMutationTarget} from "./native-window-target-guard.mjs";
+import {verifiedExecutionReceipt,contradictsFailureReceipt} from "./native-action-receipts.mjs";
 type Provider = {id:string;name:string;default_model:string;api_key_required:boolean;custom_base_url:boolean};
 type NativeChatMessage = {role:"user"|"assistant";content:string};
 type NativeChatResponse = {content:string;provider:string;model:string;tool_proposal:Record<string,unknown>|null};
@@ -393,7 +394,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     const receipts=await invoke<Array<{event:string;action_id:string|null;success:boolean;tool:string}>>("audit_log",{limit:200});
     const matched=receipts.find(r=>r.action_id===current.action.id &&
        r.tool===result.tool && r.event==="executed" && r.success===true);
-    const verified=result.success && Boolean(matched);
+    const verified=verifiedExecutionReceipt(current.action,result,receipts);
     executionVerified=verified;
     if(verified){
      updateTask(current.threadId,verifyTask(getTask(current.threadId),current.action.id,result.tool,true));
@@ -415,7 +416,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      clearPending();
      // A contradictory successful audit must not be reinterpreted as a
      // confirmed failure, even if a separate receipt lookup appears to fail.
-     const recoveryPrepared=!matched && await prepareAuditedUiReadRecovery(current,failure);
+     const recoveryPrepared=!matched&&!contradictsFailureReceipt(current.action,receipts)&&
+      await prepareAuditedUiReadRecovery(current,failure);
      if(!recoveryPrepared){
       haltTask(current.threadId,"unknown_outcome");
       appendReply(current.threadId,current.promptIndex,
