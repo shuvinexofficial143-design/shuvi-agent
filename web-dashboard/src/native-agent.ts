@@ -21,6 +21,7 @@ import {taskOutcomeSummary} from "./native-task-outcome.mjs";
 import {checkRequestedAppTarget} from "./native-intent-target.mjs";
 import {cleanObservedLabel} from "./native-observation-text.mjs";
 import {redactNativeError,redactNativeOutput,redactNativeMessage} from "./native-error-redaction.mjs";
+import {validPreparedApproval} from "./native-prepared-approval.mjs";
 type Provider = {id:string;name:string;default_model:string;api_key_required:boolean;custom_base_url:boolean};
 type NativeChatMessage = {role:"user"|"assistant";content:string};
 type NativeChatResponse = {content:string;provider:string;model:string;tool_proposal:Record<string,unknown>|null};
@@ -340,7 +341,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     provider:task.route.provider,model:task.route.model,baseUrl:task.route.base_url||null
    });
    if(!next||typeof next.id!=="string"||!next.id.trim()||next.id.length>128||
-    next.kind!==response.tool_proposal.tool)
+    next.kind!==response.tool_proposal.tool||!validPreparedApproval(next))
     throw Error("Next action does not match the proposed tool identity.");
    if(task.usedIds.has(next.id))throw Error("Native action ID reused; cannot restage an already approved identity.");
    pending={...task,action:next,step:task.step+1,seen:new Set([...seen,fp]),
@@ -379,7 +380,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    const next=await invoke<Pending>("prepare_tool",{
     proposal,provider:current.route.provider,model:current.route.model,baseUrl:current.route.base_url||null
    });
-   if(!next||typeof next.id!=="string"||!next.id.trim()||next.id.length>128||next.kind!=="ui_windows"||current.usedIds.has(next.id))return false;
+   if(!next||typeof next.id!=="string"||!next.id.trim()||next.id.length>128||next.kind!=="ui_windows"||current.usedIds.has(next.id)||!validPreparedApproval(next))return false;
    haltTask(current.threadId,"confirmed_read_failure");
    pending={...current,action:next,step:current.step+1,seen:new Set([...current.seen,fp]),
     usedIds:new Set([...current.usedIds,next.id]),
@@ -643,7 +644,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
        proposal:response.tool_proposal,provider:route.provider,model:route.model,baseUrl:route.base_url||null
       });
       if(!proposed||typeof proposed.id!=="string"||!proposed.id.trim()||proposed.id.length>128||
-       proposed.kind!==response.tool_proposal.tool)
+       proposed.kind!==response.tool_proposal.tool||!validPreparedApproval(proposed))
        throw Error("Prepared native action does not match the proposed tool identity.");
       pending={action:proposed,threadId,promptIndex,objective:effectiveObjective,
        route:{role:route.role,provider:route.provider,model:route.model,base_url:route.base_url||""},
