@@ -15,7 +15,7 @@ test("native approval fields must be typed, bounded and match exact proposed too
  assert.equal(approvalRiskClass("evil onmouseover=alert(1)"),"risk unknown");
 });
 test("chat and manual approval parse only static markup and set untrusted labels as text",()=>{
- const chat=main.slice(main.indexOf("function renderChatPermission("),main.indexOf("async function auditGraphOutcome("));
+ const chat=main.slice(main.indexOf("function renderChatPermission("),main.indexOf("function renderManualPending("));
  const manual=main.slice(main.indexOf("function renderManualPending("),main.indexOf('el<HTMLButtonElement>("#refreshAudit")'));
  assert.match(chat,/chatSummary.textContent = pendingAction.summary/);
  assert.match(manual,/manualSummary.textContent = pendingAction.summary/);
