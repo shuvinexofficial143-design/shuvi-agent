@@ -34,6 +34,7 @@ import { workerQueueView } from "./master-worker-queue.mjs";
 import { MODEL_ROLES, loadModelRoutes, validateModelRoute, selectTaskRoute } from "./model-routing.mjs";
 import type { ModelRoute, TaskModelRoute } from "./model-routing.mjs";
 import { chooseNativeRoute } from "../web-dashboard/src/native-model-routing.mjs";
+import {createTaskPermissionScope,grantTaskRead,allowsTaskRead,revokeTaskScope} from "./task-permission-scope.mjs";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("Missing app root");
@@ -71,7 +72,14 @@ let remoteApproval:{id:string;expiresAt:number;proposal:ToolProposal;actionId:st
 let sessionInputTokens = 0;
 let sessionOutputTokens = 0;
 let sessionTotalTokens = 0;
-const sessionAllowedScopes = new Set<string>();
+let activePermissionScope=createTaskPermissionScope(crypto.randomUUID());
+function rotatePermissionScope():void{
+ revokeTaskScope(activePermissionScope);
+ activePermissionScope=createTaskPermissionScope(crypto.randomUUID());
+}
+function activeReadGrant(proposal:ToolProposal,risk:string){
+ return {taskId:activePermissionScope.taskId,key:sessionPermissionKey(proposal),tool:proposal.tool,risk};
+}
 
 root.innerHTML = `
 <div id="onboarding" class="onboarding hidden">
@@ -603,6 +611,7 @@ async function saveActiveCheckpoint(): Promise<void> {
 }
 
 async function clearActiveCheckpoint(): Promise<void> {
+  revokeTaskScope(activePermissionScope);
   try {
     await invoke("clear_session_checkpoint");
   } catch {
@@ -897,17 +906,17 @@ function sessionPermissionKey(proposal: ToolProposal): string {
 function sessionPermissionLabel(proposal: ToolProposal): string {
   const key = sessionPermissionKey(proposal);
 
-  if (key.includes("|exact:")) return "Allow this exact path for session";
-  if (key.includes("|pid:")) return "Allow for this managed browser session";
-  if (key.includes("|window:")) return "Allow for this window session";
-  return "Allow this read tool for session";
+  if (key.includes("|exact:")) return "Allow this exact path for current task (5 min)";
+  if (key.includes("|pid:")) return "Allow for this task and browser (5 min)";
+  if (key.includes("|window:")) return "Allow for this task and window (5 min)";
+  return "Allow this read tool for current task (5 min)";
 }
 
 function revokeBrowserSessionPermissions(pid?: number): void {
   const exactSuffix = typeof pid === "number" ? "|pid:" + String(pid) : null;
-  for (const key of [...sessionAllowedScopes]) {
+  for (const key of [...activePermissionScope.grants.keys()]) {
     if (exactSuffix ? key.endsWith(exactSuffix) : key.includes("|pid:")) {
-      sessionAllowedScopes.delete(key);
+      activePermissionScope.grants.delete(key);
     }
   }
 }
@@ -940,6 +949,7 @@ async function recordOrchestrationAudit(
 }
 
 async function stopAgentForSafety(reason: string): Promise<void> {
+  revokeTaskScope(activePermissionScope);
   if (remoteTask) await closeRemoteTask("stopped");
   orchestration = { ...orchestration, recovery_mode: "stopped", stop_reason: reason.slice(0, 800) };
   if (orchestration.task_graph) await recordOrchestrationAudit("task_graph_stopped", reason.slice(0, 1200));
@@ -1036,7 +1046,7 @@ async function stageProposal(proposal: ToolProposal): Promise<void> {
     if (
       !remoteTask &&
       pendingAction.risk === "low" &&
-      sessionAllowedScopes.has(sessionPermissionKey(proposal)) &&
+      allowsTaskRead(activePermissionScope,activeReadGrant(proposal,pendingAction.risk)) &&
       !cancelRequested
     ) {
       await executePendingProposal(proposal);
@@ -1292,7 +1302,10 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
   const allowSession = chatPermission.querySelector<HTMLButtonElement>("#chatAllowSession");
   if (allowSession) {
     allowSession.onclick = async () => {
-      sessionAllowedScopes.add(sessionPermissionKey(proposal));
+      if(!pendingAction||!grantTaskRead(activePermissionScope,activeReadGrant(proposal,pendingAction.risk))){
+        await stopAgentForSafety("Invalid task-scoped read permission. No action executed.");
+        return;
+      }
       await executePendingProposal(proposal);
     };
   }
@@ -1303,6 +1316,7 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
       if (!pendingAction) return;
 
       const actionId = pendingAction.id;
+      revokeTaskScope(activePermissionScope);
       if(remoteTask){
         clearChatPermission();
         try{await invoke("deny_action",{actionId});}catch{/* fail closed */}
@@ -1352,6 +1366,7 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
 
 async function runAgentStep(): Promise<void> {
   if (cancelRequested) {
+    revokeTaskScope(activePermissionScope);
     messages.push({ role: "assistant", content: "Task stopped." });
     renderMessages();
     if (orchestration.task_graph) {
@@ -1520,6 +1535,7 @@ el<HTMLButtonElement>("#resumeTask").addEventListener("click", async () => {
   };
   restoreTaskRoute();
 
+  rotatePermissionScope(); // Restoring progress never restores permission grants.
   messages = checkpoint.messages;
   orchestration = restored;
   renderOrchestrationStatus();
@@ -1537,6 +1553,7 @@ el<HTMLButtonElement>("#resumeTask").addEventListener("click", async () => {
 el<HTMLButtonElement>("#discardTask").addEventListener("click", async () => {
   savedCheckpoint = null;
   orchestration = createAgentOrchestrationState();
+  rotatePermissionScope();
   renderOrchestrationStatus();
   resumeBanner.classList.add("hidden");
   await clearActiveCheckpoint();
@@ -1773,6 +1790,7 @@ el<HTMLFormElement>("#chatForm").addEventListener("submit", async (event) => {
   saveProviderSettings();
   beginTaskRoute(content);
   cancelRequested = false;
+  rotatePermissionScope();
   orchestration = createAgentOrchestrationState();
   renderOrchestrationStatus();
   messages.push({ role: "user", content });
@@ -2098,6 +2116,7 @@ async function tickRemoteAgent():Promise<void>{
       return;
     }
     cancelRequested=false;
+    rotatePermissionScope();
     orchestration=createAgentOrchestrationState();
     renderOrchestrationStatus();
     messages.push({role:"user",content:m.text});

@@ -19,6 +19,6 @@ test("session permission UI describes exact path scope",()=>{
   const start=main.indexOf("function sessionPermissionLabel");
   const end=main.indexOf("function hiddenToolFailure",start);
   const block=main.slice(start,end);
-  assert.match(block,/Allow this exact path for session/);
+  assert.match(block,/Allow this exact path for current task/);
   assert.doesNotMatch(block,/Allow in this workspace for session/);
 });
