@@ -1,3 +1,4 @@
+import {cleanObservedLabel} from "./native-observation-text.mjs";
 // A verified native window read restricts subsequent desktop mutations.
 // Without prior read, trusted Rust window matching still applies.
 const MUTATIONS=new Set(["ui_click","ui_set_value","ui_send_keys","ui_toggle","ui_focus","ui_scroll","ui_expand_collapse"]);
@@ -9,7 +10,8 @@ export function observedWindowInventory(result,audited){
   return rows.filter(x=>x&&typeof x.Name==="string"&&x.Name.trim()&&
    Number.isSafeInteger(x.ProcessId)&&x.ProcessId>0&&
    Number.isSafeInteger(x.NativeWindowHandle)&&x.NativeWindowHandle>0)
-   .map(x=>({title:x.Name.trim().slice(0,180),pid:x.ProcessId,hwnd:x.NativeWindowHandle}));
+   .map(x=>({title:cleanObservedLabel(x.Name,180),pid:x.ProcessId,hwnd:x.NativeWindowHandle}))
+   .filter(x=>x.title.length>0);
  }catch{return [];}
 }
 export function checkObservedMutationTarget(proposal,observed){

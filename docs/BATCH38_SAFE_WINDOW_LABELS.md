@@ -1,0 +1,1 @@
+Batch 38: Normalize raw observed window titles inside the guard's inventory. Embedded null, direction or invisible control marks cannot silently change the title shown and used to plan an action. Normalized titles may require a fresh unique native target; no automatic mutation.

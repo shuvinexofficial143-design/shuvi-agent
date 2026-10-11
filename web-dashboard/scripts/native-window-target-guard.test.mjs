@@ -24,3 +24,13 @@ test("Batch 26 multiple observed rows with one handle remain ambiguous",()=>{
  const duplicate=[{title:"Premiere",pid:1,hwnd:3},{title:"Premiere",pid:1,hwnd:3}];
  assert.equal(check({tool:"ui_click",arguments:{window:"Premiere"}},duplicate).allowed,false);
 });
+
+test("Batch 38 normalized native window labels cannot hide bidi text or null characters",()=>{
+ const result={tool:"ui_windows",success:true,stdout:JSON.stringify([
+  {Name:"Adobe\u202e Premiere\u0000 Pro",ProcessId:123,NativeWindowHandle:5}
+ ])};
+ const titles=observedWindowInventory(result,true);
+ assert.equal(titles.length,1);
+ assert.equal(titles[0].title,"Adobe Premiere Pro");
+ assert.doesNotMatch(titles[0].title,/[\u202a-\u202e]/);
+});
