@@ -17,7 +17,7 @@ export function windowGoalEvidence(objective,result,hasExactAudit){
  let rows;
  try{rows=JSON.parse(result.stdout);}catch{return null;}
  if(!Array.isArray(rows)||rows.length===0||rows.length>200)return null;
- const [,app,match]=candidates[0];
+ const [app,,match]=candidates[0];
  const selected=rows.filter(row=>row&&typeof row==="object"&&!Array.isArray(row)&&
   (typeof row.Name==="string"&&match.test(row.Name)||
    typeof row.ProcessName==="string"&&match.test(row.ProcessName)));
