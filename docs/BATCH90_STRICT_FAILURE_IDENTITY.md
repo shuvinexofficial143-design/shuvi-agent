@@ -1,0 +1,1 @@
+Batch 90: Read-failure conflict classifier fails closed when prepared action ID or kind is missing, whitespace-only or oversized. A malformed prepared action cannot be treated as confirmed safe-to-recover.

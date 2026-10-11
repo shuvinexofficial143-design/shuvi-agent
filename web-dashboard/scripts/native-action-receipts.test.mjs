@@ -47,3 +47,9 @@ test("Batch 89 a blank or oversized prepared action identity cannot be audit-ver
  }
  assert.equal(verified({...action,id:" a-1 "},result,[{...good,action_id:" a-1 "}]),true);
 });
+
+test("Batch 90 missing prepared action identity never certifies a recoverable failure",()=>{
+ for(const prepared of [null,{id:" ",kind:"ui_find"},{id:"a".repeat(129),kind:"ui_find"},{id:"a-1",kind:""}])
+  assert.equal(conflict(prepared,[]),true);
+ assert.equal(conflict(action,[{...good,event:"failed",success:false}]),false);
+});
