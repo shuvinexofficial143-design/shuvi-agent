@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { mountTelegramUI, type TelegramUI } from "./telegram-ui";
 import "./styles.css";
 import type {
   ActionResult,
@@ -46,6 +47,7 @@ let cancelRequested = false;
 let sessionInputTokens = 0;
 let sessionOutputTokens = 0;
 let sessionTotalTokens = 0;
+let telegramUI: TelegramUI | null = null;
 const sessionAllowedScopes = new Set<string>();
 
 root.innerHTML = `
@@ -609,6 +611,48 @@ async function boot(): Promise<void> {
     await refreshRam();
     await refreshAudit();
     await refreshPremiereBridge();
+    telegramUI = await mountTelegramUI({
+      onPrompt(text) {
+        if (busy || pendingAction || manualActionRunning || !providers.length) return false;
+        const field = el<HTMLTextAreaElement>("#prompt");
+        field.value = text;
+        el<HTMLFormElement>("#chatForm").requestSubmit();
+        return true;
+      },
+      onApprove(code) {
+        const action = pendingAction;
+        const button = chatPermission.querySelector<HTMLButtonElement>("#chatApprove");
+        if (!action || !pendingChatProposal || executingActionId || !button ||
+            action.id.slice(0, 8).toLowerCase() !== code.toLowerCase()) return false;
+        button.click(); // Existing Shuvi Rust permission gate and action receipt remain authoritative.
+        return true;
+      },
+      onDeny(code) {
+        const action = pendingAction;
+        const button = chatPermission.querySelector<HTMLButtonElement>("#chatDeny");
+        if (!action || !pendingChatProposal || executingActionId || !button ||
+            action.id.slice(0, 8).toLowerCase() !== code.toLowerCase()) return false;
+        button.click();
+        return true;
+      },
+      onCancel() {
+        if (!busy && !pendingAction) return false;
+        el<HTMLButtonElement>("#stopButton").click();
+        return true;
+      },
+      onResume() {
+        const button = el<HTMLButtonElement>("#resumeTask");
+        if (busy || pendingAction || !savedCheckpoint || button.closest(".hidden") || button.disabled) return false;
+        button.click(); // Use the existing validated checkpoint recovery path.
+        return true;
+      },
+      getStatus() {
+        const pending = pendingAction && pendingChatProposal
+          ? "Waiting for approval: " + pendingAction.summary + " (code " + pendingAction.id.slice(0, 8) + ")"
+          : busy ? "Running" : "Idle";
+        return "Shuvi Desktop · " + pending + "\n" + orchestrationSummary(orchestration);
+      }
+    });
     window.setInterval(() => void refreshRam(), 5000);
   } catch (error) {
     settingsStatus.textContent = String(error);
@@ -665,6 +709,7 @@ function renderMessages(): void {
 }
 
 function setBusy(value: boolean): void {
+  const wasBusy = busy;
   busy = value;
   const send = el<HTMLButtonElement>("#sendButton");
   const stop = el<HTMLButtonElement>("#stopButton");
@@ -672,6 +717,14 @@ function setBusy(value: boolean): void {
   send.textContent = value ? "Working…" : "Send";
   stop.textContent = "Stop";
   stop.classList.toggle("hidden", !value);
+  if (!value) {
+    const progress = taskGraphProgress(orchestration.task_graph);
+    const notice = wasBusy && orchestration.recovery_mode !== "stopped" && progress.total
+      ? (progress.completed === progress.total ? "Completed" : "Paused / incomplete") +
+        " · " + progress.completed + "/" + progress.total + " verified steps"
+      : null;
+    telegramUI?.finish(notice);
+  }
 }
 
 function providerToolEnvelope(payload: Record<string, unknown>): string {
@@ -809,6 +862,7 @@ async function stopAgentForSafety(reason: string): Promise<void> {
   await recordOrchestrationAudit("orchestration_stopped", reason, orchestration.last_tool);
   messages.push({ role: "assistant", content: reason });
   renderMessages();
+  telegramUI?.taskStopped(reason);
   await saveActiveCheckpoint();
   setBusy(false);
 }
@@ -1067,6 +1121,7 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
   }
 
   chatPermission.classList.remove("hidden");
+  telegramUI?.approvalPending(pendingAction.summary, pendingAction.risk, pendingAction.id.slice(0, 8));
   chatPermission.innerHTML = `
     <div class="permission-head">
       <div>
@@ -1237,6 +1292,7 @@ async function runAgentStep(): Promise<void> {
     messages.push({ role: "assistant", content: response.content });
     renderMessages();
     await saveActiveCheckpoint();
+    if (!response.tool_proposal) telegramUI?.assistantAnswer(response.content);
 
     if (response.tool_proposal) {
       await stageProposal(response.tool_proposal);
@@ -1256,6 +1312,7 @@ async function runAgentStep(): Promise<void> {
   } catch (error) {
     messages.push({ role: "assistant", content: `Error: ${String(error)}` });
     renderMessages();
+    telegramUI?.taskStopped("Model request failed. Check Shuvi Desktop for the error.");
     setBusy(false);
   }
 }

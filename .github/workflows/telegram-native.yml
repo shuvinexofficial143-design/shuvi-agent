@@ -1,0 +1,35 @@
+name: Telegram native integration checks
+
+on:
+  pull_request:
+    paths:
+      - "src-tauri/src/telegram_control.rs"
+      - "src-tauri/src/lib.rs"
+      - "src/main.ts"
+      - "src/telegram-ui.ts"
+      - "scripts/telegram-control-source.test.mjs"
+      - ".github/workflows/telegram-native.yml"
+  workflow_dispatch:
+
+jobs:
+  telegram-windows:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Install npm dependencies
+        run: npm ci
+      - name: Telegram security and routing contracts
+        run: node --test scripts/telegram-control-source.test.mjs
+      - name: Native Desktop TypeScript production build
+        run: npm run build
+      - name: Native Rust compile check
+        run: cargo check --manifest-path src-tauri/Cargo.toml --lib
