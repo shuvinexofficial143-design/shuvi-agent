@@ -1,0 +1,1 @@
+Batch 70: Keep motion graphics, keyframes, compositing/masking, stabilization and depth effects as unverified editing outcomes until their application state/output is observed. These are goal checks, not new tool privileges.

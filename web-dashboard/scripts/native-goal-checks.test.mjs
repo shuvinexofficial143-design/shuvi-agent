@@ -37,3 +37,10 @@ test("Batch 69 audio cleanup is an independently unverified finishing criterion"
  assert.deepEqual(taskGoalChecks("Import audio").map(x=>x.id),["window","media"]);
  assert.match(taskGoalContext("noise reduction"),/audibly present/);
 });
+
+test("Batch 70 motion graphics, masking and keyframe tasks require verified editing state",()=>{
+ for(const request of ["After Effects motion graphics","Blender keyframe animation",
+  "Premiere add depth reveal and masking","Stabilization and tracking"])
+  assert.ok(taskGoalChecks(request).some(c=>c.id==="edit"),request);
+ assert.deepEqual(taskGoalChecks("Premiere export").map(c=>c.id),["window","export"]);
+});
