@@ -1,0 +1,1 @@
+Batch 46: Redact common provider credentials in native stdout/stderr before user-facing feedback and in Master result text. Error reports remain bounded at 2400 characters; full native tool result display cap is 7000. No real Windows execution.

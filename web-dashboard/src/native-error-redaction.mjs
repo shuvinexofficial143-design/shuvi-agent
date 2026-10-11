@@ -1,7 +1,7 @@
 // A provider or failed native invocation can include raw authentication secrets.
 // Display only a bounded, credential-redacted error string to the owner.
-export function redactNativeError(input){
- const message=String(input??"Unknown error").slice(0,2400);
+function sanitize(input,limit){
+ const message=String(input??"Unknown error").slice(0,limit);
  return message
   .replace(/\b(sk-[A-Za-z0-9_-]{12,})\b/g,"[REDACTED_API_KEY]")
   .replace(/(Bearer\s+)[A-Za-z0-9._~+/-]{8,}/gi,"$1[REDACTED_TOKEN]")
@@ -9,3 +9,6 @@ export function redactNativeError(input){
   .replace(/([?&](?:api[_-]?key|access[_-]?token|token|key)=)[^&#\s]{8,}/gi,"$1[REDACTED]")
   .replace(/((?:x-api-key|x-auth-token)\s*:\s*)[^\s,;]+/gi,"$1[REDACTED]");
 }
+
+export const redactNativeError=input=>sanitize(input,2400);
+export const redactNativeOutput=input=>sanitize(input,7000);

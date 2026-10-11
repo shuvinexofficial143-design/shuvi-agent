@@ -18,3 +18,12 @@ test("Batch 45 query and X-API-Key header credentials cannot appear in failure f
  assert.doesNotMatch(redacted("x-api-key: "+dummy),new RegExp(dummy));
  assert.doesNotMatch(redacted("https://example.invalid/?access_token="+dummy),new RegExp(dummy));
 });
+
+test("Batch 46 user-visible stdout and Model report redact token and keep bounded context",async()=>{
+ const {redactNativeOutput}=await import("../src/native-error-redaction.mjs");
+ const credential=["s","k","-",...["abcd","efgh","ijkl","mnop"]].join("");
+ const output=redactNativeOutput("Action output "+credential+" saved");
+ assert.doesNotMatch(output,new RegExp(credential));
+ assert.match(output,/\[REDACTED_API_KEY\]/);
+ assert.ok(redactNativeOutput("x".repeat(9000)).length<=7000);
+});

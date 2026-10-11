@@ -20,7 +20,7 @@ import {requiresNewWindowObservation} from "./native-ui-snapshot-lifetime.mjs";
 import {taskOutcomeSummary} from "./native-task-outcome.mjs";
 import {checkRequestedAppTarget} from "./native-intent-target.mjs";
 import {cleanObservedLabel} from "./native-observation-text.mjs";
-import {redactNativeError} from "./native-error-redaction.mjs";
+import {redactNativeError,redactNativeOutput} from "./native-error-redaction.mjs";
 type Provider = {id:string;name:string;default_model:string;api_key_required:boolean;custom_base_url:boolean};
 type NativeChatMessage = {role:"user"|"assistant";content:string};
 type NativeChatResponse = {content:string;provider:string;model:string;tool_proposal:Record<string,unknown>|null};
@@ -234,7 +234,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  async function continueAfterVerifiedAction(task:PendingTask,result:ActionResult){
   // One provider request per confirmed, approved step. No retries for ambiguous
   // provider results and no auto execution of a newly proposed Windows action.
-  const toolResult=evidenceText(result);
+  const toolResult=redactNativeOutput(evidenceText(result));
   // Keep the objective FIRST so lengthy, untrusted UI readbacks cannot
   // crowd out the original user task when the model input is bounded.
   const report="Original user request: "+task.objective.slice(0,1800)+
@@ -463,7 +463,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      const label=verified
        ? "Native action completed with matching audit. Continuing original task…"
        : "Action outcome not independently verified. Stopped; inspect native audit before retrying.";
-     const output=[result.stdout,result.stderr].filter(Boolean).join("\n").slice(0,7000);
+     const output=redactNativeOutput([result.stdout,result.stderr].filter(Boolean).join("\n"));
      appendReply(current.threadId,current.promptIndex,label+(output?"\n"+output:""));
      showActionFeedback(label+(output?" "+output:""));
      refreshState(label);
