@@ -217,7 +217,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   recoveryDismiss.hidden=false;
  }
  recoveryCheck.addEventListener("click",async()=>{
-  const actionId=previousRecovery?.actionId;
+  const actionId=readNativeRecovery(recoveryStorage)?.actionId;
   if(!actionId)return;
   recoveryCheck.disabled=true;
   recoveryNotice.textContent="Reading previous action evidence from Rust Audit. No commands are being replayed.";
@@ -253,10 +253,19 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   // Installed native commands MUST NOT bypass recovery when localStorage
   // is missing, denied, or throws. Ordinary Chat remains independent.
   if(!recoveryStorage)return false;
-  return writeNativeRecovery(recoveryStorage,{
+  const saved=writeNativeRecovery(recoveryStorage,{
    maxActions:b.maxActions,stagedActions:b.stagedActions,
    modelRequests:b.modelRequests,expiresAt:b.expiresAt,phase,actionId
   });
+  if(saved&&phase==="outcome_unknown"){
+   // Protect an uncertain action/provider request even without a restart.
+   recoveryAcknowledged=false;
+   recoveryNotice.textContent="Current Windows task outcome is UNKNOWN. Review Rust Activity/Audit before acknowledging and starting another desktop task. No automatic retry.";
+   recoveryNotice.hidden=false;
+   recoveryCheck.hidden=!actionId;
+   recoveryDismiss.hidden=false;
+  }
+  return saved;
  };
  const taskEvidence=new Map<string,ReturnType<typeof newEvidence>>();
  const verifiedWindows=new Map<string,NonNullable<ReturnType<typeof windowGoalEvidence>>>();
