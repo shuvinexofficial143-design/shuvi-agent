@@ -50,3 +50,13 @@ test("Batch 55 colloquial edit commands reach Master while simple questions rema
  assert.equal(classifyNativeIntent("What is a clip in Premiere?"),"chat");
  assert.equal(classifyNativeIntent("Explain how to trim a video"),"chat");
 });
+
+test("Batch 65 colloquial app spellings still reach the selected Master",()=>{
+ for(const [request,role] of [
+ ["Premire kholo aur project banao","premiere"],
+ ["primiere open karo","master"],
+ ["Open AfterEffects project","after-effects"],
+ ["Open Photo Shop and select a layer","photoshop"]
+ ]) assert.equal(classifyNativeIntent(request),role,request);
+ assert.equal(classifyNativeIntent("Why does Photoshop exist?"),"chat");
+});

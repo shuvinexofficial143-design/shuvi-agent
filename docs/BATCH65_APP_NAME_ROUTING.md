@@ -1,0 +1,1 @@
+Batch 65: Normalize a few common app spelling variants at routing only. The Master still receives the literal user input and must request typed, owner-approved Windows tools.

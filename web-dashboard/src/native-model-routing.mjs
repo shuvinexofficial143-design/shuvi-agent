@@ -26,10 +26,10 @@ const names=new Set(NATIVE_MODEL_ROLES.map(x=>x[0]));
 const modelId=/^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}$/;
 export function validModelId(value){return typeof value==="string"&&modelId.test(value);}
 const intents=[
- ["after-effects",/\bafter[\s-]?effects?\b|आफ्टर इफेक्ट/iu],
- ["premiere",/\bpremiere\b|प्रीमियर/iu],
+ ["after-effects",/\bafter[\s-]?effects?\b|\baftereffects\b|आफ्टर इफेक्ट/iu],
+ ["premiere",/\b(?:premiere|premire|premier)\b|प्रीमियर|प्रिमियर/iu],
  ["blender",/\bblender\b|\b3d\b|ब्लेंडर|3डी/iu],
- ["photoshop",/\bphotoshop\b|फोटोशॉप/iu],
+ ["photoshop",/\bphoto[\s-]?shop\b|फोटोशॉप/iu],
  ["illustrator",/\billustrator\b|इलस्ट्रेटर/iu],
  ["audition",/\baudition\b|ऑडिशन/iu],
  ["media-encoder",/\bmedia[\s-]?encoder\b|मीडिया एनकोडर/iu],
