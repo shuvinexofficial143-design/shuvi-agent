@@ -1,0 +1,1 @@
+Batch 75: Keep bounded recent evidence for model context, but retain per-task action IDs so audit-verified steps cannot be recounted by replaying an old ID after more than 12 subsequent steps. Ephemeral memory only; no arbitrary six-step cap.

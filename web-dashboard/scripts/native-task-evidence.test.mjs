@@ -17,3 +17,11 @@ test("bounded history, unlimited audited step counter, malformed result blocked"
  assert.strictEqual(recordAuditedEvidence(s,"z",{tool:"invalid tool",success:true},true),s);
  assert.ok(evidenceSummary(s).length<400);
 });
+
+test("Batch 75 replaying an action beyond the last twelve audit rows is never double-counted",()=>{
+ let state=newEvidence();
+ for(let i=0;i<30;i++)state=recordAuditedEvidence(state,"unique-"+i,{tool:"ui_windows",success:true},true);
+ assert.equal(state.observations.length,12);
+ assert.strictEqual(recordAuditedEvidence(state,"unique-0",{tool:"ui_windows",success:true},true),state);
+ assert.equal(state.audited,30);
+});
