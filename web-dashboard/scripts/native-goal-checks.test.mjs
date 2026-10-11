@@ -23,3 +23,10 @@ test("Batch 61 captions, B-roll, grading and final export remain unverified goal
  assert.deepEqual(taskGoalChecks("Add captions and b-roll").map(x=>x.id),["window","edit"]);
  assert.deepEqual(taskGoalChecks("Import audio").map(x=>x.id),["window","media"]);
 });
+
+test("Batch 67 saving an existing project needs independently verified on-disk outcome",()=>{
+ assert.deepEqual(taskGoalChecks("Premiere project save karo").map(x=>x.id),["window","save"]);
+ assert.deepEqual(taskGoalChecks("Blender save as").map(x=>x.id),["window","save"]);
+ assert.deepEqual(taskGoalChecks("Premiere new project banao").map(x=>x.id),["window","project"]);
+ assert.match(taskGoalContext("Blender save as"),/approved destination/);
+});
