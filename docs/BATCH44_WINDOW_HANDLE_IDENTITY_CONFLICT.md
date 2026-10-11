@@ -1,0 +1,1 @@
+Batch 44: Reject a proposed UI mutation when a verified window inventory contains conflicting title or PID entries claiming the same window handle. Never pick one observation by name alone; require fresh grounded inspection and owner consent.

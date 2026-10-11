@@ -25,6 +25,11 @@ export function checkObservedMutationTarget(proposal,observed){
  if(typeof title!=="string"||!title.trim()||title.length>180)
   return {allowed:false,reason:"Explicit verified target window required."};
  const exact=observed.filter(x=>x.title.toLocaleLowerCase("en-US")===title.trim().toLocaleLowerCase("en-US"));
+ // Conflicting rows assigning the same handle to different names/processes
+ // cannot establish a trustworthy unique application identity.
+ if(exact.length===1&&observed.some(x=>x.hwnd===exact[0].hwnd&&
+  (x.title!==exact[0].title||x.pid!==exact[0].pid)))
+  return {allowed:false,reason:"Conflicting observed title/process for one window handle."};
  // Duplicate records for an apparently identical title are still ambiguous.
  const count=exact.length;
  return count===1?{allowed:true,reason:"unique_window"}:{allowed:false,

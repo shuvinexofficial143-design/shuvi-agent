@@ -41,3 +41,10 @@ test("Batch 40 huge or non-string UI inventory never authorizes a mutation",()=>
  assert.deepEqual(observedWindowInventory({...huge,stdout:null},true),[]);
  assert.equal(check({tool:"ui_click",arguments:{window:"Premiere"}},observedWindowInventory(huge,true)).allowed,false);
 });
+
+test("Batch 44 conflicting title/process on same handle fails closed",()=>{
+ const impossible=[{title:"Adobe Premiere Pro",pid:100,hwnd:7},
+  {title:"Adobe Photoshop",pid:200,hwnd:7}];
+ assert.equal(check({tool:"ui_click",arguments:{window:"Adobe Premiere Pro"}},impossible).allowed,false);
+ assert.equal(check({tool:"ui_click",arguments:{window:"Adobe Photoshop"}},impossible).allowed,false);
+});
