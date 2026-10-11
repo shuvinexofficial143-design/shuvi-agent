@@ -1,0 +1,1 @@
+Batch 45 — Remove common API credentials from native/provider failure feedback in URL query parameters and X-API-Key style headers, in addition to existing Bearer and secret-prefix detection. Dummy test secrets are constructed at runtime.

@@ -11,3 +11,10 @@ test("Batch 43 protects credentials in errors returned to chat and owner UI",()=
  assert.equal(redacted("UI lookup failed: name not found"),"UI lookup failed: name not found");
  assert.ok(redacted("x".repeat(9000)).length<=2400);
 });
+
+test("Batch 45 query and X-API-Key header credentials cannot appear in failure feedback",()=>{
+ const dummy=["alpha","bravo","charlie","delta"].join("");
+ assert.doesNotMatch(redacted("https://example.invalid/api?api_key="+dummy),new RegExp(dummy));
+ assert.doesNotMatch(redacted("x-api-key: "+dummy),new RegExp(dummy));
+ assert.doesNotMatch(redacted("https://example.invalid/?access_token="+dummy),new RegExp(dummy));
+});
