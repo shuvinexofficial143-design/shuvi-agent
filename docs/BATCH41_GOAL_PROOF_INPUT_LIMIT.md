@@ -1,0 +1,1 @@
+Batch 41: Oversized native window output cannot become verified application-window evidence even with a matching tool audit. The application, project and export stay unverified.

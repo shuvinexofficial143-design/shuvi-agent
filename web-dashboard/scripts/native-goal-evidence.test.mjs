@@ -22,3 +22,8 @@ test("Batch 28 reject forged window title contradicting recognized process",()=>
  const result={tool:"ui_windows",success:true,stdout:JSON.stringify([{Name:"Adobe Premiere Pro 2026",ProcessName:"Photoshop",ProcessId:111,NativeWindowHandle:222}])};
  assert.equal(windowGoalEvidence("Premiere kholo",result,true),null);
 });
+
+test("Batch 41 oversized UI evidence cannot mark an app window verified",()=>{
+ const huge={tool:"ui_windows",success:true,stdout:"["+" ".repeat(250001)+"]"};
+ assert.equal(windowGoalEvidence("Premiere kholo",huge,true),null);
+});
