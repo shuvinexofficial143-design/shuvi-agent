@@ -408,6 +408,12 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     showActionFeedback("Windows action denied by you. Nothing was executed.");
     refreshState("Action denied. Native approval journal updated.");
    }else{
+    // Once a mutation is attempted, even a thrown native result may have changed the UI.
+    if(requiresNewWindowObservation(observedWindows.has(current.threadId),current.action.kind)){
+     observedWindows.set(current.threadId,[]);
+     verifiedWindows.delete(current.threadId);
+     goalStatus.textContent=taskGoalLabel(current.objective);
+    }
     updateTask(current.threadId,executeTask(getTask(current.threadId),current.action.id));
     refreshState("Executing only the approved native action "+current.action.id.slice(0,8)+"…");
     const result=await invoke<ActionResult>("execute_action",{actionId:current.action.id});
