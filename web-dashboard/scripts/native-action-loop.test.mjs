@@ -46,3 +46,12 @@ test("Batch 93 malformed proposal argument roots are never staged as native tool
  assert.ok(actionFingerprint({tool:"ui_windows",arguments:{}}));
  assert.ok(actionFingerprint({tool:"ui_windows"}));
 });
+
+test("Batch 97 tool fingerprint rejects getters without invoking untrusted accessors",()=>{
+ let called=0;
+ const nested={};
+ Object.defineProperty(nested,"selector",{enumerable:true,get(){called++;return "clicked";}});
+ const result=actionFingerprint({tool:"ui_click",arguments:{options:nested}});
+ assert.equal(result,null);
+ assert.equal(called,0,"never evaluate an accessor while canonicalizing a proposal");
+});

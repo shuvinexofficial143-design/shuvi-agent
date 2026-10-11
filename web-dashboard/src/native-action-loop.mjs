@@ -20,7 +20,10 @@ function canonical(value,depth=0){
   const out={};
   for(const key of Object.keys(value).sort()){
    if(key==="__proto__"||key==="constructor"||key==="prototype")throw Error("unsafe proposal key");
-   Object.defineProperty(out,key,{value:canonical(value[key],depth+1),
+   const descriptor=Object.getOwnPropertyDescriptor(value,key);
+   // A model proposal must be plain data, never a computed accessor.
+   if(!descriptor||!("value" in descriptor))throw Error("unsafe accessor in proposal");
+   Object.defineProperty(out,key,{value:canonical(descriptor.value,depth+1),
     writable:true,enumerable:true,configurable:true});
   }
   return out;
