@@ -78,3 +78,10 @@ test("Batch 79 a contradictory known-app title cannot be verified by matching pr
   {Name:"Adobe Premiere Pro - Adobe Photoshop",ProcessName:"Premiere",ProcessId:123,NativeWindowHandle:222}])};
  assert.equal(windowGoalEvidence("Premiere kholo",title,true),null);
 });
+
+test("Batch 83 untrustworthy native read exit status cannot verify a live app",()=>{
+ for(const exit_code of ["0",1,-1,true,NaN,2.5]){
+  assert.equal(windowGoalEvidence("Premiere kholo",{...observation,exit_code},true),null);
+ }
+ assert.equal(windowGoalEvidence("Premiere kholo",{...observation,exit_code:0},true)?.app,"premiere");
+});

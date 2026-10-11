@@ -17,6 +17,7 @@ const knownApps=[
 ];
 export function windowGoalEvidence(objective,result,hasExactAudit){
  if(hasExactAudit!==true||result?.success!==true||result.tool!=="ui_windows"||
+  (result.exit_code!=null&&(!Number.isSafeInteger(result.exit_code)||result.exit_code!==0))||
   typeof result.stdout!=="string"||result.stdout.length>250000||typeof objective!=="string")return null;
  const candidates=knownApps.filter(([,expr])=>expr.test(objective.slice(0,2500)));
  if(candidates.length!==1)return null;
