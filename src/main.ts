@@ -37,6 +37,7 @@ import {createTaskPermissionScope,grantTaskRead,allowsTaskRead,revokeTaskScope} 
 import {taskReadPermissionKey} from "./task-read-permission-key.mjs";
 import {allowedTaskBudget,taskDeadlineAllows,reserveTaskModelRequest} from "./task-runtime-budget.mjs";
 import {approvalRiskClass, validPendingDisplayMetadata} from "./approval-render-safety.mjs";
+import {stagingWasInvalidated} from "./approval-staging-guard.mjs";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("Missing app root");
@@ -983,6 +984,19 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
   orchestration = accepted.state;
   if (accepted.event) await recordOrchestrationAudit(accepted.event, `Task graph revision ${orchestration.task_graph?.revision}`, proposal.tool);
   orchestration = recordProposalStart(orchestration, proposal);
+  // Ownership token + exact state identity prevent a slow native prepare reply
+  // from staging a different task after Stop, Resume, or a new instruction.
+  const stagingScope = activePermissionScope;
+  let stagingState = orchestration;
+  const staleStage = () => stagingWasInvalidated(
+    stagingScope, activePermissionScope, stagingState, orchestration, cancelRequested
+  );
+  const denyStaleAction = async (id: unknown): Promise<void> => {
+    if (typeof id === "string" && id.length > 0 && id.length < 128) {
+      try { await invoke("deny_action", { actionId: id }); } catch { /* never authorize */ }
+    }
+    if (pendingAction?.id === id && pendingChatProposal === proposal) clearChatPermission();
+  };
   renderOrchestrationStatus();
   // Persist the in-flight receipt before permission staging/execution. Failure closes the graph path.
   if (orchestration.task_graph) {
@@ -994,16 +1008,21 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
     }
   }
   const step = orchestration.next_step;
+  if (staleStage()) return;
   try {
     // Bind the prepared native action to the same pinned model route that
     // produced its tool proposal; UI Settings may differ from role routing.
-    pendingAction = await invoke<PendingAction>("prepare_tool", {
+    const staged = await invoke<PendingAction>("prepare_tool", {
       proposal,
       provider: route.provider,
       model: route.model,
       baseUrl: route.base_url || null
     });
-
+    if (staleStage()) {
+      await denyStaleAction(staged?.id);
+      return;
+    }
+    pendingAction = staged;
     pendingChatProposal = proposal;
     const preparedId = pendingAction?.id;
     if (!validPendingDisplayMetadata(pendingAction, proposal.tool)) {
@@ -1025,6 +1044,7 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
       return;
     }
     orchestration = bound.state;
+    stagingState = orchestration;
 
     // Once Rust has created an exact pending action UUID, persist that binding before
     // showing approval UI or auto-executing a session-scoped low-risk action.
@@ -1042,6 +1062,11 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
       }
     }
 
+    if (staleStage()) {
+      await denyStaleAction(preparedId);
+      return;
+    }
+
     if (
       !remoteTask &&
       pendingAction.risk === "low" &&
@@ -1057,6 +1082,10 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
       const approvalExpiresAt = Date.now() + 90_000;
       try {
         await sendRemoteReceipt("requires_approval", {approvalId,approvalExpiresAt});
+        if (staleStage()) {
+          await denyStaleAction(preparedId);
+          return;
+        }
         remoteApproval = {id:approvalId,expiresAt:approvalExpiresAt,proposal,actionId:preparedId};
       } catch {
         try { await invoke("deny_action", {actionId:preparedId}); } catch { /* fail closed */ }
@@ -1066,6 +1095,10 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
         return;
       }
     }
+    if (staleStage()) {
+      await denyStaleAction(preparedId);
+      return;
+    }
     renderChatPermission(proposal, step);
     if (remoteTask) {
       const approve = chatPermission.querySelector<HTMLButtonElement>("#chatApprove");
@@ -1074,6 +1107,8 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
       if(allowSession)allowSession.disabled=true;
     }
   } catch (error) {
+    // An older failed prepare cannot mutate or retry a new task.
+    if (staleStage()) return;
     revokeTaskScope(activePermissionScope);
     orchestration = recordToolOutcome(orchestration, proposal, "failure", undefined, false);
     await auditGraphOutcome(proposal);
@@ -1811,9 +1846,9 @@ el<HTMLButtonElement>("#prepareAction").addEventListener("click", async () => {
   if (!command) return;
 
   const output = el<HTMLElement>("#actionOutput");
-  if (manualActionRunning) {
+  if (manualActionRunning || busy) {
     output.classList.remove("hidden");
-    output.textContent = "A manual PowerShell action is already running. Resolve it before preparing another action.";
+    output.textContent = "Finish the active manual or Chat task before preparing another PowerShell action.";
     return;
   }
   if (pendingAction && pendingChatProposal) {
