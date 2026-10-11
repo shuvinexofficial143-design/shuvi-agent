@@ -7,6 +7,7 @@ import {mountNativeModelSetup, type ModelTeamHandle, type NativeInvoke} from "./
 import {chooseNativeRoute} from "./native-model-routing.mjs";
 import {masterGoalContext,resolveMasterObjective} from "./native-master-goal.mjs";
 import {createTask,stageTask,executeTask,verifyTask,pauseTask,taskSummary,taskContext} from "./native-task-progress.mjs";
+import {isRecoverableUiReadFailure,isAuditedUiReadFailure} from "./native-read-recovery.mjs";
 type Provider = {id:string;name:string;default_model:string;api_key_required:boolean;custom_base_url:boolean};
 type NativeChatMessage = {role:"user"|"assistant";content:string};
 type NativeChatResponse = {content:string;provider:string;model:string;tool_proposal:Record<string,unknown>|null};
@@ -294,6 +295,42 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    showActionFeedback("Next action could not be prepared. No automatic retry.");
   }
  }
+ // A failed read-only lookup may be followed by a DIFFERENT read-only
+ // observation only after checking the exact Rust failure receipt. Every
+ // recovery action is separately shown to the owner for Allow once / Deny.
+ async function prepareAuditedUiReadRecovery(current:PendingTask,message:string):Promise<boolean>{
+  if(!isRecoverableUiReadFailure(current.action.kind,message))return false;
+  const proposal={tool:"ui_windows",arguments:{}};
+  const fp=fingerprint(proposal);
+  if(current.seen.has(fp))return false;
+  try{
+   const receipt=await invoke<{action_id:string|null;event:string;tool:string;success:boolean}|null>(
+    "action_audit_receipt",{actionId:current.action.id});
+   if(!isAuditedUiReadFailure(current.action.kind,message,current.action.id,receipt,current.seen.has(fp)))
+    return false;
+   const next=await invoke<Pending>("prepare_tool",{
+    proposal,provider:current.route.provider,model:current.route.model,baseUrl:current.route.base_url||null
+   });
+   if(!next||typeof next.id!=="string"||next.kind!=="ui_windows")return false;
+   haltTask(current.threadId,"confirmed_read_failure");
+   pending={...current,action:next,step:current.step+1,seen:new Set([...current.seen,fp])};
+   updateTask(current.threadId,stageTask(getTask(current.threadId),next.id,next.kind,current.step+1));
+   pendingText.textContent="Read-only UI recovery · Allow once required: "+
+    next.summary+"\nRisk: "+next.risk+"\n"+next.detail;
+   approval.hidden=false;
+   approval.scrollIntoView?.({block:"nearest",behavior:"smooth"});
+   appendReply(current.threadId,current.promptIndex,
+    "UI lookup failed with a verified native failure receipt: "+message.slice(0,1200)+
+    "\nPrepared read-only window discovery for separate approval. No automatic paid AI retry.");
+   showActionFeedback("Confirmed UI lookup failure. Window discovery awaits a new Allow once; no action executed automatically.");
+   refreshState("UI recovery inspection awaiting your approval.");
+   return true;
+  }catch{
+   // Missing/mismatched audit or uncertain staging must fail closed. Never
+   // retry the original action, and never assume a second tool was executed.
+   return false;
+  }
+ }
  async function decide(allowed:boolean){
   const current=pending;
   if(!current||sending)return;
@@ -318,64 +355,39 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     const verified=result.success && Boolean(matched);
     if(verified)updateTask(current.threadId,verifyTask(getTask(current.threadId),current.action.id,result.tool,true));
     else haltTask(current.threadId,"unknown_outcome");
-    const label=verified
-      ? "Native action completed with matching audit. Continuing original task…"
-      : "Action outcome not independently verified. Stopped; inspect native audit before retrying.";
-    const output=[result.stdout,result.stderr].filter(Boolean).join("\n").slice(0,7000);
-    appendReply(current.threadId,current.promptIndex,label+(output?"\n"+output:""));
-    showActionFeedback(label+(output?" "+output:""));
-    refreshState(label);
-    // Free the old approval before staging the next one. Only a verified
-    // successful action triggers exactly one new Master call.
-    clearPending();
-    if(verified)await continueAfterVerifiedAction(current,result);
+    if(!verified && result.success===false){
+     // A normal typed failure result (as opposed to a thrown exception) must
+     // follow exactly the same audited read-only recovery decision.
+     const failure=[result.stderr,result.stdout].filter(Boolean).join("\n").slice(0,1200);
+     clearPending();
+     const recoveryPrepared=await prepareAuditedUiReadRecovery(current,failure);
+     if(!recoveryPrepared){
+      haltTask(current.threadId,"unknown_outcome");
+      appendReply(current.threadId,current.promptIndex,
+       "Native action failed or outcome is not independently verified. No automatic retry. Check Activity/Audit before further action.");
+      showActionFeedback("Native action not verified; recovery cannot be safely staged.");
+      refreshState("Task paused. Inspect the native audit.");
+     }
+    }else{
+     const label=verified
+       ? "Native action completed with matching audit. Continuing original task…"
+       : "Action outcome not independently verified. Stopped; inspect native audit before retrying.";
+     const output=[result.stdout,result.stderr].filter(Boolean).join("\n").slice(0,7000);
+     appendReply(current.threadId,current.promptIndex,label+(output?"\n"+output:""));
+     showActionFeedback(label+(output?" "+output:""));
+     refreshState(label);
+     clearPending();
+     if(verified)await continueAfterVerifiedAction(current,result);
+    }
    }
   }catch(error){
    const message=String(error).slice(0,1200);
-   let recoveryPrepared=false;
-   // Failure recovery is possible ONLY for a read-only UI query when an exact
-   // native action audit receipt proves failure, not an unknown outcome.
-   // No paid model retries, no auto execution, no automatic change to other apps.
-   if(["ui_find","ui_discover"].includes(current.action.kind) &&
-      /UI lookup failed:|UI discovery failed:|Requested top-level window was not found|Requested window not uniquely found|Ambiguous window identity/i.test(message)){
-    try{
-     const receipt=await invoke<{action_id:string|null;event:string;tool:string;success:boolean}|null>(
-      "action_audit_receipt",{actionId:current.action.id});
-     const proposal={tool:"ui_windows",arguments:{}};
-     const fp=fingerprint(proposal);
-     if(receipt?.action_id===current.action.id &&
-        receipt.event==="failed" && receipt.success===false &&
-        receipt.tool===current.action.kind && !current.seen.has(fp)){
-      const next=await invoke<Pending>("prepare_tool",{
-       proposal,provider:current.route.provider,
-       model:current.route.model,baseUrl:current.route.base_url||null
-      });
-      if(!next||typeof next.id!=="string"||next.kind!=="ui_windows")
-       throw Error("Read-only recovery was not staged correctly.");
-      haltTask(current.threadId,"confirmed_read_failure");
-      pending={...current,action:next,step:current.step+1,
-       seen:new Set([...current.seen,fp])};
-      updateTask(current.threadId,stageTask(getTask(current.threadId),next.id,next.kind,current.step+1));
-      pendingText.textContent="Read-only UI recovery · Allow once required: "+
-       next.summary+"\\nRisk: "+next.risk+"\\n"+next.detail;
-      approval.hidden=false;
-      approval.scrollIntoView?.({block:"nearest",behavior:"smooth"});
-      appendReply(current.threadId,current.promptIndex,
-       "UI lookup failed with a verified native failure receipt: "+message+
-       "\\nPrepared read-only window discovery for separate approval. No automatic paid AI retry.");
-      showActionFeedback("Confirmed UI lookup failure. Window discovery awaits a new Allow once; no action executed automatically.");
-      refreshState("UI recovery inspection awaiting your approval.");
-      recoveryPrepared=true;
-     }
-    }catch{
-     // Missing or mismatched audit / preparation outcome stays fail-closed.
-    }
-   }
+   const recoveryPrepared=await prepareAuditedUiReadRecovery(current,message);
    if(!recoveryPrepared){
     haltTask(current.threadId,"unknown_outcome");
     updateReply(current.threadId,current.promptIndex,
      (replies.get(current.threadId)?.[current.promptIndex]||"")+
-     "\\n\\nNative action outcome unknown: "+message+". Do not retry blindly.");
+     "\n\nNative action outcome unknown: "+message+". Do not retry blindly.");
     showActionFeedback("Native action outcome unknown. Review Activity/Audit before retrying.");
     refreshState("Native action outcome unknown. Check Activity/Audit.");
    }

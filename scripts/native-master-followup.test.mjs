@@ -38,7 +38,7 @@ const launch={
  provider:"xkiro",model:"model/master",
  tool_proposal:{tool:"premiere_launch",arguments:{}}
 };
-function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,stdoutFor=null}={}){
+function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,stdoutFor=null}={}){
  const nodes=new Map(),created=[],calls=[],chatInputs=[],staged=[];
  const domParent=el(),composerParent=el(),form=el(),chat=el();
  form.parentElement=composerParent;chat.parentElement=domParent;
@@ -65,10 +65,12 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
    if(!action)throw Error("unexpected action ID");
    if(failFind&&action.proposal.tool==="ui_find")
     throw Error("UI lookup failed: Requested top-level window was not found.");
+   if(softFailedRead&&action.proposal.tool==="ui_find")
+    return {success:false,tool:"ui_find",stdout:"",stderr:"UI lookup failed: No matching UI element found",exit_code:1};
    return {success:true,tool:action.proposal.tool,stdout:stdoutFor?.[action.proposal.tool]??(action.proposal.tool==="premiere_detect"?detectedPath:"Launch requested"),stderr:"",exit_code:0};
   }
   if(name==="action_audit_receipt")
-   return failFind?{action_id:params.actionId,tool:"ui_find",event:"failed",success:false}:null;
+   return (failFind||softFailedRead)?{action_id:receiptMismatch?"mismatched-action":params.actionId,tool:"ui_find",event:"failed",success:false}:null;
   if(name==="audit_log")return auditOk?staged.map(s=>({event:"executed",action_id:s.id,tool:s.proposal.tool,success:true})):[];
   if(name==="deny_action")return;
   throw Error("unexpected native call: "+name);
@@ -338,4 +340,35 @@ test("next Master proposal sees one audited step but still needs a new Allow onc
  assert.match(s.chatInputs[1].orchestration_context,/Verified tools: premiere_launch/);
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
  assert.equal(s.approval.hidden,false);
+});
+
+test("typed unsuccessful read-only ui_find result stages audited ui_windows without paid retry",async()=>{
+ const finding={content:JSON.stringify({tool:"ui_find",arguments:{name:"New Project",window:"Premiere"}}),
+  provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_find",arguments:{name:"New Project",window:"Premiere"}}};
+ const s=setup({first:finding,softFailedRead:true});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Find new project in Premiere","typed-ui-failure",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"typed failure recovery proposal");
+ assert.equal(s.staged[1].proposal.tool,"ui_windows");
+ assert.equal(s.chatInputs.length,1,"no additional paid Master request");
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1,
+  "read-only recovery still needs separate explicit approval");
+ assert.equal(s.approval.hidden,false);
+ assert.match(s.transport.getReplies("typed-ui-failure")[0],/verified native failure receipt/);
+});
+test("typed failure with mismatched native receipt never stages recovery or paid retry",async()=>{
+ const finding={content:JSON.stringify({tool:"ui_find",arguments:{name:"New Project",window:"Premiere"}}),
+  provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_find",arguments:{name:"New Project",window:"Premiere"}}};
+ const s=setup({first:finding,softFailedRead:true,receiptMismatch:true});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Find new project in Premiere","bad-receipt",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.approval.hidden===true,"recovery rejected");
+ assert.equal(s.staged.length,1);
+ assert.equal(s.chatInputs.length,1);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+ assert.match(s.transport.getReplies("bad-receipt")[0],/No automatic retry/);
 });
