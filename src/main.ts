@@ -206,18 +206,18 @@ root.innerHTML = `
         <div class="premiere-status-row">
           <div>
             <strong id="premiereBridgeState">Bridge stopped</strong>
-            <p id="premiereBridgeDetail" class="muted">Start the bridge, then paste the temporary token into the Shuvi Premiere Bridge panel.</p>
+            <p id="premiereBridgeDetail" class="muted">The bridge auto-starts. Paste this token into Premiere only for the first pairing or after a manual disconnect.</p>
           </div>
           <span id="premierePairBadge" class="premiere-pair-badge">NOT PAIRED</span>
         </div>
 
         <label>
-          Temporary pairing token
-          <input id="premiereBridgeToken" readonly placeholder="Start bridge to generate a token" />
+          Pairing token
+          <input id="premiereBridgeToken" readonly placeholder="Pairing token will appear when the bridge starts" />
         </label>
 
         <div class="button-row">
-          <button id="startPremiereBridge" class="primary">Start / rotate token</button>
+          <button id="startPremiereBridge" class="primary">Start / reconnect</button>
           <button id="refreshPremiereBridge">Refresh status</button>
           <button id="stopPremiereBridge">Stop bridge</button>
         </div>
@@ -225,8 +225,8 @@ root.innerHTML = `
         <div class="premiere-help">
           <strong>Pairing steps</strong>
           <p>1. Open Premiere Pro 25.6+ and load the Shuvi Premiere Bridge UXP panel.</p>
-          <p>2. Start the bridge here and copy the temporary token into the Premiere panel.</p>
-          <p>3. Press Connect in Premiere. Once paired, Shuvi can use native typed Premiere commands.</p>
+          <p>2. On the first pairing, copy this token into the Premiere panel and press Connect.</p>
+          <p>3. The token is persisted securely by Shuvi and locally by the UXP panel, so later restarts should reconnect automatically.</p>
         </div>
       </div>
     </section>
@@ -367,6 +367,7 @@ function prepareOnboarding(): void {
 const MAX_PROVIDER_MESSAGES = 80;
 const MAX_PROVIDER_MESSAGE_BYTES = 256 * 1024;
 const MAX_PROVIDER_CONTEXT_BYTES = 1_500_000;
+const MAX_PROVIDER_TOOL_ENVELOPE_BYTES = 64 * 1024;
 
 function boundedMessageBytes(content: string, encoder = new TextEncoder()): number | null {
   if (content.length > MAX_PROVIDER_MESSAGE_BYTES) return null;
@@ -374,13 +375,33 @@ function boundedMessageBytes(content: string, encoder = new TextEncoder()): numb
   return bytes <= MAX_PROVIDER_MESSAGE_BYTES ? bytes : null;
 }
 
+function boundedToolEnvelopeBytes(content: string, encoder = new TextEncoder()): number | null {
+  const bytes = boundedMessageBytes(content, encoder);
+  return bytes != null && bytes <= MAX_PROVIDER_TOOL_ENVELOPE_BYTES ? bytes : null;
+}
+
+function isProviderToolEnvelope(message: ChatMessage): boolean {
+  return message.role === "user" && message.content.startsWith("[SHUVI_TOOL_RESULT]\n");
+}
+
+function currentTaskMessages(source: ChatMessage[]): ChatMessage[] {
+  for (let index = source.length - 1; index >= 0; index -= 1) {
+    const message = source[index];
+    if (message.role === "user" && !isProviderToolEnvelope(message)) {
+      return source.slice(index);
+    }
+  }
+  return source;
+}
+
 function providerMessageWindow(source: ChatMessage[]): ChatMessage[] {
   const encoder = new TextEncoder();
+  const taskMessages = currentTaskMessages(source);
   const selected: ChatMessage[] = [];
   let bytes = 0;
 
-  for (let index = source.length - 1; index >= 0 && selected.length < MAX_PROVIDER_MESSAGES; index -= 1) {
-    const message = source[index];
+  for (let index = taskMessages.length - 1; index >= 0 && selected.length < MAX_PROVIDER_MESSAGES; index -= 1) {
+    const message = taskMessages[index];
     const messageBytes = boundedMessageBytes(message.content, encoder);
     if (messageBytes == null) {
       if (selected.length === 0) {
@@ -403,7 +424,7 @@ function currentCheckpoint(): SessionCheckpoint {
     provider: providerSelect.value,
     model: modelInput.value.trim(),
     base_url: baseUrlInput.value.trim() || null,
-    messages,
+    messages: currentTaskMessages(messages),
     orchestration
   };
 }
@@ -667,7 +688,7 @@ function providerToolEnvelope(payload: Record<string, unknown>): string {
 
   let candidate = { ...payload };
   let content = wrap(candidate);
-  if (boundedMessageBytes(content) != null) return content;
+  if (boundedMessageBytes(content) != null && boundedToolEnvelopeBytes(content) != null) return content;
 
   const originals = new Map(
     Object.entries(candidate)
@@ -688,7 +709,7 @@ function providerToolEnvelope(payload: Record<string, unknown>): string {
         (tail ? original.slice(-tail) : "");
     }
     content = wrap(candidate);
-    if (boundedMessageBytes(content) != null) return content;
+    if (boundedMessageBytes(content) != null && boundedToolEnvelopeBytes(content) != null) return content;
   }
 
   return wrap({

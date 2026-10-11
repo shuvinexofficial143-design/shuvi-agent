@@ -14,7 +14,29 @@ const { validateItem: validateGraphicItem, mappedPlan } = require("./graphics-ba
 const { diagnoseProject } = require("./project-diagnostics.js");
 
 const BRIDGE_BASE = "http://127.0.0.1:17361";
-let bridgeToken = "";
+const BRIDGE_TOKEN_STORAGE_KEY = "shuvi.premiere.bridge.token";
+
+function loadSavedBridgeToken() {
+  try {
+    return globalThis.localStorage?.getItem(BRIDGE_TOKEN_STORAGE_KEY)?.trim() || "";
+  } catch {
+    return "";
+  }
+}
+
+function saveBridgeToken(token) {
+  try {
+    globalThis.localStorage?.setItem(BRIDGE_TOKEN_STORAGE_KEY, token);
+  } catch {}
+}
+
+function clearSavedBridgeToken() {
+  try {
+    globalThis.localStorage?.removeItem(BRIDGE_TOKEN_STORAGE_KEY);
+  } catch {}
+}
+
+let bridgeToken = loadSavedBridgeToken();
 let pollTimer = null;
 let busy = false;
 let activeExpectation = null;
@@ -7645,19 +7667,21 @@ function startPolling() {
 }
 
 function connectBridge() {
-  const token = el("tokenInput")?.value?.trim() || "";
+  const token = el("tokenInput")?.value?.trim() || bridgeToken || "";
   if (!token) {
     setStatus("Paste the pairing token from Shuvi.", false);
     return;
   }
 
   bridgeToken = token;
+  saveBridgeToken(token);
   startPolling();
   setStatus("Connecting…", false);
 }
 
 function disconnectBridge() {
   bridgeToken = "";
+  clearSavedBridgeToken();
   if (pollTimer) {
     clearInterval(pollTimer);
     pollTimer = null;
@@ -7682,9 +7706,16 @@ entrypoints.setup({
 
         el("connect")?.addEventListener("click", connectBridge);
         el("disconnect")?.addEventListener("click", disconnectBridge);
+
+        const tokenInput = el("tokenInput");
+        if (bridgeToken && tokenInput) tokenInput.value = bridgeToken;
+        if (bridgeToken) {
+          setStatus("Reconnecting to Shuvi…", false);
+          startPolling();
+        }
       },
       show() {
-        if (bridgeToken) startPolling();
+        if (bridgeToken && !pollTimer) startPolling();
       },
       hide() {
         // Keep polling while Premiere is running so Shuvi can finish an approved task.
