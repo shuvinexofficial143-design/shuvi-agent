@@ -24,6 +24,8 @@ export function checkRequestedAppTarget(goal,proposal){
  const expected=requestedAppScope(goal),target=proposal?.arguments?.window;
  if(!expected||typeof target!=="string")return {allowed:true,reason:"native_target_validation_required"};
  const apps=APPS.filter(([,re])=>re.test(target));
+ if(apps.length>1)
+  return {allowed:false,reason:"Ambiguous multi-app window title; inspect or clarify the target."};
  if(apps.length===1&&apps[0][0]!==expected)
   return {allowed:false,reason:"Target application conflicts with the explicitly requested app."};
  return {allowed:true,reason:"no_cross_app_conflict"};

@@ -27,3 +27,10 @@ test("Batch 56 other Adobe apps are scoped without blocking explicit multi-app w
  }
  assert.equal(requestedAppScope("Open Adobe Animate and Media Encoder"),null);
 });
+
+test("Batch 68 ambiguous title naming two apps cannot redirect single-app work",()=>{
+ assert.equal(check("Premiere kholo",{tool:"ui_click",arguments:{window:"Premiere - Photoshop Link"}}).allowed,false);
+ assert.equal(check("Premiere kholo",{tool:"ui_find",arguments:{window:"Premiere - Photoshop Link"}}).allowed,false);
+ assert.equal(check("Premiere kholo",{tool:"ui_click",arguments:{window:"Adobe Premiere Pro"}}).allowed,true);
+ assert.equal(check("Premiere aur Photoshop kholo",{tool:"ui_click",arguments:{window:"Premiere - Photoshop Link"}}).allowed,true);
+});
