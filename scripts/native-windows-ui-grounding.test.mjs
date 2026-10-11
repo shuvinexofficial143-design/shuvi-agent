@@ -34,9 +34,11 @@ test("Master discovers observed UI and does not silently switch providers",()=>{
   assert.match(agent,/xKiro model capability is checked against its public catalog/);
   assert.match(agent,/No silent model switches or automatic paid retries/);
 });
-test("Windows preview installer is manual-only until repairs are accepted",()=>{
+test("Windows preview builds only for explicit workflow changes, not ordinary source pushes",()=>{
   assert.match(preview,/workflow_dispatch:/);
-  assert.doesNotMatch(preview,/^\s*push:\s*$/m);
+  assert.match(preview,/^\s*push:\s*$/m);
+  assert.match(preview,/^\s*paths:\s*\r?\n\s*- \.github\/workflows\/desktop-dashboard-preview\.yml\s*$/m);
+  assert.doesNotMatch(preview,/^\s*- (?:src|scripts|web-dashboard|agent-runtime)\//m);
 });
 
 test("unsupported xKiro vision fails before any paid screenshot request",()=>{

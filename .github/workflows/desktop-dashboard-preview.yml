@@ -1,7 +1,7 @@
 name: Shuvi Desktop Dashboard Preview
 
 # Preview installers do not build on ordinary source-code pushes.
-# An explicit workflow-file-only commit is the owner's one-time build request.
+# A deliberate workflow-file-only change authorizes this requested ZIP build.
 # Keep normal development pushes outside this build trigger.
 on:
   push:
