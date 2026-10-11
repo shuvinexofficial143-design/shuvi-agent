@@ -1107,24 +1107,29 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
       const allowSession = chatPermission.querySelector<HTMLButtonElement>("#chatAllowSession");
       if(allowSession)allowSession.disabled=true;
     }
-  } catch (error) {
-    // An older failed prepare cannot mutate or retry a new task.
+  } catch {
+    // An IPC error can arrive after Rust has staged a pending native action.
+    // The UI cannot prove that nothing was staged; never spend another model
+    // request or plan another Windows action after this unknown outcome.
     if (staleStage()) return;
+    const abandonedId = pendingChatProposal === proposal ? pendingAction?.id : null;
+    if (typeof abandonedId === "string" && abandonedId.length < 128) {
+      try { await invoke("deny_action", { actionId: abandonedId }); } catch { /* fail closed */ }
+    }
+    if (pendingChatProposal === proposal) clearChatPermission();
     revokeTaskScope(activePermissionScope);
-    orchestration = recordToolOutcome(orchestration, proposal, "failure", undefined, false);
-    await auditGraphOutcome(proposal);
     await recordOrchestrationAudit(
       "orchestration_replan",
-      `Tool preparation failed and requires replanning: ${String(error)}`.slice(0, 1_200),
+      "Native action preparation outcome unknown. Task stopped; no automatic paid planning or native execution.",
       proposal.tool
     );
     messages.push(hiddenToolFailure(proposal, {
-      prepare_failed: true,
-      error: String(error),
+      prepare_outcome_unknown: true,
       retry_automatically: false
     }));
-    renderMessages();
-    await continueAfterOutcome();
+    await stopAgentForSafety(
+      "Native preparation outcome unknown. Shuvi cannot verify whether a Windows action remains pending. Inspect the native audit and start a new owner-approved task; no automatic retry."
+    );
   }
 }
 
