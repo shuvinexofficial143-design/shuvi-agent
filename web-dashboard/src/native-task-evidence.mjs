@@ -5,6 +5,8 @@ export function recordAuditedEvidence(state,id,result,audited){
  if(!state||audited!==true||result?.success!==true||
   typeof id!=="string"||!id||id.length>128||
   typeof result.tool!=="string"||!/^[a-z][a-z0-9_]{0,79}$/.test(result.tool))return state;
+ // Even a tool reporting success must not contradict a nonzero/malformed exit.
+ if(result.exit_code!=null&&(!Number.isSafeInteger(result.exit_code)||result.exit_code!==0))return state;
  if(state.seenIds?.has(id)||state.observations.some(x=>x.id===id))return state;
  return {audited:state.audited+1,lastTool:result.tool,
   seenIds:new Set([...(state.seenIds??[]),id]),

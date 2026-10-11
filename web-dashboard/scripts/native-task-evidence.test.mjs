@@ -25,3 +25,11 @@ test("Batch 75 replaying an action beyond the last twelve audit rows is never do
  assert.strictEqual(recordAuditedEvidence(state,"unique-0",{tool:"ui_windows",success:true},true),state);
  assert.equal(state.audited,30);
 });
+
+test("Batch 76 audit evidence never counts a nonzero or malformed typed exit status",()=>{
+ const state=newEvidence(),base={tool:"ui_click",success:true};
+ for(const status of [1,-1,"0","1",true,false,0.5,NaN]){
+  assert.strictEqual(recordAuditedEvidence(state,"step1",{...base,exit_code:status},true),state);
+ }
+ assert.equal(recordAuditedEvidence(state,"step1",{...base,exit_code:0},true).audited,1);
+});

@@ -1,0 +1,1 @@
+Batch 76: A successful-looking typed native result cannot be recorded as an audited evidence step if its exit status is nonzero, noninteger, boolean, string or NaN. This complements exact Rust audit verification.
