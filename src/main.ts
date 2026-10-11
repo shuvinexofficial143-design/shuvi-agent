@@ -36,6 +36,7 @@ import { chooseNativeRoute } from "../web-dashboard/src/native-model-routing.mjs
 import {createTaskPermissionScope,grantTaskRead,allowsTaskRead,revokeTaskScope} from "./task-permission-scope.mjs";
 import {taskReadPermissionKey} from "./task-read-permission-key.mjs";
 import {allowedTaskBudget,taskDeadlineAllows,reserveTaskModelRequest} from "./task-runtime-budget.mjs";
+import {approvalRiskClass, validPendingDisplayMetadata} from "./approval-render-safety.mjs";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("Missing app root");
@@ -442,9 +443,12 @@ function syncOnboardingProvider(): void {
 }
 
 function prepareOnboarding(): void {
-  onboardingProvider.innerHTML = providers
-    .map((provider) => `<option value="${provider.id}">${provider.name}</option>`)
-    .join("");
+  onboardingProvider.replaceChildren(...providers.map(provider => {
+    const option = document.createElement("option");
+    option.value = provider.id;
+    option.textContent = provider.name;
+    return option;
+  }));
 
   const savedProvider = readLocalPreference("shuvi.provider");
   if (savedProvider && providers.some((provider) => provider.id === savedProvider)) {
@@ -470,8 +474,18 @@ function loadConfiguredModelRoutes(): void {
     readLocalPreference("shuvi.modelRoutes"),
     providers.map(provider => provider.id)
   );
-  teamRole.innerHTML = MODEL_ROLES.map(([id, label]) => `<option value="${id}">${label}</option>`).join("");
-  teamProvider.innerHTML = providers.map(provider => `<option value="${provider.id}">${provider.name}</option>`).join("");
+  teamRole.replaceChildren(...MODEL_ROLES.map(([id, label]) => {
+    const option = document.createElement("option");
+    option.value = id;
+    option.textContent = label;
+    return option;
+  }));
+  teamProvider.replaceChildren(...providers.map(provider => {
+    const option = document.createElement("option");
+    option.value = provider.id;
+    option.textContent = provider.name;
+    return option;
+  }));
   updateTeamForm();
   renderModelTeam();
 }
@@ -748,9 +762,12 @@ async function loadWorkspace(): Promise<void> {
 async function boot(): Promise<void> {
   try {
     providers = await invoke<ProviderDescriptor[]>("list_providers");
-    providerSelect.innerHTML = providers
-      .map((provider) => `<option value="${provider.id}">${provider.name}</option>`)
-      .join("");
+    providerSelect.replaceChildren(...providers.map(provider => {
+      const option = document.createElement("option");
+      option.value = provider.id;
+      option.textContent = provider.name;
+      return option;
+    }));
 
     loadSavedProvider();
     loadConfiguredModelRoutes();
@@ -988,7 +1005,15 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
     });
 
     pendingChatProposal = proposal;
-    const preparedId = pendingAction.id;
+    const preparedId = pendingAction?.id;
+    if (!validPendingDisplayMetadata(pendingAction, proposal.tool)) {
+      if (typeof preparedId === "string" && preparedId.length < 128) {
+        try { await invoke("deny_action", { actionId: preparedId }); } catch { /* fail closed */ }
+      }
+      clearChatPermission();
+      await stopAgentForSafety("Native approval metadata does not match the requested tool. No execution authorized.");
+      return;
+    }
     const bound = bindPreparedAction(orchestration, proposal, preparedId);
     if (!bound.ok) {
       try { await invoke("deny_action", { actionId: preparedId }); } catch { /* best effort */ }
@@ -1224,38 +1249,29 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
   }
 
   chatPermission.classList.remove("hidden");
-  chatPermission.innerHTML = `
-    <div class="permission-head">
-      <div>
-        <span class="risk ${pendingAction.risk}">${pendingAction.risk.toUpperCase()} RISK</span>
-        <strong>${pendingAction.summary}</strong>
-      </div>
-      <span class="permission-step">Agent step ${step}/${orchestration.max_steps}</span>
-    </div>
-    <p class="permission-reason"></p>
-    <pre class="permission-detail"></pre>
-    <div class="button-row">
-      <button id="chatApprove" class="primary">Allow once</button>
-      ${pendingAction.risk === "low" && taskReadPermissionKey(proposal) !== null && (
-        proposal.tool === "read_file" ||
-        proposal.tool === "list_directory" ||
-        proposal.tool === "ui_find" ||
-        proposal.tool === "list_processes" ||
-        proposal.tool === "browser_dom_read" ||
-        proposal.tool === "workspace_scan" ||
-        proposal.tool === "search_text" ||
-        proposal.tool === "git_status" ||
-        proposal.tool === "git_diff" ||
-        proposal.tool === "premiere_bridge_status" ||
-        proposal.tool === "premiere_context" ||
-        proposal.tool === "premiere_list_items"
-      )
-        ? '<button id="chatAllowSession"></button>'
-        : ""}
-      <button id="chatDeny">Deny</button>
-    </div>
-  `;
-
+  const allowReadGrant = pendingAction.risk === "low" && taskReadPermissionKey(proposal) !== null && (
+    ["read_file","list_directory","ui_find","list_processes","browser_dom_read",
+     "workspace_scan","search_text","git_status","git_diff","premiere_bridge_status",
+     "premiere_context","premiere_list_items"].includes(proposal.tool)
+  );
+  // The skeleton contains only trusted markup; tool-supplied names are text.
+  chatPermission.innerHTML = [
+    '<div class="permission-head"><div><span class="risk"></span><strong class="permission-summary"></strong></div>',
+    '<span class="permission-step"></span></div>',
+    '<p class="permission-reason"></p><pre class="permission-detail"></pre>',
+    '<div class="button-row"><button id="chatApprove" class="primary">Allow once</button>',
+    ...(allowReadGrant ? ['<button id="chatAllowSession"></button>'] : []),
+    '<button id="chatDeny">Deny</button></div>'
+  ].join("");
+  const chatRisk = chatPermission.querySelector<HTMLElement>(".risk");
+  if (chatRisk) {
+    chatRisk.className = approvalRiskClass(pendingAction.risk);
+    chatRisk.textContent = pendingAction.risk.toUpperCase() + " RISK";
+  }
+  const chatSummary = chatPermission.querySelector<HTMLElement>(".permission-summary");
+  if (chatSummary) chatSummary.textContent = pendingAction.summary;
+  const chatStep = chatPermission.querySelector<HTMLElement>(".permission-step");
+  if (chatStep) chatStep.textContent = `Agent step ${step}/${orchestration.max_steps}`;
   const reason = chatPermission.querySelector<HTMLElement>(".permission-reason");
   if (reason) {
     const plannedStep = proposal.plan?.step?.trim();
@@ -1823,6 +1839,14 @@ el<HTMLButtonElement>("#prepareAction").addEventListener("click", async () => {
   try {
     pendingChatProposal = null;
     pendingAction = await invoke<PendingAction>("prepare_powershell", { command });
+    if (!validPendingDisplayMetadata(pendingAction)) {
+      const rejectedId = pendingAction?.id;
+      pendingAction = null;
+      if (typeof rejectedId === "string" && rejectedId.length < 128) {
+        try { await invoke("deny_action", { actionId: rejectedId }); } catch { /* fail closed */ }
+      }
+      throw Error("Unsafe native PowerShell approval metadata; no execution authorized.");
+    }
     renderManualPending();
   } catch (error) {
     output.classList.remove("hidden");
@@ -1839,16 +1863,15 @@ function renderManualPending(): void {
   }
 
   box.classList.remove("hidden");
-  box.innerHTML = `
-    <div class="risk ${pendingAction.risk}">${pendingAction.risk.toUpperCase()} RISK</div>
-    <h3>${pendingAction.summary}</h3>
-    <pre></pre>
-    <div class="button-row">
-      <button id="approveAction" class="primary">Allow once</button>
-      <button id="denyAction">Deny</button>
-    </div>
-  `;
-
+  box.innerHTML = '<div class="risk"></div><h3></h3><pre></pre><div class="button-row">' +
+    '<button id="approveAction" class="primary">Allow once</button><button id="denyAction">Deny</button></div>';
+  const manualRisk = box.querySelector<HTMLElement>(".risk");
+  if (manualRisk) {
+    manualRisk.className = approvalRiskClass(pendingAction.risk);
+    manualRisk.textContent = pendingAction.risk.toUpperCase() + " RISK";
+  }
+  const manualSummary = box.querySelector<HTMLElement>("h3");
+  if (manualSummary) manualSummary.textContent = pendingAction.summary;
   const preview = box.querySelector("pre");
   if (preview) preview.textContent = pendingAction.detail;
 
