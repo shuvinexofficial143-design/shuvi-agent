@@ -35,6 +35,7 @@ type PendingTask = {action:Pending;threadId:string;promptIndex:number;
 // inventory to avoid forwarding arbitrary control content as instructions.
 function compactObservedUi(result:ActionResult):string|null {
  if(!["ui_windows","ui_discover","ui_find"].includes(result.tool))return null;
+ if(typeof result.stdout!=="string"||result.stdout.length>250000)return null;
  try{
   const raw=JSON.parse(result.stdout) as unknown;
   const candidates=Array.isArray(raw)?raw:raw&&typeof raw==="object"?[raw]:[];
