@@ -8,7 +8,7 @@ const APPS=[
  ["illustrator",/\billustrator\b|इलस्ट्रेटर/iu],
  ["audition",/\baudition\b|ऑडिशन/iu]
 ];
-const MUTATE=new Set(["ui_click","ui_set_value","ui_send_keys","ui_toggle","ui_focus","ui_scroll","ui_expand_collapse"]);
+const MUTATE=new Set(["ui_find","ui_discover","ui_click","ui_set_value","ui_send_keys","ui_toggle","ui_focus","ui_scroll","ui_expand_collapse"]);
 export function requestedAppScope(input){
  if(typeof input!=="string")return null;
  const matches=APPS.filter(([,re])=>re.test(input.slice(0,2500)));

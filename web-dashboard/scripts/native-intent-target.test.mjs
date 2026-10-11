@@ -10,3 +10,9 @@ test("wrong named application cannot receive a UI click from another app's task"
  assert.equal(check("Premiere kholo",{tool:"ui_click",arguments:{window:"Adobe Premiere Pro 2026"}}).allowed,true);
  assert.equal(check("Premiere kholo",{tool:"ui_windows",arguments:{}}).allowed,true);
 });
+
+test("Batch 27 app-scoped read-only UI lookup does not wander into another app",()=>{
+ assert.equal(check("Premiere kholo",{tool:"ui_find",arguments:{window:"Adobe Photoshop 2026"}}).allowed,false);
+ assert.equal(check("Premiere kholo",{tool:"ui_discover",arguments:{window:"Adobe Premiere Pro 2026"}}).allowed,true);
+ assert.equal(check("Premiere kholo",{tool:"ui_windows",arguments:{}}).allowed,true);
+});
