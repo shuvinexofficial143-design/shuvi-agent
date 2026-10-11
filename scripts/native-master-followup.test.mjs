@@ -419,3 +419,49 @@ test("verified UI recovery observation causes grounded replan advice, not a blin
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,2);
  assert.equal(s.approval.hidden,false);
 });
+
+test("same Master action with reordered argument keys is blocked before staging",async()=>{
+ const first={content:"find",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_find",arguments:{window:"Premiere",name:"New Project"}}};
+ const second={content:"find again",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_find",arguments:{name:"New Project",window:"Premiere"}}};
+ const s=setup({first,second});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Look for New Project in Premiere","canonical-duplicate",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.transport.getReplies("canonical-duplicate")[0]?.includes("identical action"),
+  "duplicate proposal rejected");
+ assert.equal(s.staged.length,1);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+ assert.equal(s.chatInputs.length,2,"no paid retry after repeated proposal");
+});
+test("a fresh read-only UI inspection after audited mutation is allowed once",async()=>{
+ const windows={content:"windows",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_windows",arguments:{}}};
+ const click={content:"click",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_click",arguments:{window:"Premiere",name:"New Project"}}};
+ const windowsAgain={content:"inspect changed UI",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_windows",arguments:{}}};
+ const repeatedWindows={content:"inspect same unchanged UI",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_windows",arguments:{}}};
+ const s=setup({first:windows,second:click,following:[windowsAgain,repeatedWindows]});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Inspect Premiere, click New Project, and verify window","reobserve-after-change",0);
+ assert.equal(s.staged[0].proposal.tool,"ui_windows");
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"mutation proposed");
+ assert.equal(s.staged[1].proposal.tool,"ui_click");
+ await until(()=>!s.allow.disabled,"mutation approval");
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===3,"read-after-mutation proposed");
+ assert.equal(s.staged[2].proposal.tool,"ui_windows");
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,2,
+  "reobservation requires a fresh approval");
+ await until(()=>!s.allow.disabled,"reobservation approval");
+ s.allow.listeners.get("click")();
+ await until(()=>s.transport.getReplies("reobserve-after-change")[0]?.includes("identical action"),
+  "second unchanged read stopped");
+ assert.equal(s.staged.length,3);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,3);
+ assert.equal(s.chatInputs.length,4);
+});

@@ -8,6 +8,7 @@ import {chooseNativeRoute} from "./native-model-routing.mjs";
 import {masterGoalContext,resolveMasterObjective} from "./native-master-goal.mjs";
 import {createTask,stageTask,executeTask,verifyTask,pauseTask,taskSummary,taskContext} from "./native-task-progress.mjs";
 import {isRecoverableUiReadFailure,isAuditedUiReadFailure,uiReplanGuidance} from "./native-read-recovery.mjs";
+import {actionFingerprint,seenAfterAuditedChange,actionLoopGuidance} from "./native-action-loop.mjs";
 type Provider = {id:string;name:string;default_model:string;api_key_required:boolean;custom_base_url:boolean};
 type NativeChatMessage = {role:"user"|"assistant";content:string};
 type NativeChatResponse = {content:string;provider:string;model:string;tool_proposal:Record<string,unknown>|null};
@@ -61,8 +62,7 @@ function compactObservedUi(result:ActionResult):string|null {
 }
 const evidenceText=(result:ActionResult):string =>
  compactObservedUi(result)??[result.stdout,result.stderr].filter(Boolean).join("\n").slice(0,2500);
-const fingerprint=(proposal:Record<string,unknown>):string =>
- JSON.stringify({tool:proposal.tool,arguments:proposal.arguments});
+const fingerprint=(proposal:Record<string,unknown>):string|null => actionFingerprint(proposal);
 type NativeInternals = {invoke:NativeInvoke};
 
 declare global {
@@ -232,6 +232,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    "Current approved step: "+task.step+". "+
    "Last audited tool: "+result.tool+". "+taskContext(getTask(task.threadId))+" "+
    uiReplanGuidance(task.recoveryFrom,result.tool)+" "+
+   actionLoopGuidance()+" "+
    "After premiere_detect, propose the dedicated premiere_launch tool with empty arguments {} when the user wants Premiere opened; detection alone is not launch. "+
    "For other trusted discovered executable paths, propose launch_app with the exact observed path. "+
    "After any launch, use ui_windows or a suitable separate inspection to verify that the app/window exists. "+
@@ -269,7 +270,14 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    return;
   }
   const fp=fingerprint(response.tool_proposal);
-  if(task.seen.has(fp)){
+  if(!fp){
+   haltTask(task.threadId,"prepare_failed");
+   appendReply(task.threadId,task.promptIndex,
+    "Stopped: invalid or oversized tool proposal. No Windows action or automatic paid retry.");
+   return;
+  }
+  const seen=seenAfterAuditedChange(task.seen,result.tool,true);
+  if(seen.has(fp)){
    haltTask(task.threadId,"repeated_tool");
    appendReply(task.threadId,task.promptIndex,
     "Stopped: Master proposed an identical action again. No duplicate execution or paid retry.");
@@ -282,7 +290,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     provider:task.route.provider,model:task.route.model,baseUrl:task.route.base_url||null
    });
    if(!next||typeof next.id!=="string")throw Error("Next action could not be staged.");
-   pending={...task,action:next,step:task.step+1,seen:new Set([...task.seen,fp]),recoveryFrom:null};
+   pending={...task,action:next,step:task.step+1,seen:new Set([...seen,fp]),recoveryFrom:null};
    updateTask(task.threadId,stageTask(getTask(task.threadId),next.id,next.kind,task.step+1));
    pendingText.textContent="Step "+(task.step+1)+
     " · Permission required: "+next.summary+"\nRisk: "+next.risk+"\n"+next.detail;
@@ -304,7 +312,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   if(!isRecoverableUiReadFailure(current.action.kind,message))return false;
   const proposal={tool:"ui_windows",arguments:{}};
   const fp=fingerprint(proposal);
-  if(current.seen.has(fp))return false;
+  if(!fp||current.seen.has(fp))return false;
   try{
    const receipt=await invoke<{action_id:string|null;event:string;tool:string;success:boolean}|null>(
     "action_audit_receipt",{actionId:current.action.id});
@@ -496,8 +504,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
        proposal:response.tool_proposal,provider:route.provider,model:route.model,baseUrl:route.base_url||null
       });
       if(!proposed||typeof proposed.id!=="string")throw Error("Tool preparation did not return a valid native action.");
-      const first=JSON.stringify({tool:response.tool_proposal.tool,
-       arguments:response.tool_proposal.arguments});
+      const first=fingerprint(response.tool_proposal);
+      if(!first)throw Error("Invalid or oversized native tool proposal.");
       pending={action:proposed,threadId,promptIndex,objective:effectiveObjective,
        route:{role:route.role,provider:route.provider,model:route.model,base_url:route.base_url||""},
        step:1,seen:new Set([first])};
