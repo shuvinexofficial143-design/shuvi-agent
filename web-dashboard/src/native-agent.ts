@@ -426,8 +426,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    // Only a short answer to an explicit application-choice question carries
    // the previous goal. Generic clarification or a fresh command does not.
    const isAppClarification=Boolean(waitingForChoice && lastAnswer?.role==="assistant" &&
-    /कौन[\\s-]*सा|कौनसी|which\\s+(?:adobe\\s+)?(?:app|application|software)|what\\s+app|specify\\s+(?:the\\s+)?(?:app|application)/iu.test(lastAnswer.content) &&
-    text.trim().length<=300 && !/^(?:cancel|stop|never\\s?mind|forget\\s+it|रद्द|नहीं|मत\\s+करो)\\b/iu.test(text.trim()));
+    /कौन[\s-]*सा|कौनसी|which\s+(?:adobe\s+)?(?:app|application|software)|what\s+app|specify\s+(?:the\s+)?(?:app|application)/iu.test(lastAnswer.content) &&
+    text.trim().length<=300 && !/^(?:cancel|stop|never\s?mind|forget\s+it|रद्द|नहीं|मत\s+करो)\b/iu.test(text.trim()));
    const effectiveObjective=resolveMasterObjective(lastRequest?.content,text,isAppClarification);
    if(pending)return {ok:false,error:"First approve or deny the existing Windows action."};
    if(sending)return {ok:false,error:"A native request is already running."};

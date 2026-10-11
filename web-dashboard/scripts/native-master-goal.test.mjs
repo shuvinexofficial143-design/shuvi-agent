@@ -40,7 +40,7 @@ test("completion context is bounded and never echoes raw commands or secrets",()
 });
 test("native first turn and verified follow-up both receive goal contract without changing the approval gate",()=>{
  const source=readFileSync(new URL("../src/native-agent.ts",import.meta.url),"utf8");
- assert.match(source,/masterGoalContext\(text\)/);
+ assert.match(source,/masterGoalContext\(effectiveObjective\)/);
  assert.match(source,/masterGoalContext\(task\.objective\)/);
  assert.match(source,/invoke<Pending>\("prepare_tool"/);
  assert.match(source,/invoke<ActionResult>\("execute_action"/);
