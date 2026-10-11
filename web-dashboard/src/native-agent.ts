@@ -39,7 +39,7 @@ function compactObservedUi(result:ActionResult):string|null {
    for(const [field,label] of pairs){
     const value=source[field];
     if(typeof value==="string")item[label]=
-     (field==="ControlType"?value.replace(/^ControlType\\./,""):value).slice(0,180);
+     (field==="ControlType"?value.replace(/^ControlType\./,""):value).slice(0,180);
     else if(typeof value==="number"&&Number.isFinite(value))item[label]=value;
     else if(typeof value==="boolean")item[label]=value;
    }
