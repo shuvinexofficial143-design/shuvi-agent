@@ -1,0 +1,1 @@
+Batch 40: Do not parse or trust oversized or non-string ui_windows results for the native target guard. Rejected inventory prevents new desktop UI mutations until a fresh valid native window inspection.

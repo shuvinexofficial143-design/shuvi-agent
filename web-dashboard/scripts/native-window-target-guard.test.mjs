@@ -34,3 +34,10 @@ test("Batch 38 normalized native window labels cannot hide bidi text or null cha
  assert.equal(titles[0].title,"Adobe Premiere Pro");
  assert.doesNotMatch(titles[0].title,/[\u202a-\u202e]/);
 });
+
+test("Batch 40 huge or non-string UI inventory never authorizes a mutation",()=>{
+ const huge={tool:"ui_windows",success:true,stdout:"["+" ".repeat(250001)+"]"};
+ assert.deepEqual(observedWindowInventory(huge,true),[]);
+ assert.deepEqual(observedWindowInventory({...huge,stdout:null},true),[]);
+ assert.equal(check({tool:"ui_click",arguments:{window:"Premiere"}},observedWindowInventory(huge,true)).allowed,false);
+});
