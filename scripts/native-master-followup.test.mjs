@@ -38,7 +38,7 @@ const launch={
  provider:"xkiro",model:"model/master",
  tool_proposal:{tool:"premiere_launch",arguments:{}}
 };
-function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,stdoutFor=null}={}){
+function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null}={}){
  const nodes=new Map(),created=[],calls=[],chatInputs=[],staged=[];
  const domParent=el(),composerParent=el(),form=el(),chat=el();
  form.parentElement=composerParent;chat.parentElement=domParent;
@@ -71,7 +71,10 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
   }
   if(name==="action_audit_receipt")
    return (failFind||softFailedRead)?{action_id:receiptMismatch?"mismatched-action":params.actionId,tool:"ui_find",event:"failed",success:false}:null;
-  if(name==="audit_log")return auditOk?staged.map(s=>({event:"executed",action_id:s.id,tool:s.proposal.tool,success:true})):[];
+  if(name==="audit_log")return auditOk?staged.map(s=>{
+   const failed=softFailedRead&&s.proposal.tool==="ui_find"&&!conflictingSuccessAudit;
+   return {event:failed?"failed":"executed",action_id:s.id,tool:s.proposal.tool,success:!failed};
+  }):[];
   if(name==="deny_action")return;
   throw Error("unexpected native call: "+name);
  };
@@ -371,4 +374,20 @@ test("typed failure with mismatched native receipt never stages recovery or paid
  assert.equal(s.chatInputs.length,1);
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
  assert.match(s.transport.getReplies("bad-receipt")[0],/No automatic retry/);
+});
+
+test("conflicting successful audit on typed failure blocks read-only recovery",async()=>{
+ const finding={content:JSON.stringify({tool:"ui_find",arguments:{name:"New Project",window:"Premiere"}}),
+  provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_find",arguments:{name:"New Project",window:"Premiere"}}};
+ const s=setup({first:finding,softFailedRead:true,conflictingSuccessAudit:true});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Find new project in Premiere","contradictory-audit",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.approval.hidden===true,"contradictory audit blocked");
+ assert.equal(s.staged.length,1);
+ assert.equal(s.chatInputs.length,1);
+ assert.equal(s.calls.filter(x=>x.name==="action_audit_receipt").length,0);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+ assert.match(s.transport.getReplies("contradictory-audit")[0],/No automatic retry/);
 });

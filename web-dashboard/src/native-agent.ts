@@ -360,7 +360,9 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      // follow exactly the same audited read-only recovery decision.
      const failure=[result.stderr,result.stdout].filter(Boolean).join("\n").slice(0,1200);
      clearPending();
-     const recoveryPrepared=await prepareAuditedUiReadRecovery(current,failure);
+     // A contradictory successful audit must not be reinterpreted as a
+     // confirmed failure, even if a separate receipt lookup appears to fail.
+     const recoveryPrepared=!matched && await prepareAuditedUiReadRecovery(current,failure);
      if(!recoveryPrepared){
       haltTask(current.threadId,"unknown_outcome");
       appendReply(current.threadId,current.promptIndex,
