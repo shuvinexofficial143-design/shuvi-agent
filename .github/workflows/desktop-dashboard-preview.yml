@@ -1,8 +1,14 @@
 name: Shuvi Desktop Dashboard Preview
 
-# Preview installers are manual-only until native Windows UI acceptance is complete.
-# Pushes run source CI but must not produce an installer ZIP automatically.
+# Preview installers do not build on ordinary source-code pushes.
+# An explicit workflow-file-only commit is the owner's one-time build request.
+# Keep normal development pushes outside this build trigger.
 on:
+  push:
+    branches:
+      - phase1/safety-reconciliation-oct9
+    paths:
+      - .github/workflows/desktop-dashboard-preview.yml
   workflow_dispatch:
 
 permissions:
