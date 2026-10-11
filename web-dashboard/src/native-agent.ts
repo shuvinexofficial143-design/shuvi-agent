@@ -170,9 +170,11 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  recoveryNotice.setAttribute("role","status");
  recoveryNotice.hidden=true;
  const recoveryCheck=field("button","Check interrupted action in Rust Audit");
+ recoveryCheck.className="shuvi-native-recovery-check";
  recoveryCheck.type="button";
  recoveryCheck.hidden=true;
- const recoveryDismiss=field("button","Dismiss interrupted task notice");
+ const recoveryDismiss=field("button","Acknowledge old task and clear journal");
+ recoveryDismiss.className="shuvi-native-recovery-dismiss";
  recoveryDismiss.type="button";
  recoveryDismiss.hidden=true;
  budgetNote.className="shuvi-native-note";
@@ -202,6 +204,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  // restored as model-call or native-tool execution authority.
  const recoveryStorage=(()=>{try{return window.localStorage??null;}catch{return null;}})();
  const previousRecovery=readNativeRecovery(recoveryStorage);
+ const needsOwnerRecoveryReview=Boolean(previousRecovery&&["model_reserved","awaiting_approval","executing","outcome_unknown"].includes(previousRecovery.phase));
+ let recoveryAcknowledged=!needsOwnerRecoveryReview;
  if(previousRecovery){
   recoveryNotice.textContent="Previous Windows task interrupted: "+
    previousRecovery.stagedActions+"/"+previousRecovery.maxActions+
@@ -234,7 +238,13 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   }
  });
  recoveryDismiss.addEventListener("click",()=>{
-  clearNativeRecovery(recoveryStorage);
+  // Only an explicit owner acknowledgement can release a previous uncertain
+  // recovery record. Failure to clear persistent evidence stays fail-closed.
+  if(!clearNativeRecovery(recoveryStorage)){
+   recoveryNotice.textContent="Could not clear interrupted task journal. New Windows tasks remain blocked.";
+   return;
+  }
+  recoveryAcknowledged=true;
   recoveryNotice.hidden=true;
   recoveryCheck.hidden=true;
   recoveryDismiss.hidden=true;
@@ -747,6 +757,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    if(pending)return {ok:false,error:"First approve or deny the existing Windows action."};
    if(sending)return {ok:false,error:"A native request is already running."};
    if(!text.trim()||text.length>2500)return {ok:false,error:"Invalid command length."};
+   if(route.role!=="chat"&&!recoveryAcknowledged)return {ok:false,error:
+    "The previous Windows task may have an unresolved action or paid request. Review Rust Audit, then explicitly acknowledge and clear the interrupted task journal before starting another Windows task. Nothing was sent."};
    const prev=histories.get(threadId)||[];
    const ownerBudget=waitingForChoice ? taskBudgets.get(threadId) : undefined;
    const taskBudget=ownerBudget ?? createNativeTaskBudget(Number(budgetSelect.value));
