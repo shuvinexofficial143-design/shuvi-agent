@@ -17,3 +17,8 @@ test("unrequested app, two matching windows, malformed identity cannot count as 
  assert.equal(windowGoalEvidence("Premiere kholo",{...observation,stdout:JSON.stringify([{Name:"Premiere"}])},true),null);
  assert.equal(windowGoalEvidence("Premiere kholo",{...observation,stdout:"broken"},true),null);
 });
+
+test("Batch 28 reject forged window title contradicting recognized process",()=>{
+ const result={tool:"ui_windows",success:true,stdout:JSON.stringify([{Name:"Adobe Premiere Pro 2026",ProcessName:"Photoshop",ProcessId:111,NativeWindowHandle:222}])};
+ assert.equal(windowGoalEvidence("Premiere kholo",result,true),null);
+});

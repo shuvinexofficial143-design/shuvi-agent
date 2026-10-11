@@ -23,6 +23,9 @@ export function windowGoalEvidence(objective,result,hasExactAudit){
    typeof row.ProcessName==="string"&&match.test(row.ProcessName)));
  if(selected.length!==1)return null;
  const row=selected[0];
+ // A matching title can be misleading if process identity names another app.
+ const process=typeof row.ProcessName==="string"?row.ProcessName:"";
+ if(process&&knownApps.some(([id,,matcher])=>id!==app&&matcher.test(process)))return null;
  if(typeof row.Name!=="string"||!row.Name.trim()||
   !Number.isSafeInteger(row.ProcessId)||row.ProcessId<=0||
   !Number.isSafeInteger(row.NativeWindowHandle)||row.NativeWindowHandle<=0)
