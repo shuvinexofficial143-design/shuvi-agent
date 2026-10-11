@@ -5,6 +5,7 @@
  */
 import {mountNativeModelSetup, type ModelTeamHandle, type NativeInvoke} from "./native-model-setup";
 import {chooseNativeRoute} from "./native-model-routing.mjs";
+import {masterGoalContext} from "./native-master-goal.mjs";
 type Provider = {id:string;name:string;default_model:string;api_key_required:boolean;custom_base_url:boolean};
 type NativeChatMessage = {role:"user"|"assistant";content:string};
 type NativeChatResponse = {content:string;provider:string;model:string;tool_proposal:Record<string,unknown>|null};
@@ -223,7 +224,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    "After any launch, use ui_windows or a suitable separate inspection to verify that the app/window exists. "+
     "For UI tasks use ui_windows to discover real process/window identity and ui_discover for observed button labels/roles before proposing UI mutation. If lookup fails, do not blindly repeat guessed labels; use read-only discovery and ask for clarification on ambiguity. For inspect_screen ALWAYS include window with the actual observed target app title from ui_windows, even if Shuvi chat is foreground for permission; window:'desktop' ONLY on an explicit request for the full desktop. Never automatically switch paid vision provider. "+
    "Propose ONE next typed action as JSON. Never re-execute a previous identical action, "+
-   "never claim completion based only on a detection/launch request. Every new action requires user approval.";
+   "never claim completion based only on a detection/launch request. Every new action requires user approval. "+
+    masterGoalContext(task.objective);
   refreshState("Master AI is continuing from the verified tool result (one new model request)…");
   showActionFeedback("Verified previous action. Master is choosing the next step; another AI request may use tokens. No new Windows action has been approved.");
   let response:NativeChatResponse;
@@ -430,7 +432,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     const firstStepGuidance=route.role==="chat"?null:
      "Continue the user\u0027s actual desktop request, not a preliminary inspection. "+
      (waitingForChoice&&lastRequest?"The user\u0027s current app name answers the previous opening request: "+lastRequest.content.slice(0,300)+". ":"")+
-     "For an instruction to open Premiere Pro, propose premiere_launch with {} FIRST; it already finds the installation. Do not stop at premiere_detect. After launch, verify the real window with a separately approved ui_windows. For UI work use ui_windows and ui_discover to ground current button labels and controls rather than guessing names; on ambiguity stop and ask. For inspect_screen always supply window with the exact real app title observed via ui_windows, even if the user returns to Shuvi to approve; use desktop only for an explicitly requested whole-screen inspection. Use inspect_screen only if the selected model supports Vision; xKiro model capability is checked against its public catalog before any paid screenshot request. No silent model switches or automatic paid retries. Each action requires Allow once and matching audit.";
+     "For an instruction to open Premiere Pro, propose premiere_launch with {} FIRST; it already finds the installation. Do not stop at premiere_detect. After launch, verify the real window with a separately approved ui_windows. For UI work use ui_windows and ui_discover to ground current button labels and controls rather than guessing names; on ambiguity stop and ask. For inspect_screen always supply window with the exact real app title observed via ui_windows, even if the user returns to Shuvi to approve; use desktop only for an explicitly requested whole-screen inspection. Use inspect_screen only if the selected model supports Vision; xKiro model capability is checked against its public catalog before any paid screenshot request. No silent model switches or automatic paid retries. Each action requires Allow once and matching audit. "+
+      masterGoalContext(text);
    const response=await invoke<NativeChatResponse>("chat",{
       input:{provider:route.provider,model:route.model,base_url:route.base_url||null,messages,orchestration_context:firstStepGuidance}
     });
