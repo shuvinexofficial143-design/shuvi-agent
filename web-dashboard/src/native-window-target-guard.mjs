@@ -38,8 +38,8 @@ export function checkAmbiguousReadWindow(proposal,observed){
  if(typeof target!=="string"||!target.trim())return {allowed:true,reason:"native_lookup_required"};
  const matches=observed.filter(x=>typeof x.title==="string"&&
   x.title.toLocaleLowerCase("en-US")===target.trim().toLocaleLowerCase("en-US"));
- const handles=new Set(matches.map(x=>x.hwnd));
- return handles.size>1?
+ // Repeated exact-title rows cannot uniquely identify one target.
+ return matches.length>1?
   {allowed:false,reason:"Multiple audited windows have the same title. Ask which window or use a unique identity."}:
   {allowed:true,reason:"no_verified_title_ambiguity"};
 }
