@@ -74,3 +74,15 @@ test("Batch 85 one malformed duplicate row invalidates the entire audited target
  assert.deepEqual(inventory,[]);
  assert.equal(check({tool:"ui_click",arguments:{window:"Premiere"}},inventory).allowed,false);
 });
+
+test("Batch 95 native window target refuses cross-app process/title disagreement",()=>{
+ const mismatch=observedWindowInventory({tool:"ui_windows",success:true,stdout:JSON.stringify([
+  {Name:"Adobe Premiere Pro",ProcessName:"Adobe Photoshop",ProcessId:44,NativeWindowHandle:5}
+ ])},true);
+ assert.equal(mismatch[0].process,"Adobe Photoshop");
+ assert.equal(check({tool:"ui_click",arguments:{window:"Adobe Premiere Pro"}},mismatch).allowed,false);
+ const valid=observedWindowInventory({tool:"ui_windows",success:true,stdout:JSON.stringify([
+  {Name:"Adobe Premiere Pro",ProcessName:"Adobe Premiere Pro.exe",ProcessId:45,NativeWindowHandle:6}
+ ])},true);
+ assert.equal(check({tool:"ui_click",arguments:{window:"Adobe Premiere Pro"}},valid).allowed,true);
+});

@@ -1,6 +1,20 @@
 import {cleanObservedLabel} from "./native-observation-text.mjs";
 // A verified native window read restricts subsequent desktop mutations.
 // Without prior read, trusted Rust window matching still applies.
+const KNOWN_APPS=[
+ ["premiere",/\bpremi(?:ere|re|er)\b/i],["photoshop",/\bphotoshop\b/i],
+ ["blender",/\bblender\b/i],["after-effects",/\bafter[\s-]?effects?\b/i],
+ ["illustrator",/\billustrator\b/i],["audition",/\baudition\b/i],
+ ["media-encoder",/\bmedia[\s-]?encoder\b/i],["animate",/\badobe[\s-]+animate\b/i],
+ ["character-animator",/\bcharacter[\s-]?animator\b/i],
+ ["substance-3d",/\bsubstance[\s-]?3d\b/i],["frameio",/\bframe\.?io\b/i]
+];
+const identifiedApp=text=>typeof text==="string"?KNOWN_APPS.filter(([,pattern])=>pattern.test(text)).map(([id])=>id):[];
+const processConflict=row=>{
+ const titleApps=identifiedApp(row?.title),processApps=identifiedApp(row?.process);
+ return titleApps.length>0&&processApps.length>0&&
+  (titleApps.length!==1||processApps.length!==1||titleApps[0]!==processApps[0]);
+};
 const MUTATIONS=new Set(["ui_click","ui_set_value","ui_send_keys","ui_toggle","ui_focus","ui_scroll","ui_expand_collapse"]);
 export function observedWindowInventory(result,audited){
  if(audited!==true||result?.success!==true||result.tool!=="ui_windows")return null;
@@ -17,7 +31,8 @@ export function observedWindowInventory(result,audited){
    typeof x.Name==="string"&&cleanObservedLabel(x.Name,180)&&
    Number.isSafeInteger(x.ProcessId)&&x.ProcessId>0&&
    Number.isSafeInteger(x.NativeWindowHandle)&&x.NativeWindowHandle>0))return [];
-  return rows.map(x=>({title:cleanObservedLabel(x.Name,180),pid:x.ProcessId,hwnd:x.NativeWindowHandle}));
+  return rows.map(x=>({title:cleanObservedLabel(x.Name,180),pid:x.ProcessId,hwnd:x.NativeWindowHandle,
+   process:typeof x.ProcessName==="string"?cleanObservedLabel(x.ProcessName,120):""}));
  }catch{return [];}
 }
 export function checkObservedMutationTarget(proposal,observed){
@@ -31,6 +46,7 @@ export function checkObservedMutationTarget(proposal,observed){
  if(typeof title!=="string"||!title.trim()||title.length>180)
   return {allowed:false,reason:"Explicit verified target window required."};
  const exact=observed.filter(x=>x.title.toLocaleLowerCase("en-US")===title.trim().toLocaleLowerCase("en-US"));
+ if(exact.some(processConflict))return {allowed:false,reason:"Observed window title conflicts with the reported process application."};
  // Conflicting rows assigning the same handle to different names/processes
  // cannot establish a trustworthy unique application identity.
  if(exact.length===1&&observed.some(x=>x.hwnd===exact[0].hwnd&&
@@ -55,6 +71,7 @@ export function checkAmbiguousReadWindow(proposal,observed){
   return {allowed:false,reason:"Read-only window name contains hidden or control formatting."};
  const matches=observed.filter(x=>typeof x.title==="string"&&
   x.title.toLocaleLowerCase("en-US")===target.trim().toLocaleLowerCase("en-US"));
+ if(matches.some(processConflict))return {allowed:false,reason:"Observed window title conflicts with process identity."};
  if(matches.length===1&&observed.some(x=>x.hwnd===matches[0].hwnd&&
   (x.pid!==matches[0].pid||x.title!==matches[0].title)))
   return {allowed:false,reason:"Conflicting observed window-handle identity; inspect again."};
