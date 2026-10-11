@@ -10576,6 +10576,7 @@ for ($i = 0; $i -lt [Math]::Min($windows.Count, 100); $i++) {
         try { $processName = [string](Get-Process -Id $pidValue -ErrorAction Stop).ProcessName } catch {}
         $items += [PSCustomObject]@{
             Name = $title; ProcessId = $pidValue; ProcessName = $processName
+            NativeWindowHandle = [int]$e.Current.NativeWindowHandle
             ClassName = [string]$e.Current.ClassName
         }
     } catch {}
@@ -10594,23 +10595,31 @@ ConvertTo-Json -InputObject @($items) -Compress -Depth 3"#;
             let script = format!(r#"Add-Type -AssemblyName UIAutomationClient
 {root_script}
 $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
-$items = @()
+$interactive = [System.Collections.Generic.List[object]]::new()
+$context = [System.Collections.Generic.List[object]]::new()
 for ($i=0; $i -lt [Math]::Min($all.Count, 1200); $i++) {{
     try {{
         $e = $all.Item($i)
         $n = [string]$e.Current.Name
         $id = [string]$e.Current.AutomationId
         if ([string]::IsNullOrWhiteSpace($n) -and [string]::IsNullOrWhiteSpace($id)) {{ continue }}
-        $items += [PSCustomObject]@{{
-            Name=$n; AutomationId=$id
-            ControlType=[string]$e.Current.ControlType.ProgrammaticName
+        $role = [string]$e.Current.ControlType.ProgrammaticName
+        $item = [PSCustomObject]@{{
+            Name=$n; AutomationId=$id; ControlType=$role
             ClassName=[string]$e.Current.ClassName
             IsEnabled=[bool]$e.Current.IsEnabled
             Bounds=[string]$e.Current.BoundingRectangle.ToString()
         }}
-        if ($items.Count -ge 120) {{ break }}
+        # All applications share UIA roles. Prioritize actionable elements;
+        # do not hardcode application-specific labels or guess a click target.
+        if ($role -match 'Button|MenuItem|TabItem|Hyperlink|Edit|ComboBox|ListItem|CheckBox|RadioButton') {{
+            $interactive.Add($item)
+        }} else {{
+            $context.Add($item)
+        }}
     }} catch {{}}
 }}
+$items = @($interactive | Select-Object -First 110) + @($context | Select-Object -First 40)
 ConvertTo-Json -InputObject @($items) -Compress -Depth 3"#);
             let output = run_hidden_powershell(&script)?;
             if !output.status.success() {
