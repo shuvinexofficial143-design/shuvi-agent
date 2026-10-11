@@ -45,7 +45,7 @@ const MASTER_GUIDANCE = [
   "- Blender read-only via blender_inspect; for approved modeling/animation use blender_run_plan with 1..6 typed validated operations, ending in verified file.checkpoint or render.execute. These are bounded background actions, not live GUI editing or a persistent 3D session.",
   "- Browser can research asset sources; download/permission, local path and usage rights need independent confirmation before Premiere import.",
   "- Use the existing task_graph with dependency-bound typed action receipts when useful, never model-supplied completion. Shared Windows UI actions are sequential; all mutations keep normal approval, audit and checkpoints.",
-  "- A single run has an eight-action safety budget. If more work is needed, preserve progress and report unfinished stages; never mark the whole edit done because one action succeeded."
+  "- Respect the explicit owner-selected action budget and two-hour deadline from orchestration context; every native action remains permission-gated. Preserve progress when the budget expires, and never mark an edit complete after only a launch or one successful action."
 ].join("\n");
 export function editingMasterContext(messages) {
   if (!Array.isArray(messages)) return "";

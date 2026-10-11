@@ -4,6 +4,7 @@ import {
   restoreTaskGraph, reviseTaskGraph, startTaskStep, taskGraphProgress,
   type TaskGraph, type GraphAuditEvent
 } from "./task-graph.mjs";
+import { allowedTaskBudget, taskDeadline, taskDeadlineAllows, MAX_RUNTIME_ACTIONS } from "./task-runtime-budget.mjs";
 
 export const MAX_AGENT_STEPS = 8;
 export const MAX_CONSECUTIVE_FAILURES = 3;
@@ -66,6 +67,8 @@ export type AgentOrchestrationState = {
   version: 5;
   next_step: number;
   tool_actions: number;
+  max_steps: number; // Explicit owner-selected budget, immutable during task execution.
+  task_expires_at_ms: number | null;
   consecutive_failures: number;
   blocked_repeats: number;
   last_proposal_fingerprint: string | null;
@@ -126,7 +129,7 @@ function boundedText(value: unknown, max: number): string | null {
 
 function boundedStep(value: unknown): number {
   return Number.isInteger(value)
-    ? Math.max(0, Math.min(MAX_AGENT_STEPS, Number(value)))
+    ? Math.max(0, Math.min(MAX_RUNTIME_ACTIONS, Number(value)))
     : 0;
 }
 
@@ -354,11 +357,13 @@ export function proposalFingerprint(proposal: ToolProposal): string {
   return canonical({ tool: proposal.tool, arguments: proposal.arguments }).slice(0, 16_384);
 }
 
-export function createAgentOrchestrationState(): AgentOrchestrationState {
+export function createAgentOrchestrationState(ownerBudget: number = MAX_AGENT_STEPS, now = Date.now()): AgentOrchestrationState {
   return {
     version: 5,
     next_step: 1,
     tool_actions: 0,
+    max_steps: allowedTaskBudget(ownerBudget) ? ownerBudget : MAX_AGENT_STEPS,
+    task_expires_at_ms: taskDeadline(now),
     consecutive_failures: 0,
     blocked_repeats: 0,
     last_proposal_fingerprint: null,
@@ -387,6 +392,15 @@ export function normalizeAgentOrchestrationState(value: unknown): AgentOrchestra
     return { ...base, recovery_mode: "stopped", stop_reason: "Unsupported saved orchestration state; start a new task." };
   }
 
+  const validBudget = input.version !== 5 || input.max_steps === undefined || allowedTaskBudget(input.max_steps);
+  const maxSteps = validBudget && input.version === 5 && allowedTaskBudget(input.max_steps)
+    ? input.max_steps : MAX_AGENT_STEPS;
+  const deadlineField = input.version === 5 ? input.task_expires_at_ms : undefined;
+  const deadline = deadlineField === undefined ? null : deadlineField;
+  const validDeadline = deadline === null || (Number.isSafeInteger(deadline) && deadline > 0);
+  const validContract = validBudget && validDeadline &&
+    (maxSteps === MAX_AGENT_STEPS || deadline !== null) &&
+    taskDeadlineAllows(deadline);
   const requestedNextStep = Number.isInteger(input.next_step) ? Number(input.next_step) : 1;
   const toolActions = Number.isInteger(input.tool_actions) ? Number(input.tool_actions) : 0;
   const codingInput = input.coding && typeof input.coding === "object"
@@ -402,7 +416,7 @@ export function normalizeAgentOrchestrationState(value: unknown): AgentOrchestra
     boundedStep(codingInput?.last_commit_step),
     boundedStep(codingInput?.last_push_step),
     Array.isArray(input.unsuccessful_fingerprints)
-      ? Math.min(MAX_AGENT_STEPS, input.unsuccessful_fingerprints.length)
+      ? Math.min(MAX_RUNTIME_ACTIONS, input.unsuccessful_fingerprints.length)
       : 0
   );
   const nextStep = Math.max(requestedNextStep, persistedStepFloor + 1);
@@ -421,15 +435,19 @@ export function normalizeAgentOrchestrationState(value: unknown): AgentOrchestra
   const receipts = input.version === 3 || input.version === 4 || input.version === 5 ? input.unsuccessful_fingerprints
     : input.last_proposal_fingerprint && ["failure", "denied", "blocked"].includes(String(input.last_outcome))
       ? [input.last_proposal_fingerprint] : [];
-  const validReceipts = Array.isArray(receipts) && receipts.length <= MAX_AGENT_STEPS
+  const validReceipts = Array.isArray(receipts) && receipts.length <= maxSteps
     && receipts.every(x => typeof x === "string" && x.length > 0 && x.length <= 16_384);
   const interrupted = restored.ok ? restored.interrupted : [];
-  const invalid = legacyUnboundGraph || legacyUnauditedGraph || !restored.ok || !validReceipts
+  const invalid = !validContract || requestedNextStep < 1 || requestedNextStep > maxSteps + 1
+    || toolActions < 0 || toolActions > maxSteps || !restored.ok
+    || legacyUnboundGraph || legacyUnauditedGraph || !validReceipts
     || (restored.ok && restored.graph && restored.graph.objective !== input.objective);
   const result: AgentOrchestrationState = {
     version: 5,
-    next_step: Math.max(1, Math.min(MAX_AGENT_STEPS + 1, nextStep)),
-    tool_actions: Math.max(0, Math.min(MAX_AGENT_STEPS, toolActions)),
+    next_step: Math.max(1, Math.min(maxSteps + 1, nextStep)),
+    tool_actions: Math.max(0, Math.min(maxSteps, toolActions)),
+    max_steps: maxSteps,
+    task_expires_at_ms: validDeadline ? deadline : null,
     consecutive_failures: Math.max(0, Math.min(MAX_CONSECUTIVE_FAILURES, failures)),
     blocked_repeats: Math.max(0, Math.min(MAX_ORCHESTRATION_BLOCKS, blocks)),
     last_proposal_fingerprint: boundedText(input.last_proposal_fingerprint, 16_384),
@@ -444,18 +462,19 @@ export function normalizeAgentOrchestrationState(value: unknown): AgentOrchestra
       ? normalizeCodingWorkflowState(input.coding, nextStep)
       : createCodingWorkflowState(),
     task_graph: restored.ok ? restored.graph : null,
-    unsuccessful_fingerprints: validReceipts ? [...new Set([...receipts, ...interrupted])].slice(-MAX_AGENT_STEPS) : [],
+    unsuccessful_fingerprints: validReceipts ? [...new Set([...receipts, ...interrupted])].slice(-maxSteps) : [],
     recovery_step: boundedStep(input.recovery_step)
   };
   if (invalid) return { ...result, recovery_mode: "stopped",
-    stop_reason: legacyUnboundGraph
+    stop_reason: !validContract ? "Task budget or deadline is invalid or expired; obtain a new owner instruction."
+      : legacyUnboundGraph
       ? "Saved task graph predates prepared-action binding; start a new task so completion evidence can be rebound safely."
       : legacyUnauditedGraph
         ? "Saved task graph predates Rust audit-receipt correlation; start a new task so execution evidence can be verified safely."
         : "Invalid saved graph/evidence; a new user instruction/reset is required." };
   if (interrupted.length) {
-    result.next_step = Math.min(MAX_AGENT_STEPS + 1, result.next_step + 1);
-    result.tool_actions = Math.min(MAX_AGENT_STEPS, result.tool_actions + 1);
+    result.next_step = Math.min(maxSteps + 1, result.next_step + 1);
+    result.tool_actions = Math.min(maxSteps, result.tool_actions + 1);
     if (result.recovery_mode !== "stopped") result.recovery_mode = "replan_required";
     result.last_outcome = "failure";
     result.last_proposal_fingerprint = interrupted[0];
@@ -582,11 +601,14 @@ export function evaluateProposal(
       stop: true
     };
   }
-  if (state.next_step > MAX_AGENT_STEPS) {
+  if (!taskDeadlineAllows(state.task_expires_at_ms)) {
+    return { allowed: false, fingerprint, reason: "Owner-approved task deadline expired.", stop: true };
+  }
+  if (state.next_step > state.max_steps) {
     return {
       allowed: false,
       fingerprint,
-      reason: `The task reached Shuvi's ${MAX_AGENT_STEPS}-step safety limit.`,
+      reason: `The task reached its owner-approved ${state.max_steps}-step safety limit.`,
       stop: true
     };
   }
@@ -697,7 +719,7 @@ function withSuccessfulCodingEvidence(
   proposal: ToolProposal,
   result?: ActionResult
 ): CodingWorkflowState {
-  const step = Math.min(MAX_AGENT_STEPS, state.next_step);
+  const step = Math.min(state.max_steps, state.next_step);
   const path = normalizePath(proposal.arguments.path);
   const git = resultGitIdentity(result);
   const exactGit = git && path === git.repo_root ? git : null;
@@ -832,8 +854,8 @@ export function recordToolOutcome(
   return {
     ...state,
     ...planFields(state, proposal),
-    next_step: Math.min(MAX_AGENT_STEPS + 1, state.next_step + 1),
-    tool_actions: Math.min(MAX_AGENT_STEPS, state.tool_actions + 1),
+    next_step: Math.min(state.max_steps + 1, state.next_step + 1),
+    tool_actions: Math.min(state.max_steps, state.tool_actions + 1),
     consecutive_failures: Math.min(MAX_CONSECUTIVE_FAILURES, failures),
     blocked_repeats: outcome === "success" ? 0 : state.blocked_repeats,
     last_proposal_fingerprint: fingerprint,
@@ -845,7 +867,7 @@ export function recordToolOutcome(
       : null,
     task_graph: taskGraph,
     unsuccessful_fingerprints: outcome === "success" ? state.unsuccessful_fingerprints
-      : [...new Set([...state.unsuccessful_fingerprints, fingerprint])].slice(-MAX_AGENT_STEPS),
+      : [...new Set([...state.unsuccessful_fingerprints, fingerprint])].slice(-state.max_steps),
     recovery_step: typedSuccess && proposal.task_recovery === true && RECOVERY_TOOLS.includes(proposal.tool)
       ? state.next_step : state.recovery_step,
     coding: outcome === "success"
@@ -863,7 +885,7 @@ export function recordProposalBlock(
   return {
     ...state,
     ...planFields(state, proposal),
-    next_step: Math.min(MAX_AGENT_STEPS + 1, state.next_step + 1),
+    next_step: Math.min(state.max_steps + 1, state.next_step + 1),
     blocked_repeats: blocks,
     task_graph: blockTaskStep(state.task_graph, proposal.task_step_id, decision.reason),
     last_proposal_fingerprint: decision.fingerprint,
@@ -922,7 +944,8 @@ export function orchestrationContext(state: AgentOrchestrationState): string {
       ...state.task_graph.steps.map(s => `- ${s.step_id}: ${s.status}; tool=${s.expected_tool}; needs=${s.depends_on.join(",") || "none"}`),
       "- Use task_step_id. For recovery use task_recovery:true with an unassociated inspection; then submit next graph revision with recover_steps.",
     ] : []),
-    `- next step: ${state.next_step}/${MAX_AGENT_STEPS}`,
+    `- next step: ${state.next_step}/${state.max_steps}`,
+    `- owner-approved task deadline: ${state.task_expires_at_ms ?? "legacy 8-step checkpoint"}`,
     `- previous outcome: ${state.last_outcome ?? "none"}`,
     `- consecutive failures: ${state.consecutive_failures}/${MAX_CONSECUTIVE_FAILURES}`,
     `- recovery mode: ${state.recovery_mode}`
@@ -978,5 +1001,5 @@ export function orchestrationSummary(state: AgentOrchestrationState): string {
   const coding = state.coding.active ? ` · coding ${codingPhase(state).replaceAll("_", " ")}` : "";
   const progress = taskGraphProgress(state.task_graph);
   const graph = progress.total ? `${progress.completed}/${progress.total} steps complete · ` : "";
-  return `${graph}step ${Math.min(state.next_step, MAX_AGENT_STEPS)}/${MAX_AGENT_STEPS} · ${mode}${coding}`;
+  return `${graph}step ${Math.min(state.next_step, state.max_steps)}/${state.max_steps} · ${mode}${coding}`;
 }

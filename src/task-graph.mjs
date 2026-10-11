@@ -1,5 +1,6 @@
 import { workerQueueView } from "./master-worker-queue.mjs";
 // Pure bounded coordinator. Provider metadata is never execution authority.
+import { MAX_RUNTIME_ACTIONS } from "./task-runtime-budget.mjs";
 export const GRAPH_LIMIT = 8;
 export const GRAPH_REVISION_LIMIT = 8;
 export const GRAPH_AUDIT_EVENTS = Object.freeze([
@@ -248,7 +249,7 @@ export function restoreTaskGraph(value, nextStep) {
         || (s.status === "blocked" && !bounded(s.blocked_reason, 500))) return fail("Invalid saved step state.");
     for (const e of s.evidence) {
       if (!object(e) || e.step_id !== s.step_id || !bounded(e.tool, 160)
-          || !bounded(e.fingerprint, 16384) || !integer(e.orchestration_step, 1, GRAPH_LIMIT)
+          || !bounded(e.fingerprint, 16384) || !integer(e.orchestration_step, 1, MAX_RUNTIME_ACTIONS)
           || e.orchestration_step >= nextStep || seenNumbers.has(e.orchestration_step)
           || !["success", "failure", "denied"].includes(e.outcome)
           || !["typed_result", "local_failure", "interrupted"].includes(e.source)
@@ -269,7 +270,7 @@ export function restoreTaskGraph(value, nextStep) {
       blocked_reason: bounded(s.blocked_reason, 500) ? s.blocked_reason : null, running: null };
     if (s.status === "running") {
       if (!object(s.running) || !bounded(s.running.fingerprint, 16384)
-          || s.running.orchestration_step !== nextStep || nextStep > GRAPH_LIMIT
+          || s.running.orchestration_step !== nextStep || nextStep > MAX_RUNTIME_ACTIONS
           || (s.running.action_id !== null && !actionId(s.running.action_id)))
         return fail("Invalid saved in-flight action.");
       interrupted.push(s.running.fingerprint);
@@ -285,7 +286,7 @@ export function restoreTaskGraph(value, nextStep) {
     }
     steps.push(restored);
   }
-  if (count > GRAPH_LIMIT || interrupted.length > 1) return fail("Saved evidence exceeds the action ceiling.");
+  if (count > MAX_RUNTIME_ACTIONS || interrupted.length > 1) return fail("Saved evidence exceeds the action ceiling.");
   const graph = refreshTaskGraph({ ...parsed.graph, steps });
   for (const s of graph.steps.filter(completed)) {
     const n = s.evidence.find(e => e.success).orchestration_step;

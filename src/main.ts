@@ -13,7 +13,6 @@ import type {
   PremiereBridgeStatus
 } from "./types";
 import {
-  MAX_AGENT_STEPS,
   createAgentOrchestrationState,
   codingPhase,
   evaluateProposal,
@@ -36,6 +35,7 @@ import type { ModelRoute, TaskModelRoute } from "./model-routing.mjs";
 import { chooseNativeRoute } from "../web-dashboard/src/native-model-routing.mjs";
 import {createTaskPermissionScope,grantTaskRead,allowsTaskRead,revokeTaskScope} from "./task-permission-scope.mjs";
 import {taskReadPermissionKey} from "./task-read-permission-key.mjs";
+import {allowedTaskBudget,taskDeadlineAllows} from "./task-runtime-budget.mjs";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("Missing app root");
@@ -169,6 +169,13 @@ root.innerHTML = `
 
       <form id="chatForm" class="composer">
         <textarea id="prompt" rows="2" placeholder="Message Shuvi…" required></textarea>
+        <label title="Owner-approved task action limit. Every native action still requires its existing permission gate." style="font-size:12px">Actions
+          <select id="taskActionBudget" aria-label="Task action budget">
+            <option value="8">8 (standard)</option>
+            <option value="24">24 (extended)</option>
+            <option value="48">48 (long task)</option>
+          </select>
+        </label>
         <button id="stopButton" class="stop-button hidden" type="button">Stop</button>
         <button id="sendButton" type="submit">Send</button>
       </form>
@@ -600,7 +607,7 @@ function renderOrchestrationStatus(): void {
     ? ` · ${codingPhase(orchestration).replaceAll("_", " ")}`
     : "";
   progress.textContent =
-    `Agent ${Math.min(orchestration.next_step, MAX_AGENT_STEPS)}/${MAX_AGENT_STEPS}${coding}${mode}`;
+    `Agent ${Math.min(orchestration.next_step, orchestration.max_steps)}/${orchestration.max_steps}${coding}${mode}`;
 }
 
 async function saveActiveCheckpoint(): Promise<void> {
@@ -1117,6 +1124,12 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
   if (!pendingAction || cancelRequested) return;
 
   const actionId = pendingAction.id;
+  if (!taskDeadlineAllows(orchestration.task_expires_at_ms) || orchestration.next_step > orchestration.max_steps) {
+    try { await invoke("deny_action", { actionId }); } catch { /* conservative halt */ }
+    clearChatPermission();
+    await stopAgentForSafety("Owner-approved task budget expired before execution; no new native action authorized.");
+    return;
+  }
   executingActionId = actionId;
   executingCancellation = null;
   clearChatPermission();
@@ -1215,7 +1228,7 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
         <span class="risk ${pendingAction.risk}">${pendingAction.risk.toUpperCase()} RISK</span>
         <strong>${pendingAction.summary}</strong>
       </div>
-      <span class="permission-step">Agent step ${step}/${MAX_AGENT_STEPS}</span>
+      <span class="permission-step">Agent step ${step}/${orchestration.max_steps}</span>
     </div>
     <p class="permission-reason"></p>
     <pre class="permission-detail"></pre>
@@ -1348,11 +1361,12 @@ async function runAgentStep(): Promise<void> {
 
   if (
     orchestration.recovery_mode === "stopped" ||
-    orchestration.next_step > MAX_AGENT_STEPS
+    orchestration.next_step > orchestration.max_steps ||
+    !taskDeadlineAllows(orchestration.task_expires_at_ms)
   ) {
     await stopAgentForSafety(
       orchestration.stop_reason ??
-        `I stopped this task because it reached Shuvi's ${MAX_AGENT_STEPS}-step safety limit.`
+        `I stopped this task because its owner-approved ${orchestration.max_steps}-step or two-hour safety budget expired.`
     );
     return;
   }
@@ -1759,7 +1773,8 @@ el<HTMLFormElement>("#chatForm").addEventListener("submit", async (event) => {
   beginTaskRoute(content);
   cancelRequested = false;
   rotatePermissionScope();
-  orchestration = createAgentOrchestrationState();
+  const selectedActions = Number(el<HTMLSelectElement>("#taskActionBudget").value);
+  orchestration = createAgentOrchestrationState(allowedTaskBudget(selectedActions) ? selectedActions : 8);
   renderOrchestrationStatus();
   messages.push({ role: "user", content });
   prompt.value = "";
