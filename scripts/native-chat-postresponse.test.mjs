@@ -156,3 +156,25 @@ test("native Windows task refuses to call a paid provider when recovery storage 
  assert.equal(mock.calls.includes("chat"),false);
  assert.equal(mock.calls.includes("prepare_tool"),false);
 });
+
+test("second native submission cannot cross a paused asynchronous Rust checkpoint write",async()=>{
+ let releaseWrite,announceSave;
+ const saveEntered=new Promise(resolve=>{announceSave=resolve;});
+ const blockedSave=new Promise(resolve=>{releaseWrite=resolve;});
+ const mock=nativeInvoke({content:"One response",tool_proposal:null},false);
+ const invoke=async(command)=>{
+  if(command==="save_native_recovery"){announceSave();await blockedSave;}
+  return mock.invoke(command);
+ };
+ const transport=await mount(invoke,inMemoryRecoveryStore());
+ const firstTask=transport.send("Open Notepad","concurrent-first",0);
+ await saveEntered;
+ const secondTask=await transport.send("Open Notepad","concurrent-second",0);
+ assert.equal(secondTask.ok,false);
+ assert.match(secondTask.error,/already running/);
+ assert.equal(mock.calls.filter(c=>c==="chat").length,0);
+ releaseWrite();
+ const outcome=await firstTask;
+ assert.equal(outcome.ok,true);
+ assert.equal(mock.calls.filter(c=>c==="chat").length,1);
+});

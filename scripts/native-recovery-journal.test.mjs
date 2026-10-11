@@ -30,7 +30,7 @@ test("native transport uses journal before provider dispatch and action approval
  const text=readFileSync(new URL("../web-dashboard/src/native-agent.ts",import.meta.url),"utf8");
  assert.match(text,/const previousRecovery=readNativeRecovery\(recoveryStorage\)/);
  assert.match(text,/No paid model call or Windows tool action has resumed/);
- assert.match(text,/if\(route.role!=="chat"&&!await persistRecovery\(taskBudget,"model_reserved"\)\)return/);
+ assert.match(text,/if\(route.role!=="chat"&&!await persistRecovery\(taskBudget,"model_reserved"\)\)\{/);
  assert.match(text,/if\(!await persistRecovery\(taskBudget,"model_reserved",task.action.id\)\)/);
  assert.match(text,/if\(!await persistRecovery\(taskBudget,"awaiting_approval",proposed.id\)\)/);
  assert.match(text,/if\(!await persistRecovery\(taskBudget,"awaiting_approval",next.id\)\)/);
@@ -78,4 +78,11 @@ test("installed native execution must fail closed if recovery storage is absent"
  const source=readFileSync(new URL("../web-dashboard/src/native-agent.ts",import.meta.url),"utf8");
  assert.match(source,/if\(!recoveryStorage\)return false/);
  assert.doesNotMatch(source,/if\(!recoveryStorage\)return true/);
+});
+
+test("submission acquires exclusive lock before awaiting Rust recovery disk IO",()=>{
+ const source=readFileSync(new URL("../web-dashboard/src/native-agent.ts",import.meta.url),"utf8");
+ const send=source.slice(source.indexOf("async send(text,threadId"),source.lastIndexOf("return {ok:true,reply};"));
+ const lock=send.indexOf("sending=true;"),save=send.indexOf('await persistRecovery(taskBudget,"model_reserved")');
+ assert.ok(lock>=0&&save>lock);
 });
