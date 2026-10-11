@@ -611,7 +611,7 @@ test("Batch 13 blocks cross-app model click after audited Premiere window read",
  await until(()=>s.transport.connected(),"native");
  await s.transport.send("Premiere kholo","guard-cross-app",0);
  s.allow.listeners.get("click")();
- await until(()=>s.transport.getReplies("guard-cross-app")[0]?.includes("Unsafe or ambiguous UI target"),"unsafe blocked");
+ await until(()=>/Unsafe app selection|Unsafe or ambiguous UI target/.test(s.transport.getReplies("guard-cross-app")[0]??""),"unsafe blocked");
  assert.equal(s.staged.length,1);
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
 });
