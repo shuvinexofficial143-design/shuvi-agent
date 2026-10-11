@@ -10640,8 +10640,8 @@ for ($i = 0; $i -lt [Math]::Min($matches.Count, 25); $i++) {{
         Bounds = $e.Current.BoundingRectangle.ToString()
     }}
 }}
-if ($items.Count -eq 0) {{ 'No matching controls. Use ui_discover to inspect the real UI labels and roles.' }}
-else {{ $items | ConvertTo-Json -Compress }}"#
+if ($items.Count -eq 0) {{ throw 'No matching UI element found. Use ui_discover to inspect the actual labels, automation IDs and control roles.' }}
+$items | ConvertTo-Json -Compress"#
             );
 
             let output = run_hidden_powershell(&script)?;

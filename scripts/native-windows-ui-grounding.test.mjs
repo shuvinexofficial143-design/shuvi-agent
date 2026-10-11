@@ -60,3 +60,15 @@ test("Settings displays xKiro Vision capability before a screenshot task",()=>{
   assert.match(settings,/Vision ✓/);
   assert.match(settings,/assign a Vision-enabled model to the Master role/);
 });
+
+test("ui_find absence is a real failure, so audit-gated recovery runs instead of false verified success",()=>{
+ const arm=src.slice(src.indexOf("ToolAction::UiFind { name, automation_id, window } => {"),
+  src.indexOf("ToolAction::UiClick { name, automation_id, window } => {"));
+ assert.match(arm,/if \(\$items.Count -eq 0\) \{\{ throw 'No matching UI element found/);
+ assert.match(arm,/UI lookup failed:/);
+ assert.doesNotMatch(arm,/No matching controls\. Use ui_discover/);
+ const ui=readFileSync(new URL("../web-dashboard/src/native-agent.ts",import.meta.url),"utf8");
+ assert.match(ui,/receipt\.event==="failed"/);
+ assert.match(ui,/receipt\.success===false/);
+ assert.match(ui,/tool:"ui_windows",arguments:\{\}/);
+});
