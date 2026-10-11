@@ -29,7 +29,7 @@ type ActionResult = {success:boolean;tool:string;stdout:string;stderr:string;exi
 type Runtime = {shuvi_memory_mb:number;managed_children_count:number};
 type NativeRoute = {role:string;provider:string;model:string;base_url:string};
 type PendingTask = {action:Pending;threadId:string;promptIndex:number;
- route:NativeRoute;objective:string;step:number;seen:Set<string>;
+ route:NativeRoute;objective:string;step:number;seen:Set<string>;usedIds:Set<string>;
  recoveryFrom?:"ui_find"|"ui_discover"|null};
 // UI discovery output must reach the Master as observed data, not be silently
 // cut after the first dozen controls. Keep a bounded, compact, field allowlisted
@@ -340,7 +340,9 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    if(!next||typeof next.id!=="string"||!next.id.trim()||next.id.length>128||
     next.kind!==response.tool_proposal.tool)
     throw Error("Next action does not match the proposed tool identity.");
-   pending={...task,action:next,step:task.step+1,seen:new Set([...seen,fp]),recoveryFrom:null};
+   if(task.usedIds.has(next.id))throw Error("Native action ID reused; cannot restage an already approved identity.");
+   pending={...task,action:next,step:task.step+1,seen:new Set([...seen,fp]),
+    usedIds:new Set([...task.usedIds,next.id]),recoveryFrom:null};
    updateTask(task.threadId,stageTask(getTask(task.threadId),next.id,next.kind,task.step+1));
    pendingText.textContent="Step "+(task.step+1)+
     " · Permission required: "+next.summary+"\nRisk: "+next.risk+"\n"+next.detail;
@@ -375,9 +377,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    const next=await invoke<Pending>("prepare_tool",{
     proposal,provider:current.route.provider,model:current.route.model,baseUrl:current.route.base_url||null
    });
-   if(!next||typeof next.id!=="string"||!next.id.trim()||next.id.length>128||next.kind!=="ui_windows")return false;
+   if(!next||typeof next.id!=="string"||!next.id.trim()||next.id.length>128||next.kind!=="ui_windows"||current.usedIds.has(next.id))return false;
    haltTask(current.threadId,"confirmed_read_failure");
    pending={...current,action:next,step:current.step+1,seen:new Set([...current.seen,fp]),
+    usedIds:new Set([...current.usedIds,next.id]),
     recoveryFrom:current.action.kind as "ui_find"|"ui_discover"};
    updateTask(current.threadId,stageTask(getTask(current.threadId),next.id,next.kind,current.step+1));
    pendingText.textContent="Read-only UI recovery · Allow once required: "+
@@ -634,7 +637,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
        throw Error("Prepared native action does not match the proposed tool identity.");
       pending={action:proposed,threadId,promptIndex,objective:effectiveObjective,
        route:{role:route.role,provider:route.provider,model:route.model,base_url:route.base_url||""},
-       step:1,seen:new Set([first])};
+       step:1,seen:new Set([first]),usedIds:new Set([proposed.id])};
       updateTask(threadId,stageTask(createTask(),proposed.id,proposed.kind,1));
       pendingText.textContent="Permission required: "+proposed.summary+
         "\nRisk: "+proposed.risk+"\n"+proposed.detail;

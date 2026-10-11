@@ -38,7 +38,7 @@ const launch={
  provider:"xkiro",model:"model/master",
  tool_proposal:{tool:"premiere_launch",arguments:{}}
 };
-function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null,wrongStageIndex=0,continuationRenderError=false}={}){
+function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null,wrongStageIndex=0,continuationRenderError=false,reusePendingId=false}={}){
  const nodes=new Map(),created=[],calls=[],chatInputs=[],staged=[];
  const domParent=el(),composerParent=el(),form=el(),chat=el();
  form.parentElement=composerParent;chat.parentElement=domParent;
@@ -64,7 +64,7 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
    return response;
   }
   if(name==="prepare_tool"){
-   const id="action-"+(staged.length+1);
+   const id=reusePendingId?"action-1":"action-"+(staged.length+1);
    staged.push({id,proposal:params.proposal});
    return {id,kind:staged.length===wrongStageIndex?"wrong_tool":params.proposal.tool,
     summary:"Run "+params.proposal.tool,detail:"Approval needed",risk:"medium"};
@@ -723,4 +723,16 @@ test("Batch 51 ordinary chat ignores model-produced native tool proposals",async
  assert.match(response.reply,/Ordinary Chat cannot prepare Windows tools/);
  assert.equal(s.staged.length,0);
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,0);
+});
+
+test("Batch 52 Rust returning same prepared action ID cannot stage next approval",async()=>{
+ const s=setup({first:detection,second:launch,reusePendingId:true});
+ await until(()=>s.transport.connected(),"native");
+ await s.transport.send("Premiere kholo","id-reuse",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.transport.getReplies("id-reuse")[0]?.includes("Native action ID reused"),
+  "reused action ID blocked");
+ assert.equal(s.staged.length,2,"staging was attempted but second approval denied");
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+ assert.equal(s.approval.hidden,true);
 });

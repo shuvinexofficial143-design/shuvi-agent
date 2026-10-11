@@ -1,0 +1,1 @@
+Batch 52: Track prepared action IDs per live native task. A subsequently prepared tool or read-only recovery tool cannot reuse an already approved action ID, even if its typed arguments differ. No automatic paid retry or Windows action.
