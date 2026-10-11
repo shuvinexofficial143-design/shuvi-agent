@@ -30,3 +30,9 @@ export function clearNativeRecovery(store){
  if(!store)return false;
  try{store.removeItem(NATIVE_JOURNAL_KEY);return true;}catch{return false;}
 }
+
+// Validate an independent Rust snapshot before showing it as crash evidence.
+// It can never grant an executable task capability.
+export function validateNativeRecoveryRecord(record,now=Date.now()){
+ return normalize(record,now);
+}
