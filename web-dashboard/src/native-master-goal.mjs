@@ -12,7 +12,7 @@ export function masterGoalContext(request) {
  const text=typeof request==="string"?request.slice(0,2500):"";
  const premiere=PREMIERE.test(text);
  const createProject=premiere&&PROJECT.test(text)&&CREATE.test(text);
- const exportRequested=premiere&&EXPORT.test(text);
+ const exportRequested=EXPORT.test(text);
  let specific="";
  if(createProject){
   specific=" Premiere project creation is an END GOAL, not a launch step: create a NEW project with the exact user-requested name at a user-approved destination; verify the resulting active/saved project identity by native readback or observed application state. Do not invent a name/location or modify an existing project. If critical details are missing, ask.";

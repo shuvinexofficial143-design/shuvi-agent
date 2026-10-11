@@ -74,3 +74,9 @@ test("Batch 62 project creation in non-Premiere editors is still a verified end 
  assert.match(advice,/user-approved save destination/);
  assert.match(masterGoalContext("Photoshop new project create karo"),/Project creation in any desktop editor/);
 });
+
+test("Batch 66 artifact verification applies to Blender and other editors too",()=>{
+ for(const request of ["Blender render final video","After Effects export animation","Premiere export"])
+  assert.match(masterGoalContext(request),/verify the actual completed output artifact/,request);
+ assert.doesNotMatch(masterGoalContext("Blender open karo"),/actual completed output artifact/);
+});
