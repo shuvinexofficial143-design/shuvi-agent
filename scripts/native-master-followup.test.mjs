@@ -736,3 +736,15 @@ test("Batch 52 Rust returning same prepared action ID cannot stage next approval
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
  assert.equal(s.approval.hidden,true);
 });
+
+test("Batch 53 a fresh Windows command excludes unrelated previous task messages",async()=>{
+ const noTool={content:"Ready",provider:"xkiro",model:"model/master",tool_proposal:null};
+ const s=setup({first:noTool,second:launch});
+ await until(()=>s.transport.connected(),"native");
+ await s.transport.send("Premiere kholo aur project banao","fresh-context",0);
+ await s.transport.send("Premiere kholo","fresh-context",1);
+ assert.equal(s.chatInputs.length,2);
+ assert.equal(s.chatInputs[1].messages.length,1);
+ assert.equal(s.chatInputs[1].messages[0].content,"Premiere kholo");
+ assert.equal(s.staged.length,1);
+});

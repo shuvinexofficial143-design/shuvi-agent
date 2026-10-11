@@ -576,7 +576,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    if(!text.trim()||text.length>2500)return {ok:false,error:"Invalid command length."};
    const prev=histories.get(threadId)||[];
    // Keep paid-request context bounded and avoid forwarding any credential.
-   const messages:NativeChatMessage[]=[...prev.slice(-20),{role:"user",content:text}];
+   const messages:NativeChatMessage[]=[...(waitingForChoice||route.role==="chat"?prev.slice(-20):[]),
+    {role:"user",content:text}];
    sending=true;
    refreshState("Sending "+(route.role==="chat"?"chat":"Windows task for Master/selected specialist")+
     " to "+route.provider+" / "+route.model+"…");
