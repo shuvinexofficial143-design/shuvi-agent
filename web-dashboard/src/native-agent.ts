@@ -253,8 +253,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    "Current approved step: "+task.step+". "+
    "Last audited tool: "+result.tool+". "+taskContext(getTask(task.threadId))+" "+
    evidenceSummary(taskEvidence.get(task.threadId)??null)+" "+
-   goalEvidenceLabel(task.objective,verifiedWindows.get(task.threadId)??null)+" "+
-   summarizeWindowObservation(result,true)+" "+
+   redactNativeMessage(goalEvidenceLabel(task.objective,verifiedWindows.get(task.threadId)??null))+" "+
+   redactNativeMessage(summarizeWindowObservation(result,true))+" "+
    uiReplanGuidance(task.recoveryFrom,result.tool)+" "+
    actionLoopGuidance()+" "+taskGoalContext(task.objective)+" "+
    "After premiere_detect, propose the dedicated premiere_launch tool with empty arguments {} when the user wants Premiere opened; detection alone is not launch. "+
@@ -453,7 +453,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       const proof=windowGoalEvidence(current.objective,result,true);
       if(proof)verifiedWindows.set(current.threadId,proof);
       else verifiedWindows.delete(current.threadId);
-      goalStatus.textContent=proof?goalEvidenceLabel(current.objective,proof):taskGoalLabel(current.objective);
+      goalStatus.textContent=proof?redactNativeMessage(goalEvidenceLabel(current.objective,proof)):taskGoalLabel(current.objective);
      }
     }
     else haltTask(current.threadId,"unknown_outcome");

@@ -1,0 +1,1 @@
+Batch 91: Redact possible credentials embedded in observed native window titles before status display or embedding window observation summaries in Master model continuation. Keep original window IDs/audit intact.
