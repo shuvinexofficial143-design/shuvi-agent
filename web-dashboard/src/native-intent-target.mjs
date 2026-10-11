@@ -6,7 +6,12 @@ const APPS=[
  ["blender",/\bblender\b|ब्लेंडर/iu],
  ["after-effects",/\bafter[\s-]?effects?\b|आफ्टर इफेक्ट/iu],
  ["illustrator",/\billustrator\b|इलस्ट्रेटर/iu],
- ["audition",/\baudition\b|ऑडिशन/iu]
+ ["audition",/\baudition\b|ऑडिशन/iu],
+ ["media-encoder",/\bmedia[\s-]?encoder\b|मीडिया एनकोडर/iu],
+ ["animate",/\badobe[\s-]+animate\b|एडोबी एनिमेट/iu],
+ ["character-animator",/\bcharacter[\s-]?animator\b|कैरेक्टर एनिमेटर/iu],
+ ["substance-3d",/\bsubstance[\s-]?3d\b|सब्सटेंस/iu],
+ ["frameio",/\bframe\.?io\b|फ्रेम डॉट आईओ/iu]
 ];
 const MUTATE=new Set(["ui_find","ui_discover","ui_click","ui_set_value","ui_send_keys","ui_toggle","ui_focus","ui_scroll","ui_expand_collapse"]);
 export function requestedAppScope(input){

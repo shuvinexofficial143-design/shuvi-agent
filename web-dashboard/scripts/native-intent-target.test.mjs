@@ -16,3 +16,14 @@ test("Batch 27 app-scoped read-only UI lookup does not wander into another app",
  assert.equal(check("Premiere kholo",{tool:"ui_discover",arguments:{window:"Adobe Premiere Pro 2026"}}).allowed,true);
  assert.equal(check("Premiere kholo",{tool:"ui_windows",arguments:{}}).allowed,true);
 });
+
+test("Batch 56 other Adobe apps are scoped without blocking explicit multi-app work",()=>{
+ const pairs=[["Media Encoder","Adobe Photoshop"],["Adobe Animate","Adobe Illustrator"],
+  ["Character Animator","Adobe Premiere"],["Substance 3D","Adobe Photoshop"],
+  ["Frame.io","Adobe Premiere"]];
+ for(const [requested,other] of pairs){
+  assert.ok(requestedAppScope(requested));
+  assert.equal(check("Open "+requested,{tool:"ui_click",arguments:{window:other}}).allowed,false,requested);
+ }
+ assert.equal(requestedAppScope("Open Adobe Animate and Media Encoder"),null);
+});
