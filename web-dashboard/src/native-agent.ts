@@ -74,7 +74,9 @@ function compactObservedUi(result:ActionResult):string|null {
  }catch{return null;}
 }
 const evidenceText=(result:ActionResult):string =>
- compactObservedUi(result)??[result.stdout,result.stderr].filter(Boolean).join("\n").slice(0,2500);
+ ["ui_windows","ui_find","ui_discover"].includes(result.tool)
+  ? (compactObservedUi(result)??"Native UI observation unavailable or invalid; no selector, window or control independently grounded.")
+  : [result.stdout,result.stderr].filter(Boolean).join("\n").slice(0,2500);
 const fingerprint=(proposal:Record<string,unknown>):string|null => actionFingerprint(proposal);
 type NativeInternals = {invoke:NativeInvoke};
 

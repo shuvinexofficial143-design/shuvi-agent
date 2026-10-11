@@ -1,0 +1,1 @@
+Batch 47: Malformed, oversized or missing UI inspection data must not fall back to raw untrusted stdout for the Master. Instead it reports an explicit unverified observation and requires fresh grounded inspection before any desktop action.
