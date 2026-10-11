@@ -81,7 +81,7 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
   if(name==="action_audit_receipt")
    return (failFind||softFailedRead)?{action_id:receiptMismatch?"mismatched-action":params.actionId,tool:"ui_find",event:"failed",success:false}:null;
   if(name==="audit_log")return auditOk?staged.map(s=>{
-   const failed=softFailedRead&&s.proposal.tool==="ui_find"&&!conflictingSuccessAudit;
+   const failed=(softFailedRead||failFind)&&s.proposal.tool==="ui_find"&&!conflictingSuccessAudit;
    return {event:failed?"failed":"executed",action_id:s.id,tool:s.proposal.tool,success:!failed};
   }):[];
   if(name==="deny_action")return;
@@ -698,4 +698,18 @@ test("Batch 18 Master prose without next tool reports unverified outcome even if
  assert.equal(s.staged.length,1);
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
  assert.equal(s.chatInputs.length,2);
+});
+
+test("Batch 19 thrown read error with conflicting successful native audit cannot stage recovery",async()=>{
+ const finder={content:"find",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_find",arguments:{window:"Premiere",name:"New Project"}}};
+ const s=setup({first:finder,failFind:true,conflictingSuccessAudit:true});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Premiere me New Project khojo","thrown-contradiction",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.transport.getReplies("thrown-contradiction")[0]?.includes("Native action outcome unknown"),
+  "conflicting audit must fail closed");
+ assert.equal(s.staged.length,1,"no read-only recovery approval after contradiction");
+ assert.equal(s.chatInputs.length,1,"no further paid request");
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
 });

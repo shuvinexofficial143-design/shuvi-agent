@@ -350,6 +350,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     "action_audit_receipt",{actionId:current.action.id});
    if(!isAuditedUiReadFailure(current.action.kind,message,current.action.id,receipt,current.seen.has(fp)))
     return false;
+   // A thrown native error is not definitive failure if the action log
+   // contains a conflicting executed/success or different-tool audit.
+   const auditTrail=await invoke<Array<{event:string;action_id:string|null;success:boolean;tool:string}>>("audit_log",{limit:200});
+   if(!Array.isArray(auditTrail)||contradictsFailureReceipt(current.action,auditTrail))return false;
    const next=await invoke<Pending>("prepare_tool",{
     proposal,provider:current.route.provider,model:current.route.model,baseUrl:current.route.base_url||null
    });
