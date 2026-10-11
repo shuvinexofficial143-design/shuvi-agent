@@ -43,3 +43,10 @@ test("Batch 34 imperative new command after a clarification is NOT inherited",()
  assert.equal(taskClarificationKind("What project name should I use?","Reset the editor"),null);
  assert.equal(taskClarificationKind("Which app should I open?","Photoshop"),"application");
 });
+
+test("Batch 58 Roman Hindi follow-up questions preserve the current goal",()=>{
+ assert.equal(taskClarificationKind("Konsa Adobe app kholu?","Premiere Pro"),"application");
+ assert.equal(taskClarificationKind("Kaha project save karu?","D:\\Videos"),"destination");
+ assert.equal(taskClarificationKind("Project ka naam kya rakhu?","Shuvi Film 01"),"name");
+ assert.equal(taskClarificationKind("Konsa Adobe app kholu?","Premiere kholo"),null);
+});
