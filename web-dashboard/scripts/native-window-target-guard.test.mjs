@@ -48,3 +48,8 @@ test("Batch 44 conflicting title/process on same handle fails closed",()=>{
  assert.equal(check({tool:"ui_click",arguments:{window:"Adobe Premiere Pro"}},impossible).allowed,false);
  assert.equal(check({tool:"ui_click",arguments:{window:"Adobe Photoshop"}},impossible).allowed,false);
 });
+
+test("Batch 49 invisible directional characters in proposed window target are not normalized into authorization",()=>{
+ const observed=[{title:"Adobe Premiere Pro 2026",pid:12,hwnd:13}];
+ assert.equal(check({tool:"ui_click",arguments:{window:"Adobe Premiere\u202e Pro 2026"}},observed).allowed,false);
+});

@@ -22,6 +22,8 @@ export function checkObservedMutationTarget(proposal,observed){
  if(!Array.isArray(observed)||!observed.length)
   return {allowed:false,reason:"Window observation missing or invalid; request ui_windows."};
  const title=proposal?.arguments?.window;
+ if(typeof title==="string"&&cleanObservedLabel(title,180)!==title.trim())
+  return {allowed:false,reason:"Proposed window title contains hidden or control formatting."};
  if(typeof title!=="string"||!title.trim()||title.length>180)
   return {allowed:false,reason:"Explicit verified target window required."};
  const exact=observed.filter(x=>x.title.toLocaleLowerCase("en-US")===title.trim().toLocaleLowerCase("en-US"));
@@ -45,6 +47,8 @@ export function checkAmbiguousReadWindow(proposal,observed){
   return {allowed:true,reason:"native_lookup_required"};
  const target=proposal?.arguments?.window;
  if(typeof target!=="string"||!target.trim())return {allowed:true,reason:"native_lookup_required"};
+ if(cleanObservedLabel(target,180)!==target.trim())
+  return {allowed:false,reason:"Read-only window name contains hidden or control formatting."};
  const matches=observed.filter(x=>typeof x.title==="string"&&
   x.title.toLocaleLowerCase("en-US")===target.trim().toLocaleLowerCase("en-US"));
  if(matches.length===1&&observed.some(x=>x.hwnd===matches[0].hwnd&&
