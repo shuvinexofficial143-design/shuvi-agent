@@ -32,3 +32,9 @@ test("Batch 25 visible window summaries strip invisible directional marks",()=>{
  assert.doesNotMatch(output,/[\u202a-\u202e]/u);
  assert.match(output,/Premiere/);
 });
+
+test("Batch 39 oversized native window observation never enters model window summary",()=>{
+ const giant={tool:"ui_windows",success:true,stdout:"["+" ".repeat(250001)+"]"};
+ assert.match(guide(giant,true),/too large or unavailable/);
+ assert.equal(guide(giant,false),"");
+});

@@ -4,6 +4,8 @@ import {cleanObservedLabel} from "./native-observation-text.mjs";
 const allowed=(v,max)=>typeof v==="string"?cleanObservedLabel(v,max):"";
 export function summarizeWindowObservation(result,audited=false){
  if(!audited||result?.success!==true||result.tool!=="ui_windows")return "";
+ if(typeof result.stdout!=="string"||result.stdout.length>250000)
+  return "Window observation too large or unavailable; identity cannot be verified. Inspect again.";
  let data;
  try{data=JSON.parse(result.stdout);}catch{return "Window observation unavailable or unparseable; no target identity verified.";}
  const rows=Array.isArray(data)?data:(data&&typeof data==="object"?[data]:[]);
