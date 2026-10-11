@@ -12,6 +12,7 @@ import {actionFingerprint,seenAfterAuditedChange,actionLoopGuidance} from "./nat
 import {taskGoalContext,taskGoalLabel} from "./native-goal-checks.mjs";
 import {taskClarificationKind,extendTaskClarification} from "./native-task-clarification.mjs";
 import {newEvidence,recordAuditedEvidence,evidenceSummary} from "./native-task-evidence.mjs";
+import {summarizeWindowObservation} from "./native-window-observation.mjs";
 type Provider = {id:string;name:string;default_model:string;api_key_required:boolean;custom_base_url:boolean};
 type NativeChatMessage = {role:"user"|"assistant";content:string};
 type NativeChatResponse = {content:string;provider:string;model:string;tool_proposal:Record<string,unknown>|null};
@@ -239,6 +240,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    "Current approved step: "+task.step+". "+
    "Last audited tool: "+result.tool+". "+taskContext(getTask(task.threadId))+" "+
    evidenceSummary(taskEvidence.get(task.threadId)??null)+" "+
+   summarizeWindowObservation(result,true)+" "+
    uiReplanGuidance(task.recoveryFrom,result.tool)+" "+
    actionLoopGuidance()+" "+taskGoalContext(task.objective)+" "+
    "After premiere_detect, propose the dedicated premiere_launch tool with empty arguments {} when the user wants Premiere opened; detection alone is not launch. "+

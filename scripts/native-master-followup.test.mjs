@@ -543,3 +543,23 @@ test("Batch 09 model continuation sees audit-only evidence and still requires ne
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
  assert.equal(s.approval.hidden,false);
 });
+
+test("Batch 10 verified Windows inventory explicitly flags identity ambiguity before next approval",async()=>{
+ const inspect={content:"inspect",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_discover",arguments:{window:"Premiere"}}};
+ const windows={content:"windows",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_windows",arguments:{}}};
+ const stdout=JSON.stringify([
+  {Name:"Adobe Premiere Pro 2026",ProcessId:111,ProcessName:"Premiere",NativeWindowHandle:501},
+  {Name:"Adobe Premiere Pro 2026",ProcessId:222,ProcessName:"Premiere",NativeWindowHandle:502}
+ ]);
+ const s=setup({first:windows,second:inspect,stdoutFor:{ui_windows:stdout}});
+ await until(()=>s.transport.connected(),"native");
+ await s.transport.send("Premiere ko dekho","multi-window-evidence",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"second approval");
+ assert.match(s.chatInputs[1].orchestration_context,/2 usable window identity/);
+ assert.match(s.chatInputs[1].orchestration_context,/NOT a selected target/);
+ assert.match(s.chatInputs[1].orchestration_context,/never pick the first matching window/);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+});
