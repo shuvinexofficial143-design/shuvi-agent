@@ -16,3 +16,10 @@ test("bounded guidance does not echo original private request",()=>{
  const v=taskGoalContext(("open SECRET_SAMPLE_VALUE").repeat(2000));
  assert.ok(v.length<1600);assert.ok(!v.includes("SECRET_SAMPLE_VALUE"));
 });
+
+test("Batch 61 captions, B-roll, grading and final export remain unverified goals",()=>{
+ const ids=taskGoalChecks("Premiere me subtitles, transitions, color grading aur final video export karo").map(x=>x.id);
+ assert.deepEqual(ids,["window","edit","export"]);
+ assert.deepEqual(taskGoalChecks("Add captions and b-roll").map(x=>x.id),["window","edit"]);
+ assert.deepEqual(taskGoalChecks("Import audio").map(x=>x.id),["window","media"]);
+});

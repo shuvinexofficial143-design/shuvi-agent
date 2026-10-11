@@ -1,0 +1,1 @@
+Batch 61: Extend advisory, never-self-attested outcome criteria for subtitles, captions, color grading, B-roll, transitions, VFX, media imports, rendered/final export. Only actual independent evidence can satisfy them, not successful tool calls.
