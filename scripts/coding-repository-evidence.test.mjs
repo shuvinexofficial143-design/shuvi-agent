@@ -5,7 +5,8 @@ import {stripTypeScriptTypes} from "node:module";
 
 const source=readFileSync(new URL("../src/agent-orchestrator.ts",import.meta.url),"utf8");
 const executable=stripTypeScriptTypes(source).replace('"./task-graph.mjs"',
-  JSON.stringify(new URL("../src/task-graph.mjs",import.meta.url).href));
+  JSON.stringify(new URL("../src/task-graph.mjs",import.meta.url).href)).replace('"./task-runtime-budget.mjs"',
+  JSON.stringify(new URL("../src/task-runtime-budget.mjs",import.meta.url).href));
 const agent=await import("data:text/javascript;base64,"+Buffer.from(executable).toString("base64"));
 
 const HEAD_A="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";

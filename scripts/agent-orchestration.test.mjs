@@ -27,7 +27,7 @@ test("interrupted tasks resume their persisted orchestration step instead of ste
 });
 
 test("new user instruction starts fresh state but failures do not auto retry",()=>{
-  assert.match(main,/orchestration = createAgentOrchestrationState\(\);[\s\S]{0,500}messages\.push\(\{ role: "user", content \}\)/);
+  assert.match(main,/orchestration = createAgentOrchestrationState\(allowedTaskBudget\(selectedActions\) \? selectedActions : 8\);[\s\S]{0,500}messages\.push\(\{ role: "user", content \}\)/);
   assert.match(main,/evaluateProposal\(orchestration, proposal\)/);
   assert.match(main,/recordProposalBlock\(orchestration, proposal, decision\)/);
   assert.match(main,/orchestration_blocked: true/);

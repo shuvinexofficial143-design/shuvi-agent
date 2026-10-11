@@ -7,7 +7,8 @@ import * as graph from "../src/task-graph.mjs";
 // Execute the real TS coordinator, not a reimplementation or regex-only model.
 const source = readFileSync(new URL("../src/agent-orchestrator.ts", import.meta.url), "utf8");
 const executable = stripTypeScriptTypes(source).replace('"./task-graph.mjs"',
-  JSON.stringify(new URL("../src/task-graph.mjs", import.meta.url).href));
+  JSON.stringify(new URL("../src/task-graph.mjs", import.meta.url).href)).replace('"./task-runtime-budget.mjs"',
+  JSON.stringify(new URL("../src/task-runtime-budget.mjs",import.meta.url).href));
 const agent = await import("data:text/javascript;base64," + Buffer.from(executable).toString("base64"));
 
 function step(step_id, depends_on = [], expected_tool = "read_file") {
@@ -628,4 +629,29 @@ test("visual pointer drag is gated by fresh screen inspection before and after",
   assert.equal(premature.allowed,false);
   assert.match(premature.reason,/Verify the pointer drag/);
   assert.equal(agent.evaluateProposal(state,{tool:"inspect_screen",arguments:{prompt:"verify result"}}).allowed,true);
+});
+
+
+test("owner-authorized continuation persists steps above eight without implicit escalation",()=>{
+ let s=agent.createAgentOrchestrationState(24);
+ for(let i=0;i<10;i++){
+   const p={tool:"list_processes",arguments:{filter:"p"+i}};
+   assert.equal(agent.evaluateProposal(s,p).allowed,true);
+   s=agent.recordToolOutcome(s,p,"success",result("list_processes"));
+ }
+ assert.equal(s.next_step,11);
+ assert.equal(s.tool_actions,10);
+ assert.equal(s.max_steps,24);
+ const restored=agent.normalizeAgentOrchestrationState(json(s));
+ assert.equal(restored.recovery_mode,"normal");
+ assert.equal(restored.next_step,11);
+ assert.equal(restored.max_steps,24);
+ assert.equal(agent.evaluateProposal(restored,{tool:"list_processes",arguments:{filter:"new"}}).allowed,true);
+ const elevated=json(s);
+ elevated.max_steps=48;
+ delete elevated.task_expires_at_ms;
+ assert.equal(agent.normalizeAgentOrchestrationState(elevated).recovery_mode,"stopped");
+ const expired=json(s);
+ expired.task_expires_at_ms=Date.now()-1000;
+ assert.equal(agent.normalizeAgentOrchestrationState(expired).recovery_mode,"stopped");
 });

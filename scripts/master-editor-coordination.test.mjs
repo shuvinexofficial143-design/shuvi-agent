@@ -33,7 +33,8 @@ test("routing requires host evidence and approved Remotion-to-Premiere handoff",
   assert.match(guide,/NOT a rendered asset/);
   assert.match(guide,/Blender read-only via blender_inspect/);
   assert.match(guide,/blender_run_plan/);
-  assert.match(guide,/eight-action safety budget/);
+  assert.match(guide,/owner-selected action budget/);
+  assert.match(guide,/two-hour deadline/);
   assert.match(guide,/normal approval, audit and checkpoints/);
 });
 

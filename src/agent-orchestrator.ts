@@ -438,7 +438,7 @@ export function normalizeAgentOrchestrationState(value: unknown): AgentOrchestra
   const validReceipts = Array.isArray(receipts) && receipts.length <= maxSteps
     && receipts.every(x => typeof x === "string" && x.length > 0 && x.length <= 16_384);
   const interrupted = restored.ok ? restored.interrupted : [];
-  const invalid = !validContract || requestedNextStep < 1 || requestedNextStep > maxSteps + 1
+  const invalid = !validContract || requestedNextStep < 1 || requestedNextStep > maxSteps + 1 || nextStep > maxSteps + 1
     || toolActions < 0 || toolActions > maxSteps || !restored.ok
     || legacyUnboundGraph || legacyUnauditedGraph || !validReceipts
     || (restored.ok && restored.graph && restored.graph.objective !== input.objective);
