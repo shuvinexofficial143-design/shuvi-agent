@@ -24,6 +24,7 @@ import {redactNativeError,redactNativeOutput,redactNativeMessage} from "./native
 import {validPreparedApproval} from "./native-prepared-approval.mjs";
 import {createNativeTaskBudget,reserveNativeModelRequest,canStageNativeAction,canExecuteNativeAction,markNativeActionStaged} from "./native-task-budget.mjs";
 import type {NativeTaskBudget} from "./native-task-budget.mjs";
+import {readNativeRecovery,writeNativeRecovery,clearNativeRecovery} from "./native-recovery-journal.mjs";
 type Provider = {id:string;name:string;default_model:string;api_key_required:boolean;custom_base_url:boolean};
 type NativeChatMessage = {role:"user"|"assistant";content:string};
 type NativeChatResponse = {content:string;provider:string;model:string;tool_proposal:Record<string,unknown>|null};
@@ -163,8 +164,15 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  budgetSelect.value="8";
  budgetLabel.append(budgetSelect);
  const budgetNote=field("p","Selected limit bounds Master AI follow-up requests (actions + 1) and expires after 2 hours. Runs do not auto-resume after restart.");
+ const recoveryNotice=field("p");
+ recoveryNotice.className="shuvi-native-recovery";
+ recoveryNotice.setAttribute("role","status");
+ recoveryNotice.hidden=true;
+ const recoveryDismiss=field("button","Dismiss interrupted task notice");
+ recoveryDismiss.type="button";
+ recoveryDismiss.hidden=true;
  budgetNote.className="shuvi-native-note";
- panel.append(title,status,showDetails,openSettings,notes,budgetLabel,budgetNote,taskStatus,goalStatus);
+ panel.append(title,status,showDetails,openSettings,notes,budgetLabel,budgetNote,taskStatus,goalStatus,recoveryNotice,recoveryDismiss);
  chat.parentElement?.insertBefore(panel,chat);
  // A confirmation above the entire chat falls out of view while reading the
  // latest reply. Keep all pending native approvals adjacent to the composer.
@@ -186,6 +194,33 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  const taskStates=new Map<string,ReturnType<typeof createTask>>();
  const taskGoalRoots=new Map<string,string>();
  const taskBudgets=new Map<string,NativeTaskBudget>();
+ // Separate from the legacy Desktop checkpoint. Stored records are NEVER
+ // restored as model-call or native-tool execution authority.
+ const recoveryStorage=(()=>{try{return window.localStorage??null;}catch{return null;}})();
+ const previousRecovery=readNativeRecovery(recoveryStorage);
+ if(previousRecovery){
+  recoveryNotice.textContent="Previous Windows task interrupted: "+
+   previousRecovery.stagedActions+"/"+previousRecovery.maxActions+
+   " native actions staged, "+previousRecovery.modelRequests+" model requests reserved. "+
+   "Last state: "+previousRecovery.phase+". No paid model call or Windows tool action has resumed. "+
+   "Review Activity/Audit before issuing a new instruction.";
+  recoveryNotice.hidden=false;
+  recoveryDismiss.hidden=false;
+ }
+ recoveryDismiss.addEventListener("click",()=>{
+  clearNativeRecovery(recoveryStorage);
+  recoveryNotice.hidden=true;
+  recoveryDismiss.hidden=true;
+ });
+ const writeRecovery=(b:NativeTaskBudget,phase:string,actionId:string|null=null):boolean=>{
+  // Previews without WebView storage cannot claim crash recovery. On a
+  // packaged WebView, storage failure blocks new paid requests/approvals.
+  if(!recoveryStorage)return true;
+  return writeNativeRecovery(recoveryStorage,{
+   maxActions:b.maxActions,stagedActions:b.stagedActions,
+   modelRequests:b.modelRequests,expiresAt:b.expiresAt,phase,actionId
+  });
+ };
  const taskEvidence=new Map<string,ReturnType<typeof newEvidence>>();
  const verifiedWindows=new Map<string,NonNullable<ReturnType<typeof windowGoalEvidence>>>();
  const observedWindows=new Map<string,NonNullable<ReturnType<typeof observedWindowInventory>>>();
@@ -261,6 +296,11 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   }
   // One provider request per confirmed, approved step. No retries for ambiguous
   // provider results and no auto execution of a newly proposed Windows action.
+  if(!writeRecovery(taskBudget,"model_reserved",task.action.id)){
+   haltTask(task.threadId,"recovery_journal_failed");
+   appendReply(task.threadId,task.promptIndex,"Native recovery journal could not be saved. No follow-up AI request sent.");
+   return;
+  }
   const toolResult=redactNativeOutput(evidenceText(result));
   // Keep the objective FIRST so lengthy, untrusted UI readbacks cannot
   // crowd out the original user task when the model input is bounded.
@@ -379,6 +419,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     try{await invoke<void>("deny_action",{actionId:next.id});}catch{/* fail closed */}
     throw Error("Native action budget expired during preparation; no approval was given.");
    }
+   if(!writeRecovery(taskBudget,"awaiting_approval",next.id)){
+    try{await invoke<void>("deny_action",{actionId:next.id});}catch{/* fail closed */}
+    throw Error("Native recovery journal failed; no action authorized.");
+   }
    pending={...task,action:next,step:task.step+1,seen:new Set([...seen,fp]),
     usedIds:new Set([...task.usedIds,next.id]),recoveryFrom:null};
    updateTask(task.threadId,stageTask(getTask(task.threadId),next.id,next.kind,task.step+1));
@@ -422,6 +466,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     try{await invoke<void>("deny_action",{actionId:next.id});}catch{/* fail closed */}
     return false;
    }
+   if(!writeRecovery(taskBudget,"awaiting_approval",next.id)){
+    try{await invoke<void>("deny_action",{actionId:next.id});}catch{/* fail closed */}
+    return false;
+   }
    haltTask(current.threadId,"confirmed_read_failure");
    pending={...current,action:next,step:current.step+1,seen:new Set([...current.seen,fp]),
     usedIds:new Set([...current.usedIds,next.id]),
@@ -453,6 +501,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   try {
    if(!allowed){
     await invoke<void>("deny_action",{actionId:current.action.id});
+    const deniedBudget=taskBudgets.get(current.threadId);
+    if(deniedBudget)writeRecovery(deniedBudget,"paused",current.action.id);
     haltTask(current.threadId,"denied");
     updateReply(current.threadId,current.promptIndex,
       (replies.get(current.threadId)?.[current.promptIndex]||"")+"\n\nWindows tool denied by you. No action executed.");
@@ -495,6 +545,14 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     const verified=verifiedExecutionReceipt(current.action,result,receipts);
     executionVerified=verified;
     if(verified){
+     const verifiedBudget=taskBudgets.get(current.threadId);
+     if(verifiedBudget&&!writeRecovery(verifiedBudget,"audit_verified",current.action.id)){
+      haltTask(current.threadId,"recovery_journal_failed");
+      appendReply(current.threadId,current.promptIndex,
+       "Native action audit-verified, but recovery journal failed. No further AI request sent.");
+      clearPending();
+      return;
+     }
      updateTask(current.threadId,verifyTask(getTask(current.threadId),current.action.id,result.tool,true));
      taskEvidence.set(current.threadId,recordAuditedEvidence(
       taskEvidence.get(current.threadId)??newEvidence(),current.action.id,result,true));
@@ -645,6 +703,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    if(!reserveNativeModelRequest(taskBudget))return {ok:false,error:
     "Owner-selected AI request budget or task deadline exhausted. No paid AI request was sent. Start a new task to authorize more work."};
    taskBudgets.set(threadId,taskBudget);
+   if(!writeRecovery(taskBudget,"model_reserved"))return {ok:false,error:
+    "Native recovery journal could not be saved. No paid AI request sent."};
    // Keep paid-request context bounded and avoid forwarding any credential.
    const messages:NativeChatMessage[]=[...(waitingForChoice||route.role==="chat"?prev.slice(-20):[]),
     {role:"user",content:text}];
@@ -710,6 +770,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       if(!markNativeActionStaged(taskBudget)){
        try{await invoke<void>("deny_action",{actionId:proposed.id});}catch{/* no execution */}
        throw Error("Native budget expired during action preparation; action not authorized.");
+      }
+      if(!writeRecovery(taskBudget,"awaiting_approval",proposed.id)){
+       try{await invoke<void>("deny_action",{actionId:proposed.id});}catch{/* fail closed */}
+       throw Error("Native approval journal could not be saved. No Windows action authorized.");
       }
       pending={action:proposed,threadId,promptIndex,objective:effectiveObjective,
        route:{role:route.role,provider:route.provider,model:route.model,base_url:route.base_url||""},
