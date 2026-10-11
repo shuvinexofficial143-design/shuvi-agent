@@ -30,7 +30,7 @@ test("native transport uses journal before provider dispatch and action approval
  const text=readFileSync(new URL("../web-dashboard/src/native-agent.ts",import.meta.url),"utf8");
  assert.match(text,/const previousRecovery=readNativeRecovery\(recoveryStorage\)/);
  assert.match(text,/No paid model call or Windows tool action has resumed/);
- assert.match(text,/if\(!writeRecovery\(taskBudget,"model_reserved"\)\)return/);
+ assert.match(text,/if\(route.role!=="chat"&&!writeRecovery\(taskBudget,"model_reserved"\)\)return/);
  assert.match(text,/if\(!writeRecovery\(taskBudget,"model_reserved",task.action.id\)\)/);
  assert.match(text,/if\(!writeRecovery\(taskBudget,"awaiting_approval",proposed.id\)\)/);
  assert.match(text,/if\(!writeRecovery\(taskBudget,"awaiting_approval",next.id\)\)/);

@@ -117,7 +117,7 @@ test("installed native transport journals paid request before dispatch without s
  assert.equal(mock.calls.filter(x=>x==="chat").length,1);
  const saved=store.read();
  assert.ok(saved);
- assert.equal(saved.phase,"model_reserved");
+ assert.equal(saved.phase,"paused","resolved Master reply must not appear in-flight after completion");
  assert.equal(saved.maxActions,8);
  assert.equal(saved.modelRequests,1);
  assert.equal(saved.stagedActions,0);
