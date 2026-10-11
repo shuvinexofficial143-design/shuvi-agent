@@ -946,7 +946,7 @@ async function continueAfterOutcome(): Promise<void> {
   await runAgentStep();
 }
 
-async function stageProposal(proposal: ToolProposal): Promise<void> {
+async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Promise<void> {
   const decision = evaluateProposal(orchestration, proposal);
   if (!decision.allowed) {
     orchestration = recordProposalBlock(orchestration, proposal, decision);
@@ -978,11 +978,13 @@ async function stageProposal(proposal: ToolProposal): Promise<void> {
   }
   const step = orchestration.next_step;
   try {
+    // Bind the prepared native action to the same pinned model route that
+    // produced its tool proposal; UI Settings may differ from role routing.
     pendingAction = await invoke<PendingAction>("prepare_tool", {
       proposal,
-      provider: providerSelect.value,
-      model: modelInput.value.trim(),
-      baseUrl: baseUrlInput.value.trim() || null
+      provider: route.provider,
+      model: route.model,
+      baseUrl: route.base_url || null
     });
 
     pendingChatProposal = proposal;
@@ -1449,7 +1451,7 @@ async function runAgentStep(): Promise<void> {
     await saveActiveCheckpoint();
 
     if (response.tool_proposal) {
-      await stageProposal(response.tool_proposal);
+      await stageProposal(response.tool_proposal, route);
       return;
     }
 
