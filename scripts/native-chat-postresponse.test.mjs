@@ -50,6 +50,9 @@ function nativeInvoke(chatResult, prepareFails) {
     calls.push(command);
     switch (command) {
       case "runtime_status": return { shuvi_memory_mb: 45, managed_children_count: 0 };
+      case "save_native_recovery": return;
+      case "load_native_recovery": return null;
+      case "clear_native_recovery": return;
       case "list_providers": return [{ id:"xkiro", name:"xKiro", api_key_required:true }];
       case "remote_agent_status": return { enabled: false };
       case "chat": return chatResult;

@@ -71,6 +71,9 @@ async function setup(reply){
   commands.push(name);
   switch(name){
    case "runtime_status":return {shuvi_memory_mb:12,managed_children_count:0};
+   case "save_native_recovery":return;
+   case "load_native_recovery":return null;
+   case "clear_native_recovery":return;
    case "list_providers":return [{id:"xkiro",name:"xKiro"}];
    case "remote_agent_status":return {enabled:false};
    case "chat":return reply;

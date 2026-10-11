@@ -63,7 +63,7 @@ test("action dispatch MUST follow the durable executing write and unknown outcom
  const start=source.indexOf("async function decide(allowed:boolean)");
  const stop=source.indexOf('approve.addEventListener("click"',start);
  const decide=source.slice(start,stop);
- const journal=decide.indexOf('writeRecovery(currentBudget,"executing",current.action.id)');
+ const journal=decide.indexOf('persistRecovery(currentBudget,"executing",current.action.id)');
  const execute=decide.indexOf('invoke<ActionResult>("execute_action"');
  assert.ok(journal>=0&&execute>journal);
  const preflight=decide.slice(journal,execute);

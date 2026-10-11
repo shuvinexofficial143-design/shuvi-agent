@@ -52,6 +52,9 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
  const invoke=async(name,params={})=>{
   calls.push({name,params});
   if(name==="runtime_status")return {shuvi_memory_mb:40,managed_children_count:0};
+  if(name==="save_native_recovery")return;
+  if(name==="load_native_recovery")return null;
+  if(name==="clear_native_recovery")return;
   if(name==="list_providers")return [{id:"xkiro",name:"xKiro"}];
   if(name==="remote_agent_status")return {enabled:false};
   if(name==="chat"){
