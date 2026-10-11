@@ -1,0 +1,2 @@
+# Batch 07 — Native tool proposal preflight and exact staged tool binding
+Validate bounded, canonical provider tool proposals *before* calling Rust `prepare_tool`. After stage, fail closed unless the returned prepared action has a nonempty bounded ID and identical typed tool kind. Apply to first and continuation steps. Invalid models cannot create permission cards or execute OS tools. Does not authorize any new execution or paid model retries. Tests include malformed first proposal and mismatching Rust stage responses. No main/merge/deploy/installer.

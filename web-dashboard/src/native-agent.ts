@@ -292,7 +292,9 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     proposal:response.tool_proposal,
     provider:task.route.provider,model:task.route.model,baseUrl:task.route.base_url||null
    });
-   if(!next||typeof next.id!=="string")throw Error("Next action could not be staged.");
+   if(!next||typeof next.id!=="string"||!next.id.trim()||next.id.length>128||
+    next.kind!==response.tool_proposal.tool)
+    throw Error("Next action does not match the proposed tool identity.");
    pending={...task,action:next,step:task.step+1,seen:new Set([...seen,fp]),recoveryFrom:null};
    updateTask(task.threadId,stageTask(getTask(task.threadId),next.id,next.kind,task.step+1));
    pendingText.textContent="Step "+(task.step+1)+
@@ -504,12 +506,15 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     if(response.tool_proposal){
      actionFeedback.hidden=true;
      try{
+      // Validate provider output before contacting the native staging queue.
+      const first=fingerprint(response.tool_proposal);
+      if(!first)throw Error("Invalid or oversized native tool proposal.");
       const proposed=await invoke<Pending>("prepare_tool",{
        proposal:response.tool_proposal,provider:route.provider,model:route.model,baseUrl:route.base_url||null
       });
-      if(!proposed||typeof proposed.id!=="string")throw Error("Tool preparation did not return a valid native action.");
-      const first=fingerprint(response.tool_proposal);
-      if(!first)throw Error("Invalid or oversized native tool proposal.");
+      if(!proposed||typeof proposed.id!=="string"||!proposed.id.trim()||proposed.id.length>128||
+       proposed.kind!==response.tool_proposal.tool)
+       throw Error("Prepared native action does not match the proposed tool identity.");
       pending={action:proposed,threadId,promptIndex,objective:effectiveObjective,
        route:{role:route.role,provider:route.provider,model:route.model,base_url:route.base_url||""},
        step:1,seen:new Set([first])};

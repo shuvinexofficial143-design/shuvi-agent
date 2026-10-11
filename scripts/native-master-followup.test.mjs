@@ -38,7 +38,7 @@ const launch={
  provider:"xkiro",model:"model/master",
  tool_proposal:{tool:"premiere_launch",arguments:{}}
 };
-function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null}={}){
+function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null,wrongStageIndex=0}={}){
  const nodes=new Map(),created=[],calls=[],chatInputs=[],staged=[];
  const domParent=el(),composerParent=el(),form=el(),chat=el();
  form.parentElement=composerParent;chat.parentElement=domParent;
@@ -58,7 +58,8 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
   if(name==="prepare_tool"){
    const id="action-"+(staged.length+1);
    staged.push({id,proposal:params.proposal});
-   return {id,kind:params.proposal.tool,summary:"Run "+params.proposal.tool,detail:"Approval needed",risk:"medium"};
+   return {id,kind:staged.length===wrongStageIndex?"wrong_tool":params.proposal.tool,
+    summary:"Run "+params.proposal.tool,detail:"Approval needed",risk:"medium"};
   }
   if(name==="execute_action"){
    const action=staged.find(s=>s.id===params.actionId);
@@ -464,4 +465,40 @@ test("a fresh read-only UI inspection after audited mutation is allowed once",as
  assert.equal(s.staged.length,3);
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,3);
  assert.equal(s.chatInputs.length,4);
+});
+
+test("Batch 07 invalid provider tool is blocked BEFORE native preparation",async()=>{
+ const invalid={content:"not a valid tool",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_click",arguments:{payload:"x".repeat(20000)}}};
+ const s=setup({first:invalid});
+ await until(()=>s.transport.connected(),"ready");
+ const outcome=await s.transport.send("Click the observed button","bad-proposal",0);
+ assert.equal(outcome.ok,true,"paid reply already received, no automatic paid retry");
+ assert.equal(s.calls.filter(c=>c.name==="prepare_tool").length,0);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
+ assert.equal(s.approval.hidden,true);
+ assert.match(s.transport.getReplies("bad-proposal")[0],/preparation failed/);
+});
+test("Batch 07 first mismatched Rust prepared tool cannot create approval",async()=>{
+ const s=setup({first:launch,wrongStageIndex:1});
+ await until(()=>s.transport.connected(),"ready");
+ await s.transport.send("Open Premiere","wrong-initial-kind",0);
+ assert.equal(s.calls.filter(c=>c.name==="prepare_tool").length,1);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
+ assert.equal(s.approval.hidden,true);
+ assert.match(s.transport.getReplies("wrong-initial-kind")[0],/does not match the proposed tool identity/);
+});
+test("Batch 07 continuation rejects mismatched prepared kind after audited first step",async()=>{
+ const read={content:'{"tool":"ui_windows","arguments":{}}',provider:"xkiro",
+  model:"model/master",tool_proposal:{tool:"ui_windows",arguments:{}}};
+ const s=setup({first:launch,second:read,wrongStageIndex:2});
+ await until(()=>s.transport.connected(),"ready");
+ await s.transport.send("Open Premiere and inspect window","wrong-followup-kind",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.transport.getReplies("wrong-followup-kind")[0]?.includes("Next Windows tool preparation failed"),
+  "mismatch fail closed");
+ assert.equal(s.staged.length,2,"Rust mocked staging was reached but mismatched tool was never approved");
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
+ assert.equal(s.approval.hidden,true);
+ assert.equal(s.chatInputs.length,2);
 });
