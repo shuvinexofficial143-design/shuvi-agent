@@ -11,7 +11,8 @@ export function verifiedExecutionReceipt(prepared,result,receipts){
  // Rust logs may also include normal prepared/approved bookkeeping for
  // the same approved action. Only contradictory terminal outcomes fail closed.
  if(same.some(r=>r.tool!==prepared.kind||
-  r.event==="failed"||r.event==="denied"||
+  !["prepared","approved","executed"].includes(r.event)||
+  (r.event==="prepared"||r.event==="approved")&&r.success!==true||
   r.event==="executed"&&r.success!==true))return false;
  return same.some(r=>r.tool===prepared.kind&&r.event==="executed"&&r.success===true);
 }
@@ -19,5 +20,8 @@ export function contradictsFailureReceipt(prepared,receipts){
  if(!prepared||typeof prepared.id!=="string"||!prepared.id.trim()||prepared.id.length>128||
   typeof prepared.kind!=="string"||!prepared.kind.trim()||!Array.isArray(receipts))return true;
  return receipts.some(r=>r?.action_id===prepared.id&&
-  (r.tool!==prepared.kind||r.event==="denied"||r.event==="executed"));
+  (r.tool!==prepared.kind||
+  !["prepared","approved","failed"].includes(r.event)||
+  ((r.event==="prepared"||r.event==="approved")&&r.success!==true)||
+  (r.event==="failed"&&r.success!==false)));
 }

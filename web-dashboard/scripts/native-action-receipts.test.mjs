@@ -53,3 +53,12 @@ test("Batch 90 missing prepared action identity never certifies a recoverable fa
   assert.equal(conflict(prepared,[]),true);
  assert.equal(conflict(action,[{...good,event:"failed",success:false}]),false);
 });
+
+test("Batch 99 unexpected or contradictory lifecycle events never verify action success or safe recovery",()=>{
+ assert.equal(verified(action,result,[good,{...good,event:"unknown",success:true}]),false);
+ assert.equal(verified(action,result,[good,{...good,event:"approved",success:false}]),false);
+ assert.equal(verified(action,result,[good,{...good,event:"approved",success:true}]),true);
+ assert.equal(conflict(action,[{...good,event:"failed",success:true}]),true);
+ assert.equal(conflict(action,[{...good,event:"unrecognized",success:false}]),true);
+ assert.equal(conflict(action,[{...good,event:"failed",success:false}]),false);
+});
