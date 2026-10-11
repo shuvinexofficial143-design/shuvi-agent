@@ -10,7 +10,8 @@ test("A12 native chat must durably save recovery state before any potentially bi
  const gate=step.slice(preflight,network);
  assert.match(gate,/catch \{/);
  assert.match(gate,/No AI provider request was sent/);
- assert.match(gate,/setBusy\(false\);\s*return;/);
- assert.match(gate,/if \(cancelRequested\)/);
+ assert.match(gate,/await stopAgentForSafety\("Shuvi could not persist its model-request reservation/);
+ assert.match(gate,/return;/);
+ assert.match(gate,/if \(staleModelRequest\(\)\) return;/);
  assert.match(step,/provider request outcome is unknown/);
 });
