@@ -906,3 +906,25 @@ test("contradictory recovery audit stays unknown and cannot itself start a Windo
  assert.equal(s.recoveryCheck.hidden,false);
  assert.equal(s.calls.some(c=>c.name==="execute_action"||c.name==="prepare_tool"||c.name==="chat"),false);
 });
+
+test("unknown outcome in the same session blocks a second paid task until owner acknowledgement",async()=>{
+ const store=recoveryStore();
+ const s=setup({recoveryStore:store,auditOk:false,first:detection});
+ await until(()=>s.transport.connected(),"native IPC");
+ await s.transport.send("Open Premiere Pro","uncertain-original",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.approval.hidden===true&&s.allow.disabled===false,"native unknown settled");
+ assert.equal(store.last().phase,"outcome_unknown");
+ assert.equal(s.recoveryDismiss.hidden,false);
+ assert.equal(s.recoveryCheck.hidden,false);
+ const blocked=await s.transport.send("Open Premiere Pro","second-task",0);
+ assert.equal(blocked.ok,false);
+ assert.match(blocked.error,/previous Windows task/);
+ assert.equal(s.chatInputs.length,1);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+ s.recoveryDismiss.listeners.get("click")();
+ const allowed=await s.transport.send("Open Premiere Pro","new-owner-approved-task",0);
+ assert.equal(allowed.ok,true);
+ assert.equal(s.chatInputs.length,2);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+});
