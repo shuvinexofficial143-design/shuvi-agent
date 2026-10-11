@@ -64,7 +64,7 @@ function nativeInvoke(chatResult, prepareFails) {
 test("successful paid AI reply remains acknowledged when tool prepare fails", async () => {
   const mock = nativeInvoke({
     content: "I can help with that.", provider: "xkiro",
-    model: "openai/gpt-5.6-sol", tool_proposal: { kind: "desktop" }
+    model: "openai/gpt-5.6-sol", tool_proposal: { tool: "ui_windows", arguments: {} }
   }, true);
   const transport = await mount(mock.invoke);
   const result = await transport.send("Open Notepad", "thread-1", 0);

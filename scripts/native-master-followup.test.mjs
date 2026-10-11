@@ -486,7 +486,7 @@ test("Batch 07 first mismatched Rust prepared tool cannot create approval",async
  assert.equal(s.calls.filter(c=>c.name==="prepare_tool").length,1);
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
  assert.equal(s.approval.hidden,true);
- assert.match(s.transport.getReplies("wrong-initial-kind")[0],/does not match the proposed tool identity/);
+ assert.match(s.transport.getReplies("wrong-initial-kind")[0],/tool preparation failed or its outcome is unknown/);
 });
 test("Batch 07 continuation rejects mismatched prepared kind after audited first step",async()=>{
  const read={content:'{"tool":"ui_windows","arguments":{}}',provider:"xkiro",
