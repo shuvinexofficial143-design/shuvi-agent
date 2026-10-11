@@ -22,7 +22,7 @@ import {checkRequestedAppTarget} from "./native-intent-target.mjs";
 import {cleanObservedLabel} from "./native-observation-text.mjs";
 import {redactNativeError,redactNativeOutput,redactNativeMessage} from "./native-error-redaction.mjs";
 import {validPreparedApproval} from "./native-prepared-approval.mjs";
-import {createNativeTaskBudget,reserveNativeModelRequest,canStageNativeAction,markNativeActionStaged} from "./native-task-budget.mjs";
+import {createNativeTaskBudget,reserveNativeModelRequest,canStageNativeAction,canExecuteNativeAction,markNativeActionStaged} from "./native-task-budget.mjs";
 import type {NativeTaskBudget} from "./native-task-budget.mjs";
 type Provider = {id:string;name:string;default_model:string;api_key_required:boolean;custom_base_url:boolean};
 type NativeChatMessage = {role:"user"|"assistant";content:string};
@@ -162,7 +162,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  }
  budgetSelect.value="8";
  budgetLabel.append(budgetSelect);
- const budgetNote=field("p","Selected limit also bounds Master AI follow-up requests (actions + 1). Runs are not resumed automatically after restart.");
+ const budgetNote=field("p","Selected limit bounds Master AI follow-up requests (actions + 1) and expires after 2 hours. Runs do not auto-resume after restart.");
  budgetNote.className="shuvi-native-note";
  panel.append(title,status,showDetails,openSettings,notes,budgetLabel,budgetNote,taskStatus,goalStatus);
  chat.parentElement?.insertBefore(panel,chat);
@@ -459,6 +459,19 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     showActionFeedback("Windows action denied by you. Nothing was executed.");
     refreshState("Action denied. Native approval journal updated.");
    }else{
+    // An approval can remain visible for hours. Expiry is checked again
+    // immediately before dispatch to native Rust, not just when staged.
+    const currentBudget=taskBudgets.get(current.threadId);
+    if(!currentBudget||!canExecuteNativeAction(currentBudget)){
+     try{await invoke<void>("deny_action",{actionId:current.action.id});}catch{/* do not execute */}
+     haltTask(current.threadId,"owner_budget_expired");
+     appendReply(current.threadId,current.promptIndex,
+      "Owner-selected native task budget or deadline expired before approval. The pending action was not executed. Start a new task to authorize further work.");
+     showActionFeedback("Task authorization expired. Nothing executed.");
+     refreshState("Native action not executed: owner budget expired.");
+     clearPending();
+     return;
+    }
     // Once a mutation is attempted, even a thrown native result may have changed the UI.
     if(requiresNewWindowObservation(observedWindows.has(current.threadId),current.action.kind)){
      observedWindows.set(current.threadId,[]);

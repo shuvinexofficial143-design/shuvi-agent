@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
-import {createNativeTaskBudget,reserveNativeModelRequest,canStageNativeAction,markNativeActionStaged} from "../web-dashboard/src/native-task-budget.mjs";
+import {createNativeTaskBudget,reserveNativeModelRequest,canStageNativeAction,canExecuteNativeAction,markNativeActionStaged} from "../web-dashboard/src/native-task-budget.mjs";
 const native=readFileSync(new URL("../web-dashboard/src/native-agent.ts",import.meta.url),"utf8");
 test("native budgets are explicitly finite and cannot be forged or silently extended",()=>{
  for(const actions of [0,6,12,49,Infinity,NaN,undefined])assert.equal(createNativeTaskBudget(actions,1000),null);
@@ -38,4 +38,21 @@ test("native UI exposes owner choice and verifies each paid continuation before 
  assert.match(native,/if\(!markNativeActionStaged\(taskBudget\)\)/);
  assert.match(native,/taskBudgets.delete\(threadId\)/);
  assert.match(native,/taskBudgets.clear\(\)/);
+});
+
+test("staged Windows action loses execution authority when owner deadline expires",()=>{
+ const b=createNativeTaskBudget(8,1000);
+ assert.equal(canExecuteNativeAction(b,1001),false);
+ assert.equal(markNativeActionStaged(b,1001),true);
+ assert.equal(canExecuteNativeAction(b,1002),true);
+ assert.equal(canExecuteNativeAction(b,b.expiresAt),false);
+ assert.equal(canExecuteNativeAction({...b,modelRequests:99},1002),false);
+});
+test("native approval rechecks budget before the actual OS execution IPC",()=>{
+ const current=native.slice(native.indexOf("async function decide("),native.indexOf("approve.addEventListener("));
+ const check=current.indexOf("canExecuteNativeAction(currentBudget)");
+ const execute=current.indexOf('invoke<ActionResult>("execute_action"');
+ assert.ok(check>=0&&execute>check);
+ assert.match(current,/await invoke<void>\("deny_action",\{actionId:current.action.id\}\)/);
+ assert.match(current,/owner_budget_expired/);
 });

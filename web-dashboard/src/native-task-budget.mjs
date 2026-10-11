@@ -10,7 +10,7 @@ function valid(state,now){
  return !!state&&ALLOWED.has(state.maxActions)&&Number.isSafeInteger(state.expiresAt)&&
  Number.isSafeInteger(now)&&now>0&&now<state.expiresAt&&
  state.expiresAt<=now+MAX_AGE_MS&&Number.isSafeInteger(state.modelRequests)&&
- state.modelRequests>=0&&Number.isSafeInteger(state.stagedActions)&&
+ state.modelRequests>=0&&state.modelRequests<=state.maxActions+1&&Number.isSafeInteger(state.stagedActions)&&
  state.stagedActions>=0&&state.stagedActions<=state.maxActions;
 }
 export function reserveNativeModelRequest(state,now=Date.now()){
@@ -20,6 +20,9 @@ export function reserveNativeModelRequest(state,now=Date.now()){
 }
 export function canStageNativeAction(state,now=Date.now()){
  return valid(state,now)&&state.stagedActions<state.maxActions;
+}
+export function canExecuteNativeAction(state,now=Date.now()){
+ return valid(state,now)&&state.stagedActions>0;
 }
 export function markNativeActionStaged(state,now=Date.now()){
  if(!canStageNativeAction(state,now))return false;

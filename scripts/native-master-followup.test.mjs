@@ -775,3 +775,22 @@ test("Batch 74 provider chat reply cannot echo API key to user-visible native ch
  assert.match(reply.reply,/\[REDACTED_API_KEY\]/);
  assert.equal(s.staged.length,0);
 });
+
+test("Owner limit permits eight approvals but never stages a ninth action",async()=>{
+ const action=i=>({content:JSON.stringify({tool:"ui_find",arguments:{target:"window-"+i}}),
+  provider:"xkiro",model:"model/master",tool_proposal:{tool:"ui_find",arguments:{target:"window-"+i}}});
+ const s=setup({first:detection,second:action(2),
+  following:[action(3),action(4),action(5),action(6),action(7),action(8),action(9)]});
+ await until(()=>s.transport.connected(),"native budget setup");
+ await s.transport.send("Open Premiere and inspect available windows","budget-cap",0);
+ for(let step=1;step<=8;step++){
+  await until(()=>s.staged.length===step,"staged native action "+step);
+  await until(()=>s.allow.disabled===false,"owner approval "+step);
+  s.allow.listeners.get("click")();
+ }
+ await until(()=>s.transport.getReplies("budget-cap")[0]?.includes("owner-selected native action budget is exhausted"),"budget refusal");
+ assert.equal(s.chatInputs.length,9,"bounded final model observation is permitted");
+ assert.equal(s.staged.length,8,"no ninth native action prepared");
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,8);
+ assert.equal(s.approval.hidden,true);
+});

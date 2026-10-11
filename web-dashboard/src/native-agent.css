@@ -96,3 +96,10 @@
   margin-left:12px;margin-right:12px
  }
 }
+
+/* Owner-visible native task budget on the installed Chat surface. */
+#view-chat .shuvi-native-link>label{display:flex;align-items:center;gap:7px;font-size:12px;flex-wrap:wrap}
+#view-chat .shuvi-native-link>label select{width:auto;min-width:105px;min-height:34px;
+ color:inherit;background:var(--panel-2);border:1px solid rgba(150,160,174,.5);
+ border-radius:8px;padding:5px 8px;font:inherit}
+
