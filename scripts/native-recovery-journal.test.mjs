@@ -30,11 +30,11 @@ test("native transport uses journal before provider dispatch and action approval
  const text=readFileSync(new URL("../web-dashboard/src/native-agent.ts",import.meta.url),"utf8");
  assert.match(text,/const previousRecovery=readNativeRecovery\(recoveryStorage\)/);
  assert.match(text,/No paid model call or Windows tool action has resumed/);
- assert.match(text,/if\(route.role!=="chat"&&!writeRecovery\(taskBudget,"model_reserved"\)\)return/);
- assert.match(text,/if\(!writeRecovery\(taskBudget,"model_reserved",task.action.id\)\)/);
- assert.match(text,/if\(!writeRecovery\(taskBudget,"awaiting_approval",proposed.id\)\)/);
- assert.match(text,/if\(!writeRecovery\(taskBudget,"awaiting_approval",next.id\)\)/);
- assert.match(text,/if\(verifiedBudget&&!writeRecovery\(verifiedBudget,"audit_verified"/);
+ assert.match(text,/if\(route.role!=="chat"&&!await persistRecovery\(taskBudget,"model_reserved"\)\)return/);
+ assert.match(text,/if\(!await persistRecovery\(taskBudget,"model_reserved",task.action.id\)\)/);
+ assert.match(text,/if\(!await persistRecovery\(taskBudget,"awaiting_approval",proposed.id\)\)/);
+ assert.match(text,/if\(!await persistRecovery\(taskBudget,"awaiting_approval",next.id\)\)/);
+ assert.match(text,/if\(verifiedBudget&&!await persistRecovery\(verifiedBudget,"audit_verified"/);
 });
 
 test("a paused or uncertain task remains an inspection-only journal record",()=>{
@@ -46,7 +46,7 @@ test("a paused or uncertain task remains an inspection-only journal record",()=>
  const native=readFileSync(new URL("../web-dashboard/src/native-agent.ts",import.meta.url),"utf8");
  assert.match(native,/writeRecovery\(taskBudget,"outcome_unknown"\)/);
  assert.match(native,/writeRecovery\(taskBudget,"paused"\)/);
- assert.match(native,/route.role!=="chat"&&!writeRecovery\(taskBudget,"model_reserved"\)/);
+ assert.match(native,/route.role!=="chat"&&!await persistRecovery\(taskBudget,"model_reserved"\)/);
 });
 
 test("executing journal survives crash boundary and remains inspection-only",()=>{
@@ -71,7 +71,7 @@ test("action dispatch MUST follow the durable executing write and unknown outcom
  assert.match(preflight,/recovery_journal_failed/);
  assert.match(preflight,/return;/);
  assert.match(decide,/writeRecovery\(unknownBudget,"outcome_unknown",current.action.id\)/);
- assert.match(decide,/writeRecovery\(verifiedBudget,"audit_verified",current.action.id\)/);
+ assert.match(decide,/persistRecovery\(verifiedBudget,"audit_verified",current.action.id\)/);
 });
 
 test("installed native execution must fail closed if recovery storage is absent",()=>{
