@@ -27,3 +27,13 @@ test("Batch 46 user-visible stdout and Model report redact token and keep bounde
  assert.match(output,/\[REDACTED_API_KEY\]/);
  assert.ok(redactNativeOutput("x".repeat(9000)).length<=7000);
 });
+
+test("Batch 71 redact full token before display truncation to avoid leaking its prefix",async()=>{
+ const {redactNativeOutput}=await import("../src/native-error-redaction.mjs");
+ const fake=["s","k","-","abcdef","ghijkl","mnopqrstuv"].join("");
+ const prefix="x".repeat(2396);
+ const report=redacted(prefix+fake);
+ assert.equal(report.length<=2400,true);
+ assert.ok(!report.includes(fake.slice(0,5)),"truncated secret prefix must not leak");
+ assert.equal(redactNativeOutput("x".repeat(100001)),"[OVERSIZED_DIAGNOSTIC_OMITTED]");
+});
