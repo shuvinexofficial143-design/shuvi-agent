@@ -27,9 +27,9 @@ export type TaskStep = TaskStepSpec & {
 };
 export type TaskGraph = { objective: string; revision: number; steps: TaskStep[] };
 type Failure = { ok: false; error: string };
-export function parseTaskGraph(value: unknown): Failure | { ok: true; graph: { objective: string; revision: number; steps: TaskStepSpec[] }; recover_steps: string[] };
+export function parseTaskGraph(value: unknown, maxSteps?: number): Failure | { ok: true; graph: { objective: string; revision: number; steps: TaskStepSpec[] }; recover_steps: string[] };
 export function refreshTaskGraph(graph: TaskGraph | null): TaskGraph | null;
-export function reviseTaskGraph(current: TaskGraph | null, metadata: unknown, objective: string | null, recoveryStep?: number): Failure | { ok: true; graph: TaskGraph; event: GraphAuditEvent | null };
+export function reviseTaskGraph(current: TaskGraph | null, metadata: unknown, objective: string | null, recoveryStep?: number, maxSteps?: number): Failure | { ok: true; graph: TaskGraph; event: GraphAuditEvent | null };
 export function graphDependencyFailure(graph: TaskGraph | null, proposal: ToolProposal): string | null;
 export function startTaskStep(graph: TaskGraph | null, proposal: ToolProposal, fingerprint: string, orchestrationStep: number): TaskGraph | null;
 export function bindTaskStepAction(
@@ -51,4 +51,4 @@ export function finishTaskStep(
   auditReceipt?: TaskAuditReceipt | null
 ): TaskGraph | null;
 export function taskGraphProgress(graph: TaskGraph | null): { completed: number; total: number; current: string | null; steps: { step_id: string; title: string; status: TaskStepStatus; reason: string | null; evidence_verified: boolean }[] };
-export function restoreTaskGraph(value: unknown, nextStep: number): Failure | { ok: true; graph: TaskGraph | null; interrupted: string[] };
+export function restoreTaskGraph(value: unknown, nextStep: number, maxSteps?: number): Failure | { ok: true; graph: TaskGraph | null; interrupted: string[] };

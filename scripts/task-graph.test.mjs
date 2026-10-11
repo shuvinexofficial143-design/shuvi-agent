@@ -655,3 +655,48 @@ test("owner-authorized continuation persists steps above eight without implicit 
  expired.task_expires_at_ms=Date.now()-1000;
  assert.equal(agent.normalizeAgentOrchestrationState(expired).recovery_mode,"stopped");
 });
+
+
+test("extended owner graph completes ten dependent steps, persists audited receipts, and appends a stage",()=>{
+  const firstTen=Array.from({length:10},(_,i)=>step("long"+i,i?["long"+(i-1)]:[],"read_file"));
+  const metadata=plan(firstTen,1);
+  assert.equal(graph.parseTaskGraph(metadata).ok,false,"default legacy eight-step plan remains bounded");
+  assert.equal(graph.parseTaskGraph(metadata,24).ok,true,"owner 24-step contract permits extended graph");
+  assert.equal(graph.parseTaskGraph(metadata,8).ok,false);
+  let state=agent.createAgentOrchestrationState(24);
+  const first=proposal("long0","read_file",{task_graph:metadata,arguments:{path:"/repo/long0.txt"}});
+  state=agent.acceptProposalGraph(state,first).state;
+  assert.equal(state.task_graph.steps.length,10);
+  for(let i=0;i<10;i++){
+    const p=proposal("long"+i,"read_file",{arguments:{path:"/repo/long"+i+".txt"}});
+    state=done(state,p,result("read_file"));
+  }
+  assert.equal(state.next_step,11);
+  assert.equal(graph.taskGraphProgress(state.task_graph).completed,10);
+  const saved=json(state);
+  const resumed=agent.normalizeAgentOrchestrationState(saved);
+  assert.equal(resumed.recovery_mode,"normal");
+  assert.equal(resumed.task_graph.steps.length,10);
+  assert.equal(graph.taskGraphProgress(resumed.task_graph).completed,10);
+  assert.equal(resumed.task_graph.steps[9].evidence[0].orchestration_step,10);
+  const expanded=plan([...firstTen,step("long10",["long9"],"read_file")],2);
+  const next=proposal("long10","read_file",{task_graph:expanded,arguments:{path:"/repo/long10.txt"}});
+  const change=agent.acceptProposalGraph(resumed,next);
+  assert.equal(change.event,"task_graph_replanned");
+  assert.equal(change.state.task_graph.steps.length,11);
+  assert.equal(graph.taskGraphProgress(change.state.task_graph).completed,10);
+  assert.deepEqual(change.state.task_graph.steps[0].evidence,resumed.task_graph.steps[0].evidence);
+  const completed=done(change.state,proposal("long10","read_file",{arguments:{path:"/repo/long10.txt"}}),result("read_file"));
+  assert.equal(graph.taskGraphProgress(completed.task_graph).completed,11);
+});
+
+test("extended planner is still capped to owner budget and cannot erase verified steps",()=>{
+ const ten=Array.from({length:10},(_,i)=>step("s"+i,[],"read_file"));
+ const current=graph.reviseTaskGraph(null,plan(ten),null,0,24);
+ assert.equal(current.ok,true);
+ const over=plan(Array.from({length:25},(_,i)=>step("s"+i,[],"read_file")));
+ assert.equal(graph.reviseTaskGraph(current.graph,over,current.graph.objective,0,24).ok,false);
+ assert.equal(graph.parseTaskGraph(plan(undefined,25),24).ok,false);
+ assert.equal(graph.parseTaskGraph(plan(undefined,24),24).ok,true);
+ assert.equal(graph.restoreTaskGraph(current.graph,1,8).ok,false);
+});

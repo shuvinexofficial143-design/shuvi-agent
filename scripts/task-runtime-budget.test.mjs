@@ -88,3 +88,13 @@ test("runtime persists the model request BEFORE a paid chat and validates restor
  assert.match(orchestrator,/missingRequests && maxSteps === MAX_AGENT_STEPS/);
  assert.match(orchestrator,/paid AI model requests reserved:/);
 });
+
+
+test("extended graph wiring respects owner budget, preserves audit evidence and legacy graph limits",()=>{
+ const graph=readFileSync(new URL("../src/task-graph.mjs",import.meta.url),"utf8");
+ assert.match(orchestrator,/restoreTaskGraph\(input.version === 5 \? input.task_graph : null, nextStep, maxSteps\)/);
+ assert.match(orchestrator,/state.recovery_step, state.max_steps\)/);
+ assert.match(graph,/parseTaskGraph\(metadata, maxSteps\)/);
+ assert.match(graph,/count > maxSteps/);
+ assert.match(graph,/evidence: \[\.\.\.s.evidence, evidence\]\.slice\(-MAX_RUNTIME_ACTIONS\)/);
+});

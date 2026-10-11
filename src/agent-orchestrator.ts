@@ -441,7 +441,7 @@ export function normalizeAgentOrchestrationState(value: unknown): AgentOrchestra
 
   const legacyUnboundGraph = input.version === 3 && input.task_graph != null;
   const legacyUnauditedGraph = input.version === 4 && input.task_graph != null;
-  const restored = restoreTaskGraph(input.version === 5 ? input.task_graph : null, nextStep);
+  const restored = restoreTaskGraph(input.version === 5 ? input.task_graph : null, nextStep, maxSteps);
   const receipts = input.version === 3 || input.version === 4 || input.version === 5 ? input.unsuccessful_fingerprints
     : input.last_proposal_fingerprint && ["failure", "denied", "blocked"].includes(String(input.last_outcome))
       ? [input.last_proposal_fingerprint] : [];
@@ -650,7 +650,7 @@ export function evaluateProposal(
     return { allowed: false, fingerprint, reason: "The stable objective cannot be silently changed.", stop: false };
   }
   const graphPlan = proposal.task_graph == null ? null
-    : reviseTaskGraph(state.task_graph, proposal.task_graph, state.objective ?? proposal.plan?.objective ?? null, state.recovery_step);
+    : reviseTaskGraph(state.task_graph, proposal.task_graph, state.objective ?? proposal.plan?.objective ?? null, state.recovery_step, state.max_steps);
   if (graphPlan && !graphPlan.ok) return { allowed: false, fingerprint, reason: graphPlan.error, stop: false };
   const graph = graphPlan?.ok ? graphPlan.graph : state.task_graph;
   const graphFailure = graphDependencyFailure(graph, proposal);
@@ -686,7 +686,7 @@ export function acceptProposalGraph(state: AgentOrchestrationState, proposal: To
   if (!evaluateProposal(state, proposal).allowed) return { state, event: null };
   if (proposal.task_graph == null) return { state, event: null };
   const change = reviseTaskGraph(state.task_graph, proposal.task_graph,
-    state.objective ?? proposal.plan?.objective ?? null, state.recovery_step);
+    state.objective ?? proposal.plan?.objective ?? null, state.recovery_step, state.max_steps);
   if (!change.ok) return { state, event: null };
   return { state: { ...state, task_graph: change.graph, objective: change.graph.objective }, event: change.event };
 }
@@ -951,9 +951,12 @@ export function codingPhase(state: AgentOrchestrationState): CodingPhase {
 export function orchestrationContext(state: AgentOrchestrationState): string {
   const parts = [
     "Agent orchestration state:",
+    `- owner objective: ${state.objective ?? state.task_graph?.objective ?? "unresolved"}`,
     ...(state.task_graph ? [
-      `- graph revision: ${state.task_graph.revision}; objective: ${state.task_graph.objective}`,
-      ...state.task_graph.steps.map(s => `- ${s.step_id}: ${s.status}; tool=${s.expected_tool}; needs=${s.depends_on.join(",") || "none"}`),
+      `- graph revision ${state.task_graph.revision}; verified completed IDs: ${state.task_graph.steps.filter(s=>s.status==="completed").map(s=>s.step_id).join(",") || "none"}`,
+      ...state.task_graph.steps.filter(s=>s.status!=="completed").slice(0,10).map(s =>
+        `- ${s.step_id}: ${s.status}; tool=${s.expected_tool}; needs=${s.depends_on.join(",") || "none"}`),
+      `- unfinished steps: ${state.task_graph.steps.filter(s=>s.status!=="completed").length}. Append steps by increasing graph revision, retain all attempted-step IDs and evidence, and respect the ${state.max_steps}-action owner budget.`,
       "- Use task_step_id. For recovery use task_recovery:true with an unassociated inspection; then submit next graph revision with recover_steps.",
     ] : []),
     `- next step: ${state.next_step}/${state.max_steps}`,

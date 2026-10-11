@@ -1,6 +1,6 @@
 import { workerQueueView } from "./master-worker-queue.mjs";
 // Pure bounded coordinator. Provider metadata is never execution authority.
-import { MAX_RUNTIME_ACTIONS } from "./task-runtime-budget.mjs";
+import { MAX_RUNTIME_ACTIONS, allowedTaskBudget } from "./task-runtime-budget.mjs";
 export const GRAPH_LIMIT = 8;
 export const GRAPH_REVISION_LIMIT = 8;
 export const GRAPH_AUDIT_EVENTS = Object.freeze([
@@ -23,14 +23,15 @@ const clone = x => JSON.parse(JSON.stringify(x));
 const keys = (x, allowed) => Object.keys(x).every(k => allowed.includes(k));
 const fail = error => ({ ok: false, error });
 
-export function parseTaskGraph(value) {
+export function parseTaskGraph(value, maxSteps = GRAPH_LIMIT) {
+  if (!allowedTaskBudget(maxSteps)) return fail("Graph exceeds the owner-approved task budget.");
   if (!object(value) || !keys(value, ["objective", "revision", "steps", "recover_steps"])
       || !bounded(value.objective, 500) || !Array.isArray(value.steps)
-      || value.steps.length < 1 || value.steps.length > GRAPH_LIMIT) {
-    return fail("Task graph requires a bounded objective and 1..8 steps.");
+      || value.steps.length < 1 || value.steps.length > maxSteps) {
+    return fail(`Task graph requires a bounded objective and 1..${maxSteps} steps.`);
   }
   const revision = value.revision ?? 1;
-  if (!integer(revision, 1, GRAPH_REVISION_LIMIT)) return fail("Invalid graph revision (1..8).");
+  if (!integer(revision, 1, maxSteps)) return fail(`Invalid graph revision (1..${maxSteps}).`);
   const recover = value.recover_steps ?? [];
   if (!Array.isArray(recover) || recover.length > GRAPH_LIMIT || !recover.every(id)
       || new Set(recover).size !== recover.length) return fail("Invalid recovery step IDs.");
@@ -87,8 +88,8 @@ export function refreshTaskGraph(graph) {
 }
 
 // A full replacement is accepted transactionally; history is copied only from local state.
-export function reviseTaskGraph(current, metadata, objective, recoveryStep = 0) {
-  const parsed = parseTaskGraph(metadata);
+export function reviseTaskGraph(current, metadata, objective, recoveryStep = 0, maxSteps = GRAPH_LIMIT) {
+  const parsed = parseTaskGraph(metadata, maxSteps);
   if (!parsed.ok) return parsed;
   const next = parsed.graph;
   if ((objective && next.objective !== objective) || (current && next.objective !== current.objective))
@@ -213,7 +214,7 @@ export function finishTaskStep(
       "Action lacked matching typed result and Rust audit evidence for the bound prepared action." };
   return refreshTaskGraph({ ...graph, steps: graph.steps.map(s => s !== target ? s :
     { ...s, status: success ? "completed" : "failed", running: null, blocked_reason: null,
-      evidence: [...s.evidence, evidence].slice(-GRAPH_LIMIT) }) });
+      evidence: [...s.evidence, evidence].slice(-MAX_RUNTIME_ACTIONS) }) });
 }
 
 export function taskGraphProgress(graph) {
@@ -232,12 +233,13 @@ export function taskGraphProgress(graph) {
 }
 
 // Checkpoints are local receipts, not signatures. Malformed receipts stop resume.
-export function restoreTaskGraph(value, nextStep) {
+export function restoreTaskGraph(value, nextStep, maxSteps = GRAPH_LIMIT) {
+  if (!allowedTaskBudget(maxSteps)) return fail("Invalid owner-approved graph budget.");
   if (value == null) return { ok: true, graph: null, interrupted: [] };
-  if (!object(value) || !Array.isArray(value.steps) || value.steps.length > GRAPH_LIMIT)
+  if (!object(value) || !Array.isArray(value.steps) || value.steps.length > maxSteps)
     return fail("Invalid saved task graph.");
   const parsed = parseTaskGraph({ objective: value.objective, revision: value.revision,
-    steps: value.steps.map(s => object(s) ? spec(s) : s) });
+    steps: value.steps.map(s => object(s) ? spec(s) : s) }, maxSteps);
   if (!parsed.ok) return parsed;
   let count = 0;
   const interrupted = [];
@@ -245,7 +247,7 @@ export function restoreTaskGraph(value, nextStep) {
   const steps = [];
   for (const s of value.steps) {
     if (!["pending", "ready", "running", "completed", "failed", "blocked", "skipped"].includes(s.status)
-        || !Array.isArray(s.evidence) || s.evidence.length > GRAPH_LIMIT
+        || !Array.isArray(s.evidence) || s.evidence.length > maxSteps
         || (s.status === "blocked" && !bounded(s.blocked_reason, 500))) return fail("Invalid saved step state.");
     for (const e of s.evidence) {
       if (!object(e) || e.step_id !== s.step_id || !bounded(e.tool, 160)
@@ -286,7 +288,7 @@ export function restoreTaskGraph(value, nextStep) {
     }
     steps.push(restored);
   }
-  if (count > MAX_RUNTIME_ACTIONS || interrupted.length > 1) return fail("Saved evidence exceeds the action ceiling.");
+  if (count > maxSteps || interrupted.length > 1) return fail("Saved evidence exceeds the owner-approved action ceiling.");
   const graph = refreshTaskGraph({ ...parsed.graph, steps });
   for (const s of graph.steps.filter(completed)) {
     const n = s.evidence.find(e => e.success).orchestration_step;
