@@ -30,3 +30,10 @@ test("Batch 67 saving an existing project needs independently verified on-disk o
  assert.deepEqual(taskGoalChecks("Premiere new project banao").map(x=>x.id),["window","project"]);
  assert.match(taskGoalContext("Blender save as"),/approved destination/);
 });
+
+test("Batch 69 audio cleanup is an independently unverified finishing criterion",()=>{
+ assert.deepEqual(taskGoalChecks("Audition noise reduction and audio mixing").map(x=>x.id),["window","audio"]);
+ assert.deepEqual(taskGoalChecks("Premiere edit with voice-over and export").map(x=>x.id),["window","edit","audio","export"]);
+ assert.deepEqual(taskGoalChecks("Import audio").map(x=>x.id),["window","media"]);
+ assert.match(taskGoalContext("noise reduction"),/audibly present/);
+});
