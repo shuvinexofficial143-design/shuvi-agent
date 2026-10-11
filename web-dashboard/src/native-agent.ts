@@ -33,7 +33,7 @@ function compactObservedUi(result:ActionResult):string|null {
    const source=row as Record<string,unknown>;
    const item:Record<string,string|number|boolean>={};
    const pairs=result.tool==="ui_windows"
-    ?[["Name","title"],["ProcessId","pid"],["ProcessName","process"],["ClassName","class"]]
+    ?[["Name","title"],["ProcessId","pid"],["ProcessName","process"],["NativeWindowHandle","hwnd"],["ClassName","class"]]
     :[["Name","name"],["AutomationId","id"],["ControlType","role"],["IsEnabled","enabled"],
        ...(result.tool==="ui_find"?[["Bounds","bounds"]]:[])];
    for(const [field,label] of pairs){
