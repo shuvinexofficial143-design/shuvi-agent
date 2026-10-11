@@ -22,3 +22,27 @@ export function taskDeadlineAllows(deadline, now = Date.now()) {
   return Number.isSafeInteger(deadline) && Number.isSafeInteger(now) &&
     now > 0 && deadline > now && deadline <= now + MAX_TASK_DURATION_MS;
 }
+
+
+// A paid provider request is reserved BEFORE it leaves the local machine.
+// A failed/unknown upstream result can still be billed and must consume one
+// reservation; action approvals remain an entirely separate security gate.
+export function maxTaskModelRequests(maxSteps) {
+  return allowedTaskBudget(maxSteps) ? maxSteps + 1 : null;
+}
+
+export function reserveTaskModelRequest(state) {
+  if (!state || !allowedTaskBudget(state.max_steps) ||
+      !Number.isSafeInteger(state.model_requests_reserved) ||
+      state.model_requests_reserved < 0) {
+    return {ok:false, reason:"Invalid task model-request accounting."};
+  }
+  const maxRequests = maxTaskModelRequests(state.max_steps);
+  if (state.model_requests_reserved >= maxRequests) {
+    return {ok:false, reason:"Owner-approved AI model-request budget exhausted. No paid provider request was sent."};
+  }
+  if (!taskDeadlineAllows(state.task_expires_at_ms)) {
+    return {ok:false, reason:"Owner-approved task deadline expired. No paid provider request was sent."};
+  }
+  return {ok:true, state:{...state, model_requests_reserved:state.model_requests_reserved + 1}};
+}

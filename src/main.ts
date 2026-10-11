@@ -35,7 +35,7 @@ import type { ModelRoute, TaskModelRoute } from "./model-routing.mjs";
 import { chooseNativeRoute } from "../web-dashboard/src/native-model-routing.mjs";
 import {createTaskPermissionScope,grantTaskRead,allowsTaskRead,revokeTaskScope} from "./task-permission-scope.mjs";
 import {taskReadPermissionKey} from "./task-read-permission-key.mjs";
-import {allowedTaskBudget,taskDeadlineAllows} from "./task-runtime-budget.mjs";
+import {allowedTaskBudget,taskDeadlineAllows,reserveTaskModelRequest} from "./task-runtime-budget.mjs";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("Missing app root");
@@ -1391,16 +1391,20 @@ async function runAgentStep(): Promise<void> {
     }
   }
 
-  // A12: A potentially billed provider request is never dispatched when the
-  // recovery checkpoint cannot first be written and verified by native code.
-  // A failed preflight is not a provider failure, so no charge is implied.
+  // Reserve ONE potentially billed model request before dispatch. The
+  // reservation persists across crash/restart and is not silently refunded
+  // for cancelled requests or provider errors with uncertain billing.
+  const reservation = reserveTaskModelRequest(orchestration);
+  if (!reservation.ok) {
+    await stopAgentForSafety(reservation.reason);
+    return;
+  }
+  orchestration = reservation.state;
+  // A12: if the durable reservation cannot be saved, do NOT call the provider.
   try {
     await invoke("save_session_checkpoint", { checkpoint: currentCheckpoint() });
   } catch {
-    messages.push({ role: "assistant", content: "Shuvi could not safely save task progress. No AI provider request was sent. Check local storage before trying again." });
-    renderMessages();
-    if(remoteTask)await closeRemoteTask("outcome_unknown");
-    setBusy(false);
+    await stopAgentForSafety("Shuvi could not persist its model-request reservation. No AI provider request was sent.");
     return;
   }
   if (cancelRequested) {

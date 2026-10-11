@@ -60,6 +60,7 @@ export type AgentOrchestrationCheckpoint = {
   tool_actions: number;
   max_steps?: number;
   task_expires_at_ms?: number | null;
+  model_requests_reserved?: number;
   consecutive_failures: number;
   blocked_repeats: number;
   last_proposal_fingerprint: string | null;

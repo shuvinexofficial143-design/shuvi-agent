@@ -69,6 +69,7 @@ export type AgentOrchestrationState = {
   tool_actions: number;
   max_steps: number; // Explicit owner-selected budget, immutable during task execution.
   task_expires_at_ms: number | null;
+  model_requests_reserved: number; // Conservatively counted before upstream calls.
   consecutive_failures: number;
   blocked_repeats: number;
   last_proposal_fingerprint: string | null;
@@ -364,6 +365,7 @@ export function createAgentOrchestrationState(ownerBudget: number = MAX_AGENT_ST
     tool_actions: 0,
     max_steps: allowedTaskBudget(ownerBudget) ? ownerBudget : MAX_AGENT_STEPS,
     task_expires_at_ms: taskDeadline(now),
+    model_requests_reserved: 0,
     consecutive_failures: 0,
     blocked_repeats: 0,
     last_proposal_fingerprint: null,
@@ -401,6 +403,14 @@ export function normalizeAgentOrchestrationState(value: unknown): AgentOrchestra
   const validContract = validBudget && validDeadline &&
     (maxSteps === MAX_AGENT_STEPS || deadline !== null) &&
     taskDeadlineAllows(deadline);
+  // Legacy <=8 step checkpoints predate provider-call accounting. Do not
+  // silently renew or reset an already extended 24/48-step model-call budget.
+  const missingRequests = input.model_requests_reserved === undefined;
+  const requests = missingRequests && maxSteps === MAX_AGENT_STEPS
+    ? Math.max(0, Math.min(MAX_AGENT_STEPS, Number.isInteger(input.next_step) ? Number(input.next_step) - 1 : 0))
+    : input.model_requests_reserved;
+  const validRequests = Number.isSafeInteger(requests) && requests >= 0 && requests <= maxSteps + 1
+    && (!missingRequests || maxSteps === MAX_AGENT_STEPS);
   const requestedNextStep = Number.isInteger(input.next_step) ? Number(input.next_step) : 1;
   const toolActions = Number.isInteger(input.tool_actions) ? Number(input.tool_actions) : 0;
   const codingInput = input.coding && typeof input.coding === "object"
@@ -438,7 +448,7 @@ export function normalizeAgentOrchestrationState(value: unknown): AgentOrchestra
   const validReceipts = Array.isArray(receipts) && receipts.length <= maxSteps
     && receipts.every(x => typeof x === "string" && x.length > 0 && x.length <= 16_384);
   const interrupted = restored.ok ? restored.interrupted : [];
-  const invalid = !validContract || requestedNextStep < 1 || requestedNextStep > maxSteps + 1 || nextStep > maxSteps + 1
+  const invalid = !validContract || !validRequests || requestedNextStep < 1 || requestedNextStep > maxSteps + 1 || nextStep > maxSteps + 1
     || toolActions < 0 || toolActions > maxSteps || !restored.ok
     || legacyUnboundGraph || legacyUnauditedGraph || !validReceipts
     || (restored.ok && restored.graph && restored.graph.objective !== input.objective);
@@ -448,6 +458,7 @@ export function normalizeAgentOrchestrationState(value: unknown): AgentOrchestra
     tool_actions: Math.max(0, Math.min(maxSteps, toolActions)),
     max_steps: maxSteps,
     task_expires_at_ms: validDeadline ? deadline : null,
+    model_requests_reserved: validRequests ? requests : maxSteps + 1,
     consecutive_failures: Math.max(0, Math.min(MAX_CONSECUTIVE_FAILURES, failures)),
     blocked_repeats: Math.max(0, Math.min(MAX_ORCHESTRATION_BLOCKS, blocks)),
     last_proposal_fingerprint: boundedText(input.last_proposal_fingerprint, 16_384),
@@ -467,6 +478,7 @@ export function normalizeAgentOrchestrationState(value: unknown): AgentOrchestra
   };
   if (invalid) return { ...result, recovery_mode: "stopped",
     stop_reason: !validContract ? "Task budget or deadline is invalid or expired; obtain a new owner instruction."
+      : !validRequests ? "Missing, invalid, or exhausted provider-request accounting; start a new owner-approved task."
       : legacyUnboundGraph
       ? "Saved task graph predates prepared-action binding; start a new task so completion evidence can be rebound safely."
       : legacyUnauditedGraph
@@ -946,6 +958,7 @@ export function orchestrationContext(state: AgentOrchestrationState): string {
     ] : []),
     `- next step: ${state.next_step}/${state.max_steps}`,
     `- owner-approved task deadline: ${state.task_expires_at_ms ?? "legacy 8-step checkpoint"}`,
+    `- paid AI model requests reserved: ${state.model_requests_reserved}/${state.max_steps + 1}`,
     `- previous outcome: ${state.last_outcome ?? "none"}`,
     `- consecutive failures: ${state.consecutive_failures}/${MAX_CONSECUTIVE_FAILURES}`,
     `- recovery mode: ${state.recovery_mode}`

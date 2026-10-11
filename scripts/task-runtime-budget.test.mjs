@@ -51,3 +51,40 @@ test("graph restore continues validating typed evidence above legacy step eight"
  assert.match(graph,/export const GRAPH_LIMIT = 8/); // planning graph remains bounded
  assert.deepEqual(restoreTaskGraph(null,17),{ok:true,graph:null,interrupted:[]});
 });
+
+
+test("model-call reservations are finite, counted before dispatch and never silently reset",async()=>{
+ const {reserveTaskModelRequest,maxTaskModelRequests}=await import("../src/task-runtime-budget.mjs");
+ assert.equal(maxTaskModelRequests(8),9);
+ assert.equal(maxTaskModelRequests(24),25);
+ assert.equal(maxTaskModelRequests(48),49);
+ assert.equal(maxTaskModelRequests(1000),null);
+ let s={max_steps:8,model_requests_reserved:0,task_expires_at_ms:Date.now()+10000};
+ for(let n=1;n<=9;n++){
+   const reservation=reserveTaskModelRequest(s);
+   assert.equal(reservation.ok,true);
+   s=reservation.state;
+   assert.equal(s.model_requests_reserved,n);
+ }
+ assert.equal(reserveTaskModelRequest(s).ok,false);
+ assert.match(reserveTaskModelRequest(s).reason,/budget exhausted/);
+ for(const x of [undefined,null,-1,1.5,50,"4"]){
+   assert.equal(reserveTaskModelRequest({...s,model_requests_reserved:x}).ok,false);
+ }
+ assert.equal(reserveTaskModelRequest({...s,max_steps:24,model_requests_reserved:24}).ok,true);
+ assert.equal(reserveTaskModelRequest({...s,max_steps:24,model_requests_reserved:26}).ok,false);
+ assert.equal(reserveTaskModelRequest({...s,max_steps:8,model_requests_reserved:0,task_expires_at_ms:Date.now()-1000}).ok,false);
+});
+
+test("runtime persists the model request BEFORE a paid chat and validates restored counts",()=>{
+ const reserve=main.indexOf("const reservation = reserveTaskModelRequest(orchestration)");
+ const persist=main.indexOf('await invoke("save_session_checkpoint", { checkpoint: currentCheckpoint() });',reserve);
+ const dispatch=main.indexOf('const response = await invoke<ChatResponse>("chat", {',persist);
+ assert.ok(reserve>=0 && persist>reserve && dispatch>persist);
+ assert.match(main.slice(reserve,dispatch),/orchestration = reservation.state/);
+ assert.match(main.slice(reserve,dispatch),/No AI provider request was sent/);
+ assert.match(orchestrator,/model_requests_reserved: 0/);
+ assert.match(orchestrator,/!validRequests/);
+ assert.match(orchestrator,/missingRequests && maxSteps === MAX_AGENT_STEPS/);
+ assert.match(orchestrator,/paid AI model requests reserved:/);
+});
