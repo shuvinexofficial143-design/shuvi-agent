@@ -42,7 +42,7 @@ const intents=[
  ["research",/\b(?:browse|browser|google search|web search|research|search the web)\b|वेब पर खोज|रिसर्च/iu],
  ["vision",/\b(?:screenshot|inspect screen|screen vision)\b|स्क्रीनशॉट|स्क्रीन देख/iu]
 ];
-const executionVerb=/\b(?:open|launch|start|create|make|build|edit|render|export|write|save|modify|design|generate|run|search|find|inspect|control|send|reply|read|download|upload|close|click|type|commit|push|install|delete|remove|update|look(?=\s+(?:for|at)\b)|banao|bnado|khojo|dekho|dhundho|dhoondo|khol(?:o|na|de|do)?|khul(?:wa|do)?|chala(?:o|do)?|chal(?:u|ao)|karo|kar\s?do|kr\s?do|bhejo|likho|dikhao)\b|खोलो|खोलना|खोल\s?दो|बनाओ|बनाना|करो|करना|लिखो|लिखना|भेजो|भेजना|सेव|एडिट|चलाओ|रेंडर|डिलीट|हटाओ|डाउनलोड|इंस्टॉल|खोजो|देखो|बदल/iu;
+const executionVerb=/\b(?:open|launch|start|create|make|build|edit|render|export|write|save|modify|design|generate|run|search|find|inspect|control|send|reply|read|download|upload|close|click|type|commit|push|install|delete|remove|update|rename|copy|paste|import|attach|select|drag|drop|move|trim|cut|split|merge|undo|redo|look(?=\s+(?:for|at)\b)|lagao|lagana|jodo|jod\s?do|hatao|badlo|badal\s?do|save\s?krdo|banao|bnado|khojo|dekho|dhundho|dhoondo|khol(?:o|na|de|do)?|khul(?:wa|do)?|chala(?:o|do)?|chal(?:u|ao)|karo|kar\s?do|kr\s?do|bhejo|likho|dikhao)\b|खोलो|खोलना|खोल\s?दो|बनाओ|बनाना|करो|करना|लिखो|लिखना|भेजो|भेजना|सेव|एडिट|चलाओ|रेंडर|डिलीट|हटाओ|डाउनलोड|इंस्टॉल|खोजो|देखो|बदल/iu;
 export function classifyNativeIntent(text) {
  if(typeof text!=="string")return "chat";
  const input=text.trim();

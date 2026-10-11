@@ -41,3 +41,12 @@ test("Roman Hindi and simple English imperative UI requests route to Master, not
   assert.equal(classifyNativeIntent(command),"premiere",command);
  assert.equal(classifyNativeIntent("Can you explain Premiere?"),"chat");
 });
+
+test("Batch 55 colloquial edit commands reach Master while simple questions remain Chat",()=>{
+ const wants=["Premiere me clip import kar do","Blender object ko rename karo",
+  "Photoshop layer ko select karo","Premiere me subtitles lagao",
+  "Adobe Audition me audio trim kar do","Explorer me file copy karo"];
+ for(const text of wants)assert.notEqual(classifyNativeIntent(text),"chat",text);
+ assert.equal(classifyNativeIntent("What is a clip in Premiere?"),"chat");
+ assert.equal(classifyNativeIntent("Explain how to trim a video"),"chat");
+});
