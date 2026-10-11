@@ -40,7 +40,9 @@ test("long tasks keep total count while bounding history and rejecting malformed
 });
 test("native feedback obtains count only from successful action and matching audit",()=>{
  const src=readFileSync(new URL("../src/native-agent.ts",import.meta.url),"utf8");
- assert.match(src,/const verified=result\.success && Boolean\(matched\)/);
+ assert.match(src,/const verified=verifiedExecutionReceipt\(current\.action,result,receipts\)/);
+ assert.match(src,/r\.action_id===current\.action\.id/);
+ assert.match(src,/contradictsFailureReceipt\(current\.action,receipts\)/);
  assert.match(src,/if\(verified\)\{\s*updateTask\(current\.threadId,verifyTask/);
  assert.match(src,/recordAuditedEvidence\(/);
  assert.match(src,/taskEvidence\.set\(current\.threadId/);
