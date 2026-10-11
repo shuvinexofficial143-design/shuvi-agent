@@ -6,8 +6,11 @@ export function verifiedExecutionReceipt(prepared,result,receipts){
   result?.success!==true||result.tool!==prepared.kind||!Array.isArray(receipts))return false;
  const same=receipts.filter(r=>r?.action_id===prepared.id);
  if(!same.length)return false;
- if(same.some(r=>r.tool!==prepared.kind||r.event!=="executed"||r.success!==true))
-  return false;
+ // Rust logs may also include normal prepared/approved bookkeeping for
+ // the same approved action. Only contradictory terminal outcomes fail closed.
+ if(same.some(r=>r.tool!==prepared.kind||
+  r.event==="failed"||r.event==="denied"||
+  r.event==="executed"&&r.success!==true))return false;
  return same.some(r=>r.tool===prepared.kind&&r.event==="executed"&&r.success===true);
 }
 export function contradictsFailureReceipt(prepared,receipts){
