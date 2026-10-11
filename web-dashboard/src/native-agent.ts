@@ -25,6 +25,7 @@ import {validPreparedApproval} from "./native-prepared-approval.mjs";
 import {createNativeTaskBudget,reserveNativeModelRequest,canStageNativeAction,canExecuteNativeAction,markNativeActionStaged} from "./native-task-budget.mjs";
 import type {NativeTaskBudget} from "./native-task-budget.mjs";
 import {readNativeRecovery,writeNativeRecovery,clearNativeRecovery} from "./native-recovery-journal.mjs";
+import {reconcileNativeActionAudit,recoveryAuditMessage} from "./native-recovery-audit.mjs";
 type Provider = {id:string;name:string;default_model:string;api_key_required:boolean;custom_base_url:boolean};
 type NativeChatMessage = {role:"user"|"assistant";content:string};
 type NativeChatResponse = {content:string;provider:string;model:string;tool_proposal:Record<string,unknown>|null};
@@ -168,11 +169,14 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  recoveryNotice.className="shuvi-native-recovery";
  recoveryNotice.setAttribute("role","status");
  recoveryNotice.hidden=true;
+ const recoveryCheck=field("button","Check interrupted action in Rust Audit");
+ recoveryCheck.type="button";
+ recoveryCheck.hidden=true;
  const recoveryDismiss=field("button","Dismiss interrupted task notice");
  recoveryDismiss.type="button";
  recoveryDismiss.hidden=true;
  budgetNote.className="shuvi-native-note";
- panel.append(title,status,showDetails,openSettings,notes,budgetLabel,budgetNote,taskStatus,goalStatus,recoveryNotice,recoveryDismiss);
+ panel.append(title,status,showDetails,openSettings,notes,budgetLabel,budgetNote,taskStatus,goalStatus,recoveryNotice,recoveryCheck,recoveryDismiss);
  chat.parentElement?.insertBefore(panel,chat);
  // A confirmation above the entire chat falls out of view while reading the
  // latest reply. Keep all pending native approvals adjacent to the composer.
@@ -205,11 +209,13 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    "Last state: "+previousRecovery.phase+". No paid model call or Windows tool action has resumed. "+
    "Review Activity/Audit before issuing a new instruction.";
   recoveryNotice.hidden=false;
+  recoveryCheck.hidden=!previousRecovery.actionId;
   recoveryDismiss.hidden=false;
  }
  recoveryDismiss.addEventListener("click",()=>{
   clearNativeRecovery(recoveryStorage);
   recoveryNotice.hidden=true;
+  recoveryCheck.hidden=true;
   recoveryDismiss.hidden=true;
  });
  const writeRecovery=(b:NativeTaskBudget,phase:string,actionId:string|null=null):boolean=>{
