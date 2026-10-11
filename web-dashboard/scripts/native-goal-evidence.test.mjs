@@ -69,3 +69,12 @@ test("Batch 78 an unrelated nonempty process cannot impersonate the requested ap
  assert.equal(windowGoalEvidence("Premiere kholo",{...result,stdout:JSON.stringify([
   {Name:"Adobe Premiere Pro 2026",ProcessId:123,NativeWindowHandle:222}])},true)?.app,"premiere");
 });
+
+test("Batch 79 a contradictory known-app title cannot be verified by matching process alone",()=>{
+ const result={tool:"ui_windows",success:true,stdout:JSON.stringify([
+  {Name:"Adobe Photoshop 2026",ProcessName:"Adobe Premiere Pro",ProcessId:123,NativeWindowHandle:222}])};
+ assert.equal(windowGoalEvidence("Premiere kholo",result,true),null);
+ const title={tool:"ui_windows",success:true,stdout:JSON.stringify([
+  {Name:"Adobe Premiere Pro - Adobe Photoshop",ProcessName:"Premiere",ProcessId:123,NativeWindowHandle:222}])};
+ assert.equal(windowGoalEvidence("Premiere kholo",title,true),null);
+});

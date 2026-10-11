@@ -1,0 +1,1 @@
+Batch 79: Native window proof fails closed if its displayed title names another recognized desktop app, even when a process name claims the requested app. No export or project status is inferred.
