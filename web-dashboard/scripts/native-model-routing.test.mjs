@@ -34,3 +34,10 @@ test("native custom URL validation avoids remote credential leaks and loopback e
  assert.ok(NATIVE_MODEL_ROLES.some(x=>x[0]==="chat"));
  assert.ok(NATIVE_MODEL_ROLES.some(x=>x[0]==="after-effects"));
 });
+
+test("Roman Hindi and simple English imperative UI requests route to Master, not Chat",()=>{
+ for(const command of ["Premiere me New Project banao","Premiere me New Project khojo",
+  "Premiere ko dekho","Look for New Project in Premiere"])
+  assert.equal(classifyNativeIntent(command),"premiere",command);
+ assert.equal(classifyNativeIntent("Can you explain Premiere?"),"chat");
+});
