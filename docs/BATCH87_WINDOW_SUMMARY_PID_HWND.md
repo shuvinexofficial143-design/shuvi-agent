@@ -1,0 +1,1 @@
+Batch 87: Do not summarize native Window Title alone as a usable verified identity; require positive integer PID and HWND, keeping ambiguous/malformed records out of the observed target sample.

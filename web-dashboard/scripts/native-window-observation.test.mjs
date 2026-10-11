@@ -53,3 +53,13 @@ test("Batch 86 unsuccessful or malformed typed window read is never described as
   assert.match(guide({...base,exit_code},true),/no target identity verified/);
  assert.match(guide({...base,exit_code:0},true),/Verified read-only/);
 });
+
+test("Batch 87 title-only UI readback is not presented as identified Windows target",()=>{
+ const incomplete={tool:"ui_windows",success:true,stdout:JSON.stringify([
+  {Name:"Premiere",ProcessId:0,NativeWindowHandle:12},
+  {Name:"Premiere",ProcessId:12,NativeWindowHandle:0},
+  {Name:"Premiere"}
+ ])};
+ assert.match(guide(incomplete,true),/no usable window identity/);
+ assert.doesNotMatch(guide(incomplete,true),/Observed sample:/);
+});

@@ -16,9 +16,9 @@ export function summarizeWindowObservation(result,audited=false){
  for(const item of rows.slice(0,200)){
   if(!item||typeof item!=="object"||Array.isArray(item))continue;
   const title=allowed(item.Name,120),process=allowed(item.ProcessName,90);
-  const pid=Number.isSafeInteger(item.ProcessId)&&item.ProcessId>=0?item.ProcessId:null;
+  const pid=Number.isSafeInteger(item.ProcessId)&&item.ProcessId>0?item.ProcessId:null;
   const hwnd=Number.isSafeInteger(item.NativeWindowHandle)&&item.NativeWindowHandle>0?item.NativeWindowHandle:null;
-  if(!title&&!process)continue;
+  if(!title||pid===null||hwnd===null)continue;
   // Do not hide duplicate rows: repetition itself signals ambiguous evidence.
   found.push({title,process,pid,hwnd});
  }
