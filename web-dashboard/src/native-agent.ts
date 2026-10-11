@@ -20,6 +20,7 @@ import {requiresNewWindowObservation} from "./native-ui-snapshot-lifetime.mjs";
 import {taskOutcomeSummary} from "./native-task-outcome.mjs";
 import {checkRequestedAppTarget} from "./native-intent-target.mjs";
 import {cleanObservedLabel} from "./native-observation-text.mjs";
+import {redactNativeError} from "./native-error-redaction.mjs";
 type Provider = {id:string;name:string;default_model:string;api_key_required:boolean;custom_base_url:boolean};
 type NativeChatMessage = {role:"user"|"assistant";content:string};
 type NativeChatResponse = {content:string;provider:string;model:string;tool_proposal:Record<string,unknown>|null};
@@ -224,7 +225,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    if(disconnect)disconnect.disabled=true;
   }catch(error){
    ready=false;
-   refreshState("Native runtime not connected: "+String(error));
+   refreshState("Native runtime not connected: "+redactNativeError(error));
   }
  }
  function appendReply(threadId:string,index:number,extra:string){
@@ -274,7 +275,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   }catch(error){
    haltTask(task.threadId,"model_failed");
    appendReply(task.threadId,task.promptIndex,
-    "Master continuation failed or its result is unknown: "+String(error)+
+    "Master continuation failed or its result is unknown: "+redactNativeError(error)+
     ". Stopped. No automatic paid retry.");
    showActionFeedback("Master continuation failed or outcome unknown. No automatic retry or Windows action.");
    return;
@@ -348,7 +349,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   }catch(error){
    haltTask(task.threadId,"prepare_failed");
    appendReply(task.threadId,task.promptIndex,
-    "Next Windows tool preparation failed: "+String(error)+". Nothing executed. Task paused.");
+    "Next Windows tool preparation failed: "+redactNativeError(error)+". Nothing executed. Task paused.");
    showActionFeedback("Next action could not be prepared. No automatic retry.");
   }
  }
@@ -471,7 +472,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     }
    }
   }catch(error){
-   const message=String(error).slice(0,1200);
+   const message=redactNativeError(error).slice(0,1200);
    if(executionVerified){
     // An audited success cannot become an unknown Windows outcome just
     // because a later model response or rendering/approval step threw.
@@ -633,7 +634,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       approval.scrollIntoView?.({block:"nearest",behavior:"smooth"});
      }catch(error){
       updateTask(threadId,pauseTask(createTask(),"prepare_failed"));
-      showActionFeedback("AI replied but Windows could not prepare its action: "+String(error)+
+      showActionFeedback("AI replied but Windows could not prepare its action: "+redactNativeError(error)+
        ". Nothing executed. Check the action details; do not resend this paid request blindly.");
       // The paid model response already arrived. A separate Windows prepare failure
       // cannot turn that successful AI response into an unsent draft/retry.
@@ -659,7 +660,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     return {ok:true,reply};
    }catch(error){
     refreshState("Native AI request failed or outcome unknown. Never retry blindly.");
-    return {ok:false,error:String(error)};
+    return {ok:false,error:redactNativeError(error)};
    }finally{
     sending=false;
     refreshState();
