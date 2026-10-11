@@ -406,9 +406,9 @@ export function normalizeAgentOrchestrationState(value: unknown): AgentOrchestra
   // Legacy <=8 step checkpoints predate provider-call accounting. Do not
   // silently renew or reset an already extended 24/48-step model-call budget.
   const missingRequests = input.model_requests_reserved === undefined;
-  const requests = missingRequests && maxSteps === MAX_AGENT_STEPS
+  const requests: number = missingRequests && maxSteps === MAX_AGENT_STEPS
     ? Math.max(0, Math.min(MAX_AGENT_STEPS, Number.isInteger(input.next_step) ? Number(input.next_step) - 1 : 0))
-    : input.model_requests_reserved;
+    : typeof input.model_requests_reserved === "number" ? input.model_requests_reserved : Number.NaN;
   const validRequests = Number.isSafeInteger(requests) && requests >= 0 && requests <= maxSteps + 1
     && (!missingRequests || maxSteps === MAX_AGENT_STEPS);
   const requestedNextStep = Number.isInteger(input.next_step) ? Number(input.next_step) : 1;
