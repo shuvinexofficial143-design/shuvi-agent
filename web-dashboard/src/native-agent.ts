@@ -290,9 +290,9 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   histories.set(task.threadId,[...messages,{role:"assistant",content:answer}].slice(-22));
   appendReply(task.threadId,task.promptIndex,"Master next step:\n"+answer);
   if(!response.tool_proposal){
-   haltTask(task.threadId,"no_next_tool");
+   haltTask(task.threadId,followupRoot?"awaiting_clarification":"no_next_tool");
    appendReply(task.threadId,task.promptIndex,
-    "Task paused: no further executable tool was proposed. The full original objective is NOT independently verified complete; check the actual application/project before claiming success.\n"+
+    (followupRoot?"Task paused: waiting for your clarification; no further Windows tool is prepared. The original goal is NOT independently verified complete.\n":"Task paused: no further executable tool was proposed. The full original objective is NOT independently verified complete; check the actual application/project before claiming success.\n")+
     taskOutcomeSummary(task.objective,verifiedWindows.get(task.threadId)??null));
    showActionFeedback("Master replied without a next executable tool. The original Windows task is not automatically verified as completed.");
    refreshState("Master did not propose another action; task paused.");
@@ -660,9 +660,11 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      }
     }else{
      if(route.role!=="chat"){
-      updateTask(threadId,pauseTask(createTask(),"no_tool"));
+      updateTask(threadId,pauseTask(createTask(),nextRoot?"awaiting_clarification":"no_tool"));
       const likeToolJson=/["']tool["']\s*:/.test(reply);
-      showActionFeedback(likeToolJson
+      showActionFeedback(nextRoot
+       ? "Master is waiting for your app/name/folder clarification. No Windows tool is prepared or executed."
+       : likeToolJson
        ? "The AI wrote tool-like JSON, but it was not recognized as a valid native action. No Windows action was prepared or executed. No automatic retry."
        : "AI replied without requesting a Windows action. No application opened or message sent. No automatic retry.");
       refreshState("AI replied without an executable Windows tool. No action performed.");

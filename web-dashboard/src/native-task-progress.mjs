@@ -16,7 +16,7 @@ export function verifyTask(s,id,tool,audited){
 }
 export function pauseTask(s,reason){
  if(!s)return s;
- const reasons=["denied","unknown_outcome","confirmed_read_failure","model_failed","prepare_failed","no_next_tool","repeated_tool","no_tool"];
+ const reasons=["denied","unknown_outcome","confirmed_read_failure","model_failed","prepare_failed","no_next_tool","repeated_tool","no_tool","awaiting_clarification"];
  return {...s,phase:"paused",pending:null,reason:reasons.includes(reason)?reason:"unknown_outcome"};
 }
 export function taskSummary(s){

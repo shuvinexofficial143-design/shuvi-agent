@@ -50,3 +50,10 @@ test("native feedback obtains count only from successful action and matching aud
  assert.match(src,/aria-label","Native task progress"/);
  assert.match(src,/invoke<ActionResult>\("execute_action"/);
 });
+
+test("Batch 63 awaiting clarification is not counted as task completion",()=>{
+ const s=createTask();
+ const waiting=pauseTask(s,"awaiting_clarification");
+ assert.match(taskSummary(waiting),/awaiting_clarification/);
+ assert.match(taskSummary(waiting),/Overall task unverified/);
+});
