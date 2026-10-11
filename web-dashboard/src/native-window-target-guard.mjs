@@ -26,3 +26,19 @@ export function checkObservedMutationTarget(proposal,observed){
   reason:count===0?"Proposed window differs from audited observed application.":
   "Ambiguous observed window title; multiple handles share it."};
 }
+
+
+// Repeated read-only UI lookup on two windows sharing a verified exact title
+// cannot identify a unique target. Avoid paid loops: ask for specificity.
+export function checkAmbiguousReadWindow(proposal,observed){
+ if(!["ui_find","ui_discover"].includes(proposal?.tool)||!Array.isArray(observed))
+  return {allowed:true,reason:"native_lookup_required"};
+ const target=proposal?.arguments?.window;
+ if(typeof target!=="string"||!target.trim())return {allowed:true,reason:"native_lookup_required"};
+ const matches=observed.filter(x=>typeof x.title==="string"&&
+  x.title.toLocaleLowerCase("en-US")===target.trim().toLocaleLowerCase("en-US"));
+ const handles=new Set(matches.map(x=>x.hwnd));
+ return handles.size>1?
+  {allowed:false,reason:"Multiple audited windows have the same title. Ask which window or use a unique identity."}:
+  {allowed:true,reason:"no_verified_title_ambiguity"};
+}

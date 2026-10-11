@@ -14,7 +14,7 @@ import {taskClarificationKind,extendTaskClarification,nextClarificationRoot} fro
 import {newEvidence,recordAuditedEvidence,evidenceSummary} from "./native-task-evidence.mjs";
 import {summarizeWindowObservation} from "./native-window-observation.mjs";
 import {windowGoalEvidence,goalEvidenceLabel} from "./native-goal-evidence.mjs";
-import {observedWindowInventory,checkObservedMutationTarget} from "./native-window-target-guard.mjs";
+import {observedWindowInventory,checkObservedMutationTarget,checkAmbiguousReadWindow} from "./native-window-target-guard.mjs";
 import {verifiedExecutionReceipt,contradictsFailureReceipt} from "./native-action-receipts.mjs";
 import {requiresNewWindowObservation} from "./native-ui-snapshot-lifetime.mjs";
 import {taskOutcomeSummary} from "./native-task-outcome.mjs";
@@ -306,6 +306,12 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    appendReply(task.threadId,task.promptIndex,"Unsafe app selection: "+appGate.reason+" Nothing staged.");
    return;
   }
+  const readGate=checkAmbiguousReadWindow(response.tool_proposal,observedWindows.get(task.threadId)??null);
+  if(!readGate.allowed){
+   haltTask(task.threadId,"prepare_failed");
+   appendReply(task.threadId,task.promptIndex,"Ambiguous window lookup: "+readGate.reason+" Nothing staged.");
+   return;
+  }
   const gate=checkObservedMutationTarget(response.tool_proposal,observedWindows.get(task.threadId)??null);
   if(!gate.allowed){
    haltTask(task.threadId,"prepare_failed");
@@ -594,6 +600,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       // Validate provider output before contacting the native staging queue.
       const appGate=checkRequestedAppTarget(effectiveObjective,response.tool_proposal);
       if(!appGate.allowed)throw Error("Unsafe app selection: "+appGate.reason);
+      const readGate=checkAmbiguousReadWindow(response.tool_proposal,observedWindows.get(threadId)??null);
+      if(!readGate.allowed)throw Error("Ambiguous window lookup: "+readGate.reason);
       const gate=checkObservedMutationTarget(response.tool_proposal,observedWindows.get(threadId)??null);
       if(!gate.allowed)throw Error("Unsafe or ambiguous UI target: "+gate.reason);
       const first=fingerprint(response.tool_proposal);
