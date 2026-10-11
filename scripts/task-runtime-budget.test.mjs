@@ -47,7 +47,7 @@ test("graph restore continues validating typed evidence above legacy step eight"
  const graph=readFileSync(new URL("../src/task-graph.mjs",import.meta.url),"utf8");
  assert.match(graph,/integer\(e.orchestration_step, 1, MAX_RUNTIME_ACTIONS\)/);
  assert.match(graph,/nextStep > MAX_RUNTIME_ACTIONS/);
- assert.match(graph,/count > MAX_RUNTIME_ACTIONS/);
+ assert.match(graph,/count > maxSteps/);
  assert.match(graph,/export const GRAPH_LIMIT = 8/); // planning graph remains bounded
  assert.deepEqual(restoreTaskGraph(null,17),{ok:true,graph:null,interrupted:[]});
 });
