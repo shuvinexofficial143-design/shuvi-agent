@@ -4,6 +4,13 @@ import {reconcileNativeActionAudit,recoveryAuditMessage} from "../web-dashboard/
 const id="action-123",ok={action_id:id,event:"executed",success:true,tool:"premiere_launch"};
 test("exact independent Rust receipt and audit trail required for recovered execution",()=>{
  assert.deepEqual(reconcileNativeActionAudit(id,ok,[ok]),{kind:"executed_audited",tool:"premiere_launch"});
+ assert.equal(reconcileNativeActionAudit(id,ok,[
+  {...ok,event:"prepared",success:false},
+  {...ok,event:"approved",success:true},ok
+ ]).kind,"executed_audited");
+ assert.equal(reconcileNativeActionAudit(id,ok,[
+  {...ok,event:"prepared",tool:"ui_find",success:false},ok
+ ]).kind,"unknown");
  for(const [receipt,trail] of [[null,[ok]],[ok,[]],[ok,[{...ok,action_id:"other"}]],
   [ok,[{...ok,tool:"ui_find"}]],[ok,[ok,{...ok,event:"failed",success:false}]],
   [ok,[{...ok,success:false}]]]){
