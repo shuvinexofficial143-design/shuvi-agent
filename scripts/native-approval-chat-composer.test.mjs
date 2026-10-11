@@ -78,7 +78,12 @@ async function setup(reply){
    default:throw Error("unexpected native call "+name);
   }
  };
- globalThis.window={__TAURI_INTERNALS__:{invoke}};
+ const journal=new Map();
+ globalThis.window={__TAURI_INTERNALS__:{invoke},localStorage:{
+  getItem:key=>journal.get(key)??null,
+  setItem:(key,value)=>journal.set(key,String(value)),
+  removeItem:key=>journal.delete(key)
+ }};
  const client=mountNativeAgent(()=>{});
  await new Promise(r=>setImmediate(r));
  return {client,commands,els,composerParent,panelParent};

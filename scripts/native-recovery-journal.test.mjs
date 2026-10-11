@@ -73,3 +73,9 @@ test("action dispatch MUST follow the durable executing write and unknown outcom
  assert.match(decide,/writeRecovery\(unknownBudget,"outcome_unknown",current.action.id\)/);
  assert.match(decide,/writeRecovery\(verifiedBudget,"audit_verified",current.action.id\)/);
 });
+
+test("installed native execution must fail closed if recovery storage is absent",()=>{
+ const source=readFileSync(new URL("../web-dashboard/src/native-agent.ts",import.meta.url),"utf8");
+ assert.match(source,/if\(!recoveryStorage\)return false/);
+ assert.doesNotMatch(source,/if\(!recoveryStorage\)return true/);
+});

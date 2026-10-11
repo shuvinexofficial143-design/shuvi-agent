@@ -32,7 +32,8 @@ function el() {
     parentElement: { insertBefore() {} }
   };
 }
-async function mount(invoke, storage = null) {
+async function mount(invoke, storage = undefined) {
+  if(storage===undefined)storage=inMemoryRecoveryStore();
   globalThis.document = {
     createElement: () => el(),
     getElementById: id => id === "chatWorkspaceLayout" ? el() : null
@@ -141,4 +142,14 @@ test("ordinary informational Chat does not require writable Windows task recover
  const reply=await transport.send("Hello Shuvi","plain-chat",0);
  assert.equal(reply.ok,true);
  assert.equal(mock.calls.filter(x=>x==="chat").length,1);
+});
+
+test("native Windows task refuses to call a paid provider when recovery storage is absent",async()=>{
+ const mock=nativeInvoke({content:"Should not dispatch",tool_proposal:null},false);
+ const transport=await mount(mock.invoke,null);
+ const result=await transport.send("Open Notepad","journal-missing",0);
+ assert.equal(result.ok,false);
+ assert.match(result.error,/recovery journal could not be saved/);
+ assert.equal(mock.calls.includes("chat"),false);
+ assert.equal(mock.calls.includes("prepare_tool"),false);
 });

@@ -213,9 +213,9 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   recoveryDismiss.hidden=true;
  });
  const writeRecovery=(b:NativeTaskBudget,phase:string,actionId:string|null=null):boolean=>{
-  // Previews without WebView storage cannot claim crash recovery. On a
-  // packaged WebView, storage failure blocks new paid requests/approvals.
-  if(!recoveryStorage)return true;
+  // Installed native commands MUST NOT bypass recovery when localStorage
+  // is missing, denied, or throws. Ordinary Chat remains independent.
+  if(!recoveryStorage)return false;
   return writeNativeRecovery(recoveryStorage,{
    maxActions:b.maxActions,stagedActions:b.stagedActions,
    modelRequests:b.modelRequests,expiresAt:b.expiresAt,phase,actionId

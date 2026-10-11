@@ -87,7 +87,15 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
   if(name==="deny_action")return;
   throw Error("unexpected native call: "+name);
  };
- globalThis.window={__TAURI_INTERNALS__:{invoke},localStorage:recoveryStore};
+ const actualRecoveryStore=recoveryStore??(function(){
+  const data=new Map();
+  return {
+   getItem:key=>data.get(key)??null,
+   setItem:(key,value)=>data.set(key,String(value)),
+   removeItem:key=>data.delete(key)
+  };
+ })();
+ globalThis.window={__TAURI_INTERNALS__:{invoke},localStorage:actualRecoveryStore};
  const transport=mountNativeAgent(()=>{});
  const allow=created.find(x=>x.textContent==="Allow once");
  const deny=created.find(x=>x.textContent==="Deny");
