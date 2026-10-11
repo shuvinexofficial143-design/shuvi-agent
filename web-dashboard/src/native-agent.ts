@@ -10,6 +10,7 @@ import {createTask,stageTask,executeTask,verifyTask,pauseTask,taskSummary,taskCo
 import {isRecoverableUiReadFailure,isAuditedUiReadFailure,uiReplanGuidance} from "./native-read-recovery.mjs";
 import {actionFingerprint,seenAfterAuditedChange,actionLoopGuidance} from "./native-action-loop.mjs";
 import {taskGoalContext,taskGoalLabel} from "./native-goal-checks.mjs";
+import {taskClarificationKind,extendTaskClarification} from "./native-task-clarification.mjs";
 type Provider = {id:string;name:string;default_model:string;api_key_required:boolean;custom_base_url:boolean};
 type NativeChatMessage = {role:"user"|"assistant";content:string};
 type NativeChatResponse = {content:string;provider:string;model:string;tool_proposal:Record<string,unknown>|null};
@@ -155,6 +156,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  const histories=new Map<string,NativeChatMessage[]>();
  const replies=new Map<string,string[]>();
  const taskStates=new Map<string,ReturnType<typeof createTask>>();
+ const taskGoalRoots=new Map<string,string>();
  const getTask=(id:string)=>taskStates.get(id)??null;
  function updateTask(id:string,state:ReturnType<typeof createTask>|null){if(!state)return;taskStates.set(id,state);taskStatus.textContent=taskSummary(state);onChange();}
  function haltTask(id:string,why:string){const s=getTask(id);if(s)updateTask(id,pauseTask(s,why));}
@@ -457,8 +459,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   connected:()=>ready,
   getReplies:(threadId:string)=>replies.get(threadId)||[],
   canClearChats:()=>!pending&&!sending,
-  clearChat:(threadId:string)=>{if(pending?.threadId===threadId)return;histories.delete(threadId);replies.delete(threadId);taskStates.delete(threadId);taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
-  clearAllChats:()=>{histories.clear();replies.clear();taskStates.clear();taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
+  clearChat:(threadId:string)=>{if(pending?.threadId===threadId)return;histories.delete(threadId);replies.delete(threadId);taskStates.delete(threadId);taskGoalRoots.delete(threadId);taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
+  clearAllChats:()=>{histories.clear();replies.clear();taskStates.clear();taskGoalRoots.clear();taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
   async send(text,threadId,promptIndex=0){
    if(!ready)return {ok:false,error:"Windows Shuvi is not connected yet."};
    // A short answer to a Master clarification is still part of the SAME
@@ -468,17 +470,20 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    const previous=histories.get(threadId)||[];
    const lastAnswer=previous[previous.length-1];
    const lastRequest=[...previous].reverse().find(message=>message.role==="user");
-   const waitingForChoice=Boolean(lastAnswer?.role==="assistant" &&
-    /[?？]|कौन\s*सा|कौन-सा|बताओ|which|specify|what\s+app/iu.test(lastAnswer.content) &&
-    lastRequest && chooseNativeRoute(lastRequest.content,team?.current()).role!=="chat");
+   // A second clarification must retain the ORIGINAL computer goal, not
+   // the immediately preceding short app-name/path response.
+   const clarification=taskClarificationKind(lastAnswer?.role==="assistant"?lastAnswer.content:null,text);
+   const retainedGoal=taskGoalRoots.get(threadId);
+   const waitingForChoice=Boolean(clarification&&retainedGoal);
    const route=chooseNativeRoute(waitingForChoice?"@master "+text:text,team?.current());
    if(!route.ok)return {ok:false,error:route.error};
-   // Only a short answer to an explicit application-choice question carries
-   // the previous goal. Generic clarification or a fresh command does not.
-   const isAppClarification=Boolean(waitingForChoice && lastAnswer?.role==="assistant" &&
-    /कौन[\s-]*सा|कौनसी|which\s+(?:adobe\s+)?(?:app|application|software)|what\s+app|specify\s+(?:the\s+)?(?:app|application)/iu.test(lastAnswer.content) &&
-    text.trim().length<=300 && !/^(?:cancel|stop|never\s?mind|forget\s+it|रद्द|नहीं|मत\s+करो)\b/iu.test(text.trim()));
-   const effectiveObjective=resolveMasterObjective(lastRequest?.content,text,isAppClarification);
+   const isAppClarification=Boolean(waitingForChoice&&clarification==="application");
+   let effectiveObjective=resolveMasterObjective(lastRequest?.content,text,isAppClarification);
+   if(waitingForChoice&&retainedGoal){
+    effectiveObjective=isAppClarification
+     ?resolveMasterObjective(retainedGoal,text,true)
+     :extendTaskClarification(retainedGoal,text,clarification);
+   }
    if(pending)return {ok:false,error:"First approve or deny the existing Windows action."};
    if(sending)return {ok:false,error:"A native request is already running."};
    if(!text.trim()||text.length>2500)return {ok:false,error:"Invalid command length."};
@@ -492,7 +497,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     const firstStepGuidance=route.role==="chat"?null:
      "Continue the user\u0027s actual desktop request, not a preliminary inspection. "+
      (waitingForChoice&&lastRequest?"The user\u0027s current app name answers the previous opening request: "+lastRequest.content.slice(0,300)+". ":"")+
-     (isAppClarification?"Keep the original request as the task goal after this clarification: "+effectiveObjective.slice(0,440)+". ":"")+
+     (waitingForChoice?"Keep the original request as the task goal after this clarification: "+effectiveObjective.slice(0,440)+". ":"")+
      "For an instruction to open Premiere Pro, propose premiere_launch with {} FIRST; it already finds the installation. Do not stop at premiere_detect. After launch, verify the real window with a separately approved ui_windows. For UI work use ui_windows and ui_discover to ground current button labels and controls rather than guessing names; on ambiguity stop and ask. For inspect_screen always supply window with the exact real app title observed via ui_windows, even if the user returns to Shuvi to approve; use desktop only for an explicitly requested whole-screen inspection. Use inspect_screen only if the selected model supports Vision; xKiro model capability is checked against its public catalog before any paid screenshot request. No silent model switches or automatic paid retries. Each action requires Allow once and matching audit. "+
       masterGoalContext(effectiveObjective)+" "+taskGoalContext(effectiveObjective);
    const response=await invoke<NativeChatResponse>("chat",{
@@ -501,6 +506,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     if(!response||typeof response.content!=="string")throw Error("Invalid native AI response.");
     const reply=response.content.slice(0,12000);
     histories.set(threadId,[...messages,{role:"assistant",content:reply}].slice(-22));
+    if(route.role!=="chat")taskGoalRoots.set(threadId,effectiveObjective);
     if(route.role!=="chat")goalStatus.textContent=taskGoalLabel(effectiveObjective);
     updateReply(threadId,promptIndex,reply);
     if(response.tool_proposal){

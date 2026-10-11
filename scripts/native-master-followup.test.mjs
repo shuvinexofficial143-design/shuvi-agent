@@ -502,3 +502,31 @@ test("Batch 07 continuation rejects mismatched prepared kind after audited first
  assert.equal(s.approval.hidden,true);
  assert.equal(s.chatInputs.length,2);
 });
+
+test("Batch 08 multi-turn app and folder clarification retains original goal",async()=>{
+ const app={content:"कौन-सा Adobe ऐप खोलूँ?",provider:"xkiro",model:"model/master",tool_proposal:null};
+ const destination={content:"Where should I save the new project?",provider:"xkiro",model:"model/master",tool_proposal:null};
+ const s=setup({first:app,second:destination,following:[launch]});
+ await until(()=>s.transport.connected(),"native IPC");
+ await s.transport.send("Adobe खोलकर Shuvi AI Test 01 नाम का नया प्रोजेक्ट बनाओ","multi-clarification",0);
+ await s.transport.send("Premiere Pro","multi-clarification",1);
+ await s.transport.send("D:\\Projects\\Test","multi-clarification",2);
+ assert.equal(s.chatInputs.length,3);
+ assert.equal(s.chatInputs[2].model,"model/master");
+ assert.match(s.chatInputs[2].orchestration_context,/Adobe खोलकर Shuvi AI Test 01/);
+ assert.match(s.chatInputs[2].orchestration_context,/Premiere Pro/);
+ assert.match(s.chatInputs[2].orchestration_context,/Projects/);
+ assert.equal(s.staged.length,1);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,0);
+ assert.equal(s.approval.hidden,false);
+});
+test("Batch 08 fresh command does not inherit older clarification goal",async()=>{
+ const app={content:"कौन-सा Adobe ऐप खोलूँ?",provider:"xkiro",model:"model/master",tool_proposal:null};
+ const s=setup({first:app,second:launch});
+ await until(()=>s.transport.connected(),"native IPC");
+ await s.transport.send("Adobe खोलकर Shuvi Test नाम का प्रोजेक्ट बनाओ","fresh-after-choice",0);
+ await s.transport.send("Photoshop खोलो","fresh-after-choice",1);
+ assert.equal(s.chatInputs.length,2);
+ assert.doesNotMatch(s.chatInputs[1].orchestration_context,/Shuvi Test/);
+ assert.equal(s.staged.length,1);
+});
