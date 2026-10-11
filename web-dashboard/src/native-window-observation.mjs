@@ -1,6 +1,7 @@
+import {cleanObservedLabel} from "./native-observation-text.mjs";
 // Batch 10: Parse only observed, audit-verified read-only Windows output.
 // Window inventory is untrusted UI state, NOT permission to mutate anything.
-const allowed=(v,max)=>typeof v==="string"?v.trim().slice(0,max):"";
+const allowed=(v,max)=>typeof v==="string"?cleanObservedLabel(v,max):"";
 export function summarizeWindowObservation(result,audited=false){
  if(!audited||result?.success!==true||result.tool!=="ui_windows")return "";
  let data;

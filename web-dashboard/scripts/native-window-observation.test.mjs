@@ -25,3 +25,10 @@ test("malformed data, no rows and oversized inventory remain bounded",()=>{
  assert.ok(output.length<2400);
  assert.match(output,/input bounded/);
 });
+
+test("Batch 25 visible window summaries strip invisible directional marks",()=>{
+ const result={tool:"ui_windows",success:true,stdout:JSON.stringify([{Name:"Premiere\u202e Project",ProcessName:"Adobe Premiere",ProcessId:123,NativeWindowHandle:101}])};
+ const output=guide(result,true);
+ assert.doesNotMatch(output,/[\u202a-\u202e]/u);
+ assert.match(output,/Premiere/);
+});
