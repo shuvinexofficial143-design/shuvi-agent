@@ -39,3 +39,10 @@ test("only audited UI mutations unlock repeat observations, never mutation repea
 test("Batch 92 Master told to re-observe Windows after every audited UI mutation",()=>{
  assert.match(actionLoopGuidance(),/newly approved ui_windows read before another UI mutation/);
 });
+
+test("Batch 93 malformed proposal argument roots are never staged as native tools",()=>{
+ for(const argumentsValue of [null,[],1,"x",true])
+  assert.equal(actionFingerprint({tool:"ui_windows",arguments:argumentsValue}),null);
+ assert.ok(actionFingerprint({tool:"ui_windows",arguments:{}}));
+ assert.ok(actionFingerprint({tool:"ui_windows"}));
+});

@@ -1,0 +1,1 @@
+Batch 93: Reject null, array and scalar root tool arguments before preparing any native action. Only omitted arguments or a plain JSON object are eligible for action fingerprinting and subsequent Rust validation.

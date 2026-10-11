@@ -32,6 +32,8 @@ export function actionFingerprint(proposal){
   if(!proposal||typeof proposal!=="object"||Array.isArray(proposal)||
    typeof proposal.tool!=="string"||!/^[a-z][a-z0-9_]{0,79}$/.test(proposal.tool))
    return null;
+  if(proposal.arguments!==undefined&&(!proposal.arguments||typeof proposal.arguments!=="object"||
+   Array.isArray(proposal.arguments)))return null;
   const json=JSON.stringify({tool:proposal.tool,arguments:canonical(proposal.arguments??{})});
   return json.length<=16000?json:null;
  }catch{return null;}
