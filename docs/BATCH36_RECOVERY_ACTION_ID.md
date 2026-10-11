@@ -1,0 +1,1 @@
+Batch 36: Failure recovery refuses empty, whitespace-only or oversized native action IDs. Exact, bounded action identity remains mandatory before any separately approved read-only inspection.

@@ -41,3 +41,10 @@ test("safe replan advice appears only after the audited ui_windows observation",
  assert.match(advice,/never click, type, save or modify/);
  assert.ok(advice.length<1100);
 });
+
+test("Batch 36 rejected oversized or whitespace-only action ID never qualifies for recovery",()=>{
+ const receipt={action_id:" ",tool:"ui_find",event:"failed",success:false};
+ assert.equal(isAuditedUiReadFailure("ui_find","UI lookup failed: no match"," ",receipt),false);
+ const id="a".repeat(129);
+ assert.equal(isAuditedUiReadFailure("ui_find","UI lookup failed: no match",id,{...receipt,action_id:id}),false);
+});

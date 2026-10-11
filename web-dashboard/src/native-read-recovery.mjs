@@ -9,7 +9,7 @@ export function isRecoverableUiReadFailure(kind, message){
 }
 export function isAuditedUiReadFailure(kind, message, actionId, receipt, alreadyDiscovered=false){
  if(!isRecoverableUiReadFailure(kind,message)||alreadyDiscovered||
-  typeof actionId!=="string"||!actionId)return false;
+  typeof actionId!=="string"||!actionId.trim()||actionId.length>128)return false;
  return Boolean(receipt&&typeof receipt==="object"&&!Array.isArray(receipt)&&
   receipt.action_id===actionId&&receipt.tool===kind&&
   receipt.event==="failed"&&receipt.success===false);
