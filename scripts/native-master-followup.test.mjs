@@ -38,7 +38,7 @@ const launch={
  provider:"xkiro",model:"model/master",
  tool_proposal:{tool:"premiere_launch",arguments:{}}
 };
-function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null,wrongStageIndex=0,continuationRenderError=false,reusePendingId=false,recoveryStore=null,recoveryReceipt=null,recoveryTrail=null}={}){
+function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null,wrongStageIndex=0,continuationRenderError=false,reusePendingId=false,recoveryStore=null,recoveryReceipt=null,recoveryTrail=null,rustRecord=null,rustFailPhase=null}={}){
  const nodes=new Map(),created=[],calls=[],chatInputs=[],staged=[];
  const domParent=el(),composerParent=el(),form=el(),chat=el();
  form.parentElement=composerParent;chat.parentElement=domParent;
@@ -52,8 +52,8 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
  const invoke=async(name,params={})=>{
   calls.push({name,params});
   if(name==="runtime_status")return {shuvi_memory_mb:40,managed_children_count:0};
-  if(name==="save_native_recovery")return;
-  if(name==="load_native_recovery")return null;
+  if(name==="save_native_recovery"){if(params.record?.phase===rustFailPhase)throw Error("Rust snapshot rejected");return;}
+  if(name==="load_native_recovery")return rustRecord;
   if(name==="clear_native_recovery")return;
   if(name==="list_providers")return [{id:"xkiro",name:"xKiro"}];
   if(name==="remote_agent_status")return {enabled:false};
@@ -888,7 +888,7 @@ test("restart with an uncertain action blocks new desktop work until explicit ow
  assert.match(s.recoveryNotice.textContent,/Rust Audit confirms a successful action/);
  assert.equal(s.calls.some(c=>c.name==="execute_action"),false);
  assert.equal(s.calls.some(c=>c.name==="chat"),false);
- s.recoveryDismiss.listeners.get("click")();
+ await s.recoveryDismiss.listeners.get("click")();
  const accepted=await s.transport.send("Open Premiere Pro","new-safe-task",0);
  assert.equal(accepted.ok,true);
  assert.equal(s.staged.length,1);
@@ -925,9 +925,49 @@ test("unknown outcome in the same session blocks a second paid task until owner 
  assert.match(blocked.error,/previous Windows task/);
  assert.equal(s.chatInputs.length,1);
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
- s.recoveryDismiss.listeners.get("click")();
+ await s.recoveryDismiss.listeners.get("click")();
  const allowed=await s.transport.send("Open Premiere Pro","new-owner-approved-task",0);
  assert.equal(allowed.ok,true);
  assert.equal(s.chatInputs.length,2);
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+});
+
+test("Rust recovery alone blocks new tasks even when WebView storage was lost",async()=>{
+ const now=Date.now(),id="rust-previous-21";
+ const rustRecord={version:1,maxActions:8,stagedActions:1,modelRequests:1,
+  expiresAt:now+600000,updatedAt:now,phase:"executing",actionId:id};
+ const s=setup({rustRecord});
+ await until(()=>s.transport.connected(),"native IPC and Rust checkpoint");
+ assert.equal(s.recoveryDismiss.hidden,false);
+ const blocked=await s.transport.send("Open Premiere Pro","lost-local",0);
+ assert.equal(blocked.ok,false);
+ assert.equal(s.chatInputs.length,0);
+ assert.match(s.recoveryNotice.textContent,/Native Rust recovered task/);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
+ await s.recoveryDismiss.listeners.get("click")();
+ assert.equal(s.calls.filter(c=>c.name==="clear_native_recovery").length,1);
+ const allowed=await s.transport.send("Open Premiere Pro","new-owner-task",0);
+ assert.equal(allowed.ok,true);
+ assert.equal(s.staged.length,1);
+});
+test("Rust snapshot failure prevents a paid model request and any prepared Windows action",async()=>{
+ const s=setup({rustFailPhase:"model_reserved"});
+ await until(()=>s.transport.connected(),"native IPC");
+ const answer=await s.transport.send("Open Premiere Pro","rust-write-failure",0);
+ assert.equal(answer.ok,false);
+ assert.equal(s.calls.filter(c=>c.name==="save_native_recovery").length,1);
+ assert.equal(s.chatInputs.length,0);
+ assert.equal(s.staged.length,0);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
+});
+test("Rust executing-phase write failure denies approval without executing Windows action",async()=>{
+ const s=setup({rustFailPhase:"executing"});
+ await until(()=>s.transport.connected(),"native IPC");
+ const answer=await s.transport.send("Open Premiere Pro","rust-exec-failure",0);
+ assert.equal(answer.ok,true);
+ assert.equal(s.staged.length,1);
+ s.allow.listeners.get("click")();
+ await until(()=>s.approval.hidden===true&&s.allow.disabled===false,"execution stopped at Rust checkpoint");
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
+ assert.equal(s.calls.filter(c=>c.name==="deny_action").length,1);
 });
