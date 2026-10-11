@@ -10,16 +10,15 @@ export function summarizeWindowObservation(result,audited=false){
  try{data=JSON.parse(result.stdout);}catch{return "Window observation unavailable or unparseable; no target identity verified.";}
  const rows=Array.isArray(data)?data:(data&&typeof data==="object"?[data]:[]);
  if(!rows.length)return "Verified ui_windows returned no window identities. Do not invent an application title or click.";
- const found=[];const seen=new Set();
+ const found=[];
  for(const item of rows.slice(0,200)){
   if(!item||typeof item!=="object"||Array.isArray(item))continue;
   const title=allowed(item.Name,120),process=allowed(item.ProcessName,90);
   const pid=Number.isSafeInteger(item.ProcessId)&&item.ProcessId>=0?item.ProcessId:null;
   const hwnd=Number.isSafeInteger(item.NativeWindowHandle)&&item.NativeWindowHandle>0?item.NativeWindowHandle:null;
   if(!title&&!process)continue;
-  const key=JSON.stringify([title,process,pid,hwnd]);
-  if(seen.has(key))continue;
-  seen.add(key);found.push({title,process,pid,hwnd});
+  // Do not hide duplicate rows: repetition itself signals ambiguous evidence.
+  found.push({title,process,pid,hwnd});
  }
  if(!found.length)return "Verified ui_windows returned no usable window identity. Do not guess.";
  const sample=found.slice(0,6).map(x=>JSON.stringify(x)).join("; ");
