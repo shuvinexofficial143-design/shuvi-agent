@@ -22,5 +22,5 @@ test("duplicate exact window titles are ambiguous even if names match",()=>{
 
 test("Batch 26 multiple observed rows with one handle remain ambiguous",()=>{
  const duplicate=[{title:"Premiere",pid:1,hwnd:3},{title:"Premiere",pid:1,hwnd:3}];
- assert.equal(checkObservedMutationTarget({tool:"ui_click",arguments:{window:"Premiere"}},duplicate).allowed,false);
+ assert.equal(check({tool:"ui_click",arguments:{window:"Premiere"}},duplicate).allowed,false);
 });
