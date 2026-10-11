@@ -38,7 +38,7 @@ const launch={
  provider:"xkiro",model:"model/master",
  tool_proposal:{tool:"premiere_launch",arguments:{}}
 };
-function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null,wrongStageIndex=0,continuationRenderError=false,reusePendingId=false,recoveryStore=null}={}){
+function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null,wrongStageIndex=0,continuationRenderError=false,reusePendingId=false,recoveryStore=null,recoveryReceipt=null,recoveryTrail=null}={}){
  const nodes=new Map(),created=[],calls=[],chatInputs=[],staged=[];
  const domParent=el(),composerParent=el(),form=el(),chat=el();
  form.parentElement=composerParent;chat.parentElement=domParent;
@@ -78,8 +78,10 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
     return {success:false,tool:"ui_find",stdout:"",stderr:"UI lookup failed: No matching UI element found",exit_code:1};
    return {success:true,tool:action.proposal.tool,stdout:stdoutFor?.[action.proposal.tool]??(action.proposal.tool==="premiere_detect"?detectedPath:"Launch requested"),stderr:"",exit_code:0};
   }
+  if(name==="action_audit_receipt"&&recoveryReceipt)return recoveryReceipt;
   if(name==="action_audit_receipt")
    return (failFind||softFailedRead)?{action_id:receiptMismatch?"mismatched-action":params.actionId,tool:"ui_find",event:"failed",success:false}:null;
+  if(name==="audit_log"&&recoveryTrail)return recoveryTrail;
   if(name==="audit_log")return auditOk?staged.map(s=>{
    const failed=(softFailedRead||failFind)&&s.proposal.tool==="ui_find"&&!conflictingSuccessAudit;
    return {event:failed?"failed":"executed",action_id:s.id,tool:s.proposal.tool,success:!failed};
@@ -100,7 +102,10 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
  const allow=created.find(x=>x.textContent==="Allow once");
  const deny=created.find(x=>x.textContent==="Deny");
  const approval=created.find(x=>x.attributes["aria-label"]==="Windows action needs your approval");
- return {transport,calls,chatInputs,staged,allow,deny,approval};
+ const recoveryCheck=created.find(x=>x.textContent==="Check interrupted action in Rust Audit");
+ const recoveryDismiss=created.find(x=>x.textContent==="Acknowledge old task and clear journal");
+ const recoveryNotice=created.find(x=>x.className==="shuvi-native-recovery");
+ return {transport,calls,chatInputs,staged,allow,deny,approval,recoveryCheck,recoveryDismiss,recoveryNotice};
 }
 async function until(predicate,label){
  for(let i=0;i<80;i++){
@@ -857,4 +862,47 @@ test("missing Rust audit does not turn an attempted Windows action into a safe r
  assert.equal(store.last().actionId,"action-1");
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
  assert.equal(s.calls.filter(c=>c.name==="chat").length,1);
+});
+
+test("restart with an uncertain action blocks new desktop work until explicit owner acknowledgement",async()=>{
+ const store=recoveryStore();
+ const now=Date.now(),id="prior-action-456";
+ store.setItem("shuvi.native.task.recovery.v1",JSON.stringify({
+  version:1,maxActions:8,stagedActions:1,modelRequests:1,
+  expiresAt:now+600000,updatedAt:now,phase:"executing",actionId:id
+ }));
+ const receipt={action_id:id,event:"executed",tool:"premiere_launch",success:true};
+ const s=setup({recoveryStore:store,first:detection,recoveryReceipt:receipt,
+  recoveryTrail:[{...receipt,event:"prepared",success:false},receipt]});
+ await until(()=>s.transport.connected(),"native IPC recovery");
+ assert.equal(s.recoveryCheck.hidden,false);
+ assert.equal(s.recoveryDismiss.hidden,false);
+ const blocked=await s.transport.send("Open Premiere Pro","new-unsafe-task",0);
+ assert.equal(blocked.ok,false);
+ assert.match(blocked.error,/previous Windows task/);
+ assert.equal(s.calls.some(c=>c.name==="chat"||c.name==="prepare_tool"),false);
+ await s.recoveryCheck.listeners.get("click")();
+ assert.match(s.recoveryNotice.textContent,/Rust Audit confirms a successful action/);
+ assert.equal(s.calls.some(c=>c.name==="execute_action"),false);
+ assert.equal(s.calls.some(c=>c.name==="chat"),false);
+ s.recoveryDismiss.listeners.get("click")();
+ const accepted=await s.transport.send("Open Premiere Pro","new-safe-task",0);
+ assert.equal(accepted.ok,true);
+ assert.equal(s.staged.length,1);
+ assert.equal(s.calls.some(c=>c.name==="execute_action"),false);
+});
+test("contradictory recovery audit stays unknown and cannot itself start a Windows action",async()=>{
+ const store=recoveryStore(),now=Date.now(),id="prior-action-789";
+ store.setItem("shuvi.native.task.recovery.v1",JSON.stringify({
+  version:1,maxActions:8,stagedActions:1,modelRequests:1,
+  expiresAt:now+600000,updatedAt:now,phase:"outcome_unknown",actionId:id
+ }));
+ const receipt={action_id:id,event:"executed",tool:"premiere_launch",success:true};
+ const s=setup({recoveryStore:store,recoveryReceipt:receipt,
+  recoveryTrail:[{...receipt,tool:"ui_windows"}]});
+ await until(()=>s.transport.connected(),"native IPC recovery");
+ await s.recoveryCheck.listeners.get("click")();
+ assert.match(s.recoveryNotice.textContent,/UNKNOWN/);
+ assert.equal(s.recoveryCheck.hidden,false);
+ assert.equal(s.calls.some(c=>c.name==="execute_action"||c.name==="prepare_tool"||c.name==="chat"),false);
 });
