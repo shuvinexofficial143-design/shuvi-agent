@@ -1,0 +1,1 @@
+Batch 54: Independently audited application-window proof retains native PID and handle, but any label displayed to the owner and passed to planning is sanitized of invisible and bidi formatting. No project/export success inferred.

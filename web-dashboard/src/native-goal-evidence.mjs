@@ -1,3 +1,4 @@
+import {cleanObservedLabel} from "./native-observation-text.mjs";
 // Window-level completion evidence, NOT proof of project/file/editor outcomes.
 // Only a fresh, exact-audited ui_windows action can confirm an application.
 // A project dialog or launched process cannot complete the user's original goal.
@@ -35,7 +36,9 @@ export function windowGoalEvidence(objective,result,hasExactAudit){
   !Number.isSafeInteger(row.ProcessId)||row.ProcessId<=0||
   !Number.isSafeInteger(row.NativeWindowHandle)||row.NativeWindowHandle<=0)
   return null;
- return {app,title:row.Name.slice(0,140),pid:row.ProcessId,hwnd:row.NativeWindowHandle};
+ const safeTitle=cleanObservedLabel(row.Name,140);
+ if(!safeTitle)return null;
+ return {app,title:safeTitle,pid:row.ProcessId,hwnd:row.NativeWindowHandle};
 }
 export function goalEvidenceLabel(request,verifiedWindow){
  if(!verifiedWindow)return "Original goal checks remain unverified; inspect the actual application.";

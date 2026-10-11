@@ -35,3 +35,13 @@ test("Batch 50 conflicting records sharing a HWND cannot verify a live applicati
  ])};
  assert.equal(windowGoalEvidence("Premiere kholo",contradiction,true),null);
 });
+
+test("Batch 54 independently verified window proof displays normalized safe title",()=>{
+ const result={tool:"ui_windows",success:true,stdout:JSON.stringify([
+  {Name:"Adobe Premiere\u202e Pro 2026",ProcessName:"Adobe Premiere Pro",ProcessId:120,NativeWindowHandle:121}
+ ])};
+ const proof=windowGoalEvidence("Premiere kholo",result,true);
+ assert.ok(proof);
+ assert.equal(proof.title,"Adobe Premiere Pro 2026");
+ assert.doesNotMatch(goalEvidenceLabel("Premiere kholo",proof),/[\u202a-\u202e]/);
+});
