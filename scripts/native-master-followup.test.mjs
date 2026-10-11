@@ -685,3 +685,17 @@ test("Batch 17 clearing chats cannot erase a pending native approval or its thre
  s.transport.clearAllChats();
  assert.deepEqual(s.transport.getReplies("protected-clear"),[]);
 });
+
+test("Batch 18 Master prose without next tool reports unverified outcome even if it says done",async()=>{
+ const first=launch;
+ const second={content:"The project is fully saved!",provider:"xkiro",model:"model/master",tool_proposal:null};
+ const s=setup({first,second});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Premiere kholo aur new project banao","model-completion-only",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.transport.getReplies("model-completion-only")[0]?.includes("Outcome: UNVERIFIED"),
+  "outcome evidence summary");
+ assert.equal(s.staged.length,1);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
+ assert.equal(s.chatInputs.length,2);
+});

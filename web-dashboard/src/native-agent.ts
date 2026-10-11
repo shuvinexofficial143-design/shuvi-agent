@@ -17,6 +17,7 @@ import {windowGoalEvidence,goalEvidenceLabel} from "./native-goal-evidence.mjs";
 import {observedWindowInventory,checkObservedMutationTarget} from "./native-window-target-guard.mjs";
 import {verifiedExecutionReceipt,contradictsFailureReceipt} from "./native-action-receipts.mjs";
 import {requiresNewWindowObservation} from "./native-ui-snapshot-lifetime.mjs";
+import {taskOutcomeSummary} from "./native-task-outcome.mjs";
 type Provider = {id:string;name:string;default_model:string;api_key_required:boolean;custom_base_url:boolean};
 type NativeChatMessage = {role:"user"|"assistant";content:string};
 type NativeChatResponse = {content:string;provider:string;model:string;tool_proposal:Record<string,unknown>|null};
@@ -285,7 +286,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   if(!response.tool_proposal){
    haltTask(task.threadId,"no_next_tool");
    appendReply(task.threadId,task.promptIndex,
-    "Task paused: no further executable tool was proposed. The full original objective is NOT independently verified complete; check the actual application/project before claiming success.");
+    "Task paused: no further executable tool was proposed. The full original objective is NOT independently verified complete; check the actual application/project before claiming success.\n"+
+    taskOutcomeSummary(task.objective,verifiedWindows.get(task.threadId)??null));
    showActionFeedback("Master replied without a next executable tool. The original Windows task is not automatically verified as completed.");
    refreshState("Master did not propose another action; task paused.");
    return;
