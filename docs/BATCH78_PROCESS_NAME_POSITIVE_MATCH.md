@@ -1,0 +1,1 @@
+Batch 78: A native window with a Premiere title but a nonempty unrelated process name no longer verifies Premiere is open. When process identity is present it must positively match the requested application; missing process name remains unverified by process and still requires other strict checks.

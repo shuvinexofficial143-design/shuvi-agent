@@ -31,7 +31,9 @@ export function windowGoalEvidence(objective,result,hasExactAudit){
  const row=selected[0];
  // A matching title can be misleading if process identity names another app.
  const process=typeof row.ProcessName==="string"?row.ProcessName:"";
- if(process&&knownApps.some(([id,,matcher])=>id!==app&&matcher.test(process)))return null;
+ // When the OS supplies a process identity, it must positively match
+ // the requested app; a spoofed title on an unrelated process is not proof.
+ if(process&&(!match.test(process)||knownApps.some(([id,,matcher])=>id!==app&&matcher.test(process))))return null;
  // A reused native handle with contradictory process/title cannot verify
  // a unique live app, even if exactly one title matches the requested app.
  if(rows.some(other=>other!==row&&other&&

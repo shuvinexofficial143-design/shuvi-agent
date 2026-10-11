@@ -60,3 +60,12 @@ test("Batch 57 newly scoped Adobe tools only verify their own unique audited liv
   assert.equal(windowGoalEvidence("Open "+name,result,false),null);
  }
 });
+
+test("Batch 78 an unrelated nonempty process cannot impersonate the requested app via title",()=>{
+ const result={tool:"ui_windows",success:true,stdout:JSON.stringify([
+  {Name:"Adobe Premiere Pro 2026",ProcessName:"UnrelatedEditor.exe",ProcessId:123,NativeWindowHandle:222}
+ ])};
+ assert.equal(windowGoalEvidence("Premiere kholo",result,true),null);
+ assert.equal(windowGoalEvidence("Premiere kholo",{...result,stdout:JSON.stringify([
+  {Name:"Adobe Premiere Pro 2026",ProcessId:123,NativeWindowHandle:222}])},true)?.app,"premiere");
+});
