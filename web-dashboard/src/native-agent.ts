@@ -267,6 +267,14 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   }
   return saved;
  };
+ const persistRecovery=async(b:NativeTaskBudget,phase:string,actionId:string|null=null):Promise<boolean>=>{
+  // Rust fsynced checkpoint must accept the same bounded local record.
+  if(!writeRecovery(b,phase,actionId))return false;
+  const record=readNativeRecovery(recoveryStorage);
+  if(!record)return false;
+  try{await invoke<void>("save_native_recovery",{record});return true;}
+  catch{return false;}
+ };
  const taskEvidence=new Map<string,ReturnType<typeof newEvidence>>();
  const verifiedWindows=new Map<string,NonNullable<ReturnType<typeof windowGoalEvidence>>>();
  const observedWindows=new Map<string,NonNullable<ReturnType<typeof observedWindowInventory>>>();
@@ -342,7 +350,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   }
   // One provider request per confirmed, approved step. No retries for ambiguous
   // provider results and no auto execution of a newly proposed Windows action.
-  if(!writeRecovery(taskBudget,"model_reserved",task.action.id)){
+  if(!await persistRecovery(taskBudget,"model_reserved",task.action.id)){
    haltTask(task.threadId,"recovery_journal_failed");
    appendReply(task.threadId,task.promptIndex,"Native recovery journal could not be saved. No follow-up AI request sent.");
    return;
@@ -467,7 +475,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     try{await invoke<void>("deny_action",{actionId:next.id});}catch{/* fail closed */}
     throw Error("Native action budget expired during preparation; no approval was given.");
    }
-   if(!writeRecovery(taskBudget,"awaiting_approval",next.id)){
+   if(!await persistRecovery(taskBudget,"awaiting_approval",next.id)){
     try{await invoke<void>("deny_action",{actionId:next.id});}catch{/* fail closed */}
     throw Error("Native recovery journal failed; no action authorized.");
    }
@@ -514,7 +522,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     try{await invoke<void>("deny_action",{actionId:next.id});}catch{/* fail closed */}
     return false;
    }
-   if(!writeRecovery(taskBudget,"awaiting_approval",next.id)){
+   if(!await persistRecovery(taskBudget,"awaiting_approval",next.id)){
     try{await invoke<void>("deny_action",{actionId:next.id});}catch{/* fail closed */}
     return false;
    }
@@ -574,7 +582,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     // Crash boundary: after this durable marker, the action MUST be treated
     // as possibly executed until a matching Rust audit proves otherwise.
     // If this write fails, no execute_action IPC is sent.
-    if(!writeRecovery(currentBudget,"executing",current.action.id)){
+    if(!await persistRecovery(currentBudget,"executing",current.action.id)){
      try{await invoke<void>("deny_action",{actionId:current.action.id});}catch{/* no execution requested */}
      haltTask(current.threadId,"recovery_journal_failed");
      appendReply(current.threadId,current.promptIndex,
@@ -608,7 +616,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     executionVerified=verified;
     if(verified){
      const verifiedBudget=taskBudgets.get(current.threadId);
-     if(verifiedBudget&&!writeRecovery(verifiedBudget,"audit_verified",current.action.id)){
+     if(verifiedBudget&&!await persistRecovery(verifiedBudget,"audit_verified",current.action.id)){
       haltTask(current.threadId,"recovery_journal_failed");
       appendReply(current.threadId,current.promptIndex,
        "Native action audit-verified, but recovery journal failed. No further AI request sent.");
@@ -775,7 +783,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    if(!reserveNativeModelRequest(taskBudget))return {ok:false,error:
     "Owner-selected AI request budget or task deadline exhausted. No paid AI request was sent. Start a new task to authorize more work."};
    taskBudgets.set(threadId,taskBudget);
-   if(route.role!=="chat"&&!writeRecovery(taskBudget,"model_reserved"))return {ok:false,error:
+   if(route.role!=="chat"&&!await persistRecovery(taskBudget,"model_reserved"))return {ok:false,error:
     "Native recovery journal could not be saved. No paid AI request sent."};
    // Keep paid-request context bounded and avoid forwarding any credential.
    const messages:NativeChatMessage[]=[...(waitingForChoice||route.role==="chat"?prev.slice(-20):[]),
@@ -843,7 +851,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
        try{await invoke<void>("deny_action",{actionId:proposed.id});}catch{/* no execution */}
        throw Error("Native budget expired during action preparation; action not authorized.");
       }
-      if(!writeRecovery(taskBudget,"awaiting_approval",proposed.id)){
+      if(!await persistRecovery(taskBudget,"awaiting_approval",proposed.id)){
        try{await invoke<void>("deny_action",{actionId:proposed.id});}catch{/* fail closed */}
        throw Error("Native approval journal could not be saved. No Windows action authorized.");
       }
