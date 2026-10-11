@@ -345,7 +345,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     usedIds:new Set([...task.usedIds,next.id]),recoveryFrom:null};
    updateTask(task.threadId,stageTask(getTask(task.threadId),next.id,next.kind,task.step+1));
    pendingText.textContent="Step "+(task.step+1)+
-    " · Permission required: "+next.summary+"\nRisk: "+next.risk+"\n"+next.detail;
+    " · Permission required: "+redactNativeError(next.summary)+"\nRisk: "+redactNativeError(next.risk)+"\n"+redactNativeError(next.detail);
    approval.hidden=false;
    approval.scrollIntoView?.({block:"nearest",behavior:"smooth"});
    showActionFeedback("Master has prepared the next Windows action. Review and select Allow once or Deny. Nothing executed automatically.");
@@ -384,7 +384,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     recoveryFrom:current.action.kind as "ui_find"|"ui_discover"};
    updateTask(current.threadId,stageTask(getTask(current.threadId),next.id,next.kind,current.step+1));
    pendingText.textContent="Read-only UI recovery · Allow once required: "+
-    next.summary+"\nRisk: "+next.risk+"\n"+next.detail;
+    next.summary+"\nRisk: "+redactNativeError(next.risk)+"\n"+redactNativeError(next.detail);
    approval.hidden=false;
    approval.scrollIntoView?.({block:"nearest",behavior:"smooth"});
    appendReply(current.threadId,current.promptIndex,
@@ -640,8 +640,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
        route:{role:route.role,provider:route.provider,model:route.model,base_url:route.base_url||""},
        step:1,seen:new Set([first]),usedIds:new Set([proposed.id])};
       updateTask(threadId,stageTask(createTask(),proposed.id,proposed.kind,1));
-      pendingText.textContent="Permission required: "+proposed.summary+
-        "\nRisk: "+proposed.risk+"\n"+proposed.detail;
+      pendingText.textContent="Permission required: "+redactNativeError(proposed.summary)+
+        "\nRisk: "+redactNativeError(proposed.risk)+"\n"+redactNativeError(proposed.detail);
       approval.hidden=false;
       showActionFeedback("Windows action prepared. Read the approval below and select Allow once or Deny. Nothing runs before approval.");
       refreshState("Waiting for your explicit Allow once / Deny decision. No tool executed.");
