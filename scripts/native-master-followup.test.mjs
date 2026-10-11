@@ -405,9 +405,9 @@ test("verified UI recovery observation causes grounded replan advice, not a blin
  const finding={content:JSON.stringify({tool:"ui_find",arguments:{name:"New Project",window:"Adobe Premiere Pro"}}),
   provider:"xkiro",model:"model/master",
   tool_proposal:{tool:"ui_find",arguments:{name:"New Project",window:"Adobe Premiere Pro"}}};
- const discovery={content:JSON.stringify({tool:"ui_discover",arguments:{window:"Adobe Premiere Pro"}}),
+ const discovery={content:JSON.stringify({tool:"ui_discover",arguments:{window:"Adobe Premiere Pro 2026"}}),
   provider:"xkiro",model:"model/master",
-  tool_proposal:{tool:"ui_discover",arguments:{window:"Adobe Premiere Pro"}}};
+  tool_proposal:{tool:"ui_discover",arguments:{window:"Adobe Premiere Pro 2026"}}};
  const s=setup({first:finding,second:discovery,failFind:true,
   stdoutFor:{ui_windows:JSON.stringify([{Name:"Adobe Premiere Pro 2026",ProcessId:3500,ProcessName:"Adobe Premiere Pro",NativeWindowHandle:909}])}});
  await until(()=>s.transport.connected(),"native ready");
@@ -553,9 +553,9 @@ test("Batch 09 model continuation sees audit-only evidence and still requires ne
  assert.equal(s.approval.hidden,false);
 });
 
-test("Batch 10 verified Windows inventory explicitly flags identity ambiguity before next approval",async()=>{
+test("Batch 10 and 96 reject ambiguous UI lookup after a verified multi-window inventory",async()=>{
  const inspect={content:"inspect",provider:"xkiro",model:"model/master",
-  tool_proposal:{tool:"ui_discover",arguments:{window:"Premiere"}}};
+  tool_proposal:{tool:"ui_discover",arguments:{window:"Adobe Premiere Pro 2026"}}};
  const windows={content:"windows",provider:"xkiro",model:"model/master",
   tool_proposal:{tool:"ui_windows",arguments:{}}};
  const stdout=JSON.stringify([
@@ -566,11 +566,13 @@ test("Batch 10 verified Windows inventory explicitly flags identity ambiguity be
  await until(()=>s.transport.connected(),"native");
  await s.transport.send("Premiere ko dekho","multi-window-evidence",0);
  s.allow.listeners.get("click")();
- await until(()=>s.staged.length===2,"second approval");
+ await until(()=>s.transport.getReplies("multi-window-evidence")[0]?.includes("Ambiguous window lookup"),"ambiguous lookup blocked");
+ assert.equal(s.staged.length,1,"no ambiguous second approval staged");
  assert.match(s.chatInputs[1].orchestration_context,/2 usable window identity/);
  assert.match(s.chatInputs[1].orchestration_context,/NOT a selected target/);
  assert.match(s.chatInputs[1].orchestration_context,/never pick the first matching window/);
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+ assert.equal(s.approval.hidden,true);
 });
 
 test("Batch 11 post-action save-folder clarification retains the ORIGINAL goal",async()=>{
