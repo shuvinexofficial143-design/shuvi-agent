@@ -65,6 +65,7 @@ export function checkObservedMutationTarget(proposal,observed){
 export function checkAmbiguousReadWindow(proposal,observed){
  if(!["ui_find","ui_discover"].includes(proposal?.tool)||!Array.isArray(observed))
   return {allowed:true,reason:"native_lookup_required"};
+ if(observed.length===0)return {allowed:false,reason:"Window snapshot is stale or invalid; inspect ui_windows first."};
  const target=proposal?.arguments?.window;
  if(typeof target!=="string"||!target.trim())return {allowed:true,reason:"native_lookup_required"};
  if(cleanObservedLabel(target,180)!==target.trim())
@@ -75,6 +76,7 @@ export function checkAmbiguousReadWindow(proposal,observed){
  if(matches.length===1&&observed.some(x=>x.hwnd===matches[0].hwnd&&
   (x.pid!==matches[0].pid||x.title!==matches[0].title)))
   return {allowed:false,reason:"Conflicting observed window-handle identity; inspect again."};
+ if(matches.length===0)return {allowed:false,reason:"Read-only lookup target not present in latest verified window inventory."};
  // Repeated exact-title rows cannot uniquely identify one target.
  return matches.length>1?
   {allowed:false,reason:"Multiple audited windows have the same title. Ask which window or use a unique identity."}:

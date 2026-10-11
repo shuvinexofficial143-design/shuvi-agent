@@ -1,0 +1,1 @@
+Batch 96: Once a native ui_windows snapshot exists, read-only ui_find/ui_discover cannot target unobserved window names or a stale/invalidated inventory. Propose new separately owner-approved ui_windows instead. Before the first inventory Rust retains authority.
