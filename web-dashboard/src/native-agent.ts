@@ -606,6 +606,14 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      goalStatus.textContent=taskGoalLabel(effectiveObjective);
     }
     updateReply(threadId,promptIndex,reply);
+    if(route.role==="chat"&&response.tool_proposal){
+     // Chat is informational: a model's tool JSON is not user permission.
+     const notice="Ordinary Chat cannot prepare Windows tools. Use an explicit desktop task request.";
+     updateReply(threadId,promptIndex,reply+"\n\n"+notice);
+     showActionFeedback(notice+" Nothing staged or executed.");
+     refreshState("Chat tool proposal ignored; no native action prepared.");
+     return {ok:true,reply:reply+"\n\n"+notice};
+    }
     if(response.tool_proposal){
      actionFeedback.hidden=true;
      try{

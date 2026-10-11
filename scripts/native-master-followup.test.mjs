@@ -713,3 +713,14 @@ test("Batch 19 thrown read error with conflicting successful native audit cannot
  assert.equal(s.chatInputs.length,1,"no further paid request");
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
 });
+
+test("Batch 51 ordinary chat ignores model-produced native tool proposals",async()=>{
+ const s=setup({first:{content:"I can help",provider:"xkiro",model:"model/chat",
+  tool_proposal:{tool:"premiere_launch",arguments:{}}}});
+ await until(()=>s.transport.connected(),"native ready");
+ const response=await s.transport.send("hello Shuvi","chat-only-proposal",0);
+ assert.equal(response.ok,true);
+ assert.match(response.reply,/Ordinary Chat cannot prepare Windows tools/);
+ assert.equal(s.staged.length,0);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,0);
+});
