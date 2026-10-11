@@ -22,3 +22,13 @@ export function extendTaskClarification(root,answer,kind){
  const suffix="\nUser "+kind+" clarification: "+value;
  return root.trim().slice(0,2500-suffix.length)+suffix;
 }
+
+
+// Preserve a Windows objective only across explicit Master clarification.
+export const isTaskClarificationQuestion=question=>
+ taskClarificationKind(question,"Shuvi Answer")!==null;
+export function nextClarificationRoot(objective,reply,hasTool,role){
+ if(role==="chat"||hasTool===true||!isTaskClarificationQuestion(reply))return null;
+ if(typeof objective!=="string"||!objective.trim())return null;
+ return objective.trim().slice(0,2500);
+}

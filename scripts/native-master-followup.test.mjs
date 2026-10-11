@@ -563,3 +563,32 @@ test("Batch 10 verified Windows inventory explicitly flags identity ambiguity be
  assert.match(s.chatInputs[1].orchestration_context,/never pick the first matching window/);
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
 });
+
+test("Batch 11 post-action save-folder clarification retains the ORIGINAL goal",async()=>{
+ const question={content:"Where should I save the project?",provider:"xkiro",model:"model/master",tool_proposal:null};
+ const next={content:"windows",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_windows",arguments:{}}};
+ const s=setup({first:launch,second:question,following:[next]});
+ await until(()=>s.transport.connected(),"native IPC");
+ await s.transport.send("Premiere kholo aur Shuvi AI Test project banao","clarification-after-tool",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.chatInputs.length===2,"Master destination question");
+ await until(()=>s.transport.getReplies("clarification-after-tool")[0]?.includes("Task paused"),
+  "paused for owner choice");
+ await s.transport.send("D:\\Temporary Projects","clarification-after-tool",1);
+ assert.equal(s.chatInputs[2].model,"model/master");
+ assert.match(s.chatInputs[2].orchestration_context,/Premiere kholo aur Shuvi AI Test/);
+ assert.match(s.chatInputs[2].orchestration_context,/Temporary Projects/);
+ assert.equal(s.staged.length,2);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
+});
+test("Batch 11 no-tool final answer clears old clarification identity",async()=>{
+ const question={content:"Which Adobe app should I open?",provider:"xkiro",model:"model/master",tool_proposal:null};
+ const done={content:"All set!",provider:"xkiro",model:"model/master",tool_proposal:null};
+ const s=setup({first:question,second:done,following:[launch]});
+ await until(()=>s.transport.connected(),"native IPC");
+ await s.transport.send("Adobe kholo aur Shuvi Test project banao","scope-expiration",0);
+ await s.transport.send("Premiere Pro","scope-expiration",1);
+ await s.transport.send("Something else","scope-expiration",2);
+ assert.doesNotMatch(s.chatInputs[2].orchestration_context??"",/Shuvi Test/);
+});

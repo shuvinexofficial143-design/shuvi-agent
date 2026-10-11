@@ -10,7 +10,7 @@ import {createTask,stageTask,executeTask,verifyTask,pauseTask,taskSummary,taskCo
 import {isRecoverableUiReadFailure,isAuditedUiReadFailure,uiReplanGuidance} from "./native-read-recovery.mjs";
 import {actionFingerprint,seenAfterAuditedChange,actionLoopGuidance} from "./native-action-loop.mjs";
 import {taskGoalContext,taskGoalLabel} from "./native-goal-checks.mjs";
-import {taskClarificationKind,extendTaskClarification} from "./native-task-clarification.mjs";
+import {taskClarificationKind,extendTaskClarification,nextClarificationRoot} from "./native-task-clarification.mjs";
 import {newEvidence,recordAuditedEvidence,evidenceSummary} from "./native-task-evidence.mjs";
 import {summarizeWindowObservation} from "./native-window-observation.mjs";
 type Provider = {id:string;name:string;default_model:string;api_key_required:boolean;custom_base_url:boolean};
@@ -269,6 +269,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    return;
   }
   const answer=response.content.slice(0,9000);
+  // An audited step may be followed by an explicit name/folder question.
+  const followupRoot=nextClarificationRoot(task.objective,answer,Boolean(response.tool_proposal),task.route.role);
+  if(followupRoot)taskGoalRoots.set(task.threadId,followupRoot);
+  else taskGoalRoots.delete(task.threadId);
   histories.set(task.threadId,[...messages,{role:"assistant",content:answer}].slice(-22));
   appendReply(task.threadId,task.promptIndex,"Master next step:\n"+answer);
   if(!response.tool_proposal){
@@ -515,7 +519,9 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     if(!response||typeof response.content!=="string")throw Error("Invalid native AI response.");
     const reply=response.content.slice(0,12000);
     histories.set(threadId,[...messages,{role:"assistant",content:reply}].slice(-22));
-    if(route.role!=="chat")taskGoalRoots.set(threadId,effectiveObjective);
+    const nextRoot=nextClarificationRoot(effectiveObjective,reply,Boolean(response.tool_proposal),route.role);
+    if(nextRoot)taskGoalRoots.set(threadId,nextRoot);
+    else taskGoalRoots.delete(threadId);
     if(route.role!=="chat")goalStatus.textContent=taskGoalLabel(effectiveObjective);
     updateReply(threadId,promptIndex,reply);
     if(response.tool_proposal){

@@ -24,3 +24,15 @@ test("successive answers preserve the original named task, within bounded model 
  assert.ok(extendTaskClarification("a".repeat(20000),"b".repeat(400),"name").length<=2500);
  assert.equal(extendTaskClarification(root,"unrelated",null),"unrelated");
 });
+
+test("Batch 11 only recognized clarification requests retain original Windows scope",async()=>{
+ const {isTaskClarificationQuestion,nextClarificationRoot}=await import("../src/native-task-clarification.mjs");
+ assert.equal(isTaskClarificationQuestion("कौन-सा Adobe ऐप खोलूँ?"),true);
+ assert.equal(isTaskClarificationQuestion("Where should I save the project?"),true);
+ assert.equal(isTaskClarificationQuestion("What project name should I use?"),true);
+ assert.equal(isTaskClarificationQuestion("Project created successfully!"),false);
+ assert.equal(nextClarificationRoot("Make project","Where should I save the project?",false,"master"),"Make project");
+ assert.equal(nextClarificationRoot("Make project","Done!",false,"master"),null);
+ assert.equal(nextClarificationRoot("Make project","Where should I save the project?",true,"master"),null);
+ assert.equal(nextClarificationRoot("Make project","Where should I save the project?",false,"chat"),null);
+});
