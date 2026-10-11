@@ -21,8 +21,12 @@ test("chat and manual approval parse only static markup and set untrusted labels
  assert.match(manual,/manualSummary.textContent = pendingAction.summary/);
  assert.match(chat,/chatRisk.className = approvalRiskClass\(pendingAction.risk\)/);
  assert.match(manual,/manualRisk.className = approvalRiskClass\(pendingAction.risk\)/);
- assert.doesNotMatch(chat,/\$\{pendingAction\.(summary|risk|detail)/);
- assert.doesNotMatch(manual,/\$\{pendingAction\.(summary|risk|detail)/);
+ const chatMarkup=chat.slice(chat.indexOf("chatPermission.innerHTML ="),chat.indexOf("const chatRisk ="));
+ const manualMarkup=manual.slice(manual.indexOf("box.innerHTML ="),manual.indexOf("const manualRisk ="));
+ assert.ok(chatMarkup.includes("chatPermission.innerHTML"));
+ assert.ok(manualMarkup.includes("box.innerHTML"));
+ assert.doesNotMatch(chatMarkup,/pendingAction\.(summary|risk|detail)/);
+ assert.doesNotMatch(manualMarkup,/pendingAction\.(summary|risk|detail)/);
  assert.match(main,/validPendingDisplayMetadata\(pendingAction, proposal.tool\)/);
  assert.match(main,/validPendingDisplayMetadata\(pendingAction\)/);
 });
