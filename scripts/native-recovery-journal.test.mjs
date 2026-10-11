@@ -44,8 +44,8 @@ test("a paused or uncertain task remains an inspection-only journal record",()=>
   assert.equal(readNativeRecovery(store,1001).phase,phase);
  }
  const native=readFileSync(new URL("../web-dashboard/src/native-agent.ts",import.meta.url),"utf8");
- assert.match(native,/writeRecovery\(taskBudget,"outcome_unknown"\)/);
- assert.match(native,/writeRecovery\(taskBudget,"paused"\)/);
+ assert.match(native,/persistRecovery\(taskBudget,"outcome_unknown"\)/);
+ assert.match(native,/persistRecovery\(taskBudget,"paused"\)/);
  assert.match(native,/route.role!=="chat"&&!await persistRecovery\(taskBudget,"model_reserved"\)/);
 });
 
@@ -70,7 +70,7 @@ test("action dispatch MUST follow the durable executing write and unknown outcom
  assert.match(preflight,/await invoke<void>\("deny_action",\{actionId:current.action.id\}\)/);
  assert.match(preflight,/recovery_journal_failed/);
  assert.match(preflight,/return;/);
- assert.match(decide,/writeRecovery\(unknownBudget,"outcome_unknown",current.action.id\)/);
+ assert.match(decide,/persistRecovery\(unknownBudget,"outcome_unknown",current.action.id\)/);
  assert.match(decide,/persistRecovery\(verifiedBudget,"audit_verified",current.action.id\)/);
 });
 
@@ -85,4 +85,13 @@ test("submission acquires exclusive lock before awaiting Rust recovery disk IO",
  const send=source.slice(source.indexOf("async send(text,threadId"),source.lastIndexOf("return {ok:true,reply};"));
  const lock=send.indexOf("sending=true;"),save=send.indexOf('await persistRecovery(taskBudget,"model_reserved")');
  assert.ok(lock>=0&&save>lock);
+});
+
+test("Rust journal captures terminal states after verified or uncertain native outcomes",()=>{
+ const source=readFileSync(new URL("../web-dashboard/src/native-agent.ts",import.meta.url),"utf8");
+ assert.match(source,/await persistRecovery\(taskBudget,"paused",task.action.id\)/);
+ assert.match(source,/await persistRecovery\(taskBudget,"outcome_unknown",task.action.id\)/);
+ assert.match(source,/await persistRecovery\(taskBudget,"paused"\)/);
+ assert.match(source,/await persistRecovery\(taskBudget,"outcome_unknown"\)/);
+ assert.match(source,/await persistRecovery\(unknownBudget,"outcome_unknown",current.action.id\)/);
 });
