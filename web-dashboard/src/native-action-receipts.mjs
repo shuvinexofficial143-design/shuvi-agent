@@ -18,5 +18,5 @@ export function verifiedExecutionReceipt(prepared,result,receipts){
 export function contradictsFailureReceipt(prepared,receipts){
  if(!prepared||typeof prepared.id!=="string"||!Array.isArray(receipts))return true;
  return receipts.some(r=>r?.action_id===prepared.id&&
-  (r.tool!==prepared.kind||r.event==="executed"&&r.success===true));
+  (r.tool!==prepared.kind||r.event==="denied"||r.event==="executed"));
 }

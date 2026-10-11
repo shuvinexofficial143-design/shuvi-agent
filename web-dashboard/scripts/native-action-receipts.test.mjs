@@ -25,3 +25,10 @@ test("Batch 33 conflicting nonzero native exit code cannot count as audited succ
  assert.equal(verified(action,{...result,exit_code:0},[good]),true);
  assert.equal(verified(action,{...result,exit_code:null},[good]),true);
 });
+
+test("Batch 35 denied or any executed record cannot co-authorize failed UI recovery",()=>{
+ assert.equal(conflict(action,[{...good,event:"denied",success:false}]),true);
+ assert.equal(conflict(action,[{...good,event:"executed",success:false}]),true);
+ assert.equal(conflict(action,[{...good,event:"failed",success:false}]),false);
+ assert.equal(conflict(action,[{...good,event:"prepared",success:true}]),false);
+});

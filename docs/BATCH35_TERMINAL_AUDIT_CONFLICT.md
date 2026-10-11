@@ -1,0 +1,1 @@
+Batch 35: Failed-read recovery rejects a conflicting denied or executed terminal action event, even if executed is marked unsuccessful. Only an exact failed action receipt can qualify for read-only recovery. No automatic retries or tool authorization.
