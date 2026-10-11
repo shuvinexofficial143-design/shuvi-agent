@@ -5,10 +5,12 @@ const LOCATION=/\b(?:where|which|what)\b.{0,110}\b(?:folder|directory|save|path|
 const NAME=/\b(?:what|which|specify|choose)\b.{0,110}\b(?:project\s+name|file\s+name|filename|name)\b|क्या\s*नाम|नाम\s*(?:क्या|बताओ)/iu;
 const CANCEL=/^(?:@|cancel\b|stop\b|never\s*mind\b|forget\s*it\b|रद्द|मत\s*करो|नया\s+काम\b)/iu;
 const FRESH=/\b(?:open|launch|delete|create|export|install|send|khol(?:o|na)?|banao)\b.{1,55}\b(?:karo|kar\s*do|now)\b|खोलो|बनाओ|डिलीट|इंस्टॉल/iu;
+// A full imperative is a new command, not a short answer to an old question.
+const INDEPENDENT=/^(?:delete|remove|reset|close|launch|open|create|export|install|send|wipe|format)\b|^(?:हटाओ|बंद\s+करो|डिलीट|नया\s+काम)/iu;
 export function taskClarificationKind(question,answer){
  if(typeof question!=="string"||typeof answer!=="string")return null;
  const q=question.trim().slice(0,650),a=answer.trim();
- if(!q||!a||a.length>300||CANCEL.test(a)||FRESH.test(a))return null;
+ if(!q||!a||a.length>300||CANCEL.test(a)||FRESH.test(a)||INDEPENDENT.test(a))return null;
  if(!/[?？]|कौन|बताओ|कहाँ|कहां|what\b|which\b|where\b|specify\b/iu.test(q))return null;
  if(APP.test(q)&&/(?:app|application|software|ऐप|सॉफ्टवेयर|adobe|एडोबी)/iu.test(q))return "application";
  if(LOCATION.test(q))return "destination";

@@ -36,3 +36,10 @@ test("Batch 11 only recognized clarification requests retain original Windows sc
  assert.equal(nextClarificationRoot("Make project","Where should I save the project?",true,"master"),null);
  assert.equal(nextClarificationRoot("Make project","Where should I save the project?",false,"chat"),null);
 });
+
+test("Batch 34 imperative new command after a clarification is NOT inherited",()=>{
+ assert.equal(taskClarificationKind("Where should I save the project?","Delete all old projects"),null);
+ assert.equal(taskClarificationKind("Which app should I open?","Open Photoshop now"),null);
+ assert.equal(taskClarificationKind("What project name should I use?","Reset the editor"),null);
+ assert.equal(taskClarificationKind("Which app should I open?","Photoshop"),"application");
+});
