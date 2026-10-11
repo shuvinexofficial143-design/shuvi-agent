@@ -1,0 +1,1 @@
+Batch 74: Credential-redact provider-generated prose BEFORE appending it to the native chat UI or conversation history, both for initial messages and continuation after audited Windows steps. This does not alter tool proposal parameters, native audit or owner approval.

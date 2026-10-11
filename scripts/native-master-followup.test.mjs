@@ -762,3 +762,14 @@ test("Batch 64 a Master question yields waiting-for-clarification rather than co
  assert.equal(s.staged.length,1);
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
 });
+
+test("Batch 74 provider chat reply cannot echo API key to user-visible native chat",async()=>{
+ const key=["s","k","-",...["abcdefgh","ijklmnop"]].join("");
+ const s=setup({first:{content:"Response contained "+key,provider:"xkiro",model:"model/chat",tool_proposal:null}});
+ await until(()=>s.transport.connected(),"native ready");
+ const reply=await s.transport.send("Hello Shuvi","redacted-model-answer",0);
+ assert.equal(reply.ok,true);
+ assert.doesNotMatch(reply.reply,new RegExp(key));
+ assert.match(reply.reply,/\[REDACTED_API_KEY\]/);
+ assert.equal(s.staged.length,0);
+});

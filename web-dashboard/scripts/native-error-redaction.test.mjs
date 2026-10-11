@@ -47,3 +47,12 @@ test("Batch 72 redact structured JSON credential fields but keep useful diagnost
  assert.match(cleaned,/"api_key":"\[REDACTED\]"/);
  assert.match(cleaned,/"status":"failed"/);
 });
+
+test("Batch 74 assistant reply content is redacted before chat display/history",async()=>{
+ const {redactNativeMessage}=await import("../src/native-error-redaction.mjs");
+ const secret=["s","k","-",...["abcde","fghij","klmno"]].join("");
+ const safe=redactNativeMessage("AI answer had "+secret+" in it");
+ assert.match(safe,/\[REDACTED_API_KEY\]/);
+ assert.doesNotMatch(safe,new RegExp(secret));
+ assert.ok(redactNativeMessage("x".repeat(20000)).length<=12000);
+});

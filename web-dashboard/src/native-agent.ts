@@ -20,7 +20,7 @@ import {requiresNewWindowObservation} from "./native-ui-snapshot-lifetime.mjs";
 import {taskOutcomeSummary} from "./native-task-outcome.mjs";
 import {checkRequestedAppTarget} from "./native-intent-target.mjs";
 import {cleanObservedLabel} from "./native-observation-text.mjs";
-import {redactNativeError,redactNativeOutput} from "./native-error-redaction.mjs";
+import {redactNativeError,redactNativeOutput,redactNativeMessage} from "./native-error-redaction.mjs";
 type Provider = {id:string;name:string;default_model:string;api_key_required:boolean;custom_base_url:boolean};
 type NativeChatMessage = {role:"user"|"assistant";content:string};
 type NativeChatResponse = {content:string;provider:string;model:string;tool_proposal:Record<string,unknown>|null};
@@ -282,7 +282,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    showActionFeedback("Master continuation failed or outcome unknown. No automatic retry or Windows action.");
    return;
   }
-  const answer=response.content.slice(0,9000);
+  const answer=redactNativeMessage(response.content).slice(0,9000);
   // An audited step may be followed by an explicit name/folder question.
   const followupRoot=nextClarificationRoot(task.objective,answer,Boolean(response.tool_proposal),task.route.role);
   if(followupRoot)taskGoalRoots.set(task.threadId,followupRoot);
@@ -595,7 +595,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       input:{provider:route.provider,model:route.model,base_url:route.base_url||null,messages,orchestration_context:firstStepGuidance}
     });
     if(!response||typeof response.content!=="string")throw Error("Invalid native AI response.");
-    const reply=response.content.slice(0,12000);
+    const reply=redactNativeMessage(response.content).slice(0,12000);
     histories.set(threadId,[...messages,{role:"assistant",content:reply}].slice(-22));
     const nextRoot=nextClarificationRoot(effectiveObjective,reply,Boolean(response.tool_proposal),route.role);
     if(nextRoot)taskGoalRoots.set(threadId,nextRoot);

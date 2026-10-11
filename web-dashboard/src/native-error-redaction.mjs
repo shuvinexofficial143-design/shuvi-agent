@@ -17,3 +17,4 @@ function sanitize(input,limit){
 
 export const redactNativeError=input=>sanitize(input,2400);
 export const redactNativeOutput=input=>sanitize(input,7000);
+export const redactNativeMessage=input=>sanitize(input,12000);
