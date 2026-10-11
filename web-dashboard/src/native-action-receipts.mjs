@@ -3,7 +3,9 @@
 export function verifiedExecutionReceipt(prepared,result,receipts){
  if(!prepared||typeof prepared.id!=="string"||!prepared.id||
   typeof prepared.kind!=="string"||!prepared.kind||
-  result?.success!==true||result.tool!==prepared.kind||!Array.isArray(receipts))return false;
+  result?.success!==true||result.tool!==prepared.kind||
+  (typeof result.exit_code==="number"&&result.exit_code!==0)||
+  !Array.isArray(receipts))return false;
  const same=receipts.filter(r=>r?.action_id===prepared.id);
  if(!same.length)return false;
  // Rust logs may also include normal prepared/approved bookkeeping for

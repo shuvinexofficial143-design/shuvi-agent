@@ -19,3 +19,9 @@ test("success and failure on same action ID are contradictory, never verified",(
  assert.equal(conflict(action,[{...good,tool:"ui_click",event:"failed",success:false}]),true);
  assert.equal(conflict(action,[{...good,action_id:"different"}]),false);
 });
+
+test("Batch 33 conflicting nonzero native exit code cannot count as audited success",()=>{
+ assert.equal(verified(action,{...result,exit_code:1},[good]),false);
+ assert.equal(verified(action,{...result,exit_code:0},[good]),true);
+ assert.equal(verified(action,{...result,exit_code:null},[good]),true);
+});
