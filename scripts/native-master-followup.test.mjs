@@ -666,3 +666,22 @@ test("Batch 16 blocks a second UI mutation after first click until new audited w
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,2);
  assert.equal(s.chatInputs.length,3,"no automatic paid retry");
 });
+
+test("Batch 17 clearing chats cannot erase a pending native approval or its thread evidence",async()=>{
+ const s=setup({first:launch});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Premiere kholo","protected-clear",0);
+ assert.equal(s.staged.length,1);
+ assert.equal(s.approval.hidden,false);
+ assert.equal(s.transport.canClearChats(),false);
+ const before=s.transport.getReplies("protected-clear")[0];
+ s.transport.clearAllChats();
+ s.transport.clearChat("protected-clear");
+ assert.equal(s.transport.getReplies("protected-clear")[0],before);
+ assert.equal(s.approval.hidden,false);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
+ s.deny.listeners.get("click")();
+ await until(()=>s.transport.canClearChats(),"native deny complete");
+ s.transport.clearAllChats();
+ assert.deepEqual(s.transport.getReplies("protected-clear"),[]);
+});
