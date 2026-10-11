@@ -453,7 +453,8 @@ test("a fresh read-only UI inspection after audited mutation is allowed once",as
   tool_proposal:{tool:"ui_windows",arguments:{}}};
  const repeatedWindows={content:"inspect same unchanged UI",provider:"xkiro",model:"model/master",
   tool_proposal:{tool:"ui_windows",arguments:{}}};
- const s=setup({first:windows,second:click,following:[windowsAgain,repeatedWindows]});
+ const s=setup({first:windows,second:click,following:[windowsAgain,repeatedWindows],
+  stdoutFor:{ui_windows:JSON.stringify([{Name:"Premiere",ProcessId:100,NativeWindowHandle:101,ProcessName:"Adobe Premiere Pro"}])}});
  await until(()=>s.transport.connected(),"native ready");
  await s.transport.send("Inspect Premiere, click New Project, and verify window","reobserve-after-change",0);
  assert.equal(s.staged[0].proposal.tool,"ui_windows");
