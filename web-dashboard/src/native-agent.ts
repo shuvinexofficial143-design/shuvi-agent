@@ -24,7 +24,7 @@ import {redactNativeError,redactNativeOutput,redactNativeMessage} from "./native
 import {validPreparedApproval} from "./native-prepared-approval.mjs";
 import {createNativeTaskBudget,reserveNativeModelRequest,canStageNativeAction,canExecuteNativeAction,markNativeActionStaged} from "./native-task-budget.mjs";
 import type {NativeTaskBudget} from "./native-task-budget.mjs";
-import {readNativeRecovery,writeNativeRecovery,clearNativeRecovery} from "./native-recovery-journal.mjs";
+import {readNativeRecovery,writeNativeRecovery,clearNativeRecovery,validateNativeRecoveryRecord} from "./native-recovery-journal.mjs";
 import {reconcileNativeActionAudit,recoveryAuditMessage} from "./native-recovery-audit.mjs";
 type Provider = {id:string;name:string;default_model:string;api_key_required:boolean;custom_base_url:boolean};
 type NativeChatMessage = {role:"user"|"assistant";content:string};
@@ -204,6 +204,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  // restored as model-call or native-tool execution authority.
  const recoveryStorage=(()=>{try{return window.localStorage??null;}catch{return null;}})();
  const previousRecovery=readNativeRecovery(recoveryStorage);
+ let rustRecovery:ReturnType<typeof validateNativeRecoveryRecord>=null;
  const needsOwnerRecoveryReview=Boolean(previousRecovery&&["model_reserved","awaiting_approval","executing","outcome_unknown"].includes(previousRecovery.phase));
  let recoveryAcknowledged=!needsOwnerRecoveryReview;
  if(previousRecovery){
@@ -217,7 +218,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   recoveryDismiss.hidden=false;
  }
  recoveryCheck.addEventListener("click",async()=>{
-  const actionId=readNativeRecovery(recoveryStorage)?.actionId;
+  const actionId=readNativeRecovery(recoveryStorage)?.actionId??rustRecovery?.actionId;
   if(!actionId)return;
   recoveryCheck.disabled=true;
   recoveryNotice.textContent="Reading previous action evidence from Rust Audit. No commands are being replayed.";
@@ -237,17 +238,27 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    recoveryCheck.disabled=false;
   }
  });
- recoveryDismiss.addEventListener("click",()=>{
-  // Only an explicit owner acknowledgement can release a previous uncertain
-  // recovery record. Failure to clear persistent evidence stays fail-closed.
-  if(!clearNativeRecovery(recoveryStorage)){
-   recoveryNotice.textContent="Could not clear interrupted task journal. New Windows tasks remain blocked.";
+ recoveryDismiss.addEventListener("click",async()=>{
+  // Never erase the evidence while a native task is being executed or staged.
+  if(sending||pending){
+   recoveryNotice.textContent="Resolve the active Windows approval/request before clearing the recovery record.";
    return;
   }
-  recoveryAcknowledged=true;
-  recoveryNotice.hidden=true;
-  recoveryCheck.hidden=true;
-  recoveryDismiss.hidden=true;
+  recoveryDismiss.disabled=true;
+  try{
+   await invoke<void>("clear_native_recovery");
+   if(!clearNativeRecovery(recoveryStorage))
+    throw Error("Local recovery journal could not be cleared");
+   rustRecovery=null;
+   recoveryAcknowledged=true;
+   recoveryNotice.hidden=true;
+   recoveryCheck.hidden=true;
+   recoveryDismiss.hidden=true;
+  }catch{
+   recoveryNotice.textContent="Could not clear all persistent recovery evidence. New Windows tasks remain blocked.";
+  }finally{
+   recoveryDismiss.disabled=false;
+  }
  });
  const writeRecovery=(b:NativeTaskBudget,phase:string,actionId:string|null=null):boolean=>{
   // Installed native commands MUST NOT bypass recovery when localStorage
@@ -306,10 +317,25 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  async function load(){
   try{
    // This is a real native Tauri invocation, not a web/mock readiness badge.
-   const [runtime,list]=await Promise.all([
+   const [runtime,list,savedRustRecovery]=await Promise.all([
     invoke<Runtime>("runtime_status"),
-    invoke<Provider[]>("list_providers")
+    invoke<Provider[]>("list_providers"),
+    invoke<unknown>("load_native_recovery")
    ]);
+   if(savedRustRecovery!==null){
+    const validated=validateNativeRecoveryRecord(savedRustRecovery);
+    if(!validated)throw Error("Native Rust recovery checkpoint is invalid; refuse runtime admission.");
+    rustRecovery=validated;
+    if(["model_reserved","awaiting_approval","executing","outcome_unknown"].includes(validated.phase))
+     recoveryAcknowledged=false;
+    recoveryNotice.textContent="Native Rust recovered task: "+
+     validated.stagedActions+"/"+validated.maxActions+" actions staged, "+
+     validated.modelRequests+" model requests reserved, phase "+validated.phase+
+     ". No old request or Windows action was replayed. Review Rust Audit.";
+    recoveryNotice.hidden=false;
+    recoveryCheck.hidden=!validated.actionId;
+    recoveryDismiss.hidden=false;
+   }
    if(!Array.isArray(list)||!list.length)throw Error("Native provider registry unavailable.");
    team=mountNativeModelSetup(invoke,list);
    document.getElementById("shuvi-native-model-setup")?.append(mobile);
