@@ -748,3 +748,17 @@ test("Batch 53 a fresh Windows command excludes unrelated previous task messages
  assert.equal(s.chatInputs[1].messages[0].content,"Premiere kholo");
  assert.equal(s.staged.length,1);
 });
+
+test("Batch 64 a Master question yields waiting-for-clarification rather than completed status",async()=>{
+ const q={content:"Which Adobe app should I open?",provider:"xkiro",model:"model/master",tool_proposal:null};
+ const s=setup({first:q,second:launch});
+ await until(()=>s.transport.connected(),"native");
+ const first=await s.transport.send("Open an Adobe app","app-clarification-status",0);
+ assert.equal(first.ok,true);
+ assert.equal(s.staged.length,0);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
+ const next=await s.transport.send("Premiere Pro","app-clarification-status",1);
+ assert.equal(next.ok,true);
+ assert.equal(s.staged.length,1);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
+});

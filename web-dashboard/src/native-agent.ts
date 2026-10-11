@@ -294,8 +294,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    appendReply(task.threadId,task.promptIndex,
     (followupRoot?"Task paused: waiting for your clarification; no further Windows tool is prepared. The original goal is NOT independently verified complete.\n":"Task paused: no further executable tool was proposed. The full original objective is NOT independently verified complete; check the actual application/project before claiming success.\n")+
     taskOutcomeSummary(task.objective,verifiedWindows.get(task.threadId)??null));
-   showActionFeedback("Master replied without a next executable tool. The original Windows task is not automatically verified as completed.");
-   refreshState("Master did not propose another action; task paused.");
+   showActionFeedback(followupRoot?"Master asks for your clarification. No Windows action is prepared or executed.":
+    "Master replied without a next executable tool. The original Windows task is not automatically verified as completed.");
+   refreshState(followupRoot?"Waiting for your clarification to continue the same Windows task.":
+    "Master did not propose another action; task paused.");
    return;
   }
   const fp=fingerprint(response.tool_proposal);
@@ -667,7 +669,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
        : likeToolJson
        ? "The AI wrote tool-like JSON, but it was not recognized as a valid native action. No Windows action was prepared or executed. No automatic retry."
        : "AI replied without requesting a Windows action. No application opened or message sent. No automatic retry.");
-      refreshState("AI replied without an executable Windows tool. No action performed.");
+      refreshState(nextRoot?"Master is waiting for your clarification; no Windows action prepared.":
+       "AI replied without an executable Windows tool. No action performed.");
      }else{
       actionFeedback.hidden=true;
       refreshState("Native AI replied. No Windows tool action was requested.");
