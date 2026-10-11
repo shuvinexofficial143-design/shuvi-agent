@@ -64,3 +64,13 @@ test("Batch 84 invalid UI inventory exit status never authorizes a target mutati
  }
  assert.equal(observedWindowInventory({...good,exit_code:0},true).length,1);
 });
+
+test("Batch 85 one malformed duplicate row invalidates the entire audited target snapshot",()=>{
+ const result={tool:"ui_windows",success:true,stdout:JSON.stringify([
+  {Name:"Premiere",ProcessId:1,NativeWindowHandle:5},
+  {Name:"Premiere",ProcessId:"missing",NativeWindowHandle:6}
+ ])};
+ const inventory=observedWindowInventory(result,true);
+ assert.deepEqual(inventory,[]);
+ assert.equal(check({tool:"ui_click",arguments:{window:"Premiere"}},inventory).allowed,false);
+});

@@ -11,11 +11,13 @@ export function observedWindowInventory(result,audited){
  try{
   const rows=JSON.parse(result.stdout);
   if(!Array.isArray(rows)||!rows.length||rows.length>200)return [];
-  return rows.filter(x=>x&&typeof x.Name==="string"&&x.Name.trim()&&
+  // Do not silently drop contradictory/malformed native rows: doing so can
+  // falsely make an otherwise ambiguous target appear unique.
+  if(!rows.every(x=>x&&typeof x==="object"&&!Array.isArray(x)&&
+   typeof x.Name==="string"&&cleanObservedLabel(x.Name,180)&&
    Number.isSafeInteger(x.ProcessId)&&x.ProcessId>0&&
-   Number.isSafeInteger(x.NativeWindowHandle)&&x.NativeWindowHandle>0)
-   .map(x=>({title:cleanObservedLabel(x.Name,180),pid:x.ProcessId,hwnd:x.NativeWindowHandle}))
-   .filter(x=>x.title.length>0);
+   Number.isSafeInteger(x.NativeWindowHandle)&&x.NativeWindowHandle>0))return [];
+  return rows.map(x=>({title:cleanObservedLabel(x.Name,180),pid:x.ProcessId,hwnd:x.NativeWindowHandle}));
  }catch{return [];}
 }
 export function checkObservedMutationTarget(proposal,observed){
