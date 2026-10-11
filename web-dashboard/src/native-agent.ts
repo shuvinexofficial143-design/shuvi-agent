@@ -590,8 +590,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       taskEvidence.delete(threadId);
       taskStates.delete(threadId);
      }
-     // A new task cannot borrow a previous window verification.
-     verifiedWindows.delete(threadId);
+     // Preserve live proof on a clarification; clear it only for a new task.
+     if(!waitingForChoice)verifiedWindows.delete(threadId);
      goalStatus.textContent=taskGoalLabel(effectiveObjective);
     }
     updateReply(threadId,promptIndex,reply);
