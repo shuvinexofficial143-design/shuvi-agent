@@ -323,3 +323,19 @@ test("Master's prose-only completion claim remains visibly unverified",async()=>
  assert.equal(s.staged.length,1);
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
 });
+
+test("next Master proposal sees one audited step but still needs a new Allow once",async()=>{
+ const inspect={content:JSON.stringify({tool:"ui_windows",arguments:{}}),
+  provider:"xkiro",model:"model/master",tool_proposal:{tool:"ui_windows",arguments:{}}};
+ const s=setup({first:launch,second:inspect});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Premiere kholo aur project banao","progress-task",0);
+ assert.equal(s.staged.length,1);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"next permission");
+ assert.match(s.chatInputs[1].orchestration_context,/1 audited native step\(s\)/);
+ assert.match(s.chatInputs[1].orchestration_context,/Verified tools: premiere_launch/);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+ assert.equal(s.approval.hidden,false);
+});

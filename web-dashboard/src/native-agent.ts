@@ -6,6 +6,7 @@
 import {mountNativeModelSetup, type ModelTeamHandle, type NativeInvoke} from "./native-model-setup";
 import {chooseNativeRoute} from "./native-model-routing.mjs";
 import {masterGoalContext,resolveMasterObjective} from "./native-master-goal.mjs";
+import {createTask,stageTask,executeTask,verifyTask,pauseTask,taskSummary,taskContext} from "./native-task-progress.mjs";
 type Provider = {id:string;name:string;default_model:string;api_key_required:boolean;custom_base_url:boolean};
 type NativeChatMessage = {role:"user"|"assistant";content:string};
 type NativeChatResponse = {content:string;provider:string;model:string;tool_proposal:Record<string,unknown>|null};
@@ -104,6 +105,9 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  });
  const notes=field("p","Windows commands use native Tauri IPC. Every proposed tool action requires your explicit approval. No automatic paid retry.");
  notes.className="shuvi-native-note";
+ const taskStatus=field("p","No active Windows task.");
+ taskStatus.setAttribute("role","status");
+ taskStatus.setAttribute("aria-label","Native task progress");
  const approval=field("div");approval.className="shuvi-native-approval";approval.hidden=true;
  approval.setAttribute("role","region");
  approval.setAttribute("aria-label","Windows action needs your approval");
@@ -126,7 +130,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  const mobileStatus=field("p","Checking optional mobile agent pairing…");
  mobileStatus.setAttribute("role","status");
  mobile.append(mobileTitle,mobileCode,mobileConnect,mobileDisconnect,mobileStatus);
- panel.append(title,status,showDetails,openSettings,notes);
+ panel.append(title,status,showDetails,openSettings,notes,taskStatus);
  chat.parentElement?.insertBefore(panel,chat);
  // A confirmation above the entire chat falls out of view while reading the
  // latest reply. Keep all pending native approvals adjacent to the composer.
@@ -145,6 +149,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  let pending:PendingTask|null=null;
  const histories=new Map<string,NativeChatMessage[]>();
  const replies=new Map<string,string[]>();
+ const taskStates=new Map<string,ReturnType<typeof createTask>>();
+ const getTask=(id:string)=>taskStates.get(id)??null;
+ function updateTask(id:string,state:ReturnType<typeof createTask>){taskStates.set(id,state);taskStatus.textContent=taskSummary(state);onChange();}
+ function haltTask(id:string,why:string){const s=getTask(id);if(s)updateTask(id,pauseTask(s,why));}
  function updateReply(threadId:string,index:number,value:string){
   const records=replies.get(threadId)||[];
   records[index]=value.slice(0,14000);
@@ -220,7 +228,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   const orchestrator="Continue the ORIGINAL computer task, not just its last inspection step. "+
    "Objective: "+task.objective.slice(0,500)+". "+
    "Current approved step: "+task.step+". "+
-   "Last audited tool: "+result.tool+". "+
+   "Last audited tool: "+result.tool+". "+taskContext(getTask(task.threadId))+" "+
    "After premiere_detect, propose the dedicated premiere_launch tool with empty arguments {} when the user wants Premiere opened; detection alone is not launch. "+
    "For other trusted discovered executable paths, propose launch_app with the exact observed path. "+
    "After any launch, use ui_windows or a suitable separate inspection to verify that the app/window exists. "+
@@ -239,6 +247,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    if(!response||typeof response.content!=="string")
     throw Error("Invalid next-step AI response");
   }catch(error){
+   haltTask(task.threadId,"model_failed");
    appendReply(task.threadId,task.promptIndex,
     "Master continuation failed or its result is unknown: "+String(error)+
     ". Stopped. No automatic paid retry.");
@@ -249,6 +258,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   histories.set(task.threadId,[...messages,{role:"assistant",content:answer}].slice(-22));
   appendReply(task.threadId,task.promptIndex,"Master next step:\n"+answer);
   if(!response.tool_proposal){
+   haltTask(task.threadId,"no_next_tool");
    appendReply(task.threadId,task.promptIndex,
     "Task paused: no further executable tool was proposed. The full original objective is NOT independently verified complete; check the actual application/project before claiming success.");
    showActionFeedback("Master replied without a next executable tool. The original Windows task is not automatically verified as completed.");
@@ -257,6 +267,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   }
   const fp=fingerprint(response.tool_proposal);
   if(task.seen.has(fp)){
+   haltTask(task.threadId,"repeated_tool");
    appendReply(task.threadId,task.promptIndex,
     "Stopped: Master proposed an identical action again. No duplicate execution or paid retry.");
    showActionFeedback("Repeated action blocked. Task paused.");
@@ -269,6 +280,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    });
    if(!next||typeof next.id!=="string")throw Error("Next action could not be staged.");
    pending={...task,action:next,step:task.step+1,seen:new Set([...task.seen,fp])};
+   updateTask(task.threadId,stageTask(getTask(task.threadId),next.id,next.kind,task.step+1));
    pendingText.textContent="Step "+(task.step+1)+
     " · Permission required: "+next.summary+"\nRisk: "+next.risk+"\n"+next.detail;
    approval.hidden=false;
@@ -276,6 +288,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    showActionFeedback("Master has prepared the next Windows action. Review and select Allow once or Deny. Nothing executed automatically.");
    refreshState("Master waiting for approval of next task step.");
   }catch(error){
+   haltTask(task.threadId,"prepare_failed");
    appendReply(task.threadId,task.promptIndex,
     "Next Windows tool preparation failed: "+String(error)+". Nothing executed. Task paused.");
    showActionFeedback("Next action could not be prepared. No automatic retry.");
@@ -289,11 +302,13 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   try {
    if(!allowed){
     await invoke<void>("deny_action",{actionId:current.action.id});
+    haltTask(current.threadId,"denied");
     updateReply(current.threadId,current.promptIndex,
       (replies.get(current.threadId)?.[current.promptIndex]||"")+"\n\nWindows tool denied by you. No action executed.");
     showActionFeedback("Windows action denied by you. Nothing was executed.");
     refreshState("Action denied. Native approval journal updated.");
    }else{
+    updateTask(current.threadId,executeTask(getTask(current.threadId),current.action.id));
     refreshState("Executing only the approved native action "+current.action.id.slice(0,8)+"…");
     const result=await invoke<ActionResult>("execute_action",{actionId:current.action.id});
     // Native Result is not self-attested success: require the exact audited action receipt.
@@ -301,6 +316,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     const matched=receipts.find(r=>r.action_id===current.action.id &&
        r.tool===result.tool && r.event==="executed" && r.success===true);
     const verified=result.success && Boolean(matched);
+    if(verified)updateTask(current.threadId,verifyTask(getTask(current.threadId),current.action.id,result.tool,true));
+    else haltTask(current.threadId,"unknown_outcome");
     const label=verified
       ? "Native action completed with matching audit. Continuing original task…"
       : "Action outcome not independently verified. Stopped; inspect native audit before retrying.";
@@ -335,8 +352,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       });
       if(!next||typeof next.id!=="string"||next.kind!=="ui_windows")
        throw Error("Read-only recovery was not staged correctly.");
+      haltTask(current.threadId,"confirmed_read_failure");
       pending={...current,action:next,step:current.step+1,
        seen:new Set([...current.seen,fp])};
+      updateTask(current.threadId,stageTask(getTask(current.threadId),next.id,next.kind,current.step+1));
       pendingText.textContent="Read-only UI recovery · Allow once required: "+
        next.summary+"\\nRisk: "+next.risk+"\\n"+next.detail;
       approval.hidden=false;
@@ -353,6 +372,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     }
    }
    if(!recoveryPrepared){
+    haltTask(current.threadId,"unknown_outcome");
     updateReply(current.threadId,current.promptIndex,
      (replies.get(current.threadId)?.[current.promptIndex]||"")+
      "\\n\\nNative action outcome unknown: "+message+". Do not retry blindly.");
@@ -407,8 +427,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   connected:()=>ready,
   getReplies:(threadId:string)=>replies.get(threadId)||[],
   canClearChats:()=>!pending&&!sending,
-  clearChat:(threadId:string)=>{if(pending?.threadId===threadId)return;histories.delete(threadId);replies.delete(threadId);},
-  clearAllChats:()=>{histories.clear();replies.clear();},
+  clearChat:(threadId:string)=>{if(pending?.threadId===threadId)return;histories.delete(threadId);replies.delete(threadId);taskStates.delete(threadId);taskStatus.textContent="No active Windows task.";},
+  clearAllChats:()=>{histories.clear();replies.clear();taskStates.clear();taskStatus.textContent="No active Windows task.";},
   async send(text,threadId,promptIndex=0){
    if(!ready)return {ok:false,error:"Windows Shuvi is not connected yet."};
    // A short answer to a Master clarification is still part of the SAME
@@ -464,6 +484,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       pending={action:proposed,threadId,promptIndex,objective:effectiveObjective,
        route:{role:route.role,provider:route.provider,model:route.model,base_url:route.base_url||""},
        step:1,seen:new Set([first])};
+      updateTask(threadId,stageTask(createTask(),proposed.id,proposed.kind,1));
       pendingText.textContent="Permission required: "+proposed.summary+
         "\nRisk: "+proposed.risk+"\n"+proposed.detail;
       approval.hidden=false;
@@ -471,6 +492,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       refreshState("Waiting for your explicit Allow once / Deny decision. No tool executed.");
       approval.scrollIntoView?.({block:"nearest",behavior:"smooth"});
      }catch(error){
+      updateTask(threadId,pauseTask(createTask(),"prepare_failed"));
       showActionFeedback("AI replied but Windows could not prepare its action: "+String(error)+
        ". Nothing executed. Check the action details; do not resend this paid request blindly.");
       // The paid model response already arrived. A separate Windows prepare failure
@@ -483,6 +505,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      }
     }else{
      if(route.role!=="chat"){
+      updateTask(threadId,pauseTask(createTask(),"no_tool"));
       const likeToolJson=/["']tool["']\s*:/.test(reply);
       showActionFeedback(likeToolJson
        ? "The AI wrote tool-like JSON, but it was not recognized as a valid native action. No Windows action was prepared or executed. No automatic retry."
