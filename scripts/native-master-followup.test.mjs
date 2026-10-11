@@ -287,3 +287,39 @@ test("Premiere creation objective survives audited launch and is not mistaken fo
   "the next readback action still requires separate approval");
  assert.equal(s.approval.hidden,false);
 });
+
+test("app choice preserves original named project through native approval and follow-up",async()=>{
+ const clarification={content:"कौन-सा Adobe ऐप खोलूँ?",provider:"xkiro",
+  model:"model/master",tool_proposal:null};
+ const inspection={content:JSON.stringify({tool:"ui_windows",arguments:{}}),provider:"xkiro",
+  model:"model/master",tool_proposal:{tool:"ui_windows",arguments:{}}};
+ const s=setup({first:clarification,second:launch,following:[inspection]});
+ await until(()=>s.transport.connected(),"native app ready");
+ await s.transport.send("Adobe खोलकर Shuvi AI Test 01 नाम का नया प्रोजेक्ट बनाओ","choice-project",0);
+ assert.equal(s.staged.length,0);
+ await s.transport.send("Premiere Pro","choice-project",1);
+ assert.equal(s.staged.length,1);
+ assert.equal(s.staged[0].proposal.tool,"premiere_launch");
+ assert.match(s.chatInputs[1].orchestration_context,/Premiere project creation is an END GOAL/);
+ assert.match(s.chatInputs[1].orchestration_context,/Shuvi AI Test 01/);
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"audited window verification");
+ assert.match(s.chatInputs[2].orchestration_context,/Shuvi AI Test 01/);
+ assert.match(s.chatInputs[2].orchestration_context,/Premiere Pro/);
+ assert.match(s.chatInputs[2].messages.at(-1).content,/^Original user request:/);
+ assert.equal(s.staged[1].proposal.tool,"ui_windows");
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+ assert.equal(s.approval.hidden,false);
+});
+test("Master's prose-only completion claim remains visibly unverified",async()=>{
+ const claimed={content:"The project was created successfully",provider:"xkiro",
+  model:"model/master",tool_proposal:null};
+ const s=setup({first:launch,second:claimed});
+ await until(()=>s.transport.connected(),"native app ready");
+ await s.transport.send("Premiere kholo aur new project banao","unverified-finish",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.transport.getReplies("unverified-finish")[0]?.includes("NOT independently verified complete"),
+  "honest pause");
+ assert.equal(s.staged.length,1);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+});

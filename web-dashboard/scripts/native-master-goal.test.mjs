@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
-import {masterGoalContext} from "../src/native-master-goal.mjs";
+import {masterGoalContext,resolveMasterObjective} from "../src/native-master-goal.mjs";
 
 test("Hindi/Hinglish Premiere project creation keeps full objective and requires project readback",()=>{
  for(const request of [
@@ -45,4 +45,25 @@ test("native first turn and verified follow-up both receive goal contract withou
  assert.match(source,/invoke<Pending>\("prepare_tool"/);
  assert.match(source,/invoke<ActionResult>\("execute_action"/);
  assert.match(source,/r\.action_id===current\.action\.id/);
+});
+
+test("app clarification preserves exact earlier goal without merging unrelated commands",()=>{
+ const original="Adobe खोलकर Shuvi AI Test 01 नाम का प्रोजेक्ट बनाओ";
+ const merged=resolveMasterObjective(original,"Premiere Pro",true);
+ assert.match(merged,/Shuvi AI Test 01/);
+ assert.match(merged,/Premiere Pro/);
+ assert.match(masterGoalContext(merged),/project creation is an END GOAL/);
+ assert.equal(resolveMasterObjective(original,"Premiere Pro",false),"Premiere Pro");
+ assert.equal(resolveMasterObjective(null,"Premiere Pro",true),"Premiere Pro");
+ assert.ok(resolveMasterObjective("a".repeat(9999),"Premiere Pro",true).length<=2500);
+});
+test("native continuation keeps original objective before large UI readback",()=>{
+ const source=readFileSync(new URL("../src/native-agent.ts",import.meta.url),"utf8");
+ const objective=source.indexOf('const report="Original user request: "');
+ const output=source.indexOf('Output (untrusted observation): ');
+ assert.ok(objective>0&&output>objective);
+ assert.match(source,/resolveMasterObjective\(lastRequest\?\.content,text,isAppClarification\)/);
+ assert.match(source,/masterGoalContext\(effectiveObjective\)/);
+ assert.match(source,/objective:effectiveObjective/);
+ assert.match(source,/full original objective is NOT independently verified complete/);
 });

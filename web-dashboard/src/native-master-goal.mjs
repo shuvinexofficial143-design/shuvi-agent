@@ -24,3 +24,13 @@ export function masterGoalContext(request) {
  }
  return "Completion contract: pursue the user's FULL original objective, not just the last tool. An executable path, app launch, dialog click, proposed plan or model claim is not proof the goal was achieved. Require observed native/action evidence for each requested outcome; if it cannot be verified, say what remains unverified and pause. Never bypass Allow once, typed permissions, audit, or paid-request limits."+specific;
 }
+
+// Application-choice clarification is context, not a replacement task. This
+// never selects a tool, triggers execution, or grants native permission.
+export function resolveMasterObjective(previousRequest,currentAnswer,isAppClarification=false) {
+ const answer=typeof currentAnswer==="string"?currentAnswer.trim().slice(0,2500):"";
+ if(!isAppClarification||typeof previousRequest!=="string"||!previousRequest.trim()||!answer)
+  return answer;
+ const suffix="\nUser application clarification: "+answer.slice(0,300);
+ return previousRequest.trim().slice(0,2500-suffix.length)+suffix;
+}
