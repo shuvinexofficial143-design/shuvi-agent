@@ -423,6 +423,13 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      verifiedWindows.delete(current.threadId);
      goalStatus.textContent=taskGoalLabel(current.objective);
     }
+    // A newly attempted window inspection supersedes earlier window proof,
+    // even if native execution fails or its audit cannot be confirmed.
+    if(current.action.kind==="ui_windows"){
+     observedWindows.set(current.threadId,[]);
+     verifiedWindows.delete(current.threadId);
+     goalStatus.textContent=taskGoalLabel(current.objective);
+    }
     updateTask(current.threadId,executeTask(getTask(current.threadId),current.action.id));
     refreshState("Executing only the approved native action "+current.action.id.slice(0,8)+"…");
     const result=await invoke<ActionResult>("execute_action",{actionId:current.action.id});

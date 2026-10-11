@@ -1,0 +1,1 @@
+Batch 77: At the beginning of any newly approved ui_windows execution, mark previous window inventory and proof stale. If that inspection fails, contradicts audit, or throws, the old snapshot cannot still certify a currently open app. Fresh success repopulates it.
