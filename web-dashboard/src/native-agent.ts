@@ -570,7 +570,12 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     if(nextRoot)taskGoalRoots.set(threadId,nextRoot);
     else taskGoalRoots.delete(threadId);
     if(route.role!=="chat"){
-     if(!waitingForChoice)observedWindows.delete(threadId);
+     if(!waitingForChoice){
+      observedWindows.delete(threadId);
+      verifiedWindows.delete(threadId);
+      taskEvidence.delete(threadId);
+      taskStates.delete(threadId);
+     }
      // A new task cannot borrow a previous window verification.
      verifiedWindows.delete(threadId);
      goalStatus.textContent=taskGoalLabel(effectiveObjective);
