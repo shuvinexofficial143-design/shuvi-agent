@@ -19,6 +19,9 @@ export function masterGoalContext(request) {
  }else if(premiere){
   specific=" For a Premiere opening request, verify the correct live application/window identity after launch before reporting it open.";
  }
+ if(!premiere&&PROJECT.test(text)&&CREATE.test(text)){
+  specific+=" Project creation in any desktop editor requires an independently observed new project, user-requested name and user-approved save destination. Never assume clicking New or launching an editor saved a project.";
+ }
  if(exportRequested){
   specific+=" If export was requested, verify the actual completed output artifact; an export command or queued job alone does not prove completion.";
  }

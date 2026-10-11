@@ -67,3 +67,10 @@ test("native continuation keeps original objective before large UI readback",()=
  assert.match(source,/objective:effectiveObjective/);
  assert.match(source,/full original objective is NOT independently verified complete/);
 });
+
+test("Batch 62 project creation in non-Premiere editors is still a verified end goal",()=>{
+ const advice=masterGoalContext("Blender open karo aur new project banao");
+ assert.match(advice,/Project creation in any desktop editor/);
+ assert.match(advice,/user-approved save destination/);
+ assert.match(masterGoalContext("Photoshop new project create karo"),/Project creation in any desktop editor/);
+});
