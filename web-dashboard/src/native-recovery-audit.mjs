@@ -10,9 +10,14 @@ function valid(row,id){
 export function reconcileNativeActionAudit(id,receipt,trail){
  if(typeof id!=="string"||!ACTION_ID.test(id))return {kind:"unknown",tool:null};
  if(!valid(receipt,id)||!Array.isArray(trail)||trail.length>200)return {kind:"unknown",tool:null};
+ // Rust may log prepared/approved before the final outcome. They do not
+ // prove execution, but contradictory tool identity still fails closed.
  const matches=trail.filter(item=>item?.action_id===id);
- if(matches.length!==1||!valid(matches[0],id))return {kind:"unknown",tool:null};
- const row=matches[0];
+ if(matches.some(item=>!item||item.tool!==receipt.tool))
+  return {kind:"unknown",tool:null};
+ const final=matches.filter(item=>EVENTS.has(item?.event));
+ if(final.length!==1||!valid(final[0],id))return {kind:"unknown",tool:null};
+ const row=final[0];
  if(row.tool!==receipt.tool||row.event!==receipt.event||row.success!==receipt.success)
   return {kind:"unknown",tool:null};
  if(row.event==="executed"&&row.success)return {kind:"executed_audited",tool:row.tool};
