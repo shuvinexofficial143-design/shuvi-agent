@@ -151,7 +151,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  const replies=new Map<string,string[]>();
  const taskStates=new Map<string,ReturnType<typeof createTask>>();
  const getTask=(id:string)=>taskStates.get(id)??null;
- function updateTask(id:string,state:ReturnType<typeof createTask>){taskStates.set(id,state);taskStatus.textContent=taskSummary(state);onChange();}
+ function updateTask(id:string,state:ReturnType<typeof createTask>|null){if(!state)return;taskStates.set(id,state);taskStatus.textContent=taskSummary(state);onChange();}
  function haltTask(id:string,why:string){const s=getTask(id);if(s)updateTask(id,pauseTask(s,why));}
  function updateReply(threadId:string,index:number,value:string){
   const records=replies.get(threadId)||[];

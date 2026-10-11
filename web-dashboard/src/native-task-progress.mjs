@@ -23,7 +23,7 @@ export function taskSummary(s){
  if(!s)return "No active Windows task.";
  const next=s.pending?" · Step "+s.pending.step+" "+s.pending.tool+
   (s.phase==="executing"?" executing":" awaiting Allow once"):"";
- const stop=s.phase==="paused"?" · Paused ("+s.reason+"):"";
+ const stop=s.phase==="paused"?" · Paused ("+s.reason+")":"";
  return s.verified+" audited native step(s)"+next+stop+" · Overall task unverified.";
 }
 export function taskContext(s){
