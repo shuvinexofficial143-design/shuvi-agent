@@ -44,13 +44,14 @@ test("native preparation uses the SAME task-pinned provider/model as paid planni
  assert.ok(route>=0 && planning>route);
  assert.match(main,/async function stageProposal\(proposal: ToolProposal, route: TaskModelRoute\)/);
  assert.match(main,/await stageProposal\(response.tool_proposal, route\)/);
- const start=main.indexOf('pendingAction = await invoke<PendingAction>("prepare_tool"');
+ const start=main.indexOf('const staged = await invoke<PendingAction>("prepare_tool"');
  const end=main.indexOf('pendingChatProposal = proposal',start);
  assert.ok(start>=0 && end>start);
  const block=main.slice(start,end);
  assert.match(block,/provider: route.provider/);
  assert.match(block,/model: route.model/);
  assert.match(block,/baseUrl: route.base_url \|\| null/);
+ assert.match(block,/if \(staleStage\(\)\) \{[\s\S]*await denyStaleAction\(staged\?\.id\)/);
  assert.doesNotMatch(block,/providerSelect.value|modelInput.value|baseUrlInput.value/);
 });
 function requireForTest(){return {readFileSync:fsReadFileSync};}

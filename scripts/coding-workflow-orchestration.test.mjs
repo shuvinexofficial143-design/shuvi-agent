@@ -94,7 +94,8 @@ test("coding dependency state persists across orchestration v5 and legacy non-gr
 test("UI exposes the current bounded coding phase without bypassing permissions",()=>{
   assert.match(main,/id="agentProgress"/);
   assert.match(main,/codingPhase\(orchestration\)\.replaceAll\("_", " "\)/);
-  assert.match(main,/pendingAction = await invoke<PendingAction>\("prepare_tool"/);
+  assert.match(main,/const staged = await invoke<PendingAction>\("prepare_tool"/);
+  assert.match(main,/if \(staleStage\(\)\) \{[\s\S]*?await denyStaleAction\(staged\?\.id\)/);
   assert.match(main,/renderChatPermission\(proposal, step\)/);
   assert.match(main,/execute_action/);
 });

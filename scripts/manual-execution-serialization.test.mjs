@@ -10,8 +10,8 @@ test("manual PowerShell execution has a single-active-action frontend guard",()=
     main.indexOf('el<HTMLButtonElement>("#prepareAction")'),
     main.indexOf("function renderManualPending")
   );
-  assert.match(prep,/if \(manualActionRunning\)/);
-  assert.match(prep,/A manual PowerShell action is already running/);
+  assert.match(prep,/if \(manualActionRunning \|\| busy\)/);
+  assert.match(prep,/Finish the active manual or Chat task before preparing another PowerShell action/);
 });
 
 test("manual action running state is set before execute_action and cleared in finally",()=>{
