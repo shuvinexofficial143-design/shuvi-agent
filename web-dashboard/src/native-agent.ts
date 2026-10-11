@@ -388,7 +388,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    approval.hidden=false;
    approval.scrollIntoView?.({block:"nearest",behavior:"smooth"});
    appendReply(current.threadId,current.promptIndex,
-    "UI lookup failed with a verified native failure receipt: "+message.slice(0,1200)+
+    "UI lookup failed with a verified native failure receipt: "+redactNativeError(message).slice(0,1200)+
     "\nPrepared read-only window discovery for separate approval. No automatic paid AI retry.");
    showActionFeedback("Confirmed UI lookup failure. Window discovery awaits a new Allow once; no action executed automatically.");
    refreshState("UI recovery inspection awaiting your approval.");
@@ -451,7 +451,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     if(!verified && result.success===false && result.tool===current.action.kind){
      // A normal typed failure result (as opposed to a thrown exception) must
      // follow exactly the same audited read-only recovery decision.
-     const failure=[result.stderr,result.stdout].filter(Boolean).join("\n").slice(0,1200);
+     const failure=redactNativeError([result.stderr,result.stdout].filter(Boolean).join("\n")).slice(0,1200);
      clearPending();
      // A contradictory successful audit must not be reinterpreted as a
      // confirmed failure, even if a separate receipt lookup appears to fail.
