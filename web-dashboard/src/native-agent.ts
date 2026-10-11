@@ -809,12 +809,17 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    if(!reserveNativeModelRequest(taskBudget))return {ok:false,error:
     "Owner-selected AI request budget or task deadline exhausted. No paid AI request was sent. Start a new task to authorize more work."};
    taskBudgets.set(threadId,taskBudget);
-   if(route.role!=="chat"&&!await persistRecovery(taskBudget,"model_reserved"))return {ok:false,error:
-    "Native recovery journal could not be saved. No paid AI request sent."};
+   // Claim the submission lock BEFORE the asynchronous Rust disk checkpoint.
+   // Otherwise a second send can enter while the first reservation is pending.
+   sending=true;
+   if(route.role!=="chat"&&!await persistRecovery(taskBudget,"model_reserved")){
+    sending=false;
+    refreshState("Native recovery journal unavailable; no provider call sent.");
+    return {ok:false,error:"Native recovery journal could not be saved. No paid AI request sent."};
+   }
    // Keep paid-request context bounded and avoid forwarding any credential.
    const messages:NativeChatMessage[]=[...(waitingForChoice||route.role==="chat"?prev.slice(-20):[]),
     {role:"user",content:text}];
-   sending=true;
    refreshState("Sending "+(route.role==="chat"?"chat":"Windows task for Master/selected specialist")+
     " to "+route.provider+" / "+route.model+"…");
    try{
