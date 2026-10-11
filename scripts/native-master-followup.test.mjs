@@ -265,3 +265,25 @@ test("Master receives actionable controls from deep inside a long UI discovery l
  assert.ok(next.length<=10800,"prevent unbounded provider input");
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
 });
+
+
+test("Premiere creation objective survives audited launch and is not mistaken for a finished task",async()=>{
+ const inspect={content:JSON.stringify({tool:"ui_windows",arguments:{}}),
+  provider:"xkiro",model:"model/master",tool_proposal:{tool:"ui_windows",arguments:{}}};
+ const s=setup({first:launch,second:inspect});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Premire kholo aur Shuvi AI Test 01 naam ka project banao","project-create",0);
+ assert.equal(s.staged.length,1);
+ assert.equal(s.staged[0].proposal.tool,"premiere_launch");
+ assert.match(s.chatInputs[0].orchestration_context,/Premiere project creation is an END GOAL/);
+ assert.match(s.chatInputs[0].orchestration_context,/exact user-requested name/);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"verified next step");
+ assert.match(s.chatInputs[1].orchestration_context,/Premiere project creation is an END GOAL/);
+ assert.match(s.chatInputs[1].orchestration_context,/Current approved step: 1/);
+ assert.equal(s.staged[1].proposal.tool,"ui_windows");
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1,
+  "the next readback action still requires separate approval");
+ assert.equal(s.approval.hidden,false);
+});
