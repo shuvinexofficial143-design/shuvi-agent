@@ -1,0 +1,1 @@
+Batch 84: A malformed or nonzero typed exit status invalidates native window inventory even when the response claims success. The UI target guard then refuses mutations rather than reusing unverified evidence. All actions still need owner Allow once.

@@ -4,6 +4,8 @@ import {cleanObservedLabel} from "./native-observation-text.mjs";
 const MUTATIONS=new Set(["ui_click","ui_set_value","ui_send_keys","ui_toggle","ui_focus","ui_scroll","ui_expand_collapse"]);
 export function observedWindowInventory(result,audited){
  if(audited!==true||result?.success!==true||result.tool!=="ui_windows")return null;
+ // Contradictory nonzero or malformed native exit status cannot ground targets.
+ if(result.exit_code!=null&&(!Number.isSafeInteger(result.exit_code)||result.exit_code!==0))return [];
  // Oversized native output cannot authorize a later UI target choice.
  if(typeof result.stdout!=="string"||result.stdout.length>250000)return [];
  try{

@@ -53,3 +53,14 @@ test("Batch 49 invisible directional characters in proposed window target are no
  const observed=[{title:"Adobe Premiere Pro 2026",pid:12,hwnd:13}];
  assert.equal(check({tool:"ui_click",arguments:{window:"Adobe Premiere\u202e Pro 2026"}},observed).allowed,false);
 });
+
+test("Batch 84 invalid UI inventory exit status never authorizes a target mutation",()=>{
+ const good={tool:"ui_windows",success:true,stdout:JSON.stringify([
+  {Name:"Premiere",ProcessId:123,NativeWindowHandle:456}])};
+ for(const exit_code of [1,-1,"0",false,NaN]){
+  const inventory=observedWindowInventory({...good,exit_code},true);
+  assert.deepEqual(inventory,[]);
+  assert.equal(check({tool:"ui_click",arguments:{window:"Premiere"}},inventory).allowed,false);
+ }
+ assert.equal(observedWindowInventory({...good,exit_code:0},true).length,1);
+});
