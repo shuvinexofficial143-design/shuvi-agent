@@ -1,7 +1,7 @@
 // Native audit verification: tie success to the exact approved action AND
 // the prepared tool identity; contradictory records fail closed.
 export function verifiedExecutionReceipt(prepared,result,receipts){
- if(!prepared||typeof prepared.id!=="string"||!prepared.id||
+ if(!prepared||typeof prepared.id!=="string"||!prepared.id.trim()||prepared.id.length>128||
   typeof prepared.kind!=="string"||!prepared.kind||
   result?.success!==true||result.tool!==prepared.kind||
   (result.exit_code!=null&&(!Number.isSafeInteger(result.exit_code)||result.exit_code!==0))||

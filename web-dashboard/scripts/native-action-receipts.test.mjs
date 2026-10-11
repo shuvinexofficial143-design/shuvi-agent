@@ -40,3 +40,10 @@ test("Batch 73 success receipts fail closed on malformed exit status serializati
  assert.equal(verified(action,{...result,exit_code:null},[good]),true);
  assert.equal(verified(action,result,[good]),true);
 });
+
+test("Batch 89 a blank or oversized prepared action identity cannot be audit-verified",()=>{
+ for(const id of [" ","","a".repeat(129)]){
+  assert.equal(verified({...action,id},result,[{...good,action_id:id}]),false);
+ }
+ assert.equal(verified({...action,id:" a-1 "},result,[{...good,action_id:" a-1 "}]),true);
+});
