@@ -9,6 +9,7 @@ mod atomic_file;
 mod execution_lease;
 mod bounded_child;
 mod provider_request_guard;
+mod native_recovery;
 
 mod premiere_execution;
 mod premiere_store;
@@ -19213,6 +19214,9 @@ pub fn run() {
             save_session_checkpoint,
             load_session_checkpoint,
             clear_session_checkpoint,
+            native_recovery::save_native_recovery,
+            native_recovery::load_native_recovery,
+            native_recovery::clear_native_recovery,
             premiere_bridge_start,
             premiere_bridge_status,
             premiere_bridge_stop,
