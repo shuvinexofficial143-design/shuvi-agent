@@ -50,7 +50,7 @@ export function seenAfterAuditedChange(seen,verifiedTool,hasExactSuccessfulAudit
 export function actionLoopGuidance(){
  return "Avoid planning loops: an identical action proposal with reordered JSON arguments "+
   "is still the same action. Do not repeat an unchanged UI inspection or selector "+
-  "without verified intervening UI change. After an audited UI mutation, inspect "+
+  "without verified intervening UI change. After an audited UI mutation, request a newly approved ui_windows read before another UI mutation. Inspect "+
   "the new observed state if needed; a tool call or click alone is not task completion. "+
   "Ask for clarification when progress cannot be grounded. No extra paid retries or "+
   "unapproved actions.";

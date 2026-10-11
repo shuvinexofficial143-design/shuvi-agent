@@ -35,3 +35,7 @@ test("only audited UI mutations unlock repeat observations, never mutation repea
  assert.match(guidance,/verified intervening UI change/);
  assert.match(guidance,/No extra paid retries/);
 });
+
+test("Batch 92 Master told to re-observe Windows after every audited UI mutation",()=>{
+ assert.match(actionLoopGuidance(),/newly approved ui_windows read before another UI mutation/);
+});

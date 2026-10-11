@@ -1,0 +1,1 @@
+Batch 92: Explain the existing post-mutation window-snapshot invalidation to the Master in its next-step guidance. An independently owner-approved ui_windows read is needed to ground a later mutation; no automatic tool call introduced.
