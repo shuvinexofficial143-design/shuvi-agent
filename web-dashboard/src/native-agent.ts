@@ -22,6 +22,8 @@ import {checkRequestedAppTarget} from "./native-intent-target.mjs";
 import {cleanObservedLabel} from "./native-observation-text.mjs";
 import {redactNativeError,redactNativeOutput,redactNativeMessage} from "./native-error-redaction.mjs";
 import {validPreparedApproval} from "./native-prepared-approval.mjs";
+import {createNativeTaskBudget,reserveNativeModelRequest,canStageNativeAction,markNativeActionStaged} from "./native-task-budget.mjs";
+import type {NativeTaskBudget} from "./native-task-budget.mjs";
 type Provider = {id:string;name:string;default_model:string;api_key_required:boolean;custom_base_url:boolean};
 type NativeChatMessage = {role:"user"|"assistant";content:string};
 type NativeChatResponse = {content:string;provider:string;model:string;tool_proposal:Record<string,unknown>|null};
@@ -150,7 +152,19 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  const mobileStatus=field("p","Checking optional mobile agent pairing…");
  mobileStatus.setAttribute("role","status");
  mobile.append(mobileTitle,mobileCode,mobileConnect,mobileDisconnect,mobileStatus);
- panel.append(title,status,showDetails,openSettings,notes,taskStatus,goalStatus);
+ const budgetLabel=field("label","Windows task budget · max approved actions");
+ const budgetSelect=field("select");
+ budgetSelect.setAttribute("aria-label","Maximum Windows actions per task");
+ for(const count of [8,24,48]){
+  const choice=field("option",count+" actions");
+  choice.value=String(count);
+  budgetSelect.append(choice);
+ }
+ budgetSelect.value="8";
+ budgetLabel.append(budgetSelect);
+ const budgetNote=field("p","Selected limit also bounds Master AI follow-up requests (actions + 1). Runs are not resumed automatically after restart.");
+ budgetNote.className="shuvi-native-note";
+ panel.append(title,status,showDetails,openSettings,notes,budgetLabel,budgetNote,taskStatus,goalStatus);
  chat.parentElement?.insertBefore(panel,chat);
  // A confirmation above the entire chat falls out of view while reading the
  // latest reply. Keep all pending native approvals adjacent to the composer.
@@ -171,6 +185,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  const replies=new Map<string,string[]>();
  const taskStates=new Map<string,ReturnType<typeof createTask>>();
  const taskGoalRoots=new Map<string,string>();
+ const taskBudgets=new Map<string,NativeTaskBudget>();
  const taskEvidence=new Map<string,ReturnType<typeof newEvidence>>();
  const verifiedWindows=new Map<string,NonNullable<ReturnType<typeof windowGoalEvidence>>>();
  const observedWindows=new Map<string,NonNullable<ReturnType<typeof observedWindowInventory>>>();
@@ -235,6 +250,15 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   updateReply(threadId,index,(replies.get(threadId)?.[index]||"")+"\n\n"+extra);
  }
  async function continueAfterVerifiedAction(task:PendingTask,result:ActionResult){
+  const taskBudget=taskBudgets.get(task.threadId);
+  if(!taskBudget||!reserveNativeModelRequest(taskBudget)){
+   haltTask(task.threadId,"owner_budget_exhausted");
+   appendReply(task.threadId,task.promptIndex,
+    "Task paused: owner-selected Master AI request budget or deadline exhausted. No new provider request or native action was sent. Start a new task to authorize more work.");
+   showActionFeedback("Task budget exhausted. No additional paid request.");
+   refreshState("Task paused: owner budget exhausted.");
+   return;
+  }
   // One provider request per confirmed, approved step. No retries for ambiguous
   // provider results and no auto execution of a newly proposed Windows action.
   const toolResult=redactNativeOutput(evidenceText(result));
@@ -335,6 +359,13 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    showActionFeedback("Repeated action blocked. Task paused.");
    return;
   }
+  if(!canStageNativeAction(taskBudget)){
+   haltTask(task.threadId,"owner_budget_exhausted");
+   appendReply(task.threadId,task.promptIndex,
+    "Task paused: the owner-selected native action budget is exhausted. The last AI response was already billed or reserved; no new Windows action was staged.");
+   showActionFeedback("No further native action authorized by this task budget.");
+   return;
+  }
   try{
    const next=await invoke<Pending>("prepare_tool",{
     proposal:response.tool_proposal,
@@ -344,6 +375,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     next.kind!==response.tool_proposal.tool||!validPreparedApproval(next))
     throw Error("Next action does not match the proposed tool identity.");
    if(task.usedIds.has(next.id))throw Error("Native action ID reused; cannot restage an already approved identity.");
+   if(!markNativeActionStaged(taskBudget)){
+    try{await invoke<void>("deny_action",{actionId:next.id});}catch{/* fail closed */}
+    throw Error("Native action budget expired during preparation; no approval was given.");
+   }
    pending={...task,action:next,step:task.step+1,seen:new Set([...seen,fp]),
     usedIds:new Set([...task.usedIds,next.id]),recoveryFrom:null};
    updateTask(task.threadId,stageTask(getTask(task.threadId),next.id,next.kind,task.step+1));
@@ -368,6 +403,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   const proposal={tool:"ui_windows",arguments:{}};
   const fp=fingerprint(proposal);
   if(!fp||current.seen.has(fp))return false;
+  const taskBudget=taskBudgets.get(current.threadId);
+  if(!taskBudget||!canStageNativeAction(taskBudget))return false;
   try{
    const receipt=await invoke<{action_id:string|null;event:string;tool:string;success:boolean}|null>(
     "action_audit_receipt",{actionId:current.action.id});
@@ -381,6 +418,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     proposal,provider:current.route.provider,model:current.route.model,baseUrl:current.route.base_url||null
    });
    if(!next||typeof next.id!=="string"||!next.id.trim()||next.id.length>128||next.kind!=="ui_windows"||current.usedIds.has(next.id)||!validPreparedApproval(next))return false;
+   if(!markNativeActionStaged(taskBudget)){
+    try{await invoke<void>("deny_action",{actionId:next.id});}catch{/* fail closed */}
+    return false;
+   }
    haltTask(current.threadId,"confirmed_read_failure");
    pending={...current,action:next,step:current.step+1,seen:new Set([...current.seen,fp]),
     usedIds:new Set([...current.usedIds,next.id]),
@@ -556,8 +597,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   connected:()=>ready,
   getReplies:(threadId:string)=>replies.get(threadId)||[],
   canClearChats:()=>!pending&&!sending,
-  clearChat:(threadId:string)=>{if(sending||pending)return;histories.delete(threadId);replies.delete(threadId);taskStates.delete(threadId);taskGoalRoots.delete(threadId);taskEvidence.delete(threadId);verifiedWindows.delete(threadId);observedWindows.delete(threadId);taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
-  clearAllChats:()=>{if(pending||sending)return;histories.clear();replies.clear();taskStates.clear();taskGoalRoots.clear();taskEvidence.clear();verifiedWindows.clear();observedWindows.clear();taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
+  clearChat:(threadId:string)=>{if(sending||pending)return;histories.delete(threadId);replies.delete(threadId);taskStates.delete(threadId);taskGoalRoots.delete(threadId);taskBudgets.delete(threadId);taskEvidence.delete(threadId);verifiedWindows.delete(threadId);observedWindows.delete(threadId);taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
+  clearAllChats:()=>{if(pending||sending)return;histories.clear();replies.clear();taskStates.clear();taskGoalRoots.clear();taskBudgets.clear();taskEvidence.clear();verifiedWindows.clear();observedWindows.clear();taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
   async send(text,threadId,promptIndex=0){
    if(!ready)return {ok:false,error:"Windows Shuvi is not connected yet."};
    // A short answer to a Master clarification is still part of the SAME
@@ -585,6 +626,12 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    if(sending)return {ok:false,error:"A native request is already running."};
    if(!text.trim()||text.length>2500)return {ok:false,error:"Invalid command length."};
    const prev=histories.get(threadId)||[];
+   const ownerBudget=waitingForChoice ? taskBudgets.get(threadId) : undefined;
+   const taskBudget=ownerBudget ?? createNativeTaskBudget(Number(budgetSelect.value));
+   if(!taskBudget)return {ok:false,error:"Select a valid Windows task budget: 8, 24 or 48 actions."};
+   if(!reserveNativeModelRequest(taskBudget))return {ok:false,error:
+    "Owner-selected AI request budget or task deadline exhausted. No paid AI request was sent. Start a new task to authorize more work."};
+   taskBudgets.set(threadId,taskBudget);
    // Keep paid-request context bounded and avoid forwarding any credential.
    const messages:NativeChatMessage[]=[...(waitingForChoice||route.role==="chat"?prev.slice(-20):[]),
     {role:"user",content:text}];
@@ -640,12 +687,17 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       if(!gate.allowed)throw Error("Unsafe or ambiguous UI target: "+gate.reason);
       const first=fingerprint(response.tool_proposal);
       if(!first)throw Error("Invalid or oversized native tool proposal.");
+      if(!canStageNativeAction(taskBudget))throw Error("Owner-selected Windows action budget exhausted; no tool staged.");
       const proposed=await invoke<Pending>("prepare_tool",{
        proposal:response.tool_proposal,provider:route.provider,model:route.model,baseUrl:route.base_url||null
       });
       if(!proposed||typeof proposed.id!=="string"||!proposed.id.trim()||proposed.id.length>128||
        proposed.kind!==response.tool_proposal.tool||!validPreparedApproval(proposed))
        throw Error("Prepared native action does not match the proposed tool identity.");
+      if(!markNativeActionStaged(taskBudget)){
+       try{await invoke<void>("deny_action",{actionId:proposed.id});}catch{/* no execution */}
+       throw Error("Native budget expired during action preparation; action not authorized.");
+      }
       pending={action:proposed,threadId,promptIndex,objective:effectiveObjective,
        route:{role:route.role,provider:route.provider,model:route.model,base_url:route.base_url||""},
        step:1,seen:new Set([first]),usedIds:new Set([proposed.id])};
