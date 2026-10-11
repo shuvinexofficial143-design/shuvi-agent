@@ -1,7 +1,7 @@
 // Recoverable inspection metadata only, NEVER permission to run an old action.
 export const NATIVE_JOURNAL_KEY="shuvi.native.task.recovery.v1";
 const ACTIONS=new Set([8,24,48]);
-const PHASES=new Set(["model_reserved","awaiting_approval","audit_verified","paused","outcome_unknown"]);
+const PHASES=new Set(["model_reserved","awaiting_approval","audit_verified","paused","outcome_unknown","executing"]);
 const ACTION_ID=/^[A-Za-z0-9_-]{1,128}$/;
 const MAX_AGE=7200000;
 function normalize(record,now){

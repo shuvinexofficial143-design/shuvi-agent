@@ -38,7 +38,7 @@ const launch={
  provider:"xkiro",model:"model/master",
  tool_proposal:{tool:"premiere_launch",arguments:{}}
 };
-function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null,wrongStageIndex=0,continuationRenderError=false,reusePendingId=false}={}){
+function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null,wrongStageIndex=0,continuationRenderError=false,reusePendingId=false,recoveryStore=null}={}){
  const nodes=new Map(),created=[],calls=[],chatInputs=[],staged=[];
  const domParent=el(),composerParent=el(),form=el(),chat=el();
  form.parentElement=composerParent;chat.parentElement=domParent;
@@ -87,7 +87,7 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
   if(name==="deny_action")return;
   throw Error("unexpected native call: "+name);
  };
- globalThis.window={__TAURI_INTERNALS__:{invoke}};
+ globalThis.window={__TAURI_INTERNALS__:{invoke},localStorage:recoveryStore};
  const transport=mountNativeAgent(()=>{});
  const allow=created.find(x=>x.textContent==="Allow once");
  const deny=created.find(x=>x.textContent==="Deny");
@@ -793,4 +793,60 @@ test("Owner limit permits eight approvals but never stages a ninth action",async
  assert.equal(s.staged.length,8,"no ninth native action prepared");
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,8);
  assert.equal(s.approval.hidden,true);
+});
+
+function recoveryStore({unwritablePhase=null}={}){
+ const data=new Map(),writes=[];
+ return {
+  writes,
+  getItem:k=>data.get(k)??null,
+  setItem(k,value){
+   const record=JSON.parse(value);
+   if(record.phase===unwritablePhase)throw Error("Native storage denied");
+   writes.push(record);
+   data.set(k,value);
+  },
+  removeItem:k=>data.delete(k),
+  last(){const items=writes;return items.at(-1);}
+ };
+}
+test("real native approval journals executing BEFORE the actual IPC, then audit-verified before Master continuation",async()=>{
+ const store=recoveryStore();
+ const s=setup({recoveryStore:store,first:detection,second:launch});
+ await until(()=>s.transport.connected(),"native IPC");
+ await s.transport.send("Open Premiere Pro","execution-journal",0);
+ assert.equal(store.last().phase,"awaiting_approval");
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"next approved tool");
+ const sent=s.calls.findIndex(c=>c.name==="execute_action");
+ assert.ok(sent>=0);
+ const phases=store.writes.map(x=>x.phase);
+ assert.ok(phases.indexOf("executing")>phases.indexOf("awaiting_approval"));
+ assert.ok(phases.indexOf("audit_verified")>phases.indexOf("executing"));
+ assert.equal(store.last().phase,"awaiting_approval");
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
+});
+test("unwritable executing journal rejects the native action and makes ZERO execute calls",async()=>{
+ const store=recoveryStore({unwritablePhase:"executing"});
+ const s=setup({recoveryStore:store,first:detection});
+ await until(()=>s.transport.connected(),"native IPC");
+ await s.transport.send("Open Premiere Pro","execution-blocked",0);
+ assert.equal(s.staged.length,1);
+ s.allow.listeners.get("click")();
+ await until(()=>s.approval.hidden===true,"blocked pending approval cleared");
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
+ assert.equal(s.calls.filter(c=>c.name==="deny_action").length,1);
+ assert.match(s.transport.getReplies("execution-blocked")[0],/Could not durably mark native execution/);
+});
+test("missing Rust audit does not turn an attempted Windows action into a safe retry",async()=>{
+ const store=recoveryStore();
+ const s=setup({recoveryStore:store,first:detection,auditOk:false});
+ await until(()=>s.transport.connected(),"native IPC");
+ await s.transport.send("Open Premiere Pro","unknown-journal",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.approval.hidden===true,"unverified action paused");
+ assert.equal(store.last().phase,"outcome_unknown");
+ assert.equal(store.last().actionId,"action-1");
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
+ assert.equal(s.calls.filter(c=>c.name==="chat").length,1);
 });

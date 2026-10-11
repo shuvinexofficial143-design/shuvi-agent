@@ -48,3 +48,28 @@ test("a paused or uncertain task remains an inspection-only journal record",()=>
  assert.match(native,/writeRecovery\(taskBudget,"paused"\)/);
  assert.match(native,/route.role!=="chat"&&!writeRecovery\(taskBudget,"model_reserved"\)/);
 });
+
+test("executing journal survives crash boundary and remains inspection-only",()=>{
+ const store=makeStore();
+ assert.equal(writeNativeRecovery(store,{...value,phase:"executing"},1000),true);
+ const recovered=readNativeRecovery(store,2000);
+ assert.equal(recovered.phase,"executing");
+ assert.equal(recovered.actionId,value.actionId);
+ assert.equal(recovered.modelRequests,value.modelRequests);
+ assert.equal(recovered.stagedActions,value.stagedActions);
+});
+test("action dispatch MUST follow the durable executing write and unknown outcomes retain uncertainty",()=>{
+ const source=readFileSync(new URL("../web-dashboard/src/native-agent.ts",import.meta.url),"utf8");
+ const start=source.indexOf("async function decide(allowed:boolean)");
+ const stop=source.indexOf('approve.addEventListener("click"',start);
+ const decide=source.slice(start,stop);
+ const journal=decide.indexOf('writeRecovery(currentBudget,"executing",current.action.id)');
+ const execute=decide.indexOf('invoke<ActionResult>("execute_action"');
+ assert.ok(journal>=0&&execute>journal);
+ const preflight=decide.slice(journal,execute);
+ assert.match(preflight,/await invoke<void>\("deny_action",\{actionId:current.action.id\}\)/);
+ assert.match(preflight,/recovery_journal_failed/);
+ assert.match(preflight,/return;/);
+ assert.match(decide,/writeRecovery\(unknownBudget,"outcome_unknown",current.action.id\)/);
+ assert.match(decide,/writeRecovery\(verifiedBudget,"audit_verified",current.action.id\)/);
+});

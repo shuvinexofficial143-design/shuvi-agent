@@ -516,11 +516,25 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     const currentBudget=taskBudgets.get(current.threadId);
     if(!currentBudget||!canExecuteNativeAction(currentBudget)){
      try{await invoke<void>("deny_action",{actionId:current.action.id});}catch{/* do not execute */}
+     if(currentBudget)writeRecovery(currentBudget,"paused",current.action.id);
      haltTask(current.threadId,"owner_budget_expired");
      appendReply(current.threadId,current.promptIndex,
       "Owner-selected native task budget or deadline expired before approval. The pending action was not executed. Start a new task to authorize further work.");
      showActionFeedback("Task authorization expired. Nothing executed.");
      refreshState("Native action not executed: owner budget expired.");
+     clearPending();
+     return;
+    }
+    // Crash boundary: after this durable marker, the action MUST be treated
+    // as possibly executed until a matching Rust audit proves otherwise.
+    // If this write fails, no execute_action IPC is sent.
+    if(!writeRecovery(currentBudget,"executing",current.action.id)){
+     try{await invoke<void>("deny_action",{actionId:current.action.id});}catch{/* no execution requested */}
+     haltTask(current.threadId,"recovery_journal_failed");
+     appendReply(current.threadId,current.promptIndex,
+      "Could not durably mark native execution. No Windows execute command was sent. Review Activity/Audit before starting another task.");
+     showActionFeedback("Recovery journal unavailable. Native execution blocked.");
+     refreshState("No Windows action executed by Shuvi: journal write failed.");
      clearPending();
      return;
     }
@@ -571,7 +585,13 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       goalStatus.textContent=proof?redactNativeMessage(goalEvidenceLabel(current.objective,proof)):taskGoalLabel(current.objective);
      }
     }
-    else haltTask(current.threadId,"unknown_outcome");
+    else {
+     // The native result without exact successful Rust audit is NOT success.
+     // Never regress the persisted 'executing' marker to awaiting approval.
+     const unknownBudget=taskBudgets.get(current.threadId);
+     if(unknownBudget)writeRecovery(unknownBudget,"outcome_unknown",current.action.id);
+     haltTask(current.threadId,"unknown_outcome");
+    }
     if(!verified && result.success===false && result.tool===current.action.kind){
      // A normal typed failure result (as opposed to a thrown exception) must
      // follow exactly the same audited read-only recovery decision.
@@ -612,6 +632,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     showActionFeedback("Native action verified. Follow-up planning failed; no automatic retry.");
     refreshState("Master continuation failed; prior native action remains verified.");
    }else{
+    const unknownBudget=taskBudgets.get(current.threadId);
+    if(unknownBudget)writeRecovery(unknownBudget,"outcome_unknown",current.action.id);
     const recoveryPrepared=await prepareAuditedUiReadRecovery(current,message);
    if(!recoveryPrepared){
     haltTask(current.threadId,"unknown_outcome");

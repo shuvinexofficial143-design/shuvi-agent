@@ -45,6 +45,7 @@ test("native feedback obtains count only from successful action and matching aud
  assert.match(src,/contradictsFailureReceipt\(current\.action,receipts\)/);
  assert.match(src,/if\(verified\)\{[\s\S]*?updateTask\(current\.threadId,verifyTask/);
  assert.match(src,/if\(verifiedBudget&&!writeRecovery\(verifiedBudget,"audit_verified"/);
+ assert.match(src,/writeRecovery\(currentBudget,"executing",current.action.id\)/);
  assert.match(src,/recordAuditedEvidence\(/);
  assert.match(src,/taskEvidence\.set\(current\.threadId/);
  assert.match(src,/taskContext\(getTask\(task\.threadId\)\)/);
