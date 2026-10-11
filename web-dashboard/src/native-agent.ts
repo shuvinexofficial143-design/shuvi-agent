@@ -428,7 +428,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      }
     }
     else haltTask(current.threadId,"unknown_outcome");
-    if(!verified && result.success===false){
+    if(!verified && result.success===false && result.tool===current.action.kind){
      // A normal typed failure result (as opposed to a thrown exception) must
      // follow exactly the same audited read-only recovery decision.
      const failure=[result.stderr,result.stdout].filter(Boolean).join("\n").slice(0,1200);
