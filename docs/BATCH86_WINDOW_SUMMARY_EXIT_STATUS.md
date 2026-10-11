@@ -1,0 +1,1 @@
+Batch 86: Do not tell the Master a ui_windows result was verified if the typed exit status contradicts success or is malformed, despite a success flag.

@@ -4,6 +4,8 @@ import {cleanObservedLabel} from "./native-observation-text.mjs";
 const allowed=(v,max)=>typeof v==="string"?cleanObservedLabel(v,max):"";
 export function summarizeWindowObservation(result,audited=false){
  if(!audited||result?.success!==true||result.tool!=="ui_windows")return "";
+ if(result.exit_code!=null&&(!Number.isSafeInteger(result.exit_code)||result.exit_code!==0))
+  return "Window observation exit status invalid; no target identity verified.";
  if(typeof result.stdout!=="string"||result.stdout.length>250000)
   return "Window observation too large or unavailable; identity cannot be verified. Inspect again.";
  let data;

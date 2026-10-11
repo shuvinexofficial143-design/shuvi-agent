@@ -45,3 +45,11 @@ test("Batch 80 duplicate OS window rows remain visible as ambiguous observations
  assert.match(text,/2 usable window identity/);
  assert.match(text,/NOT a selected target/);
 });
+
+test("Batch 86 unsuccessful or malformed typed window read is never described as verified",()=>{
+ const base={tool:"ui_windows",success:true,stdout:JSON.stringify([
+  {Name:"Premiere",ProcessName:"Premiere",ProcessId:1,NativeWindowHandle:2}])};
+ for(const exit_code of [1,-1,"0",false,NaN])
+  assert.match(guide({...base,exit_code},true),/no target identity verified/);
+ assert.match(guide({...base,exit_code:0},true),/Verified read-only/);
+});
