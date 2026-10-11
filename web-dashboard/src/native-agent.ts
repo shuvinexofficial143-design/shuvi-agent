@@ -420,7 +420,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    if(!response||typeof response.content!=="string")
     throw Error("Invalid next-step AI response");
   }catch(error){
-   writeRecovery(taskBudget,"outcome_unknown",task.action.id);
+   await persistRecovery(taskBudget,"outcome_unknown",task.action.id);
    haltTask(task.threadId,"model_failed");
    appendReply(task.threadId,task.promptIndex,
     "Master continuation failed or its result is unknown: "+redactNativeError(error)+
@@ -436,7 +436,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   histories.set(task.threadId,[...messages,{role:"assistant",content:answer}].slice(-22));
   appendReply(task.threadId,task.promptIndex,"Master next step:\n"+answer);
   if(!response.tool_proposal){
-   writeRecovery(taskBudget,"paused",task.action.id);
+   await persistRecovery(taskBudget,"paused",task.action.id);
    haltTask(task.threadId,followupRoot?"awaiting_clarification":"no_next_tool");
    appendReply(task.threadId,task.promptIndex,
     (followupRoot?"Task paused: waiting for your clarification; no further Windows tool is prepared. The original goal is NOT independently verified complete.\n":"Task paused: no further executable tool was proposed. The full original objective is NOT independently verified complete; check the actual application/project before claiming success.\n")+
@@ -584,7 +584,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    if(!allowed){
     await invoke<void>("deny_action",{actionId:current.action.id});
     const deniedBudget=taskBudgets.get(current.threadId);
-    if(deniedBudget)writeRecovery(deniedBudget,"paused",current.action.id);
+    if(deniedBudget)await persistRecovery(deniedBudget,"paused",current.action.id);
     haltTask(current.threadId,"denied");
     updateReply(current.threadId,current.promptIndex,
       (replies.get(current.threadId)?.[current.promptIndex]||"")+"\n\nWindows tool denied by you. No action executed.");
@@ -596,7 +596,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     const currentBudget=taskBudgets.get(current.threadId);
     if(!currentBudget||!canExecuteNativeAction(currentBudget)){
      try{await invoke<void>("deny_action",{actionId:current.action.id});}catch{/* do not execute */}
-     if(currentBudget)writeRecovery(currentBudget,"paused",current.action.id);
+     if(currentBudget)await persistRecovery(currentBudget,"paused",current.action.id);
      haltTask(current.threadId,"owner_budget_expired");
      appendReply(current.threadId,current.promptIndex,
       "Owner-selected native task budget or deadline expired before approval. The pending action was not executed. Start a new task to authorize further work.");
@@ -669,7 +669,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      // The native result without exact successful Rust audit is NOT success.
      // Never regress the persisted 'executing' marker to awaiting approval.
      const unknownBudget=taskBudgets.get(current.threadId);
-     if(unknownBudget)writeRecovery(unknownBudget,"outcome_unknown",current.action.id);
+     if(unknownBudget)await persistRecovery(unknownBudget,"outcome_unknown",current.action.id);
      haltTask(current.threadId,"unknown_outcome");
     }
     if(!verified && result.success===false && result.tool===current.action.kind){
@@ -713,7 +713,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     refreshState("Master continuation failed; prior native action remains verified.");
    }else{
     const unknownBudget=taskBudgets.get(current.threadId);
-    if(unknownBudget)writeRecovery(unknownBudget,"outcome_unknown",current.action.id);
+    if(unknownBudget)await persistRecovery(unknownBudget,"outcome_unknown",current.action.id);
     const recoveryPrepared=await prepareAuditedUiReadRecovery(current,message);
    if(!recoveryPrepared){
     haltTask(current.threadId,"unknown_outcome");
@@ -897,7 +897,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       refreshState("Waiting for your explicit Allow once / Deny decision. No tool executed.");
       approval.scrollIntoView?.({block:"nearest",behavior:"smooth"});
      }catch(error){
-      writeRecovery(taskBudget,"outcome_unknown");
+      await persistRecovery(taskBudget,"outcome_unknown");
       updateTask(threadId,pauseTask(createTask(),"prepare_failed"));
       showActionFeedback("AI replied but Windows could not prepare its action: "+redactNativeError(error)+
        ". Nothing executed. Check the action details; do not resend this paid request blindly.");
@@ -911,7 +911,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      }
     }else{
      if(route.role!=="chat"){
-      writeRecovery(taskBudget,"paused");
+      await persistRecovery(taskBudget,"paused");
       updateTask(threadId,pauseTask(createTask(),nextRoot?"awaiting_clarification":"no_tool"));
       const likeToolJson=/["']tool["']\s*:/.test(reply);
       showActionFeedback(nextRoot
@@ -928,7 +928,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     }
     return {ok:true,reply};
    }catch(error){
-    if(route.role!=="chat")writeRecovery(taskBudget,"outcome_unknown");
+    if(route.role!=="chat")await persistRecovery(taskBudget,"outcome_unknown");
     refreshState("Native AI request failed or outcome unknown. Never retry blindly.");
     return {ok:false,error:redactNativeError(error)};
    }finally{
