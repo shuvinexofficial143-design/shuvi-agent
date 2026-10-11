@@ -10,4 +10,7 @@ test("low-risk auto-execution is allowed only through scoped TTL checks",()=>{
  assert.match(main,/allowsTaskRead\(activePermissionScope,activeReadGrant\(proposal,pendingAction\.risk\)\)/);
  assert.match(main,/grantTaskRead\(activePermissionScope,activeReadGrant\(proposal,pendingAction\.risk\)\)/);
  assert.doesNotMatch(main,/sessionAllowedScopes\.(?:add|has)/);
+ assert.match(main,/key:taskReadPermissionKey\(proposal\) \?\? ""/);
+ assert.match(main,/taskReadPermissionKey\(proposal\) !== null/);
+ assert.doesNotMatch(main,/\|session/);
 });

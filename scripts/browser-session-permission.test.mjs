@@ -10,6 +10,7 @@ test("browser PID session grants can be revoked as a lifecycle boundary",()=>{
   const block=main.slice(start,end);
   assert.match(block,/for \(const key of \[\.\.\.activePermissionScope\.grants\.keys\(\)\]\)/);
   assert.match(block,/key\.includes\("\|pid:"\)/);
+  assert.match(block,/key\.includes\(exactMarker\)/);
   assert.match(block,/activePermissionScope\.grants\.delete\(key\)/);
 });
 

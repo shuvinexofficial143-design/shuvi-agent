@@ -35,6 +35,7 @@ import { MODEL_ROLES, loadModelRoutes, validateModelRoute, selectTaskRoute } fro
 import type { ModelRoute, TaskModelRoute } from "./model-routing.mjs";
 import { chooseNativeRoute } from "../web-dashboard/src/native-model-routing.mjs";
 import {createTaskPermissionScope,grantTaskRead,allowsTaskRead,revokeTaskScope} from "./task-permission-scope.mjs";
+import {taskReadPermissionKey} from "./task-read-permission-key.mjs";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("Missing app root");
@@ -78,7 +79,7 @@ function rotatePermissionScope():void{
  activePermissionScope=createTaskPermissionScope(crypto.randomUUID());
 }
 function activeReadGrant(proposal:ToolProposal,risk:string){
- return {taskId:activePermissionScope.taskId,key:sessionPermissionKey(proposal),tool:proposal.tool,risk};
+ return {taskId:activePermissionScope.taskId,key:taskReadPermissionKey(proposal) ?? "",tool:proposal.tool,risk};
 }
 
 root.innerHTML = `
@@ -871,51 +872,15 @@ function toolResultMessage(result: ActionResult): ChatMessage {
   };
 }
 
-function normalizeScopePath(value: string): string {
-  return value.replaceAll("/", "\\").replace(/\\+$/, "").toLowerCase();
-}
-
-function sessionPermissionKey(proposal: ToolProposal): string {
-  const pathValue =
-    typeof proposal.arguments.path === "string"
-      ? proposal.arguments.path.trim()
-      : "";
-
-  if (pathValue) {
-    // Session auto-approval for filesystem/Git reads is deliberately exact-path only.
-    // A frontend string prefix cannot prove canonical containment because dot-dot segments,
-    // Windows junctions and symlinks can resolve outside the selected workspace.
-    return proposal.tool + "|exact:" + normalizeScopePath(pathValue);
-  }
-
-  const pid =
-    typeof proposal.arguments.pid === "number"
-      ? String(proposal.arguments.pid)
-      : "";
-  if (pid) return proposal.tool + "|pid:" + pid;
-
-  const windowName =
-    typeof proposal.arguments.window === "string"
-      ? proposal.arguments.window.trim().toLowerCase()
-      : "";
-  if (windowName) return proposal.tool + "|window:" + windowName;
-
-  return proposal.tool + "|session";
-}
-
-function sessionPermissionLabel(proposal: ToolProposal): string {
-  const key = sessionPermissionKey(proposal);
-
-  if (key.includes("|exact:")) return "Allow this exact path for current task (5 min)";
-  if (key.includes("|pid:")) return "Allow for this task and browser (5 min)";
-  if (key.includes("|window:")) return "Allow for this task and window (5 min)";
-  return "Allow this read tool for current task (5 min)";
+function sessionPermissionLabel(_proposal: ToolProposal): string {
+  // Every field of the next proposed read must match, not just path/PID/window.
+  return "Allow this exact read request for current task (5 min)";
 }
 
 function revokeBrowserSessionPermissions(pid?: number): void {
-  const exactSuffix = typeof pid === "number" ? "|pid:" + String(pid) : null;
+  const exactMarker = typeof pid === "number" ? "|pid:" + String(pid) + "|args:" : null;
   for (const key of [...activePermissionScope.grants.keys()]) {
-    if (exactSuffix ? key.endsWith(exactSuffix) : key.includes("|pid:")) {
+    if (exactMarker ? key.includes(exactMarker) : key.includes("|pid:")) {
       activePermissionScope.grants.delete(key);
     }
   }
@@ -1075,6 +1040,7 @@ async function stageProposal(proposal: ToolProposal): Promise<void> {
       if(allowSession)allowSession.disabled=true;
     }
   } catch (error) {
+    revokeTaskScope(activePermissionScope);
     orchestration = recordToolOutcome(orchestration, proposal, "failure", undefined, false);
     await auditGraphOutcome(proposal);
     await recordOrchestrationAudit(
@@ -1191,6 +1157,7 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
       receipt
     );
     await auditGraphOutcome(proposal);
+    if (cancelledByUser || !result.success || !receiptMatches) revokeTaskScope(activePermissionScope);
     messages.push(toolResultMessage(result));
     if (cancelledByUser) {
       messages.push(hiddenToolFailure(proposal, {
@@ -1208,6 +1175,7 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
     }
     await continueAfterOutcome();
   } catch (error) {
+    revokeTaskScope(activePermissionScope);
     const receipt = await readActionAuditReceipt(actionId);
     const cancelledByUser = await actionCancellationConfirmed(actionId);
     const confirmedFailure = exactActionReceipt(receipt, actionId, proposal.tool, "failed", false);
@@ -1253,7 +1221,7 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
     <pre class="permission-detail"></pre>
     <div class="button-row">
       <button id="chatApprove" class="primary">Allow once</button>
-      ${pendingAction.risk === "low" && (
+      ${pendingAction.risk === "low" && taskReadPermissionKey(proposal) !== null && (
         proposal.tool === "read_file" ||
         proposal.tool === "list_directory" ||
         proposal.tool === "ui_find" ||
@@ -1918,6 +1886,7 @@ el<HTMLButtonElement>("#refreshAudit").addEventListener("click", () => {
 
 el<HTMLButtonElement>("#stopButton").addEventListener("click", async () => {
   cancelRequested = true;
+  revokeTaskScope(activePermissionScope);
 
   if (pendingAction && pendingChatProposal) {
     const actionId = pendingAction.id;
