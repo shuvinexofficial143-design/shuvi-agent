@@ -19,3 +19,8 @@ test("duplicate exact window titles are ambiguous even if names match",()=>{
  const duplicate=[...observed,{title:"Adobe Premiere Pro 2026",pid:789,hwnd:3}];
  assert.match(check({tool:"ui_click",arguments:{window:"Adobe Premiere Pro 2026"}},duplicate).reason,/Ambiguous/);
 });
+
+test("Batch 26 multiple observed rows with one handle remain ambiguous",()=>{
+ const duplicate=[{title:"Premiere",pid:1,hwnd:3},{title:"Premiere",pid:1,hwnd:3}];
+ assert.equal(checkObservedMutationTarget({tool:"ui_click",arguments:{window:"Premiere"}},duplicate).allowed,false);
+});

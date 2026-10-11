@@ -21,7 +21,8 @@ export function checkObservedMutationTarget(proposal,observed){
  if(typeof title!=="string"||!title.trim()||title.length>180)
   return {allowed:false,reason:"Explicit verified target window required."};
  const exact=observed.filter(x=>x.title.toLocaleLowerCase("en-US")===title.trim().toLocaleLowerCase("en-US"));
- const count=new Set(exact.map(x=>x.hwnd)).size;
+ // Duplicate records for an apparently identical title are still ambiguous.
+ const count=exact.length;
  return count===1?{allowed:true,reason:"unique_window"}:{allowed:false,
   reason:count===0?"Proposed window differs from audited observed application.":
   "Ambiguous observed window title; multiple handles share it."};
