@@ -1,0 +1,37 @@
+// Window-level completion evidence, NOT proof of project/file/editor outcomes.
+// Only a fresh, exact-audited ui_windows action can confirm an application.
+// A project dialog or launched process cannot complete the user's original goal.
+const knownApps=[
+ ["premiere",/\bpremi(?:ere|re|er)\b|प्रीमियर|प्रिमियर/iu,/\bpremiere\b/i],
+ ["photoshop",/\bphotoshop\b|फोटोशॉप/iu,/\bphotoshop\b/i],
+ ["after-effects",/\bafter[\s-]?effects?\b|आफ्टर इफेक्ट/iu,/\bafter[\s-]?effects?\b/i],
+ ["blender",/\bblender\b|ब्लेंडर/iu,/\bblender\b/i],
+ ["illustrator",/\billustrator\b|इलस्ट्रेटर/iu,/\billustrator\b/i],
+ ["audition",/\baudition\b|ऑडिशन/iu,/\baudition\b/i]
+];
+export function windowGoalEvidence(objective,result,hasExactAudit){
+ if(hasExactAudit!==true||result?.success!==true||result.tool!=="ui_windows"||
+  typeof result.stdout!=="string"||typeof objective!=="string")return null;
+ const candidates=knownApps.filter(([,expr])=>expr.test(objective.slice(0,2500)));
+ if(candidates.length!==1)return null;
+ let rows;
+ try{rows=JSON.parse(result.stdout);}catch{return null;}
+ if(!Array.isArray(rows)||rows.length===0||rows.length>200)return null;
+ const [,app,match]=candidates[0];
+ const selected=rows.filter(row=>row&&typeof row==="object"&&!Array.isArray(row)&&
+  (typeof row.Name==="string"&&match.test(row.Name)||
+   typeof row.ProcessName==="string"&&match.test(row.ProcessName)));
+ if(selected.length!==1)return null;
+ const row=selected[0];
+ if(typeof row.Name!=="string"||!row.Name.trim()||
+  !Number.isSafeInteger(row.ProcessId)||row.ProcessId<=0||
+  !Number.isSafeInteger(row.NativeWindowHandle)||row.NativeWindowHandle<=0)
+  return null;
+ return {app,title:row.Name.slice(0,140),pid:row.ProcessId,hwnd:row.NativeWindowHandle};
+}
+export function goalEvidenceLabel(request,verifiedWindow){
+ if(!verifiedWindow)return "Original goal checks remain unverified; inspect the actual application.";
+ return "Observed live "+verifiedWindow.app+" window: "+verifiedWindow.title+
+  " (PID "+verifiedWindow.pid+"). Only WINDOW existence independently verified; "+
+  "project, edits, import, export and other requested outcomes remain UNVERIFIED.";
+}

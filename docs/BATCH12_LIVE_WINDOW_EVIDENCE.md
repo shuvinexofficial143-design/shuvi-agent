@@ -1,0 +1,1 @@
+Batch 12: A unique live application Window milestone can only be supported by an approved, successful, exact-audited ui_windows observation with process ID and native HWND. Tool success alone or a process launch is not goal success. UI indicates that new project/media/edit/export outcomes remain UNVERIFIED. No Windows live acceptance or merge/deploy.
