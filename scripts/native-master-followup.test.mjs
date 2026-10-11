@@ -260,7 +260,7 @@ test("Master receives actionable controls from deep inside a long UI discovery l
  const next=s.chatInputs[1].messages.at(-1).content;
  assert.match(next,/New Project/);
  assert.match(next,/createProject/);
- assert.match(next,/ControlType.Button/);
+ assert.match(next,/"role":"Button"/);
  assert.match(next,/untrusted observed data/);
  assert.ok(next.length<=10800,"prevent unbounded provider input");
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);

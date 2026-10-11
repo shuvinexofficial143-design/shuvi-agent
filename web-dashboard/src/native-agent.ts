@@ -23,20 +23,25 @@ function compactObservedUi(result:ActionResult):string|null {
   const raw=JSON.parse(result.stdout) as unknown;
   const candidates=Array.isArray(raw)?raw:raw&&typeof raw==="object"?[raw]:[];
   if(!candidates.length)return null;
-  const keys=result.tool==="ui_windows"
-   ?["Name","ProcessId","ProcessName","ClassName"]
-   :["Name","AutomationId","ControlType","IsEnabled","Bounds"];
+  // Short field names preserve more real controls, including buttons deep in
+  // the Accessibility tree, without increasing paid-model context length.
   const budget=8800;
   const rows:Record<string,string|number|boolean>[]=[];
   let used=60;
   for(const row of candidates.slice(0,160)){
    if(!row||typeof row!=="object"||Array.isArray(row))continue;
+   const source=row as Record<string,unknown>;
    const item:Record<string,string|number|boolean>={};
-   for(const field of keys){
-    const value=(row as Record<string,unknown>)[field];
-    if(typeof value==="string")item[field]=value.slice(0,180);
-    else if(typeof value==="number"&&Number.isFinite(value))item[field]=value;
-    else if(typeof value==="boolean")item[field]=value;
+   const pairs=result.tool==="ui_windows"
+    ?[["Name","title"],["ProcessId","pid"],["ProcessName","process"],["ClassName","class"]]
+    :[["Name","name"],["AutomationId","id"],["ControlType","role"],["IsEnabled","enabled"],
+       ...(result.tool==="ui_find"?[["Bounds","bounds"]]:[])];
+   for(const [field,label] of pairs){
+    const value=source[field];
+    if(typeof value==="string")item[label]=
+     (field==="ControlType"?value.replace(/^ControlType\\./,""):value).slice(0,180);
+    else if(typeof value==="number"&&Number.isFinite(value))item[label]=value;
+    else if(typeof value==="boolean")item[label]=value;
    }
    if(!Object.keys(item).length)continue;
    const size=JSON.stringify(item).length+2;
