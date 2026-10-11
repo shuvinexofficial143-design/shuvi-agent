@@ -38,6 +38,7 @@ import {taskReadPermissionKey} from "./task-read-permission-key.mjs";
 import {allowedTaskBudget,taskDeadlineAllows,reserveTaskModelRequest} from "./task-runtime-budget.mjs";
 import {approvalRiskClass, validPendingDisplayMetadata} from "./approval-render-safety.mjs";
 import {stagingWasInvalidated} from "./approval-staging-guard.mjs";
+import {verifiedNativeActionResult, confirmedNativeActionFailure} from "./native-action-outcome.mjs";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("Missing app root");
@@ -1199,13 +1200,7 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
   try {
     const result = await invoke<ActionResult>("execute_action", { actionId });
     const receipt = await readActionAuditReceipt(actionId);
-    const receiptMatches = exactActionReceipt(
-      receipt,
-      actionId,
-      result.tool,
-      "executed",
-      result.success
-    );
+    const receiptMatches = verifiedNativeActionResult(proposal.tool, actionId, result, receipt);
     const cancelledByUser = await actionCancellationConfirmed(actionId);
     if (!cancelledByUser && result.success) {
       if (proposal.tool === "browser_start") {
@@ -1233,27 +1228,37 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
     );
     await auditGraphOutcome(proposal);
     if (cancelledByUser || !result.success || !receiptMatches) revokeTaskScope(activePermissionScope);
-    messages.push(toolResultMessage(result));
+    // A returned tool result is not trusted until Rust corroborates the
+    // exact action UUID, proposed tool, typed result and executed receipt.
+    // Otherwise no further paid provider or Windows action is authorized.
     if (cancelledByUser) {
       messages.push(hiddenToolFailure(proposal, {
         cancelled_by_user: true,
         action_id: actionId,
         retry_automatically: false
       }));
-    } else if (proposal.task_step_id != null && !receiptMatches) {
+      if (remoteTask) await closeRemoteTask("stopped");
+      await stopAgentForSafety("Owner cancelled the native action. Shuvi stopped without another AI request.");
+      return;
+    }
+    if (!receiptMatches) {
       messages.push(hiddenToolFailure(proposal, {
+        outcome_unknown: true,
         evidence_verification_failed: true,
         action_id: actionId,
-        reason: "The typed result did not have a matching Rust executed audit receipt, so the task step was not completed.",
         retry_automatically: false
       }));
+      if (remoteTask) await closeRemoteTask("outcome_unknown");
+      await stopAgentForSafety("Native action outcome unknown: no matching Rust executed audit receipt for this exact tool and result. Inspect the audit before starting a new task. No automatic retry.");
+      return;
     }
+    messages.push(toolResultMessage(result));
     await continueAfterOutcome();
   } catch (error) {
     revokeTaskScope(activePermissionScope);
     const receipt = await readActionAuditReceipt(actionId);
     const cancelledByUser = await actionCancellationConfirmed(actionId);
-    const confirmedFailure = exactActionReceipt(receipt, actionId, proposal.tool, "failed", false);
+    const confirmedFailure = confirmedNativeActionFailure(proposal.tool, actionId, receipt);
     if(remoteTask)remoteTask.hadFailure=true;
     orchestration = recordToolOutcome(
       orchestration,
@@ -1265,13 +1270,23 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
       receipt
     );
     await auditGraphOutcome(proposal);
+    // Native IPC can throw AFTER a Windows action has executed. Without a
+    // matching failed receipt, neither success nor failure is established.
     messages.push(hiddenToolFailure(proposal, {
-      error: String(error),
+      error: confirmedFailure ? "Rust audited an execution failure." : "Native action outcome is unknown.",
       action_id: actionId,
       cancelled_by_user: cancelledByUser,
       execution_failure_audit_confirmed: cancelledByUser ? false : confirmedFailure,
       retry_automatically: false
     }));
+    if (cancelledByUser || !confirmedFailure) {
+      if (remoteTask) await closeRemoteTask(cancelledByUser ? "stopped" : "outcome_unknown");
+      await stopAgentForSafety(cancelledByUser
+        ? "Owner cancelled the native action. No further provider or Windows actions dispatched."
+        : "Native action outcome unknown after execution error. An exact Rust failed receipt was not available; review the audit before starting a new task. No automatic retry.");
+      return;
+    }
+    // The exact failed Rust action receipt permits bounded safety replanning.
     await continueAfterOutcome();
   } finally {
     clearExecutingAction(actionId);
