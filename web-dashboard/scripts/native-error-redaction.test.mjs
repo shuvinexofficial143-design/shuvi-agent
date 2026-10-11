@@ -37,3 +37,13 @@ test("Batch 71 redact full token before display truncation to avoid leaking its 
  assert.ok(!report.includes(fake.slice(0,5)),"truncated secret prefix must not leak");
  assert.equal(redactNativeOutput("x".repeat(100001)),"[OVERSIZED_DIAGNOSTIC_OMITTED]");
 });
+
+test("Batch 72 redact structured JSON credential fields but keep useful diagnostics",async()=>{
+ const {redactNativeOutput}=await import("../src/native-error-redaction.mjs");
+ const dummy=["alpha","bravo","charlie","delta"].join("");
+ const raw=JSON.stringify({api_key:dummy,access_token:dummy,secret:dummy,status:"failed"});
+ const cleaned=redactNativeOutput(raw);
+ assert.doesNotMatch(cleaned,new RegExp(dummy));
+ assert.match(cleaned,/"api_key":"\[REDACTED\]"/);
+ assert.match(cleaned,/"status":"failed"/);
+});

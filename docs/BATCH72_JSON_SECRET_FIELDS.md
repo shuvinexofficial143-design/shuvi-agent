@@ -1,0 +1,1 @@
+Batch 72: Redact JSON credential values from native diagnostics and provider messages, including api_key, access_token, secret and authorization, while keeping ordinary structured status details. Tests construct dummy strings at runtime.
