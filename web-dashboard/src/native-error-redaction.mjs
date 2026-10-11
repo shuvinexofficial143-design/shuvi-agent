@@ -8,10 +8,10 @@ function sanitize(input,limit){
  return message
   .replace(/sk-[A-Za-z0-9_-]{12,}/g,"[REDACTED_API_KEY]")
   .replace(/(Bearer\s+)[A-Za-z0-9._~+/-]{8,}/gi,"$1[REDACTED_TOKEN]")
-  .replace(/((?:api[_-]?key|access[_-]?token|authorization)\s*[:=]\s*)["']?[A-Za-z0-9._~+/-]{8,}["']?/gi,"$1[REDACTED]")
-  .replace(/([?&](?:api[_-]?key|access[_-]?token|token|key)=)[^&#\s]{8,}/gi,"$1[REDACTED]")
+  .replace(/((?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|password|authorization)\s*[:=]\s*)["']?[A-Za-z0-9._~+/-]{8,}["']?/gi,"$1[REDACTED]")
+  .replace(/([?&](?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|token|key)=)[^&#\s]{8,}/gi,"$1[REDACTED]")
   .replace(/((?:x-api-key|x-auth-token)\s*:\s*)[^\s,;]+/gi,"$1[REDACTED]")
-  .replace(/(["'](?:api[_-]?key|access[_-]?token|secret|authorization)["']\s*:\s*["'])[^"'\r\n]{8,}(["'])/gi,"$1[REDACTED]$2")
+  .replace(/(["'](?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|password|secret|authorization)["']\s*:\s*["'])[^"'\r\n]{8,}(["'])/gi,"$1[REDACTED]$2")
   .slice(0,limit);
 }
 

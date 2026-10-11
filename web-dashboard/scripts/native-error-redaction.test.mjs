@@ -56,3 +56,13 @@ test("Batch 74 assistant reply content is redacted before chat display/history",
  assert.doesNotMatch(safe,new RegExp(secret));
  assert.ok(redactNativeMessage("x".repeat(20000)).length<=12000);
 });
+
+test("Batch 81 redact password and refresh/client secrets from diagnostics",()=>{
+ const token=["alpha","bravo","charlie"].join("");
+ for(const input of [
+  "password="+token, "refresh_token="+token,
+  "https://invalid.test/?client_secret="+token,
+  JSON.stringify({password:token,refresh_token:token,client_secret:token})
+ ])assert.doesNotMatch(redacted(input),new RegExp(token));
+ assert.match(redacted("UI matching failed"),/UI matching failed/);
+});
