@@ -38,7 +38,7 @@ const launch={
  provider:"xkiro",model:"model/master",
  tool_proposal:{tool:"premiere_launch",arguments:{}}
 };
-function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false}={}){
+function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,stdoutFor=null}={}){
  const nodes=new Map(),created=[],calls=[],chatInputs=[],staged=[];
  const domParent=el(),composerParent=el(),form=el(),chat=el();
  form.parentElement=composerParent;chat.parentElement=domParent;
@@ -65,7 +65,7 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
    if(!action)throw Error("unexpected action ID");
    if(failFind&&action.proposal.tool==="ui_find")
     throw Error("UI lookup failed: Requested top-level window was not found.");
-   return {success:true,tool:action.proposal.tool,stdout:action.proposal.tool==="premiere_detect"?detectedPath:"Launch requested",stderr:"",exit_code:0};
+   return {success:true,tool:action.proposal.tool,stdout:stdoutFor?.[action.proposal.tool]??(action.proposal.tool==="premiere_detect"?detectedPath:"Launch requested"),stderr:"",exit_code:0};
   }
   if(name==="action_audit_receipt")
    return failFind?{action_id:params.actionId,tool:"ui_find",event:"failed",success:false}:null;
@@ -241,4 +241,27 @@ test("audited failed read-only UI lookup stages window recovery without paying A
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1,"no unapproved recovery execution");
  assert.equal(s.approval.hidden,false);
  assert.match(s.transport.getReplies("repair-ui")[0],/No automatic paid AI retry/);
+});
+
+test("Master receives actionable controls from deep inside a long UI discovery list",async()=>{
+ const entries=Array.from({length:110},(_,i)=>({
+  Name:i===90?"New Project":"Feature "+i,
+  AutomationId:i===90?"createProject":"feature-"+i,
+  ControlType:"ControlType.Button",IsEnabled:true,Bounds:"0,0,60,20",ClassName:"Button"
+ }));
+ const discovering={content:JSON.stringify({tool:"ui_discover",arguments:{window:"Adobe Premiere"}}),
+  provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_discover",arguments:{window:"Adobe Premiere"}}};
+ const s=setup({first:discovering,stdoutFor:{ui_discover:JSON.stringify(entries)}});
+ await until(()=>s.transport.connected(),"native IPC");
+ await s.transport.send("Create a Premiere Project","observed-ui",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.chatInputs.length===2,"Master continuation with discovery inventory");
+ const next=s.chatInputs[1].messages.at(-1).content;
+ assert.match(next,/New Project/);
+ assert.match(next,/createProject/);
+ assert.match(next,/ControlType.Button/);
+ assert.match(next,/untrusted observed data/);
+ assert.ok(next.length<=10800,"prevent unbounded provider input");
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
 });
