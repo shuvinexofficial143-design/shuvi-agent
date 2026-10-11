@@ -8,7 +8,7 @@ test("custom text provider requires its saved API key",()=>{
   const start=rust.indexOf("async fn openai_compatible_chat");
   const end=rust.indexOf("async fn gemini_chat",start);
   const block=rust.slice(start,end);
-  assert.match(block,/matches!\(input\.provider\.as_str\(\), "deepseek" \| "openai" \| "openrouter" \| "custom"\)/);
+  assert.match(block,/matches!\(input\.provider\.as_str\(\), "xkiro" \| "deepseek" \| "openai" \| "openrouter" \| "custom"\)/);
   assert.match(block,/No API key saved for this provider/);
   assert.ok(block.indexOf("No API key saved for this provider") < block.indexOf("bearer_auth"));
 });

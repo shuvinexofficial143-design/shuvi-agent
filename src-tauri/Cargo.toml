@@ -1,6 +1,6 @@
 [package]
 name = "shuvi"
-version = "0.1.0"
+version = "0.1.3"
 description = "Shuvi permission-first AI computer agent"
 authors = ["Shuvi"]
 edition = "2021"

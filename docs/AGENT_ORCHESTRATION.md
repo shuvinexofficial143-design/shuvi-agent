@@ -192,3 +192,10 @@ be silently replaced. Six additional strict graph audit events are documented in
 
 
 Review-session approved fixes now require an exact successful typed Premiere action receipt whose audit timestamp is at or after that persisted review session's creation time. Review session persistence schema v2 stores this creation time; legacy schema v1 review sessions fail closed and should be restarted rather than inheriting unbound historical edit evidence.
+
+
+## Windows packaged Chat continuation (Master result → next approved action)
+
+The native packaged Chat UI now continues **one Master model step** after an owner-approved Windows tool has a matching successful Rust action audit. The previous observation and stable original user objective are included in the bounded next provider request. For example, an audited `premiere_detect` executable path is evidence of discovery, not Premiere launching; Master should next propose the dedicated `premiere_launch` tool (or `launch_app` with an exact trusted path for generic apps). Each proposed new native tool must be separately staged and explicitly approved in the same visible Chat composer. A later process/window inspection is needed before claiming the app actually opened.
+
+The continuation has **no fixed six-step (or other count-based) tool limit**. Work proceeds only after each owner-approved action has a successful matching native audit; each next action needs a fresh explicit Allow once. Identical repeated proposals are rejected to stop duplicate loops. Denied, failed, unknown, missing-audit, and unparseable next steps stop without paid retries. Additional successful steps may issue additional billable model calls, but only after owner-approved audited actions. The UI numbers steps for orientation, not as a cap. This packaged native Chat behavior remains session-only and is not proof of a full autonomous Windows session or a successfully launched app until live acceptance.

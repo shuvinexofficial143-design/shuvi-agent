@@ -38,7 +38,8 @@ test("AB temporarily sets exact selection and requires restoration for overall s
   assert.match(uxp,/replaceSequenceSelection\(sequence, resolved\.map\(entry => entry\.item\)\)/);
   assert.match(uxp,/previousSelection = await sequence\.getSelection\(\)/);
   assert.match(uxp,/selectionRestored = \(await replaceSequenceSelection\(sequence, previousItems\)\) !== false/);
-  const arm=rust.slice(rust.lastIndexOf("ToolAction::PremiereSceneDetection"),rust.indexOf("\n        ToolAction::PremiereCancelTranscriptRebuild",rust.lastIndexOf("ToolAction::PremiereSceneDetection")));
+  const start=rust.indexOf("ToolAction::PremiereSceneDetection {request} =>");
+  const arm=rust.slice(start,rust.indexOf("\n        ToolAction::PremiereCancelTranscriptRebuild",start));
   assert.match(arm,/verified = delta_verified && selection_restored/);
 });
 
@@ -64,7 +65,8 @@ test("cut verification correlates same media on original track/range",()=>{
 test("native true without observable delta is not called verified or successful",()=>{
   assert.match(uxp,/"accepted_unverified"/);
   assert.match(uxp,/"verified_delta"/);
-  const arm=rust.slice(rust.lastIndexOf("ToolAction::PremiereSceneDetection"),rust.indexOf("\n        ToolAction::PremiereCancelTranscriptRebuild",rust.lastIndexOf("ToolAction::PremiereSceneDetection")));
+  const start=rust.indexOf("ToolAction::PremiereSceneDetection {request} =>");
+  const arm=rust.slice(start,rust.indexOf("\n        ToolAction::PremiereCancelTranscriptRebuild",start));
   assert.match(arm,/delta_verified = verification == "verified_delta"/);
   assert.match(arm,/selection_restored = result\.get\("selectionRestored"\)/);
   assert.match(arm,/verified = delta_verified && selection_restored/);
@@ -76,7 +78,8 @@ test("native true without observable delta is not called verified or successful"
 });
 
 test("AB checkpoints mutation and never marks retry safe",()=>{
-  const arm=rust.slice(rust.indexOf("ToolAction::PremiereSceneDetection"));
+  const start=rust.indexOf("ToolAction::PremiereSceneDetection {request} =>");
+  const arm=rust.slice(start,rust.indexOf("\n        ToolAction::PremiereCancelTranscriptRebuild",start));
   assert.match(arm,/backup_premiere_project\(&premiere_bridge\)\.await\?/);
   assert.match(arm,/"retry_safe":false/);
   assert.match(scene,/"blind_retry":false/);

@@ -20,9 +20,10 @@ test("agent orchestration has bounded failure and repeat circuit breakers",()=>{
 test("interrupted tasks resume their persisted orchestration step instead of step one",()=>{
   assert.match(types,/orchestration\?: AgentOrchestrationCheckpoint \| null/);
   assert.match(main,/version: 2,[\s\S]*messages,[\s\S]*orchestration/);
-  assert.match(main,/orchestration = normalizeAgentOrchestrationState\(checkpoint\.orchestration\)/);
+  assert.match(main,/const restored = normalizeAgentOrchestrationState\(checkpoint\.orchestration\)/);
+  assert.match(main,/orchestration = restored/);
   assert.doesNotMatch(main,/resumeTask[\s\S]{0,1800}runAgentStep\(1\)/);
-  assert.match(main,/orchestration_context: orchestrationContext\(orchestration\)/);
+  assert.match(main,/orchestration_context: orchestrationWithMasterEditor\(orchestrationContext\(orchestration\), messages\)/);
 });
 
 test("new user instruction starts fresh state but failures do not auto retry",()=>{

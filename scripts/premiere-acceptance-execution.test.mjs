@@ -59,7 +59,7 @@ test("ripple-delete acceptance is exact, checkpointed, media-aware and independe
   const execution=desktop.slice(desktop.indexOf('ToolAction::PremiereAcceptanceExecute {action_id} =>'),desktop.indexOf('ToolAction::PremiereAcceptanceProbe {group} =>'));
   assert.match(source,/"delete_ripple"/);
   assert.match(source,/fn verify_ripple_delete/);
-  assert.match(source,/row.get\("mediaId"\)/);
+  assert.match(source,/expected\.get\("mediaId"\)/);
   assert.match(source,/start>=target_end-0\.001/);
   assert.match(execution,/"delete_ripple"=>ToolAction::PremiereDeleteClip/);
   assert.match(execution,/ripple:true/);

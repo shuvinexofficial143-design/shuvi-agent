@@ -29,11 +29,18 @@ import {
 } from "./agent-orchestrator";
 
 import { taskGraphProgress, type GraphAuditEvent } from "./task-graph.mjs";
+import { editingMasterContext, orchestrationWithMasterEditor } from "./master-editor.mjs";
+import { workerQueueView } from "./master-worker-queue.mjs";
+import { MODEL_ROLES, loadModelRoutes, validateModelRoute, selectTaskRoute } from "./model-routing.mjs";
+import type { ModelRoute, TaskModelRoute } from "./model-routing.mjs";
+import { chooseNativeRoute } from "../web-dashboard/src/native-model-routing.mjs";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("Missing app root");
 
 let providers: ProviderDescriptor[] = [];
+let modelRoutes: Record<string, ModelRoute> = {};
+let taskModelRoute: TaskModelRoute | null = null;
 let messages: ChatMessage[] = [];
 let pendingAction: PendingAction | null = null;
 let pendingChatProposal: ToolProposal | null = null;
@@ -43,6 +50,24 @@ let orchestration: AgentOrchestrationState = createAgentOrchestrationState();
 let busy = false;
 let manualActionRunning = false;
 let cancelRequested = false;
+type RemoteInboundMessage = {
+  ownerId:string; deviceId:string; threadId:string; messageId:string; taskId:string;
+  text:string; expiresAt:number;
+};
+type RemoteActiveTask = {
+  message:RemoteInboundMessage; revision:number; status:string;
+  evidenceActionId:string|null; hadFailure:boolean;
+};
+type RemoteInbox = {
+ messages:RemoteInboundMessage[];
+ decisions:Array<{taskId:string;approvalId:string;decision:string}>;
+ pending:Array<{taskId:string;request:string}>;
+};
+let remoteAgentEnabled = false;
+let remotePolling = false;
+let remoteTask:RemoteActiveTask|null = null;
+let remoteApproval:{id:string;expiresAt:number;proposal:ToolProposal;actionId:string}|null = null;
+
 let sessionInputTokens = 0;
 let sessionOutputTokens = 0;
 let sessionTotalTokens = 0;
@@ -53,16 +78,11 @@ root.innerHTML = `
   <div class="onboarding-card">
     <div class="orb onboarding-orb">S</div>
     <h1>Set up Shuvi</h1>
-    <p>Choose the AI provider Shuvi should use. Your API key is stored in the operating-system credential store.</p>
+    <p>Shuvi supports multiple AI providers and task-specific models. You can connect providers here or configure a model team later.</p>
 
     <label>
       Provider
       <select id="onboardingProvider"></select>
-    </label>
-
-    <label>
-      Model
-      <input id="onboardingModel" autocomplete="off" />
     </label>
 
     <label id="onboardingBaseUrlLabel" class="hidden">
@@ -75,7 +95,8 @@ root.innerHTML = `
       <input id="onboardingKey" type="password" placeholder="Paste provider API key" autocomplete="off" />
     </label>
 
-    <button id="completeOnboarding" class="primary onboarding-button">Start using Shuvi</button>
+    <button id="completeOnboarding" class="primary onboarding-button">Save provider and open Shuvi</button>
+    <button id="skipOnboarding" type="button" class="onboarding-button">Configure models later</button>
     <p id="onboardingStatus" class="muted"></p>
   </div>
 </div>
@@ -256,6 +277,20 @@ root.innerHTML = `
 
         <p id="settingsStatus" class="muted"></p>
       </div>
+      <section class="panel form-grid" aria-label="Model team routes">
+        <h3>Model Team · Task Routing</h3>
+        <p class="muted">Assign a verified provider and exact model ID to each role. Shuvi routes a task to one AI model at a time; independent parallel workers remain under development. Provider keys are saved separately in Windows Credential Manager above.</p>
+        <label>Task role<select id="teamRole"></select></label>
+        <label>AI provider<select id="teamProvider"></select></label>
+        <label>Exact model ID<input id="teamModel" autocomplete="off" placeholder="Enter the provider's real model ID" /></label>
+        <label id="teamBaseUrlLabel" class="hidden">Custom/Local API URL<input id="teamBaseUrl" autocomplete="off" placeholder="https://.../v1/chat/completions" /></label>
+        <div class="button-row">
+          <button id="saveTeamRoute" class="primary" type="button">Assign model to role</button>
+          <button id="deleteTeamRoute" type="button">Clear role</button>
+        </div>
+        <p id="teamStatus" class="muted" role="status"></p>
+        <div id="teamSummary" class="muted"></div>
+      </section>
         <section class="panel" aria-label="Web Control Center pairing">
           <h3>Web Control Center · Read-only connection</h3>
           <p class="muted">Start a local pairing listener manually. It only confirms that this Shuvi Windows process is running. It cannot run computer commands, inspect private data or approve actions.</p>
@@ -268,6 +303,18 @@ root.innerHTML = `
           </label>
           <p id="webPairingStatus" class="muted" role="status">Bridge disabled. Nothing is listening on 127.0.0.1:47771.</p>
           <p class="muted">Web URL: http://127.0.0.1:1423 — code is session-only and must not be pasted into chat or shared publicly.</p>
+        </section>
+        <section class="panel" aria-label="Windows outbound remote agent">
+          <h3>Windows Remote Agent · Secure outbound control</h3>
+          <p class="muted">Opt in to commands from your Shuvi mobile dashboard. No public Windows port is opened. Native tool permission and exact audit receipts remain required.</p>
+          <label>Windows agent pairing code (not the mobile owner code)
+            <input id="remoteAgentAccess" type="password" autocomplete="off" spellcheck="false" maxlength="64" placeholder="64-character private agent code" />
+          </label>
+          <div class="button-row">
+            <button id="remoteAgentConnect" class="primary" type="button">Connect Windows Agent</button>
+            <button id="remoteAgentDisconnect" type="button">Disconnect and revoke on this PC</button>
+          </div>
+          <p id="remoteAgentStatus" class="muted" role="status">Remote agent disabled. No command polling.</p>
         </section>
     </section>
   </main>
@@ -292,12 +339,18 @@ const workspaceInput = el<HTMLInputElement>("#workspaceInput");
 const workspaceStatus = el<HTMLElement>("#workspaceStatus");
 const onboarding = el<HTMLElement>("#onboarding");
 const onboardingProvider = el<HTMLSelectElement>("#onboardingProvider");
-const onboardingModel = el<HTMLInputElement>("#onboardingModel");
 const onboardingBaseUrl = el<HTMLInputElement>("#onboardingBaseUrl");
 const onboardingBaseUrlLabel = el<HTMLElement>("#onboardingBaseUrlLabel");
 const onboardingKey = el<HTMLInputElement>("#onboardingKey");
 const onboardingKeyLabel = el<HTMLElement>("#onboardingKeyLabel");
 const onboardingStatus = el<HTMLElement>("#onboardingStatus");
+const teamRole = el<HTMLSelectElement>("#teamRole");
+const teamProvider = el<HTMLSelectElement>("#teamProvider");
+const teamModel = el<HTMLInputElement>("#teamModel");
+const teamBaseUrl = el<HTMLInputElement>("#teamBaseUrl");
+const teamBaseUrlLabel = el<HTMLElement>("#teamBaseUrlLabel");
+const teamStatus = el<HTMLElement>("#teamStatus");
+const teamSummary = el<HTMLElement>("#teamSummary");
 const resumeBanner = el<HTMLElement>("#resumeBanner");
 const resumeSummary = el<HTMLElement>("#resumeSummary");
 const premiereBridgeState = el<HTMLElement>("#premiereBridgeState");
@@ -315,15 +368,27 @@ function applyProviderDefaults(forceModel = false): void {
   if (!provider) return;
 
   if (forceModel || !modelInput.value) modelInput.value = provider.default_model;
+  modelInput.placeholder = provider.id === "xkiro"
+    ? "Enter the exact xKiro model ID (no default is assumed)"
+    : "Model ID";
   baseUrlLabel.classList.toggle("hidden", !provider.custom_base_url);
   apiKeyLabel.classList.toggle("hidden", !provider.api_key_required);
   activeProvider.textContent = `${provider.name} · ${modelInput.value || provider.default_model}`;
 }
 
+// A20: The browser can throw on localStorage access (policy, private mode,
+// WebView sandbox or quota). Provider UI must remain usable without storage.
+function readLocalPreference(key: string): string | null {
+  try { return window.localStorage.getItem(key); } catch { return null; }
+}
+function writeLocalPreference(key: string, value: string): boolean {
+  try { window.localStorage.setItem(key, value); return true; } catch { return false; }
+}
+
 function loadSavedProvider(): void {
-  const id = localStorage.getItem("shuvi.provider");
-  const model = localStorage.getItem("shuvi.model");
-  const baseUrl = localStorage.getItem("shuvi.baseUrl");
+  const id = readLocalPreference("shuvi.provider");
+  const model = readLocalPreference("shuvi.model");
+  const baseUrl = readLocalPreference("shuvi.baseUrl");
 
   if (id && providers.some((provider) => provider.id === id)) providerSelect.value = id;
   if (model) modelInput.value = model;
@@ -333,24 +398,24 @@ function loadSavedProvider(): void {
 }
 
 function saveProviderSettings(): void {
-  localStorage.setItem("shuvi.provider", providerSelect.value);
-  localStorage.setItem("shuvi.model", modelInput.value.trim());
-  localStorage.setItem("shuvi.baseUrl", baseUrlInput.value.trim());
+  const saved = [
+    writeLocalPreference("shuvi.provider", providerSelect.value),
+    writeLocalPreference("shuvi.model", modelInput.value.trim()),
+    writeLocalPreference("shuvi.baseUrl", baseUrlInput.value.trim()),
+  ].every(Boolean);
   applyProviderDefaults();
-  settingsStatus.textContent = "Provider settings saved.";
+  settingsStatus.textContent = saved
+    ? "Provider settings saved."
+    : "Local storage unavailable. Settings apply only until Shuvi restarts.";
 }
 
 function selectedOnboardingProvider(): ProviderDescriptor | undefined {
   return providers.find((provider) => provider.id === onboardingProvider.value);
 }
 
-function syncOnboardingProvider(forceModel = false): void {
+function syncOnboardingProvider(): void {
   const provider = selectedOnboardingProvider();
   if (!provider) return;
-
-  if (forceModel || !onboardingModel.value) {
-    onboardingModel.value = provider.default_model;
-  }
 
   onboardingKeyLabel.classList.toggle("hidden", !provider.api_key_required);
   onboardingBaseUrlLabel.classList.toggle("hidden", !provider.custom_base_url);
@@ -365,16 +430,82 @@ function prepareOnboarding(): void {
     .map((provider) => `<option value="${provider.id}">${provider.name}</option>`)
     .join("");
 
-  const savedProvider = localStorage.getItem("shuvi.provider");
+  const savedProvider = readLocalPreference("shuvi.provider");
   if (savedProvider && providers.some((provider) => provider.id === savedProvider)) {
     onboardingProvider.value = savedProvider;
   }
 
-  syncOnboardingProvider(true);
+  syncOnboardingProvider();
 
-  if (localStorage.getItem("shuvi.onboarded") !== "1") {
+  if (readLocalPreference("shuvi.onboarded") !== "1") {
     onboarding.classList.remove("hidden");
   }
+}
+
+function defaultModelRoute(): ModelRoute {
+  return {
+    provider: providerSelect.value,
+    model: modelInput.value.trim(),
+    base_url: baseUrlInput.value.trim()
+  };
+}
+function loadConfiguredModelRoutes(): void {
+  modelRoutes = loadModelRoutes(
+    readLocalPreference("shuvi.modelRoutes"),
+    providers.map(provider => provider.id)
+  );
+  teamRole.innerHTML = MODEL_ROLES.map(([id, label]) => `<option value="${id}">${label}</option>`).join("");
+  teamProvider.innerHTML = providers.map(provider => `<option value="${provider.id}">${provider.name}</option>`).join("");
+  updateTeamForm();
+  renderModelTeam();
+}
+function updateTeamForm(): void {
+  const configured = modelRoutes[teamRole.value];
+  teamProvider.value = configured?.provider ?? providerSelect.value;
+  teamModel.value = configured?.model ?? "";
+  teamBaseUrl.value = configured?.base_url ?? "";
+  updateTeamBaseUrlVisibility();
+}
+function updateTeamBaseUrlVisibility(): void {
+  teamBaseUrlLabel.classList.toggle("hidden", !["custom", "ollama"].includes(teamProvider.value));
+}
+function renderModelTeam(): void {
+  teamSummary.replaceChildren();
+  for (const [id, label] of MODEL_ROLES) {
+    const line = document.createElement("p");
+    const route = modelRoutes[id];
+    line.textContent = route
+      ? `${label}: ${route.provider} / ${route.model}`
+      : `${label}: uses Master or default provider`;
+    teamSummary.append(line);
+  }
+}
+function restoreTaskRoute(): void {
+  if (taskModelRoute) {
+    activeProvider.textContent = `Task model [${taskModelRoute.role}] · ${taskModelRoute.provider} / ${taskModelRoute.model}`;
+  }
+}
+function beginTaskRoute(text: string): void {
+  // The installed Dashboard and the existing native background coordinator
+  // share one non-secret model-team config. Remote mobile tasks must respect
+  // the owner's exact choices, just like commands typed in the visible UI.
+  const savedTeam = readLocalPreference("shuvi.native.model.team.v1");
+  if (savedTeam) {
+    try {
+      const team = JSON.parse(savedTeam) as {provider:string;base_url:string;roles:Record<string,string>};
+      if (team && typeof team.provider === "string" &&
+          providers.some(provider => provider.id === team.provider)) {
+        const chosen = chooseNativeRoute(text,team);
+        taskModelRoute = chosen.ok
+          ? {provider:chosen.provider,model:chosen.model,base_url:chosen.base_url,role:chosen.role}
+          : {provider:team.provider,model:"",base_url:"",role:chosen.role};
+        restoreTaskRoute();
+        return;
+      }
+    } catch { /* Fail closed into existing explicit native route checks. */ }
+  }
+  taskModelRoute = selectTaskRoute(text, modelRoutes, defaultModelRoute());
+  restoreTaskRoute();
 }
 
 const MAX_PROVIDER_MESSAGES = 80;
@@ -413,9 +544,9 @@ function currentCheckpoint(): SessionCheckpoint {
   return {
     version: 2,
     updated_at_ms: Date.now(),
-    provider: providerSelect.value,
-    model: modelInput.value.trim(),
-    base_url: baseUrlInput.value.trim() || null,
+    provider: taskModelRoute?.provider ?? providerSelect.value,
+    model: taskModelRoute?.model ?? modelInput.value.trim(),
+    base_url: (taskModelRoute?.base_url ?? baseUrlInput.value.trim()) || null,
     messages,
     orchestration
   };
@@ -424,6 +555,7 @@ function currentCheckpoint(): SessionCheckpoint {
 function renderOrchestrationStatus(): void {
   const progress = el<HTMLElement>("#agentProgress");
   const graphProgress = taskGraphProgress(orchestration.task_graph);
+  const workerQueue = workerQueueView(orchestration.task_graph);
   const graphView = el<HTMLElement>("#taskProgress");
   graphView.classList.toggle("hidden", !graphProgress.total);
   const list = el<HTMLElement>("#taskProgressSteps");
@@ -432,17 +564,19 @@ function renderOrchestrationStatus(): void {
     el<HTMLElement>("#taskProgressSummary").textContent =
       `${graphProgress.completed}/${graphProgress.total} evidence-verified steps complete`;
     const symbols: Record<string, string> = { completed: "✓", running: "→", ready: "→", pending: "○", failed: "!", blocked: "!", skipped: "–" };
+    const laneById = new Map(workerQueue.jobs.map(job => [job.id, job]));
     for (const step of graphProgress.steps) {
       const row = document.createElement("div");
       const verified = step.evidence_verified ? " · verified evidence" : "";
       const reason = step.reason && (step.status === "failed" || step.status === "blocked")
         ? ` — ${step.reason}`
         : "";
-      row.textContent = `${symbols[step.status]} ${step.title} (${step.status}${verified})${reason}`;
+      const worker = laneById.get(step.step_id);
+      row.textContent = `${symbols[step.status]} [${worker?.worker ?? "master"}] ${step.title} (${worker?.status ?? step.status}${verified})${reason}`;
       row.title = step.reason ?? (step.evidence_verified ? "Completion backed by local typed-tool evidence." : step.status);
       list.append(row);
     }
-    progress.textContent = `Task: ${orchestration.task_graph.objective} · ${graphProgress.completed}/${graphProgress.total} steps complete · Current: ${graphProgress.current ?? "none"} · Phase: ${orchestration.coding.active ? codingPhase(orchestration) : "general"} · State: ${orchestration.recovery_mode}`;
+    progress.textContent = `Task: ${orchestration.task_graph.objective} · ${workerQueue.verified}/${workerQueue.total} audited worker actions · ${workerQueue.ready} ready · ${workerQueue.running} running · ${workerQueue.blocked} blocked · Current: ${graphProgress.current ?? "none"} · Phase: ${orchestration.coding.active ? codingPhase(orchestration) : "general"} · State: ${orchestration.recovery_mode}`;
     return;
   }
   if (!orchestration.objective && orchestration.tool_actions === 0 && orchestration.next_step === 1) {
@@ -602,6 +736,7 @@ async function boot(): Promise<void> {
       .join("");
 
     loadSavedProvider();
+    loadConfiguredModelRoutes();
     prepareOnboarding();
     await loadWorkspace();
     await loadRecoveryCheckpoint();
@@ -609,6 +744,8 @@ async function boot(): Promise<void> {
     await refreshRam();
     await refreshAudit();
     await refreshPremiereBridge();
+    await refreshRemoteAgent();
+    window.setInterval(() => void tickRemoteAgent(), 4000);
     window.setInterval(() => void refreshRam(), 5000);
   } catch (error) {
     settingsStatus.textContent = String(error);
@@ -803,6 +940,7 @@ async function recordOrchestrationAudit(
 }
 
 async function stopAgentForSafety(reason: string): Promise<void> {
+  if (remoteTask) await closeRemoteTask("stopped");
   orchestration = { ...orchestration, recovery_mode: "stopped", stop_reason: reason.slice(0, 800) };
   if (orchestration.task_graph) await recordOrchestrationAudit("task_graph_stopped", reason.slice(0, 1200));
   renderOrchestrationStatus();
@@ -896,6 +1034,7 @@ async function stageProposal(proposal: ToolProposal): Promise<void> {
     }
 
     if (
+      !remoteTask &&
       pendingAction.risk === "low" &&
       sessionAllowedScopes.has(sessionPermissionKey(proposal)) &&
       !cancelRequested
@@ -904,7 +1043,27 @@ async function stageProposal(proposal: ToolProposal): Promise<void> {
       return;
     }
 
+    if (remoteTask) {
+      const approvalId = crypto.randomUUID();
+      const approvalExpiresAt = Date.now() + 90_000;
+      try {
+        await sendRemoteReceipt("requires_approval", {approvalId,approvalExpiresAt});
+        remoteApproval = {id:approvalId,expiresAt:approvalExpiresAt,proposal,actionId:preparedId};
+      } catch {
+        try { await invoke("deny_action", {actionId:preparedId}); } catch { /* fail closed */ }
+        clearChatPermission();
+        await closeRemoteTask("outcome_unknown");
+        await stopAgentForSafety("Remote approval could not be securely requested. The native action was not authorized.");
+        return;
+      }
+    }
     renderChatPermission(proposal, step);
+    if (remoteTask) {
+      const approve = chatPermission.querySelector<HTMLButtonElement>("#chatApprove");
+      if(approve){approve.disabled=true;approve.textContent="Approve on mobile";}
+      const allowSession = chatPermission.querySelector<HTMLButtonElement>("#chatAllowSession");
+      if(allowSession)allowSession.disabled=true;
+    }
   } catch (error) {
     orchestration = recordToolOutcome(orchestration, proposal, "failure", undefined, false);
     await auditGraphOutcome(proposal);
@@ -1008,6 +1167,10 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
       }
     }
     void refreshAudit();
+    if (remoteTask) {
+      if (!cancelledByUser && result.success && receiptMatches) remoteTask.evidenceActionId=actionId;
+      if (cancelledByUser || !result.success || !receiptMatches) remoteTask.hadFailure=true;
+    }
     orchestration = recordToolOutcome(
       orchestration,
       proposal,
@@ -1038,6 +1201,7 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
     const receipt = await readActionAuditReceipt(actionId);
     const cancelledByUser = await actionCancellationConfirmed(actionId);
     const confirmedFailure = exactActionReceipt(receipt, actionId, proposal.tool, "failed", false);
+    if(remoteTask)remoteTask.hadFailure=true;
     orchestration = recordToolOutcome(
       orchestration,
       proposal,
@@ -1139,6 +1303,13 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
       if (!pendingAction) return;
 
       const actionId = pendingAction.id;
+      if(remoteTask){
+        clearChatPermission();
+        try{await invoke("deny_action",{actionId});}catch{/* fail closed */}
+        await closeRemoteTask("stopped");
+        await stopAgentForSafety("The remote Windows action was denied locally.");
+        return;
+      }
       clearChatPermission();
 
       let deniedConfirmed = false;
@@ -1187,6 +1358,7 @@ async function runAgentStep(): Promise<void> {
       await recordOrchestrationAudit("task_graph_stopped", "User stopped the task; progress retained.");
       await saveActiveCheckpoint();
     } else await clearActiveCheckpoint();
+    if(remoteTask)await closeRemoteTask("stopped");
     setBusy(false);
     return;
   }
@@ -1203,15 +1375,51 @@ async function runAgentStep(): Promise<void> {
   }
 
   setBusy(true);
+  const route = taskModelRoute ?? { ...defaultModelRoute(), role: "default" };
+  // A blank model is never sent to a paid provider and never silently replaced.
+  if (!route.model.trim()) {
+    messages.push({role:"assistant",content:"No exact AI model is configured for this task. Open Provider and assign a Master or task-specific model. No AI request was sent."});
+    renderMessages();
+    if(remoteTask)await closeRemoteTask("failed");
+    setBusy(false);
+    return;
+  }
+
+  if(remoteTask && remoteTask.status === "admitted"){
+    try {await sendRemoteReceipt("running");}
+    catch {
+      await closeRemoteTask("outcome_unknown");
+      setBusy(false);
+      return;
+    }
+  }
+
+  // A12: A potentially billed provider request is never dispatched when the
+  // recovery checkpoint cannot first be written and verified by native code.
+  // A failed preflight is not a provider failure, so no charge is implied.
+  try {
+    await invoke("save_session_checkpoint", { checkpoint: currentCheckpoint() });
+  } catch {
+    messages.push({ role: "assistant", content: "Shuvi could not safely save task progress. No AI provider request was sent. Check local storage before trying again." });
+    renderMessages();
+    if(remoteTask)await closeRemoteTask("outcome_unknown");
+    setBusy(false);
+    return;
+  }
+  if (cancelRequested) {
+    if(remoteTask)await closeRemoteTask("stopped");
+    setBusy(false);
+    return;
+  }
 
   try {
     const response = await invoke<ChatResponse>("chat", {
       input: {
-        provider: providerSelect.value,
-        model: modelInput.value.trim(),
-        base_url: baseUrlInput.value.trim() || null,
+        provider: route.provider,
+        model: route.model,
+        base_url: route.base_url || null,
         messages: providerMessageWindow(messages),
-        orchestration_context: orchestrationContext(orchestration)
+        orchestration_context: orchestrationWithMasterEditor(orchestrationContext(orchestration), messages)
       }
     });
 
@@ -1230,6 +1438,7 @@ async function runAgentStep(): Promise<void> {
         await recordOrchestrationAudit("task_graph_stopped", "User stopped the task after the provider returned; progress retained.");
         await saveActiveCheckpoint();
       } else await clearActiveCheckpoint();
+      if(remoteTask)await closeRemoteTask("outcome_unknown");
       setBusy(false);
       return;
     }
@@ -1244,7 +1453,15 @@ async function runAgentStep(): Promise<void> {
     }
 
     const progress = taskGraphProgress(orchestration.task_graph);
-    if (progress.total && progress.completed < progress.total) {
+    const needsDragReview = orchestration.last_tool === "pointer_drag"
+      && orchestration.last_outcome === "success";
+    if (needsDragReview) {
+      messages.push({ role: "assistant", content:
+        "Pointer drag was dispatched, but its visual result has not been verified. The edit is NOT complete. Inspect the screen before continuing." });
+      renderMessages();
+      await saveActiveCheckpoint();
+      await loadRecoveryCheckpoint();
+    } else if (progress.total && progress.completed < progress.total) {
       messages.push({ role: "assistant", content: `Task paused with ${progress.completed}/${progress.total} steps supported by successful tool evidence. Unfinished steps remain saved.` });
       renderMessages();
       await saveActiveCheckpoint();
@@ -1252,10 +1469,28 @@ async function runAgentStep(): Promise<void> {
     } else {
       await clearActiveCheckpoint();
     }
+    // A native action receipt proves that action, not an entire creative edit.
+    // Master-edit requests must have a completed evidence-backed task graph
+    // before the mobile UI can display a completed task.
+    const masterEditing = Boolean(editingMasterContext(messages));
+    const graphSatisfied = progress.total > 0 && progress.completed === progress.total;
+    if(remoteTask)await closeRemoteTask(
+      remoteTask.evidenceActionId && !remoteTask.hadFailure && !needsDragReview &&
+      (masterEditing ? graphSatisfied : (!progress.total || graphSatisfied))
+        ? "succeeded" : "outcome_unknown"
+    );
     setBusy(false);
-  } catch (error) {
-    messages.push({ role: "assistant", content: `Error: ${String(error)}` });
+  } catch {
+    // A12/A14: provider errors/timeouts may occur AFTER an upstream charge.
+    // Do not store arbitrary URL/credential-bearing HTTP error strings in
+    // durable chat or let the recovery flow blindly retry this attempt.
+    const caution = "AI provider request outcome is unknown; the request may already have been billed. DO NOT automatically retry. Inspect provider usage before issuing a new instruction.";
+    orchestration = { ...orchestration, recovery_mode: "stopped", stop_reason: caution };
+    renderOrchestrationStatus();
+    messages.push({ role: "assistant", content: caution });
     renderMessages();
+    await saveActiveCheckpoint();
+    if(remoteTask)await closeRemoteTask("outcome_unknown");
     setBusy(false);
   }
 }
@@ -1264,6 +1499,10 @@ el<HTMLButtonElement>("#resumeTask").addEventListener("click", async () => {
   if (!savedCheckpoint || busy) return;
 
   const checkpoint = savedCheckpoint;
+  const restored = normalizeAgentOrchestrationState(checkpoint.orchestration);
+  if (restored.recovery_mode !== "stopped" && !window.confirm(
+    "Resuming may resend an unfinished AI request. The prior provider request may have been billed. Verify provider usage before continuing. Send a new request?"
+  )) return;
   savedCheckpoint = null;
   resumeBanner.classList.add("hidden");
 
@@ -1273,13 +1512,25 @@ el<HTMLButtonElement>("#resumeTask").addEventListener("click", async () => {
     baseUrlInput.value = checkpoint.base_url ?? "";
     applyProviderDefaults();
   }
+  taskModelRoute = {
+    provider: checkpoint.provider,
+    model: checkpoint.model,
+    base_url: checkpoint.base_url ?? "",
+    role: "resumed"
+  };
+  restoreTaskRoute();
 
   messages = checkpoint.messages;
-  orchestration = normalizeAgentOrchestrationState(checkpoint.orchestration);
+  orchestration = restored;
   renderOrchestrationStatus();
   renderMessages();
   cancelRequested = false;
   await saveActiveCheckpoint();
+  if (orchestration.recovery_mode === "stopped") {
+    // Restore history for inspection, not a second paid generation call.
+    setBusy(false);
+    return;
+  }
   await runAgentStep();
 });
 
@@ -1291,17 +1542,23 @@ el<HTMLButtonElement>("#discardTask").addEventListener("click", async () => {
   await clearActiveCheckpoint();
 });
 
+el<HTMLButtonElement>("#skipOnboarding").addEventListener("click", () => {
+  writeLocalPreference("shuvi.onboarded", "1");
+  onboarding.classList.add("hidden");
+  settingsStatus.textContent = "Add provider keys and exact model IDs in Provider before sending AI requests.";
+});
 onboardingProvider.addEventListener("change", () => {
   onboardingKey.value = "";
   onboardingBaseUrl.value = "";
-  syncOnboardingProvider(true);
+  syncOnboardingProvider();
 });
 
 el<HTMLButtonElement>("#completeOnboarding").addEventListener("click", async () => {
   const provider = selectedOnboardingProvider();
   if (!provider) return;
 
-  const model = onboardingModel.value.trim() || provider.default_model;
+  // Model selection is not an onboarding gate: assign different models per task in the Provider tab.
+  const model = readLocalPreference("shuvi.model") ?? provider.default_model;
   const baseUrl = onboardingBaseUrl.value.trim();
   const apiKey = onboardingKey.value.trim();
 
@@ -1322,10 +1579,12 @@ el<HTMLButtonElement>("#completeOnboarding").addEventListener("click", async () 
       await invoke("save_api_key", { provider: provider.id, apiKey });
     }
 
-    localStorage.setItem("shuvi.provider", provider.id);
-    localStorage.setItem("shuvi.model", model);
-    localStorage.setItem("shuvi.baseUrl", baseUrl);
-    localStorage.setItem("shuvi.onboarded", "1");
+    const stored = [
+      writeLocalPreference("shuvi.provider", provider.id),
+      writeLocalPreference("shuvi.model", model),
+      writeLocalPreference("shuvi.baseUrl", baseUrl),
+      writeLocalPreference("shuvi.onboarded", "1"),
+    ].every(Boolean);
 
     providerSelect.value = provider.id;
     modelInput.value = model;
@@ -1335,7 +1594,7 @@ el<HTMLButtonElement>("#completeOnboarding").addEventListener("click", async () 
 
     onboarding.classList.add("hidden");
     onboardingStatus.textContent = "";
-    settingsStatus.textContent = `${provider.name} is ready.`;
+    settingsStatus.textContent = stored ? `${provider.name} is ready.` : `${provider.name} ready for this session; local settings could not be saved.`;
   } catch (error) {
     onboardingStatus.textContent = `Setup failed: ${String(error)}`;
   }
@@ -1422,6 +1681,51 @@ modelInput.addEventListener("input", () => applyProviderDefaults());
 
 el<HTMLButtonElement>("#saveProvider").addEventListener("click", saveProviderSettings);
 
+teamRole.addEventListener("change", updateTeamForm);
+teamProvider.addEventListener("change", () => {
+  teamModel.value = "";
+  teamBaseUrl.value = "";
+  updateTeamBaseUrlVisibility();
+});
+el<HTMLButtonElement>("#saveTeamRoute").addEventListener("click", () => {
+  const role = teamRole.value;
+  const proposed = {
+    provider: teamProvider.value,
+    model: teamModel.value.trim(),
+    base_url: teamBaseUrl.value.trim()
+  };
+  const validated = validateModelRoute(role, proposed, providers.map(p => p.id));
+  if (!validated) {
+    teamStatus.textContent = "Enter a valid role, provider, exact model ID and (if custom) HTTPS API URL.";
+    return;
+  }
+  const next = { ...modelRoutes, [role]: validated };
+  const encoded = JSON.stringify(next);
+  if (!writeLocalPreference("shuvi.modelRoutes", encoded) ||
+      readLocalPreference("shuvi.modelRoutes") !== encoded) {
+    teamStatus.textContent = "Could not persist model routes. No role was changed.";
+    return;
+  }
+  modelRoutes = next;
+  teamStatus.textContent = `${role} route saved. Save that provider's API key separately above. No paid test request was made.`;
+  renderModelTeam();
+});
+el<HTMLButtonElement>("#deleteTeamRoute").addEventListener("click", () => {
+  const role = teamRole.value;
+  const next = { ...modelRoutes };
+  delete next[role];
+  const encoded = JSON.stringify(next);
+  if (!writeLocalPreference("shuvi.modelRoutes", encoded) ||
+      readLocalPreference("shuvi.modelRoutes") !== encoded) {
+    teamStatus.textContent = "Could not save removal. Previous role remains.";
+    return;
+  }
+  modelRoutes = next;
+  teamStatus.textContent = `${role} route cleared.`;
+  updateTeamForm();
+  renderModelTeam();
+});
+
 el<HTMLButtonElement>("#saveKey").addEventListener("click", async () => {
   const provider = selectedProvider();
   const apiKey = apiKeyInput.value.trim();
@@ -1467,6 +1771,7 @@ el<HTMLFormElement>("#chatForm").addEventListener("submit", async (event) => {
   prompt.setCustomValidity("");
 
   saveProviderSettings();
+  beginTaskRoute(content);
   cancelRequested = false;
   orchestration = createAgentOrchestrationState();
   renderOrchestrationStatus();
@@ -1599,6 +1904,13 @@ el<HTMLButtonElement>("#stopButton").addEventListener("click", async () => {
   if (pendingAction && pendingChatProposal) {
     const actionId = pendingAction.id;
     const proposal = pendingChatProposal;
+    if(remoteTask){
+      try{await invoke("deny_action",{actionId});}catch{/* conservative stop */}
+      clearChatPermission();
+      await closeRemoteTask("stopped");
+      await stopAgentForSafety("Windows owner stopped the remote task before its action.");
+      return;
+    }
     clearChatPermission();
 
     let denied = false;
@@ -1658,5 +1970,144 @@ document.querySelectorAll<HTMLButtonElement>(".nav").forEach((button) => {
     }
   });
 });
+
+
+function remoteStatusLabel(message:string){
+  el<HTMLElement>("#remoteAgentStatus").textContent=message;
+}
+async function refreshRemoteAgent():Promise<void>{
+  try {
+    const state=await invoke<{enabled:boolean}>("remote_agent_status");
+    remoteAgentEnabled=state.enabled;
+    remoteStatusLabel(state.enabled
+      ? "Windows native outbound agent enabled · waiting for authenticated mobile tasks"
+      : "Remote agent disabled · no polling");
+  }catch{remoteAgentEnabled=false;remoteStatusLabel("Remote agent unavailable in this Windows build");}
+}
+el<HTMLButtonElement>("#remoteAgentConnect").addEventListener("click",async()=>{
+  const field=el<HTMLInputElement>("#remoteAgentAccess");
+  const code=field.value.trim(); field.value="";
+  if(!/^[a-fA-F0-9]{64}$/.test(code)){
+    remoteStatusLabel("Agent code must be 64 hexadecimal characters.");return;
+  }
+  try {
+    await invoke("remote_agent_pair",{accessCode:code});
+    await refreshRemoteAgent();
+    void tickRemoteAgent();
+  }catch{remoteStatusLabel("Remote pairing failed. Check cloud configuration and dedicated agent code.");}
+});
+el<HTMLButtonElement>("#remoteAgentDisconnect").addEventListener("click",async()=>{
+  remoteAgentEnabled=false;
+  if(remoteTask){
+    cancelRequested=true;
+    if(pendingAction){
+      try{await invoke("deny_action",{actionId:pendingAction.id});}catch{/* fail closed */}
+      clearChatPermission();
+    }
+    await closeRemoteTask("outcome_unknown");
+  }
+  try{await invoke("remote_agent_disconnect");}
+  catch{remoteStatusLabel("Could not revoke OS credential. Verify in Windows credential manager.");return;}
+  await refreshRemoteAgent();
+});
+function remoteReceipt(status:string,task:RemoteActiveTask,extras:Record<string,unknown>={}){
+  const m=task.message;
+  return {
+   protocol:"shuvi.remote.v1",type:"task_receipt",
+   ownerId:m.ownerId,deviceId:m.deviceId,threadId:m.threadId,
+   messageId:m.messageId,taskId:m.taskId,
+   revision:task.revision+1,occurredAt:Date.now(),status,...extras
+  };
+}
+async function sendRemoteReceipt(status:string,extras:Record<string,unknown>={}):Promise<void>{
+  if(!remoteTask)throw Error("No remote task");
+  const receipt=remoteReceipt(status,remoteTask,extras);
+  await invoke("remote_agent_receipt",{receipt});
+  remoteTask.revision=receipt.revision;
+  remoteTask.status=status;
+}
+async function closeRemoteTask(status:"succeeded"|"failed"|"stopped"|"outcome_unknown"):Promise<void>{
+  if(!remoteTask)return;
+  const extras= status==="succeeded" && remoteTask.evidenceActionId
+    ? {evidence:{kind:"native_audit",id:remoteTask.evidenceActionId}} : {};
+  try {await sendRemoteReceipt(status,extras);}
+  catch {remoteStatusLabel("Task outcome was not accepted by server; do not retry blindly.");}
+  remoteTask=null;
+  remoteApproval=null;
+}
+async function tickRemoteAgent():Promise<void>{
+  if(remotePolling)return;
+  remotePolling=true;
+  try {
+    // The visible Dashboard can pair/revoke the agent after the hidden
+    // coordinator boots. Re-read native pairing before any remote poll.
+    await refreshRemoteAgent();
+    if(!remoteAgentEnabled)return;
+    const inbox=await invoke<RemoteInbox>("remote_agent_poll");
+    if(remoteTask) {
+      const t=remoteTask;
+      if(inbox.pending.some(p=>p.taskId===t.message.taskId&&p.request==="cancel")){
+        if(executingActionId){
+          // Stop is a request, not proof that the OS process has stopped.
+          el<HTMLButtonElement>("#stopButton").click();
+          remoteStatusLabel("Remote stop requested; native cancellation outcome pending");
+        }else{
+          if(pendingAction) {
+            try{await invoke("deny_action",{actionId:pendingAction.id});}catch{ /* fail closed */ }
+            clearChatPermission();
+          }
+          await closeRemoteTask("stopped");
+          await stopAgentForSafety("Remote owner cancelled this task before native execution.");
+        }
+        return;
+      }
+      const a=remoteApproval;
+      if(a) {
+        if(Date.now()>=a.expiresAt){
+          try{await invoke("deny_action",{actionId:a.actionId});}catch{ /* fail closed */ }
+          clearChatPermission();
+          await closeRemoteTask("stopped");
+          await stopAgentForSafety("Mobile approval expired; no action was run.");
+          return;
+        }
+        const d=inbox.decisions.find(x=>x.taskId===t.message.taskId&&x.approvalId===a.id);
+        if(d?.decision==="deny"){
+          try{await invoke("deny_action",{actionId:a.actionId});}catch{ /* fail closed */ }
+          clearChatPermission();
+          await closeRemoteTask("stopped");
+          await stopAgentForSafety("Mobile owner denied the proposed Windows action.");
+        }else if(d?.decision==="approve"){
+          // The cloud server checks task, approval ID, deadline and single use.
+          // Native Rust still checks its own prepared action UUID.
+          try{await sendRemoteReceipt("running");}
+          catch{await closeRemoteTask("outcome_unknown");return;}
+          remoteApproval=null;
+          await executePendingProposal(a.proposal);
+        }
+      }
+      return;
+    }
+    if(busy||manualActionRunning||pendingAction||!inbox.messages.length)return;
+    const m=inbox.messages[0];
+    // The durable journal must acknowledge admission before any provider
+    // or Windows action; unknown delivery outcomes fail closed.
+    remoteTask={message:m,revision:1,status:"received",evidenceActionId:null,hadFailure:false};
+    try{await sendRemoteReceipt("admitted");}
+    catch{
+      remoteTask=null;remoteStatusLabel("Remote admission unconfirmed; no command executed.");
+      return;
+    }
+    cancelRequested=false;
+    orchestration=createAgentOrchestrationState();
+    renderOrchestrationStatus();
+    messages.push({role:"user",content:m.text});
+    beginTaskRoute(m.text);
+    renderMessages();
+    remoteStatusLabel("Remote command admitted · native execution not yet proven");
+    await runAgentStep();
+  }catch{
+    remoteStatusLabel("Remote transport unavailable; no unverified command executed.");
+  }finally{remotePolling=false;}
+}
 
 void boot();

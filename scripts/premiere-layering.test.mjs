@@ -86,7 +86,7 @@ test("track rename and organization recheck index-bound targets before mutation"
 test("track organization is one bounded compound transaction with readback",()=>{
   assert.match(layering,/MAX_TRACK_RENAMES: usize = 32/);
   assert.match(uxp,/Shuvi: Organize Tracks/);
-  assert.match(uxp,/for \(const entry of resolved\) compoundAction\.addAction/);
+  assert.match(uxp,/for \(const entry of freshResolved\) compoundAction\.addAction/);
   assert.match(uxp,/complete:results\.every\(row => row\.verified\)/);
 });
 
@@ -118,7 +118,8 @@ test("replacement nesting verifies selected-only content and one atomic remove-o
   assert.match(body,/createOverwriteItemAction/);
   assert.match(body,/compound\.addAction\(remove\);compound\.addAction\(overwrite\)/);
   assert.match(body,/verified_replacement_nest/);
-  assert.match(body,/linkedAudio:false|linked audio/i);
+  assert.match(body,/contentVerified:true/);
+  assert.match(body,/selectionRestored:nested\.selectionRestored/);
   assert.match(rust,/PremiereReplaceWithSubsequence/);
   assert.match(rust,/linked_audio_inferred":false/);
 });

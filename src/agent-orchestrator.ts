@@ -622,6 +622,21 @@ export function evaluateProposal(
   const graphFailure = graphDependencyFailure(graph, proposal);
   if (graphFailure) return { allowed: false, fingerprint, reason: graphFailure, stop: false };
 
+  // A coordinate drag must be informed by fresh visual evidence. Sending the
+  // Windows pointer event alone does not prove an editing effect; force a
+  // visible reinspection before any following native action.
+  if (proposal.tool === "pointer_drag" &&
+      !(state.last_tool === "inspect_screen" && state.last_outcome === "success")) {
+    return { allowed: false, fingerprint,
+      reason: "A fresh successful inspect_screen is required immediately before pointer_drag.",
+      stop: false };
+  }
+  if (state.last_tool === "pointer_drag" && state.last_outcome === "success" &&
+      proposal.tool !== "inspect_screen") {
+    return { allowed: false, fingerprint,
+      reason: "Verify the pointer drag with inspect_screen before taking another action.",
+      stop: false };
+  }
   const dependency = dependencyFailure(state, proposal);
   if (dependency) {
     return { allowed: false, fingerprint, reason: dependency, stop: false };

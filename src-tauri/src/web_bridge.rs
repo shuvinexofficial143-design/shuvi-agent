@@ -7,7 +7,7 @@ use std::{
     net::{TcpListener, TcpStream},
     sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex, OnceLock},
     thread::{self, JoinHandle},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use uuid::Uuid;
 
@@ -51,12 +51,19 @@ fn same_secret(actual: &str, expected: &str) -> bool {
     diff == 0
 }
 
+const TOTAL_HEADER_DEADLINE: Duration = Duration::from_secs(3);
+
 fn read_headers(stream: &mut TcpStream) -> Result<String, ()> {
-    stream.set_read_timeout(Some(Duration::from_secs(2))).map_err(|_| ())?;
+    // A per-read timeout is insufficient: an attacker can trickle one byte
+    // every two seconds and indefinitely block the single bridge worker.
+    let deadline = Instant::now() + TOTAL_HEADER_DEADLINE;
     stream.set_write_timeout(Some(Duration::from_secs(2))).map_err(|_| ())?;
     let mut bytes = Vec::with_capacity(1024);
     let mut buffer = [0u8; 1024];
     while bytes.len() < MAX_HEADERS {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() { return Err(()); }
+        stream.set_read_timeout(Some(remaining)).map_err(|_| ())?;
         let count = stream.read(&mut buffer).map_err(|_| ())?;
         if count == 0 { return Err(()); }
         bytes.extend_from_slice(&buffer[..count]);
@@ -221,6 +228,30 @@ mod tests {
         assert!(!same_secret("a1234567", "a1234568"));
         assert!(!same_secret("a123456", "a1234567"));
     }
+    #[test]
+    fn partial_header_client_cannot_hold_bridge_indefinitely() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+        let address = listener.local_addr().expect("listener address");
+        let sender = std::thread::spawn(move || {
+            let mut client = TcpStream::connect(address).expect("connect loopback");
+            // Keep making tiny progress: the old per-read timeout never expired.
+            for _ in 0..9 {
+                if client.write_all(b"x").is_err() { break; }
+                std::thread::sleep(Duration::from_millis(450));
+            }
+        });
+        let (mut accepted, _) = listener.accept().expect("accept client");
+        let start = Instant::now();
+        assert!(read_headers(&mut accepted).is_err());
+        assert!(
+            start.elapsed() < Duration::from_secs(4),
+            "slow client must be evicted by the absolute deadline"
+        );
+        drop(accepted);
+        sender.join().expect("sender terminated");
+    }
+
     #[test]
     fn bridge_is_explicitly_local_and_read_only() {
         assert_eq!(BIND, "127.0.0.1:47771");

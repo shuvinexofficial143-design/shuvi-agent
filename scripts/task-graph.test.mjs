@@ -355,15 +355,31 @@ test("coding hard dependencies override a permissive graph", () => {
   }
 });
 test("successful coding sequence still enforces fresh same-repository review", () => {
+  const HEAD_A="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const HEAD_C="cccccccccccccccccccccccccccccccccccccccc";
+  const WORKTREE_A="dddddddddddddddddddddddddddddddddddddddd";
+  const gitResult=(tool,head)=>({
+    tool,success:true,exit_code:0,stderr:"",
+    stdout:"[SHUVI_GIT_CONTEXT_V1]"+JSON.stringify({
+      schema:1,repo_root:"/repo",branch:"main",head,upstream:"origin/main",
+      upstream_head:HEAD_A,worktree_clean:false,worktree_fingerprint:WORKTREE_A
+    })+"\nobserved"
+  });
+  const p=(tool,path="/repo")=>{
+    const args={path};
+    if(tool==="apply_patch") args.expected_worktree_fingerprint=WORKTREE_A;
+    if(tool==="git_commit") Object.assign(args,{message:"x",files:["a.ts"],expected_head:HEAD_A,expected_worktree_fingerprint:WORKTREE_A});
+    if(tool==="git_push") args.expected_head=HEAD_C;
+    return {tool,arguments:args};
+  };
   let s=agent.createAgentOrchestrationState();
-  const p=(tool,path="/repo")=>({tool,arguments:{path}});
-  s=done(s,p("git_status"));
-  s=done(s,p("apply_patch"));
+  s=done(s,p("git_status"),gitResult("git_status",HEAD_A));
+  s=done(s,p("apply_patch"),result("apply_patch"));
   assert.equal(agent.evaluateProposal(s,p("git_commit")).allowed,false);
-  s=done(s,p("git_status"));
-  s=done(s,p("git_diff"));
+  s=done(s,p("git_status"),gitResult("git_status",HEAD_A));
+  s=done(s,p("git_diff"),gitResult("git_diff",HEAD_A));
   assert.equal(agent.evaluateProposal(s,p("git_commit")).allowed,true);
-  s=done(s,p("git_commit"));
+  s=done(s,p("git_commit"),gitResult("git_commit",HEAD_C));
   assert.equal(agent.evaluateProposal(s,p("git_push","/other")).allowed,false);
   assert.equal(agent.evaluateProposal(s,p("git_push")).allowed,true);
 });
@@ -399,14 +415,14 @@ test("frontend correlates execution with exact Rust audit receipt before evidenc
     main.indexOf("function renderChatPermission")
   );
   const executeCall=execute.indexOf('"execute_action"');
-  const receiptCall=execute.indexOf('"action_audit_receipt"');
+  const receiptCall=execute.indexOf("readActionAuditReceipt(actionId)");
   const outcomeCall=execute.indexOf("recordToolOutcome");
   assert.ok(executeCall>=0);
   assert.ok(receiptCall>executeCall);
   assert.ok(outcomeCall>receiptCall);
   assert.match(execute,/exactActionReceipt\([\s\S]{0,180}"executed"/);
   assert.match(execute,/evidence_verification_failed: true/);
-  assert.match(execute,/execution_failure_audit_confirmed: confirmedFailure/);
+  assert.match(execute,/execution_failure_audit_confirmed: cancelledByUser \? false : confirmedFailure/);
   assert.match(main,/action_audit_receipt/);
 });
 
@@ -424,8 +440,8 @@ test("UI binds exact prepared action before approval or execution", () => {
   assert.ok(boundSave>bind);
   assert.ok(autoExecute>boundSave);
   assert.ok(permission>boundSave);
-  assert.match(main,/recordToolOutcome\([\s\S]{0,260}result\.success \? "success" : "failure",[\s\S]{0,180}actionId/);
-  assert.match(main,/recordToolOutcome\(orchestration, proposal, "denied", undefined, false, actionId\)/);
+  assert.match(main,/recordToolOutcome\([\s\S]{0,520}actionId,[\s\S]{0,80}receipt/);
+  assert.match(main,/deniedConfirmed \? "denied" : "failure"[\s\S]{0,260}actionId,[\s\S]{0,80}receipt/);
   assert.match(main,/taskGraphProgress\(orchestration.task_graph\)/);
   assert.match(main,/row.textContent/);
   assert.match(main,/progress.completed < progress.total/);
@@ -442,7 +458,8 @@ test("strict Rust event allowlist matches all graph audit events", () => {
 
 test("user stop finalizes a pending prepared graph action before resume", () => {
   const main=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
-  const stop=main.slice(main.indexOf('el<HTMLButtonElement>("#stopButton")'),main.indexOf("document.querySelectorAll<HTMLButtonElement>"));
+  const stopStart=main.indexOf('el<HTMLButtonElement>("#stopButton").addEventListener');
+  const stop=main.slice(stopStart,main.indexOf("document.querySelectorAll<HTMLButtonElement>",stopStart));
   assert.match(main,/let pendingChatProposal: ToolProposal \| null = null/);
   assert.match(stop,/pendingAction && pendingChatProposal/);
   assert.match(stop,/const proposal = pendingChatProposal/);
@@ -596,4 +613,19 @@ test("persisted coding step receipts can only advance the resume floor", () => {
   });
   assert.equal(state.next_step,8);
   assert.equal(state.coding.last_mutation_step,7);
+});
+
+test("visual pointer drag is gated by fresh screen inspection before and after",()=>{
+  let state=agent.createAgentOrchestrationState();
+  const drag={tool:"pointer_drag",arguments:{x1:50,y1:80,x2:200,y2:100,duration_ms:500}};
+  const unsafe=agent.evaluateProposal(state,drag);
+  assert.equal(unsafe.allowed,false);
+  assert.match(unsafe.reason,/inspect_screen/);
+  state={...state,last_tool:"inspect_screen",last_outcome:"success"};
+  assert.equal(agent.evaluateProposal(state,drag).allowed,true);
+  state={...state,last_tool:"pointer_drag",last_outcome:"success"};
+  const premature=agent.evaluateProposal(state,{tool:"read_file",arguments:{path:"/a"}});
+  assert.equal(premature.allowed,false);
+  assert.match(premature.reason,/Verify the pointer drag/);
+  assert.equal(agent.evaluateProposal(state,{tool:"inspect_screen",arguments:{prompt:"verify result"}}).allowed,true);
 });

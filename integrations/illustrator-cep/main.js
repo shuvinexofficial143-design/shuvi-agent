@@ -1,0 +1,113 @@
+(function () {
+  "use strict";
+  var BRIDGE_BASE="http://127.0.0.1:17365", bridgeToken="", pollTimer=null, busy=false;
+  var delivered=Object.create(null), deliveredCount=0;
+  function el(id){return document.getElementById(id);}
+  function show(v){var n=el("output");if(n)n.textContent=v;}
+  function setStatus(v,ok){var n=el("bridgeStatus");if(!n)return;n.textContent=v;n.className=ok?"connected":"";}
+  function evalHost(action,args){
+    return new Promise(function(resolve,reject){
+      if(!window.__adobe_cep__||typeof window.__adobe_cep__.evalScript!=="function"){reject(new Error("Illustrator CEP evalScript is unavailable."));return;}
+      var encoded=encodeURIComponent(JSON.stringify(args||{}));
+      var script="shuviIllustratorDispatch("+JSON.stringify(action)+","+JSON.stringify(encoded)+");";
+      window.__adobe_cep__.evalScript(script,function(result){
+        try{
+          if(!result||result==="EvalScript error.")throw new Error("Illustrator ExtendScript evaluation failed.");
+          var envelope=eval("("+result+")");
+          if(!envelope||envelope.ok!==true)throw new Error(envelope&&envelope.error?String(envelope.error):"Illustrator host returned an invalid result.");
+          resolve(envelope.data);
+        }catch(error){reject(error);}
+      });
+    });
+  }
+  function bridgeRequest(method,path,body,token,timeoutMs){
+    return new Promise(function(resolve,reject){
+      var xhr=new XMLHttpRequest();xhr.open(method,BRIDGE_BASE+path,true);xhr.timeout=timeoutMs||3000;
+      xhr.setRequestHeader("X-Shuvi-Token",token);xhr.setRequestHeader("Content-Type","application/json");
+      xhr.onreadystatechange=function(){if(xhr.readyState!==4)return;var p=null;try{p=xhr.responseText?JSON.parse(xhr.responseText):null;}catch(e){}
+        if(xhr.status>=200&&xhr.status<300)resolve(p);else reject(new Error(p&&p.error?p.error:"Bridge HTTP "+xhr.status));};
+      xhr.onerror=function(){reject(new Error("Could not reach the Shuvi Illustrator bridge."));};
+      xhr.ontimeout=function(){reject(new Error("Shuvi Illustrator bridge request timed out."));};
+      xhr.send(body==null?null:JSON.stringify(body));
+    });
+  }
+  function claim(command){
+    if(!command||typeof command.id!=="string"||!command.id||command.id.length>80||typeof command.action!=="string"||!command.action||command.action.length>80)
+      throw new Error("Invalid Shuvi Illustrator command identity.");
+    if(delivered[command.id])throw new Error("Duplicate Illustrator command delivery rejected.");
+    if(deliveredCount>=1024)throw new Error("Pairing delivery budget exhausted; rotate the Shuvi pairing token.");
+    delivered[command.id]=true;deliveredCount+=1;
+  }
+  function boundedInteger(value,min,max,label){
+    var n=Number(value);
+    if(!isFinite(n)||Math.floor(n)!==n||n<min||n>max)throw new Error(label+" must be an integer from "+min+" to "+max+".");
+    return n;
+  }
+  function execute(command){
+    var args=command.arguments||{};
+    if(command.action==="inspect_context")return evalHost("inspect_context",{});
+    if(command.action==="inspect_artboards")return evalHost("inspect_artboards",{maxArtboards:boundedInteger(args.maxArtboards==null?128:args.maxArtboards,1,256,"maxArtboards")});
+    if(command.action==="inspect_layers")return evalHost("inspect_layers",{maxLayers:boundedInteger(args.maxLayers==null?128:args.maxLayers,1,256,"maxLayers")});
+    if(command.action==="inspect_page_items")return evalHost("inspect_page_items",{maxItems:boundedInteger(args.maxItems==null?256:args.maxItems,1,256,"maxItems")});
+    if(command.action==="inspect_selection")return evalHost("inspect_selection",{maxItems:boundedInteger(args.maxItems==null?64:args.maxItems,1,64,"maxItems")});
+    if(command.action==="verify_identity"){
+      if(typeof args.expectedDocumentSignature!=="string"||!args.expectedDocumentSignature.length||args.expectedDocumentSignature.length>2000)
+        return Promise.reject(new Error("Exact Illustrator document signature is required."));
+      return evalHost("verify_identity",{expectedDocumentSignature:args.expectedDocumentSignature});
+    }
+    if(command.action==="set_layer_property"){
+      var operation=String(args.operation||"");
+      if(operation!=="rename"&&operation!=="visible"&&operation!=="locked")
+        return Promise.reject(new Error("Illustrator layer operation must be rename, visible, or locked."));
+      var layerIndex=boundedInteger(args.layerIndex,0,100000,"layerIndex");
+      if(typeof args.expectedDocumentSignature!=="string"||!args.expectedDocumentSignature.length||args.expectedDocumentSignature.length>2000)
+        return Promise.reject(new Error("Exact Illustrator document signature is required."));
+      if(typeof args.expectedDocumentPath!=="string"||!args.expectedDocumentPath.length||args.expectedDocumentPath.length>32000)
+        return Promise.reject(new Error("Exact local Illustrator document path is required."));
+      if(typeof args.expectedLayerName!=="string"||!args.expectedLayerName.length||args.expectedLayerName.length>512)
+        return Promise.reject(new Error("Exact inspected Illustrator layer name is required."));
+      if(typeof args.expectedLayerSignature!=="string"||!args.expectedLayerSignature.length||args.expectedLayerSignature.length>2000)
+        return Promise.reject(new Error("Exact inspected Illustrator layer signature is required."));
+      return evalHost("set_layer_property",{
+        expectedDocumentSignature:args.expectedDocumentSignature,
+        expectedDocumentPath:args.expectedDocumentPath,
+        layerIndex:layerIndex,
+        expectedLayerName:args.expectedLayerName,
+        expectedLayerSignature:args.expectedLayerSignature,
+        operation:operation,
+        expectedValue:args.expectedValue,
+        value:args.value
+      });
+    }
+    return Promise.reject(new Error("Unsupported Shuvi Illustrator command: "+command.action));
+  }
+  function bounded(command,success,data,error){
+    var e={id:command.id,action:command.action,success:success,data:success?data:null,error:success?null:String(error||"Unknown Illustrator bridge error").slice(0,4000)};
+    if(JSON.stringify(e).length>220000)e={id:command.id,action:command.action,success:false,data:null,error:"Illustrator read-only result exceeded the bounded payload."};
+    return e;
+  }
+  function poll(){
+    if(!bridgeToken||busy)return;busy=true;var token=bridgeToken;
+    bridgeRequest("GET","/command",null,token,2500).then(function(command){
+      if(bridgeToken!==token)return null;setStatus("Connected to Shuvi",true);
+      if(!command||!command.id||!command.action)return null;claim(command);show("Running: "+command.action);
+      return execute(command).then(function(data){
+        return bridgeRequest("POST","/result",bounded(command,true,data,null),token,4000).then(function(){show(JSON.stringify(data,null,2));});
+      }).catch(function(error){
+        return bridgeRequest("POST","/result",bounded(command,false,null,error),token,4000).then(function(){show("Command failed: "+String(error));});
+      });
+    }).catch(function(error){setStatus("Not paired: "+String(error),false);})
+      .then(function(){busy=false;},function(){busy=false;});
+  }
+  function startPolling(){if(pollTimer)clearInterval(pollTimer);pollTimer=setInterval(poll,650);poll();}
+  function connect(){var token=(el("tokenInput").value||"").trim();if(!token){setStatus("Paste the pairing token from Shuvi.",false);return;}
+    bridgeToken=token;delivered=Object.create(null);deliveredCount=0;setStatus("Connecting...",false);startPolling();}
+  function disconnect(){bridgeToken="";if(pollTimer)clearInterval(pollTimer);pollTimer=null;setStatus("Disconnected",false);}
+  function direct(action,args){evalHost(action,args).then(function(v){show(JSON.stringify(v,null,2));}).catch(function(e){show("Illustrator inspection failed: "+String(e));});}
+  document.addEventListener("DOMContentLoaded",function(){
+    el("connect").addEventListener("click",connect);el("disconnect").addEventListener("click",disconnect);
+    el("inspect").addEventListener("click",function(){direct("inspect_context",{});});
+    el("artboards").addEventListener("click",function(){direct("inspect_artboards",{maxArtboards:128});});
+    setStatus("Disconnected",false);
+  });
+}());

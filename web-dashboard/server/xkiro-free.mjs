@@ -41,7 +41,7 @@ export async function callXkiroFree({env=process.env,messages,fetcher=fetch}) {
   const model=env.XKIRO_CHAT_MODEL||DEFAULT_XKIRO_FREE_MODEL;
   const key=env.XKIRO_API_KEY;
   // Catalog is public; usage is read-only and unmetered. Both are prerequisites.
-  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),12000);
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),5000);
   try {
     const [catalogResponse,usageResponse]=await Promise.all([
       fetcher(ORIGIN+"/v1/models",{method:"GET",redirect:"error",signal:controller.signal}),
@@ -56,7 +56,7 @@ export async function callXkiroFree({env=process.env,messages,fetcher=fetch}) {
     if(!confirmedFreeCatalogModel(catalog,model))throw new Error("Requested xKiro model is not confirmed free; paid fallback is prohibited");
     if(!hasFreeDailyAllowance(usage))throw new Error("Free token allowance exhausted or unknown; paid fallback is prohibited");
   } finally {clearTimeout(timer);}
-  const controller2=new AbortController(),timer2=setTimeout(()=>controller2.abort(),20000);
+  const controller2=new AbortController(),timer2=setTimeout(()=>controller2.abort(),15000);
   try {
     const response=await fetcher(ORIGIN+"/v1/chat/completions",{
       method:"POST",

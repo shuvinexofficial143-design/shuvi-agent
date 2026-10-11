@@ -18,11 +18,13 @@ test("Telegram surfaces, webhook routes and settings are removed from Vercel app
   ])assert.equal(existsSync(new URL(path,import.meta.url)),false,path);
 });
 
-test("Shuvi's original browser chat and online AI chat are preserved",()=>{
+test("Shuvi command chat is the only mounted chat; legacy cloud route stays isolated",()=>{
   const main=source("main.ts"),online=source("online-chat.ts"),settings=readApi("online-status.js");
   assert.match(main,/mountChatWorkspace/);
-  assert.match(main,/mountOnlineChat\(\)/);
+  assert.doesNotMatch(main,/mountOnlineChat/);
   assert.match(main,/mountAITeamWebPlanner\(\)/);
+  // The old opt-in cloud implementation is retained in source for
+  // compatibility, but must not appear as a separate Vercel chat tab.
   assert.match(online,/\/api\/online-chat/);
   assert.match(settings,/onlineAI:/);
 });
