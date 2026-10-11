@@ -7,7 +7,8 @@ test("native remote inbox is opt-in, outbound-only and uses normal agent orchest
  assert.match(native,/remote_agent_poll/);
  assert.match(native,/await sendRemoteReceipt\("admitted"\)/);
  assert.match(native,/await runAgentStep\(\)/);
- assert.match(native,/await stageProposal\(response.tool_proposal\)/);
+ assert.match(native,/await stageProposal\(response.tool_proposal, route\)/);
+ assert.match(native,/async function stageProposal\(proposal: ToolProposal, route: TaskModelRoute\)/);
  assert.match(native,/requires_approval/);
  assert.match(native,/Approve on mobile/);
  assert.match(rust,/keyring::Error::NoEntry/);
