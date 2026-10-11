@@ -60,3 +60,10 @@ test("Batch 65 colloquial app spellings still reach the selected Master",()=>{
  ]) assert.equal(classifyNativeIntent(request),role,request);
  assert.equal(classifyNativeIntent("Why does Photoshop exist?"),"chat");
 });
+
+test("Batch 82 capability questions stay Chat without losing direct Can you commands",()=>{
+ for(const question of ["Can Premiere export 4K?","Does Blender render videos?","Will After Effects support VFX?"])
+  assert.equal(classifyNativeIntent(question),"chat",question);
+ assert.equal(classifyNativeIntent("Can you open Premiere?"),"premiere");
+ assert.equal(classifyNativeIntent("Premiere export karo"),"premiere");
+});

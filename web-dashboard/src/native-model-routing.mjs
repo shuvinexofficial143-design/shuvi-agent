@@ -49,6 +49,9 @@ export function classifyNativeIntent(text) {
  const explicit=input.match(/^@([a-z0-9-]+)(?:\s|$)/i);
  if(explicit&&names.has(explicit[1].toLowerCase()))return explicit[1].toLowerCase();
  if(/^(?:explain|what is|how (?:do|does|to)|teach me|tell me about|why |can you explain|समझाओ|क्या है|कैसे |क्यों )/iu.test(input))return "chat";
+ // A question about what software can do is not a request to operate it.
+ // A direct "Can you open..." remains an actionable user command.
+ if(/^(?:can|could|does|do|is|are|should|will)\s+(?!you\b|we\b|shuvi\b).{1,100}\?\s*$/iu.test(input))return "chat";
  if(!executionVerb.test(input))return "chat";
  const match=intents.filter(([,rule])=>rule.test(input));
  if(match.length===1)return match[0][0];

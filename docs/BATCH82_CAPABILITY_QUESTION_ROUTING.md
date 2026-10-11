@@ -1,0 +1,1 @@
+Batch 82: Distinguish informational capability questions (Can Premiere export 4K?) from explicit desktop actions (Can you open Premiere?). This avoids unnecessary paid Master/tool staging while preserving natural-language action requests.
