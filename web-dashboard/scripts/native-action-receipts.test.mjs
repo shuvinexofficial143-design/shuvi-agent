@@ -32,3 +32,11 @@ test("Batch 35 denied or any executed record cannot co-authorize failed UI recov
  assert.equal(conflict(action,[{...good,event:"failed",success:false}]),false);
  assert.equal(conflict(action,[{...good,event:"prepared",success:true}]),false);
 });
+
+test("Batch 73 success receipts fail closed on malformed exit status serialization",()=>{
+ for(const status of ["0","1",false,true,NaN,0.5,-1])
+  assert.equal(verified(action,{...result,exit_code:status},[good]),false,String(status));
+ assert.equal(verified(action,{...result,exit_code:0},[good]),true);
+ assert.equal(verified(action,{...result,exit_code:null},[good]),true);
+ assert.equal(verified(action,result,[good]),true);
+});

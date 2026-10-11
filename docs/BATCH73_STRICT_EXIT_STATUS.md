@@ -1,0 +1,1 @@
+Batch 73: A reported successful native action may not be accepted with malformed, boolean or string process exit codes. Only an integer zero (or absent/not-applicable exit code) can accompany a matching exact Rust success audit.

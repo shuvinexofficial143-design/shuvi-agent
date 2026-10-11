@@ -4,7 +4,7 @@ export function verifiedExecutionReceipt(prepared,result,receipts){
  if(!prepared||typeof prepared.id!=="string"||!prepared.id||
   typeof prepared.kind!=="string"||!prepared.kind||
   result?.success!==true||result.tool!==prepared.kind||
-  (typeof result.exit_code==="number"&&result.exit_code!==0)||
+  (result.exit_code!=null&&(!Number.isSafeInteger(result.exit_code)||result.exit_code!==0))||
   !Array.isArray(receipts))return false;
  const same=receipts.filter(r=>r?.action_id===prepared.id);
  if(!same.length)return false;
