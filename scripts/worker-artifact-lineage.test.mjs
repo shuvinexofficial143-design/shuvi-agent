@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {parseWorkerArtifact,validWorkerArtifact,artifactHandoffFailure} from "../src/worker-artifact-lineage.mjs";
+import {parseWorkerArtifact,validWorkerArtifact,artifactHandoffFailure,importArtifactIdentity} from "../src/worker-artifact-lineage.mjs";
 import {workerQueueView,nextWorkerTurn} from "../src/master-worker-queue.mjs";
 import {graphDependencyFailure,restoreTaskGraph} from "../src/task-graph.mjs";
 const id=n=>"123e4567-e89b-42d3-a456-"+String(n).padStart(12,"0");
@@ -81,6 +81,9 @@ test("valid Remotion lineage is ready only for the exact accepted output file",(
  const g=fixture();
  assert.equal(artifactHandoffFailure(g,"insert"),null);
  assert.deepEqual(workerQueueView(g).ready_job_ids,["insert"]);
+ assert.deepEqual(importArtifactIdentity(g,"insert"),{
+  source:"remotion",source_action_id:id(3),path,sha256:sha
+ });
  const proposal={tool:"premiere_insert_media",task_step_id:"insert",arguments:{path}};
  assert.equal(graphDependencyFailure(g,proposal),null);
  assert.equal(nextWorkerTurn(g).requires_owner_approval,true);
@@ -151,6 +154,9 @@ test("Blender PNG import requires matching Rust-verified producer identity and a
     step("import","premiere_insert_media",null,["model"])]};
  assert.equal(artifactHandoffFailure(g,"import"),null);
  assert.deepEqual(workerQueueView(g).ready_job_ids,["import"]);
+ assert.deepEqual(importArtifactIdentity(g,"import"),{
+  source:"blender",source_action_id:id(1),path:"/repo/blender.png",sha256:"b".repeat(64)
+ });
  assert.equal(graphDependencyFailure(g,{tool:"premiere_insert_media",task_step_id:"import",
   arguments:{path:"/repo/blender.png"}}),null);
  assert.match(graphDependencyFailure(g,{tool:"premiere_insert_media",task_step_id:"import",
@@ -165,4 +171,17 @@ test("Blender PNG import requires matching Rust-verified producer identity and a
  assert.match(artifactHandoffFailure(project,"import"),/not the Blender project/);
  assert.equal(nextWorkerTurn(project),null);
  assert.equal(restoreTaskGraph(g,2,8).ok,true);
+});
+
+test("mixed Blender and Remotion lineage is ambiguous rather than silently choosing a producer",()=>{
+ const g=fixture();
+ const blender=step("blender","blender_run_plan",4,[],{
+  kind:"blender_artifact",producer_action_id:id(4),
+  path:"/repo/blender.png",sha256:"b".repeat(64),bytes:5000
+ });
+ g.steps.splice(3,0,blender);
+ g.steps.find(s=>s.step_id==="insert").depends_on=["plan","blender"];
+ assert.match(artifactHandoffFailure(g,"insert"),/mixed Blender and Remotion sources/);
+ assert.equal(importArtifactIdentity(g,"insert"),null);
+ assert.deepEqual(workerQueueView(g).ready_job_ids,[]);
 });
