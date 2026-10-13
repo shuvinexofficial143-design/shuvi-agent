@@ -1054,7 +1054,7 @@ test("failure to retire no-action checkpoint blocks any later paid or native dis
  assert.equal(s.chatInputs.length,1);
  assert.equal(s.staged.length,0);
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
- const stillBlocked=await s.transport.send("Try another new task","new-task-blocked-again",0);
+ const stillBlocked=await s.transport.send("Open Photoshop","new-task-blocked-again",0);
  assert.equal(stillBlocked.ok,false);
  assert.match(stillBlocked.error,/previous Windows task/);
 });
