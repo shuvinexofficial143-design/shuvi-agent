@@ -71,7 +71,8 @@ function done(state, p, r = result(p.tool)) {
       schema_version:1,source:"verified_motion_graphics_delivery",
       final_acceptance_action_id:accept?.action_id,
       output_file:accept?.artifact?.path,output_sha256:accept?.artifact?.sha256,
-      premiere_tool_proposal:{tool:"premiere_insert_media",arguments:{path:accept?.artifact?.path}},
+      premiere_tool_proposal:{tool:"premiere_insert_media",arguments:{path:accept?.artifact?.path,
+        expected_sha256:accept?.artifact?.sha256}},
       automatic_execution:false,requires_normal_premiere_approval:true,production_ready:false
     })};
   }
