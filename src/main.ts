@@ -589,6 +589,7 @@ function renderOrchestrationStatus(): void {
   const graphProgress = taskGraphProgress(orchestration.task_graph);
   const workerQueue = workerQueueView(orchestration.task_graph);
   const nextTurn = nextWorkerTurn(orchestration.task_graph);
+  const nextMedia = nextTurn?.artifact ? " · Source: "+nextTurn.artifact.source+" SHA-256 "+nextTurn.artifact.sha256.slice(0,12)+"…" : "";
   const graphView = el<HTMLElement>("#taskProgress");
   graphView.classList.toggle("hidden", !graphProgress.total);
   const list = el<HTMLElement>("#taskProgressSteps");
@@ -614,7 +615,7 @@ function renderOrchestrationStatus(): void {
         ? "Exact typed-result and native audit receipt verified." : step.status));
       list.append(row);
     }
-    progress.textContent = `Task: ${orchestration.task_graph.objective} · ${workerQueue.verified}/${workerQueue.total} audited worker actions · ${workerQueue.ready} ready · ${workerQueue.running} running · ${workerQueue.blocked} blocked · Next: ${nextTurn ? nextTurn.worker+" / "+nextTurn.step_id+" (approval needed)" : "awaiting safe handoff"} · Current: ${graphProgress.current ?? "none"} · Phase: ${orchestration.coding.active ? codingPhase(orchestration) : "general"} · State: ${orchestration.recovery_mode}`;
+    progress.textContent = `Task: ${orchestration.task_graph.objective} · ${workerQueue.verified}/${workerQueue.total} audited worker actions · ${workerQueue.ready} ready · ${workerQueue.running} running · ${workerQueue.blocked} blocked · Next: ${nextTurn ? nextTurn.worker+" / "+nextTurn.step_id+" (approval needed)" : "awaiting safe handoff"}${nextMedia} · Current: ${graphProgress.current ?? "none"} · Phase: ${orchestration.coding.active ? codingPhase(orchestration) : "general"} · State: ${orchestration.recovery_mode}`;
     return;
   }
   if (!orchestration.objective && orchestration.tool_actions === 0 && orchestration.next_step === 1) {
