@@ -225,6 +225,7 @@ test("unrelated or reversed acceptance cannot authorize an unrelated render",()=
  assert.equal(nextWorkerTurn(g),null);
  accept.depends_on=["render"];
  plan.depends_on=[];
+ insert.depends_on=["render","accept","plan"];
  assert.match(handoffContractFailure(g,"import"),/motion_graphics_plan_premiere_insertion/);
  plan.depends_on=["accept"];
  assert.equal(handoffContractFailure(g,"import"),null);
