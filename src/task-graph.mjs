@@ -1,4 +1,4 @@
-import { workerQueueView, nextWorkerTurn, evidenceForStep } from "./master-worker-queue.mjs";
+import { workerQueueView, nextWorkerTurn, evidenceForStep, handoffContractFailure } from "./master-worker-queue.mjs";
 export { nextWorkerTurn };
 // Pure bounded coordinator. Provider metadata is never execution authority.
 import { MAX_RUNTIME_ACTIONS, allowedTaskBudget } from "./task-runtime-budget.mjs";
@@ -146,6 +146,8 @@ export function graphDependencyFailure(graph, proposal) {
     " (Rust-audited dependency evidence required).";
   if (step.status === "blocked") return "Task step must be recalculated as ready before execution.";
   if (step.expected_tool !== proposal.tool) return "Task step requires typed tool " + step.expected_tool + ".";
+  const handoff=handoffContractFailure(graph,stepId);
+  if(handoff)return handoff;
   // Defense in depth: a model-proposed completed status is not enough to
   // unlock cross-application work, and a shared app lane cannot be double-booked.
   const lane = workerQueueView(graph);
@@ -316,6 +318,8 @@ export function restoreTaskGraph(value, nextStep, maxSteps = GRAPH_LIMIT) {
   }
   if (count > maxSteps || interrupted.length > 1) return fail("Saved evidence exceeds the owner-approved action ceiling.");
   const graph = refreshTaskGraph({ ...parsed.graph, steps });
+  if(graph.steps.some(s=>s.status==="completed"&&handoffContractFailure(graph,s.step_id)))
+    return fail("Saved worker completion skips required cross-app artifact acceptance and insertion planning.");
   for (const s of graph.steps.filter(completed)) {
     const n = s.evidence.find(e => e.success).orchestration_step;
     if (s.depends_on.some(d => {
