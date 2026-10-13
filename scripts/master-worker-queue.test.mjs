@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
-import {workerForTool,evidenceForStep,workerQueueView,workerQueueSummary} from "../src/master-worker-queue.mjs";
+import {workerForTool,evidenceForStep,workerQueueView,workerQueueSummary,nextWorkerTurn} from "../src/master-worker-queue.mjs";
 import {graphDependencyFailure} from "../src/task-graph.mjs";
 const UUID="123e4567-e89b-42d3-a456-426614174000";
 const step=(step_id,expected_tool,status="ready",depends_on=[],evidence=[])=>({step_id,expected_tool,status,depends_on,evidence,title:step_id});
@@ -143,4 +143,23 @@ test("recovered failure history remains visible but a later exact audit can hand
  assert.equal(q.verified,1);
  assert.deepEqual(q.ready_job_ids,["export"]);
  assert.equal(q.jobs[1].handoffs[0].orchestration_step,3);
+});
+
+test("nextWorkerTurn makes a deterministic plan preview, never an executable approval",()=>{
+ const g={steps:[
+  step("inspect","premiere_context","completed",[],accepted("premiere_context","inspect")),
+  step("motion","motion_graphics_run_remotion","ready",["inspect"]),
+  step("insert","premiere_insert_media","pending",["motion"])
+ ]};
+ const turn=nextWorkerTurn(g);
+ assert.equal(turn.step_id,"motion");
+ assert.equal(turn.worker,"remotion");
+ assert.equal(turn.tool,"motion_graphics_run_remotion");
+ assert.equal(turn.requires_owner_approval,true);
+ assert.equal(turn.handoffs[0].action_id,UUID);
+ assert.equal(nextWorkerTurn({steps:[
+  step("running","motion_graphics_run_remotion","running"),
+  step("wait","motion_graphics_run_remotion","ready")
+ ]}),null);
+ assert.equal(nextWorkerTurn(null),null);
 });
