@@ -1,4 +1,4 @@
-import { workerQueueView, nextWorkerTurn } from "./master-worker-queue.mjs";
+import { workerQueueView, nextWorkerTurn, evidenceForStep } from "./master-worker-queue.mjs";
 export { nextWorkerTurn };
 // Pure bounded coordinator. Provider metadata is never execution authority.
 import { MAX_RUNTIME_ACTIONS, allowedTaskBudget } from "./task-runtime-budget.mjs";
@@ -75,7 +75,9 @@ function spec(s) {
     success_criteria: s.success_criteria, expected_tool: s.expected_tool, depends_on: s.depends_on };
 }
 function completed(s) {
-  return s.status === "completed" && s.evidence.some(e => e.success === true && e.source === "typed_result");
+  // Model-authored success flags and incomplete local evidence cannot unlock
+  // graph dependencies, progress, or a cross-worker handoff.
+  return evidenceForStep(s) !== null;
 }
 export function refreshTaskGraph(graph) {
   if (!graph) return null;
