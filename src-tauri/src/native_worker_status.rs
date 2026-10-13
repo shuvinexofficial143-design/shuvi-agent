@@ -233,7 +233,7 @@ mod tests{
     fn durable_start_record_is_not_fabricated_as_a_heartbeat_tick(){
         let id=uuid();
         let record=crate::native_worker_job::NativeJob{
-            version:1,action_id:id,tool:"read_file".into(),phase:"running".into(),
+            version:1,action_id:id,tool:"premiere_insert_media".into(),phase:"running".into(),
             started_at_ms:1_000,updated_at_ms:1_000,heartbeat_seq:0,audit_success:None,
             prior_action_ids:Vec::new()
         };
