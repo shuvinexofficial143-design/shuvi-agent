@@ -1,5 +1,6 @@
 import type { ToolProposal, ActionResult } from "./types";
 import type { WorkerTurn } from "./master-worker-queue.mjs";
+import type { WorkerArtifact } from "./worker-artifact-lineage.mjs";
 export const GRAPH_LIMIT: 8;
 export function nextWorkerTurn(graph: TaskGraph | null):WorkerTurn|null;
 export function handoffContractFailure(graph:TaskGraph | null, stepId:string):string|null;
@@ -21,6 +22,7 @@ export type TaskEvidence = {
   source: "typed_result" | "local_failure" | "interrupted";
   orchestration_step: number;
   summary: string;
+  artifact?: WorkerArtifact;
 };
 export type TaskStep = TaskStepSpec & {
   status: TaskStepStatus;
