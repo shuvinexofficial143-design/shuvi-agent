@@ -1,4 +1,5 @@
 import { workerQueueView, nextWorkerTurn, evidenceForStep, handoffContractFailure } from "./master-worker-queue.mjs";
+import {parseWorkerArtifact,validWorkerArtifact,artifactHandoffFailure} from "./worker-artifact-lineage.mjs";
 export { nextWorkerTurn, handoffContractFailure };
 // Pure bounded coordinator. Provider metadata is never execution authority.
 import { MAX_RUNTIME_ACTIONS, allowedTaskBudget } from "./task-runtime-budget.mjs";
@@ -148,6 +149,8 @@ export function graphDependencyFailure(graph, proposal) {
   if (step.expected_tool !== proposal.tool) return "Task step requires typed tool " + step.expected_tool + ".";
   const handoff=handoffContractFailure(graph,stepId);
   if(handoff)return handoff;
+  const identityFailure=artifactHandoffFailure(graph,stepId,proposal);
+  if(identityFailure)return identityFailure;
   // Defense in depth: a model-proposed completed status is not enough to
   // unlock cross-application work, and a shared app lane cannot be double-booked.
   const lane = workerQueueView(graph);
@@ -221,16 +224,24 @@ export function finishTaskStep(
     && (result.exit_code === null || Number.isInteger(result.exit_code));
   // Defense in depth: even a forged/stale running receipt cannot complete
   // Premiere import by skipping final Remotion acceptance and insertion plan.
-  const handoffSafe=!handoffContractFailure(graph,target.step_id);
+  const handoffSafe=!handoffContractFailure(graph,target.step_id)
+    &&!artifactHandoffFailure(graph,target.step_id,proposal);
+  const needsArtifact=["motion_graphics_accept_final_remotion",
+    "motion_graphics_plan_premiere_insertion"].includes(proposal.tool);
+  const artifact=typed&&outcome==="success"&&result.success===true
+    ?parseWorkerArtifact(proposal.tool,result.stdout,preparedActionId):null;
   const success = outcome === "success" && typed && result.success === true
-    && handoffSafe && (proposal.tool !== "run_project_task" || result.exit_code === 0);
+    && handoffSafe && (!needsArtifact||artifact!==null)
+    && (proposal.tool !== "run_project_task" || result.exit_code === 0);
   const evidence = { step_id: target.step_id, tool: proposal.tool, fingerprint,
     action_id: actionId(preparedActionId) ? preparedActionId : null,
     audit_event: auditBound ? auditReceipt.event : null,
     success, outcome: success ? "success" : outcome === "success" ? "failure" : outcome,
     source: typed ? "typed_result" : "local_failure", orchestration_step: stepNumber,
+    ...(success&&artifact?{artifact}:{}),
     summary: success ? "Typed tool and Rust audit receipt matched the exact prepared action." :
-      !handoffSafe ? "Cross-app action cannot complete without accepted final render and Premiere insertion-plan receipts." :
+      !handoffSafe ? "Cross-app action cannot complete without exact accepted artifact SHA-256, plan and permission receipts." :
+      needsArtifact&&!artifact ? "Native final acceptance or insertion plan lacked a matching authenticated artifact identity." :
       "Action lacked matching typed result and Rust audit evidence for the bound prepared action." };
   return refreshTaskGraph({ ...graph, steps: graph.steps.map(s => s !== target ? s :
     { ...s, status: success ? "completed" : "failed", running: null, blocked_reason: null,
@@ -283,7 +294,11 @@ export function restoreTaskGraph(value, nextStep, maxSteps = GRAPH_LIMIT) {
           || (e.audit_event !== null && !["executed","failed","denied"].includes(e.audit_event))
           || (e.success && (!actionId(e.action_id) || e.audit_event !== "executed"
               || e.source !== "typed_result" || e.outcome !== "success" || e.tool !== s.expected_tool))
-          || (!e.success && e.outcome === "success")) return fail("Invalid saved completion evidence.");
+          || (!e.success && e.outcome === "success")
+          || (e.artifact!==undefined&&!validWorkerArtifact(e.artifact,e.tool,e.action_id))
+          || (e.success&&["motion_graphics_accept_final_remotion",
+                "motion_graphics_plan_premiere_insertion"].includes(e.tool)&&
+              !validWorkerArtifact(e.artifact,e.tool,e.action_id))) return fail("Invalid saved completion evidence.");
       if (e.action_id !== null) {
         if (seenActionIds.has(e.action_id)) return fail("Duplicate native action ID in saved worker evidence.");
         seenActionIds.add(e.action_id);
@@ -322,7 +337,8 @@ export function restoreTaskGraph(value, nextStep, maxSteps = GRAPH_LIMIT) {
   }
   if (count > maxSteps || interrupted.length > 1) return fail("Saved evidence exceeds the owner-approved action ceiling.");
   const graph = refreshTaskGraph({ ...parsed.graph, steps });
-  if(graph.steps.some(s=>s.status==="completed"&&handoffContractFailure(graph,s.step_id)))
+  if(graph.steps.some(s=>s.status==="completed"&&
+    (handoffContractFailure(graph,s.step_id)||artifactHandoffFailure(graph,s.step_id))))
     return fail("Saved worker completion skips required cross-app artifact acceptance and insertion planning.");
   for (const s of graph.steps.filter(completed)) {
     const n = s.evidence.find(e => e.success).orchestration_step;
