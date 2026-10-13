@@ -66,6 +66,7 @@ mod premiere_scene_detection;
 mod premiere_scene_rough_cut;
 mod premiere_layering;
 mod premiere_media_prep;
+mod premiere_artifact_integrity;
 mod premiere_delivery;
 mod premiere_finishing;
 mod premiere_assembly;
@@ -907,7 +908,7 @@ enum ToolAction {
     PremiereInsertProjectItem { item_id: String, seconds: f64, video_track: u32, audio_track: u32, mode: String },
     PremiereInspectMulticamItem { item_id: String },
     PremiereInsertMulticamItem { item_id: String, seconds: f64, video_track: u32, audio_track: u32, mode: String },
-    PremiereInsertMedia { path: String, seconds: f64, video_track: u32, audio_track: u32, mode: String },
+    PremiereInsertMedia { path: String, seconds: f64, video_track: u32, audio_track: u32, mode: String, expected_sha256: Option<String> },
     PremiereTrimClip { kind: String, track: u32, clip_index: u32, start_seconds: Option<f64>, end_seconds: Option<f64> },
     PremiereRollEdit { kind: String, track: u32, left_clip_index: u32, right_clip_index: u32, boundary_seconds: f64 },
     PremiereMoveClip { kind: String, track: u32, clip_index: u32, delta_seconds: f64 },
@@ -7068,6 +7069,11 @@ fn stage_tool(
             if !matches!(mode.as_str(), "insert" | "overwrite") {
                 return Err("premiere_insert_media mode must be insert or overwrite.".into());
             }
+            let expected_sha256 = match proposal.arguments.get("expected_sha256") {
+                None => None,
+                Some(Value::String(value)) => premiere_artifact_integrity::validate_expected(Some(value))?,
+                Some(_) => return Err("premiere_insert_media expected_sha256 must be a 64-character hex string.".into()),
+            };
             (
                 ToolAction::PremiereInsertMedia {
                     path: path.clone(),
@@ -7075,6 +7081,7 @@ fn stage_tool(
                     video_track: video_track as u32,
                     audio_track: audio_track as u32,
                     mode: mode.clone(),
+                    expected_sha256,
                 },
                 "Edit Premiere timeline".to_string(),
                 format!("{mode} media at {seconds:.3}s on V{video_track}/A{audio_track}: {path}"),
@@ -16369,8 +16376,12 @@ try {{
                 exit_code: Some(if verified {0}else{1}),
             })
         }
-        ToolAction::PremiereInsertMedia { path, seconds, video_track, audio_track, mode } => {
+        ToolAction::PremiereInsertMedia { path, seconds, video_track, audio_track, mode, expected_sha256 } => {
+            // Check at actual dispatch, not just model planning or Allow once.
+            // Project checkpoint may take time, so rehash after backing up and
+            // immediately before the untrusted Adobe bridge receives the path.
             let backup = backup_premiere_project(&premiere_bridge).await?;
+            let before=premiere_artifact_integrity::verify_expected(&path,expected_sha256.as_deref())?;
             let value = premiere_bridge.request(
                 "insert_media",
                 json!({
@@ -16382,14 +16393,27 @@ try {{
                 }),
                 Duration::from_secs(30),
             ).await?;
-            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_insert_delta");
-
+            // A changed source after the Adobe operation is NOT an audited
+            // success; host/project state must be inspected before retrying.
+            let after=premiere_artifact_integrity::verify_expected(&path,expected_sha256.as_deref());
+            let unchanged=match &after{
+                Ok(value)=>value==&before,
+                Err(_)=>false,
+            };
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_insert_delta")
+                && unchanged;
             Ok(ActionResult {
                 success: verified,
                 tool,
                 stdout: json!({"backup":backup,"result":value,"post_state_verified":verified,
+                    "native_pre_import_sha256_verified":before.is_some(),
+                    "native_post_import_sha256_verified":unchanged&&before.is_some(),
+                    "native_expected_sha256":expected_sha256,
+                    "native_post_import_source_unchanged":unchanged,
                     "overwrite_semantics_verified":false,"retry_safe":false}).to_string(),
-                stderr: String::new(),
+                stderr: if unchanged {String::new()} else {
+                    "Approved Premiere source changed during import; outcome may be uncertain. Inspect project before retrying.".into()
+                },
                 exit_code: Some(if verified {0}else{1}),
             })
         }
