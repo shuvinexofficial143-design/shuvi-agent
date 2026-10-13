@@ -282,6 +282,16 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    rustRecovery=null;
    recoveryCheckpointFailed=false;
    cleanNoActionPausedBudget=null;
+   // Acknowledgement is an explicit abandonment of the old execution scope.
+   // Never reuse old budgets, goal roots, window evidence or worker state.
+   taskBudgets.clear();
+   taskGoalRoots.clear();
+   taskStates.clear();
+   taskEvidence.clear();
+   verifiedWindows.clear();
+   observedWindows.clear();
+   taskStatus.textContent="Previous task acknowledged; start a fresh Windows task.";
+   goalStatus.textContent="Old task objective not independently verified.";
    recoveryAcknowledged=true;
    recoveryNotice.hidden=true;
    recoveryCheck.hidden=true;
