@@ -7,6 +7,7 @@ import type {
   PendingAction,
   ProviderDescriptor,
   RuntimeStatus,
+  NativeWorkerStatus,
   ToolProposal,
   AuditEntry,
   SessionCheckpoint,
@@ -52,6 +53,9 @@ let pendingChatProposal: ToolProposal | null = null;
 let executingActionId: string | null = null;
 let executingCancellation: { actionId: string; promise: Promise<boolean> } | null = null;
 let orchestration: AgentOrchestrationState = createAgentOrchestrationState();
+let nativeHostStatus: NativeWorkerStatus | null = null;
+let nativeHostStatusUnavailable = true;
+let nativeHostReadPending = false;
 let busy = false;
 let manualActionRunning = false;
 let cancelRequested = false;
@@ -584,6 +588,38 @@ function currentCheckpoint(): SessionCheckpoint {
   };
 }
 
+function nativeWorkerDisplay(): string {
+  if (nativeHostStatusUnavailable || !nativeHostStatus) return "Host worker: unavailable (do not infer idle)";
+  const host = nativeHostStatus;
+  if (host.requiresOwnerReview || host.state === "recovery_required")
+    return "Host worker: RECOVERY REQUIRED — inspect native action and journal";
+  if (host.state === "native_action_in_flight")
+    return "Host worker: native action active ("+(host.tool ?? "unknown")+
+      ", "+Math.floor((host.observedActionAgeMs ?? 0)/1000)+"s observed; NOT a progress heartbeat)";
+  if (host.state === "lease_held_unattributed")
+    return "Host lease occupied — action identity not independently attributed";
+  return "Host worker: no action in this process (other instances unknown)";
+}
+// Only a read-only Rust IPC call can update host ownership observations.
+// Never use the web graph or this UI timer to grant another native lease.
+async function refreshNativeWorkerStatus(): Promise<void> {
+  if(nativeHostReadPending)return;
+  nativeHostReadPending=true;
+  try{
+    const status=await invoke<NativeWorkerStatus>("native_worker_status");
+    if(status.schemaVersion!==1||status.progressHeartbeatVerified!==false
+      ||status.safeToAutoRetry!==false)throw Error("Invalid native worker observation");
+    nativeHostStatus=status;
+    nativeHostStatusUnavailable=false;
+  }catch{
+    nativeHostStatus=null;
+    nativeHostStatusUnavailable=true;
+  }finally{
+    nativeHostReadPending=false;
+    renderOrchestrationStatus();
+  }
+}
+
 function renderOrchestrationStatus(): void {
   const progress = el<HTMLElement>("#agentProgress");
   const graphProgress = taskGraphProgress(orchestration.task_graph);
@@ -617,11 +653,11 @@ function renderOrchestrationStatus(): void {
         ? "Exact typed-result and native audit receipt verified." : step.status));
       list.append(row);
     }
-    progress.textContent = `Task: ${orchestration.task_graph.objective} · ${workerQueue.verified}/${workerQueue.total} audited worker actions · ${workerQueue.ready} ready · ${workerQueue.running} running · ${workerQueue.blocked} blocked · Native lease: ${workerSupervisor.state}${workerSupervisor.quarantined ? " (recovery required)" : ""} · Next: ${nextTurn ? nextTurn.worker+" / "+nextTurn.step_id+" (approval needed)" : "awaiting safe handoff"}${nextMedia}${nextBatch} · Current: ${graphProgress.current ?? "none"} · Phase: ${orchestration.coding.active ? codingPhase(orchestration) : "general"} · State: ${orchestration.recovery_mode}`;
+    progress.textContent = `Task: ${orchestration.task_graph.objective} · ${workerQueue.verified}/${workerQueue.total} audited worker actions · ${workerQueue.ready} ready · ${workerQueue.running} running · ${workerQueue.blocked} blocked · Native lease: ${workerSupervisor.state}${workerSupervisor.quarantined ? " (recovery required)" : ""} · Next: ${nextTurn ? nextTurn.worker+" / "+nextTurn.step_id+" (approval needed)" : "awaiting safe handoff"}${nextMedia}${nextBatch} · ${nativeWorkerDisplay()} · Current: ${graphProgress.current ?? "none"} · Phase: ${orchestration.coding.active ? codingPhase(orchestration) : "general"} · State: ${orchestration.recovery_mode}`;
     return;
   }
   if (!orchestration.objective && orchestration.tool_actions === 0 && orchestration.next_step === 1) {
-    progress.textContent = "Agent idle";
+    progress.textContent = "Agent idle · "+nativeWorkerDisplay();
     return;
   }
 
@@ -632,7 +668,7 @@ function renderOrchestrationStatus(): void {
     ? ` · ${codingPhase(orchestration).replaceAll("_", " ")}`
     : "";
   progress.textContent =
-    `Agent ${Math.min(orchestration.next_step, orchestration.max_steps)}/${orchestration.max_steps}${coding}${mode}`;
+    `Agent ${Math.min(orchestration.next_step, orchestration.max_steps)}/${orchestration.max_steps}${coding}${mode} · ${nativeWorkerDisplay()}`;
 }
 
 async function saveActiveCheckpoint(): Promise<void> {
@@ -786,12 +822,14 @@ async function boot(): Promise<void> {
     await loadWorkspace();
     await loadRecoveryCheckpoint();
     renderOrchestrationStatus();
+    await refreshNativeWorkerStatus();
     await refreshRam();
     await refreshAudit();
     await refreshPremiereBridge();
     await refreshRemoteAgent();
     window.setInterval(() => void tickRemoteAgent(), 4000);
     window.setInterval(() => void refreshRam(), 5000);
+    window.setInterval(() => void refreshNativeWorkerStatus(), 4000);
   } catch (error) {
     settingsStatus.textContent = String(error);
   }
