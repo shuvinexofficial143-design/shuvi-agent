@@ -948,7 +948,8 @@ test("Rust recovery alone blocks new tasks even when WebView storage was lost",a
  assert.equal(s.calls.filter(c=>c.name==="clear_native_recovery").length,1);
  const allowed=await s.transport.send("Open Premiere Pro","new-owner-task",0);
  assert.equal(allowed.ok,true);
- a
+ assert.equal(s.staged.length,1);
+});
 test("a Rust-only paused checkpoint requires owner acknowledgement even without an executing action",async()=>{
  const now=Date.now();
  const rustRecord={version:1,maxActions:8,stagedActions:1,modelRequests:1,
@@ -966,8 +967,6 @@ test("a Rust-only paused checkpoint requires owner acknowledgement even without 
  const allowed=await s.transport.send("Open Premiere Pro","after-paused-review",0);
  assert.equal(allowed.ok,true);
  assert.equal(s.chatInputs.length,1);
-});
-ssert.equal(s.staged.length,1);
 });
 test("Rust snapshot failure prevents a paid model request and any prepared Windows action",async()=>{
  const s=setup({rustFailPhase:"model_reserved"});
