@@ -122,6 +122,12 @@ pub(crate) fn read(app:&AppHandle)->Result<Option<NativeJob>,String>{
     let _lock=JOB_LOCK.lock().map_err(|_|"Native job lock poisoned.")?;
     read_at(&journal_path(app)?)
 }
+pub(crate) fn require_resolved(app:&AppHandle)->Result<(),String>{
+    if read(app)?.is_some_and(|job|job.phase!="audit_verified"){
+        return Err("An unfinished durable native worker job blocks all new desktop mutations until independent owner review.".into());
+    }
+    Ok(())
+}
 
 /// RAII host-supervisor heartbeat: the OS thread ticks the Rust process
 /// even if external Adobe is hung. On drop it does NOT mark success or free
