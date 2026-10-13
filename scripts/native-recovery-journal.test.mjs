@@ -197,7 +197,8 @@ test("native task writes task-bound checkpoint before paid request; any Rust wri
 test("revisioned WebView journal rejects stale duplicate and cross-task replacement",()=>{
  const store=makeStore();
  const taskId="14a40d18-4df8-4cb8-ab90-0137027f3a8b";
- const first={...value,version:2,taskId,revision:1};
+ const first={...value,version:2,taskId,revision:1,phase:"model_reserved",
+  modelRequests:1,stagedActions:0,actionId:null};
  assert.equal(writeNativeRecovery(store,first,1000),true);
  const snapshot=store.m.get(NATIVE_JOURNAL_KEY);
  assert.equal(writeNativeRecovery(store,first,1001),false);
@@ -209,16 +210,21 @@ test("revisioned WebView journal rejects stale duplicate and cross-task replacem
  assert.equal(writeNativeRecovery(store,{...first,revision:2,expiresAt:7200999},1001),false);
  assert.equal(writeNativeRecovery(store,value,1001),false,"v1 must not overwrite v2");
  assert.equal(store.m.get(NATIVE_JOURNAL_KEY),snapshot,"no rejected write may alter journal");
- const second={...first,revision:2,phase:"executing"};
+ const second={...first,revision:2,phase:"awaiting_approval",
+  stagedActions:1,actionId:"native_action-123"};
  assert.equal(writeNativeRecovery(store,second,1002),true);
  assert.equal(readNativeRecovery(store,1003).revision,2);
- assert.equal(writeNativeRecovery(store,{...first,revision:3,modelRequests:5,stagedActions:4,actionId:"next-action"},1004),true);
+ const executing={...second,revision:3,phase:"executing"};
+ assert.equal(writeNativeRecovery(store,executing,1004),true);
  assert.equal(readNativeRecovery(store,1005).revision,3);
+ const audited={...executing,revision:4,phase:"audit_verified"};
+ assert.equal(writeNativeRecovery(store,audited,1005),true);
 });
 
 test("recovery journal cannot resume revision chain after local evidence disappears",()=>{
  const taskId="14a40d18-4df8-4cb8-ab90-0137027f3a8b";
- const store=makeStore(),first={...value,version:2,taskId,revision:1};
+ const store=makeStore(),first={...value,version:2,taskId,revision:1,phase:"model_reserved",
+  modelRequests:1,stagedActions:0,actionId:null};
  assert.equal(writeNativeRecovery(store,first,1000),true);
  store.m.delete(NATIVE_JOURNAL_KEY);
  assert.equal(writeNativeRecovery(store,{...first,revision:2},1001),false);
@@ -231,7 +237,8 @@ test("recovery journal cannot resume revision chain after local evidence disappe
 test("local recovery rejects forged execution and audit revisions without modifying journal",()=>{
  const store=makeStore();
  const taskId="14a40d18-4df8-4cb8-ab90-0137027f3a8b";
- const first={...value,version:2,taskId,revision:1};
+ const first={...value,version:2,taskId,revision:1,phase:"model_reserved",
+  modelRequests:1,stagedActions:0,actionId:null};
  assert.equal(writeNativeRecovery(store,first,1000),true);
  const original=store.m.get(NATIVE_JOURNAL_KEY);
  assert.equal(writeNativeRecovery(store,{...first,revision:2,phase:"audit_verified"},1001),false);
@@ -239,9 +246,29 @@ test("local recovery rejects forged execution and audit revisions without modify
  assert.equal(writeNativeRecovery(store,{...first,revision:2,phase:"awaiting_approval"},1001),false);
  assert.equal(writeNativeRecovery(store,{...first,revision:2,phase:"model_reserved"},1001),false);
  assert.equal(store.m.get(NATIVE_JOURNAL_KEY),original);
- assert.equal(writeNativeRecovery(store,{...first,revision:2,phase:"executing"},1002),true);
+ const approved={...first,revision:2,phase:"awaiting_approval",
+  stagedActions:1,actionId:"native_action-123"};
+ assert.equal(writeNativeRecovery(store,approved,1002),true);
+ assert.equal(writeNativeRecovery(store,{...approved,revision:3,phase:"executing"},1003),true);
  const executing=store.m.get(NATIVE_JOURNAL_KEY);
- assert.equal(writeNativeRecovery(store,{...first,revision:3,phase:"executing"},1003),false);
+ assert.equal(writeNativeRecovery(store,{...approved,revision:4,phase:"executing"},1004),false);
+ assert.equal(writeNativeRecovery(store,{...approved,revision:4,phase:"paused"},1004),false);
+ assert.equal(writeNativeRecovery(store,{...approved,revision:4,phase:"model_reserved",modelRequests:2},1004),false);
  assert.equal(store.m.get(NATIVE_JOURNAL_KEY),executing);
- assert.equal(writeNativeRecovery(store,{...first,revision:3,phase:"audit_verified"},1003),true);
+ assert.equal(writeNativeRecovery(store,{...approved,revision:4,phase:"audit_verified"},1004),true);
+});
+
+test("revisioned v2 initial checkpoint must be a single reservation with no action",()=>{
+ const id="14a40d18-4df8-4cb8-ab90-0137027f3a8b";
+ const first={...value,version:2,taskId:id,revision:1,phase:"model_reserved",
+  modelRequests:1,stagedActions:0,actionId:null};
+ assert.equal(writeNativeRecovery(makeStore(),first,1000),true);
+ for(const patch of [
+  {phase:"executing"},{phase:"audit_verified"},{phase:"paused"},
+  {phase:"awaiting_approval"},{modelRequests:0},{modelRequests:2},
+  {stagedActions:1},{actionId:"fabricated-action"},{revision:2}
+ ]){
+  assert.equal(writeNativeRecovery(makeStore(),{...first,...patch},1000),false,
+   JSON.stringify(patch));
+ }
 });
