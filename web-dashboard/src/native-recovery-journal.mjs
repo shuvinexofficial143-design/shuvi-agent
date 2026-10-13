@@ -48,6 +48,16 @@ export function writeNativeRecovery(store,record,now=Date.now()){
     old.revision===undefined||old.revision+1!==safe.revision||
     old.maxActions!==safe.maxActions||old.expiresAt!==safe.expiresAt||
     safe.modelRequests<old.modelRequests||safe.stagedActions<old.stagedActions)return false;
+   // Mirror Rust's high-risk event ordering before touching localStorage.
+   if(safe.phase==="executing"&&
+    (old.phase!=="awaiting_approval"||safe.actionId!==old.actionId||
+     safe.stagedActions!==old.stagedActions))return false;
+   if(safe.phase==="audit_verified"&&
+    (old.phase!=="executing"||safe.actionId!==old.actionId||
+     safe.stagedActions!==old.stagedActions))return false;
+   if(safe.phase==="awaiting_approval"&&
+    (safe.stagedActions!==old.stagedActions+1||safe.actionId===old.actionId))return false;
+   if(safe.phase==="model_reserved"&&safe.modelRequests!==old.modelRequests+1)return false;
   }
  }else if(previous.kind==="valid"&&previous.record.version===2&&previous.record.revision!==undefined){
   // Older/unversioned writes must never downgrade new revisioned evidence.
