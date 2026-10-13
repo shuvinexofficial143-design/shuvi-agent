@@ -1,9 +1,12 @@
 export type AcceptedRemotionArtifact={kind:"accepted_remotion";acceptance_action_id:string;render_action_id:string;path:string;sha256:string};
 export type PremiereInsertionArtifact={kind:"premiere_insertion_plan";final_acceptance_action_id:string;path:string;sha256:string};
 export type BlenderArtifact={kind:"blender_artifact";producer_action_id:string;path:string;sha256:string;bytes:number};
-export type WorkerArtifact=BlenderArtifact|AcceptedRemotionArtifact|PremiereInsertionArtifact;
+export type WorkerBatchSource={source_step_id:string;producer_action_id:string;path:string;sha256:string};
+export type PremiereWorkerBatchArtifact={kind:"premiere_worker_batch";import_action_id:string;sources:WorkerBatchSource[]};
+export type WorkerArtifact=BlenderArtifact|AcceptedRemotionArtifact|PremiereInsertionArtifact|PremiereWorkerBatchArtifact;
 export function parseWorkerArtifact(tool:string,stdout:string,actionId:string):WorkerArtifact|null;
 export function validWorkerArtifact(value:unknown,tool:string,actionId:string|null):boolean;
 export function artifactHandoffFailure(graph:unknown,stepId:string,proposal?:unknown):string|null;
 export type WorkerImportIdentity={source:"remotion"|"blender";source_action_id:string;path:string;sha256:string};
 export function importArtifactIdentity(graph:unknown,stepId:string):WorkerImportIdentity|null;
+export function workerBatchSources(graph:unknown,stepId:string):WorkerBatchSource[]|null;
