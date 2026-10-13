@@ -829,3 +829,70 @@ test("Master progress refuses premature child completion even with a synthetic t
  assert.match(ctx,/verified completed IDs: inspect/);
  assert.doesNotMatch(ctx,/verified completed IDs: inspect,edit/);
 });
+
+test("real task graph will not stage Remotion-to-Premiere media before final acceptance and planning",()=>{
+ const invalid=plan([
+  step("render",[],"motion_graphics_run_remotion"),
+  step("insert",["render"],"premiere_insert_media")
+ ]);
+ let state=initial(invalid);
+ state=done(state,proposal("render","motion_graphics_run_remotion"));
+ assert.equal(graph.taskGraphProgress(state.task_graph).completed,1);
+ const candidate=proposal("insert","premiere_insert_media");
+ const denied=agent.evaluateProposal(state,candidate);
+ assert.equal(denied.allowed,false);
+ assert.match(denied.reason,/motion_graphics_accept_final_remotion/);
+ assert.equal(graph.nextWorkerTurn(state.task_graph),null);
+ const fake=json(state.task_graph);
+ fake.steps[1].status="completed";
+ fake.steps[1].evidence=[{
+  step_id:"insert",tool:"premiere_insert_media",fingerprint:"fabricated",
+  action_id:actionIdFor(2),audit_event:"executed",success:true,outcome:"success",
+  source:"typed_result",orchestration_step:2,summary:"Fake completion"
+ }];
+ assert.equal(graph.taskGraphProgress(fake).completed,1);
+ const restored=graph.restoreTaskGraph(fake,3);
+ assert.equal(restored.ok,false);
+ assert.match(restored.error,/cross-app artifact acceptance/);
+});
+
+test("Remotion accepted-final -> Premiere insertion plan -> native import survives checkpoint recovery",()=>{
+ const valid=plan([
+  step("render",[],"motion_graphics_run_remotion"),
+  step("accept",["render"],"motion_graphics_accept_final_remotion"),
+  step("insertion_plan",["accept"],"motion_graphics_plan_premiere_insertion"),
+  step("import",["insertion_plan"],"premiere_insert_media"),
+  step("review",["import"],"premiere_timeline")
+ ]);
+ let state=initial(valid);
+ assert.equal(graph.nextWorkerTurn(state.task_graph).step_id,"render");
+ state=done(state,proposal("render","motion_graphics_run_remotion"));
+ assert.equal(agent.evaluateProposal(state,proposal("import","premiere_insert_media")).allowed,false);
+ assert.equal(graph.nextWorkerTurn(state.task_graph).step_id,"accept");
+ state=done(state,proposal("accept","motion_graphics_accept_final_remotion"));
+ assert.equal(graph.nextWorkerTurn(state.task_graph).step_id,"insertion_plan");
+ state=done(state,proposal("insertion_plan","motion_graphics_plan_premiere_insertion"));
+ assert.equal(graph.nextWorkerTurn(state.task_graph).step_id,"import");
+ assert.equal(agent.evaluateProposal(state,proposal("import","premiere_insert_media")).allowed,true);
+ const saved=json(state);
+ const resumed=agent.normalizeAgentOrchestrationState(saved);
+ assert.equal(resumed.recovery_mode,"normal");
+ assert.equal(graph.taskGraphProgress(resumed.task_graph).completed,3);
+ assert.equal(graph.nextWorkerTurn(resumed.task_graph).step_id,"import");
+ state=done(resumed,proposal("import","premiere_insert_media"));
+ assert.equal(graph.nextWorkerTurn(state.task_graph).step_id,"review");
+ state=done(state,proposal("review","premiere_timeline"));
+ assert.equal(graph.taskGraphProgress(state.task_graph).completed,5);
+ assert.equal(graph.nextWorkerTurn(state.task_graph),null);
+});
+
+test("Premiere insertion for unrelated independently inspected assets remains available",()=>{
+ const g=plan([
+  step("context",[],"premiere_context"),
+  step("insert",["context"],"premiere_insert_media")
+ ]);
+ let state=initial(g);
+ state=done(state,proposal("context","premiere_context"));
+ assert.equal(agent.evaluateProposal(state,proposal("insert","premiere_insert_media")).allowed,true);
+ assert.equal(graph.nextWorkerTurn(state.task_graph).step_id,"insert");
+});
