@@ -1073,3 +1073,26 @@ test("acted-on or uncertain tasks never qualify for no-action rollover",async()=
  assert.equal(s.calls.filter(c=>c.name==="clear_native_recovery").length,0);
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
 });
+
+test("owner acknowledgement revokes old native task identity even when reusing the same chat thread",async()=>{
+ const s=setup({first:detection,second:launch,auditOk:false});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Open Premiere Pro","same-owner-thread",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.recoveryDismiss.hidden===false&&s.allow.disabled===false,"outcome unknown");
+ const old=s.calls.filter(c=>c.name==="save_native_recovery").map(c=>c.params.record);
+ const oldId=old[0].taskId;
+ assert.equal(old.at(-1).phase,"outcome_unknown");
+ await s.recoveryDismiss.listeners.get("click")();
+ assert.equal(s.calls.filter(c=>c.name==="clear_native_recovery").length,1);
+ const fresh=await s.transport.send("Open Photoshop","same-owner-thread",1);
+ assert.equal(fresh.ok,true);
+ assert.equal(s.chatInputs.length,2);
+ const all=s.calls.filter(c=>c.name==="save_native_recovery").map(c=>c.params.record);
+ const newReservation=all.find((r,i)=>i>=old.length&&r.phase==="model_reserved");
+ assert.ok(newReservation,"new owner command has an independent reservation");
+ assert.notEqual(newReservation.taskId,oldId);
+ assert.equal(newReservation.revision,1);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1,
+  "acknowledging a task never automatically executes a new action");
+});
