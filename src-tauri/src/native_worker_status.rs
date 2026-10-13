@@ -44,7 +44,18 @@ pub(crate) fn snapshot(
             } else { None }
         })
     } else {None};
-    let state=if !lease&&(!running.is_empty()||!started.is_empty()){
+    // An unresolved durable journal must belong to the EXACT currently
+    // leased action. A later action with a different UUID cannot conceal an
+    // uncertain outcome left by an earlier crashed task.
+    let journal_unresolved=match phase.as_deref(){
+        Some("outcome_unknown")=>true,
+        Some("executing")=>!lease||attribution.as_ref().is_none_or(|active|
+            recovery.and_then(|r|r.action_id.as_deref())!=Some(active.0.as_str())),
+        _=>false
+    };
+    let state=if journal_unresolved{
+        "recovery_required"
+    }else if !lease&&(!running.is_empty()||!started.is_empty()){
         "recovery_required"
     }else if running.len()>1||started.len()>1
         ||(lease&&!running.is_empty()&&attribution.is_none()){
@@ -112,6 +123,18 @@ mod tests{
         assert_eq!(status.state,"recovery_required");
         assert!(status.requires_owner_review);
         assert!(status.action_id.is_none());
+    }
+    #[test]
+    fn a_different_live_action_never_clears_a_crashed_task_journal(){
+        let (tools,starts)=running();
+        let mut old=recovery("executing");
+        old.action_id=Some("123e4567-e89b-42d3-a456-426614174009".into());
+        let unmatched=snapshot(true,&tools,&starts,Some(&old),6_000);
+        assert_eq!(unmatched.state,"recovery_required");
+        assert!(unmatched.requires_owner_review);
+        let unknown=snapshot(true,&tools,&starts,Some(&recovery("outcome_unknown")),6_000);
+        assert_eq!(unknown.state,"recovery_required");
+        assert!(!unknown.safe_to_auto_retry);
     }
     #[test]
     fn unowned_action_map_and_duplicate_actions_are_quarantined(){
