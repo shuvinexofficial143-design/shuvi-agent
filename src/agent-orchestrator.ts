@@ -5,6 +5,7 @@ import {
   type TaskGraph, type GraphAuditEvent
 } from "./task-graph.mjs";
 import { allowedTaskBudget, taskDeadline, taskDeadlineAllows, MAX_RUNTIME_ACTIONS } from "./task-runtime-budget.mjs";
+import {workerSupervisorView} from "./master-worker-queue.mjs";
 
 
 export const MAX_AGENT_STEPS = 8;
@@ -951,12 +952,16 @@ export function codingPhase(state: AgentOrchestrationState): CodingPhase {
 
 export function orchestrationContext(state: AgentOrchestrationState): string {
   const verifiedProgress=taskGraphProgress(state.task_graph);
+  const supervisor=workerSupervisorView(state.task_graph);
   const unfinishedIds=new Set(verifiedProgress.steps.filter(s=>!s.evidence_verified).map(s=>s.step_id));
   const parts = [
     "Agent orchestration state:",
     `- owner objective: ${state.objective ?? state.task_graph?.objective ?? "unresolved"}`,
     ...(state.task_graph ? [
       `- graph revision ${state.task_graph.revision}; verified completed IDs: ${verifiedProgress.steps.filter(s=>s.evidence_verified).map(s=>s.step_id).join(",") || "none"}`,
+      `- native worker lease: ${supervisor.state}`+
+        (supervisor.step_id?`; active step=${supervisor.step_id}, worker=${supervisor.worker}; this single Rust-owned action blocks all other worker dispatches.`:"")+
+        (supervisor.quarantined?`; QUARANTINED: ${supervisor.reason} Only an independent recovery inspection is permitted; never retry uncertain writes.`:""),
       (() => {
         const next=nextWorkerTurn(state.task_graph);
         return next
