@@ -36,3 +36,40 @@ export function clearNativeRecovery(store){
 export function validateNativeRecoveryRecord(record,now=Date.now()){
  return normalize(record,now);
 }
+
+
+// Do not erase the distinction between an empty journal and one that exists
+// but cannot be decoded. On startup, silently treating corruption as "none"
+// would permit a new Windows task to overwrite unresolved execution evidence.
+export function inspectNativeRecoveryStore(store,now=Date.now()){
+ if(!store)return {kind:"unavailable",record:null};
+ try{
+  const raw=store.getItem(NATIVE_JOURNAL_KEY);
+  if(raw===null)return {kind:"empty",record:null};
+  if(raw.length>1800)return {kind:"invalid",record:null};
+  const record=normalize(JSON.parse(raw),now);
+  return record?{kind:"valid",record}:{kind:"invalid",record:null};
+ }catch{return {kind:"invalid",record:null};}
+}
+
+// Both stores are independent inspection evidence; neither restores task
+// authority. Any old record needs owner acknowledgement, including "paused"
+// and "audit_verified": an audited action is not a completed user objective.
+// Compare action/counters/phase but not updatedAt; the Rust fsync timestamp
+// legitimately differs from the WebView timestamp for the same checkpoint.
+export function assessNativeRecoveryPair(webview,rust,now=Date.now()){
+ const decision=(reason)=>({requiresReview:reason!=="no_previous_task",reason});
+ if(!webview||webview.kind==="invalid"||webview.kind==="unavailable")
+  return decision("invalid_webview");
+ if(webview.kind==="empty")
+  return decision(rust===null?"no_previous_task":"missing_webview");
+ if(webview.kind!=="valid")return decision("invalid_webview");
+ const local=normalize(webview.record,now);
+ if(!local)return decision("invalid_webview");
+ if(rust===null)return decision("missing_rust");
+ const native=normalize(rust,now);
+ if(!native)return decision("invalid_rust");
+ const fields=["version","maxActions","stagedActions","modelRequests","expiresAt","phase","actionId"];
+ if(fields.some(field=>local[field]!==native[field]))return decision("mismatched_stores");
+ return decision("matched_previous_task");
+}
