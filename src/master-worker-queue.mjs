@@ -50,7 +50,9 @@ export function evidenceForStep(step){
 const STATUSES=new Set(["ready","pending","running","completed","failed","blocked","skipped"]);
 export function workerQueueView(graph){
   const empty=()=>({total:0,verified:0,running:0,ready:0,blocked:0,jobs:[],ready_job_ids:[]});
-  if(!graph||!Array.isArray(graph.steps)||graph.steps.length>8)return empty();
+  // Task Graph allows owner-approved 8/24/48 action budgets. Silently
+  // dropping jobs 9..48 must never bypass the worker handoff gate.
+  if(!graph||!Array.isArray(graph.steps)||graph.steps.length<1||graph.steps.length>48)return empty();
   if(graph.steps.some(s=>!s||typeof s.step_id!=="string"||typeof s.expected_tool!=="string"
       ||!Array.isArray(s.depends_on)||!Array.isArray(s.evidence)))return empty();
   const ids=new Set(graph.steps.map(s=>s.step_id));
