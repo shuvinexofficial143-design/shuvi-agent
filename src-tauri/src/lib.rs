@@ -1081,6 +1081,21 @@ struct ActionState {
     assembly_cancelled: AtomicBool,
 }
 
+/// Claim both OS/user-session exclusion and a clean local action record.
+/// An interrupted mutation leaves a stale identity; never assume an OS
+/// handle closing means the prior application side-effect did not occur.
+fn claim_monitored_native_execution(
+    state:&ActionState
+)->Result<execution_lease::NativeExecutionLease<'_>,String>{
+    let lease=execution_lease::claim_single_execution(&state.native_execution_owned)?;
+    let running=state.running_action_tools.lock()
+        .map_err(|_|"Running action identities are unavailable; owner review required.".to_string())?;
+    let started=state.running_action_started_at_ms.lock()
+        .map_err(|_|"Running action start records are unavailable; owner review required.".to_string())?;
+    native_worker_status::require_clear_for_new_dispatch(&running,&started)?;
+    Ok(lease)
+}
+
 struct AcceptanceProbeGuard<'a>(&'a AtomicBool);
 impl Drop for AcceptanceProbeGuard<'_> {
     fn drop(&mut self) {self.0.store(false,Ordering::Release);}
@@ -18857,7 +18872,7 @@ async fn execute_action(
     ensure_memory_budget(state.inner())?;
     // Serialize native typed-tool execution. A plan's browser-only worker
     // count is not an execution lock; the Rust guard is the authority.
-    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
+    let _native_slot=claim_monitored_native_execution(state.inner())?;
 
     let (action, expired_action) = {
         let mut pending = state
@@ -19012,7 +19027,7 @@ fn set_workspace(
 ) -> Result<(), String> {
     // A09: switching the active project during a native edit can retarget
     // subsequent actions in that workflow. Share the desktop execution lease.
-    let _native_slot = execution_lease::claim_single_execution(&state.native_execution_owned)?;
+    let _native_slot = claim_monitored_native_execution(state.inner())?;
     write_workspace(&app, path.trim())
 }
 
@@ -19044,7 +19059,7 @@ fn photoshop_bridge_start(
     state: State<'_, ActionState>,
 ) -> Result<PhotoshopBridgeStatus,String> {
     // A09: a bridge lifecycle change cannot race a native editing action.
-    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
+    let _native_slot=claim_monitored_native_execution(state.inner())?;
     state.photoshop_bridge.start()
 }
 
@@ -19060,7 +19075,7 @@ fn photoshop_bridge_stop(
     state: State<'_, ActionState>,
 ) -> Result<PhotoshopBridgeStatus,String> {
     // A09: a bridge lifecycle change cannot race a native editing action.
-    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
+    let _native_slot=claim_monitored_native_execution(state.inner())?;
     state.photoshop_bridge.stop()
 }
 
@@ -19069,7 +19084,7 @@ fn illustrator_bridge_start(
     state: State<'_, ActionState>,
 ) -> Result<IllustratorBridgeStatus, String> {
     // A09: a bridge lifecycle change cannot race a native editing action.
-    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
+    let _native_slot=claim_monitored_native_execution(state.inner())?;
     state.illustrator_bridge.start()
 }
 
@@ -19085,7 +19100,7 @@ fn illustrator_bridge_stop(
     state: State<'_, ActionState>,
 ) -> Result<IllustratorBridgeStatus, String> {
     // A09: a bridge lifecycle change cannot race a native editing action.
-    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
+    let _native_slot=claim_monitored_native_execution(state.inner())?;
     state.illustrator_bridge.stop()
 }
 
@@ -19094,7 +19109,7 @@ fn animate_bridge_start(
     state: State<'_, ActionState>,
 ) -> Result<AnimateBridgeStatus, String> {
     // A09: a bridge lifecycle change cannot race a native editing action.
-    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
+    let _native_slot=claim_monitored_native_execution(state.inner())?;
     state.animate_bridge.start()
 }
 
@@ -19110,7 +19125,7 @@ fn animate_bridge_stop(
     state: State<'_, ActionState>,
 ) -> Result<AnimateBridgeStatus, String> {
     // A09: a bridge lifecycle change cannot race a native editing action.
-    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
+    let _native_slot=claim_monitored_native_execution(state.inner())?;
     state.animate_bridge.stop()
 }
 
@@ -19119,7 +19134,7 @@ fn audition_bridge_start(
     state: State<'_, ActionState>,
 ) -> Result<AuditionBridgeStatus, String> {
     // A09: a bridge lifecycle change cannot race a native editing action.
-    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
+    let _native_slot=claim_monitored_native_execution(state.inner())?;
     state.audition_bridge.start()
 }
 
@@ -19135,7 +19150,7 @@ fn audition_bridge_stop(
     state: State<'_, ActionState>,
 ) -> Result<AuditionBridgeStatus, String> {
     // A09: a bridge lifecycle change cannot race a native editing action.
-    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
+    let _native_slot=claim_monitored_native_execution(state.inner())?;
     state.audition_bridge.stop()
 }
 
@@ -19144,7 +19159,7 @@ fn premiere_bridge_start(
     state: State<'_, ActionState>,
 ) -> Result<PremiereBridgeStatus, String> {
     // A09: a bridge lifecycle change cannot race a native editing action.
-    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
+    let _native_slot=claim_monitored_native_execution(state.inner())?;
     state.premiere_bridge.start()
 }
 
@@ -19160,7 +19175,7 @@ fn premiere_bridge_stop(
     state: State<'_, ActionState>,
 ) -> Result<PremiereBridgeStatus, String> {
     // A09: a bridge lifecycle change cannot race a native editing action.
-    let _native_slot=execution_lease::claim_single_execution(&state.native_execution_owned)?;
+    let _native_slot=claim_monitored_native_execution(state.inner())?;
     state.premiere_bridge.stop()
 }
 
