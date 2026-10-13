@@ -38,7 +38,7 @@ const launch={
  provider:"xkiro",model:"model/master",
  tool_proposal:{tool:"premiere_launch",arguments:{}}
 };
-function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null,wrongStageIndex=0,continuationRenderError=false,reusePendingId=false,recoveryStore=null,recoveryReceipt=null,recoveryTrail=null,rustRecord=null,rustFailPhase=null}={}){
+function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null,wrongStageIndex=0,continuationRenderError=false,reusePendingId=false,recoveryStore=null,recoveryReceipt=null,recoveryTrail=null,rustRecord=null,rustFailPhase=null,rustClearFail=false}={}){
  const nodes=new Map(),created=[],calls=[],chatInputs=[],staged=[];
  const domParent=el(),composerParent=el(),form=el(),chat=el();
  form.parentElement=composerParent;chat.parentElement=domParent;
@@ -54,7 +54,7 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
   if(name==="runtime_status")return {shuvi_memory_mb:40,managed_children_count:0};
   if(name==="save_native_recovery"){if(params.record?.phase===rustFailPhase)throw Error("Rust snapshot rejected");return;}
   if(name==="load_native_recovery")return rustRecord;
-  if(name==="clear_native_recovery")return;
+  if(name==="clear_native_recovery"){if(rustClearFail)throw Error("simulated native recovery clear failure");return;}
   if(name==="list_providers")return [{id:"xkiro",name:"xKiro"}];
   if(name==="remote_agent_status")return {enabled:false};
   if(name==="chat"){
@@ -1019,4 +1019,57 @@ test("failed Rust recovery save cannot be followed by a second Windows paid requ
  assert.equal(s.chatInputs.length,0);
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
  assert.equal(s.recoveryDismiss.hidden,false);
+});
+
+test("same-session successful no-action Master answer can retire only both journals on a fresh owner command",async()=>{
+ const noTool={content:"Completed clarification without Windows tool",provider:"xkiro",model:"model/master",tool_proposal:null};
+ const s=setup({first:noTool,second:launch});
+ await until(()=>s.transport.connected(),"native ready");
+ const first=await s.transport.send("Open Adobe app?","first-action-free",0);
+ assert.equal(first.ok,true);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
+ const next=await s.transport.send("Open Premiere Pro","new-goal-after-safe-pause",0);
+ assert.equal(next.ok,true);
+ assert.equal(s.calls.filter(c=>c.name==="clear_native_recovery").length,1);
+ assert.equal(s.chatInputs.length,2);
+ assert.equal(s.staged.length,1);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
+ const records=s.calls.filter(c=>c.name==="save_native_recovery").map(c=>c.params.record);
+ assert.equal(records[0].revision,1);
+ assert.equal(records[1].phase,"paused");
+ assert.equal(records[1].revision,2);
+ const newest=records.at(-1);
+ assert.equal(newest.revision,2,"new task has a fresh revision sequence");
+ assert.notEqual(newest.taskId,records[0].taskId,"unrelated fresh task must never inherit old UUID");
+});
+
+test("failure to retire no-action checkpoint blocks any later paid or native dispatch",async()=>{
+ const noTool={content:"No tool action necessary",provider:"xkiro",model:"model/master",tool_proposal:null};
+ const s=setup({first:noTool,second:launch,rustClearFail:true});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Inspect possible app","no-action-terminal",0);
+ const blocked=await s.transport.send("Launch Premiere Pro","new-task-blocked-by-disk",0);
+ assert.equal(blocked.ok,false);
+ assert.match(blocked.error,/could not be retired/);
+ assert.equal(s.chatInputs.length,1);
+ assert.equal(s.staged.length,0);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
+ const stillBlocked=await s.transport.send("Try another new task","new-task-blocked-again",0);
+ assert.equal(stillBlocked.ok,false);
+ assert.match(stillBlocked.error,/previous Windows task/);
+});
+
+test("acted-on or uncertain tasks never qualify for no-action rollover",async()=>{
+ const noTool={content:"Cannot prove original goal complete",provider:"xkiro",model:"model/master",tool_proposal:null};
+ const s=setup({first:detection,second:noTool});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Open Premiere Pro","acted-task",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.approval.hidden===true&&s.allow.disabled===false,"audited task finished");
+ const prior=s.chatInputs.length;
+ const blocked=await s.transport.send("Open Photoshop instead","new-after-acted",0);
+ assert.equal(blocked.ok,false);
+ assert.equal(s.chatInputs.length,prior,"old Windows task cannot be silently erased");
+ assert.equal(s.calls.filter(c=>c.name==="clear_native_recovery").length,0);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
 });
