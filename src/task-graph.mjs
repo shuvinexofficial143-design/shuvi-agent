@@ -219,14 +219,18 @@ export function finishTaskStep(
     && auditReceipt.success === result.success
     && typeof result.stdout === "string" && typeof result.stderr === "string"
     && (result.exit_code === null || Number.isInteger(result.exit_code));
+  // Defense in depth: even a forged/stale running receipt cannot complete
+  // Premiere import by skipping final Remotion acceptance and insertion plan.
+  const handoffSafe=!handoffContractFailure(graph,target.step_id);
   const success = outcome === "success" && typed && result.success === true
-    && (proposal.tool !== "run_project_task" || result.exit_code === 0);
+    && handoffSafe && (proposal.tool !== "run_project_task" || result.exit_code === 0);
   const evidence = { step_id: target.step_id, tool: proposal.tool, fingerprint,
     action_id: actionId(preparedActionId) ? preparedActionId : null,
     audit_event: auditBound ? auditReceipt.event : null,
     success, outcome: success ? "success" : outcome === "success" ? "failure" : outcome,
     source: typed ? "typed_result" : "local_failure", orchestration_step: stepNumber,
     summary: success ? "Typed tool and Rust audit receipt matched the exact prepared action." :
+      !handoffSafe ? "Cross-app action cannot complete without accepted final render and Premiere insertion-plan receipts." :
       "Action lacked matching typed result and Rust audit evidence for the bound prepared action." };
   return refreshTaskGraph({ ...graph, steps: graph.steps.map(s => s !== target ? s :
     { ...s, status: success ? "completed" : "failed", running: null, blocked_reason: null,
