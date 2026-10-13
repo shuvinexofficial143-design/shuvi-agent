@@ -29,7 +29,7 @@ import {
 
 import { taskGraphProgress, type GraphAuditEvent } from "./task-graph.mjs";
 import { editingMasterContext, orchestrationWithMasterEditor } from "./master-editor.mjs";
-import { workerQueueView } from "./master-worker-queue.mjs";
+import { workerQueueView, nextWorkerTurn } from "./master-worker-queue.mjs";
 import { MODEL_ROLES, loadModelRoutes, validateModelRoute, selectTaskRoute } from "./model-routing.mjs";
 import type { ModelRoute, TaskModelRoute } from "./model-routing.mjs";
 import { chooseNativeRoute } from "../web-dashboard/src/native-model-routing.mjs";
@@ -588,6 +588,7 @@ function renderOrchestrationStatus(): void {
   const progress = el<HTMLElement>("#agentProgress");
   const graphProgress = taskGraphProgress(orchestration.task_graph);
   const workerQueue = workerQueueView(orchestration.task_graph);
+  const nextTurn = nextWorkerTurn(orchestration.task_graph);
   const graphView = el<HTMLElement>("#taskProgress");
   graphView.classList.toggle("hidden", !graphProgress.total);
   const list = el<HTMLElement>("#taskProgressSteps");
@@ -605,10 +606,13 @@ function renderOrchestrationStatus(): void {
         : "";
       const worker = laneById.get(step.step_id);
       row.textContent = `${symbols[step.status]} [${worker?.worker ?? "master"}] ${step.title} (${worker?.status ?? step.status}${verified})${reason}`;
-      row.title = step.reason ?? (step.evidence_verified ? "Completion backed by local typed-tool evidence." : step.status);
+      const exactHandoff = worker?.handoffs.map(h => h.from_worker+" → "+h.to_worker+
+        " · step "+h.from_step_id+" · Rust action "+h.action_id.slice(0,8)).join("; ");
+      row.title = step.reason ?? (exactHandoff || (step.evidence_verified
+        ? "Exact typed-result and native audit receipt verified." : step.status));
       list.append(row);
     }
-    progress.textContent = `Task: ${orchestration.task_graph.objective} · ${workerQueue.verified}/${workerQueue.total} audited worker actions · ${workerQueue.ready} ready · ${workerQueue.running} running · ${workerQueue.blocked} blocked · Current: ${graphProgress.current ?? "none"} · Phase: ${orchestration.coding.active ? codingPhase(orchestration) : "general"} · State: ${orchestration.recovery_mode}`;
+    progress.textContent = `Task: ${orchestration.task_graph.objective} · ${workerQueue.verified}/${workerQueue.total} audited worker actions · ${workerQueue.ready} ready · ${workerQueue.running} running · ${workerQueue.blocked} blocked · Next: ${nextTurn ? nextTurn.worker+" / "+nextTurn.step_id+" (approval needed)" : "awaiting safe handoff"} · Current: ${graphProgress.current ?? "none"} · Phase: ${orchestration.coding.active ? codingPhase(orchestration) : "general"} · State: ${orchestration.recovery_mode}`;
     return;
   }
   if (!orchestration.objective && orchestration.tool_actions === 0 && orchestration.next_step === 1) {
