@@ -950,20 +950,22 @@ export function codingPhase(state: AgentOrchestrationState): CodingPhase {
 }
 
 export function orchestrationContext(state: AgentOrchestrationState): string {
+  const verifiedProgress=taskGraphProgress(state.task_graph);
+  const unfinishedIds=new Set(verifiedProgress.steps.filter(s=>!s.evidence_verified).map(s=>s.step_id));
   const parts = [
     "Agent orchestration state:",
     `- owner objective: ${state.objective ?? state.task_graph?.objective ?? "unresolved"}`,
     ...(state.task_graph ? [
-      `- graph revision ${state.task_graph.revision}; verified completed IDs: ${taskGraphProgress(state.task_graph).steps.filter(s=>s.evidence_verified).map(s=>s.step_id).join(",") || "none"}`,
+      `- graph revision ${state.task_graph.revision}; verified completed IDs: ${verifiedProgress.steps.filter(s=>s.evidence_verified).map(s=>s.step_id).join(",") || "none"}`,
       (() => {
         const next=nextWorkerTurn(state.task_graph);
         return next
           ? `- next audited-safe worker handoff: step ${next.step_id}, worker=${next.worker}, exact tool=${next.tool}; ${next.handoffs.length} verified predecessor receipt(s). This is ONLY planning guidance; use the normal typed prepare/Allow once/audit flow.`
           : "- no worker step is dispatch-ready. Inspect unresolved dependencies or replan; never claim a worker action ran.";
       })(),
-      ...state.task_graph.steps.filter(s=>s.status!=="completed").slice(0,10).map(s =>
+      ...state.task_graph.steps.filter(s=>unfinishedIds.has(s.step_id)).slice(0,10).map(s =>
         `- ${s.step_id}: ${s.status}; tool=${s.expected_tool}; needs=${s.depends_on.join(",") || "none"}`),
-      `- unfinished steps: ${state.task_graph.steps.filter(s=>s.status!=="completed").length}. Append steps by increasing graph revision, retain all attempted-step IDs and evidence, and respect the ${state.max_steps}-action owner budget.`,
+      `- unfinished steps: ${unfinishedIds.size}. Append steps by increasing graph revision, retain all attempted-step IDs and evidence, and respect the ${state.max_steps}-action owner budget.`,
       "- Use task_step_id. For recovery use task_recovery:true with an unassociated inspection; then submit next graph revision with recover_steps.",
     ] : []),
     `- next step: ${state.next_step}/${state.max_steps}`,
