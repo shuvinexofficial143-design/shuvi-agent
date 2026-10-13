@@ -145,3 +145,51 @@ test("native transport gates new Windows tasks on reconciled recovery and preser
  assert.match(src,/await invoke<void>\("clear_native_recovery"\)/);
  assert.match(src,/if\(!clearNativeRecovery\(recoveryStorage\)\)/);
 });
+
+test("task-bound v2 checkpoints preserve identity and reject unbound or forged versions",()=>{
+ const store=makeStore();
+ const taskId="14a40d18-4df8-4cb8-ab90-0137027f3a8b";
+ const v2={...value,version:2,taskId};
+ assert.equal(writeNativeRecovery(store,v2,1000),true);
+ assert.deepEqual(readNativeRecovery(store,1001),{...v2,updatedAt:1000});
+ for(const patch of [{taskId:undefined},{taskId:"bad"},{taskId:"14a40d18-4df8-4cb8-ab90-0137027f3a8B"},
+  {taskId:"00000000-0000-0000-0000-000000000000"},{version:1}]){
+  const candidate={...v2,...patch};
+  assert.equal(writeNativeRecovery(makeStore(),candidate,1000),false,JSON.stringify(patch));
+ }
+});
+
+test("equal phase and counters from different tasks cannot be reconciled as one",()=>{
+ const store=makeStore();
+ const original={...value,version:2,taskId:"14a40d18-4df8-4cb8-ab90-0137027f3a8b"};
+ const other={...original,taskId:"7811c24d-d01a-4b04-96ae-0d4ef664ca93"};
+ assert.equal(writeNativeRecovery(store,original,1000),true);
+ const local=inspectNativeRecoveryStore(store,1001);
+ assert.equal(local.kind,"valid");
+ assert.deepEqual(assessNativeRecoveryPair(local,{...other,updatedAt:1005},1006),
+  {requiresReview:true,reason:"mismatched_stores"});
+ assert.deepEqual(assessNativeRecoveryPair(local,{...original,updatedAt:1005},1006),
+  {requiresReview:true,reason:"matched_previous_task"});
+});
+
+test("historical v1 recovery remains readable only as evidence, not rewritten into v2",()=>{
+ const store=makeStore();
+ assert.equal(writeNativeRecovery(store,value,1000),true);
+ const local=inspectNativeRecoveryStore(store,1001);
+ assert.equal(local.kind,"valid");
+ assert.equal(local.record.version,1);
+ assert.equal("taskId" in local.record,false);
+ assert.deepEqual(assessNativeRecoveryPair(local,{...local.record,updatedAt:1005},1006),
+  {requiresReview:true,reason:"matched_previous_task"});
+ assert.deepEqual(assessNativeRecoveryPair(local,{version:2,taskId:"14a40d18-4df8-4cb8-ab90-0137027f3a8b",...local.record},1006),
+  {requiresReview:true,reason:"matched_previous_task"});
+});
+
+test("native task writes task-bound checkpoint before paid request; any Rust write error latches admission",()=>{
+ const native=readFileSync(new URL("../web-dashboard/src/native-agent.ts",import.meta.url),"utf8");
+ assert.match(native,/const taskRecoveryIds=new WeakMap<NativeTaskBudget,string>\(\)/);
+ assert.match(native,/const id=globalThis\.crypto\?\.randomUUID\?\.\(\)/);
+ assert.match(native,/version:2,taskId,maxActions:b\.maxActions/);
+ assert.match(native,/recoveryAcknowledged=false;[\s\S]*?if\(!writeRecovery\(b,phase,actionId\)\)return failClosed\(\)/);
+ assert.match(native,/if\(!record\|\|record\.version!==2\)return failClosed\(\)/);
+});
