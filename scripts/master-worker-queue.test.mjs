@@ -64,6 +64,8 @@ test("Native Shuvi UI shows audit-backed worker progress, not fake cloud runtime
   assert.match(ui,/workerQueue\.verified/);
   assert.match(ui,/worker\?\.worker/);
   assert.match(ui,/renderOrchestrationStatus\(\)/);
+  assert.match(ui,/handoffContractFailure\(orchestration\.task_graph,step\.step_id\)/);
+  assert.match(ui,/handoffWarning/);
 });
 
 test("task graph rejects falsely completed predecessor without audit-bound UUID",()=>{
@@ -192,6 +194,9 @@ test("render alone cannot authorize a Premiere import without final acceptance",
  const g={steps:[render,insert]};
  assert.match(handoffContractFailure(g,"insert"),/motion_graphics_accept_final_remotion/);
  assert.deepEqual(workerQueueView(g).ready_job_ids,[]);
+ assert.equal(workerQueueView(g).jobs[1].status,"blocked",
+  "dashboard must not advertise the incomplete media handoff as ready");
+ assert.equal(workerQueueView(g).blocked,1);
  assert.match(graphDependencyFailure(g,{tool:"premiere_insert_media",task_step_id:"insert"}),
   /motion_graphics_accept_final_remotion/);
  const accept=step("accept","motion_graphics_accept_final_remotion","completed",["render"],
