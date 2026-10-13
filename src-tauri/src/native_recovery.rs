@@ -251,7 +251,7 @@ mod tests{
         assert!(validate_advance(Some(&executed),&NativeRecoveryRecord{
             revision:Some(2),staged_actions:1,..read}).is_err());
         assert!(validate_advance(Some(&executed),&NativeRecoveryRecord{
-            revision:Some(2),phase:"model_reserved".into(),..executed}).is_err());
+            revision:Some(2),phase:"model_reserved".into(),..executed.clone()}).is_err());
     }
     #[test]
     fn refuses_overwriting_orphaned_or_stale_checkpoint_on_disk(){
