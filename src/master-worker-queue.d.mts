@@ -1,7 +1,8 @@
 export type WorkerLane = "premiere" | "after_effects" | "remotion" | "browser" | "windows" | "coding" | "adobe" | "master" | "blender" | "unsupported";
-export type WorkerJob = {id:string;worker:WorkerLane;resource:string;tool:string;status:string;verified:boolean;action_id:string|null;depends_on:string[];title:string};
+export type WorkerHandoff = {from_step_id:string;to_step_id:string;from_worker:WorkerLane;to_worker:WorkerLane;action_id:string;orchestration_step:number};
+export type WorkerJob = {id:string;worker:WorkerLane;resource:string;tool:string;status:string;verified:boolean;action_id:string|null;depends_on:string[];handoffs:WorkerHandoff[];title:string};
 export type WorkerQueueView = {total:number;verified:number;running:number;ready:number;blocked:number;jobs:WorkerJob[];ready_job_ids?:string[]};
 export function workerForTool(tool:unknown):WorkerLane;
-export function evidenceForStep(step:unknown):{action_id:string;tool:string}|null;
+export function evidenceForStep(step:unknown):{action_id:string;tool:string;orchestration_step:number}|null;
 export function workerQueueView(graph:unknown):WorkerQueueView;
 export function workerQueueSummary(graph:unknown):string;
