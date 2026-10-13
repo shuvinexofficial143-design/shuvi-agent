@@ -59,3 +59,19 @@ test("Batch 63 awaiting clarification is not counted as task completion",()=>{
  assert.match(taskSummary(waiting),/awaiting_clarification/);
  assert.match(taskSummary(waiting),/Overall task unverified/);
 });
+
+test("native Master shows the same specialist lane as legacy worker graph without granting permission",()=>{
+ const staged=stageTask(createTask(),"native-1","blender_run_plan",1);
+ assert.match(taskSummary(staged),/Worker lane: blender/);
+ assert.equal(staged.verified,0);
+ assert.strictEqual(verifyTask(staged,"native-1","blender_run_plan",true),staged);
+ const verified=verifyTask(executeTask(staged,"native-1"),"native-1","blender_run_plan",true);
+ assert.match(taskContext(verified),/Verified worker lanes: blender/);
+ assert.equal(verified.usedActionIds[0],"native-1");
+ assert.strictEqual(stageTask(verified,"native-1","premiere_insert_media",2),verified,
+  "an audited native action ID must not become a different worker's new approval");
+ const next=stageTask(verified,"native-2","premiere_insert_media",2);
+ assert.match(taskSummary(next),/Worker lane: premiere/);
+ assert.equal(next.verified,1);
+ assert.match(taskSummary(next),/awaiting Allow once/);
+});
