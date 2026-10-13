@@ -910,3 +910,22 @@ test("Master planning context exposes missing acceptance rather than claiming a 
  assert.match(context,/never skip missing evidence/);
  assert.doesNotMatch(context,/next audited-safe worker handoff: step import/);
 });
+
+test("a forged running import receipt cannot bypass final cross-app handoff admission",()=>{
+ const p=plan([
+  step("render",[],"motion_graphics_run_remotion"),
+  step("import",["render"],"premiere_insert_media")
+ ]);
+ let s=done(initial(p),proposal("render","motion_graphics_run_remotion"));
+ const importProposal=proposal("import","premiere_insert_media");
+ const id=actionIdFor(2);
+ const target=s.task_graph.steps.find(x=>x.step_id==="import");
+ target.status="running"; // simulate an untrusted checkpoint bypassing the admission path
+ target.running={fingerprint:agent.proposalFingerprint(importProposal),orchestration_step:s.next_step,action_id:id};
+ const attempted=agent.recordToolOutcome(s,importProposal,"success",result("premiere_insert_media"),
+  true,id,auditReceipt(id,"premiere_insert_media",true,"executed"));
+ assert.equal(attempted.task_graph.steps[1].status,"failed");
+ assert.equal(graph.taskGraphProgress(attempted.task_graph).completed,1);
+ assert.match(attempted.task_graph.steps[1].evidence.at(-1).summary,/accepted final render/);
+ assert.equal(attempted.recovery_mode,"replan_required");
+});
