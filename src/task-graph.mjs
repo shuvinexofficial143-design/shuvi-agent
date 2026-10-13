@@ -233,15 +233,17 @@ export function finishTaskStep(
 
 export function taskGraphProgress(graph) {
   if (!graph) return { completed: 0, total: 0, current: null, steps: [] };
+  const queue=workerQueueView(graph);
+  const verifiedIds=new Set(queue.jobs.filter(job=>job.verified).map(job=>job.id));
   const steps = graph.steps.map(s => {
-    const verified = completed(s);
+    const verified = verifiedIds.has(s.step_id);
     const status = s.status === "completed" && !verified ? "pending" : s.status;
     const latestEvidence = s.evidence.at(-1);
     const reason = s.blocked_reason
       ?? (status === "failed" ? latestEvidence?.summary ?? "Step failed without completion evidence." : null);
     return { step_id: s.step_id, title: s.title, status, reason, evidence_verified: verified };
   });
-  return { completed: graph.steps.filter(completed).length, total: steps.length,
+  return { completed: verifiedIds.size, total: steps.length,
     current: steps.find(s => s.status === "running")?.title ?? steps.find(s => s.status === "ready")?.title ?? null,
     steps };
 }
