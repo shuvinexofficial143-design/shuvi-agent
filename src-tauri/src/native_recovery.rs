@@ -99,6 +99,26 @@ fn validate_advance(old:Option<&NativeRecoveryRecord>,next:&NativeRecoveryRecord
                next.model_requests<previous.model_requests||next.staged_actions<previous.staged_actions{
                 return Err("Native recovery task budget or counters regressed.".into());
             }
+            // A new revision alone cannot authorize a second execution of
+            // an old approved action or forge an audit success.
+            if next.phase=="executing"&&
+               (previous.phase!="awaiting_approval"||previous.action_id!=next.action_id||
+                previous.staged_actions!=next.staged_actions){
+                return Err("Native execution must follow exactly its approved action.".into());
+            }
+            if next.phase=="audit_verified"&&
+               (previous.phase!="executing"||previous.action_id!=next.action_id||
+                previous.staged_actions!=next.staged_actions){
+                return Err("Native audit verification must follow that action's execution.".into());
+            }
+            if next.phase=="awaiting_approval"&&
+               (next.staged_actions!=previous.staged_actions.saturating_add(1)||
+                previous.action_id==next.action_id){
+                return Err("Native approval must stage one NEW bounded action.".into());
+            }
+            if next.phase=="model_reserved"&&next.model_requests!=previous.model_requests.saturating_add(1){
+                return Err("Native model reservation cannot reuse an old paid request.".into());
+            }
             Ok(())
         }
     }
@@ -212,6 +232,26 @@ mod tests{
         assert!(validate_advance(Some(&first),&NativeRecoveryRecord{
             revision:Some(2),expires_at:7_100_000,..next.clone()}).is_err());
         assert!(validate_advance(Some(&NativeRecoveryRecord{revision:None,..first.clone()}),&next).is_err());
+    }
+    #[test]
+    fn action_event_order_is_correlated_and_never_replays_old_approval(){
+        let executed=state();
+        let approved=NativeRecoveryRecord{revision:Some(1),phase:"awaiting_approval".into(),..executed.clone()};
+        let attempt=NativeRecoveryRecord{revision:Some(2),..executed.clone()};
+        assert!(validate_advance(Some(&approved),&attempt).is_ok());
+        assert!(validate_advance(Some(&executed),&NativeRecoveryRecord{revision:Some(2),..executed.clone()}).is_err());
+        assert!(validate_advance(Some(&approved),&NativeRecoveryRecord{
+            revision:Some(2),action_id:Some("other-action".into()),..executed.clone()}).is_err());
+        let audited=NativeRecoveryRecord{revision:Some(2),phase:"audit_verified".into(),..executed.clone()};
+        assert!(validate_advance(Some(&executed),&audited).is_ok());
+        assert!(validate_advance(Some(&approved),&audited).is_err());
+        let read=NativeRecoveryRecord{revision:Some(2),phase:"awaiting_approval".into(),
+            action_id:Some("new-inspection".into()),staged_actions:2,..executed.clone()};
+        assert!(validate_advance(Some(&executed),&read).is_ok());
+        assert!(validate_advance(Some(&executed),&NativeRecoveryRecord{
+            revision:Some(2),staged_actions:1,..read}).is_err());
+        assert!(validate_advance(Some(&executed),&NativeRecoveryRecord{
+            revision:Some(2),phase:"model_reserved".into(),..executed}).is_err());
     }
     #[test]
     fn refuses_overwriting_orphaned_or_stale_checkpoint_on_disk(){
