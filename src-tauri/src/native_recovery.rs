@@ -11,6 +11,10 @@ const TWO_HOURS:u64=7_200_000;
 #[serde(rename_all="camelCase",deny_unknown_fields)]
 pub(crate) struct NativeRecoveryRecord {
     pub version:u32,
+    // v1 snapshots have no identity and remain read-only historical evidence.
+    // Every new save must be v2 and bind its exact independent task UUID.
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub task_id:Option<String>,
     pub max_actions:u32,
     pub staged_actions:u32,
     pub model_requests:u32,
@@ -20,8 +24,14 @@ pub(crate) struct NativeRecoveryRecord {
     pub action_id:Option<String>,
 }
 fn valid(value:&NativeRecoveryRecord)->Result<(),String>{
-    if value.version!=1||![8,24,48].contains(&value.max_actions){
+    if ![1,2].contains(&value.version)||![8,24,48].contains(&value.max_actions){
         return Err("Unsupported native recovery version or owner budget.".into());
+    }
+    match (value.version,value.task_id.as_deref()) {
+        (1,None)=>{},
+        (2,Some(id)) if uuid::Uuid::parse_str(id)
+            .map(|uuid|uuid.to_string()==id).unwrap_or(false)=>{},
+        _=>return Err("Native recovery checkpoint lacks a valid task identity.".into())
     }
     if value.staged_actions>value.max_actions||value.model_requests>value.max_actions+1{
         return Err("Native recovery budget counters exceed the owner limits.".into());
@@ -59,7 +69,10 @@ fn path(app:&AppHandle)->Result<PathBuf,String>{
     Ok(dir.join("native-recovery.json"))
 }
 pub(crate) fn save(app:&AppHandle,mut record:NativeRecoveryRecord)->Result<(),String>{
-    record.version=1;
+    // Do not silently upgrade an old unbound snapshot to a new task.
+    if record.version!=2 {
+        return Err("New native recovery writes require a task-bound v2 record.".into());
+    }
     record.updated_at=crate::now_ms();
     valid(&record)?;
     let bytes=serde_json::to_vec(&record).map_err(|_|"Native recovery could not be encoded.".to_string())?;
@@ -101,7 +114,8 @@ mod tests{
     use super::*;
     fn state()->NativeRecoveryRecord{
         NativeRecoveryRecord{
-            version:1,max_actions:8,staged_actions:1,model_requests:1,
+            version:2,task_id:Some("0f2977ac-4f61-4d9c-bf74-ecf8a3ae2172".into()),
+            max_actions:8,staged_actions:1,model_requests:1,
             expires_at:7_200_001,updated_at:1,phase:"executing".into(),
             action_id:Some("action-1".into())
         }
@@ -115,6 +129,19 @@ mod tests{
         assert!(valid(&NativeRecoveryRecord{staged_actions:9,..s.clone()}).is_err());
         assert!(valid(&NativeRecoveryRecord{action_id:None,..s.clone()}).is_err());
         assert!(valid(&NativeRecoveryRecord{action_id:Some("bad<id>".into()),..s}).is_err());
+    }
+    #[test]
+    fn legacy_v1_is_inspectable_but_cannot_be_saved_as_a_new_task(){
+        let old=NativeRecoveryRecord{version:1,task_id:None,..state()};
+        assert!(valid(&old).is_ok());
+        let raw=serde_json::to_vec(&old).unwrap();
+        validate_bytes(&raw).unwrap();
+        assert!(serde_json::from_slice::<NativeRecoveryRecord>(&raw).unwrap().task_id.is_none());
+        // Old evidence can be loaded, but cannot be used as new execution authority.
+        let missing=NativeRecoveryRecord{task_id:None,..state()};
+        assert!(valid(&missing).is_err());
+        assert!(valid(&NativeRecoveryRecord{version:1,..state()}).is_err());
+        assert!(valid(&NativeRecoveryRecord{task_id:Some("not-a-uuid".into()),..state()}).is_err());
     }
     #[test]
     fn snapshot_remains_atomic_and_recovers_last_valid_backup(){
