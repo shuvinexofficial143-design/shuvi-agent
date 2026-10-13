@@ -22,7 +22,7 @@ export function parseWorkerArtifact(tool,stdout,actionId){
      ||a.full_plan_completed!==true||a.verified_by_native_sha256!==true
      ||!obj(a.artifact)||!absPath(a.artifact.path)||!sha(a.artifact.sha256)
      ||!Number.isSafeInteger(a.artifact.bytes)||a.artifact.bytes<1
-     ||a.artifact.bytes>128*1024*1024||!/\\.(png|blend)$/i.test(a.artifact.path))return null;
+     ||a.artifact.bytes>128*1024*1024||!/\.(png|blend)$/i.test(a.artifact.path))return null;
   return {kind:"blender_artifact",producer_action_id:actionId,path:a.artifact.path,
     sha256:a.artifact.sha256.toLowerCase(),bytes:a.artifact.bytes};
  }
@@ -56,7 +56,7 @@ export function validWorkerArtifact(value,tool,actionId){
  if(tool==="blender_run_plan")
   return Object.keys(value).sort().join(",")==="bytes,kind,path,producer_action_id,sha256"
    &&value.kind==="blender_artifact"&&value.producer_action_id===actionId
-   &&absPath(value.path)&&/\\.(png|blend)$/i.test(value.path)
+   &&absPath(value.path)&&/\.(png|blend)$/i.test(value.path)
    &&sha(value.sha256)&&value.sha256===value.sha256.toLowerCase()
    &&Number.isSafeInteger(value.bytes)&&value.bytes>=1&&value.bytes<=128*1024*1024;
  if(tool==="motion_graphics_accept_final_remotion")
@@ -96,7 +96,7 @@ export function artifactHandoffFailure(graph,stepId,proposal=null){
   const receipt=successes?.length===1?successes[0]:null;
   if(!receipt||!validWorkerArtifact(receipt.artifact,"blender_run_plan",receipt.action_id))
    return "Blender-to-Premiere import requires a verified native SHA-256 artifact receipt.";
-  if(!/\\.png$/i.test(receipt.artifact.path))
+  if(!/\.png$/i.test(receipt.artifact.path))
    return "Premiere can import a verified Blender PNG, not the Blender project .blend file.";
   if(proposal&&(!obj(proposal.arguments)||proposal.arguments.path!==receipt.artifact.path))
    return "Premiere import path differs from the exact Blender PNG output receipt.";
