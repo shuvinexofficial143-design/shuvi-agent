@@ -1008,3 +1008,44 @@ test("native batch receipt survives real coordinator dispatch and refuses modifi
   assert.notEqual(agent.normalizeAgentOrchestrationState(forged).recovery_mode,"normal");
  }
 });
+
+test("global native worker lease prevents cross-app staging until original audited action finishes",()=>{
+ const metadata=plan([
+  step("blender",[],"blender_inspect"),
+  step("premiere",[],"premiere_context"),
+  step("source",[],"read_file")
+ ]);
+ let state=initial(metadata);
+ const active=proposal("blender","blender_inspect");
+ state=staged(state,active);
+ for(const other of [proposal("premiere","premiere_context"),proposal("source","read_file")]){
+  const decision=agent.evaluateProposal(state,other);
+  assert.equal(decision.allowed,false);
+  assert.match(decision.reason,/Worker lane is busy/);
+ }
+ assert.equal(graph.nextWorkerTurn(state.task_graph),null);
+ assert.match(agent.orchestrationContext(state),/native worker lease: native_action_in_flight/);
+ assert.match(agent.orchestrationContext(state),/blocks all other worker dispatches/);
+ const actionId=runningActionId(state,active);
+ state=agent.recordToolOutcome(state,active,"success",result("blender_inspect"),
+  true,actionId,auditReceipt(actionId,"blender_inspect",true,"executed"));
+ assert.equal(state.task_graph.steps[0].status,"completed");
+ assert.equal(state.recovery_mode,"normal");
+ assert.equal(graph.nextWorkerTurn(state.task_graph).step_id,"premiere");
+ assert.equal(agent.evaluateProposal(state,proposal("premiere","premiere_context")).allowed,true);
+});
+test("interrupted native worker is quarantined on recovery, never silently replaced by a new app action",()=>{
+ const metadata=plan([
+  step("render",[],"motion_graphics_run_remotion"),
+  step("inspect",[],"premiere_context")
+ ]);
+ let state=initial(metadata);
+ state=staged(state,proposal("render","motion_graphics_run_remotion"));
+ assert.equal(graph.nextWorkerTurn(state.task_graph),null);
+ const resumed=agent.normalizeAgentOrchestrationState(json(state));
+ assert.notEqual(resumed.recovery_mode,"normal");
+ assert.equal(resumed.task_graph.steps[0].status,"failed");
+ assert.equal(graph.nextWorkerTurn(resumed.task_graph),null);
+ assert.match(agent.orchestrationContext(resumed),/recovery_required/);
+ assert.match(agent.orchestrationContext(resumed),/Only an independent recovery inspection is permitted/);
+});
