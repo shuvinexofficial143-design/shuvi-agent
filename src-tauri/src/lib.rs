@@ -8,6 +8,7 @@ mod blender_plan_worker;
 mod atomic_file;
 mod execution_lease;
 mod native_worker_status;
+mod native_worker_job;
 mod bounded_child;
 mod provider_request_guard;
 mod native_recovery;
@@ -1084,15 +1085,16 @@ struct ActionState {
 /// Claim both OS/user-session exclusion and a clean local action record.
 /// An interrupted mutation leaves a stale identity; never assume an OS
 /// handle closing means the prior application side-effect did not occur.
-fn claim_monitored_native_execution(
-    state:&ActionState
-)->Result<execution_lease::NativeExecutionLease<'_>,String>{
+fn claim_monitored_native_execution<'a>(
+    state:&'a ActionState,app:&AppHandle
+)->Result<execution_lease::NativeExecutionLease<'a>,String>{
     let lease=execution_lease::claim_single_execution(&state.native_execution_owned)?;
     let running=state.running_action_tools.lock()
         .map_err(|_|"Running action identities are unavailable; owner review required.".to_string())?;
     let started=state.running_action_started_at_ms.lock()
         .map_err(|_|"Running action start records are unavailable; owner review required.".to_string())?;
     native_worker_status::require_clear_for_new_dispatch(&running,&started)?;
+    native_worker_job::require_resolved(app)?;
     Ok(lease)
 }
 
@@ -18672,8 +18674,13 @@ fn native_worker_status(
         .map_err(|_|"Running action start time is unavailable; owner review required.".to_string())?;
     let leased=state.native_execution_owned.load(Ordering::Acquire);
     let recovery=native_recovery::load(&app)?;
-    Ok(native_worker_status::snapshot(
-        leased,&running,&started,recovery.as_ref(),now_ms()
+    let job=native_worker_job::read(&app)?;
+    let now=now_ms();
+    Ok(native_worker_status::attach_durable_job(
+        native_worker_status::snapshot(
+            leased,&running,&started,recovery.as_ref(),now
+        ),
+        job.as_ref(),now
     ))
 }
 
@@ -18872,7 +18879,7 @@ async fn execute_action(
     ensure_memory_budget(state.inner())?;
     // Serialize native typed-tool execution. A plan's browser-only worker
     // count is not an execution lock; the Rust guard is the authority.
-    let _native_slot=claim_monitored_native_execution(state.inner())?;
+    let _native_slot=claim_monitored_native_execution(state.inner(),&app)?;
 
     let (action, expired_action) = {
         let mut pending = state
@@ -18887,6 +18894,9 @@ async fn execute_action(
             (None, pending.remove(&action_id))
         } else {
             let active_tool = prepared.tool.clone();
+            // Publish the durable, action-bound worker record BEFORE any tool
+            // can run. If disk state is unresolved, keep approval pending.
+            native_worker_job::begin(&app,&action_id,&active_tool,now_ms())?;
             // Hold the same lock order when publishing start time and tool
             // identity. The host-only observation never becomes permission.
             let mut running=state.running_action_tools.lock()
@@ -18921,12 +18931,16 @@ async fn execute_action(
     let tool = action.tool.clone();
     let detail = action.detail.clone();
     let audit_detail = audit_safe_action_detail(&tool, &detail);
+    // Supervisor ticks are host-process liveness evidence only; they
+    // cannot grant progress, unlock other workers, or auto-retry.
+    let pulse=native_worker_job::SupervisorPulse::start(app.clone(),action_id.clone());
     let execution = execute_tool_with_action_id(
         action,
         state.inner(),
         &app,
         Some(action_id.as_str()),
     ).await;
+    drop(pulse);
 
     if let Ok(mut running) = state.running_action_tools.lock() {
         if let Ok(mut started)=state.running_action_started_at_ms.lock(){
@@ -18953,6 +18967,7 @@ async fn execute_action(
                     action_id: Some(action_id.clone()),
                 },
             )?;
+            native_worker_job::audit(&app,&action_id,result.success,now_ms())?;
             Ok(result)
         }
         Err(error) => {
@@ -18967,6 +18982,7 @@ async fn execute_action(
                     action_id: Some(action_id.clone()),
                 },
             )?;
+            native_worker_job::audit(&app,&action_id,false,now_ms())?;
             Err(error)
         }
     }
@@ -19027,7 +19043,7 @@ fn set_workspace(
 ) -> Result<(), String> {
     // A09: switching the active project during a native edit can retarget
     // subsequent actions in that workflow. Share the desktop execution lease.
-    let _native_slot = claim_monitored_native_execution(state.inner())?;
+    let _native_slot = claim_monitored_native_execution(state.inner(),&app)?;
     write_workspace(&app, path.trim())
 }
 
@@ -19057,9 +19073,10 @@ fn clear_session_checkpoint(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn photoshop_bridge_start(
     state: State<'_, ActionState>,
+    app: AppHandle,
 ) -> Result<PhotoshopBridgeStatus,String> {
     // A09: a bridge lifecycle change cannot race a native editing action.
-    let _native_slot=claim_monitored_native_execution(state.inner())?;
+    let _native_slot=claim_monitored_native_execution(state.inner(),&app)?;
     state.photoshop_bridge.start()
 }
 
@@ -19073,18 +19090,20 @@ fn photoshop_bridge_status(
 #[tauri::command]
 fn photoshop_bridge_stop(
     state: State<'_, ActionState>,
+    app: AppHandle,
 ) -> Result<PhotoshopBridgeStatus,String> {
     // A09: a bridge lifecycle change cannot race a native editing action.
-    let _native_slot=claim_monitored_native_execution(state.inner())?;
+    let _native_slot=claim_monitored_native_execution(state.inner(),&app)?;
     state.photoshop_bridge.stop()
 }
 
 #[tauri::command]
 fn illustrator_bridge_start(
     state: State<'_, ActionState>,
+    app: AppHandle,
 ) -> Result<IllustratorBridgeStatus, String> {
     // A09: a bridge lifecycle change cannot race a native editing action.
-    let _native_slot=claim_monitored_native_execution(state.inner())?;
+    let _native_slot=claim_monitored_native_execution(state.inner(),&app)?;
     state.illustrator_bridge.start()
 }
 
@@ -19098,18 +19117,20 @@ fn illustrator_bridge_status(
 #[tauri::command]
 fn illustrator_bridge_stop(
     state: State<'_, ActionState>,
+    app: AppHandle,
 ) -> Result<IllustratorBridgeStatus, String> {
     // A09: a bridge lifecycle change cannot race a native editing action.
-    let _native_slot=claim_monitored_native_execution(state.inner())?;
+    let _native_slot=claim_monitored_native_execution(state.inner(),&app)?;
     state.illustrator_bridge.stop()
 }
 
 #[tauri::command]
 fn animate_bridge_start(
     state: State<'_, ActionState>,
+    app: AppHandle,
 ) -> Result<AnimateBridgeStatus, String> {
     // A09: a bridge lifecycle change cannot race a native editing action.
-    let _native_slot=claim_monitored_native_execution(state.inner())?;
+    let _native_slot=claim_monitored_native_execution(state.inner(),&app)?;
     state.animate_bridge.start()
 }
 
@@ -19123,18 +19144,20 @@ fn animate_bridge_status(
 #[tauri::command]
 fn animate_bridge_stop(
     state: State<'_, ActionState>,
+    app: AppHandle,
 ) -> Result<AnimateBridgeStatus, String> {
     // A09: a bridge lifecycle change cannot race a native editing action.
-    let _native_slot=claim_monitored_native_execution(state.inner())?;
+    let _native_slot=claim_monitored_native_execution(state.inner(),&app)?;
     state.animate_bridge.stop()
 }
 
 #[tauri::command]
 fn audition_bridge_start(
     state: State<'_, ActionState>,
+    app: AppHandle,
 ) -> Result<AuditionBridgeStatus, String> {
     // A09: a bridge lifecycle change cannot race a native editing action.
-    let _native_slot=claim_monitored_native_execution(state.inner())?;
+    let _native_slot=claim_monitored_native_execution(state.inner(),&app)?;
     state.audition_bridge.start()
 }
 
@@ -19148,18 +19171,20 @@ fn audition_bridge_status(
 #[tauri::command]
 fn audition_bridge_stop(
     state: State<'_, ActionState>,
+    app: AppHandle,
 ) -> Result<AuditionBridgeStatus, String> {
     // A09: a bridge lifecycle change cannot race a native editing action.
-    let _native_slot=claim_monitored_native_execution(state.inner())?;
+    let _native_slot=claim_monitored_native_execution(state.inner(),&app)?;
     state.audition_bridge.stop()
 }
 
 #[tauri::command]
 fn premiere_bridge_start(
     state: State<'_, ActionState>,
+    app: AppHandle,
 ) -> Result<PremiereBridgeStatus, String> {
     // A09: a bridge lifecycle change cannot race a native editing action.
-    let _native_slot=claim_monitored_native_execution(state.inner())?;
+    let _native_slot=claim_monitored_native_execution(state.inner(),&app)?;
     state.premiere_bridge.start()
 }
 
@@ -19173,9 +19198,10 @@ fn premiere_bridge_status(
 #[tauri::command]
 fn premiere_bridge_stop(
     state: State<'_, ActionState>,
+    app: AppHandle,
 ) -> Result<PremiereBridgeStatus, String> {
     // A09: a bridge lifecycle change cannot race a native editing action.
-    let _native_slot=claim_monitored_native_execution(state.inner())?;
+    let _native_slot=claim_monitored_native_execution(state.inner(),&app)?;
     state.premiere_bridge.stop()
 }
 
