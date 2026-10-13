@@ -41,7 +41,8 @@ test("Worker dependencies and app locks exclude conflicted or unverified handoff
   assert.equal(q.total,6);
   assert.equal(q.verified,1);
   assert.deepEqual(q.ready_job_ids,["ready_inspection"]);
-  assert.equal(q.blocked,1);
+  assert.equal(q.blocked,2,"unsupported tool and incomplete Remotion handoff must both block");
+  assert.equal(q.jobs.find(j=>j.id==="insert").status,"blocked");
   assert.match(workerQueueSummary(g),/1\/6 audited/);
 });
 test("Interrupted or stopped graphs are not reported as successful",()=>{
