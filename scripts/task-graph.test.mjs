@@ -19,7 +19,9 @@ function plan(steps = [step("inspect"), step("edit", ["inspect"], "replace_text"
   return { objective: "Fix the bug", revision, steps };
 }
 function proposal(task_step_id = "inspect", tool = "read_file", extra = {}) {
-  return { tool, arguments: { path: tool==="premiere_insert_media"?"/repo/remotion.mp4":"/repo/a.ts" }, task_step_id, ...extra };
+  return { tool, arguments: { path: tool==="premiere_insert_media"?"/repo/remotion.mp4":"/repo/a.ts",
+    ...(tool==="premiere_insert_media"?{expected_sha256:"a".repeat(64)}:{}) },
+    task_step_id, ...extra };
 }
 function result(tool = "read_file", success = true, exit_code = 0) {
   return { tool, success, exit_code, stdout: "observed", stderr: "" };
@@ -810,7 +812,7 @@ test("Blender inspection-to-model-to-Premiere insertion is a real typed worker c
  const saved=json(state.task_graph);
  assert.equal(graph.restoreTaskGraph(saved,state.next_step,state.max_steps).ok,true);
  state=done(state,proposal("insert","premiere_insert_media",
-  {arguments:{path:"/repo/blender.png"}}));
+  {arguments:{path:"/repo/blender.png",expected_sha256:"b".repeat(64)}}));
  assert.equal(graph.taskGraphProgress(state.task_graph).completed,3);
  assert.equal(graph.nextWorkerTurn(state.task_graph),null);
 });
