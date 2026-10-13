@@ -1,7 +1,7 @@
 import type { ActionResult, ToolProposal } from "./types";
 import {
   bindTaskStepAction, blockTaskStep, finishTaskStep, graphDependencyFailure, RECOVERY_TOOLS,
-  restoreTaskGraph, reviseTaskGraph, startTaskStep, taskGraphProgress, nextWorkerTurn,
+  restoreTaskGraph, reviseTaskGraph, startTaskStep, taskGraphProgress, nextWorkerTurn, handoffContractFailure,
   type TaskGraph, type GraphAuditEvent
 } from "./task-graph.mjs";
 import { allowedTaskBudget, taskDeadline, taskDeadlineAllows, MAX_RUNTIME_ACTIONS } from "./task-runtime-budget.mjs";
@@ -966,6 +966,11 @@ export function orchestrationContext(state: AgentOrchestrationState): string {
       ...state.task_graph.steps.filter(s=>unfinishedIds.has(s.step_id)).slice(0,10).map(s =>
         `- ${s.step_id}: ${s.status}; tool=${s.expected_tool}; needs=${s.depends_on.join(",") || "none"}`),
       `- unfinished steps: ${unfinishedIds.size}. Append steps by increasing graph revision, retain all attempted-step IDs and evidence, and respect the ${state.max_steps}-action owner budget.`,
+      ...state.task_graph.steps.filter(s=>unfinishedIds.has(s.step_id))
+        .map(s=>handoffContractFailure(state.task_graph,s.step_id))
+        .filter((hint):hint is string=>Boolean(hint)).slice(0,2)
+        .map(hint=>"- REQUIRED cross-app handoff repair: "+hint+
+          " Replan with ordered native acceptance and insertion-plan steps; never skip missing evidence."),
       "- Use task_step_id. For recovery use task_recovery:true with an unassociated inspection; then submit next graph revision with recover_steps.",
     ] : []),
     `- next step: ${state.next_step}/${state.max_steps}`,
