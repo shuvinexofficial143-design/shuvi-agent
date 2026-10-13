@@ -795,3 +795,20 @@ test("an untrusted caller cannot bypass bindPreparedAction to reuse an audited w
  assert.equal(graph.taskGraphProgress(attempted.task_graph).completed,1);
  assert.equal(attempted.task_graph.steps[1].evidence.at(-1).source,"local_failure");
 });
+
+test("owner-selected 24/48-step graph does not drop worker handoff validation after step eight",()=>{
+ for(const cap of [24,48]){
+  const steps=Array.from({length:cap},(_,i)=>step("job"+i));
+  const proposalForGraph=proposal("job0","read_file",{task_graph:plan(steps)});
+  const initialState=agent.createAgentOrchestrationState(cap);
+  const acceptedGraph=agent.acceptProposalGraph(initialState,proposalForGraph);
+  assert.equal(acceptedGraph.state.task_graph.steps.length,cap);
+  assert.equal(graph.nextWorkerTurn(acceptedGraph.state.task_graph).step_id,"job0");
+  const last=proposal("job"+(cap-1),"read_file",{arguments:{path:"/repo/last.ts"}});
+  assert.equal(agent.evaluateProposal(acceptedGraph.state,last).allowed,true);
+  const started=agent.recordProposalStart(acceptedGraph.state,last);
+  assert.equal(started.task_graph.steps[cap-1].status,"running");
+  assert.equal(graph.graphDependencyFailure(started.task_graph,proposal("job1","read_file")),
+   "Worker lane is busy, unavailable, or lacks exact Rust-audited dependency evidence.");
+ }
+});
