@@ -1,11 +1,13 @@
 //! A separate, bounded inspection-only checkpoint for the installed Native Dashboard.
  //! This is NOT a task-grant, replay queue, or replacement for Rust action audit.
-use std::{fs, path::PathBuf};
+use std::{fs, path::{Path,PathBuf},sync::Mutex};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
 const MAX_BYTES:usize=4096;
 const TWO_HOURS:u64=7_200_000;
+const MAX_SAFE_REVISION:u64=9_007_199_254_740_991;
+static RECOVERY_LOCK:Mutex<()>=Mutex::new(());
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
@@ -15,6 +17,9 @@ pub(crate) struct NativeRecoveryRecord {
     // Every new save must be v2 and bind its exact independent task UUID.
     #[serde(default,skip_serializing_if="Option::is_none")]
     pub task_id:Option<String>,
+    // Historical v2 records may lack an ordinal: inspect, never extend them.
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub revision:Option<u64>,
     pub max_actions:u32,
     pub staged_actions:u32,
     pub model_requests:u32,
@@ -32,6 +37,12 @@ fn valid(value:&NativeRecoveryRecord)->Result<(),String>{
         (2,Some(id)) if uuid::Uuid::parse_str(id)
             .map(|uuid|uuid.to_string()==id).unwrap_or(false)=>{},
         _=>return Err("Native recovery checkpoint lacks a valid task identity.".into())
+    }
+    match (value.version,value.revision){
+        (1,None)=>{},
+        (2,None)=>{}, // Historical v2 remains read-only.
+        (2,Some(n)) if (1..=MAX_SAFE_REVISION).contains(&n)=>{},
+        _=>return Err("Invalid native recovery checkpoint revision.".into())
     }
     if value.staged_actions>value.max_actions||value.model_requests>value.max_actions+1{
         return Err("Native recovery budget counters exceed the owner limits.".into());
@@ -68,17 +79,56 @@ fn path(app:&AppHandle)->Result<PathBuf,String>{
     fs::create_dir_all(&dir).map_err(|_|"Native recovery directory could not be created.".to_string())?;
     Ok(dir.join("native-recovery.json"))
 }
-pub(crate) fn save(app:&AppHandle,mut record:NativeRecoveryRecord)->Result<(),String>{
-    // Do not silently upgrade an old unbound snapshot to a new task.
-    if record.version!=2 {
-        return Err("New native recovery writes require a task-bound v2 record.".into());
+// An old/late IPC call cannot overwrite a newer task or an already
+// durably published step. This check and the atomic file replacement run
+// under the same recovery lock, including against owner clear.
+fn validate_advance(old:Option<&NativeRecoveryRecord>,next:&NativeRecoveryRecord)->Result<(),String>{
+    let revision=next.revision.ok_or("New recovery checkpoint requires an ordinal.")?;
+    match old {
+        None if revision==1=>Ok(()),
+        None=>Err("First native recovery revision must be one.".into()),
+        Some(previous)=>{
+            if previous.version!=2||previous.task_id!=next.task_id{
+                return Err("Prior recovery task identity requires owner acknowledgement.".into());
+            }
+            let previous_revision=previous.revision.ok_or("Older recovery checkpoint has no replay-safe revision.")?;
+            if previous_revision.checked_add(1)!=Some(revision){
+                return Err("Stale, skipped or duplicate recovery revision refused.".into());
+            }
+            if next.max_actions!=previous.max_actions||next.expires_at!=previous.expires_at||
+               next.model_requests<previous.model_requests||next.staged_actions<previous.staged_actions{
+                return Err("Native recovery task budget or counters regressed.".into());
+            }
+            Ok(())
+        }
     }
-    record.updated_at=crate::now_ms();
+}
+fn store_record(file:&Path,mut record:NativeRecoveryRecord,now:u64)->Result<(),String>{
+    if record.version!=2||record.revision.is_none(){
+        return Err("New native recovery writes require a task-bound revisioned v2 record.".into());
+    }
+    record.updated_at=now;
     valid(&record)?;
+    // A backup without a primary means an interrupted disk publication,
+    // not permission to treat the drive as an empty task.
+    let previous=if file.exists(){
+        let bytes=crate::read_file_bytes_bounded(file,MAX_BYTES,"native recovery journal")?;
+        validate_bytes(&bytes)?;
+        Some(serde_json::from_slice::<NativeRecoveryRecord>(&bytes)
+            .map_err(|_|"Native recovery primary is unreadable.".to_string())?)
+    }else if file.with_extension("json.bak").exists(){
+        return Err("Orphaned native recovery backup requires owner review.".into());
+    }else{None};
+    validate_advance(previous.as_ref(),&record)?;
     let bytes=serde_json::to_vec(&record).map_err(|_|"Native recovery could not be encoded.".to_string())?;
-    crate::premiere_store::replace(&path(app)?,&bytes,MAX_BYTES,validate_bytes)
+    crate::premiere_store::replace(file,&bytes,MAX_BYTES,validate_bytes)
+}
+pub(crate) fn save(app:&AppHandle,record:NativeRecoveryRecord)->Result<(),String>{
+    let _guard=RECOVERY_LOCK.lock().map_err(|_|"Native recovery lock unavailable.")?;
+    store_record(&path(app)?,record,crate::now_ms())
 }
 pub(crate) fn load(app:&AppHandle)->Result<Option<NativeRecoveryRecord>,String>{
+    let _guard=RECOVERY_LOCK.lock().map_err(|_|"Native recovery lock unavailable.")?;
     let file=path(app)?;
     let backup=file.with_extension("json.bak");
     if !file.exists()&&!backup.exists(){return Ok(None);}
@@ -93,6 +143,7 @@ pub(crate) fn load(app:&AppHandle)->Result<Option<NativeRecoveryRecord>,String>{
     Ok(Some(record))
 }
 pub(crate) fn clear(app:&AppHandle)->Result<(),String>{
+    let _guard=RECOVERY_LOCK.lock().map_err(|_|"Native recovery lock unavailable.")?;
     crate::premiere_store::clear_snapshot(&path(app)?)
 }
 
@@ -115,7 +166,7 @@ mod tests{
     fn state()->NativeRecoveryRecord{
         NativeRecoveryRecord{
             version:2,task_id:Some("0f2977ac-4f61-4d9c-bf74-ecf8a3ae2172".into()),
-            max_actions:8,staged_actions:1,model_requests:1,
+            revision:Some(1),max_actions:8,staged_actions:1,model_requests:1,
             expires_at:7_200_001,updated_at:1,phase:"executing".into(),
             action_id:Some("action-1".into())
         }
@@ -132,7 +183,7 @@ mod tests{
     }
     #[test]
     fn legacy_v1_is_inspectable_but_cannot_be_saved_as_a_new_task(){
-        let old=NativeRecoveryRecord{version:1,task_id:None,..state()};
+        let old=NativeRecoveryRecord{version:1,task_id:None,revision:None,..state()};
         assert!(valid(&old).is_ok());
         let raw=serde_json::to_vec(&old).unwrap();
         validate_bytes(&raw).unwrap();
@@ -142,6 +193,42 @@ mod tests{
         assert!(valid(&missing).is_err());
         assert!(valid(&NativeRecoveryRecord{version:1,..state()}).is_err());
         assert!(valid(&NativeRecoveryRecord{task_id:Some("not-a-uuid".into()),..state()}).is_err());
+    }
+    #[test]
+    fn rejects_duplicate_skipped_regressed_and_cross_task_recovery(){
+        let first=state();
+        assert!(validate_advance(None,&first).is_ok());
+        assert!(validate_advance(Some(&first),&first).is_err());
+        assert!(validate_advance(None,&NativeRecoveryRecord{revision:Some(2),..first.clone()}).is_err());
+        let next=NativeRecoveryRecord{revision:Some(2),phase:"audit_verified".into(),..first.clone()};
+        assert!(validate_advance(Some(&first),&next).is_ok());
+        assert!(validate_advance(Some(&next),&first).is_err());
+        assert!(validate_advance(Some(&first),&NativeRecoveryRecord{
+            revision:Some(3),..next.clone()}).is_err());
+        assert!(validate_advance(Some(&first),&NativeRecoveryRecord{
+            revision:Some(2),task_id:Some("e8b36b21-1c6a-459e-9b6f-75dd5692ab81".into()),..next.clone()}).is_err());
+        assert!(validate_advance(Some(&first),&NativeRecoveryRecord{
+            revision:Some(2),model_requests:0,..next.clone()}).is_err());
+        assert!(validate_advance(Some(&first),&NativeRecoveryRecord{
+            revision:Some(2),expires_at:7_100_000,..next.clone()}).is_err());
+        assert!(validate_advance(Some(&NativeRecoveryRecord{revision:None,..first.clone()}),&next).is_err());
+    }
+    #[test]
+    fn refuses_overwriting_orphaned_or_stale_checkpoint_on_disk(){
+        let folder=std::env::temp_dir().join(format!("shuvi-revision-check-{}",uuid::Uuid::new_v4()));
+        fs::create_dir(&folder).unwrap();
+        let file=folder.join("native-recovery.json");
+        let one=state();
+        store_record(&file,one.clone(),1).unwrap();
+        assert!(store_record(&file,one.clone(),2).is_err());
+        let two=NativeRecoveryRecord{revision:Some(2),phase:"audit_verified".into(),..one.clone()};
+        store_record(&file,two.clone(),2).unwrap();
+        assert!(store_record(&file,NativeRecoveryRecord{revision:Some(3),task_id:Some(
+            "e8b36b21-1c6a-459e-9b6f-75dd5692ab81".into()),..one.clone()},3).is_err());
+        assert!(store_record(&file,one,3).is_err());
+        fs::remove_file(&file).unwrap();
+        assert!(store_record(&file,NativeRecoveryRecord{revision:Some(3),..two},3).is_err());
+        fs::remove_dir_all(folder).unwrap();
     }
     #[test]
     fn snapshot_remains_atomic_and_recovers_last_valid_backup(){
