@@ -43,12 +43,24 @@
   fingerprint. This is read-only planning information, not permission for
   automatic insertion, trusted instructions from filenames, or a parallel
   independent Worker process.
-- **Not a live OS hash check at Premiere dispatch.** The JS task graph verifies
-  provenance *of the Rust-verified acceptance at the time it ran*. A file could
-  change after acceptance. Actual pre-import native hash rechecking, project
-  readback, and disposable Windows host acceptance are separate outstanding
-  requirements. The graph neither grants execution permission nor asserts
-  that Premiere has imported the media.
+- **Live native SHA-256 recheck for receipt-bound timeline insertion.**
+  `premiere_insert_media` now accepts `expected_sha256` (exact 64-character
+  hexadecimal SHA-256); worker-produced Remotion/Blender media must pass the
+  exact value from the audited local task graph before task admission.
+  Rust validates the supplied hash, verifies the current bounded regular file
+  after saving the Premiere backup and immediately before calling the bridge,
+  then hashes again after Premiere's readback. A hash mismatch aborts before
+  Adobe mutation, or marks an already-dispatched operation unsuccessful and
+  potentially uncertain. The code limits hash-checked sources to 2 GiB.
+- **Important non-atomic boundary:** Adobe still receives a pathname rather
+  than an exclusively opened source handle. Other writers can modify the file
+  between checks, and a post-dispatch change can mean Premiere state is
+  uncertain. Only disposable host testing can certify actual import/readback.
+  Ordinary manually supplied media can still use the previous import contract
+  without an expected hash; the SHA-256 policy is mandatory in the verified
+  worker-to-worker Task Graph, not a blanket claim about all media files.
+  Batch `premiere_import_media` and other import routes are not covered by
+  this particular `premiere_insert_media` SHA-256 guard.
 
 ## New bounded Blender editing/rendering adapter
 
