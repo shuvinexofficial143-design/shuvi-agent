@@ -804,7 +804,7 @@ test("Blender inspection-to-model-to-Premiere insertion is a real typed worker c
   path:"/repo/blender.png",sha256:"b".repeat(64)
  });
  assert.match(agent.orchestrationContext(state),/verified import identity/);
- assert.match(agent.orchestrationContext(state),/\\/repo\\/blender\\.png/);
+ assert.ok(agent.orchestrationContext(state).includes("/repo/blender.png"));
  assert.equal(next.requires_owner_approval,true);
  assert.equal(graph.taskGraphProgress(state.task_graph).completed,2);
  const saved=json(state.task_graph);
