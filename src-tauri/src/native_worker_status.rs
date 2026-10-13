@@ -227,7 +227,8 @@ mod tests{
         let id=uuid();
         let record=crate::native_worker_job::NativeJob{
             version:1,action_id:id,tool:"read_file".into(),phase:"running".into(),
-            started_at_ms:1_000,updated_at_ms:1_000,heartbeat_seq:0,audit_success:None
+            started_at_ms:1_000,updated_at_ms:1_000,heartbeat_seq:0,audit_success:None,
+            prior_action_ids:Vec::new()
         };
         let (tools,starts)=running();
         let live=attach_durable_job(snapshot(true,&tools,&starts,None,1_500),
@@ -242,7 +243,8 @@ mod tests{
         let job=crate::native_worker_job::NativeJob{
             version:1,action_id:uuid(),tool:"premiere_insert_media".into(),
             phase:"running".into(),started_at_ms:1_000,
-            updated_at_ms:2_000,heartbeat_seq:2,audit_success:None
+            updated_at_ms:2_000,heartbeat_seq:2,audit_success:None,
+            prior_action_ids:Vec::new()
         };
         let idle=snapshot(false,&HashMap::new(),&HashMap::new(),None,7_000);
         let recovered=attach_durable_job(idle,Some(&job),7_000);
