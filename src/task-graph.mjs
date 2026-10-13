@@ -226,7 +226,7 @@ export function finishTaskStep(
   // Premiere import by skipping final Remotion acceptance and insertion plan.
   const handoffSafe=!handoffContractFailure(graph,target.step_id)
     &&!artifactHandoffFailure(graph,target.step_id,proposal);
-  const needsArtifact=["motion_graphics_accept_final_remotion",
+  const needsArtifact=["blender_run_plan","motion_graphics_accept_final_remotion",
     "motion_graphics_plan_premiere_insertion"].includes(proposal.tool);
   const artifact=typed&&outcome==="success"&&result.success===true
     ?parseWorkerArtifact(proposal.tool,result.stdout,preparedActionId):null;
@@ -241,7 +241,7 @@ export function finishTaskStep(
     ...(success&&artifact?{artifact}:{}),
     summary: success ? "Typed tool and Rust audit receipt matched the exact prepared action." :
       !handoffSafe ? "Cross-app action cannot complete without exact accepted artifact SHA-256, plan and permission receipts." :
-      needsArtifact&&!artifact ? "Native final acceptance or insertion plan lacked a matching authenticated artifact identity." :
+      needsArtifact&&!artifact ? "Native worker output lacked an authenticated Blender artifact, final acceptance, or insertion-plan identity." :
       "Action lacked matching typed result and Rust audit evidence for the bound prepared action." };
   return refreshTaskGraph({ ...graph, steps: graph.steps.map(s => s !== target ? s :
     { ...s, status: success ? "completed" : "failed", running: null, blocked_reason: null,
@@ -296,7 +296,7 @@ export function restoreTaskGraph(value, nextStep, maxSteps = GRAPH_LIMIT) {
               || e.source !== "typed_result" || e.outcome !== "success" || e.tool !== s.expected_tool))
           || (!e.success && e.outcome === "success")
           || (e.artifact!==undefined&&!validWorkerArtifact(e.artifact,e.tool,e.action_id))
-          || (e.success&&["motion_graphics_accept_final_remotion",
+          || (e.success&&["blender_run_plan","motion_graphics_accept_final_remotion",
                 "motion_graphics_plan_premiere_insertion"].includes(e.tool)&&
               !validWorkerArtifact(e.artifact,e.tool,e.action_id))) return fail("Invalid saved completion evidence.");
       if (e.action_id !== null) {
