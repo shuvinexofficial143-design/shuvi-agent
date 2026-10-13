@@ -70,3 +70,17 @@ test("all native bridge lifecycle mutators check the durable job without bypassi
  assert.equal((lib.match(/claim_monitored_native_execution\(state.inner\(\),&app\)\?/g)??[]).length,12);
  assert.equal((lib.match(/fn (?:premiere|photoshop|illustrator|animate|audition)_bridge_(?:start|stop)\(\n    state: State<'_, ActionState>,\n    app: AppHandle,/g)??[]).length,10);
 });
+
+test("durable native job replay history is bounded and survives restart without fabricated execution proof",()=>{
+ assert.match(jobs,/MAX_PRIOR_ACTIONS:usize=24/);
+ assert.match(jobs,/prior_action_ids:Vec<String>/);
+ assert.match(jobs,/#\[serde\(default\)\]/);
+ assert.match(jobs,/history\.push\(last\.action_id\)/);
+ assert.match(jobs,/history\.drain\(\.\.excess\)/);
+ assert.match(jobs,/last\.prior_action_ids\.iter\(\)\.any/);
+ assert.match(jobs,/malformed_history_is_not_treated_as_empty_on_restart/);
+ assert.match(jobs,/bounded_durable_replay_window_keeps_recent_audited_ids_after_rotation/);
+ assert.match(status,/status\.tool\.as_deref\(\)!=Some\(job\.tool\.as_str\(\)\)/);
+ assert.match(status,/audited_job_conflicts_with_live_lease/);
+ assert.doesNotMatch(jobs,/automatic_retry|force_release_worker|assume_completed/);
+});
