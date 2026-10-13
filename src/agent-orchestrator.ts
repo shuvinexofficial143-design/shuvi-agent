@@ -954,7 +954,7 @@ export function orchestrationContext(state: AgentOrchestrationState): string {
     "Agent orchestration state:",
     `- owner objective: ${state.objective ?? state.task_graph?.objective ?? "unresolved"}`,
     ...(state.task_graph ? [
-      `- graph revision ${state.task_graph.revision}; verified completed IDs: ${state.task_graph.steps.filter(s=>s.status==="completed").map(s=>s.step_id).join(",") || "none"}`,
+      `- graph revision ${state.task_graph.revision}; verified completed IDs: ${taskGraphProgress(state.task_graph).steps.filter(s=>s.evidence_verified).map(s=>s.step_id).join(",") || "none"}`,
       (() => {
         const next=nextWorkerTurn(state.task_graph);
         return next
