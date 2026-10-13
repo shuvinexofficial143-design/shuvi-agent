@@ -174,6 +174,8 @@ export function startTaskStep(graph, proposal, fingerprint, orchestrationStep) {
 export function bindTaskStepAction(graph, proposal, fingerprint, orchestrationStep, preparedActionId) {
   if (!graph || proposal.task_step_id == null) return { ok: true, graph };
   if (!actionId(preparedActionId)) return fail("Prepared action ID is invalid.");
+  if (graph.steps.filter(s=>s.status==="running").length!==1)
+    return fail("Exactly one Rust-owned native execution lease is required before preparing a worker action.");
   const target = graph.steps.find(s => s.step_id === proposal.task_step_id);
   if (!target || target.status !== "running" || target.running?.fingerprint !== fingerprint
       || target.running.orchestration_step !== orchestrationStep) {
@@ -208,7 +210,8 @@ export function finishTaskStep(
   const target = graph.steps.find(s => s.step_id === proposal.task_step_id);
   if (!target || target.status !== "running" || target.running?.fingerprint !== fingerprint
       || target.running.orchestration_step !== stepNumber) return graph;
-  const boundAction = actionId(target.running.action_id) && target.running.action_id === preparedActionId;
+  const singleNativeLease=graph.steps.filter(s=>s.status==="running").length===1;
+  const boundAction = singleNativeLease&&actionId(target.running.action_id) && target.running.action_id === preparedActionId;
   const reusedAction = actionId(preparedActionId) && graph.steps.some(s => s !== target &&
     (s.running?.action_id === preparedActionId ||
       s.evidence.some(e => e.action_id === preparedActionId)));
