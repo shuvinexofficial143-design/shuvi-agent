@@ -989,3 +989,34 @@ test("Rust executing-phase write failure denies approval without executing Windo
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
  assert.equal(s.calls.filter(c=>c.name==="deny_action").length,1);
 });
+
+test("native transport assigns one durable UUID across reserved, approved and verified states",async()=>{
+ const s=setup();
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Open Premiere Pro","correlated-task",0);
+ const first=s.calls.filter(c=>c.name==="save_native_recovery").map(c=>c.params.record);
+ assert.ok(first.length>=2);
+ const taskId=first[0].taskId;
+ assert.match(taskId,/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+ assert.ok(first.every(record=>record.version===2&&record.taskId===taskId));
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"second audited step");
+ const saved=s.calls.filter(c=>c.name==="save_native_recovery").map(c=>c.params.record);
+ assert.ok(saved.some(record=>record.phase==="executing"));
+ assert.ok(saved.some(record=>record.phase==="audit_verified"));
+ assert.ok(saved.every(record=>record.version===2&&record.taskId===taskId));
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
+});
+
+test("failed Rust recovery save cannot be followed by a second Windows paid request",async()=>{
+ const s=setup({rustFailPhase:"model_reserved"});
+ await until(()=>s.transport.connected(),"native ready");
+ const failed=await s.transport.send("Open Premiere Pro","first-failed-checkpoint",0);
+ assert.equal(failed.ok,false);
+ const next=await s.transport.send("Open Premiere Pro","next-task-must-block",0);
+ assert.equal(next.ok,false);
+ assert.match(next.error,/previous Windows task/);
+ assert.equal(s.chatInputs.length,0);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
+ assert.equal(s.recoveryDismiss.hidden,false);
+});
