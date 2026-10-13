@@ -61,10 +61,11 @@ fn read_at(path:&Path)->Result<Option<NativeJob>,String>{
         serde_json::from_slice(&bytes).map_err(|_|"Native job unreadable.".to_string())
     };
     if path.exists(){
-        parse(path).or_else(|e|if backup.exists(){parse(&backup)}else{Err(e)})
-            .map(Some)
+        // Do not silently fall back to a last-audited backup if a new
+        // running-job primary was damaged in a crash. Recovery must be
+        // owner-reviewed, not interpreted as a vacant execution slot.
+        parse(path).map(Some)
     }else{
-        // A prior interrupted atomic publish requires explicit inspection.
         Err("Native job primary missing but backup present; inspect before dispatch.".into())
     }
 }
