@@ -28,7 +28,7 @@ test("storage failure fails closed for new journal writes",()=>{
 });
 test("native transport uses journal before provider dispatch and action approval",()=>{
  const text=readFileSync(new URL("../web-dashboard/src/native-agent.ts",import.meta.url),"utf8");
- assert.match(text,/const previousRecovery=readNativeRecovery\(recoveryStorage\)/);
+ assert.match(text,/const previousRecoveryState=inspectNativeRecoveryStore\(recoveryStorage\)/);
  assert.match(text,/No paid model call or Windows tool action has resumed/);
  assert.match(text,/if\(route.role!=="chat"&&!await persistRecovery\(taskBudget,"model_reserved"\)\)\{/);
  assert.match(text,/if\(!await persistRecovery\(taskBudget,"model_reserved",task.action.id\)\)/);
