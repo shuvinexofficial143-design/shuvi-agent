@@ -5,6 +5,8 @@ use serde::{Deserialize,Serialize};
 use std::{fs,path::{Path,PathBuf},sync::{Arc,Mutex,atomic::{AtomicBool,Ordering}},thread,time::Duration};
 use tauri::{AppHandle,Manager};
 const MAX_BYTES:usize=2048;
+// Bounded replay window in addition to the globally audited action journal.
+const MAX_PRIOR_ACTIONS:usize=24;
 static JOB_LOCK:Mutex<()>=Mutex::new(());
 const HEARTBEAT_PERIOD:Duration=Duration::from_secs(4);
 
@@ -19,6 +21,10 @@ pub(crate) struct NativeJob {
     pub updated_at_ms:u64,
     pub heartbeat_seq:u64,
     pub audit_success:Option<bool>,
+    // Backward compatible with v1 jobs already on disk. On each new job,
+    // preserve recent audited IDs; never treat a malformed list as empty.
+    #[serde(default)]
+    pub prior_action_ids:Vec<String>,
 }
 fn validate(v:&NativeJob)->Result<(),String>{
     if v.version!=1||uuid::Uuid::parse_str(&v.action_id)
@@ -33,6 +39,16 @@ fn validate(v:&NativeJob)->Result<(),String>{
        ||v.updated_at_ms>v.started_at_ms.saturating_add(86_400_000)
        ||v.heartbeat_seq>1_000_000{
         return Err("Native job heartbeat timestamps or sequence invalid.".into());
+    }
+    if v.prior_action_ids.len()>MAX_PRIOR_ACTIONS{
+        return Err("Native job replay history exceeds its durable budget.".into());
+    }
+    let mut seen=std::collections::HashSet::new();
+    for id in &v.prior_action_ids{
+        if uuid::Uuid::parse_str(id).map(|x|x.to_string()!=*id).unwrap_or(true)
+            ||id==&v.action_id||!seen.insert(id){
+            return Err("Native job prior action history is malformed or duplicated.".into());
+        }
     }
     match (v.phase.as_str(),v.audit_success){
         ("running",None)|("audit_verified",Some(_))=>Ok(()),
@@ -77,17 +93,24 @@ fn persist(path:&Path,record:&NativeJob)->Result<(),String>{
 }
 fn begin_at(path:&Path,action_id:&str,tool:&str,now:u64)->Result<NativeJob,String>{
     let _lock=JOB_LOCK.lock().map_err(|_|"Native job lock poisoned.")?;
+    let mut history=Vec::new();
     if let Some(last)=read_at(path)?{
         if last.phase!="audit_verified"{
             return Err("Unresolved durable native worker job requires owner audit review before another action.".into());
         }
-        if last.action_id==action_id{
-            return Err("A prior native job action UUID cannot be replayed.".into());
+        if last.action_id==action_id||last.prior_action_ids.iter().any(|id|id==action_id){
+            return Err("A previously audited native job UUID cannot be replayed.".into());
+        }
+        history=last.prior_action_ids;
+        history.push(last.action_id);
+        if history.len()>MAX_PRIOR_ACTIONS{
+            let excess=history.len()-MAX_PRIOR_ACTIONS;
+            history.drain(..excess);
         }
     }
     let job=NativeJob{version:1,action_id:action_id.into(),tool:tool.into(),
         phase:"running".into(),started_at_ms:now,updated_at_ms:now,
-        heartbeat_seq:0,audit_success:None};
+        heartbeat_seq:0,audit_success:None,prior_action_ids:history};
     persist(path,&job)?;
     Ok(job)
 }
@@ -185,6 +208,10 @@ mod tests{
         assert!(tick_at(&p,A,4000).is_err());
         assert!(begin_at(&p,A,"premiere_insert_media",4100).is_err());
         begin_at(&p,B,"read_file",4500).unwrap();
+        // The first UUID remains blocked even after a different audited job.
+        audited_at(&p,B,true,4800).unwrap();
+        assert!(begin_at(&p,A,"read_file",5000).unwrap_err().contains("cannot be replayed"));
+        assert_eq!(read_at(&p).unwrap().unwrap().prior_action_ids,vec![A.to_string()]);
         fs::remove_file(p).unwrap();
     }
     #[test]
@@ -194,6 +221,30 @@ mod tests{
         drop(read_at(&p).unwrap());
         assert!(begin_at(&p,B,"read_file",5000).unwrap_err().contains("owner audit review"));
         assert_eq!(read_at(&p).unwrap().unwrap().phase,"running");
+        fs::remove_file(p).unwrap();
+    }
+    #[test]
+    fn malformed_history_is_not_treated_as_empty_on_restart(){
+        let p=file();
+        begin_at(&p,A,"read_file",1000).unwrap();
+        audited_at(&p,A,true,1200).unwrap();
+        let mut bad=read_at(&p).unwrap().unwrap();
+        bad.prior_action_ids.push(A.to_string());
+        fs::write(&p,serde_json::to_vec(&bad).unwrap()).unwrap();
+        assert!(begin_at(&p,B,"read_file",1300).unwrap_err().contains("malformed"));
+        fs::remove_file(p).unwrap();
+    }
+    #[test]
+    fn legacy_job_without_history_remains_readable_and_preserves_first_uuid(){
+        let p=file();
+        begin_at(&p,A,"read_file",1000).unwrap();
+        audited_at(&p,A,true,1200).unwrap();
+        let mut value=serde_json::to_value(read_at(&p).unwrap().unwrap()).unwrap();
+        value.as_object_mut().unwrap().remove("priorActionIds");
+        fs::write(&p,serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(read_at(&p).unwrap().unwrap().prior_action_ids.is_empty());
+        begin_at(&p,B,"premiere_context",1300).unwrap();
+        assert_eq!(read_at(&p).unwrap().unwrap().prior_action_ids,vec![A.to_string()]);
         fs::remove_file(p).unwrap();
     }
     #[test]
