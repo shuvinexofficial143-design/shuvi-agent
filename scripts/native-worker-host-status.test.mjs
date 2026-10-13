@@ -24,7 +24,7 @@ test("read-only worker status is wired to the actual Tauri action state and dura
 });
 test("native desktop mutation sites reuse the original process-wide guard and never bypass stale identity checks",()=>{
  assert.match(lease,/claim_windows_desktop_lease\(/);
- assert.match(lib,/fn claim_monitored_native_execution\(/);
+ assert.match(lib,/fn claim_monitored_native_execution<'a>\(/);
  assert.match(lib,/native_worker_status::require_clear_for_new_dispatch/);
  assert.equal((lib.match(/let _native_slot\s*=\s*claim_monitored_native_execution\(state\.inner\(\),&app\)\?;/g)??[]).length,12);
  assert.match(lib,/running_action_started_at_ms: Mutex<HashMap<String, u64>>/);
