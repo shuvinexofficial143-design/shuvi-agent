@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
-import {NATIVE_JOURNAL_KEY,readNativeRecovery,writeNativeRecovery,clearNativeRecovery} from "../web-dashboard/src/native-recovery-journal.mjs";
+import {NATIVE_JOURNAL_KEY,readNativeRecovery,writeNativeRecovery,clearNativeRecovery,inspectNativeRecoveryStore,assessNativeRecoveryPair} from "../web-dashboard/src/native-recovery-journal.mjs";
 const makeStore=()=>{const m=new Map();return {m,getItem:k=>m.get(k)??null,setItem:(k,v)=>m.set(k,v),removeItem:k=>m.delete(k)}};
 const value={maxActions:24,stagedActions:3,modelRequests:4,expiresAt:7201000,phase:"awaiting_approval",actionId:"native_action-123"};
 test("recoverable journal contains only bounded metadata and can be dismissed",()=>{
@@ -94,4 +94,54 @@ test("Rust journal captures terminal states after verified or uncertain native o
  assert.match(source,/await persistRecovery\(taskBudget,"paused"\)/);
  assert.match(source,/await persistRecovery\(taskBudget,"outcome_unknown"\)/);
  assert.match(source,/await persistRecovery\(unknownBudget,"outcome_unknown",current.action.id\)/);
+});
+
+test("recovered paused and audited states still require explicit owner review",()=>{
+ const store=makeStore();
+ for(const phase of ["paused","audit_verified"]){
+  assert.equal(writeNativeRecovery(store,{...value,phase},1000),true);
+  const local=inspectNativeRecoveryStore(store,1001);
+  assert.equal(local.kind,"valid");
+  const rust={...local.record,updatedAt:1005}; // Rust writes its own timestamp.
+  assert.deepEqual(assessNativeRecoveryPair(local,rust,1006),
+   {requiresReview:true,reason:"matched_previous_task"});
+ }
+});
+
+test("split-brain WebView and Rust recovery always fails closed",()=>{
+ const store=makeStore();
+ writeNativeRecovery(store,value,1000);
+ const local=inspectNativeRecoveryStore(store,1001);
+ const rust={...local.record,phase:"executing",actionId:"other-action",updatedAt:1005};
+ assert.deepEqual(assessNativeRecoveryPair(local,rust,1006),
+  {requiresReview:true,reason:"mismatched_stores"});
+ assert.deepEqual(assessNativeRecoveryPair(local,null,1006),
+  {requiresReview:true,reason:"missing_rust"});
+ assert.deepEqual(assessNativeRecoveryPair({kind:"empty",record:null},rust,1006),
+  {requiresReview:true,reason:"missing_webview"});
+ assert.deepEqual(assessNativeRecoveryPair({kind:"empty",record:null},null,1006),
+  {requiresReview:false,reason:"no_previous_task"});
+});
+
+test("corrupt or unreadable WebView recovery cannot silently disappear on restart",()=>{
+ const store=makeStore();
+ store.m.set(NATIVE_JOURNAL_KEY,"{broken JSON");
+ const corrupt=inspectNativeRecoveryStore(store,1001);
+ assert.equal(corrupt.kind,"invalid");
+ assert.equal(corrupt.record,null);
+ assert.deepEqual(assessNativeRecoveryPair(corrupt,null,1001),
+  {requiresReview:true,reason:"invalid_webview"});
+ const throwing={getItem(){throw Error("storage unavailable")}};
+ assert.deepEqual(assessNativeRecoveryPair(inspectNativeRecoveryStore(throwing,1001),null,1001),
+  {requiresReview:true,reason:"invalid_webview"});
+});
+
+test("native transport gates new Windows tasks on reconciled recovery and preserves manual clear",()=>{
+ const src=readFileSync(new URL("../web-dashboard/src/native-agent.ts",import.meta.url),"utf8");
+ assert.match(src,/const previousRecoveryState=inspectNativeRecoveryStore\(recoveryStorage\)/);
+ assert.match(src,/const review=assessNativeRecoveryPair\(previousRecoveryState,rustRecovery\)/);
+ assert.match(src,/recoveryAcknowledged=!review\.requiresReview/);
+ assert.match(src,/if\(route\.role!=="chat"&&!recoveryAcknowledged\)/);
+ assert.match(src,/await invoke<void>\("clear_native_recovery"\)/);
+ assert.match(src,/if\(!clearNativeRecovery\(recoveryStorage\)\)/);
 });
