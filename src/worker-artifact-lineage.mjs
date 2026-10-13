@@ -16,6 +16,16 @@ export function parseWorkerArtifact(tool,stdout,actionId){
  if(!action(actionId)||typeof stdout!=="string"||stdout.length<2||stdout.length>65536)return null;
  let raw;
  try{raw=JSON.parse(stdout);}catch{return null;}
+ if(tool==="blender_run_plan"){
+  const a=raw;
+  if(!obj(a)||a.status!=="verified"||a.worker!=="blender"
+     ||a.full_plan_completed!==true||a.verified_by_native_sha256!==true
+     ||!obj(a.artifact)||!absPath(a.artifact.path)||!sha(a.artifact.sha256)
+     ||!Number.isSafeInteger(a.artifact.bytes)||a.artifact.bytes<1
+     ||a.artifact.bytes>128*1024*1024||!/\\.(png|blend)$/i.test(a.artifact.path))return null;
+  return {kind:"blender_artifact",producer_action_id:actionId,path:a.artifact.path,
+    sha256:a.artifact.sha256.toLowerCase(),bytes:a.artifact.bytes};
+ }
  if(tool==="motion_graphics_accept_final_remotion"){
   const a=receipt(raw);
   if(!obj(a)||a.schema_version!==1||a.acceptance_action_id!==actionId
@@ -43,6 +53,12 @@ export function parseWorkerArtifact(tool,stdout,actionId){
 }
 export function validWorkerArtifact(value,tool,actionId){
  if(!obj(value)||!action(actionId))return false;
+ if(tool==="blender_run_plan")
+  return Object.keys(value).sort().join(",")==="bytes,kind,path,producer_action_id,sha256"
+   &&value.kind==="blender_artifact"&&value.producer_action_id===actionId
+   &&absPath(value.path)&&/\\.(png|blend)$/i.test(value.path)
+   &&sha(value.sha256)&&value.sha256===value.sha256.toLowerCase()
+   &&Number.isSafeInteger(value.bytes)&&value.bytes>=1&&value.bytes<=128*1024*1024;
  if(tool==="motion_graphics_accept_final_remotion")
   return Object.keys(value).sort().join(",")==="acceptance_action_id,kind,path,render_action_id,sha256"
    &&value.kind==="accepted_remotion"&&value.acceptance_action_id===actionId
@@ -69,7 +85,21 @@ export function artifactHandoffFailure(graph,stepId,proposal=null){
  for(const id of target.depends_on)if(byId.has(id))walk(id);
  const find=tool=>[...ancestorIds].map(id=>byId.get(id)).filter(x=>x?.expected_tool===tool);
  const renders=find("motion_graphics_run_remotion");
- if(renders.length===0)return null;
+ if(renders.length===0){
+  const blenders=find("blender_run_plan");
+  if(!blenders.length)return null;
+  if(blenders.length!==1)return "Premiere media import has multiple Blender artifact producers.";
+  const source=blenders[0];
+  const successes=source.status==="completed"?source.evidence?.filter(e=>e?.success===true):null;
+  const receipt=successes?.length===1?successes[0]:null;
+  if(!receipt||!validWorkerArtifact(receipt.artifact,"blender_run_plan",receipt.action_id))
+   return "Blender-to-Premiere import requires a verified native SHA-256 artifact receipt.";
+  if(!/\\.png$/i.test(receipt.artifact.path))
+   return "Premiere can import a verified Blender PNG, not the Blender project .blend file.";
+  if(proposal&&(!obj(proposal.arguments)||proposal.arguments.path!==receipt.artifact.path))
+   return "Premiere import path differs from the exact Blender PNG output receipt.";
+  return null;
+ }
  const accepts=find("motion_graphics_accept_final_remotion");
  const plans=find("motion_graphics_plan_premiere_insertion");
  if(renders.length!==1||accepts.length!==1||plans.length!==1)
