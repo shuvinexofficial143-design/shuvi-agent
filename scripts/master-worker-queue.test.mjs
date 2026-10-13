@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
-import {workerForTool,evidenceForStep,workerQueueView,workerQueueSummary,nextWorkerTurn} from "../src/master-worker-queue.mjs";
+import {workerForTool,evidenceForStep,workerQueueView,workerQueueSummary,nextWorkerTurn,handoffContractFailure} from "../src/master-worker-queue.mjs";
 import {graphDependencyFailure} from "../src/task-graph.mjs";
 const UUID="123e4567-e89b-42d3-a456-426614174000";
 const step=(step_id,expected_tool,status="ready",depends_on=[],evidence=[])=>({step_id,expected_tool,status,depends_on,evidence,title:step_id});
@@ -77,7 +77,8 @@ test("task graph rejects falsely completed predecessor without audit-bound UUID"
   assert.match(graphDependencyFailure(g,{tool:"premiere_insert_media",task_step_id:"import"}),
     /Rust-audited dependency evidence/);
   g.steps[0].evidence=accepted("motion_graphics_run_remotion","asset");
-  assert.equal(graphDependencyFailure(g,{tool:"premiere_insert_media",task_step_id:"import"}),null);
+  assert.match(graphDependencyFailure(g,{tool:"premiere_insert_media",task_step_id:"import"}),
+    /motion_graphics_accept_final_remotion/);
 });
 test("resource lock prevents claiming a second renderer while first is active",()=>{
   const g={steps:[
@@ -88,23 +89,26 @@ test("resource lock prevents claiming a second renderer while first is active",(
     /Worker lane is busy/);
 });
 
-test("cross-worker handoff exposes typed predecessor receipts but never becomes execution permission",()=>{
- const receiptA="123e4567-e89b-42d3-a456-426614174001";
- const receiptB="123e4567-e89b-42d3-a456-426614174002";
+test("accepted Remotion render flows through native insertion plan before Premiere",()=>{
+ const id=i=>"123e4567-e89b-42d3-a456-"+String(i).padStart(12,"0");
  const g={steps:[
-  step("asset","motion_graphics_run_remotion","completed",[],accepted("motion_graphics_run_remotion","asset",1,receiptA)),
-  step("insert","premiere_insert_media","completed",["asset"],accepted("premiere_insert_media","insert",2,receiptB)),
+  step("render","motion_graphics_run_remotion","completed",[],accepted("motion_graphics_run_remotion","render",1,id(1))),
+  step("accept","motion_graphics_accept_final_remotion","completed",["render"],accepted("motion_graphics_accept_final_remotion","accept",2,id(2))),
+  step("plan","motion_graphics_plan_premiere_insertion","completed",["accept"],accepted("motion_graphics_plan_premiere_insertion","plan",3,id(3))),
+  step("insert","premiere_insert_media","completed",["plan"],accepted("premiere_insert_media","insert",4,id(4))),
   step("inspect","premiere_timeline","ready",["insert"])
  ]};
  const q=workerQueueView(g);
- assert.equal(q.verified,2);
+ assert.equal(q.verified,4);
  assert.deepEqual(q.ready_job_ids,["inspect"]);
- assert.deepEqual(q.jobs[2].handoffs,[{
+ assert.equal(handoffContractFailure(g,"insert"),null);
+ assert.deepEqual(q.jobs[4].handoffs,[{
   from_step_id:"insert",to_step_id:"inspect",from_worker:"premiere",to_worker:"premiere",
-  action_id:receiptB,orchestration_step:2
+  action_id:id(4),orchestration_step:4
  }]);
- assert.equal(q.jobs[1].handoffs[0].from_worker,"remotion");
- assert.equal(q.jobs[1].handoffs[0].to_worker,"premiere");
+ assert.equal(q.jobs[2].handoffs[0].from_worker,"remotion");
+ assert.equal(q.jobs[2].handoffs[0].to_worker,"premiere");
+ assert.equal(q.jobs[3].handoffs[0].from_step_id,"plan");
 });
 test("duplicate native UUID across workers never unlocks a downstream handoff",()=>{
  const g={steps:[
@@ -178,4 +182,71 @@ test("owner-approved extended 24/48 task graphs retain every worker gate and res
    "one workspace action holds the coding lane even at the 48-action limit");
  }
  assert.equal(workerQueueView({steps:Array.from({length:49},(_,i)=>step("s"+i,"read_file"))}).total,0);
+});
+
+test("render alone cannot authorize a Premiere import without final acceptance",()=>{
+ const id=i=>"123e4567-e89b-42d3-a456-"+String(i).padStart(12,"0");
+ const render=step("render","motion_graphics_run_remotion","completed",[],
+  accepted("motion_graphics_run_remotion","render",1,id(1)));
+ const insert=step("insert","premiere_insert_media","ready",["render"]);
+ const g={steps:[render,insert]};
+ assert.match(handoffContractFailure(g,"insert"),/motion_graphics_accept_final_remotion/);
+ assert.deepEqual(workerQueueView(g).ready_job_ids,[]);
+ assert.match(graphDependencyFailure(g,{tool:"premiere_insert_media",task_step_id:"insert"}),
+  /motion_graphics_accept_final_remotion/);
+ const accept=step("accept","motion_graphics_accept_final_remotion","completed",["render"],
+  accepted("motion_graphics_accept_final_remotion","accept",2,id(2)));
+ insert.depends_on=["accept"];
+ g.steps.splice(1,0,accept);
+ assert.match(handoffContractFailure(g,"insert"),/motion_graphics_plan_premiere_insertion/);
+ assert.deepEqual(workerQueueView(g).ready_job_ids,[]);
+ const plan=step("plan","motion_graphics_plan_premiere_insertion","completed",["accept"],
+  accepted("motion_graphics_plan_premiere_insertion","plan",3,id(3)));
+ insert.depends_on=["plan"];
+ g.steps.splice(2,0,plan);
+ assert.equal(handoffContractFailure(g,"insert"),null);
+ assert.deepEqual(workerQueueView(g).ready_job_ids,["insert"]);
+ const turn=nextWorkerTurn(g);
+ assert.equal(turn.tool,"premiere_insert_media");
+ assert.equal(turn.requires_owner_approval,true);
+});
+
+test("unrelated or reversed acceptance cannot authorize an unrelated render",()=>{
+ const id=i=>"123e4567-e89b-42d3-a456-"+String(i).padStart(12,"0");
+ const render=step("render","motion_graphics_run_remotion","completed",[],
+  accepted("motion_graphics_run_remotion","render",1,id(1)));
+ const accept=step("accept","motion_graphics_accept_final_remotion","completed",[],
+  accepted("motion_graphics_accept_final_remotion","accept",2,id(2)));
+ const plan=step("plan","motion_graphics_plan_premiere_insertion","completed",["accept"],
+  accepted("motion_graphics_plan_premiere_insertion","plan",3,id(3)));
+ const insert=step("import","premiere_insert_media","ready",["render","plan"]);
+ const g={steps:[render,accept,plan,insert]};
+ assert.match(handoffContractFailure(g,"import"),/motion_graphics_accept_final_remotion/);
+ assert.equal(nextWorkerTurn(g),null);
+ accept.depends_on=["render"];
+ plan.depends_on=[];
+ assert.match(handoffContractFailure(g,"import"),/motion_graphics_plan_premiere_insertion/);
+ plan.depends_on=["accept"];
+ assert.equal(handoffContractFailure(g,"import"),null);
+});
+
+test("ambiguous two-render provenance and fake completed import fail closed",()=>{
+ const id=i=>"123e4567-e89b-42d3-a456-"+String(i).padStart(12,"0");
+ const steps=[
+  step("renderA","motion_graphics_run_remotion","completed",[],
+   accepted("motion_graphics_run_remotion","renderA",1,id(1))),
+  step("renderB","motion_graphics_run_remotion","completed",[],
+   accepted("motion_graphics_run_remotion","renderB",2,id(2))),
+  step("accept","motion_graphics_accept_final_remotion","completed",["renderA"],
+   accepted("motion_graphics_accept_final_remotion","accept",3,id(3))),
+  step("plan","motion_graphics_plan_premiere_insertion","completed",["accept"],
+   accepted("motion_graphics_plan_premiere_insertion","plan",4,id(4))),
+  step("import","premiere_insert_media","completed",["plan","renderB"],
+   accepted("premiere_insert_media","import",5,id(5)))
+ ];
+ const q=workerQueueView({steps});
+ assert.match(handoffContractFailure({steps},"import"),/ambiguous/);
+ assert.equal(q.jobs[4].verified,false);
+ assert.equal(q.jobs[4].status,"blocked");
+ assert.equal(q.verified,4);
 });
