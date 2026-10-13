@@ -76,7 +76,8 @@ export function artifactHandoffFailure(graph,stepId,proposal=null){
  if(!graph||!Array.isArray(graph.steps))return null;
  const byId=new Map(graph.steps.map(s=>[s.step_id,s]));
  const target=byId.get(stepId);
- if(!target||target.expected_tool!=="premiere_insert_media")return null;
+ if(!target||!["premiere_insert_media","premiere_import_media",
+   "premiere_create_sequence_from_media"].includes(target.expected_tool))return null;
  const ancestorIds=new Set();
  const walk=id=>{
   if(ancestorIds.has(id))return;
@@ -86,6 +87,44 @@ export function artifactHandoffFailure(graph,stepId,proposal=null){
  for(const id of target.depends_on)if(byId.has(id))walk(id);
  const find=tool=>[...ancestorIds].map(id=>byId.get(id)).filter(x=>x?.expected_tool===tool);
  const renders=find("motion_graphics_run_remotion");
+ if(target.expected_tool!=="premiere_insert_media"){
+  // Source-bound batch inputs are the EXACT SET of audited Blender PNG
+  // artifacts. Remotion acceptance plans a single-file timeline import.
+  if(renders.length||find("motion_graphics_accept_final_remotion").length||
+     find("motion_graphics_plan_premiere_insertion").length)
+   return "Remotion delivery must use accepted single-file premiere_insert_media, not batch/sequence bypass.";
+  const blenders=find("blender_run_plan");
+  if(!blenders.length)return null; // ordinary independent user media unchanged
+  const seen=new Set(),sources=[];
+  for(const source of blenders){
+   const candidates=source.status==="completed"?source.evidence?.filter(e=>e?.success===true):null;
+   const receipt=candidates?.length===1?candidates[0]:null;
+   if(!receipt||!validWorkerArtifact(receipt.artifact,"blender_run_plan",receipt.action_id))
+    return "Batch import requires all native Blender SHA-256 artifact receipts.";
+   if(!/\\.png$/i.test(receipt.artifact.path))
+    return "Batch Premiere import supports verified Blender PNG media, not .blend project files.";
+   if(seen.has(receipt.artifact.path.toLowerCase()))
+    return "Batch import cannot reuse an artifact path for different Blender worker actions.";
+   seen.add(receipt.artifact.path.toLowerCase());
+   sources.push(receipt.artifact);
+  }
+  if(proposal){
+   const args=proposal.arguments;
+   if(!obj(args)||!Array.isArray(args.paths)||!Array.isArray(args.expected_sha256)
+      ||args.paths.length!==sources.length||args.expected_sha256.length!==sources.length)
+    return "Batch import must supply exactly one path and expected_sha256 per approved Blender artifact.";
+   const byPath=new Map(sources.map(a=>[a.path,a.sha256]));
+   const unique=new Set();
+   for(let i=0;i<args.paths.length;i++){
+    const path=args.paths[i],hash=args.expected_sha256[i];
+    if(typeof path!=="string"||!byPath.has(path)||unique.has(path)
+       ||!sha(hash)||hash.toLowerCase()!==byPath.get(path))
+     return "Batch import includes an unapproved path, duplicate source, or mismatched expected_sha256.";
+    unique.add(path);
+   }
+  }
+  return null;
+ }
  if(renders.length&&find("blender_run_plan").length)
   return "Premiere import has mixed Blender and Remotion sources; select one exact verified artifact.";
  if(renders.length===0){
