@@ -346,7 +346,7 @@ Transcript rebuild handles explicit interior text removal by creating and insert
 - premiere_insert_project_item: {"item_id":"project item id","seconds":0,"video_track":0,"audio_track":0,"mode":"insert|overwrite"}
 - premiere_inspect_multicam_item: {"item_id":"exact project item id"}
 - premiere_insert_multicam_item: {"item_id":"verified multicam project item id","seconds":0,"video_track":0,"audio_track":0,"mode":"insert|overwrite","expected":{"project_guid":"...","sequence_guid":"...","clips":[]}}
-- premiere_insert_media: {"path":"absolute media path","seconds":0,"video_track":0,"audio_track":0,"mode":"insert|overwrite"}
+- premiere_insert_media: {"path":"absolute media path","expected_sha256":"exact 64-hex SHA-256 REQUIRED for verified Blender/Remotion worker output, optional for ordinary media","seconds":0,"video_track":0,"audio_track":0,"mode":"insert|overwrite"}
 - premiere_trim_clip: {"kind":"video|audio","track":0,"clip_index":0,"start_seconds":0.0,"end_seconds":5.0}
 - premiere_roll_edit: {"kind":"video|audio","track":0,"left_clip_index":0,"right_clip_index":1,"boundary_seconds":5.0}
 - premiere_move_clip: {"kind":"video|audio","track":0,"clip_index":0,"delta_seconds":1.5}
