@@ -111,6 +111,23 @@ export type ChatResponse = {
   usage: UsageStats | null;
 };
 
+export type NativeWorkerStatus = {
+  schemaVersion: 1;
+  observedAtMs: number;
+  state: "idle" | "native_action_in_flight" | "lease_held_unattributed" | "recovery_required";
+  leaseOwnedByThisProcess: boolean;
+  crossProcessLeaseState: "unknown_not_probed";
+  actionId: string | null;
+  tool: string | null;
+  startedAtMs: number | null;
+  observedActionAgeMs: number | null;
+  recoveryPhase: string | null;
+  recoveryTaskId: string | null;
+  requiresOwnerReview: boolean;
+  progressHeartbeatVerified: false;
+  safeToAutoRetry: false;
+};
+
 export type RuntimeStatus = {
   shuvi_memory_bytes: number;
   shuvi_memory_mb: number;
