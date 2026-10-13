@@ -65,8 +65,8 @@ test("A01 approval/cancellation from UI still connects to native action authorit
    assert.ok(aliases.includes(name),name+" native wiring missing");
  }
  const nativeExecute=native.slice(native.indexOf("async fn execute_action("),native.indexOf("async fn execute_powershell("));
- assert.match(nativeExecute,/claim_monitored_native_execution\(state\.inner\(\)\)\?/);
- const monitored=native.slice(native.indexOf("fn claim_monitored_native_execution("),
+ assert.match(nativeExecute,/claim_monitored_native_execution\(state\.inner\(\),&app\)\?/);
+ const monitored=native.slice(native.indexOf("fn claim_monitored_native_execution<'a>("),
   native.indexOf("struct AcceptanceProbeGuard"));
  assert.match(monitored,/execution_lease::claim_single_execution\(&state.native_execution_owned\)\?/);
  assert.match(monitored,/native_worker_status::require_clear_for_new_dispatch/);
