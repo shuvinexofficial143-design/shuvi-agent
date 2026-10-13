@@ -27,7 +27,7 @@ import {
   type AgentOrchestrationState
 } from "./agent-orchestrator";
 
-import { taskGraphProgress, type GraphAuditEvent } from "./task-graph.mjs";
+import { taskGraphProgress, handoffContractFailure, type GraphAuditEvent } from "./task-graph.mjs";
 import { editingMasterContext, orchestrationWithMasterEditor } from "./master-editor.mjs";
 import { workerQueueView, nextWorkerTurn } from "./master-worker-queue.mjs";
 import { MODEL_ROLES, loadModelRoutes, validateModelRoute, selectTaskRoute } from "./model-routing.mjs";
@@ -605,10 +605,12 @@ function renderOrchestrationStatus(): void {
         ? ` — ${step.reason}`
         : "";
       const worker = laneById.get(step.step_id);
-      row.textContent = `${symbols[step.status]} [${worker?.worker ?? "master"}] ${step.title} (${worker?.status ?? step.status}${verified})${reason}`;
+      const missingHandoff = handoffContractFailure(orchestration.task_graph,step.step_id);
+      const handoffWarning = missingHandoff && worker?.status === "blocked" ? " — "+missingHandoff : "";
+      row.textContent = `${symbols[step.status]} [${worker?.worker ?? "master"}] ${step.title} (${worker?.status ?? step.status}${verified})${reason}${handoffWarning}`;
       const exactHandoff = worker?.handoffs.map(h => h.from_worker+" → "+h.to_worker+
         " · step "+h.from_step_id+" · Rust action "+h.action_id.slice(0,8)).join("; ");
-      row.title = step.reason ?? (exactHandoff || (step.evidence_verified
+      row.title = missingHandoff ?? step.reason ?? (exactHandoff || (step.evidence_verified
         ? "Exact typed-result and native audit receipt verified." : step.status));
       list.append(row);
     }
