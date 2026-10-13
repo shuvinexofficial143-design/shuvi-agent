@@ -1,9 +1,12 @@
 // Ephemeral progress only; the native Rust action audit owns authorization.
-export const createTask=()=>({phase:"planning",verified:0,tools:[],pending:null,reason:null});
+// Both packaged Shuvi UI surfaces share the same real worker/tool taxonomy.
+import {workerForTool} from "../../src/master-worker-queue.mjs";
+export const createTask=()=>({phase:"planning",verified:0,tools:[],usedActionIds:[],pending:null,reason:null});
 const valid=x=>typeof x==="string"&&/^[a-z][a-z0-9_]{0,79}$/.test(x);
 export function stageTask(s,id,tool,step){
  if(!s||s.pending||!["planning","paused"].includes(s.phase)||
   typeof id!=="string"||!id||id.length>128||!valid(tool)||
+  s.usedActionIds?.includes(id)||
   !Number.isSafeInteger(step)||step<1)return s;
  return {...s,phase:"awaiting_approval",pending:{id,tool,step},reason:null};
 }
@@ -12,7 +15,8 @@ export function executeTask(s,id){
 }
 export function verifyTask(s,id,tool,audited){
  if(!s||s.phase!=="executing"||s.pending?.id!==id||s.pending.tool!==tool||audited!==true)return s;
- return {...s,phase:"planning",verified:s.verified+1,tools:[...s.tools,tool].slice(-8),pending:null,reason:null};
+ return {...s,phase:"planning",verified:s.verified+1,tools:[...s.tools,tool].slice(-8),
+  usedActionIds:[...(s.usedActionIds??[]),id].slice(-48),pending:null,reason:null};
 }
 export function pauseTask(s,reason){
  if(!s)return s;
@@ -24,9 +28,13 @@ export function taskSummary(s){
  const next=s.pending?" · Step "+s.pending.step+" "+s.pending.tool+
   (s.phase==="executing"?" executing":" awaiting Allow once"):"";
  const stop=s.phase==="paused"?" · Paused ("+s.reason+")":"";
- return s.verified+" audited native step(s)"+next+stop+" · Overall task unverified.";
+ return s.verified+" audited native step(s)"+next+stop+
+  (s.pending?" · Worker lane: "+workerForTool(s.pending.tool):"")+
+  " · Overall task unverified.";
 }
 export function taskContext(s){
  return s?s.verified+" audited native step(s). Verified tools: "+
-  (s.tools.join(", ")||"none")+". Steps are not overall task completion.":"No audited step evidence.";
+  (s.tools.join(", ")||"none")+". Verified worker lanes: "+
+  ([...new Set(s.tools.map(workerForTool))].join(", ")||"none")+
+  ". Steps are not overall task completion.":"No audited step evidence.";
 }
