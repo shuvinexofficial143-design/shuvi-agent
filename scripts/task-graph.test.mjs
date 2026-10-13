@@ -970,3 +970,40 @@ test("a forged running import receipt cannot bypass final cross-app handoff admi
  assert.match(attempted.task_graph.steps[1].evidence.at(-1).summary,/accepted artifact SHA-256/);
  assert.equal(attempted.recovery_mode,"replan_required");
 });
+
+test("native batch receipt survives real coordinator dispatch and refuses modified restart manifest",()=>{
+ for(const tool of ["premiere_import_media","premiere_create_sequence_from_media"]){
+  const model=plan([
+   step("first",[],"blender_run_plan"),
+   step("second",[],"blender_run_plan"),
+   step("deliver",["first","second"],tool)
+  ]);
+  let state=initial(model);
+  state=done(state,proposal("first","blender_run_plan"));
+  const secondEvidence={status:"verified",worker:"blender",
+   full_plan_completed:true,verified_by_native_sha256:true,
+   artifact:{path:"/repo/blender-two.png",sha256:"c".repeat(64),bytes:4096}};
+  state=done(state,proposal("second","blender_run_plan"),{
+   ...result("blender_run_plan"),stdout:JSON.stringify(secondEvidence)
+  });
+  const importProposal=proposal("deliver",tool,{arguments:{
+   paths:["/repo/blender-two.png","/repo/blender.png"],
+   expected_sha256:["c".repeat(64),"b".repeat(64)],
+   ...(tool==="premiere_create_sequence_from_media"?{name:"Two images"}:{})
+  }});
+  assert.equal(graph.nextWorkerTurn(state.task_graph).batch_sources.length,2);
+  assert.match(agent.orchestrationContext(state),/verified native batch sources/);
+  assert.equal(agent.evaluateProposal(state,importProposal).allowed,true);
+  state=done(state,importProposal);
+  const manifest=state.task_graph.steps[2].evidence[0].artifact;
+  assert.equal(manifest.kind,"premiere_worker_batch");
+  assert.equal(manifest.import_action_id,actionIdFor(3));
+  assert.deepEqual(manifest.sources.map(x=>x.path),
+   ["/repo/blender-two.png","/repo/blender.png"]);
+  assert.equal(graph.taskGraphProgress(state.task_graph).completed,3);
+  assert.equal(agent.normalizeAgentOrchestrationState(json(state)).recovery_mode,"normal");
+  const forged=json(state);
+  forged.task_graph.steps[2].evidence[0].artifact.sources[0].sha256="d".repeat(64);
+  assert.notEqual(agent.normalizeAgentOrchestrationState(forged).recovery_mode,"normal");
+ }
+});
