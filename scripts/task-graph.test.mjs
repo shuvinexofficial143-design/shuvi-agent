@@ -781,3 +781,17 @@ test("Blender inspection-to-model-to-Premiere insertion is a real typed worker c
  assert.equal(graph.taskGraphProgress(state.task_graph).completed,3);
  assert.equal(graph.nextWorkerTurn(state.task_graph),null);
 });
+
+test("an untrusted caller cannot bypass bindPreparedAction to reuse an audited worker receipt",()=>{
+ const previous=done(initial(),proposal());
+ const newProposal=proposal("edit","replace_text");
+ const running=agent.recordProposalStart(previous,newProposal);
+ const oldId=previous.task_graph.steps[0].evidence[0].action_id;
+ const target=running.task_graph.steps.find(x=>x.step_id==="edit");
+ target.running.action_id=oldId; // forged local state bypasses normal binding
+ const attempted=agent.recordToolOutcome(running,newProposal,"success",result("replace_text"),true,
+  oldId,auditReceipt(oldId,"replace_text",true,"executed"));
+ assert.equal(attempted.task_graph.steps[1].status,"failed");
+ assert.equal(graph.taskGraphProgress(attempted.task_graph).completed,1);
+ assert.equal(attempted.task_graph.steps[1].evidence.at(-1).source,"local_failure");
+});
