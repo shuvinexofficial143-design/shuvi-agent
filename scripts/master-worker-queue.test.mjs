@@ -341,4 +341,12 @@ test("quarantine failed, forged-complete and competing-running checkpoints",()=>
  assert.equal(workerSupervisorView({steps:[{}]}).state,"recovery_required");
  assert.equal(workerSupervisorView({steps:[]}).quarantined,true);
  assert.equal(workerSupervisorView(null).state,"idle");
+ const duplicate={steps:[step("same","read_file"),step("same","premiere_context")]};
+ assert.equal(workerSupervisorView(duplicate).state,"recovery_required");
+ assert.match(graphDependencyFailure(duplicate,{tool:"read_file",task_step_id:"same"}),
+  /Native worker queue checkpoint is malformed/);
+ const oversized={steps:Array.from({length:49},(_,i)=>step("s"+i,"read_file"))};
+ assert.equal(workerSupervisorView(oversized).state,"recovery_required");
+ assert.match(graphDependencyFailure(oversized,{tool:"read_file",task_step_id:"s48"}),
+  /Native worker queue checkpoint is malformed/);
 });
