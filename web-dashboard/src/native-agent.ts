@@ -207,6 +207,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  // Terminal disk error latches the native executor closed across subsequent
  // sends or error handlers, until an explicit owner clear succeeds.
  let recoveryCheckpointFailed=false;
+ // Only a successfully answered, action-free SAME-SESSION task can be
+ // retired on the owner's next independent instruction without old execution.
+ // This marker is never restored after a process restart.
+ let cleanNoActionPausedBudget:NativeTaskBudget|null=null;
  const recoveryTaskId=(budget:NativeTaskBudget):string|null=>{
   const existing=taskRecoveryIds.get(budget);
   if(existing)return existing;
@@ -277,6 +281,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     throw Error("Local recovery journal could not be cleared");
    rustRecovery=null;
    recoveryCheckpointFailed=false;
+   cleanNoActionPausedBudget=null;
    recoveryAcknowledged=true;
    recoveryNotice.hidden=true;
    recoveryCheck.hidden=true;
@@ -855,6 +860,29 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    if(!text.trim()||text.length>2500)return {ok:false,error:"Invalid command length."};
    if(route.role!=="chat"&&!recoveryAcknowledged)return {ok:false,error:
     "The previous Windows task may have an unresolved action or paid request. Review Rust Audit, then explicitly acknowledge and clear the interrupted task journal before starting another Windows task. Nothing was sent."};
+   if(route.role!=="chat"&&!waitingForChoice&&cleanNoActionPausedBudget){
+    // A known successful answer with ZERO staged Windows actions is terminal.
+    // The owner's fresh command can retire it, but only after BOTH stores
+    // clear. Uncertain/recovered/acted-on tasks never use this shortcut.
+    sending=true;
+    try{
+     const prior=readNativeRecovery(recoveryStorage);
+     if(!prior||prior.version!==2||prior.phase!=="paused"||
+        prior.stagedActions!==0||prior.taskId!==taskRecoveryIds.get(cleanNoActionPausedBudget))
+      throw Error("Unverified no-action recovery record");
+     await invoke<void>("clear_native_recovery");
+     if(!clearNativeRecovery(recoveryStorage))throw Error("Could not clear local completed record");
+     cleanNoActionPausedBudget=null;
+    }catch{
+     recoveryCheckpointFailed=true;
+     recoveryAcknowledged=false;
+     recoveryNotice.textContent="Could not retire the previous action-free task in both recovery stores. Review and acknowledge before another Windows task.";
+     recoveryNotice.hidden=false;
+     recoveryDismiss.hidden=false;
+     return {ok:false,error:"Previous action-free task recovery could not be retired. No paid request or Windows action sent."};
+    }finally{sending=false;}
+   }
+   if(route.role!=="chat"&&waitingForChoice)cleanNoActionPausedBudget=null;
    const prev=histories.get(threadId)||[];
    const ownerBudget=waitingForChoice ? taskBudgets.get(threadId) : undefined;
    const taskBudget=ownerBudget ?? createNativeTaskBudget(Number(budgetSelect.value));
@@ -964,7 +992,9 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      }
     }else{
      if(route.role!=="chat"){
-      await persistRecovery(taskBudget,"paused");
+      const storedPause=await persistRecovery(taskBudget,"paused");
+      if(storedPause&&taskBudget.stagedActions===0&&!recoveryCheckpointFailed)
+       cleanNoActionPausedBudget=taskBudget;
       updateTask(threadId,pauseTask(createTask(),nextRoot?"awaiting_clarification":"no_tool"));
       const likeToolJson=/["']tool["']\s*:/.test(reply);
       showActionFeedback(nextRoot
