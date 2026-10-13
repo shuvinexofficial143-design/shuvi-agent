@@ -741,3 +741,43 @@ test("Master sees only permission-gated, audit-proven next worker handoffs",()=>
  assert.match(agent.orchestrationContext(state),/next audited-safe worker handoff/);
  assert.match(agent.orchestrationContext(state),/normal typed prepare\/Allow once\/audit flow/);
 });
+
+test("typed result without matching action receipt cannot mark graph completed or unlock worker",()=>{
+ const g=json(initial().task_graph);
+ g.steps[0].status="completed";
+ g.steps[0].evidence=[{
+  step_id:"inspect",tool:"read_file",fingerprint:"claimed",action_id:null,
+  audit_event:null,success:true,outcome:"success",source:"typed_result",
+  orchestration_step:1,summary:"Model says done"
+ }];
+ assert.equal(graph.taskGraphProgress(g).completed,0);
+ assert.match(graph.graphDependencyFailure(g,proposal("edit","replace_text")),/Task dependency missing: inspect/);
+ assert.equal(graph.nextWorkerTurn(g),null,
+  "completed-looking but unaudited evidence must not become cross-worker authority");
+});
+
+test("Blender inspection-to-model-to-Premiere insertion is a real typed worker chain",()=>{
+ const p=plan([
+  step("inspect3d",[],"blender_inspect"),
+  step("model3d",["inspect3d"],"blender_run_plan"),
+  step("insert",["model3d"],"premiere_insert_media")
+ ]);
+ let state=initial(p);
+ assert.equal(graph.nextWorkerTurn(state.task_graph).worker,"blender");
+ assert.equal(agent.evaluateProposal(state,proposal("insert","premiere_insert_media")).allowed,false);
+ state=done(state,proposal("inspect3d","blender_inspect"));
+ assert.equal(graph.nextWorkerTurn(state.task_graph).step_id,"model3d");
+ state=done(state,proposal("model3d","blender_run_plan"));
+ const next=graph.nextWorkerTurn(state.task_graph);
+ assert.equal(next.step_id,"insert");
+ assert.equal(next.worker,"premiere");
+ assert.equal(next.handoffs[0].from_worker,"blender");
+ assert.equal(next.handoffs[0].to_worker,"premiere");
+ assert.equal(next.requires_owner_approval,true);
+ assert.equal(graph.taskGraphProgress(state.task_graph).completed,2);
+ const saved=json(state.task_graph);
+ assert.equal(graph.restoreTaskGraph(saved,state.next_step,state.max_steps).ok,true);
+ state=done(state,proposal("insert","premiere_insert_media"));
+ assert.equal(graph.taskGraphProgress(state.task_graph).completed,3);
+ assert.equal(graph.nextWorkerTurn(state.task_graph),null);
+});
