@@ -59,7 +59,7 @@ test("real typed action journal is published before execution and finalized ONLY
 test("supervisor pulse cannot fabricate progress, cancel a desktop task or clear ownership",()=>{
  assert.match(status,/status.supervisor_health="supervisor_tick_stale"/);
  assert.match(status,/status.supervisor_health="rust_supervisor_observed"/);
- assert.match(status,/status.progress_heartbeat_verified:false/);
+ assert.match(status,/progress_heartbeat_verified:false/);
  assert.match(jobs,/A tick proves only the supervisor loop is alive/);
  assert.match(ui,/host.supervisorHealth==="rust_supervisor_observed"/);
  assert.match(ui,/host.supervisorHealth==="supervisor_tick_stale"/);
