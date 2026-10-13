@@ -33,6 +33,16 @@
   action receipts, changed path/hash or a forged saved checkpoint fail closed.
   The queue displays the import as blocked; other independent worker lanes
   are unaffected.
+- For an approved `blender_run_plan`, the Rust worker's verified
+  `artifact.path`, `artifact.sha256`, and bounded byte count are retained
+  with the exact approved action UUID. Premiere PNG import is admitted only
+  for that same verified path. A `.blend` scene file is **not** a Premiere
+  media import and never satisfies the PNG handoff.
+- On resume, the next worker-turn context exposes the matching source action,
+  path and SHA-256 as **data only**, and the dashboard shows the bounded hash
+  fingerprint. This is read-only planning information, not permission for
+  automatic insertion, trusted instructions from filenames, or a parallel
+  independent Worker process.
 - **Not a live OS hash check at Premiere dispatch.** The JS task graph verifies
   provenance *of the Rust-verified acceptance at the time it ran*. A file could
   change after acceptance. Actual pre-import native hash rechecking, project
