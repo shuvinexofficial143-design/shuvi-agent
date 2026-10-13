@@ -121,8 +121,9 @@ pub(crate) fn attach_durable_job(
     let Some(job)=job else{return status};
     status.durable_job_phase=Some(job.phase.clone());
     status.durable_job_action_id=Some(job.action_id.clone());
-    status.supervisor_heartbeat_at_ms=Some(job.updated_at_ms);
-    status.supervisor_heartbeat_age_ms=Some(now.saturating_sub(job.updated_at_ms));
+    status.supervisor_heartbeat_at_ms=(job.heartbeat_seq>0).then_some(job.updated_at_ms);
+    status.supervisor_heartbeat_age_ms=(job.heartbeat_seq>0)
+        .then_some(now.saturating_sub(job.updated_at_ms));
     status.supervisor_heartbeat_seq=Some(job.heartbeat_seq);
     if job.phase=="running" {
         if !status.lease_owned_by_this_process
@@ -135,6 +136,8 @@ pub(crate) fn attach_durable_job(
             status.supervisor_health="supervisor_tick_stale".into();
             // Still executing in this process; do not claim the host crashed
             // or release the execution slot based only on clock time.
+        } else if job.heartbeat_seq==0 {
+            status.supervisor_health="supervisor_start_record_only".into();
         } else {
             status.supervisor_health="rust_supervisor_observed".into();
         }
@@ -218,6 +221,21 @@ mod tests{
         assert!(require_clear_for_new_dispatch(&HashMap::new(),&starts).is_err());
         assert!(require_clear_for_new_dispatch(&tools,&HashMap::new()).is_err());
         assert!(require_clear_for_new_dispatch(&HashMap::new(),&HashMap::new()).is_ok());
+    }
+    #[test]
+    fn durable_start_record_is_not_fabricated_as_a_heartbeat_tick(){
+        let id=uuid();
+        let record=crate::native_worker_job::NativeJob{
+            version:1,action_id:id,tool:"read_file".into(),phase:"running".into(),
+            started_at_ms:1_000,updated_at_ms:1_000,heartbeat_seq:0,audit_success:None
+        };
+        let (mut tools,starts)=running();
+        tools.insert(uuid(),"premiere_insert_media".into());
+        let live=attach_durable_job(snapshot(true,&tools,&starts,None,1_500),
+            Some(&record),1_500);
+        assert_eq!(live.state,"recovery_required");
+        assert_eq!(live.supervisor_heartbeat_at_ms,None);
+        assert_eq!(live.supervisor_heartbeat_age_ms,None);
     }
     #[test]
     fn persisted_running_job_without_the_same_live_rust_action_needs_owner_review(){
