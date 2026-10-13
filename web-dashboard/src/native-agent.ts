@@ -274,6 +274,9 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    recoveryNotice.textContent="Resolve the active Windows approval/request before clearing the recovery record.";
    return;
   }
+  // Keep owner clear exclusive with submit/approval and other clear clicks
+  // throughout the asynchronous Rust disk operation.
+  sending=true;
   recoveryDismiss.disabled=true;
   try{
    await invoke<void>("clear_native_recovery");
@@ -297,8 +300,15 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    recoveryCheck.hidden=true;
    recoveryDismiss.hidden=true;
   }catch{
+   // Clearing Rust before WebView removal can leave split evidence. Neither
+   // store can authorize a fresh task until both are explicitly cleared.
+   recoveryCheckpointFailed=true;
+   recoveryAcknowledged=false;
    recoveryNotice.textContent="Could not clear all persistent recovery evidence. New Windows tasks remain blocked.";
+   recoveryNotice.hidden=false;
+   recoveryDismiss.hidden=false;
   }finally{
+   sending=false;
    recoveryDismiss.disabled=false;
   }
  });
