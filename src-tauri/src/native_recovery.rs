@@ -85,8 +85,9 @@ fn path(app:&AppHandle)->Result<PathBuf,String>{
 fn validate_advance(old:Option<&NativeRecoveryRecord>,next:&NativeRecoveryRecord)->Result<(),String>{
     let revision=next.revision.ok_or("New recovery checkpoint requires an ordinal.")?;
     match old {
-        None if revision==1=>Ok(()),
-        None=>Err("First native recovery revision must be one.".into()),
+        None if revision==1&&next.phase=="model_reserved"&&next.model_requests==1&&
+            next.staged_actions==0&&next.action_id.is_none()=>Ok(()),
+        None=>Err("First recovery checkpoint must reserve a single model request without an action.".into()),
         Some(previous)=>{
             if previous.version!=2||previous.task_id!=next.task_id{
                 return Err("Prior recovery task identity requires owner acknowledgement.".into());
@@ -98,6 +99,17 @@ fn validate_advance(old:Option<&NativeRecoveryRecord>,next:&NativeRecoveryRecord
             if next.max_actions!=previous.max_actions||next.expires_at!=previous.expires_at||
                next.model_requests<previous.model_requests||next.staged_actions<previous.staged_actions{
                 return Err("Native recovery task budget or counters regressed.".into());
+            }
+            // A possibly dispatched action cannot become a harmless paused
+            // state; the audit has to be verified, or the outcome stays unknown.
+            if next.phase=="paused"&&previous.phase=="executing"{
+                return Err("In-flight Windows execution cannot be downgraded to paused.".into());
+            }
+            // An old provider reservation cannot be made again from an
+            // awaiting, executing or unknown checkpoint without review.
+            if next.phase=="model_reserved"&&
+               !matches!(previous.phase.as_str(),"paused"|"audit_verified"|"model_reserved"){
+                return Err("Unresolved native action cannot reserve a new paid request.".into());
             }
             // A new revision alone cannot authorize a second execution of
             // an old approved action or forge an audit success.
@@ -252,6 +264,24 @@ mod tests{
             revision:Some(2),staged_actions:1,..read}).is_err());
         assert!(validate_advance(Some(&executed),&NativeRecoveryRecord{
             revision:Some(2),phase:"model_reserved".into(),..executed.clone()}).is_err());
+    }
+    #[test]
+    fn cannot_downgrade_inflight_execution_or_reserve_again_from_unknown(){
+        let base=state();
+        assert!(validate_advance(None,&base).is_err(),"first checkpoint must be model_reserved");
+        let reserved=NativeRecoveryRecord{
+            phase:"model_reserved".into(),action_id:None,staged_actions:0,..base.clone()};
+        assert!(validate_advance(None,&reserved).is_ok());
+        let inflight=NativeRecoveryRecord{revision:Some(2),..base.clone()};
+        let paused=NativeRecoveryRecord{
+            revision:Some(2),phase:"paused".into(),..base.clone()};
+        assert!(validate_advance(Some(&base),&paused).is_err());
+        let uncertain=NativeRecoveryRecord{
+            revision:Some(2),phase:"outcome_unknown".into(),..base.clone()};
+        let paid_again=NativeRecoveryRecord{
+            revision:Some(3),phase:"model_reserved".into(),model_requests:2,..base.clone()};
+        assert!(validate_advance(Some(&uncertain),&paid_again).is_err());
+        assert!(validate_advance(Some(&base),&inflight).is_err());
     }
     #[test]
     fn refuses_overwriting_orphaned_or_stale_checkpoint_on_disk(){
