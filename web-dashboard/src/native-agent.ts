@@ -203,6 +203,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  // Task identity is in-memory authorization context; only a UUID is persisted.
  // Recovered UUIDs are NEVER promoted back into runnable budgets.
  const taskRecoveryIds=new WeakMap<NativeTaskBudget,string>();
+ const taskRecoveryRevisions=new WeakMap<NativeTaskBudget,number>();
+ // Terminal disk error latches the native executor closed across subsequent
+ // sends or error handlers, until an explicit owner clear succeeds.
+ let recoveryCheckpointFailed=false;
  const recoveryTaskId=(budget:NativeTaskBudget):string|null=>{
   const existing=taskRecoveryIds.get(budget);
   if(existing)return existing;
@@ -272,6 +276,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    if(!clearNativeRecovery(recoveryStorage))
     throw Error("Local recovery journal could not be cleared");
    rustRecovery=null;
+   recoveryCheckpointFailed=false;
    recoveryAcknowledged=true;
    recoveryNotice.hidden=true;
    recoveryCheck.hidden=true;
@@ -288,10 +293,13 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   if(!recoveryStorage)return false;
   const taskId=recoveryTaskId(b);
   if(!taskId)return false;
+  const revision=(taskRecoveryRevisions.get(b)??0)+1;
+  if(!Number.isSafeInteger(revision))return false;
   const saved=writeNativeRecovery(recoveryStorage,{
-   version:2,taskId,maxActions:b.maxActions,stagedActions:b.stagedActions,
+   version:2,taskId,revision,maxActions:b.maxActions,stagedActions:b.stagedActions,
    modelRequests:b.modelRequests,expiresAt:b.expiresAt,phase,actionId
   });
+  if(saved)taskRecoveryRevisions.set(b,revision);
   if(saved&&phase==="outcome_unknown"){
    // Protect an uncertain action/provider request even without a restart.
    recoveryAcknowledged=false;
@@ -306,6 +314,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   // Any failed half of the dual-store checkpoint is an unresolved recovery
   // boundary. Never let the next task overwrite this evidence in-session.
   const failClosed=()=>{
+   recoveryCheckpointFailed=true;
    recoveryAcknowledged=false;
    recoveryNotice.textContent="Native recovery checkpoint failed or is inconsistent. A new Windows task remains blocked until explicit owner review and journal acknowledgement. No automatic retry.";
    recoveryNotice.hidden=false;
@@ -313,6 +322,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    recoveryDismiss.hidden=false;
    return false;
   };
+  if(recoveryCheckpointFailed)return failClosed();
   if(!writeRecovery(b,phase,actionId))return failClosed();
   const record=readNativeRecovery(recoveryStorage);
   if(!record||record.version!==2)return failClosed();
