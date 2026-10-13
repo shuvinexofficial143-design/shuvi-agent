@@ -4,3 +4,8 @@ export declare function readNativeRecovery(store:Storage|null,now?:number):Nativ
 export declare function writeNativeRecovery(store:Storage|null,record:Omit<NativeRecoveryRecord,"version"|"updatedAt">,now?:number):boolean;
 export declare function clearNativeRecovery(store:Storage|null):boolean;
 export declare function validateNativeRecoveryRecord(record:unknown,now?:number):NativeRecoveryRecord|null;
+
+export type NativeRecoveryInspection={kind:"empty"|"valid"|"invalid"|"unavailable";record:NativeRecoveryRecord|null};
+export type NativeRecoveryAssessment={requiresReview:boolean;reason:"invalid_webview"|"missing_webview"|"missing_rust"|"invalid_rust"|"mismatched_stores"|"matched_previous_task"|"no_previous_task"};
+export declare function inspectNativeRecoveryStore(store:Storage|null,now?:number):NativeRecoveryInspection;
+export declare function assessNativeRecoveryPair(webview:NativeRecoveryInspection,rust:unknown,now?:number):NativeRecoveryAssessment;
