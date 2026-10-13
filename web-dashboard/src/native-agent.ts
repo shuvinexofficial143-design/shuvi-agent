@@ -200,6 +200,17 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  const taskStates=new Map<string,ReturnType<typeof createTask>>();
  const taskGoalRoots=new Map<string,string>();
  const taskBudgets=new Map<string,NativeTaskBudget>();
+ // Task identity is in-memory authorization context; only a UUID is persisted.
+ // Recovered UUIDs are NEVER promoted back into runnable budgets.
+ const taskRecoveryIds=new WeakMap<NativeTaskBudget,string>();
+ const recoveryTaskId=(budget:NativeTaskBudget):string|null=>{
+  const existing=taskRecoveryIds.get(budget);
+  if(existing)return existing;
+  const id=globalThis.crypto?.randomUUID?.();
+  if(typeof id!=="string"||!id)return null; // no insecure random fallback
+  taskRecoveryIds.set(budget,id);
+  return id;
+ };
  // Separate from the legacy Desktop checkpoint. Stored records are NEVER
  // restored as model-call or native-tool execution authority.
  const recoveryStorage=(()=>{try{return window.localStorage??null;}catch{return null;}})();
@@ -275,8 +286,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   // Installed native commands MUST NOT bypass recovery when localStorage
   // is missing, denied, or throws. Ordinary Chat remains independent.
   if(!recoveryStorage)return false;
+  const taskId=recoveryTaskId(b);
+  if(!taskId)return false;
   const saved=writeNativeRecovery(recoveryStorage,{
-   maxActions:b.maxActions,stagedActions:b.stagedActions,
+   version:2,taskId,maxActions:b.maxActions,stagedActions:b.stagedActions,
    modelRequests:b.modelRequests,expiresAt:b.expiresAt,phase,actionId
   });
   if(saved&&phase==="outcome_unknown"){
@@ -290,12 +303,21 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   return saved;
  };
  const persistRecovery=async(b:NativeTaskBudget,phase:string,actionId:string|null=null):Promise<boolean>=>{
-  // Rust fsynced checkpoint must accept the same bounded local record.
-  if(!writeRecovery(b,phase,actionId))return false;
+  // Any failed half of the dual-store checkpoint is an unresolved recovery
+  // boundary. Never let the next task overwrite this evidence in-session.
+  const failClosed=()=>{
+   recoveryAcknowledged=false;
+   recoveryNotice.textContent="Native recovery checkpoint failed or is inconsistent. A new Windows task remains blocked until explicit owner review and journal acknowledgement. No automatic retry.";
+   recoveryNotice.hidden=false;
+   recoveryCheck.hidden=!actionId;
+   recoveryDismiss.hidden=false;
+   return false;
+  };
+  if(!writeRecovery(b,phase,actionId))return failClosed();
   const record=readNativeRecovery(recoveryStorage);
-  if(!record)return false;
+  if(!record||record.version!==2)return failClosed();
   try{await invoke<void>("save_native_recovery",{record});return true;}
-  catch{return false;}
+  catch{return failClosed();}
  };
  const taskEvidence=new Map<string,ReturnType<typeof newEvidence>>();
  const verifiedWindows=new Map<string,NonNullable<ReturnType<typeof windowGoalEvidence>>>();
