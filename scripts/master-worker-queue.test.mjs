@@ -301,6 +301,7 @@ test("one native execution lease blocks DIFFERENT app workers until audit comple
  for(const [step_id,tool] of [["premiere","premiere_context"],["ae","after_effects_inspect"],["code","read_file"]]){
    assert.match(graphDependencyFailure(g,{tool,task_step_id:step_id}),/Worker lane is busy/);
  }
+ g.steps[0].running={fingerprint:"exact local proposal",orchestration_step:1,action_id:null};
  const pending=workerSupervisorView(g);
  assert.equal(pending.state,"awaiting_native_preparation");
  assert.equal(pending.step_id,"blender");
@@ -337,4 +338,7 @@ test("quarantine failed, forged-complete and competing-running checkpoints",()=>
  assert.equal(uncertain.state,"recovery_required");
  assert.match(uncertain.reason,/Multiple native actions/);
  assert.deepEqual(workerQueueView(g).ready_job_ids,[]);
+ assert.equal(workerSupervisorView({steps:[{}]}).state,"recovery_required");
+ assert.equal(workerSupervisorView({steps:[]}).quarantined,true);
+ assert.equal(workerSupervisorView(null).state,"idle");
 });
