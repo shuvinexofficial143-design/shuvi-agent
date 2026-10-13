@@ -229,11 +229,11 @@ mod tests{
             version:1,action_id:id,tool:"read_file".into(),phase:"running".into(),
             started_at_ms:1_000,updated_at_ms:1_000,heartbeat_seq:0,audit_success:None
         };
-        let (mut tools,starts)=running();
-        tools.insert(uuid(),"premiere_insert_media".into());
+        let (tools,starts)=running();
         let live=attach_durable_job(snapshot(true,&tools,&starts,None,1_500),
             Some(&record),1_500);
-        assert_eq!(live.state,"recovery_required");
+        assert_eq!(live.state,"native_action_in_flight");
+        assert_eq!(live.supervisor_health,"supervisor_start_record_only");
         assert_eq!(live.supervisor_heartbeat_at_ms,None);
         assert_eq!(live.supervisor_heartbeat_age_ms,None);
     }
