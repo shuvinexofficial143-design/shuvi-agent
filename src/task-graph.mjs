@@ -1,5 +1,5 @@
 import { workerQueueView, nextWorkerTurn, evidenceForStep, handoffContractFailure } from "./master-worker-queue.mjs";
-import {parseWorkerArtifact,validWorkerArtifact,artifactHandoffFailure} from "./worker-artifact-lineage.mjs";
+import {parseWorkerArtifact,validWorkerArtifact,artifactHandoffFailure,workerBatchSources} from "./worker-artifact-lineage.mjs";
 export { nextWorkerTurn, handoffContractFailure };
 // Pure bounded coordinator. Provider metadata is never execution authority.
 import { MAX_RUNTIME_ACTIONS, allowedTaskBudget } from "./task-runtime-budget.mjs";
@@ -226,12 +226,20 @@ export function finishTaskStep(
   // Premiere import by skipping final Remotion acceptance and insertion plan.
   const handoffSafe=!handoffContractFailure(graph,target.step_id)
     &&!artifactHandoffFailure(graph,target.step_id,proposal);
+  const batchSources=workerBatchSources(graph,target.step_id);
   const needsArtifact=["blender_run_plan","motion_graphics_accept_final_remotion",
-    "motion_graphics_plan_premiere_insertion"].includes(proposal.tool);
+    "motion_graphics_plan_premiere_insertion"].includes(proposal.tool)||Boolean(batchSources);
   const artifact=typed&&outcome==="success"&&result.success===true
-    ?parseWorkerArtifact(proposal.tool,result.stdout,preparedActionId):null;
+    ?batchSources
+      ?{kind:"premiere_worker_batch",import_action_id:preparedActionId,
+        sources:Array.isArray(proposal.arguments?.paths)
+         ?proposal.arguments.paths.map(path=>batchSources.find(src=>src.path===path))
+         :[]}
+      :parseWorkerArtifact(proposal.tool,result.stdout,preparedActionId)
+    :null;
+  const artifactValid=!needsArtifact||validWorkerArtifact(artifact,proposal.tool,preparedActionId);
   const success = outcome === "success" && typed && result.success === true
-    && handoffSafe && (!needsArtifact||artifact!==null)
+    && handoffSafe && artifactValid
     && (proposal.tool !== "run_project_task" || result.exit_code === 0);
   const evidence = { step_id: target.step_id, tool: proposal.tool, fingerprint,
     action_id: actionId(preparedActionId) ? preparedActionId : null,
@@ -241,7 +249,7 @@ export function finishTaskStep(
     ...(success&&artifact?{artifact}:{}),
     summary: success ? "Typed tool and Rust audit receipt matched the exact prepared action." :
       !handoffSafe ? "Cross-app action cannot complete without exact accepted artifact SHA-256, plan and permission receipts." :
-      needsArtifact&&!artifact ? "Native worker output lacked an authenticated Blender artifact, final acceptance, or insertion-plan identity." :
+      needsArtifact&&!artifactValid ? "Native worker batch or render lacked exact audited artifact SHA-256 provenance." :
       "Action lacked matching typed result and Rust audit evidence for the bound prepared action." };
   return refreshTaskGraph({ ...graph, steps: graph.steps.map(s => s !== target ? s :
     { ...s, status: success ? "completed" : "failed", running: null, blocked_reason: null,
