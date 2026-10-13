@@ -173,6 +173,13 @@ export function bindTaskStepAction(graph, proposal, fingerprint, orchestrationSt
   if (target.running.action_id != null && target.running.action_id !== preparedActionId) {
     return fail("Task step is already bound to a different prepared action.");
   }
+  // A native prepared-action UUID is single-use across the entire graph.
+  // Never let a later worker inherit another worker's audit receipt.
+  if (graph.steps.some(s => s !== target &&
+    (s.running?.action_id === preparedActionId ||
+      s.evidence.some(e => e.action_id === preparedActionId)))) {
+    return fail("Prepared action ID has already been used by another worker step.");
+  }
   return { ok: true, graph: { ...graph, steps: graph.steps.map(s => s !== target ? s :
     { ...s, running: { ...s.running, action_id: preparedActionId } }) } };
 }
@@ -244,6 +251,7 @@ export function restoreTaskGraph(value, nextStep, maxSteps = GRAPH_LIMIT) {
   let count = 0;
   const interrupted = [];
   const seenNumbers = new Set();
+  const seenActionIds = new Set();
   const steps = [];
   for (const s of value.steps) {
     if (!["pending", "ready", "running", "completed", "failed", "blocked", "skipped"].includes(s.status)
@@ -261,6 +269,10 @@ export function restoreTaskGraph(value, nextStep, maxSteps = GRAPH_LIMIT) {
           || (e.success && (!actionId(e.action_id) || e.audit_event !== "executed"
               || e.source !== "typed_result" || e.outcome !== "success" || e.tool !== s.expected_tool))
           || (!e.success && e.outcome === "success")) return fail("Invalid saved completion evidence.");
+      if (e.action_id !== null) {
+        if (seenActionIds.has(e.action_id)) return fail("Duplicate native action ID in saved worker evidence.");
+        seenActionIds.add(e.action_id);
+      }
       seenNumbers.add(e.orchestration_step);
       count++;
     }
@@ -275,6 +287,11 @@ export function restoreTaskGraph(value, nextStep, maxSteps = GRAPH_LIMIT) {
           || s.running.orchestration_step !== nextStep || nextStep > MAX_RUNTIME_ACTIONS
           || (s.running.action_id !== null && !actionId(s.running.action_id)))
         return fail("Invalid saved in-flight action.");
+      if (s.running.action_id !== null) {
+        if (seenActionIds.has(s.running.action_id))
+          return fail("Interrupted native action ID was already used by another worker.");
+        seenActionIds.add(s.running.action_id);
+      }
       interrupted.push(s.running.fingerprint);
       restored = { ...restored, status: "failed", evidence: [...restored.evidence, {
         step_id: s.step_id, tool: s.expected_tool, fingerprint: s.running.fingerprint,
