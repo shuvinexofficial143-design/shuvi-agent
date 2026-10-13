@@ -21,6 +21,13 @@ pub(crate) struct NativeWorkerStatus {
     pub requires_owner_review:bool,
     pub progress_heartbeat_verified:bool,
     pub safe_to_auto_retry:bool,
+    // Durable Rust supervisor pulse, not a tool/app progress heartbeat.
+    pub durable_job_phase:Option<String>,
+    pub durable_job_action_id:Option<String>,
+    pub supervisor_heartbeat_at_ms:Option<u64>,
+    pub supervisor_heartbeat_age_ms:Option<u64>,
+    pub supervisor_heartbeat_seq:Option<u64>,
+    pub supervisor_health:String,
 }
 
 /// Called only *after* acquiring Rust's exclusive native desktop lease.
@@ -97,7 +104,44 @@ pub(crate) fn snapshot(
         requires_owner_review,
         progress_heartbeat_verified:false,
         safe_to_auto_retry:false,
+        durable_job_phase:None,durable_job_action_id:None,
+        supervisor_heartbeat_at_ms:None,supervisor_heartbeat_age_ms:None,
+        supervisor_heartbeat_seq:None,supervisor_health:"not_observed".into(),
     }
+}
+
+/// A journal's heartbeat proves the Rust supervisor was scheduled, NOT
+/// that Adobe/Blender or an individual tool progressed. A stale heartbeat
+/// must never cancel, unlock or replay a native action.
+pub(crate) fn attach_durable_job(
+    mut status:NativeWorkerStatus,
+    job:Option<&crate::native_worker_job::NativeJob>,
+    now:u64,
+)->NativeWorkerStatus{
+    let Some(job)=job else{return status};
+    status.durable_job_phase=Some(job.phase.clone());
+    status.durable_job_action_id=Some(job.action_id.clone());
+    status.supervisor_heartbeat_at_ms=Some(job.updated_at_ms);
+    status.supervisor_heartbeat_age_ms=Some(now.saturating_sub(job.updated_at_ms));
+    status.supervisor_heartbeat_seq=Some(job.heartbeat_seq);
+    if job.phase=="running" {
+        if !status.lease_owned_by_this_process
+           ||status.action_id.as_deref()!=Some(job.action_id.as_str())
+           ||status.state!="native_action_in_flight" {
+            status.state="recovery_required".into();
+            status.requires_owner_review=true;
+            status.supervisor_health="unattributed_or_interrupted".into();
+        } else if now.saturating_sub(job.updated_at_ms)>16_000 {
+            status.supervisor_health="supervisor_tick_stale".into();
+            // Still executing in this process; do not claim the host crashed
+            // or release the execution slot based only on clock time.
+        } else {
+            status.supervisor_health="rust_supervisor_observed".into();
+        }
+    } else {
+        status.supervisor_health="last_action_audited".into();
+    }
+    status
 }
 
 #[cfg(test)]
@@ -174,6 +218,32 @@ mod tests{
         assert!(require_clear_for_new_dispatch(&HashMap::new(),&starts).is_err());
         assert!(require_clear_for_new_dispatch(&tools,&HashMap::new()).is_err());
         assert!(require_clear_for_new_dispatch(&HashMap::new(),&HashMap::new()).is_ok());
+    }
+    #[test]
+    fn persisted_running_job_without_the_same_live_rust_action_needs_owner_review(){
+        let job=crate::native_worker_job::NativeJob{
+            version:1,action_id:uuid(),tool:"premiere_insert_media".into(),
+            phase:"running".into(),started_at_ms:1_000,
+            updated_at_ms:2_000,heartbeat_seq:2,audit_success:None
+        };
+        let idle=snapshot(false,&HashMap::new(),&HashMap::new(),None,7_000);
+        let recovered=attach_durable_job(idle,Some(&job),7_000);
+        assert_eq!(recovered.state,"recovery_required");
+        assert!(recovered.requires_owner_review);
+        assert!(!recovered.progress_heartbeat_verified);
+        assert!(!recovered.safe_to_auto_retry);
+        let (tools,starts)=running();
+        let live=snapshot(true,&tools,&starts,Some(&recovery("executing")),7_000);
+        let observed=attach_durable_job(live,Some(&job),7_000);
+        assert_eq!(observed.supervisor_health,"rust_supervisor_observed");
+        assert_eq!(observed.supervisor_heartbeat_seq,Some(2));
+        assert!(!observed.progress_heartbeat_verified);
+        let delayed=attach_durable_job(
+            snapshot(true,&tools,&starts,Some(&recovery("executing")),30_000),
+            Some(&job),30_000
+        );
+        assert_eq!(delayed.supervisor_health,"supervisor_tick_stale");
+        assert_eq!(delayed.state,"native_action_in_flight");
     }
     #[test]
     fn idle_has_no_claimed_cross_process_clearance(){
