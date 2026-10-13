@@ -19,7 +19,7 @@ function plan(steps = [step("inspect"), step("edit", ["inspect"], "replace_text"
   return { objective: "Fix the bug", revision, steps };
 }
 function proposal(task_step_id = "inspect", tool = "read_file", extra = {}) {
-  return { tool, arguments: { path: "/repo/a.ts" }, task_step_id, ...extra };
+  return { tool, arguments: { path: tool==="premiere_insert_media"?"/repo/remotion.mp4":"/repo/a.ts" }, task_step_id, ...extra };
 }
 function result(tool = "read_file", success = true, exit_code = 0) {
   return { tool, success, exit_code, stdout: "observed", stderr: "" };
@@ -47,6 +47,27 @@ function runningActionId(state, p) {
 function done(state, p, r = result(p.tool)) {
   state = staged(state, p);
   const actionId = runningActionId(state, p);
+  if(r.stdout==="observed"&&p.tool==="motion_graphics_accept_final_remotion"){
+    const render=state.task_graph.steps.find(s=>s.expected_tool==="motion_graphics_run_remotion")?.evidence.find(e=>e.success);
+    r={...r,stdout:JSON.stringify({
+      schema_version:1,acceptance_action_id:actionId,render_action_id:render?.action_id,
+      output_file:"/repo/remotion.mp4",output_sha256:"a".repeat(64),
+      final_output_sha256_verified:true,visual_review_verified:true,
+      runtime_process_provenance_verified:true,delivery_acceptance_verified:true,
+      dependency_source_integrity_verified:false,production_ready:false
+    })};
+  }
+  if(r.stdout==="observed"&&p.tool==="motion_graphics_plan_premiere_insertion"){
+    const accept=state.task_graph.steps.find(s=>s.expected_tool==="motion_graphics_accept_final_remotion")
+      ?.evidence.find(e=>e.success);
+    r={...r,stdout:JSON.stringify({
+      schema_version:1,source:"verified_motion_graphics_delivery",
+      final_acceptance_action_id:accept?.action_id,
+      output_file:accept?.artifact?.path,output_sha256:accept?.artifact?.sha256,
+      premiere_tool_proposal:{tool:"premiere_insert_media",arguments:{path:accept?.artifact?.path}},
+      automatic_execution:false,requires_normal_premiere_approval:true,production_ready:false
+    })};
+  }
   return agent.recordToolOutcome(
     state,
     p,
