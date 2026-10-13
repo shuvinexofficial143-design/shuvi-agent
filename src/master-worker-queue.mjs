@@ -32,9 +32,12 @@ export function workerForTool(tool){
 // action receipt. A model's "success" prose or a bare UUID never supplies
 // handoff authority. Every receipt carries a monotonic orchestration step.
 export function evidenceForStep(step){
-  if(!step||step.status!=="completed"||!Array.isArray(step.evidence)
-      ||step.evidence.length!==1)return null;
-  const e=step.evidence[0];
+  if(!step||step.status!=="completed"||!Array.isArray(step.evidence))return null;
+  // A failed attempt followed by an explicitly inspected and replanned
+  // successful attempt has historical failures; those must stay visible.
+  const successes=step.evidence.filter(e=>e&&e.success===true);
+  if(successes.length!==1)return null;
+  const e=successes[0];
   if(!e||e.step_id!==step.step_id||e.success!==true||e.outcome!=="success"
       ||e.source!=="typed_result"||e.audit_event!=="executed"
       ||e.tool!==step.expected_tool||typeof e.action_id!=="string"
@@ -55,9 +58,15 @@ export function workerQueueView(graph){
   const candidates=new Map(graph.steps.map(s=>[s.step_id,evidenceForStep(s)]));
   // One native action receipt must never unlock two worker jobs, even if a
   // disk checkpoint is tampered with or the model renamed a task step.
-  const counts=new Map();
-  for(const receipt of candidates.values()){
-    if(receipt)counts.set(receipt.action_id,(counts.get(receipt.action_id)||0)+1);
+  const owners=new Map();
+  for(const step of graph.steps){
+    const used=new Set(step.evidence.map(e=>e?.action_id).filter(id=>typeof id==="string"&&UUID.test(id)));
+    if(typeof step.running?.action_id==="string"&&UUID.test(step.running.action_id))
+      used.add(step.running.action_id);
+    for(const id of used){
+      if(!owners.has(id))owners.set(id,new Set());
+      owners.get(id).add(step.step_id);
+    }
   }
   // Verify the whole handoff chain, including the exact chronological order.
   // Do not trust a child completion when its prerequisite lacks Rust evidence.
@@ -66,7 +75,7 @@ export function workerQueueView(graph){
     let changed=false;
     for(const step of graph.steps){
       const receipt=candidates.get(step.step_id);
-      if(!receipt||accepted.has(step.step_id)||counts.get(receipt.action_id)!==1)continue;
+      if(!receipt||accepted.has(step.step_id)||owners.get(receipt.action_id)?.size!==1)continue;
       if(step.depends_on.every(dep=>{
         const prior=accepted.get(dep);
         return prior&&prior.orchestration_step<receipt.orchestration_step;
