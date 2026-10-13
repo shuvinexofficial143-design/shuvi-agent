@@ -143,7 +143,7 @@ export function graphDependencyFailure(graph, proposal) {
     return "Task step " + stepId + " is " + step.status + "; completed steps cannot rerun and failed steps require recovery/replan.";
   const missing = step.depends_on.filter(d => !graph.steps.some(s => s.step_id === d && completed(s)));
   if (missing.length) return "Task dependency missing: " + missing.join(", ") +
-    " (exact Rust-audited evidence required).";
+    " (Rust-audited dependency evidence required).";
   if (step.status === "blocked") return "Task step must be recalculated as ready before execution.";
   if (step.expected_tool !== proposal.tool) return "Task step requires typed tool " + step.expected_tool + ".";
   // Defense in depth: a model-proposed completed status is not enough to
