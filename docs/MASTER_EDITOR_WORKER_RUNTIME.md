@@ -161,6 +161,19 @@
   `audit_verified`, including the Boolean audit outcome. A missing,
   corrupt or orphaned worker journal fails closed rather than reverting to
   an older completed backup.
+- The durable job journal now keeps a **bounded last-24 audited action
+  UUID replay window**, carried forward on each new approved job and restored
+  on restart. A prior action cannot be reused merely because a different
+  action was audited afterward. Existing v1 records lacking this optional
+  field remain readable. Malformed, duplicate, or oversized replay history
+  fails closed; the 2 KiB journal is deliberately **not** an unlimited
+  historical ledger. A separate native action audit remains the long-term
+  audit source.
+- Live supervisor attribution compares **both** the exact action UUID and
+  the executing native tool against the durable job. An already-audited
+  checkpoint contradicting a currently identified running native action
+  is reported as `recovery_required`, not a healthy heartbeat or safe
+  dispatch state. No elapsed-time or heartbeat-based auto-unlock exists.
 - The read-only `native_worker_status` IPC now combines live Rust process
   attribution, the existing recovery checkpoint and the latest durable job.
   A mismatched or interrupted running journal is reported as
