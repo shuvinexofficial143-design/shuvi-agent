@@ -1049,3 +1049,24 @@ test("interrupted native worker is quarantined on recovery, never silently repla
  assert.match(agent.orchestrationContext(resumed),/recovery_required/);
  assert.match(agent.orchestrationContext(resumed),/Only an independent recovery inspection is permitted/);
 });
+
+test("duplicate in-flight native leases cannot bind or fabricate audited task completion",()=>{
+ const metadata=plan([step("a",[],"read_file"),step("b",[],"premiere_context")]);
+ let state=initial(metadata);
+ state=staged(state,proposal("a","read_file"));
+ const boundId=runningActionId(state,proposal("a","read_file"));
+ state.task_graph.steps[1].status="running";
+ state.task_graph.steps[1].running={
+  fingerprint:agent.proposalFingerprint(proposal("b","premiere_context")),
+  orchestration_step:state.next_step,action_id:null
+ };
+ const prepare=agent.bindPreparedAction(state,proposal("b","premiere_context"),actionIdFor(2));
+ assert.equal(prepare.ok,false);
+ assert.match(prepare.error,/Exactly one Rust-owned native execution lease/);
+ const attempt=agent.recordToolOutcome(state,proposal("a","read_file"),
+  "success",result("read_file"),true,boundId,auditReceipt(boundId,"read_file"));
+ assert.equal(attempt.task_graph.steps[0].status,"failed");
+ assert.equal(graph.taskGraphProgress(attempt.task_graph).completed,0);
+ const resumed=agent.normalizeAgentOrchestrationState(json(state));
+ assert.notEqual(resumed.recovery_mode,"normal");
+});
