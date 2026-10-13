@@ -135,7 +135,9 @@ export function workerQueueView(graph){
     const worker=workerForTool(step.expected_tool);
     const evidence=accepted.get(step.step_id);
     const status=STATUSES.has(step.status)?step.status:"blocked";
-    const safeStatus=status==="completed"&&!evidence?"blocked":status;
+    const unsafeHandoff=Boolean(handoffContractFailure(graph,step.step_id));
+    const safeStatus=(status==="completed"&&!evidence)||((status==="ready"||status==="completed")&&unsafeHandoff)
+      ?"blocked":status;
     const handoffs=step.depends_on.filter(dep=>accepted.has(dep)).map(dep=>{
       const prior=accepted.get(dep);
       const from=graph.steps.find(s=>s.step_id===dep);
