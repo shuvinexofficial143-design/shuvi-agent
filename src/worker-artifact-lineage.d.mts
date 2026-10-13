@@ -5,3 +5,5 @@ export type WorkerArtifact=BlenderArtifact|AcceptedRemotionArtifact|PremiereInse
 export function parseWorkerArtifact(tool:string,stdout:string,actionId:string):WorkerArtifact|null;
 export function validWorkerArtifact(value:unknown,tool:string,actionId:string|null):boolean;
 export function artifactHandoffFailure(graph:unknown,stepId:string,proposal?:unknown):string|null;
+export type WorkerImportIdentity={source:"remotion"|"blender";source_action_id:string;path:string;sha256:string};
+export function importArtifactIdentity(graph:unknown,stepId:string):WorkerImportIdentity|null;
