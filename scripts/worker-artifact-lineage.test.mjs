@@ -120,3 +120,49 @@ test("saved checkpoint never upgrades forged or missing artifact to a completed 
   assert.equal(restoreTaskGraph(modified,5,8).ok,false);
  }
 });
+
+test("Blender typed output carries the exact Rust SHA-256 verified file identity",()=>{
+ const raw={status:"verified",worker:"blender",full_plan_completed:true,
+  verified_by_native_sha256:true,
+  artifact:{path:"/repo/model.png",sha256:"c".repeat(64),bytes:8096}};
+ const artifact=parseWorkerArtifact("blender_run_plan",JSON.stringify(raw),id(1));
+ assert.deepEqual(artifact,{kind:"blender_artifact",producer_action_id:id(1),
+  path:"/repo/model.png",sha256:"c".repeat(64),bytes:8096});
+ assert.equal(validWorkerArtifact(artifact,"blender_run_plan",id(1)),true);
+ for(const patch of [
+  {full_plan_completed:false},{verified_by_native_sha256:false},
+  {status:"partial"},{worker:"model"},
+  {artifact:{...raw.artifact,bytes:0}},
+  {artifact:{...raw.artifact,sha256:"short"}},
+  {artifact:{...raw.artifact,path:"relative/model.png"}},
+  {artifact:{...raw.artifact,path:"/repo/model.py"}},
+  {artifact:{...raw.artifact,bytes:128*1024*1024+1}}
+ ])assert.equal(parseWorkerArtifact("blender_run_plan",
+  JSON.stringify({...raw,...patch}),id(1)),null,JSON.stringify(patch));
+});
+test("Blender PNG import requires matching Rust-verified producer identity and approval",()=>{
+ const artifact=parseWorkerArtifact("blender_run_plan",JSON.stringify({
+  status:"verified",worker:"blender",full_plan_completed:true,
+  verified_by_native_sha256:true,
+  artifact:{path:"/repo/blender.png",sha256:"b".repeat(64),bytes:8192}
+ }),id(1));
+ const g={objective:"Approved Blender PNG handoff",revision:1,
+  steps:[step("model","blender_run_plan",1,[],artifact),
+    step("import","premiere_insert_media",null,["model"])]};
+ assert.equal(artifactHandoffFailure(g,"import"),null);
+ assert.deepEqual(workerQueueView(g).ready_job_ids,["import"]);
+ assert.equal(graphDependencyFailure(g,{tool:"premiere_insert_media",task_step_id:"import",
+  arguments:{path:"/repo/blender.png"}}),null);
+ assert.match(graphDependencyFailure(g,{tool:"premiere_insert_media",task_step_id:"import",
+  arguments:{path:"/repo/other.png"}}),/Blender PNG output receipt/);
+ const noArtifact=JSON.parse(JSON.stringify(g));
+ delete noArtifact.steps[0].evidence[0].artifact;
+ assert.deepEqual(workerQueueView(noArtifact).ready_job_ids,[]);
+ assert.equal(workerQueueView(noArtifact).jobs[1].status,"blocked");
+ assert.equal(restoreTaskGraph(noArtifact,2,8).ok,false);
+ const project=JSON.parse(JSON.stringify(g));
+ project.steps[0].evidence[0].artifact.path="/repo/blender.blend";
+ assert.match(artifactHandoffFailure(project,"import"),/not the Blender project/);
+ assert.equal(nextWorkerTurn(project),null);
+ assert.equal(restoreTaskGraph(g,2,8).ok,true);
+});
