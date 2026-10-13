@@ -24,7 +24,7 @@ import {redactNativeError,redactNativeOutput,redactNativeMessage} from "./native
 import {validPreparedApproval} from "./native-prepared-approval.mjs";
 import {createNativeTaskBudget,reserveNativeModelRequest,canStageNativeAction,canExecuteNativeAction,markNativeActionStaged} from "./native-task-budget.mjs";
 import type {NativeTaskBudget} from "./native-task-budget.mjs";
-import {readNativeRecovery,writeNativeRecovery,clearNativeRecovery,validateNativeRecoveryRecord} from "./native-recovery-journal.mjs";
+import {readNativeRecovery,writeNativeRecovery,clearNativeRecovery,validateNativeRecoveryRecord,inspectNativeRecoveryStore,assessNativeRecoveryPair} from "./native-recovery-journal.mjs";
 import {reconcileNativeActionAudit,recoveryAuditMessage} from "./native-recovery-audit.mjs";
 type Provider = {id:string;name:string;default_model:string;api_key_required:boolean;custom_base_url:boolean};
 type NativeChatMessage = {role:"user"|"assistant";content:string};
@@ -203,9 +203,12 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  // Separate from the legacy Desktop checkpoint. Stored records are NEVER
  // restored as model-call or native-tool execution authority.
  const recoveryStorage=(()=>{try{return window.localStorage??null;}catch{return null;}})();
- const previousRecovery=readNativeRecovery(recoveryStorage);
+ const previousRecoveryState=inspectNativeRecoveryStore(recoveryStorage);
+ const previousRecovery=previousRecoveryState.record;
  let rustRecovery:ReturnType<typeof validateNativeRecoveryRecord>=null;
- const needsOwnerRecoveryReview=Boolean(previousRecovery&&["model_reserved","awaiting_approval","executing","outcome_unknown"].includes(previousRecovery.phase));
+ // A paused/audited checkpoint is evidence of an old task, not completion.
+ // Corrupt or unavailable WebView storage must not be treated as empty.
+ const needsOwnerRecoveryReview=previousRecoveryState.kind!=="empty";
  let recoveryAcknowledged=!needsOwnerRecoveryReview;
  if(previousRecovery){
   recoveryNotice.textContent="Previous Windows task interrupted: "+
@@ -215,6 +218,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    "Review Activity/Audit before issuing a new instruction.";
   recoveryNotice.hidden=false;
   recoveryCheck.hidden=!previousRecovery.actionId;
+  recoveryDismiss.hidden=false;
+ }else if(needsOwnerRecoveryReview){
+  recoveryNotice.textContent="Previous WebView recovery evidence is corrupt or unavailable. No old request or Windows action was replayed. Owner review is required before another Windows task.";
+  recoveryNotice.hidden=false;
   recoveryDismiss.hidden=false;
  }
  recoveryCheck.addEventListener("click",async()=>{
@@ -239,6 +246,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   }
  });
  recoveryDismiss.addEventListener("click",async()=>{
+  if(!ready){
+   recoveryNotice.textContent="Native recovery has not finished loading. Cannot acknowledge or clear it yet.";
+   return;
+  }
   // Never erase the evidence while a native task is being executed or staged.
   if(sending||pending){
    recoveryNotice.textContent="Resolve the active Windows approval/request before clearing the recovery record.";
@@ -326,14 +337,24 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     const validated=validateNativeRecoveryRecord(savedRustRecovery);
     if(!validated)throw Error("Native Rust recovery checkpoint is invalid; refuse runtime admission.");
     rustRecovery=validated;
-    if(["model_reserved","awaiting_approval","executing","outcome_unknown"].includes(validated.phase))
-     recoveryAcknowledged=false;
-    recoveryNotice.textContent="Native Rust recovered task: "+
-     validated.stagedActions+"/"+validated.maxActions+" actions staged, "+
-     validated.modelRequests+" model requests reserved, phase "+validated.phase+
-     ". No old request or Windows action was replayed. Review Rust Audit.";
+   }
+   // Startup admission is decided only AFTER both independent stores load.
+   // Never restore model/tool authority from either inspection snapshot.
+   const review=assessNativeRecoveryPair(previousRecoveryState,rustRecovery);
+   recoveryAcknowledged=!review.requiresReview;
+   if(review.requiresReview){
+    const reason={
+     invalid_webview:"WebView recovery evidence is invalid or unavailable.",
+     missing_webview:"Rust has recovery evidence but WebView has no matching record.",
+     missing_rust:"WebView has recovery evidence but Rust has no matching record.",
+     invalid_rust:"Rust recovery evidence is invalid.",
+     mismatched_stores:"WebView and Rust recovery records disagree.",
+     matched_previous_task:"Previous Windows task checkpoint found; an audited action is not proof the original goal completed.",
+     no_previous_task:""
+    }[review.reason];
+    recoveryNotice.textContent=reason+" No old request or Windows action was replayed. Review native Activity/Audit and explicitly acknowledge the interrupted task before a new Windows task.";
     recoveryNotice.hidden=false;
-    recoveryCheck.hidden=!validated.actionId;
+    recoveryCheck.hidden=!(previousRecovery?.actionId??rustRecovery?.actionId);
     recoveryDismiss.hidden=false;
    }
    if(!Array.isArray(list)||!list.length)throw Error("Native provider registry unavailable.");
