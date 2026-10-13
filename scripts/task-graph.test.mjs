@@ -799,6 +799,12 @@ test("Blender inspection-to-model-to-Premiere insertion is a real typed worker c
  assert.equal(next.worker,"premiere");
  assert.equal(next.handoffs[0].from_worker,"blender");
  assert.equal(next.handoffs[0].to_worker,"premiere");
+ assert.deepEqual(next.artifact,{
+  source:"blender",source_action_id:actionIdFor(2),
+  path:"/repo/blender.png",sha256:"b".repeat(64)
+ });
+ assert.match(agent.orchestrationContext(state),/verified import identity/);
+ assert.match(agent.orchestrationContext(state),/\\/repo\\/blender\\.png/);
  assert.equal(next.requires_owner_approval,true);
  assert.equal(graph.taskGraphProgress(state.task_graph).completed,2);
  const saved=json(state.task_graph);
@@ -900,6 +906,11 @@ test("Remotion accepted-final -> Premiere insertion plan -> native import surviv
  assert.equal(graph.nextWorkerTurn(state.task_graph).step_id,"insertion_plan");
  state=done(state,proposal("insertion_plan","motion_graphics_plan_premiere_insertion"));
  assert.equal(graph.nextWorkerTurn(state.task_graph).step_id,"import");
+ assert.deepEqual(graph.nextWorkerTurn(state.task_graph).artifact,{
+  source:"remotion",source_action_id:actionIdFor(3),
+  path:"/repo/remotion.mp4",sha256:"a".repeat(64)
+ });
+ assert.match(agent.orchestrationContext(state),/verified import identity/);
  assert.equal(agent.evaluateProposal(state,proposal("import","premiere_insert_media")).allowed,true);
  const saved=json(state);
  const resumed=agent.normalizeAgentOrchestrationState(saved);
