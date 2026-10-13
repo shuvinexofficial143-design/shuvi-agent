@@ -189,7 +189,7 @@ test("native task writes task-bound checkpoint before paid request; any Rust wri
  const native=readFileSync(new URL("../web-dashboard/src/native-agent.ts",import.meta.url),"utf8");
  assert.match(native,/const taskRecoveryIds=new WeakMap<NativeTaskBudget,string>\(\)/);
  assert.match(native,/const id=globalThis\.crypto\?\.randomUUID\?\.\(\)/);
- assert.match(native,/version:2,taskId,maxActions:b\.maxActions/);
+ assert.match(native,/version:2,taskId,revision,maxActions:b\.maxActions/);
  assert.match(native,/recoveryAcknowledged=false;[\s\S]*?if\(!writeRecovery\(b,phase,actionId\)\)return failClosed\(\)/);
  assert.match(native,/if\(!record\|\|record\.version!==2\)return failClosed\(\)/);
 });
