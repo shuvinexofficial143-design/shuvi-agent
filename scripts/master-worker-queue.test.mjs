@@ -163,3 +163,19 @@ test("nextWorkerTurn makes a deterministic plan preview, never an executable app
  ]}),null);
  assert.equal(nextWorkerTurn(null),null);
 });
+
+test("owner-approved extended 24/48 task graphs retain every worker gate and resource lock",()=>{
+ for(const count of [24,48]){
+  const steps=Array.from({length:count},(_,i)=>step("s"+i,"read_file","ready"));
+  const q=workerQueueView({steps});
+  assert.equal(q.total,count);
+  assert.equal(q.ready,count);
+  assert.equal(q.ready_job_ids.at(-1),"s"+(count-1));
+  assert.equal(nextWorkerTurn({steps}).step_id,"s0");
+  assert.equal(graphDependencyFailure({steps},{tool:"read_file",task_step_id:"s"+(count-1)}),null);
+  const running=steps.map((s,i)=>i===0?{...s,status:"running"}:s);
+  assert.deepEqual(workerQueueView({steps:running}).ready_job_ids,[],
+   "one workspace action holds the coding lane even at the 48-action limit");
+ }
+ assert.equal(workerQueueView({steps:Array.from({length:49},(_,i)=>step("s"+i,"read_file"))}).total,0);
+});
