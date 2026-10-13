@@ -1,3 +1,4 @@
+import {artifactHandoffFailure} from "./worker-artifact-lineage.mjs";
 // Shuvi Master Worker Queue projection (Phase 2).
 // Runs against the persisted, permission-first task graph. A worker is an
 // execution lane for typed tools, NOT a separate autonomous agent process.
@@ -122,7 +123,7 @@ export function workerQueueView(graph){
     for(const step of graph.steps){
       const receipt=candidates.get(step.step_id);
       if(!receipt||accepted.has(step.step_id)||owners.get(receipt.action_id)?.size!==1
-        ||handoffContractFailure(graph,step.step_id))continue;
+        ||handoffContractFailure(graph,step.step_id)||artifactHandoffFailure(graph,step.step_id))continue;
       if(step.depends_on.every(dep=>{
         const prior=accepted.get(dep);
         return prior&&prior.orchestration_step<receipt.orchestration_step;
@@ -137,7 +138,7 @@ export function workerQueueView(graph){
     const worker=workerForTool(step.expected_tool);
     const evidence=accepted.get(step.step_id);
     const status=STATUSES.has(step.status)?step.status:"blocked";
-    const unsafeHandoff=Boolean(handoffContractFailure(graph,step.step_id));
+    const unsafeHandoff=Boolean(handoffContractFailure(graph,step.step_id)||artifactHandoffFailure(graph,step.step_id));
     const safeStatus=(status==="completed"&&!evidence)||((status==="ready"||status==="completed")&&unsafeHandoff)
       ?"blocked":status;
     const handoffs=step.depends_on.filter(dep=>accepted.has(dep)).map(dep=>{
@@ -155,7 +156,7 @@ export function workerQueueView(graph){
   const runningLocks=new Set(jobs.filter(x=>x.status==="running").map(x=>x.resource));
   const ready=jobs.filter(x=>x.status==="ready"&&x.worker!=="unsupported"
     &&x.depends_on.every(d=>accepted.has(d))&&!runningLocks.has(x.resource)
-    &&!handoffContractFailure(graph,x.id));
+    &&!handoffContractFailure(graph,x.id)&&!artifactHandoffFailure(graph,x.id));
   const blocked=jobs.filter(x=>x.status==="blocked"||x.worker==="unsupported");
   return {total:jobs.length,verified:jobs.filter(x=>x.verified).length,
     running:jobs.filter(x=>x.status==="running").length,ready:ready.length,
