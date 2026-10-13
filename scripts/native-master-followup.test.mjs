@@ -942,13 +942,32 @@ test("Rust recovery alone blocks new tasks even when WebView storage was lost",a
  const blocked=await s.transport.send("Open Premiere Pro","lost-local",0);
  assert.equal(blocked.ok,false);
  assert.equal(s.chatInputs.length,0);
- assert.match(s.recoveryNotice.textContent,/Native Rust recovered task/);
+ assert.match(s.recoveryNotice.textContent,/Rust has recovery evidence but WebView has no matching record/);
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
  await s.recoveryDismiss.listeners.get("click")();
  assert.equal(s.calls.filter(c=>c.name==="clear_native_recovery").length,1);
  const allowed=await s.transport.send("Open Premiere Pro","new-owner-task",0);
  assert.equal(allowed.ok,true);
- assert.equal(s.staged.length,1);
+ a
+test("a Rust-only paused checkpoint requires owner acknowledgement even without an executing action",async()=>{
+ const now=Date.now();
+ const rustRecord={version:1,maxActions:8,stagedActions:1,modelRequests:1,
+  expiresAt:now+600000,updatedAt:now,phase:"paused",actionId:"paused-checkpoint"};
+ const s=setup({rustRecord});
+ await until(()=>s.transport.connected(),"native Rust paused checkpoint");
+ const blocked=await s.transport.send("Open Premiere Pro","old-paused-task",0);
+ assert.equal(blocked.ok,false);
+ assert.match(blocked.error,/previous Windows task/);
+ assert.equal(s.chatInputs.length,0);
+ assert.equal(s.recoveryDismiss.hidden,false);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
+ await s.recoveryDismiss.listeners.get("click")();
+ assert.equal(s.calls.filter(c=>c.name==="clear_native_recovery").length,1);
+ const allowed=await s.transport.send("Open Premiere Pro","after-paused-review",0);
+ assert.equal(allowed.ok,true);
+ assert.equal(s.chatInputs.length,1);
+});
+ssert.equal(s.staged.length,1);
 });
 test("Rust snapshot failure prevents a paid model request and any prepared Windows action",async()=>{
  const s=setup({rustFailPhase:"model_reserved"});
