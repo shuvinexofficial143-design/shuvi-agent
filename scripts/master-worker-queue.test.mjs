@@ -102,6 +102,14 @@ test("accepted Remotion render flows through native insertion plan before Premie
   step("insert","premiere_insert_media","completed",["plan"],accepted("premiere_insert_media","insert",4,id(4))),
   step("inspect","premiere_timeline","ready",["insert"])
  ]};
+ g.steps[1].evidence[0].artifact={
+   kind:"accepted_remotion",acceptance_action_id:id(2),render_action_id:id(1),
+   path:"/repo/verified.mp4",sha256:"a".repeat(64)
+ };
+ g.steps[2].evidence[0].artifact={
+   kind:"premiere_insertion_plan",final_acceptance_action_id:id(2),
+   path:"/repo/verified.mp4",sha256:"a".repeat(64)
+ };
  const q=workerQueueView(g);
  assert.equal(q.verified,4);
  assert.deepEqual(q.ready_job_ids,["inspect"]);
@@ -203,12 +211,17 @@ test("render alone cannot authorize a Premiere import without final acceptance",
   /motion_graphics_accept_final_remotion/);
  const accept=step("accept","motion_graphics_accept_final_remotion","completed",["render"],
   accepted("motion_graphics_accept_final_remotion","accept",2,id(2)));
+ accept.evidence[0].artifact={kind:"accepted_remotion",
+  acceptance_action_id:id(2),render_action_id:id(1),
+  path:"/repo/verified.mp4",sha256:"a".repeat(64)};
  insert.depends_on=["accept"];
  g.steps.splice(1,0,accept);
  assert.match(handoffContractFailure(g,"insert"),/motion_graphics_plan_premiere_insertion/);
  assert.deepEqual(workerQueueView(g).ready_job_ids,[]);
  const plan=step("plan","motion_graphics_plan_premiere_insertion","completed",["accept"],
   accepted("motion_graphics_plan_premiere_insertion","plan",3,id(3)));
+ plan.evidence[0].artifact={kind:"premiere_insertion_plan",
+  final_acceptance_action_id:id(2),path:"/repo/verified.mp4",sha256:"a".repeat(64)};
  insert.depends_on=["plan"];
  g.steps.splice(2,0,plan);
  assert.equal(handoffContractFailure(g,"insert"),null);
