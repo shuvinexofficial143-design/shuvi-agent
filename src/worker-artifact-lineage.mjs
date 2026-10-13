@@ -45,7 +45,8 @@ export function parseWorkerArtifact(tool,stdout,actionId){
      ||a.production_ready!==false||!obj(a.premiere_tool_proposal)
      ||a.premiere_tool_proposal.tool!=="premiere_insert_media"
      ||!obj(a.premiere_tool_proposal.arguments)
-     ||a.premiere_tool_proposal.arguments.path!==a.output_file)return null;
+     ||a.premiere_tool_proposal.arguments.path!==a.output_file
+     ||a.premiere_tool_proposal.arguments.expected_sha256!==a.output_sha256)return null;
   return {kind:"premiere_insertion_plan",final_acceptance_action_id:a.final_acceptance_action_id,
    path:a.output_file,sha256:a.output_sha256.toLowerCase()};
  }
@@ -100,6 +101,9 @@ export function artifactHandoffFailure(graph,stepId,proposal=null){
    return "Premiere can import a verified Blender PNG, not the Blender project .blend file.";
   if(proposal&&(!obj(proposal.arguments)||proposal.arguments.path!==receipt.artifact.path))
    return "Premiere import path differs from the exact Blender PNG output receipt.";
+  if(proposal&&(!sha(proposal.arguments.expected_sha256)||
+    proposal.arguments.expected_sha256.toLowerCase()!==receipt.artifact.sha256))
+   return "Premiere import requires the exact Blender expected_sha256 for native pre-dispatch rehash.";
   return null;
  }
  const accepts=find("motion_graphics_accept_final_remotion");
@@ -124,6 +128,9 @@ export function artifactHandoffFailure(graph,stepId,proposal=null){
   return "Premiere insertion plan does not match the exact accepted render path, hash, and action.";
  if(proposal&&(!obj(proposal.arguments)||proposal.arguments.path!==plan.artifact.path))
   return "Premiere import path differs from the exact accepted insertion plan; recheck the native file.";
+ if(proposal&&(!sha(proposal.arguments.expected_sha256)||
+   proposal.arguments.expected_sha256.toLowerCase()!==plan.artifact.sha256))
+  return "Premiere import requires the exact accepted expected_sha256 for native pre-dispatch rehash.";
  return null;
 }
 
