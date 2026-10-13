@@ -41,13 +41,17 @@ export function writeNativeRecovery(store,record,now=Date.now()){
  if(previous.kind==="invalid"||previous.kind==="unavailable")return false;
  if(safe.version===2&&safe.revision!==undefined){
   if(previous.kind==="empty"){
-   if(safe.revision!==1)return false;
+   if(safe.revision!==1||safe.phase!=="model_reserved"||safe.modelRequests!==1||
+    safe.stagedActions!==0||safe.actionId!==null)return false;
   }else{
    const old=previous.record;
    if(old?.version!==2||old.taskId!==safe.taskId||
     old.revision===undefined||old.revision+1!==safe.revision||
     old.maxActions!==safe.maxActions||old.expiresAt!==safe.expiresAt||
     safe.modelRequests<old.modelRequests||safe.stagedActions<old.stagedActions)return false;
+   if(safe.phase==="paused"&&old.phase==="executing")return false;
+   if(safe.phase==="model_reserved"&&
+    !["paused","audit_verified","model_reserved"].includes(old.phase))return false;
    // Mirror Rust's high-risk event ordering before touching localStorage.
    if(safe.phase==="executing"&&
     (old.phase!=="awaiting_approval"||safe.actionId!==old.actionId||
