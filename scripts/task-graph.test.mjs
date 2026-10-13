@@ -792,7 +792,8 @@ test("an untrusted caller cannot bypass bindPreparedAction to reuse an audited w
  const attempted=agent.recordToolOutcome(running,newProposal,"success",result("replace_text"),true,
   oldId,auditReceipt(oldId,"replace_text",true,"executed"));
  assert.equal(attempted.task_graph.steps[1].status,"failed");
- assert.equal(graph.taskGraphProgress(attempted.task_graph).completed,1);
+ assert.equal(graph.taskGraphProgress(attempted.task_graph).completed,0,
+  "a forged duplicate UUID taints the original worker handoff too");
  assert.equal(attempted.task_graph.steps[1].evidence.at(-1).source,"local_failure");
 });
 
