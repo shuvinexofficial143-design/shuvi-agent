@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {parseWorkerArtifact,validWorkerArtifact,artifactHandoffFailure,importArtifactIdentity} from "../src/worker-artifact-lineage.mjs";
+import {parseWorkerArtifact,validWorkerArtifact,artifactHandoffFailure,importArtifactIdentity,workerBatchSources} from "../src/worker-artifact-lineage.mjs";
 import {workerQueueView,nextWorkerTurn} from "../src/master-worker-queue.mjs";
 import {graphDependencyFailure,restoreTaskGraph} from "../src/task-graph.mjs";
 const id=n=>"123e4567-e89b-42d3-a456-"+String(n).padStart(12,"0");
@@ -205,6 +205,9 @@ test("multiple Rust-verified Blender PNG outputs can enter a Premiere batch only
    step("deliver",tool,null,["first","second"])
   ]};
   assert.deepEqual(workerQueueView(g).ready_job_ids,["deliver"]);
+  assert.equal(nextWorkerTurn(g).requires_owner_approval,true);
+  assert.equal(nextWorkerTurn(g).batch_sources.length,2);
+  assert.deepEqual(workerBatchSources(g,"deliver").map(src=>src.sha256),[a1.sha256,a2.sha256]);
   const base={tool,task_step_id:"deliver",arguments:{
    paths:[a2.path,a1.path],expected_sha256:[a2.sha256,a1.sha256],
    ...(tool==="premiere_create_sequence_from_media"?{name:"Shuvi-verified"}:{})
@@ -249,4 +252,37 @@ test("unrelated manual batch imports retain the normal owner-approval flow",()=>
  assert.deepEqual(workerQueueView(g).ready_job_ids,["batch"]);
  assert.equal(graphDependencyFailure(g,{tool:"premiere_import_media",task_step_id:"batch",
   arguments:{paths:["/user/media.mov"]}}),null);
+});
+
+test("restarted batch manifest cannot silently substitute a completed Blender source",()=>{
+ const a1={kind:"blender_artifact",producer_action_id:id(1),path:"/repo/one.png",
+  sha256:"a".repeat(64),bytes:2048};
+ const a2={kind:"blender_artifact",producer_action_id:id(2),path:"/repo/two.png",
+  sha256:"b".repeat(64),bytes:2048};
+ const g={objective:"Completed auditable two-PNG batch",revision:1,steps:[
+  step("first","blender_run_plan",1,[],a1),
+  step("second","blender_run_plan",2,[],a2),
+  step("batch","premiere_import_media",3,["first","second"],{
+   kind:"premiere_worker_batch",import_action_id:id(3),
+   sources:[
+    {source_step_id:"second",producer_action_id:id(2),path:a2.path,sha256:a2.sha256},
+    {source_step_id:"first",producer_action_id:id(1),path:a1.path,sha256:a1.sha256}
+   ]
+  })
+ ]};
+ assert.equal(validWorkerArtifact(g.steps[2].evidence[0].artifact,"premiere_import_media",id(3)),true);
+ assert.equal(artifactHandoffFailure(g,"batch"),null);
+ assert.equal(workerQueueView(g).verified,3);
+ assert.equal(restoreTaskGraph(g,4,8).ok,true);
+ for(const mutate of [
+  x=>x.steps[2].evidence[0].artifact.sources[0].sha256="c".repeat(64),
+  x=>x.steps[2].evidence[0].artifact.sources[0].producer_action_id=id(8),
+  x=>x.steps[2].evidence[0].artifact.sources.push({
+   source_step_id:"fake",producer_action_id:id(9),path:"/repo/extra.png",sha256:"d".repeat(64)}),
+  x=>delete x.steps[2].evidence[0].artifact
+ ]){
+  const changed=JSON.parse(JSON.stringify(g));mutate(changed);
+  assert.equal(restoreTaskGraph(changed,4,8).ok,false);
+  assert.equal(workerQueueView(changed).jobs[2].verified,false);
+ }
 });
