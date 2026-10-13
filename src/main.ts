@@ -619,7 +619,8 @@ async function refreshNativeWorkerStatus(): Promise<void> {
     if(status.schemaVersion!==1||status.progressHeartbeatVerified!==false
       ||status.safeToAutoRetry!==false
       ||!["not_observed","unattributed_or_interrupted","supervisor_tick_stale",
-        "rust_supervisor_observed","supervisor_start_record_only","last_action_audited"].includes(status.supervisorHealth))
+        "rust_supervisor_observed","supervisor_start_record_only","last_action_audited",
+        "audited_job_conflicts_with_live_lease"].includes(status.supervisorHealth))
       throw Error("Invalid native worker observation");
     nativeHostStatus=status;
     nativeHostStatusUnavailable=false;
