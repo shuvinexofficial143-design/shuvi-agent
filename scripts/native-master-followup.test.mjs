@@ -38,7 +38,7 @@ const launch={
  provider:"xkiro",model:"model/master",
  tool_proposal:{tool:"premiere_launch",arguments:{}}
 };
-function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null,wrongStageIndex=0,continuationRenderError=false,reusePendingId=false,recoveryStore=null,recoveryReceipt=null,recoveryTrail=null,rustRecord=null,rustFailPhase=null,rustClearFail=false}={}){
+function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null,wrongStageIndex=0,continuationRenderError=false,reusePendingId=false,recoveryStore=null,recoveryReceipt=null,recoveryTrail=null,rustRecord=null,rustFailPhase=null,rustClearFail=false,rustClearWait=null}={}){
  const nodes=new Map(),created=[],calls=[],chatInputs=[],staged=[];
  const domParent=el(),composerParent=el(),form=el(),chat=el();
  form.parentElement=composerParent;chat.parentElement=domParent;
@@ -54,7 +54,7 @@ function setup({first=detection,second=launch,following=[],auditOk=true,failFind
   if(name==="runtime_status")return {shuvi_memory_mb:40,managed_children_count:0};
   if(name==="save_native_recovery"){if(params.record?.phase===rustFailPhase)throw Error("Rust snapshot rejected");return;}
   if(name==="load_native_recovery")return rustRecord;
-  if(name==="clear_native_recovery"){if(rustClearFail)throw Error("simulated native recovery clear failure");return;}
+  if(name==="clear_native_recovery"){if(rustClearWait)await rustClearWait;if(rustClearFail)throw Error("simulated native recovery clear failure");return;}
   if(name==="list_providers")return [{id:"xkiro",name:"xKiro"}];
   if(name==="remote_agent_status")return {enabled:false};
   if(name==="chat"){
@@ -1095,4 +1095,48 @@ test("owner acknowledgement revokes old native task identity even when reusing t
  assert.equal(newReservation.revision,1);
  assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1,
   "acknowledging a task never automatically executes a new action");
+});
+
+test("failed WebView removal after Rust acknowledgement keeps Windows requests blocked",async()=>{
+ const values=new Map();
+ const storage={
+  getItem:key=>values.get(key)??null,
+  setItem:(key,value)=>values.set(key,String(value)),
+  removeItem(){throw Error("simulated WebView removal failure");}
+ };
+ const s=setup({recoveryStore:storage,auditOk:false});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Open Premiere Pro","uncertain-local-clear",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.recoveryDismiss.hidden===false&&s.allow.disabled===false,"native outcome unknown");
+ await s.recoveryDismiss.listeners.get("click")();
+ assert.equal(s.calls.filter(c=>c.name==="clear_native_recovery").length,1);
+ assert.match(s.recoveryNotice.textContent,/New Windows tasks remain blocked/);
+ const before=s.chatInputs.length;
+ const blocked=await s.transport.send("Open Photoshop","cannot-reuse-partial-clear",0);
+ assert.equal(blocked.ok,false);
+ assert.match(blocked.error,/previous Windows task/);
+ assert.equal(s.chatInputs.length,before);
+});
+
+test("owner recovery clear holds exclusive submit lock until Rust disk result is known",async()=>{
+ let release;
+ const blockedRust=new Promise(resolve=>{release=resolve;});
+ const s=setup({auditOk:false,rustClearWait:blockedRust});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Open Premiere Pro","clear-race-original",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.recoveryDismiss.hidden===false&&s.allow.disabled===false,"native outcome unknown");
+ const clearing=s.recoveryDismiss.listeners.get("click")();
+ await until(()=>s.calls.some(c=>c.name==="clear_native_recovery"),"Rust clear in flight");
+ const rejected=await s.transport.send("Open Photoshop","clear-race-new",0);
+ assert.equal(rejected.ok,false);
+ assert.match(rejected.error,/already running/);
+ assert.equal(s.chatInputs.length,1);
+ release();
+ await clearing;
+ const accepted=await s.transport.send("Open Photoshop","clear-race-new",0);
+ assert.equal(accepted.ok,true);
+ assert.equal(s.chatInputs.length,2);
+ assert.equal(s.calls.filter(c=>c.name==="clear_native_recovery").length,1);
 });
