@@ -23,6 +23,18 @@ pub(crate) struct NativeWorkerStatus {
     pub safe_to_auto_retry:bool,
 }
 
+/// Called only *after* acquiring Rust's exclusive native desktop lease.
+/// A stale identity after a panic or a partially completed action is not
+/// license to start another Windows mutation. No automatic TTL reset exists.
+pub(crate) fn require_clear_for_new_dispatch(
+    running:&HashMap<String,String>,
+    started:&HashMap<String,u64>
+)->Result<(),String>{
+    if !running.is_empty()||!started.is_empty(){
+        Err("Prior native worker action identity remains unresolved; inspect audit and recover before another desktop dispatch.".into())
+    }else{Ok(())}
+}
+
 fn token_valid(value:&str)->bool{
     uuid::Uuid::parse_str(value).is_ok()
 }
@@ -154,6 +166,14 @@ mod tests{
         assert_eq!(snapshot(true,&tools,&starts,None,8_000).state,"recovery_required");
         starts.clear();
         assert_eq!(snapshot(true,&tools,&starts,None,8_000).state,"recovery_required");
+    }
+    #[test]
+    fn a_stale_worker_record_forbids_all_new_native_dispatches(){
+        let (tools,starts)=running();
+        assert!(require_clear_for_new_dispatch(&tools,&starts).is_err());
+        assert!(require_clear_for_new_dispatch(&HashMap::new(),&starts).is_err());
+        assert!(require_clear_for_new_dispatch(&tools,&HashMap::new()).is_err());
+        assert!(require_clear_for_new_dispatch(&HashMap::new(),&HashMap::new()).is_ok());
     }
     #[test]
     fn idle_has_no_claimed_cross_process_clearance(){
