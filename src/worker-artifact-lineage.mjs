@@ -85,6 +85,8 @@ export function artifactHandoffFailure(graph,stepId,proposal=null){
  for(const id of target.depends_on)if(byId.has(id))walk(id);
  const find=tool=>[...ancestorIds].map(id=>byId.get(id)).filter(x=>x?.expected_tool===tool);
  const renders=find("motion_graphics_run_remotion");
+ if(renders.length&&find("blender_run_plan").length)
+  return "Premiere import has mixed Blender and Remotion sources; select one exact verified artifact.";
  if(renders.length===0){
   const blenders=find("blender_run_plan");
   if(!blenders.length)return null;
@@ -123,4 +125,28 @@ export function artifactHandoffFailure(graph,stepId,proposal=null){
  if(proposal&&(!obj(proposal.arguments)||proposal.arguments.path!==plan.artifact.path))
   return "Premiere import path differs from the exact accepted insertion plan; recheck the native file.";
  return null;
+}
+
+export function importArtifactIdentity(graph,stepId){
+ if(artifactHandoffFailure(graph,stepId))return null;
+ const byId=new Map(graph?.steps?.map(s=>[s.step_id,s])??[]);
+ const target=byId.get(stepId);
+ if(!target||target.expected_tool!=="premiere_insert_media")return null;
+ const ancestors=new Set();
+ const visit=id=>{
+  if(ancestors.has(id))return;
+  ancestors.add(id);
+  for(const dep of byId.get(id)?.depends_on??[])if(byId.has(dep))visit(dep);
+ };
+ for(const dep of target.depends_on)if(byId.has(dep))visit(dep);
+ const plan=[...ancestors].map(id=>byId.get(id))
+  .find(s=>s.expected_tool==="motion_graphics_plan_premiere_insertion");
+ const blender=[...ancestors].map(id=>byId.get(id))
+  .find(s=>s.expected_tool==="blender_run_plan");
+ const source=plan??blender;
+ const e=source?.evidence?.find(e=>e.success===true);
+ if(!e||!validWorkerArtifact(e.artifact,source.expected_tool,e.action_id))return null;
+ const a=e.artifact;
+ return {source:plan?"remotion":"blender",source_action_id:e.action_id,
+  path:a.path,sha256:a.sha256};
 }
