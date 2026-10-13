@@ -138,6 +138,40 @@
 - Native Stop is bound to the worker's registered Python process and its owned Blender descendant; a 4 GB managed-RAM watchdog and 120-second process deadline guard are present. Interruptions still mean the host state or saved output may be uncertain, not automatically rolled back.
 - This is **one bounded background session per approved plan**. It is not persistent Blender UI control, unrestricted 3D rendering, multiprocess parallel authoring, or a complete professional editing acceptance test. Real Windows host tests, actual installed Python package and Blender, disposable project acceptance, and verified PNG-to-Premiere insertion are still pending.
 
+## Durable native job observation and supervisor heartbeat
+
+- The existing Rust single-execution lease, cross-instance Windows file
+  exclusion, and owner-approved action ID remain the **only native dispatch
+  authority**. The new `native-worker-job.json` is an independent, bounded
+  append-by-replacement journal for the most recent approved tool action, not
+  a parallel scheduler and not an authorization token.
+- **Before** a prepared action leaves the native permission queue, Shuvi
+  persists a canonical action UUID, tool name and `running` phase. Every
+  new guarded desktop entrypoint checks for an unresolved prior job. On
+  interruption, a new action is refused; neither an expired timestamp nor
+  process restart frees the lease automatically.
+- A Rust process-owned supervisor ticks its durable observation record every
+  4 seconds while that exact action future remains alive. It is a
+  **supervisor process-liveness check-in only**, not proof that Adobe,
+  Blender, a child process or a tool operation made any progress. A stale
+  tick becomes `supervisor_tick_stale` without cancellation, automatic
+  retry or a fabricated completion.
+- Only after a normal native `executed`/`failed` audit record is
+  durably written can the matching job transition from `running` to
+  `audit_verified`, including the Boolean audit outcome. A missing,
+  corrupt or orphaned worker journal fails closed rather than reverting to
+  an older completed backup.
+- The read-only `native_worker_status` IPC now combines live Rust process
+  attribution, the existing recovery checkpoint and the latest durable job.
+  A mismatched or interrupted running journal is reported as
+  `recovery_required`. The UI never treats the supervisor tick as a
+  tool-progress heartbeat. A successful audit is still not proof of overall
+  video editing completion or acceptance.
+- **Still missing:** explicit owner-reviewed reconciliation of uncertain
+  worker journals, restart-resumable multi-job scheduling, independent AI
+  models per worker, autonomous parallel planning, live application
+  heartbeats, and full Premiere/Blender/AE host acceptance.
+
 ## Not implemented or verified
 
 - No complete autonomous multi-process worker dispatcher or independent AI models per worker yet. The native master still owns model calls, and one native tool executes at a time.
