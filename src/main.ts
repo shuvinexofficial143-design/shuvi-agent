@@ -592,10 +592,17 @@ function nativeWorkerDisplay(): string {
   if (nativeHostStatusUnavailable || !nativeHostStatus) return "Host worker: unavailable (do not infer idle)";
   const host = nativeHostStatus;
   if (host.requiresOwnerReview || host.state === "recovery_required")
-    return "Host worker: RECOVERY REQUIRED — inspect native action and journal";
-  if (host.state === "native_action_in_flight")
+    return "Host worker: RECOVERY REQUIRED — inspect native action and durable job journal; no automatic retry";
+  if (host.state === "native_action_in_flight") {
+    const pulse=host.supervisorHealth==="rust_supervisor_observed"
+      ? "Rust supervisor check-in "+Math.floor((host.supervisorHeartbeatAgeMs??0)/1000)+"s ago"
+      : host.supervisorHealth==="supervisor_tick_stale"
+        ? "Rust supervisor heartbeat stale — inspect host; never assume completion"
+        : "No independently attributed supervisor heartbeat";
     return "Host worker: native action active ("+(host.tool ?? "unknown")+
-      ", "+Math.floor((host.observedActionAgeMs ?? 0)/1000)+"s observed; NOT a progress heartbeat)";
+      ", "+Math.floor((host.observedActionAgeMs ?? 0)/1000)+"s observed; "+
+      pulse+"; NOT a progress heartbeat)";
+  }
   if (host.state === "lease_held_unattributed")
     return "Host lease occupied — action identity not independently attributed";
   return "Host worker: no action in this process (other instances unknown)";
@@ -608,7 +615,10 @@ async function refreshNativeWorkerStatus(): Promise<void> {
   try{
     const status=await invoke<NativeWorkerStatus>("native_worker_status");
     if(status.schemaVersion!==1||status.progressHeartbeatVerified!==false
-      ||status.safeToAutoRetry!==false)throw Error("Invalid native worker observation");
+      ||status.safeToAutoRetry!==false
+      ||!["not_observed","unattributed_or_interrupted","supervisor_tick_stale",
+        "rust_supervisor_observed","last_action_audited"].includes(status.supervisorHealth))
+      throw Error("Invalid native worker observation");
     nativeHostStatus=status;
     nativeHostStatusUnavailable=false;
   }catch{
