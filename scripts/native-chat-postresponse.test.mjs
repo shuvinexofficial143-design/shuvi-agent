@@ -152,7 +152,7 @@ test("native Windows task refuses to call a paid provider when recovery storage 
  const transport=await mount(mock.invoke,null);
  const result=await transport.send("Open Notepad","journal-missing",0);
  assert.equal(result.ok,false);
- assert.match(result.error,/recovery journal could not be saved/);
+ assert.match(result.error,/previous Windows task/);
  assert.equal(mock.calls.includes("chat"),false);
  assert.equal(mock.calls.includes("prepare_tool"),false);
 });
