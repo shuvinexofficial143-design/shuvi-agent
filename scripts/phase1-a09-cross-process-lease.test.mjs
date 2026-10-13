@@ -20,14 +20,18 @@ test("A09 cross-process denial never retains in-process slot",()=>{
  assert.match(lease,/a_denied_cross_process_claim_cannot_poison_existing_instance/);
 });
 test("A09 main native actions and all bridge lifecycle endpoints use same cross-instance lease",()=>{
+ const helper=native.slice(native.indexOf("fn claim_monitored_native_execution("),
+  native.indexOf("struct AcceptanceProbeGuard"));
+ assert.match(helper,/execution_lease::claim_single_execution\(&state.native_execution_owned\)/);
+ assert.match(helper,/native_worker_status::require_clear_for_new_dispatch/);
  const execution=native.slice(native.indexOf("async fn execute_action("),native.indexOf("async fn execute_powershell("));
- assert.match(execution,/execution_lease::claim_single_execution\(&state.native_execution_owned\)/);
+ assert.match(execution,/claim_monitored_native_execution\(state\.inner\(\)\)/);
  for(const app of ["premiere","photoshop","audition","animate","illustrator"]){
   for(const op of ["start","stop"]){
    const start=native.indexOf("fn "+app+"_bridge_"+op+"(");
    const end=native.indexOf("\n}",start);
    assert.ok(start>=0&&end>start);
-   assert.match(native.slice(start,end),/execution_lease::claim_single_execution\(&state.native_execution_owned\)/);
+   assert.match(native.slice(start,end),/claim_monitored_native_execution\(state\.inner\(\)\)/);
   }
  }
 });
