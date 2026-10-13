@@ -16,7 +16,8 @@ test("Worker tool routing uses actual native tool families, never phantom Blende
     ["after_effects_run","after_effects"],["motion_graphics_plan_after_effects","after_effects"],
     ["motion_graphics_run_remotion","remotion"],["motion_graphics_plan_premiere_insertion","premiere"],
     ["browser_dom_read","browser"],["pointer_click","windows"],["pointer_drag","windows"],["git_status","coding"],
-    ["photoshop_layers","adobe"],["blender_inspect","blender"],["blender_run_plan","blender"],["blender_run","unsupported"]
+    ["photoshop_layers","adobe"],["blender_inspect","blender"],["blender_run_plan","blender"],
+    ["blender_run","unsupported"],["invented_worker_launch","unsupported"],["task_graph","unsupported"]
   ])assert.equal(workerForTool(tool),expected,tool);
 });
 test("A job is not complete from model claims, an uncorrelated action or a naked success boolean",()=>{
@@ -256,4 +257,15 @@ test("ambiguous two-render provenance and fake completed import fail closed",()=
  assert.equal(q.jobs[4].verified,false);
  assert.equal(q.jobs[4].status,"blocked");
  assert.equal(q.verified,4);
+});
+
+test("invented native worker tools cannot be scheduled or complete a fake graph",()=>{
+ const unknown=step("invented","invented_worker_launch","ready");
+ const g={steps:[unknown]};
+ assert.equal(workerQueueView(g).ready,0);
+ assert.equal(workerQueueView(g).blocked,1);
+ assert.deepEqual(workerQueueView(g).ready_job_ids,[]);
+ assert.equal(nextWorkerTurn(g),null);
+ assert.match(graphDependencyFailure(g,{tool:"invented_worker_launch",task_step_id:"invented"}),
+  /No native worker exists/);
 });
