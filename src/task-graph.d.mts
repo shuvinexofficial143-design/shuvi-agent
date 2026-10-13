@@ -2,6 +2,7 @@ import type { ToolProposal, ActionResult } from "./types";
 import type { WorkerTurn } from "./master-worker-queue.mjs";
 export const GRAPH_LIMIT: 8;
 export function nextWorkerTurn(graph: TaskGraph | null):WorkerTurn|null;
+export function handoffContractFailure(graph:TaskGraph | null, stepId:string):string|null;
 export const GRAPH_REVISION_LIMIT: 8;
 export const GRAPH_AUDIT_EVENTS: readonly GraphAuditEvent[];
 export const RECOVERY_TOOLS: readonly string[];
