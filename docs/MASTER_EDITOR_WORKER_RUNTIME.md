@@ -31,6 +31,36 @@
   app worker. This is not an independent job daemon or concurrent AI process.
 
 
+## Rust native host supervisor — read-only observation, not a fake heartbeat
+
+- Native Tauri now exposes `native_worker_status` from actual Rust
+  `ActionState.native_execution_owned` and the currently executing action's
+  Rust-owned UUID/tool/start timestamp. The read-only command also inspects
+  the existing disk-backed `native_recovery` journal. It neither stages
+  tools nor authorizes paid model requests, approvals, retries or execution.
+- Timestamps report **elapsed time since the native action was claimed**;
+  they do **not** mean the Python, Blender, Premiere or After Effects worker
+  has produced a new progress heartbeat. The response explicitly reports
+  `progressHeartbeatVerified=false` and `safeToAutoRetry=false`.
+- The status reports **ownership in this application process** only.
+  Cross-process ownership is `unknown_not_probed`; it never claims the
+  Windows desktop is free simply because the current Shuvi window is idle.
+- An incomplete durable `executing` journal without the identical current
+  lease/action ID, a stale `outcome_unknown` journal, an impossible duplicate
+  action, or a running record without its Rust lease becomes
+  `recovery_required`. The desktop UI samples the read-only IPC every
+  four seconds and labels its observation as **not a progress heartbeat**.
+- Every desktop-mutating native action or Adobe bridge lifecycle operation
+  now acquires the original cross-process Windows exclusion and requires
+  empty previous action records. A panic-stale record causes denial, not
+  automatic lease expiration or a guessed safe restart.
+- **Remaining gap:** this is not a durable independent Job Scheduler and
+  does not create separate AI worker processes, in-process job queues,
+  host-signed worker progress heartbeats or trusted parallel dispatch.
+  A long-running action can own the native lease without making progress.
+  Real per-worker heartbeat/child-process tracking must be integrated with
+  native worker adapters and tested on a disposable Windows host.
+
 ## Cross-app artifact identity gate (Task Graph, development branch)
 
 - The Master Task Graph now retains an **allowlisted artifact identity** only from a
