@@ -983,7 +983,8 @@ test("native batch receipt survives real coordinator dispatch and refuses modifi
   const secondEvidence={status:"verified",worker:"blender",
    full_plan_completed:true,verified_by_native_sha256:true,
    artifact:{path:"/repo/blender-two.png",sha256:"c".repeat(64),bytes:4096}};
-  state=done(state,proposal("second","blender_run_plan"),{
+  state=done(state,proposal("second","blender_run_plan",
+   {arguments:{path:"/repo/second-work-order.blend"}}),{
    ...result("blender_run_plan"),stdout:JSON.stringify(secondEvidence)
   });
   const importProposal=proposal("deliver",tool,{arguments:{
