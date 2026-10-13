@@ -947,6 +947,6 @@ test("a forged running import receipt cannot bypass final cross-app handoff admi
   true,id,auditReceipt(id,"premiere_insert_media",true,"executed"));
  assert.equal(attempted.task_graph.steps[1].status,"failed");
  assert.equal(graph.taskGraphProgress(attempted.task_graph).completed,1);
- assert.match(attempted.task_graph.steps[1].evidence.at(-1).summary,/accepted final render/);
+ assert.match(attempted.task_graph.steps[1].evidence.at(-1).summary,/accepted artifact SHA-256/);
  assert.equal(attempted.recovery_mode,"replan_required");
 });
