@@ -224,6 +224,28 @@ mod tests{
         fs::remove_file(p).unwrap();
     }
     #[test]
+    fn bounded_durable_replay_window_keeps_recent_audited_ids_after_rotation(){
+        let p=file();
+        let mut ids=Vec::new();
+        for i in 0..30u64{
+            let id=uuid::Uuid::new_v4().to_string();
+            let at=1_000+i*1_000;
+            begin_at(&p,&id,"read_file",at).unwrap();
+            audited_at(&p,&id,true,at+100).unwrap();
+            ids.push(id);
+        }
+        let last=read_at(&p).unwrap().unwrap();
+        assert_eq!(last.prior_action_ids.len(),MAX_PRIOR_ACTIONS);
+        assert_eq!(last.prior_action_ids.first(),Some(&ids[5]));
+        assert_eq!(last.prior_action_ids.last(),Some(&ids[28]));
+        assert!(begin_at(&p,&ids[23],"read_file",33_000).unwrap_err().contains("cannot be replayed"));
+        // This protection is intentionally bounded; don't claim an
+        // infinite action-history database from a 2 KiB journal.
+        fs::remove_file(&p).unwrap();
+        let backup=p.with_extension("json.bak");
+        if backup.exists(){fs::remove_file(backup).unwrap();}
+    }
+    #[test]
     fn malformed_history_is_not_treated_as_empty_on_restart(){
         let p=file();
         begin_at(&p,A,"read_file",1000).unwrap();
