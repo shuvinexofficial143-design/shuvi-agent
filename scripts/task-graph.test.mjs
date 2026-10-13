@@ -896,3 +896,17 @@ test("Premiere insertion for unrelated independently inspected assets remains av
  assert.equal(agent.evaluateProposal(state,proposal("insert","premiere_insert_media")).allowed,true);
  assert.equal(graph.nextWorkerTurn(state.task_graph).step_id,"insert");
 });
+
+test("Master planning context exposes missing acceptance rather than claiming a finished import",()=>{
+ const metadata=plan([
+  step("render",[],"motion_graphics_run_remotion"),
+  step("import",["render"],"premiere_insert_media")
+ ]);
+ let state=initial(metadata);
+ state=done(state,proposal("render","motion_graphics_run_remotion"));
+ const context=agent.orchestrationContext(state);
+ assert.match(context,/REQUIRED cross-app handoff repair/);
+ assert.match(context,/motion_graphics_accept_final_remotion/);
+ assert.match(context,/never skip missing evidence/);
+ assert.doesNotMatch(context,/next audited-safe worker handoff: step import/);
+});
