@@ -14,6 +14,22 @@
   - Python 3.11+, the separately installed `shuvi_blender_agent` package, and an accessible Blender executable are required on the Windows machine. **Nothing was installed on AntCloud in this change.**
 - Fixed helper is bundled as a Tauri resource, not an AI-created or user-provided Python source string. Rust always stages the typed tool through normal permissions and the existing native action audit.
 - Single native execution lease remains authoritative. Lock hints on the UI are **not** parallel execution guarantees.
+- The durable Task Graph worker projection now refuses to advertise or stage a
+  second native action while **any** worker is running, even if that action is
+  assigned to a different app/project resource lane. Every new prepared UUID
+  requires exactly one in-flight graph action, and successful typed outcomes
+  also require that exclusive lease.
+- The native-lease supervisor is a **read-only view of Rust-owned state**:
+  awaiting preparation, prepared action in flight, ready, waiting or
+  recovery-required. No fake heartbeat is inferred from a timer or model
+  output. A malformed checkpoint, unverified completed action, failed step
+  or impossible double-running state quarantines all new dispatches.
+- After process interruption the checkpoint remains fail-closed; a previously
+  running action becomes an interrupted/failed step requiring separate
+  inspection, owner-approved replan and a fresh native prepared-action UUID.
+  It is never automatically retried, resumed as success or run on another
+  app worker. This is not an independent job daemon or concurrent AI process.
+
 
 ## Cross-app artifact identity gate (Task Graph, development branch)
 
