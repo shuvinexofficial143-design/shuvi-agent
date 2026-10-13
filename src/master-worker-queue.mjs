@@ -176,8 +176,12 @@ export function workerQueueView(graph){
 // absence of an observation NEVER causes automatic lease release.
 export function workerSupervisorView(graph){
   const q=workerQueueView(graph);
-  if(!q.total)return {state:"idle",step_id:null,worker:null,action_id:null,
-    quarantined:false,reason:null,next_step_id:null};
+  if(!q.total){
+    const absent=graph==null;
+    return {state:absent?"idle":"recovery_required",step_id:null,worker:null,action_id:null,
+      quarantined:!absent,reason:absent?null:"Worker checkpoint is malformed or outside its approved budget.",
+      next_step_id:null};
+  }
   const running=graph.steps.filter(s=>s.status==="running");
   const invalidCompleted=graph.steps.some(s=>s.status==="completed"
     &&!q.jobs.find(j=>j.id===s.step_id)?.verified);
@@ -192,7 +196,17 @@ export function workerSupervisorView(graph){
   if(running.length===1){
     const step=running[0];
     const job=q.jobs.find(j=>j.id===step.step_id);
-    const prepared=typeof step.running?.action_id==="string"
+    if(!step.running||typeof step.running.fingerprint!=="string"
+      ||!step.running.fingerprint||!Number.isInteger(step.running.orchestration_step)
+      ||step.running.orchestration_step<1||step.running.orchestration_step>48
+      ||(step.running.action_id!==null&&!UUID.test(step.running.action_id))
+      ||job?.worker==="unsupported"){
+      return {state:"recovery_required",step_id:step.step_id,worker:job?.worker??null,
+        action_id:null,quarantined:true,
+        reason:"Native worker lease lacks a valid locally bound task receipt; explicit host inspection required.",
+        next_step_id:null};
+    }
+    const prepared=typeof step.running.action_id==="string"
       &&UUID.test(step.running.action_id);
     return {state:prepared?"native_action_in_flight":"awaiting_native_preparation",
       step_id:step.step_id,worker:job?.worker??null,
