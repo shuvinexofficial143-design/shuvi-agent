@@ -102,13 +102,14 @@ fn validate_advance(old:Option<&NativeRecoveryRecord>,next:&NativeRecoveryRecord
             }
             // A possibly dispatched action cannot become a harmless paused
             // state; the audit has to be verified, or the outcome stays unknown.
-            if next.phase=="paused"&&previous.phase=="executing"{
+            if next.phase=="paused"&&
+               matches!(previous.phase.as_str(),"executing"|"outcome_unknown"){
                 return Err("In-flight Windows execution cannot be downgraded to paused.".into());
             }
             // An old provider reservation cannot be made again from an
             // awaiting, executing or unknown checkpoint without review.
             if next.phase=="model_reserved"&&
-               !matches!(previous.phase.as_str(),"paused"|"audit_verified"|"model_reserved"){
+               !matches!(previous.phase.as_str(),"paused"|"audit_verified"){
                 return Err("Unresolved native action cannot reserve a new paid request.".into());
             }
             // A new revision alone cannot authorize a second execution of
@@ -124,7 +125,8 @@ fn validate_advance(old:Option<&NativeRecoveryRecord>,next:&NativeRecoveryRecord
                 return Err("Native audit verification must follow that action's execution.".into());
             }
             if next.phase=="awaiting_approval"&&
-               (next.staged_actions!=previous.staged_actions.saturating_add(1)||
+               (!matches!(previous.phase.as_str(),"model_reserved"|"outcome_unknown")||
+                next.staged_actions!=previous.staged_actions.saturating_add(1)||
                 previous.action_id==next.action_id){
                 return Err("Native approval must stage one NEW bounded action.".into());
             }
@@ -259,7 +261,11 @@ mod tests{
         assert!(validate_advance(Some(&approved),&audited).is_err());
         let read=NativeRecoveryRecord{revision:Some(2),phase:"awaiting_approval".into(),
             action_id:Some("new-inspection".into()),staged_actions:2,..executed.clone()};
-        assert!(validate_advance(Some(&executed),&read).is_ok());
+        assert!(validate_advance(Some(&executed),&read).is_err(),
+            "A new approval may not bypass the last action's unverified execution");
+        let uncertain=NativeRecoveryRecord{phase:"outcome_unknown".into(),..executed.clone()};
+        assert!(validate_advance(Some(&uncertain),&read).is_ok(),
+            "An audited read-only recovery may be staged after marking the failed result unknown");
         assert!(validate_advance(Some(&executed),&NativeRecoveryRecord{
             revision:Some(2),staged_actions:1,..read}).is_err());
         assert!(validate_advance(Some(&executed),&NativeRecoveryRecord{
@@ -281,6 +287,9 @@ mod tests{
         let paid_again=NativeRecoveryRecord{
             revision:Some(3),phase:"model_reserved".into(),model_requests:2,..base.clone()};
         assert!(validate_advance(Some(&uncertain),&paid_again).is_err());
+        assert!(validate_advance(Some(&uncertain),&NativeRecoveryRecord{
+            phase:"paused".into(),revision:Some(3),..base.clone()}).is_err());
+
         assert!(validate_advance(Some(&base),&inflight).is_err());
     }
     #[test]
