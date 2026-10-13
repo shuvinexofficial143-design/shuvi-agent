@@ -6,3 +6,5 @@ export function workerForTool(tool:unknown):WorkerLane;
 export function evidenceForStep(step:unknown):{action_id:string;tool:string;orchestration_step:number}|null;
 export function workerQueueView(graph:unknown):WorkerQueueView;
 export function workerQueueSummary(graph:unknown):string;
+export type WorkerTurn = {step_id:string;worker:WorkerLane;tool:string;resource:string;handoffs:WorkerHandoff[];requires_owner_approval:true};
+export function nextWorkerTurn(graph:unknown):WorkerTurn|null;
