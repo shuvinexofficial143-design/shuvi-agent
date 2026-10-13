@@ -212,7 +212,7 @@ test("revisioned WebView journal rejects stale duplicate and cross-task replacem
  const second={...first,revision:2,phase:"executing"};
  assert.equal(writeNativeRecovery(store,second,1002),true);
  assert.equal(readNativeRecovery(store,1003).revision,2);
- assert.equal(writeNativeRecovery(store,{...first,revision:3,modelRequests:5,stagedActions:4},1004),true);
+ assert.equal(writeNativeRecovery(store,{...first,revision:3,modelRequests:5,stagedActions:4,actionId:"next-action"},1004),true);
  assert.equal(readNativeRecovery(store,1005).revision,3);
 });
 
@@ -226,4 +226,22 @@ test("recovery journal cannot resume revision chain after local evidence disappe
  store.m.set(NATIVE_JOURNAL_KEY,"{broken");
  assert.equal(writeNativeRecovery(store,{...first,revision:2},1002),false);
  assert.equal(store.m.get(NATIVE_JOURNAL_KEY),"{broken");
+});
+
+test("local recovery rejects forged execution and audit revisions without modifying journal",()=>{
+ const store=makeStore();
+ const taskId="14a40d18-4df8-4cb8-ab90-0137027f3a8b";
+ const first={...value,version:2,taskId,revision:1};
+ assert.equal(writeNativeRecovery(store,first,1000),true);
+ const original=store.m.get(NATIVE_JOURNAL_KEY);
+ assert.equal(writeNativeRecovery(store,{...first,revision:2,phase:"audit_verified"},1001),false);
+ assert.equal(writeNativeRecovery(store,{...first,revision:2,phase:"executing",actionId:"wrong"},1001),false);
+ assert.equal(writeNativeRecovery(store,{...first,revision:2,phase:"awaiting_approval"},1001),false);
+ assert.equal(writeNativeRecovery(store,{...first,revision:2,phase:"model_reserved"},1001),false);
+ assert.equal(store.m.get(NATIVE_JOURNAL_KEY),original);
+ assert.equal(writeNativeRecovery(store,{...first,revision:2,phase:"executing"},1002),true);
+ const executing=store.m.get(NATIVE_JOURNAL_KEY);
+ assert.equal(writeNativeRecovery(store,{...first,revision:3,phase:"executing"},1003),false);
+ assert.equal(store.m.get(NATIVE_JOURNAL_KEY),executing);
+ assert.equal(writeNativeRecovery(store,{...first,revision:3,phase:"audit_verified"},1003),true);
 });
