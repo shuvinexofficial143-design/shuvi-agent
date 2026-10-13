@@ -111,10 +111,21 @@ export function workerQueueView(graph){
     running:jobs.filter(x=>x.status==="running").length,ready:ready.length,
     blocked:blocked.length,jobs,ready_job_ids:ready.map(x=>x.id)};
 }
+// Deterministic next-safe-turn advisory for Master. This never invokes a
+// model, starts a worker or carries owner permission across app boundaries.
+export function nextWorkerTurn(graph){
+  const q=workerQueueView(graph);
+  const next=q.jobs.find(job=>q.ready_job_ids.includes(job.id));
+  if(!next)return null;
+  return {step_id:next.id,worker:next.worker,tool:next.tool,
+    resource:next.resource,handoffs:next.handoffs,requires_owner_approval:true};
+}
 export function workerQueueSummary(graph){
   const queue=workerQueueView(graph);
   if(!queue.total)return "";
   const jobHints=queue.jobs.slice(0,8).map(j=>
     j.id+":"+j.worker+":"+j.status+(j.verified?":audit":"")).join(", ");
-  return "Worker lanes ("+queue.verified+"/"+queue.total+" audited): "+jobHints;
+  const next=nextWorkerTurn(graph);
+  return "Worker lanes ("+queue.verified+"/"+queue.total+" audited): "+jobHints+
+    (next?"; next safe turn "+next.step_id+" -> "+next.worker+" (approval required)":"; no safe next turn");
 }
