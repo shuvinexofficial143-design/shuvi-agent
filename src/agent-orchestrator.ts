@@ -1,11 +1,10 @@
 import type { ActionResult, ToolProposal } from "./types";
 import {
   bindTaskStepAction, blockTaskStep, finishTaskStep, graphDependencyFailure, RECOVERY_TOOLS,
-  restoreTaskGraph, reviseTaskGraph, startTaskStep, taskGraphProgress, nextWorkerTurn, handoffContractFailure,
+  restoreTaskGraph, reviseTaskGraph, startTaskStep, taskGraphProgress, nextWorkerTurn, handoffContractFailure, workerSupervisorView,
   type TaskGraph, type GraphAuditEvent
 } from "./task-graph.mjs";
 import { allowedTaskBudget, taskDeadline, taskDeadlineAllows, MAX_RUNTIME_ACTIONS } from "./task-runtime-budget.mjs";
-import {workerSupervisorView} from "./master-worker-queue.mjs";
 
 
 export const MAX_AGENT_STEPS = 8;
