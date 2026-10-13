@@ -29,7 +29,7 @@ import {
 
 import { taskGraphProgress, handoffContractFailure, type GraphAuditEvent } from "./task-graph.mjs";
 import { editingMasterContext, orchestrationWithMasterEditor } from "./master-editor.mjs";
-import { workerQueueView, nextWorkerTurn } from "./master-worker-queue.mjs";
+import { workerQueueView, nextWorkerTurn, workerSupervisorView } from "./master-worker-queue.mjs";
 import { MODEL_ROLES, loadModelRoutes, validateModelRoute, selectTaskRoute } from "./model-routing.mjs";
 import type { ModelRoute, TaskModelRoute } from "./model-routing.mjs";
 import { chooseNativeRoute } from "../web-dashboard/src/native-model-routing.mjs";
@@ -588,6 +588,7 @@ function renderOrchestrationStatus(): void {
   const progress = el<HTMLElement>("#agentProgress");
   const graphProgress = taskGraphProgress(orchestration.task_graph);
   const workerQueue = workerQueueView(orchestration.task_graph);
+  const workerSupervisor = workerSupervisorView(orchestration.task_graph);
   const nextTurn = nextWorkerTurn(orchestration.task_graph);
   const nextMedia = nextTurn?.artifact ? " · Source: "+nextTurn.artifact.source+" SHA-256 "+nextTurn.artifact.sha256.slice(0,12)+"…" : "";
   const nextBatch = nextTurn?.batch_sources ? " · Batch: "+nextTurn.batch_sources.length+" audited PNG sources (normal approval required)" : "";
@@ -616,7 +617,7 @@ function renderOrchestrationStatus(): void {
         ? "Exact typed-result and native audit receipt verified." : step.status));
       list.append(row);
     }
-    progress.textContent = `Task: ${orchestration.task_graph.objective} · ${workerQueue.verified}/${workerQueue.total} audited worker actions · ${workerQueue.ready} ready · ${workerQueue.running} running · ${workerQueue.blocked} blocked · Next: ${nextTurn ? nextTurn.worker+" / "+nextTurn.step_id+" (approval needed)" : "awaiting safe handoff"}${nextMedia}${nextBatch} · Current: ${graphProgress.current ?? "none"} · Phase: ${orchestration.coding.active ? codingPhase(orchestration) : "general"} · State: ${orchestration.recovery_mode}`;
+    progress.textContent = `Task: ${orchestration.task_graph.objective} · ${workerQueue.verified}/${workerQueue.total} audited worker actions · ${workerQueue.ready} ready · ${workerQueue.running} running · ${workerQueue.blocked} blocked · Native lease: ${workerSupervisor.state}${workerSupervisor.quarantined ? " (recovery required)" : ""} · Next: ${nextTurn ? nextTurn.worker+" / "+nextTurn.step_id+" (approval needed)" : "awaiting safe handoff"}${nextMedia}${nextBatch} · Current: ${graphProgress.current ?? "none"} · Phase: ${orchestration.coding.active ? codingPhase(orchestration) : "general"} · State: ${orchestration.recovery_mode}`;
     return;
   }
   if (!orchestration.objective && orchestration.tool_actions === 0 && orchestration.next_step === 1) {
