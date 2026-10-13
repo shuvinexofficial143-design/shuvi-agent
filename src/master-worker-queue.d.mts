@@ -8,5 +8,8 @@ export function handoffContractFailure(graph:unknown,stepId:string):string|null;
 export function evidenceForStep(step:unknown):{action_id:string;tool:string;orchestration_step:number}|null;
 export function workerQueueView(graph:unknown):WorkerQueueView;
 export function workerQueueSummary(graph:unknown):string;
+export type WorkerSupervisorState="idle"|"ready"|"waiting"|"awaiting_native_preparation"|"native_action_in_flight"|"recovery_required";
+export type WorkerSupervisorView={state:WorkerSupervisorState;step_id:string|null;worker:WorkerLane|null;action_id:string|null;quarantined:boolean;reason:string|null;next_step_id:string|null};
+export function workerSupervisorView(graph:unknown):WorkerSupervisorView;
 export type WorkerTurn = {step_id:string;worker:WorkerLane;tool:string;resource:string;handoffs:WorkerHandoff[];requires_owner_approval:true;artifact?:WorkerImportIdentity;batch_sources?:WorkerBatchSource[]};
 export function nextWorkerTurn(graph:unknown):WorkerTurn|null;
