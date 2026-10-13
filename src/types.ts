@@ -132,7 +132,7 @@ export type NativeWorkerStatus = {
   supervisorHeartbeatAtMs: number | null;
   supervisorHeartbeatAgeMs: number | null;
   supervisorHeartbeatSeq: number | null;
-  supervisorHealth: "not_observed" | "unattributed_or_interrupted" |
+  supervisorHealth: "not_observed" | "supervisor_start_record_only" | "unattributed_or_interrupted" |
     "supervisor_tick_stale" | "rust_supervisor_observed" | "last_action_audited";
 };
 
