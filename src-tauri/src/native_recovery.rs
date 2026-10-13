@@ -229,7 +229,7 @@ mod tests{
     #[test]
     fn rejects_duplicate_skipped_regressed_and_cross_task_recovery(){
         let first=state();
-        assert!(validate_advance(None,&first).is_ok());
+        assert!(validate_advance(None,&first).is_err(),"initial execution without a reservation is invalid");
         assert!(validate_advance(Some(&first),&first).is_err());
         assert!(validate_advance(None,&NativeRecoveryRecord{revision:Some(2),..first.clone()}).is_err());
         let next=NativeRecoveryRecord{revision:Some(2),phase:"audit_verified".into(),..first.clone()};
@@ -288,10 +288,12 @@ mod tests{
         let folder=std::env::temp_dir().join(format!("shuvi-revision-check-{}",uuid::Uuid::new_v4()));
         fs::create_dir(&folder).unwrap();
         let file=folder.join("native-recovery.json");
-        let one=state();
+        let one=NativeRecoveryRecord{
+            phase:"model_reserved".into(),staged_actions:0,action_id:None,..state()};
         store_record(&file,one.clone(),1).unwrap();
         assert!(store_record(&file,one.clone(),2).is_err());
-        let two=NativeRecoveryRecord{revision:Some(2),phase:"audit_verified".into(),..one.clone()};
+        let two=NativeRecoveryRecord{revision:Some(2),phase:"awaiting_approval".into(),
+            staged_actions:1,action_id:Some("action-1".into()),..one.clone()};
         store_record(&file,two.clone(),2).unwrap();
         assert!(store_record(&file,NativeRecoveryRecord{revision:Some(3),task_id:Some(
             "e8b36b21-1c6a-459e-9b6f-75dd5692ab81".into()),..one.clone()},3).is_err());
