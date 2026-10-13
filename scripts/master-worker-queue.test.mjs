@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
-import {workerForTool,evidenceForStep,workerQueueView,workerQueueSummary,nextWorkerTurn,handoffContractFailure} from "../src/master-worker-queue.mjs";
+import {workerForTool,evidenceForStep,workerQueueView,workerQueueSummary,nextWorkerTurn,handoffContractFailure,workerSupervisorView} from "../src/master-worker-queue.mjs";
 import {graphDependencyFailure} from "../src/task-graph.mjs";
 const UUID="123e4567-e89b-42d3-a456-426614174000";
 const step=(step_id,expected_tool,status="ready",depends_on=[],evidence=[])=>({step_id,expected_tool,status,depends_on,evidence,title:step_id});
@@ -41,7 +41,7 @@ test("Worker dependencies and app locks exclude conflicted or unverified handoff
   const q=workerQueueView(g);
   assert.equal(q.total,6);
   assert.equal(q.verified,1);
-  assert.deepEqual(q.ready_job_ids,["ready_inspection"]);
+  assert.deepEqual(q.ready_job_ids,[],"one Rust-native execution lease blocks every other app lane");
   assert.equal(q.blocked,2,"unsupported tool and incomplete Remotion handoff must both block");
   assert.equal(q.jobs.find(j=>j.id==="insert").status,"blocked");
   assert.match(workerQueueSummary(g),/1\/6 audited/);
@@ -285,4 +285,56 @@ test("invented native worker tools cannot be scheduled or complete a fake graph"
  assert.equal(nextWorkerTurn(g),null);
  assert.match(graphDependencyFailure(g,{tool:"invented_worker_launch",task_step_id:"invented"}),
   /No native worker exists/);
+});
+
+test("one native execution lease blocks DIFFERENT app workers until audit completion",()=>{
+ const g={steps:[
+  step("blender","blender_inspect","running"),
+  step("premiere","premiere_context","ready"),
+  step("ae","after_effects_inspect","ready"),
+  step("code","read_file","ready")
+ ]};
+ const q=workerQueueView(g);
+ assert.equal(q.running,1);
+ assert.deepEqual(q.ready_job_ids,[]);
+ assert.equal(nextWorkerTurn(g),null);
+ for(const [step_id,tool] of [["premiere","premiere_context"],["ae","after_effects_inspect"],["code","read_file"]]){
+   assert.match(graphDependencyFailure(g,{tool,task_step_id:step_id}),/Worker lane is busy/);
+ }
+ const pending=workerSupervisorView(g);
+ assert.equal(pending.state,"awaiting_native_preparation");
+ assert.equal(pending.step_id,"blender");
+ assert.equal(pending.action_id,null);
+ assert.equal(pending.next_step_id,null);
+ g.steps[0].running={fingerprint:"exact local proposal",orchestration_step:1,
+  action_id:UUID};
+ const live=workerSupervisorView(g);
+ assert.equal(live.state,"native_action_in_flight");
+ assert.equal(live.action_id,UUID);
+ assert.equal(live.worker,"blender");
+ assert.match(live.reason,/Do not dispatch another worker/);
+ g.steps[0].status="completed";
+ g.steps[0].running=null;
+ g.steps[0].evidence=accepted("blender_inspect","blender",1,UUID);
+ assert.deepEqual(workerQueueView(g).ready_job_ids,["premiere","ae","code"]);
+ assert.equal(workerSupervisorView(g).state,"ready");
+ assert.equal(workerSupervisorView(g).next_step_id,"premiere");
+});
+test("quarantine failed, forged-complete and competing-running checkpoints",()=>{
+ const g={steps:[step("a","read_file","ready"),step("b","premiere_context","ready")]};
+ assert.equal(workerSupervisorView(g).state,"ready");
+ g.steps[1].status="failed";
+ assert.equal(workerSupervisorView(g).state,"recovery_required");
+ assert.equal(workerSupervisorView(g).quarantined,true);
+ assert.deepEqual(workerQueueView(g).ready_job_ids,[]);
+ g.steps[1].status="completed";
+ g.steps[1].evidence=[{success:true,source:"model_claim"}];
+ assert.match(workerSupervisorView(g).reason,/no independent Rust audit/);
+ assert.equal(nextWorkerTurn(g),null);
+ g.steps[1].status="running";g.steps[1].evidence=[];
+ g.steps[0].status="running";
+ const uncertain=workerSupervisorView(g);
+ assert.equal(uncertain.state,"recovery_required");
+ assert.match(uncertain.reason,/Multiple native actions/);
+ assert.deepEqual(workerQueueView(g).ready_job_ids,[]);
 });
