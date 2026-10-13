@@ -193,3 +193,37 @@ test("native task writes task-bound checkpoint before paid request; any Rust wri
  assert.match(native,/recoveryAcknowledged=false;[\s\S]*?if\(!writeRecovery\(b,phase,actionId\)\)return failClosed\(\)/);
  assert.match(native,/if\(!record\|\|record\.version!==2\)return failClosed\(\)/);
 });
+
+test("revisioned WebView journal rejects stale duplicate and cross-task replacement",()=>{
+ const store=makeStore();
+ const taskId="14a40d18-4df8-4cb8-ab90-0137027f3a8b";
+ const first={...value,version:2,taskId,revision:1};
+ assert.equal(writeNativeRecovery(store,first,1000),true);
+ const snapshot=store.m.get(NATIVE_JOURNAL_KEY);
+ assert.equal(writeNativeRecovery(store,first,1001),false);
+ assert.equal(writeNativeRecovery(store,{...first,revision:3},1001),false);
+ assert.equal(writeNativeRecovery(store,{...first,revision:2,
+  taskId:"7811c24d-d01a-4b04-96ae-0d4ef664ca93"},1001),false);
+ assert.equal(writeNativeRecovery(store,{...first,revision:2,modelRequests:0},1001),false);
+ assert.equal(writeNativeRecovery(store,{...first,revision:2,stagedActions:2},1001),false);
+ assert.equal(writeNativeRecovery(store,{...first,revision:2,expiresAt:7200999},1001),false);
+ assert.equal(writeNativeRecovery(store,value,1001),false,"v1 must not overwrite v2");
+ assert.equal(store.m.get(NATIVE_JOURNAL_KEY),snapshot,"no rejected write may alter journal");
+ const second={...first,revision:2,phase:"executing"};
+ assert.equal(writeNativeRecovery(store,second,1002),true);
+ assert.equal(readNativeRecovery(store,1003).revision,2);
+ assert.equal(writeNativeRecovery(store,{...first,revision:3,modelRequests:5,stagedActions:4},1004),true);
+ assert.equal(readNativeRecovery(store,1005).revision,3);
+});
+
+test("recovery journal cannot resume revision chain after local evidence disappears",()=>{
+ const taskId="14a40d18-4df8-4cb8-ab90-0137027f3a8b";
+ const store=makeStore(),first={...value,version:2,taskId,revision:1};
+ assert.equal(writeNativeRecovery(store,first,1000),true);
+ store.m.delete(NATIVE_JOURNAL_KEY);
+ assert.equal(writeNativeRecovery(store,{...first,revision:2},1001),false);
+ assert.equal(writeNativeRecovery(store,first,1001),true);
+ store.m.set(NATIVE_JOURNAL_KEY,"{broken");
+ assert.equal(writeNativeRecovery(store,{...first,revision:2},1002),false);
+ assert.equal(store.m.get(NATIVE_JOURNAL_KEY),"{broken");
+});
