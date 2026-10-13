@@ -1,6 +1,6 @@
-import { workerQueueView, nextWorkerTurn, evidenceForStep, handoffContractFailure } from "./master-worker-queue.mjs";
+import { workerQueueView, nextWorkerTurn, evidenceForStep, handoffContractFailure, workerSupervisorView } from "./master-worker-queue.mjs";
 import {parseWorkerArtifact,validWorkerArtifact,artifactHandoffFailure,workerBatchSources} from "./worker-artifact-lineage.mjs";
-export { nextWorkerTurn, handoffContractFailure };
+export { nextWorkerTurn, handoffContractFailure, workerSupervisorView };
 // Pure bounded coordinator. Provider metadata is never execution authority.
 import { MAX_RUNTIME_ACTIONS, allowedTaskBudget } from "./task-runtime-budget.mjs";
 export const GRAPH_LIMIT = 8;
