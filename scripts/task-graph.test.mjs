@@ -47,6 +47,11 @@ function runningActionId(state, p) {
 function done(state, p, r = result(p.tool)) {
   state = staged(state, p);
   const actionId = runningActionId(state, p);
+  if(r.stdout==="observed"&&p.tool==="blender_run_plan"){
+    r={...r,stdout:JSON.stringify({status:"verified",worker:"blender",
+      full_plan_completed:true,verified_by_native_sha256:true,
+      artifact:{path:"/repo/blender.png",sha256:"b".repeat(64),bytes:8192}})};
+  }
   if(r.stdout==="observed"&&p.tool==="motion_graphics_accept_final_remotion"){
     const render=state.task_graph.steps.find(s=>s.expected_tool==="motion_graphics_run_remotion")?.evidence.find(e=>e.success);
     r={...r,stdout:JSON.stringify({
@@ -798,7 +803,8 @@ test("Blender inspection-to-model-to-Premiere insertion is a real typed worker c
  assert.equal(graph.taskGraphProgress(state.task_graph).completed,2);
  const saved=json(state.task_graph);
  assert.equal(graph.restoreTaskGraph(saved,state.next_step,state.max_steps).ok,true);
- state=done(state,proposal("insert","premiere_insert_media"));
+ state=done(state,proposal("insert","premiere_insert_media",
+  {arguments:{path:"/repo/blender.png"}}));
  assert.equal(graph.taskGraphProgress(state.task_graph).completed,3);
  assert.equal(graph.nextWorkerTurn(state.task_graph),null);
 });
