@@ -15,6 +15,31 @@
 - Fixed helper is bundled as a Tauri resource, not an AI-created or user-provided Python source string. Rust always stages the typed tool through normal permissions and the existing native action audit.
 - Single native execution lease remains authoritative. Lock hints on the UI are **not** parallel execution guarantees.
 
+## Cross-app artifact identity gate (Task Graph, development branch)
+
+- The Master Task Graph now retains an **allowlisted artifact identity** only from a
+  successful typed native result correlated with a matching Rust executed audit
+  action. This is a bounded immutable projection, not a model claim.
+- Remotion final acceptance requires an action-ID match, SHA-256 format, an
+  absolute output path, successful final-output hash and visual-review flags,
+  and the expected Rust delivery/provenance booleans. The output must identify
+  the exact earlier Remotion render action.
+- The approved Premiere insertion plan carries the **same accepted output path,
+  SHA-256, and final acceptance action ID**, as well as an explicit
+  `requires_normal_premiere_approval=true`, `automatic_execution=false`
+  contract. A different path in the Premiere proposal fails before staging.
+- Native acceptance and insertion-plan evidence is retained in local graph
+  checkpoints. Missing/malformed identities, a different render ID, reused
+  action receipts, changed path/hash or a forged saved checkpoint fail closed.
+  The queue displays the import as blocked; other independent worker lanes
+  are unaffected.
+- **Not a live OS hash check at Premiere dispatch.** The JS task graph verifies
+  provenance *of the Rust-verified acceptance at the time it ran*. A file could
+  change after acceptance. Actual pre-import native hash rechecking, project
+  readback, and disposable Windows host acceptance are separate outstanding
+  requirements. The graph neither grants execution permission nor asserts
+  that Premiere has imported the media.
+
 ## New bounded Blender editing/rendering adapter
 
 - `blender_run_plan` accepts **one high-risk approved** declarative plan with at most 6 steps, 90-second internal plan timeout, one owned authenticated Blender session and a fixed bundled `shuvi_blender_plan.py` adapter. Python package `Plan.from_dict` validates payloads and `PlanRunner` dispatches only catalogued typed operations with independent readback.
