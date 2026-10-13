@@ -181,8 +181,8 @@ test("historical v1 recovery remains readable only as evidence, not rewritten in
  assert.equal("taskId" in local.record,false);
  assert.deepEqual(assessNativeRecoveryPair(local,{...local.record,updatedAt:1005},1006),
   {requiresReview:true,reason:"matched_previous_task"});
- assert.deepEqual(assessNativeRecoveryPair(local,{version:2,taskId:"14a40d18-4df8-4cb8-ab90-0137027f3a8b",...local.record},1006),
-  {requiresReview:true,reason:"matched_previous_task"});
+ assert.deepEqual(assessNativeRecoveryPair(local,{...local.record,version:2,taskId:"14a40d18-4df8-4cb8-ab90-0137027f3a8b"},1006),
+  {requiresReview:true,reason:"mismatched_stores"});
 });
 
 test("native task writes task-bound checkpoint before paid request; any Rust write error latches admission",()=>{
