@@ -52,6 +52,26 @@
   then hashes again after Premiere's readback. A hash mismatch aborts before
   Adobe mutation, or marks an already-dispatched operation unsuccessful and
   potentially uncertain. The code limits hash-checked sources to 2 GiB.
+- **Batch Premiere artifact integrity.** `premiere_import_media` and
+  `premiere_create_sequence_from_media` accept an optional ordered array of
+  `expected_sha256` values. When present, it must exactly match the media
+  `paths` array, contain 1–100 valid SHA-256 strings with no duplicate
+  paths, and each source must be a nonempty regular file of up to 2 GiB.
+  Rust checks all file hashes after its project backup, just before calling
+  Adobe, and again after native readback; any changed file makes the result
+  unverified and non-retry-safe. Native hashing also enforces a 4 GiB
+  **total batch** budget before hashing any input.
+- **Cross-worker batch authority.** In the Task Graph, multiple previously
+  verified `blender_run_plan` PNG outputs may be imported together only
+  when *every path* and its paired hash matches a unique Rust-audited
+  Blender source. The completed Premiere batch records the exact source
+  step IDs, producer action IDs, paths, and hashes, and checkpoint recovery
+  rejects missing/changed/duplicate provenance. The Master previews
+  bounded lists of verified sources but cannot dispatch or approve them.
+  Remotion final delivery intentionally cannot bypass its single-output
+  final acceptance/insertion-plan sequence using the batch or
+  create-sequence tools. Ordinary manual imports outside that provenance
+  chain retain their existing approval-based pathway.
 - **Important non-atomic boundary:** Adobe still receives a pathname rather
   than an exclusively opened source handle. Other writers can modify the file
   between checks, and a post-dispatch change can mean Premiere state is
@@ -59,8 +79,9 @@
   Ordinary manually supplied media can still use the previous import contract
   without an expected hash; the SHA-256 policy is mandatory in the verified
   worker-to-worker Task Graph, not a blanket claim about all media files.
-  Batch `premiere_import_media` and other import routes are not covered by
-  this particular `premiere_insert_media` SHA-256 guard.
+  The batch and sequence-from-media routes now have their own bounded
+  pre/post SHA-256 checks when expected hashes are provided; other media
+  manipulation routes and external Adobe changes are not atomic or covered.
 
 ## New bounded Blender editing/rendering adapter
 
