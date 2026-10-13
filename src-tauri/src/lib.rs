@@ -338,9 +338,9 @@ Transcript rebuild handles explicit interior text removal by creating and insert
 - premiere_batch_attach_proxy: {"items":[{"item_id":"clip project item id","proxy_path":"absolute proxy media path"}]}
 - premiere_insert_mogrt_path: {"path":"absolute .mogrt path","seconds":0,"video_track":0,"audio_track":0}
 - premiere_insert_mogrt_library: {"library_name":"library","element_name":"template","seconds":0,"video_track":0,"audio_track":0}
-- premiere_import_media: {"paths":["absolute media path 1","absolute media path 2"]}
+- premiere_import_media: {"paths":["absolute media path 1","absolute media path 2"],"expected_sha256":["64-hex source1","64-hex source2"]} — optional for ordinary files; REQUIRED for approved cross-worker media; hashes strictly align with paths
 - premiere_import_caption_source: {"path":"absolute .srt or .vtt path"}
-- premiere_create_sequence_from_media: {"name":"sequence name","paths":["absolute media path 1","absolute media path 2"]}
+- premiere_create_sequence_from_media: {"name":"sequence name","paths":["absolute media path 1","absolute media path 2"],"expected_sha256":["64-hex source1","64-hex source2"]} — optional for ordinary files, required for verified worker sources
 - premiere_create_subsequence: {"targets":[{"kind":"video|audio","track":0,"clip_index":0}]}
 - premiere_replace_with_subsequence: {"source":{"kind":"video","track":0,"clip_index":0,"signature":"exact inspected targetSignature"},"expected":"exact one-source expectation"}
 - premiere_insert_project_item: {"item_id":"project item id","seconds":0,"video_track":0,"audio_track":0,"mode":"insert|overwrite"}
@@ -900,9 +900,9 @@ enum ToolAction {
     PremiereBatchAttachProxy { items: Vec<Value> },
     PremiereInsertMogrtPath { path: String, seconds: f64, video_track: u32, audio_track: u32 },
     PremiereInsertMogrtLibrary { library_name: String, element_name: String, seconds: f64, video_track: u32, audio_track: u32 },
-    PremiereImportMedia { paths: Vec<String> },
+    PremiereImportMedia { paths: Vec<String>, expected_sha256: Option<Vec<String>> },
     PremiereImportCaptionSource { path: String },
-    PremiereCreateSequenceFromMedia { name: String, paths: Vec<String> },
+    PremiereCreateSequenceFromMedia { name: String, paths: Vec<String>, expected_sha256: Option<Vec<String>> },
     PremiereCreateSubsequence { targets: Vec<Value> },
     PremiereReplaceWithSubsequence { source: premiere_layering::SourceTarget },
     PremiereInsertProjectItem { item_id: String, seconds: f64, video_track: u32, audio_track: u32, mode: String },
@@ -6881,8 +6881,18 @@ fn stage_tool(
                 validated.push(absolute);
             }
 
+            let expected_sha256=match proposal.arguments.get("expected_sha256") {
+                None=>None,
+                Some(Value::Array(items))=>{
+                    let hashes=items.iter().map(|x|x.as_str().map(str::to_owned)
+                        .ok_or("Every Premiere batch expected_sha256 entry must be a hex string."))
+                        .collect::<Result<Vec<_>,_>>()?;
+                    premiere_artifact_integrity::validate_expected_batch(&validated,Some(&hashes))?
+                }
+                Some(_)=>return Err("Premiere batch expected_sha256 must be an ordered array of hashes.".into()),
+            };
             (
-                ToolAction::PremiereImportMedia { paths: validated.clone() },
+                ToolAction::PremiereImportMedia { paths: validated.clone(), expected_sha256 },
                 "Import media into Premiere".to_string(),
                 format!("Import {} media file(s) into the active Premiere project root.", validated.len()),
                 RiskLevel::Medium,
@@ -6911,10 +6921,21 @@ fn stage_tool(
                 validated.push(absolute);
             }
 
+            let expected_sha256=match proposal.arguments.get("expected_sha256") {
+                None=>None,
+                Some(Value::Array(items))=>{
+                    let hashes=items.iter().map(|x|x.as_str().map(str::to_owned)
+                        .ok_or("Every Premiere sequence expected_sha256 entry must be a hex string."))
+                        .collect::<Result<Vec<_>,_>>()?;
+                    premiere_artifact_integrity::validate_expected_batch(&validated,Some(&hashes))?
+                }
+                Some(_)=>return Err("Premiere sequence expected_sha256 must be an ordered array of hashes.".into()),
+            };
             (
                 ToolAction::PremiereCreateSequenceFromMedia {
                     name: name.clone(),
                     paths: validated.clone(),
+                    expected_sha256,
                 },
                 "Create Premiere sequence from media".to_string(),
                 format!(
@@ -16269,8 +16290,10 @@ try {{
                 "source_import_verified":verified,"caption_track_created":false,"caption_text_write_supported":false,
                 "retry_safe":false}).to_string(),stderr:String::new(),exit_code:Some(if verified{0}else{1})})
         }
-        ToolAction::PremiereImportMedia { paths } => {
+        ToolAction::PremiereImportMedia { paths, expected_sha256 } => {
             let checkpoint = backup_premiere_project(&premiere_bridge).await?;
+            let before=premiere_artifact_integrity::verify_expected_batch(
+                &paths,expected_sha256.as_deref())?;
             let value = premiere_bridge
                 .request(
                     "import_media",
@@ -16278,18 +16301,28 @@ try {{
                     Duration::from_secs(30),
                 )
                 .await?;
-
-            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+            let after=premiere_artifact_integrity::verify_expected_batch(
+                &paths,expected_sha256.as_deref());
+            let unchanged=matches!(&after,Ok(value) if value==&before);
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback")
+                &&unchanged;
             Ok(ActionResult {
                 success: verified,
                 tool,
-                stdout: json!({"checkpoint":checkpoint,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
-                stderr: String::new(),
+                stdout: json!({"checkpoint":checkpoint,"result":value,"post_state_verified":verified,
+                    "native_batch_sha256_bound":before.is_some(),
+                    "native_post_import_sha256_verified":before.is_some()&&unchanged,
+                    "native_source_unchanged":unchanged,"retry_safe":false}).to_string(),
+                stderr: if unchanged{String::new()}else{
+                    "Approved Premiere batch source changed during import; project outcome unknown. Inspect before retrying.".into()
+                },
                 exit_code: Some(if verified {0}else{1}),
             })
         }
-        ToolAction::PremiereCreateSequenceFromMedia { name, paths } => {
+        ToolAction::PremiereCreateSequenceFromMedia { name, paths, expected_sha256 } => {
             let backup = backup_premiere_project(&premiere_bridge).await?;
+            let before=premiere_artifact_integrity::verify_expected_batch(
+                &paths,expected_sha256.as_deref())?;
             let value = premiere_bridge
                 .request(
                     "create_sequence_from_media",
@@ -16297,13 +16330,22 @@ try {{
                     Duration::from_secs(45),
                 )
                 .await?;
-            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
+            let after=premiere_artifact_integrity::verify_expected_batch(
+                &paths,expected_sha256.as_deref());
+            let unchanged=matches!(&after,Ok(value) if value==&before);
+            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback")
+                &&unchanged;
 
             Ok(ActionResult {
                 success: verified,
                 tool,
-                stdout: json!({"backup":backup,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
-                stderr: String::new(),
+                stdout: json!({"backup":backup,"result":value,"post_state_verified":verified,
+                    "native_batch_sha256_bound":before.is_some(),
+                    "native_post_import_sha256_verified":before.is_some()&&unchanged,
+                    "native_source_unchanged":unchanged,"retry_safe":false}).to_string(),
+                stderr: if unchanged{String::new()}else{
+                    "Approved Premiere sequence source changed during creation; project outcome unknown. Inspect before retrying.".into()
+                },
                 exit_code: Some(if verified {0}else{1}),
             })
         }
