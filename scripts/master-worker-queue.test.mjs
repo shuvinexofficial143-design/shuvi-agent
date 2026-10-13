@@ -155,6 +155,10 @@ test("recovered failure history remains visible but a later exact audit can hand
   step("model","blender_run_plan","completed",[],[failed,...accepted("blender_run_plan","model",3,UUID)]),
   step("export","premiere_insert_media","ready",["model"])
  ]};
+ g.steps[0].evidence[1].artifact={
+  kind:"blender_artifact",producer_action_id:UUID,
+  path:"/repo/model.png",sha256:"b".repeat(64),bytes:8192
+ };
  const q=workerQueueView(g);
  assert.equal(q.verified,1);
  assert.deepEqual(q.ready_job_ids,["export"]);
