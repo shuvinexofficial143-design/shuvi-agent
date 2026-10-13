@@ -6,7 +6,8 @@ import {graphDependencyFailure,restoreTaskGraph} from "../src/task-graph.mjs";
 const id=n=>"123e4567-e89b-42d3-a456-"+String(n).padStart(12,"0");
 const sha="a".repeat(64),path="/repo/remotion-render.mp4";
 const receipt=(tool,step,number,actionId,artifact)=>({
- step_id:step,tool,orchestration_step:number,action_id:actionId,artifact,
+ step_id:step,tool,orchestration_step:number,action_id:actionId,
+ ...(artifact?{artifact}:{}),
  fingerprint:"sha256-case:"+step,source:"typed_result",audit_event:"executed",
  outcome:"success",success:true,summary:"Native Rust audited action"
 });
