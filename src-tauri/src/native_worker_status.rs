@@ -177,8 +177,9 @@ mod tests{
     }
     #[test]
     fn idle_has_no_claimed_cross_process_clearance(){
-        let empty=HashMap::new();
-        let state=snapshot(false,&empty,&empty,None,5_000);
+        let empty_tools:HashMap<String,String>=HashMap::new();
+        let empty_starts:HashMap<String,u64>=HashMap::new();
+        let state=snapshot(false,&empty_tools,&empty_starts,None,5_000);
         assert_eq!(state.state,"idle");
         assert!(!state.requires_owner_review);
         assert!(state.action_id.is_none());
