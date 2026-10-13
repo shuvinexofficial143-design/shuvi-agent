@@ -272,3 +272,27 @@ test("revisioned v2 initial checkpoint must be a single reservation with no acti
    JSON.stringify(patch));
  }
 });
+
+test("a possibly executed action must become unknown or audited before a new approval",()=>{
+ const taskId="14a40d18-4df8-4cb8-ab90-0137027f3a8b",store=makeStore();
+ const reserved={version:2,taskId,revision:1,maxActions:8,modelRequests:1,
+  stagedActions:0,expiresAt:7201000,phase:"model_reserved",actionId:null};
+ assert.equal(writeNativeRecovery(store,reserved,1000),true);
+ const prepared={...reserved,revision:2,stagedActions:1,
+  phase:"awaiting_approval",actionId:"action-1"};
+ assert.equal(writeNativeRecovery(store,prepared,1001),true);
+ const executing={...prepared,revision:3,phase:"executing"};
+ assert.equal(writeNativeRecovery(store,executing,1002),true);
+ assert.equal(writeNativeRecovery(store,{...executing,revision:4,phase:"paused"},1003),false);
+ assert.equal(writeNativeRecovery(store,{...executing,revision:4,phase:"model_reserved",modelRequests:2},1003),false);
+ assert.equal(writeNativeRecovery(store,{...executing,revision:4,phase:"awaiting_approval",
+  stagedActions:2,actionId:"action-2"},1003),false);
+ const unknown={...executing,revision:4,phase:"outcome_unknown"};
+ assert.equal(writeNativeRecovery(store,unknown,1003),true);
+ assert.equal(writeNativeRecovery(store,{...unknown,revision:5,phase:"paused"},1004),false);
+ assert.equal(writeNativeRecovery(store,{...unknown,revision:5,phase:"model_reserved",modelRequests:2},1004),false);
+ const observed={...unknown,revision:5,phase:"awaiting_approval",
+  stagedActions:2,actionId:"read-only-inspection"};
+ assert.equal(writeNativeRecovery(store,observed,1004),true,
+  "separately verified UI recovery can stage a fresh inspection after an unknown outcome");
+});
