@@ -28,7 +28,7 @@ const accepted=()=>({
 const insertion=()=>({
  schema_version:1,source:"verified_motion_graphics_delivery",
  final_acceptance_action_id:id(2),output_file:path,output_sha256:sha,
- premiere_tool_proposal:{tool:"premiere_insert_media",arguments:{path}},
+ premiere_tool_proposal:{tool:"premiere_insert_media",arguments:{path,expected_sha256:sha}},
  automatic_execution:false,requires_normal_premiere_approval:true,
  production_ready:false
 });
@@ -84,11 +84,16 @@ test("valid Remotion lineage is ready only for the exact accepted output file",(
  assert.deepEqual(importArtifactIdentity(g,"insert"),{
   source:"remotion",source_action_id:id(3),path,sha256:sha
  });
- const proposal={tool:"premiere_insert_media",task_step_id:"insert",arguments:{path}};
+ const proposal={tool:"premiere_insert_media",task_step_id:"insert",
+  arguments:{path,expected_sha256:sha}};
  assert.equal(graphDependencyFailure(g,proposal),null);
  assert.equal(nextWorkerTurn(g).requires_owner_approval,true);
- assert.match(graphDependencyFailure(g,{...proposal,arguments:{path:"/repo/changed.mp4"}}),
+ assert.match(graphDependencyFailure(g,{...proposal,arguments:{path:"/repo/changed.mp4",expected_sha256:sha}}),
   /import path differs/);
+ assert.match(graphDependencyFailure(g,{...proposal,arguments:{path}}),
+  /expected_sha256/);
+ assert.match(graphDependencyFailure(g,{...proposal,arguments:{path,expected_sha256:"b".repeat(64)}}),
+  /expected_sha256/);
 });
 test("changed SHA, output path, acceptance ID, or render action blocks cross-app import",()=>{
  for(const edit of [
@@ -158,9 +163,11 @@ test("Blender PNG import requires matching Rust-verified producer identity and a
   source:"blender",source_action_id:id(1),path:"/repo/blender.png",sha256:"b".repeat(64)
  });
  assert.equal(graphDependencyFailure(g,{tool:"premiere_insert_media",task_step_id:"import",
-  arguments:{path:"/repo/blender.png"}}),null);
+  arguments:{path:"/repo/blender.png",expected_sha256:"b".repeat(64)}}),null);
  assert.match(graphDependencyFailure(g,{tool:"premiere_insert_media",task_step_id:"import",
-  arguments:{path:"/repo/other.png"}}),/Blender PNG output receipt/);
+  arguments:{path:"/repo/other.png",expected_sha256:"b".repeat(64)}}),/Blender PNG output receipt/);
+ assert.match(graphDependencyFailure(g,{tool:"premiere_insert_media",task_step_id:"import",
+  arguments:{path:"/repo/blender.png"}}),/expected_sha256/);
  const noArtifact=JSON.parse(JSON.stringify(g));
  delete noArtifact.steps[0].evidence[0].artifact;
  assert.deepEqual(workerQueueView(noArtifact).ready_job_ids,[]);
