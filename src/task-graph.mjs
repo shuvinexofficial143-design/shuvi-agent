@@ -154,6 +154,8 @@ export function graphDependencyFailure(graph, proposal) {
   // Defense in depth: a model-proposed completed status is not enough to
   // unlock cross-application work, and a shared app lane cannot be double-booked.
   const lane = workerQueueView(graph);
+  if(lane.total!==graph.steps.length||!lane.jobs.length)
+    return "Native worker queue checkpoint is malformed or exceeds owner-approved limits; inspect and replan.";
   const job = lane.jobs.find(j => j.id === stepId);
   if (job?.worker === "unsupported") return "No native worker exists for this typed tool.";
   if (job && !lane.ready_job_ids.includes(stepId)) {
