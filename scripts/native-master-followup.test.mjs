@@ -1140,3 +1140,35 @@ test("owner recovery clear holds exclusive submit lock until Rust disk result is
  assert.equal(s.chatInputs.length,2);
  assert.equal(s.calls.filter(c=>c.name==="clear_native_recovery").length,1);
 });
+
+test("divergent v2 WebView and Rust recovery revisions never replay paid or Windows actions",async()=>{
+ const now=Date.now(),taskId="14a40d18-4df8-4cb8-ab90-0137027f3a8b";
+ const local={version:2,taskId,revision:3,maxActions:8,stagedActions:1,modelRequests:1,
+  expiresAt:now+600000,updatedAt:now,phase:"executing",actionId:"prior-action-456"};
+ const rustRecord={...local,revision:4,phase:"outcome_unknown"};
+ const store=recoveryStore();
+ store.setItem("shuvi.native.task.recovery.v1",JSON.stringify(local));
+ const s=setup({recoveryStore:store,rustRecord});
+ await until(()=>s.transport.connected(),"native IPC and both recovery checkpoints");
+ assert.match(s.recoveryNotice.textContent,/WebView and Rust recovery records disagree/);
+ const blocked=await s.transport.send("Open Premiere Pro","restart-conflict",0);
+ assert.equal(blocked.ok,false);
+ assert.match(blocked.error,/previous Windows task/);
+ assert.equal(s.chatInputs.length,0);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action"||c.name==="prepare_tool").length,0);
+ assert.equal(s.calls.filter(c=>c.name==="save_native_recovery").length,0);
+});
+
+test("unreadable WebView recovery blocks new Windows tasks without paid model dispatch",async()=>{
+ const store={getItem(){throw Error("storage denied");},
+  setItem(){throw Error("storage denied");},
+  removeItem(){throw Error("storage denied");}};
+ const s=setup({recoveryStore:store});
+ await until(()=>s.transport.connected(),"native IPC");
+ assert.match(s.recoveryNotice.textContent,/WebView recovery evidence is invalid or unavailable/);
+ const blocked=await s.transport.send("Open Premiere Pro","unreadable-recovery",0);
+ assert.equal(blocked.ok,false);
+ assert.match(blocked.error,/previous Windows task/);
+ assert.equal(s.chatInputs.length,0);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action"||c.name==="prepare_tool").length,0);
+});
