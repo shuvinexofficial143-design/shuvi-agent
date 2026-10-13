@@ -63,7 +63,7 @@ export function validWorkerArtifact(value,tool,actionId){
    if(!obj(src)||Object.keys(src).sort().join(",")!=="path,producer_action_id,sha256,source_step_id"
       ||typeof src.source_step_id!=="string"||src.source_step_id.length<1
       ||src.source_step_id.length>120||!action(src.producer_action_id)
-      ||!absPath(src.path)||!/\\.png$/i.test(src.path)||!sha(src.sha256)
+      ||!absPath(src.path)||!/\.png$/i.test(src.path)||!sha(src.sha256)
       ||src.sha256!==src.sha256.toLowerCase()||seen.has(src.path.toLowerCase()))return false;
    seen.add(src.path.toLowerCase());
   }
@@ -113,7 +113,7 @@ export function workerBatchSources(graph,stepId){
   const done=step.status==="completed"?step.evidence?.filter(e=>e?.success===true):null;
   const e=done?.length===1?done[0]:null;
   if(!e||!validWorkerArtifact(e.artifact,"blender_run_plan",e.action_id)
-   ||!/\\.png$/i.test(e.artifact.path))return null;
+   ||!/\.png$/i.test(e.artifact.path))return null;
   sources.push({source_step_id:step.step_id,producer_action_id:e.action_id,
    path:e.artifact.path,sha256:e.artifact.sha256});
  }
@@ -149,7 +149,7 @@ export function artifactHandoffFailure(graph,stepId,proposal=null){
    const receipt=candidates?.length===1?candidates[0]:null;
    if(!receipt||!validWorkerArtifact(receipt.artifact,"blender_run_plan",receipt.action_id))
     return "Batch import requires all native Blender SHA-256 artifact receipts.";
-   if(!/\\.png$/i.test(receipt.artifact.path))
+   if(!/\.png$/i.test(receipt.artifact.path))
     return "Batch Premiere import supports verified Blender PNG media, not .blend project files.";
    if(seen.has(receipt.artifact.path.toLowerCase()))
     return "Batch import cannot reuse an artifact path for different Blender worker actions.";
