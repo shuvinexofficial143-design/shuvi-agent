@@ -192,3 +192,61 @@ test("mixed Blender and Remotion lineage is ambiguous rather than silently choos
  assert.equal(importArtifactIdentity(g,"insert"),null);
  assert.deepEqual(workerQueueView(g).ready_job_ids,[]);
 });
+
+test("multiple Rust-verified Blender PNG outputs can enter a Premiere batch only as an exact set",()=>{
+ const a1={kind:"blender_artifact",producer_action_id:id(1),path:"/repo/one.png",
+  sha256:"a".repeat(64),bytes:2000};
+ const a2={kind:"blender_artifact",producer_action_id:id(2),path:"/repo/two.png",
+  sha256:"b".repeat(64),bytes:3000};
+ for(const tool of ["premiere_import_media","premiere_create_sequence_from_media"]){
+  const g={objective:"Audited two-file Premiere media batch",revision:1,steps:[
+   step("first","blender_run_plan",1,[],a1),
+   step("second","blender_run_plan",2,[],a2),
+   step("deliver",tool,null,["first","second"])
+  ]};
+  assert.deepEqual(workerQueueView(g).ready_job_ids,["deliver"]);
+  const base={tool,task_step_id:"deliver",arguments:{
+   paths:[a2.path,a1.path],expected_sha256:[a2.sha256,a1.sha256],
+   ...(tool==="premiere_create_sequence_from_media"?{name:"Shuvi-verified"}:{})
+  }};
+  assert.equal(graphDependencyFailure(g,base),null);
+  assert.equal(graphDependencyFailure(g,{...base,arguments:{
+   ...base.arguments,paths:[a1.path,a2.path],expected_sha256:[a1.sha256,a2.sha256]
+  }}),null,"reordered arrays remain safe when path and SHA move together");
+  for(const argumentsPatch of [
+   {expected_sha256:[a2.sha256]},
+   {paths:[a1.path],expected_sha256:[a1.sha256]},
+   {paths:[a2.path,a1.path,"/repo/unapproved.mp4"],
+    expected_sha256:[a2.sha256,a1.sha256,"c".repeat(64)]},
+   {paths:[a1.path,a1.path],expected_sha256:[a1.sha256,a1.sha256]},
+   {expected_sha256:[a1.sha256,a2.sha256]},
+   {paths:[a1.path,a2.path],expected_sha256:[a1.sha256,"c".repeat(64)]},
+   {expected_sha256:null}
+  ]){
+   const declined=graphDependencyFailure(g,{...base,arguments:{...base.arguments,...argumentsPatch}});
+   assert.match(declined,/Batch import/,"dangerous alternate batch rejected: "+JSON.stringify(argumentsPatch));
+  }
+  assert.equal(restoreTaskGraph(g,3,8).ok,true);
+ }
+});
+test("Remotion cannot bypass required final acceptance through Premiere batch or sequence creation",()=>{
+ for(const tool of ["premiere_import_media","premiere_create_sequence_from_media"]){
+  const g=fixture();
+  g.steps[3].expected_tool=tool;
+  assert.match(artifactHandoffFailure(g,"insert"),/must use accepted single-file/);
+  assert.equal(workerQueueView(g).jobs[3].status,"blocked");
+  assert.deepEqual(workerQueueView(g).ready_job_ids,[]);
+  assert.match(graphDependencyFailure(g,{tool,task_step_id:"insert",arguments:{
+   paths:[path],expected_sha256:[sha]
+  }}),/must use accepted single-file/);
+ }
+});
+test("unrelated manual batch imports retain the normal owner-approval flow",()=>{
+ const g={objective:"Ordinary user media",revision:1,steps:[
+  step("batch","premiere_import_media",null)
+ ]};
+ assert.equal(artifactHandoffFailure(g,"batch"),null);
+ assert.deepEqual(workerQueueView(g).ready_job_ids,["batch"]);
+ assert.equal(graphDependencyFailure(g,{tool:"premiere_import_media",task_step_id:"batch",
+  arguments:{paths:["/user/media.mov"]}}),null);
+});
