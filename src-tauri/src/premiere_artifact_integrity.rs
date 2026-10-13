@@ -6,6 +6,7 @@ use std::fs::{self,File};
 use std::io::Read;
 use std::path::Path;
 const MAX_VERIFIED_MEDIA_BYTES:u64=2*1024*1024*1024;
+const MAX_VERIFIED_BATCH_BYTES:u64=4*1024*1024*1024;
 const BUF_SIZE:usize=64*1024;
 
 pub fn validate_expected(expected:Option<&str>)->Result<Option<String>,String>{
@@ -85,6 +86,22 @@ pub fn validate_expected_batch(paths:&[String],expected:Option<&[String]>)->Resu
 pub fn verify_expected_batch(paths:&[String],expected:Option<&[String]>)->Result<Option<Vec<String>>,String>{
     let hashes=validate_expected_batch(paths,expected)?;
     let Some(hashes)=hashes else {return Ok(None)};
+    // Cap total work before hashing even the first file. One source is
+    // limited to 2 GiB; one approved batch is limited to 4 GiB in total.
+    let mut total=0u64;
+    for (index,path) in paths.iter().enumerate(){
+        let metadata=fs::symlink_metadata(path).map_err(|e|format!(
+            "Premiere batch artifact {index} cannot be inspected before dispatch: {e}"))?;
+        if !metadata.file_type().is_file()||metadata.file_type().is_symlink()
+           ||metadata.len()==0||metadata.len()>MAX_VERIFIED_MEDIA_BYTES{
+            return Err(format!("Premiere batch artifact {index} is not a bounded regular file."));
+        }
+        total=total.checked_add(metadata.len())
+            .ok_or("Premiere batch total source bytes overflow.")?;
+        if total>MAX_VERIFIED_BATCH_BYTES{
+            return Err("Premiere batch source bytes exceed the 4 GiB native hash budget.".into());
+        }
+    }
     let mut observed=Vec::with_capacity(hashes.len());
     for (index,(path,hash)) in paths.iter().zip(hashes.iter()).enumerate(){
         // Do not leak a private filesystem path into verification failure text.
@@ -167,6 +184,10 @@ mod tests{
         assert!(validate_expected_batch(&[paths[0].clone(),paths[0].to_ascii_uppercase()],
             Some(&[hash.clone(),hash])).is_err());
         assert_eq!(validate_expected_batch(&paths,None).unwrap(),None);
+        assert!(validate_expected_batch(&Vec::new(),Some(&[])).is_err());
+        let too_many=vec!["/tmp/fixture".to_string();101];
+        let hashes=vec!["a".repeat(64);101];
+        assert!(validate_expected_batch(&too_many,Some(&hashes)).is_err());
     }
 
 }
