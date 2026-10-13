@@ -153,14 +153,57 @@ export function workerQueueView(graph){
       depends_on:[...step.depends_on],handoffs,
       title:typeof step.title==="string"?step.title.slice(0,100):""};
   });
-  const runningLocks=new Set(jobs.filter(x=>x.status==="running").map(x=>x.resource));
-  const ready=jobs.filter(x=>x.status==="ready"&&x.worker!=="unsupported"
-    &&x.depends_on.every(d=>accepted.has(d))&&!runningLocks.has(x.resource)
+  const runningJobs=jobs.filter(x=>x.status==="running");
+  // Shuvi's authoritative Rust runner owns ONE native action lease, not
+  // one per Adobe/application lane. A read-only planning hint may never
+  // imply another lane can execute while a different lane is in flight.
+  // Failed, forged-completed and duplicate-running graphs also quarantine
+  // new dispatches until explicit owner-reviewed recovery/replanning.
+  const graphQuarantined=runningJobs.length>1||jobs.some((job,i)=>
+    job.status==="failed"||(graph.steps[i].status==="completed"&&!job.verified));
+  const nativeLeaseBusy=runningJobs.length>0;
+  const ready=jobs.filter(x=>!nativeLeaseBusy&&!graphQuarantined
+    &&x.status==="ready"&&x.worker!=="unsupported"
+    &&x.depends_on.every(d=>accepted.has(d))
     &&!handoffContractFailure(graph,x.id)&&!artifactHandoffFailure(graph,x.id));
   const blocked=jobs.filter(x=>x.status==="blocked"||x.worker==="unsupported");
   return {total:jobs.length,verified:jobs.filter(x=>x.verified).length,
     running:jobs.filter(x=>x.status==="running").length,ready:ready.length,
     blocked:blocked.length,jobs,ready_job_ids:ready.map(x=>x.id)};
+}
+// Read-only supervisor of the *existing* Rust-owned single execution
+// lease. This is not a live worker heartbeat or a parallel process manager;
+// absence of an observation NEVER causes automatic lease release.
+export function workerSupervisorView(graph){
+  const q=workerQueueView(graph);
+  if(!q.total)return {state:"idle",step_id:null,worker:null,action_id:null,
+    quarantined:false,reason:null,next_step_id:null};
+  const running=graph.steps.filter(s=>s.status==="running");
+  const invalidCompleted=graph.steps.some(s=>s.status==="completed"
+    &&!q.jobs.find(j=>j.id===s.step_id)?.verified);
+  const failed=graph.steps.some(s=>s.status==="failed");
+  if(running.length>1||invalidCompleted||failed)
+    return {state:"recovery_required",step_id:null,worker:null,action_id:null,
+      quarantined:true,reason:running.length>1
+        ?"Multiple native actions are marked running; host state is uncertain."
+        :invalidCompleted?"Completed worker step has no independent Rust audit receipt."
+        :"A failed native worker needs explicit inspection and recovery/replan.",
+      next_step_id:null};
+  if(running.length===1){
+    const step=running[0];
+    const job=q.jobs.find(j=>j.id===step.step_id);
+    const prepared=typeof step.running?.action_id==="string"
+      &&UUID.test(step.running.action_id);
+    return {state:prepared?"native_action_in_flight":"awaiting_native_preparation",
+      step_id:step.step_id,worker:job?.worker??null,
+      action_id:prepared?step.running.action_id:null,
+      quarantined:false,reason:"Native execution lease is held. Do not dispatch another worker or infer a heartbeat.",
+      next_step_id:null};
+  }
+  const next=nextWorkerTurn(graph);
+  return {state:next?"ready":"waiting",step_id:null,worker:null,
+    action_id:null,quarantined:false,reason:null,
+    next_step_id:next?.step_id??null};
 }
 // Deterministic next-safe-turn advisory for Master. This never invokes a
 // model, starts a worker or carries owner permission across app boundaries.
