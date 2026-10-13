@@ -47,6 +47,48 @@ export function evidenceForStep(step){
       ||e.orchestration_step>48)return null;
   return {action_id:e.action_id,tool:e.tool,orchestration_step:e.orchestration_step};
 }
+// Native Remotion renders are not automatically usable Premiere media. The
+// accepted-render and insertion-plan native tools must each have their own
+// dependency-bound, audited action between render and Premiere insertion.
+// This validates the graph structure, never a file path supplied by a model.
+export function handoffContractFailure(graph,stepId){
+  if(!graph||!Array.isArray(graph.steps))return null;
+  const byId=new Map(graph.steps.map(s=>[s.step_id,s]));
+  const target=byId.get(stepId);
+  if(!target||target.expected_tool!=="premiere_insert_media")return null;
+  const parents=new Set();
+  const visit=id=>{
+    if(parents.has(id))return;
+    parents.add(id);
+    const s=byId.get(id);
+    for(const d of s?.depends_on??[])if(byId.has(d))visit(d);
+  };
+  for(const d of target.depends_on)if(byId.has(d))visit(d);
+  const remotionRenders=[...parents].filter(id=>byId.get(id)?.expected_tool==="motion_graphics_run_remotion");
+  if(remotionRenders.length===0)return null;
+  if(remotionRenders.length!==1)
+    return "Remotion-to-Premiere handoff is ambiguous: import must trace exactly one rendered source.";
+  const ancestors=id=>{
+    const found=new Set();
+    const walk=key=>{
+      if(found.has(key))return;
+      found.add(key);
+      for(const d of byId.get(key)?.depends_on??[])if(byId.has(d))walk(d);
+    };
+    for(const d of byId.get(id)?.depends_on??[])if(byId.has(d))walk(d);
+    return found;
+  };
+  const renderId=remotionRenders[0];
+  const accepted=[...parents].filter(id=>byId.get(id)?.expected_tool==="motion_graphics_accept_final_remotion"
+    &&ancestors(id).has(renderId));
+  if(!accepted.length)
+    return "Remotion-to-Premiere handoff requires motion_graphics_accept_final_remotion after its exact render.";
+  const plans=[...parents].filter(id=>byId.get(id)?.expected_tool==="motion_graphics_plan_premiere_insertion"
+    &&accepted.some(acceptId=>ancestors(id).has(acceptId)));
+  if(!plans.length)
+    return "Remotion-to-Premiere handoff requires motion_graphics_plan_premiere_insertion after accepted final evidence.";
+  return null;
+}
 const STATUSES=new Set(["ready","pending","running","completed","failed","blocked","skipped"]);
 export function workerQueueView(graph){
   const empty=()=>({total:0,verified:0,running:0,ready:0,blocked:0,jobs:[],ready_job_ids:[]});
@@ -77,7 +119,8 @@ export function workerQueueView(graph){
     let changed=false;
     for(const step of graph.steps){
       const receipt=candidates.get(step.step_id);
-      if(!receipt||accepted.has(step.step_id)||owners.get(receipt.action_id)?.size!==1)continue;
+      if(!receipt||accepted.has(step.step_id)||owners.get(receipt.action_id)?.size!==1
+        ||handoffContractFailure(graph,step.step_id))continue;
       if(step.depends_on.every(dep=>{
         const prior=accepted.get(dep);
         return prior&&prior.orchestration_step<receipt.orchestration_step;
@@ -107,7 +150,8 @@ export function workerQueueView(graph){
   });
   const runningLocks=new Set(jobs.filter(x=>x.status==="running").map(x=>x.resource));
   const ready=jobs.filter(x=>x.status==="ready"&&x.worker!=="unsupported"
-    &&x.depends_on.every(d=>accepted.has(d))&&!runningLocks.has(x.resource));
+    &&x.depends_on.every(d=>accepted.has(d))&&!runningLocks.has(x.resource)
+    &&!handoffContractFailure(graph,x.id));
   const blocked=jobs.filter(x=>x.status==="blocked"||x.worker==="unsupported");
   return {total:jobs.length,verified:jobs.filter(x=>x.verified).length,
     running:jobs.filter(x=>x.status==="running").length,ready:ready.length,
