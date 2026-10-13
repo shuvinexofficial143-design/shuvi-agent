@@ -54,6 +54,21 @@ export function parseWorkerArtifact(tool,stdout,actionId){
 }
 export function validWorkerArtifact(value,tool,actionId){
  if(!obj(value)||!action(actionId))return false;
+ if(["premiere_import_media","premiere_create_sequence_from_media"].includes(tool)){
+  if(Object.keys(value).sort().join(",")!=="import_action_id,kind,sources"
+     ||value.kind!=="premiere_worker_batch"||value.import_action_id!==actionId
+     ||!Array.isArray(value.sources)||value.sources.length<1||value.sources.length>48)return false;
+  const seen=new Set();
+  for(const src of value.sources){
+   if(!obj(src)||Object.keys(src).sort().join(",")!=="path,producer_action_id,sha256,source_step_id"
+      ||typeof src.source_step_id!=="string"||src.source_step_id.length<1
+      ||src.source_step_id.length>120||!action(src.producer_action_id)
+      ||!absPath(src.path)||!/\\.png$/i.test(src.path)||!sha(src.sha256)
+      ||src.sha256!==src.sha256.toLowerCase()||seen.has(src.path.toLowerCase()))return false;
+   seen.add(src.path.toLowerCase());
+  }
+  return true;
+ }
  if(tool==="blender_run_plan")
   return Object.keys(value).sort().join(",")==="bytes,kind,path,producer_action_id,sha256"
    &&value.kind==="blender_artifact"&&value.producer_action_id===actionId
@@ -71,6 +86,39 @@ export function validWorkerArtifact(value,tool,actionId){
    &&absPath(value.path)&&sha(value.sha256)
    &&value.sha256===value.sha256.toLowerCase();
  return false;
+}
+// Owner-readable projection of ALL independent native Blender receipts.
+// This is not a new authorization or an inferred path: each item belongs to
+// one already audited completed producer step in the task graph.
+export function workerBatchSources(graph,stepId){
+ if(!graph||!Array.isArray(graph.steps))return null;
+ const byId=new Map(graph.steps.map(s=>[s.step_id,s]));
+ const target=byId.get(stepId);
+ if(!target||!["premiere_import_media","premiere_create_sequence_from_media"].includes(target.expected_tool))
+  return null;
+ const ancestors=new Set();
+ const visit=id=>{
+  if(ancestors.has(id))return;
+  ancestors.add(id);
+  for(const d of byId.get(id)?.depends_on??[])if(byId.has(d))visit(d);
+ };
+ for(const dep of target.depends_on)if(byId.has(dep))visit(dep);
+ const matches=[...ancestors].map(id=>byId.get(id))
+  .filter(s=>s.expected_tool==="blender_run_plan");
+ if(!matches.length||[...ancestors].some(id=>
+  ["motion_graphics_run_remotion","motion_graphics_accept_final_remotion",
+   "motion_graphics_plan_premiere_insertion"].includes(byId.get(id)?.expected_tool)))return null;
+ const sources=[];
+ for(const step of matches){
+  const done=step.status==="completed"?step.evidence?.filter(e=>e?.success===true):null;
+  const e=done?.length===1?done[0]:null;
+  if(!e||!validWorkerArtifact(e.artifact,"blender_run_plan",e.action_id)
+   ||!/\\.png$/i.test(e.artifact.path))return null;
+  sources.push({source_step_id:step.step_id,producer_action_id:e.action_id,
+   path:e.artifact.path,sha256:e.artifact.sha256});
+ }
+ if(new Set(sources.map(x=>x.path.toLowerCase())).size!==sources.length)return null;
+ return sources;
 }
 export function artifactHandoffFailure(graph,stepId,proposal=null){
  if(!graph||!Array.isArray(graph.steps))return null;
@@ -106,7 +154,24 @@ export function artifactHandoffFailure(graph,stepId,proposal=null){
    if(seen.has(receipt.artifact.path.toLowerCase()))
     return "Batch import cannot reuse an artifact path for different Blender worker actions.";
    seen.add(receipt.artifact.path.toLowerCase());
-   sources.push(receipt.artifact);
+   sources.push({source_step_id:source.step_id,producer_action_id:receipt.action_id,
+    path:receipt.artifact.path,sha256:receipt.artifact.sha256});
+  }
+  if(target.status==="completed"){
+   const done=target.evidence?.filter(e=>e?.success===true);
+   const recorded=done?.length===1?done[0]:null;
+   if(!recorded||!validWorkerArtifact(recorded.artifact,target.expected_tool,recorded.action_id))
+    return "Saved Premiere batch lacks the audited exact-source manifest.";
+   if(recorded.artifact.sources.length!==sources.length)
+    return "Saved Premiere batch manifest source count no longer matches producer receipts.";
+   const known=new Map(sources.map(src=>[src.path,src]));
+   for(const src of recorded.artifact.sources){
+    const expected=known.get(src.path);
+    if(!expected||expected.source_step_id!==src.source_step_id
+       ||expected.producer_action_id!==src.producer_action_id
+       ||expected.sha256!==src.sha256)
+     return "Saved Premiere batch manifest does not match producer SHA-256 receipts.";
+   }
   }
   if(proposal){
    const args=proposal.arguments;
