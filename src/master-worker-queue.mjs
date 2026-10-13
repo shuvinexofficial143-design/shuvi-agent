@@ -26,7 +26,9 @@ export function workerForTool(tool){
   if(/^ui_/.test(tool)||["pointer_click","pointer_drag","capture_screen","inspect_screen","launch_app","list_processes"].includes(tool))return "windows";
   if(/^(git_|run_project_task|workspace_scan|search_text|replace_text|apply_patch|read_file|write_file|list_directory|create_directory)/.test(tool))return "coding";
   if(/^(photoshop_|audition_|animate_|illustrator_|character_animator_|substance_)/.test(tool))return "adobe";
-  return "master";
+  // Master is the coordinator, never a fallback executable worker.
+  // Unknown or invented tool names have no native execution lane.
+  return "unsupported";
 }
 // A completed worker result must be a locally bound, exact Rust-audited
 // action receipt. A model's "success" prose or a bare UUID never supplies
