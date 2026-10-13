@@ -49,9 +49,9 @@ export function writeNativeRecovery(store,record,now=Date.now()){
     old.revision===undefined||old.revision+1!==safe.revision||
     old.maxActions!==safe.maxActions||old.expiresAt!==safe.expiresAt||
     safe.modelRequests<old.modelRequests||safe.stagedActions<old.stagedActions)return false;
-   if(safe.phase==="paused"&&old.phase==="executing")return false;
+   if(safe.phase==="paused"&&["executing","outcome_unknown"].includes(old.phase))return false;
    if(safe.phase==="model_reserved"&&
-    !["paused","audit_verified","model_reserved"].includes(old.phase))return false;
+    !["paused","audit_verified"].includes(old.phase))return false;
    // Mirror Rust's high-risk event ordering before touching localStorage.
    if(safe.phase==="executing"&&
     (old.phase!=="awaiting_approval"||safe.actionId!==old.actionId||
@@ -60,7 +60,8 @@ export function writeNativeRecovery(store,record,now=Date.now()){
     (old.phase!=="executing"||safe.actionId!==old.actionId||
      safe.stagedActions!==old.stagedActions))return false;
    if(safe.phase==="awaiting_approval"&&
-    (safe.stagedActions!==old.stagedActions+1||safe.actionId===old.actionId))return false;
+    (!["model_reserved","outcome_unknown"].includes(old.phase)||
+     safe.stagedActions!==old.stagedActions+1||safe.actionId===old.actionId))return false;
    if(safe.phase==="model_reserved"&&safe.modelRequests!==old.modelRequests+1)return false;
   }
  }else if(previous.kind==="valid"&&previous.record.version===2&&previous.record.revision!==undefined){
