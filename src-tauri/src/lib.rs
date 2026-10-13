@@ -7,6 +7,7 @@ mod blender_worker;
 mod blender_plan_worker;
 mod atomic_file;
 mod execution_lease;
+mod native_worker_status;
 mod bounded_child;
 mod provider_request_guard;
 mod native_recovery;
@@ -1055,6 +1056,7 @@ struct ActionState {
     managed_process_started_at: Mutex<HashMap<u32, u64>>,
     running_action_children: Mutex<HashMap<String, u32>>,
     running_action_tools: Mutex<HashMap<String, String>>,
+    running_action_started_at_ms: Mutex<HashMap<String, u64>>,
     browser_sessions: Mutex<HashMap<u32, BrowserSession>>,
     premiere_bridge: Arc<PremiereBridgeShared>,
     audition_bridge: Arc<AuditionBridgeShared>,
@@ -18641,6 +18643,25 @@ fn runtime_status(state: State<'_, ActionState>) -> Result<RuntimeStatus, String
     current_runtime_status(state.inner())
 }
 
+/// A read-only sample of the live Rust execution lease plus the durable
+/// crash-recovery journal. Reading cannot renew a TTL, execute a tool,
+/// manufacture a heartbeat, or release native ownership.
+#[tauri::command]
+fn native_worker_status(
+    state:State<'_,ActionState>,
+    app:AppHandle
+)->Result<native_worker_status::NativeWorkerStatus,String>{
+    let running=state.running_action_tools.lock()
+        .map_err(|_|"Running action identity is unavailable; owner review required.".to_string())?;
+    let started=state.running_action_started_at_ms.lock()
+        .map_err(|_|"Running action start time is unavailable; owner review required.".to_string())?;
+    let leased=state.native_execution_owned.load(Ordering::Acquire);
+    let recovery=native_recovery::load(&app)?;
+    Ok(native_worker_status::snapshot(
+        leased,&running,&started,recovery.as_ref(),now_ms()
+    ))
+}
+
 #[tauri::command]
 fn prepare_tool(
     proposal: ToolProposal,
@@ -18851,11 +18872,14 @@ async fn execute_action(
             (None, pending.remove(&action_id))
         } else {
             let active_tool = prepared.tool.clone();
-            state
-                .running_action_tools
-                .lock()
-                .map_err(|_| "Running-action state is unavailable.".to_string())?
-                .insert(action_id.clone(), active_tool);
+            // Hold the same lock order when publishing start time and tool
+            // identity. The host-only observation never becomes permission.
+            let mut running=state.running_action_tools.lock()
+                .map_err(|_| "Running-action state is unavailable.".to_string())?;
+            let mut started=state.running_action_started_at_ms.lock()
+                .map_err(|_| "Running-action start record is unavailable.".to_string())?;
+            running.insert(action_id.clone(),active_tool);
+            started.insert(action_id.clone(),now_ms());
             let action = pending
                 .remove(&action_id)
                 .ok_or_else(|| "Action disappeared before execution could start.".to_string())?;
@@ -18890,7 +18914,11 @@ async fn execute_action(
     ).await;
 
     if let Ok(mut running) = state.running_action_tools.lock() {
-        running.remove(&action_id);
+        if let Ok(mut started)=state.running_action_started_at_ms.lock(){
+            running.remove(&action_id);
+            started.remove(&action_id);
+        }
+        // Poisoned state stays visibly quarantined until owner inspection.
     }
     if let Ok(mut children) = state.running_action_children.lock() {
         children.remove(&action_id);
@@ -19266,6 +19294,7 @@ pub fn run() {
             frame_io_credential_status,
             chat,
             runtime_status,
+            native_worker_status,
             prepare_tool,
             prepare_powershell,
             deny_action,
