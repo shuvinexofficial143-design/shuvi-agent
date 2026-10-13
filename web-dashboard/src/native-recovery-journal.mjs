@@ -35,6 +35,24 @@ export function writeNativeRecovery(store,record,now=Date.now()){
  if(!store||!Number.isSafeInteger(now)||now<=0)return false;
  const safe=normalize({version:1,...record,updatedAt:now},now);
  if(!safe)return false;
+ // A new runtime snapshot must advance exactly one durable ordinal.
+ // Do not erase earlier task evidence in WebView while the Rust IPC is pending.
+ const previous=inspectNativeRecoveryStore(store,now);
+ if(previous.kind==="invalid"||previous.kind==="unavailable")return false;
+ if(safe.version===2&&safe.revision!==undefined){
+  if(previous.kind==="empty"){
+   if(safe.revision!==1)return false;
+  }else{
+   const old=previous.record;
+   if(old?.version!==2||old.taskId!==safe.taskId||
+    old.revision===undefined||old.revision+1!==safe.revision||
+    old.maxActions!==safe.maxActions||old.expiresAt!==safe.expiresAt||
+    safe.modelRequests<old.modelRequests||safe.stagedActions<old.stagedActions)return false;
+  }
+ }else if(previous.kind==="valid"&&previous.record.version===2&&previous.record.revision!==undefined){
+  // Older/unversioned writes must never downgrade new revisioned evidence.
+  return false;
+ }
  try{store.setItem(NATIVE_JOURNAL_KEY,JSON.stringify(safe));return true;}catch{return false;}
 }
 export function clearNativeRecovery(store){
