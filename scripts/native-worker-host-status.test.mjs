@@ -82,5 +82,6 @@ test("durable native job replay history is bounded and survives restart without 
  assert.match(jobs,/bounded_durable_replay_window_keeps_recent_audited_ids_after_rotation/);
  assert.match(status,/status\.tool\.as_deref\(\)!=Some\(job\.tool\.as_str\(\)\)/);
  assert.match(status,/audited_job_conflicts_with_live_lease/);
+ assert.match(ui,/audited_job_conflicts_with_live_lease/);
  assert.doesNotMatch(jobs,/fn\s+(?:automatic_retry|force_release_worker|assume_completed)\s*\(/);
 });
