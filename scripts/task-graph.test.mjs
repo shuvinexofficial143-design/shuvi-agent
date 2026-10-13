@@ -812,3 +812,19 @@ test("owner-selected 24/48-step graph does not drop worker handoff validation af
    "Worker lane is busy, unavailable, or lacks exact Rust-audited dependency evidence.");
  }
 });
+
+test("Master progress refuses premature child completion even with a synthetic typed receipt",()=>{
+ const initialState=done(initial(),proposal());
+ const g=json(initialState.task_graph);
+ const original=g.steps[0].evidence[0];
+ g.steps[0].evidence[0].orchestration_step=3;
+ g.steps[1].status="completed";
+ g.steps[1].evidence=[{...original,step_id:"edit",tool:"replace_text",
+  fingerprint:"second",action_id:actionIdFor(2),orchestration_step:2}];
+ assert.equal(graph.taskGraphProgress(g).completed,1,
+  "the earlier child action cannot precede its audited dependency");
+ assert.equal(graph.nextWorkerTurn(g),null);
+ const ctx=agent.orchestrationContext({...initialState,task_graph:g});
+ assert.match(ctx,/verified completed IDs: inspect/);
+ assert.doesNotMatch(ctx,/verified completed IDs: inspect,edit/);
+});
