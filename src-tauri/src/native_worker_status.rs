@@ -128,6 +128,7 @@ pub(crate) fn attach_durable_job(
     if job.phase=="running" {
         if !status.lease_owned_by_this_process
            ||status.action_id.as_deref()!=Some(job.action_id.as_str())
+           ||status.tool.as_deref()!=Some(job.tool.as_str())
            ||status.state!="native_action_in_flight" {
             status.state="recovery_required".into();
             status.requires_owner_review=true;
@@ -141,6 +142,12 @@ pub(crate) fn attach_durable_job(
         } else {
             status.supervisor_health="rust_supervisor_observed".into();
         }
+    } else if status.lease_owned_by_this_process&&status.action_id.is_some(){
+        // A finished journal can never attest a different action which still
+        // owns the host lease. The audit journal might be stale/corrupted.
+        status.state="recovery_required".into();
+        status.requires_owner_review=true;
+        status.supervisor_health="audited_job_conflicts_with_live_lease".into();
     } else {
         status.supervisor_health="last_action_audited".into();
     }
@@ -264,6 +271,41 @@ mod tests{
         );
         assert_eq!(delayed.supervisor_health,"supervisor_tick_stale");
         assert_eq!(delayed.state,"native_action_in_flight");
+    }
+    #[test]
+    fn a_durable_job_tool_mismatch_does_not_impersonate_running_worker(){
+        let (tools,starts)=running();
+        let job=crate::native_worker_job::NativeJob{
+            version:1,action_id:uuid(),tool:"blender_run_plan".into(),
+            phase:"running".into(),started_at_ms:1_000,updated_at_ms:2_000,
+            heartbeat_seq:1,audit_success:None,prior_action_ids:Vec::new()
+        };
+        let state=attach_durable_job(
+            snapshot(true,&tools,&starts,Some(&recovery("executing")),3_000),
+            Some(&job),3_000
+        );
+        assert_eq!(state.state,"recovery_required");
+        assert!(state.requires_owner_review);
+        assert_eq!(state.supervisor_health,"unattributed_or_interrupted");
+        assert!(!state.progress_heartbeat_verified);
+        assert!(!state.safe_to_auto_retry);
+    }
+    #[test]
+    fn an_old_audited_job_cannot_conceal_new_live_execution(){
+        let (tools,starts)=running();
+        let job=crate::native_worker_job::NativeJob{
+            version:1,action_id:uuid(),tool:"premiere_insert_media".into(),
+            phase:"audit_verified".into(),started_at_ms:1_000,
+            updated_at_ms:2_000,heartbeat_seq:1,audit_success:Some(true),
+            prior_action_ids:Vec::new()
+        };
+        let state=attach_durable_job(
+            snapshot(true,&tools,&starts,Some(&recovery("executing")),3_000),
+            Some(&job),3_000
+        );
+        assert_eq!(state.state,"recovery_required");
+        assert_eq!(state.supervisor_health,"audited_job_conflicts_with_live_lease");
+        assert!(!state.safe_to_auto_retry);
     }
     #[test]
     fn idle_has_no_claimed_cross_process_clearance(){
