@@ -204,7 +204,10 @@ export function finishTaskStep(
   if (!target || target.status !== "running" || target.running?.fingerprint !== fingerprint
       || target.running.orchestration_step !== stepNumber) return graph;
   const boundAction = actionId(target.running.action_id) && target.running.action_id === preparedActionId;
-  const auditBound = boundAction && object(auditReceipt)
+  const reusedAction = actionId(preparedActionId) && graph.steps.some(s => s !== target &&
+    (s.running?.action_id === preparedActionId ||
+      s.evidence.some(e => e.action_id === preparedActionId)));
+  const auditBound = boundAction && !reusedAction && object(auditReceipt)
     && auditReceipt.action_id === preparedActionId
     && auditReceipt.tool === proposal.tool
     && ["executed","failed","denied"].includes(auditReceipt.event)
