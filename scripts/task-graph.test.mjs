@@ -701,3 +701,43 @@ test("extended planner is still capped to owner budget and cannot erase verified
  assert.equal(graph.parseTaskGraph(plan(undefined,24),24).ok,true);
  assert.equal(graph.restoreTaskGraph(current.graph,1,8).ok,false);
 });
+
+test("same Rust action UUID cannot be rebound to a second graph worker",()=>{
+ const first=done(initial(),proposal());
+ const p=proposal("edit","replace_text");
+ assert.equal(agent.evaluateProposal(first,p).allowed,true);
+ const running=agent.recordProposalStart(first,p);
+ const receipt=first.task_graph.steps[0].evidence[0].action_id;
+ const reused=agent.bindPreparedAction(running,p,receipt);
+ assert.equal(reused.ok,false);
+ assert.match(reused.error,/already been used by another worker/);
+ assert.equal(runningActionId(reused.state,p),null);
+ const fresh=agent.bindPreparedAction(running,p,actionIdFor(2));
+ assert.equal(fresh.ok,true);
+ assert.equal(runningActionId(fresh.state,p),actionIdFor(2));
+});
+
+test("crash recovery rejects two completed worker steps with the same action UUID",()=>{
+ let state=done(initial(),proposal());
+ state=done(state,proposal("edit","replace_text"));
+ const checkpoint=json(state.task_graph);
+ assert.equal(graph.restoreTaskGraph(checkpoint,state.next_step,state.max_steps).ok,true);
+ const receipt=checkpoint.steps[0].evidence[0].action_id;
+ checkpoint.steps[1].evidence[0].action_id=receipt;
+ const restored=graph.restoreTaskGraph(checkpoint,state.next_step,state.max_steps);
+ assert.equal(restored.ok,false);
+ assert.match(restored.error,/Duplicate native action ID/);
+});
+
+test("Master sees only permission-gated, audit-proven next worker handoffs",()=>{
+ const state=done(initial(),proposal());
+ const ready=graph.nextWorkerTurn(state.task_graph);
+ assert.equal(ready.step_id,"edit");
+ assert.equal(ready.worker,"coding");
+ assert.equal(ready.tool,"replace_text");
+ assert.equal(ready.requires_owner_approval,true);
+ assert.equal(ready.handoffs[0].from_step_id,"inspect");
+ assert.equal(ready.handoffs[0].action_id,state.task_graph.steps[0].evidence[0].action_id);
+ assert.match(agent.orchestrationContext(state),/next audited-safe worker handoff/);
+ assert.match(agent.orchestrationContext(state),/normal typed prepare\/Allow once\/audit flow/);
+});
