@@ -1,4 +1,5 @@
-import { workerQueueView } from "./master-worker-queue.mjs";
+import { workerQueueView, nextWorkerTurn } from "./master-worker-queue.mjs";
+export { nextWorkerTurn };
 // Pure bounded coordinator. Provider metadata is never execution authority.
 import { MAX_RUNTIME_ACTIONS, allowedTaskBudget } from "./task-runtime-budget.mjs";
 export const GRAPH_LIMIT = 8;
