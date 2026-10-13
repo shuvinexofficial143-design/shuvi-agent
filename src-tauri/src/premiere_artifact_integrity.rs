@@ -61,6 +61,39 @@ pub fn verify_expected(path:&str,expected:Option<&str>)->Result<Option<String>,S
     Ok(Some(observed))
 }
 
+
+/// Batch SHA-256 evidence is strictly parallel to the ordered list of media
+/// paths. Mixing verified/unverified entries, extra hashes, or repeated paths
+/// is never permitted in an attested import.
+pub fn validate_expected_batch(paths:&[String],expected:Option<&[String]>)->Result<Option<Vec<String>>,String>{
+    let Some(values)=expected else{return Ok(None)};
+    if paths.is_empty()||paths.len()>100||paths.len()!=values.len(){
+        return Err("Batch Premiere source paths and expected_sha256 values must have equal nonzero lengths (maximum 100).".into());
+    }
+    let mut seen=std::collections::HashSet::new();
+    let mut normalized=Vec::with_capacity(values.len());
+    for (path,value) in paths.iter().zip(values){
+        // Case-folding avoids duplicate spellings of Windows drive paths.
+        if !seen.insert(path.to_lowercase()){
+            return Err("An approved batch cannot repeat a media path.".into());
+        }
+        normalized.push(validate_expected(Some(value))?
+            .ok_or("Every attested batch source requires SHA-256 evidence.")?);
+    }
+    Ok(Some(normalized))
+}
+pub fn verify_expected_batch(paths:&[String],expected:Option<&[String]>)->Result<Option<Vec<String>>,String>{
+    let hashes=validate_expected_batch(paths,expected)?;
+    let Some(hashes)=hashes else {return Ok(None)};
+    let mut observed=Vec::with_capacity(hashes.len());
+    for (index,(path,hash)) in paths.iter().zip(hashes.iter()).enumerate(){
+        // Do not leak a private filesystem path into verification failure text.
+        let checked=verify_expected(path,Some(hash)).map_err(|e|format!(
+            "Premiere batch artifact {index} could not be verified: {e}"))?;
+        observed.push(checked.ok_or("Bounded batch SHA-256 verification did not run.")?);
+    }
+    Ok(Some(observed))
+}
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -113,4 +146,27 @@ mod tests{
         assert!(verify_expected(link.to_str().unwrap(),Some(&"a".repeat(64))).is_err());
         fs::remove_file(link).unwrap();fs::remove_file(source).unwrap();
     }
+    #[test]
+    fn approved_batch_hashes_reverify_every_ordered_path(){
+        let first=temp_file();let second=temp_file();
+        let paths=vec![first.to_string_lossy().to_string(),second.to_string_lossy().to_string()];
+        let good=format!("{:x}",Sha256::digest(b"blender-test-png"));
+        let hashes=vec![good.clone(),good.clone()];
+        assert_eq!(verify_expected_batch(&paths,Some(&hashes)).unwrap(),Some(hashes.clone()));
+        fs::write(&second,b"modified-blender-file").unwrap();
+        assert!(verify_expected_batch(&paths,Some(&hashes)).unwrap_err().contains("artifact 1"));
+        fs::remove_file(first).unwrap();fs::remove_file(second).unwrap();
+    }
+    #[test]
+    fn batch_attestation_refuses_missing_extra_bad_or_duplicate_hashes(){
+        let paths=vec!["C:\\media\\one.png".to_string(),"C:\\media\\two.png".to_string()];
+        let hash="a".repeat(64);
+        assert!(validate_expected_batch(&paths,Some(&[hash.clone()])).is_err());
+        assert!(validate_expected_batch(&paths,Some(&[hash.clone(),hash.clone(),hash.clone()])).is_err());
+        assert!(validate_expected_batch(&paths,Some(&[hash.clone(),"bad".into()])).is_err());
+        assert!(validate_expected_batch(&[paths[0].clone(),paths[0].to_ascii_uppercase()],
+            Some(&[hash.clone(),hash])).is_err());
+        assert_eq!(validate_expected_batch(&paths,None).unwrap(),None);
+    }
+
 }
