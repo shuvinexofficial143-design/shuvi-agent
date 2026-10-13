@@ -598,7 +598,9 @@ function nativeWorkerDisplay(): string {
       ? "Rust supervisor check-in "+Math.floor((host.supervisorHeartbeatAgeMs??0)/1000)+"s ago"
       : host.supervisorHealth==="supervisor_tick_stale"
         ? "Rust supervisor heartbeat stale — inspect host; never assume completion"
-        : "No independently attributed supervisor heartbeat";
+        : host.supervisorHealth==="supervisor_start_record_only"
+          ? "Durable job started; awaiting first real Rust supervisor tick"
+          : "No independently attributed supervisor heartbeat";
     return "Host worker: native action active ("+(host.tool ?? "unknown")+
       ", "+Math.floor((host.observedActionAgeMs ?? 0)/1000)+"s observed; "+
       pulse+"; NOT a progress heartbeat)";
@@ -617,7 +619,7 @@ async function refreshNativeWorkerStatus(): Promise<void> {
     if(status.schemaVersion!==1||status.progressHeartbeatVerified!==false
       ||status.safeToAutoRetry!==false
       ||!["not_observed","unattributed_or_interrupted","supervisor_tick_stale",
-        "rust_supervisor_observed","last_action_audited"].includes(status.supervisorHealth))
+        "rust_supervisor_observed","supervisor_start_record_only","last_action_audited"].includes(status.supervisorHealth))
       throw Error("Invalid native worker observation");
     nativeHostStatus=status;
     nativeHostStatusUnavailable=false;
