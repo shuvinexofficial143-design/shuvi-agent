@@ -1,3 +1,4 @@
+import type {WorkerImportIdentity} from "./worker-artifact-lineage.mjs";
 export type WorkerLane = "premiere" | "after_effects" | "remotion" | "browser" | "windows" | "coding" | "adobe" | "master" | "blender" | "unsupported";
 export type WorkerHandoff = {from_step_id:string;to_step_id:string;from_worker:WorkerLane;to_worker:WorkerLane;action_id:string;orchestration_step:number};
 export type WorkerJob = {id:string;worker:WorkerLane;resource:string;tool:string;status:string;verified:boolean;action_id:string|null;depends_on:string[];handoffs:WorkerHandoff[];title:string};
@@ -7,5 +8,5 @@ export function handoffContractFailure(graph:unknown,stepId:string):string|null;
 export function evidenceForStep(step:unknown):{action_id:string;tool:string;orchestration_step:number}|null;
 export function workerQueueView(graph:unknown):WorkerQueueView;
 export function workerQueueSummary(graph:unknown):string;
-export type WorkerTurn = {step_id:string;worker:WorkerLane;tool:string;resource:string;handoffs:WorkerHandoff[];requires_owner_approval:true};
+export type WorkerTurn = {step_id:string;worker:WorkerLane;tool:string;resource:string;handoffs:WorkerHandoff[];requires_owner_approval:true;artifact?:WorkerImportIdentity};
 export function nextWorkerTurn(graph:unknown):WorkerTurn|null;
