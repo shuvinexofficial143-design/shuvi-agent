@@ -1,4 +1,4 @@
-import {artifactHandoffFailure,importArtifactIdentity} from "./worker-artifact-lineage.mjs";
+import {artifactHandoffFailure,importArtifactIdentity,workerBatchSources} from "./worker-artifact-lineage.mjs";
 // Shuvi Master Worker Queue projection (Phase 2).
 // Runs against the persisted, permission-first task graph. A worker is an
 // execution lane for typed tools, NOT a separate autonomous agent process.
@@ -169,9 +169,11 @@ export function nextWorkerTurn(graph){
   const next=q.jobs.find(job=>q.ready_job_ids.includes(job.id));
   if(!next)return null;
   const artifact=importArtifactIdentity(graph,next.id);
+  const batchSources=workerBatchSources(graph,next.id);
   return {step_id:next.id,worker:next.worker,tool:next.tool,
     resource:next.resource,handoffs:next.handoffs,requires_owner_approval:true,
-    ...(artifact?{artifact}:{} )};
+    ...(artifact?{artifact}:{}),
+    ...(batchSources?{batch_sources:batchSources}:{})};
 }
 export function workerQueueSummary(graph){
   const queue=workerQueueView(graph);
