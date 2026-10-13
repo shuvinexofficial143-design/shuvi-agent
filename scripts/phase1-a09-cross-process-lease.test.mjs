@@ -20,7 +20,7 @@ test("A09 cross-process denial never retains in-process slot",()=>{
  assert.match(lease,/a_denied_cross_process_claim_cannot_poison_existing_instance/);
 });
 test("A09 main native actions and all bridge lifecycle endpoints use same cross-instance lease",()=>{
- const helper=native.slice(native.indexOf("fn claim_monitored_native_execution("),
+ const helper=native.slice(native.indexOf("fn claim_monitored_native_execution<'a>("),
   native.indexOf("struct AcceptanceProbeGuard"));
  assert.match(helper,/execution_lease::claim_single_execution\(&state.native_execution_owned\)/);
  assert.match(helper,/native_worker_status::require_clear_for_new_dispatch/);
