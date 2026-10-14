@@ -1,0 +1,1 @@
+Batch 10: Only audited read-only ui_windows observations are summarized for Master. Multiple candidate windows are never auto-selected. Bounded, non-authoritative sample of real title/process/PID/window-handle fields. Every Windows action still needs Allow once. No real Windows acceptance tests.

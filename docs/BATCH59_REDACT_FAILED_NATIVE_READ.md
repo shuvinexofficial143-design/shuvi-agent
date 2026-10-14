@@ -1,0 +1,1 @@
+Batch 59: Redact secrets in typed failure and recovery messages shown to owner, without weakening the independent raw native audit or automatically executing another action.

@@ -1,0 +1,1 @@
+Batch 83: Application window proof requires a successful native read with an absent or integer-zero exit code, in addition to the exact Rust audit and unique PID/HWND. Malformed typed read failures never prove launch completion.

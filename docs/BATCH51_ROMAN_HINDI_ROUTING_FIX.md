@@ -1,0 +1,1 @@
+Follow-up to Batch 51: Maintain the informational Chat safeguard while routing genuine Roman-Hindi and English desktop commands ('banao', 'khojo', 'dekho', 'look for') to the Master. Real Windows tools still require native preparation and Allow once.

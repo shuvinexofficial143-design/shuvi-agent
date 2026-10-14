@@ -1,0 +1,1 @@
+Batch 68: Refuse Master UI read/write proposals targeting a title containing multiple known apps when user explicitly requested one. Do not silently pick one app; multi-app tasks still use ordinary Rust approval and window matching.

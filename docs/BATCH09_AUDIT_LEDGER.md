@@ -1,0 +1,1 @@
+Batch 09: Per-thread, audit-bound tool execution evidence ledger. Never marks original app/project/export goal complete. Bounded last 12 observations, unlimited total counts. Mock tests only; live Windows not tested.

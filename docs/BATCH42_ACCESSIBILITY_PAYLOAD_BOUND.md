@@ -1,0 +1,1 @@
+Batch 42: Limit native UI readback payloads before accessibility inventory JSON parsing and forwarding into Master context. Unverified observation never grants an action permission.

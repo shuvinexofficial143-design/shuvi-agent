@@ -1,0 +1,1 @@
+Batch 51: A normal informational Chat response cannot smuggle a native Windows action proposal into the owner approval queue. Users must explicitly request a desktop task; native approvals remain required on actual task routes.

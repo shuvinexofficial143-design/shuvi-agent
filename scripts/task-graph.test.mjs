@@ -7,7 +7,8 @@ import * as graph from "../src/task-graph.mjs";
 // Execute the real TS coordinator, not a reimplementation or regex-only model.
 const source = readFileSync(new URL("../src/agent-orchestrator.ts", import.meta.url), "utf8");
 const executable = stripTypeScriptTypes(source).replace('"./task-graph.mjs"',
-  JSON.stringify(new URL("../src/task-graph.mjs", import.meta.url).href));
+  JSON.stringify(new URL("../src/task-graph.mjs", import.meta.url).href)).replace('"./task-runtime-budget.mjs"',
+  JSON.stringify(new URL("../src/task-runtime-budget.mjs",import.meta.url).href));
 const agent = await import("data:text/javascript;base64," + Buffer.from(executable).toString("base64"));
 
 function step(step_id, depends_on = [], expected_tool = "read_file") {
@@ -18,7 +19,9 @@ function plan(steps = [step("inspect"), step("edit", ["inspect"], "replace_text"
   return { objective: "Fix the bug", revision, steps };
 }
 function proposal(task_step_id = "inspect", tool = "read_file", extra = {}) {
-  return { tool, arguments: { path: "/repo/a.ts" }, task_step_id, ...extra };
+  return { tool, arguments: { path: tool==="premiere_insert_media"?"/repo/remotion.mp4":"/repo/a.ts",
+    ...(tool==="premiere_insert_media"?{expected_sha256:"a".repeat(64)}:{}) },
+    task_step_id, ...extra };
 }
 function result(tool = "read_file", success = true, exit_code = 0) {
   return { tool, success, exit_code, stdout: "observed", stderr: "" };
@@ -46,6 +49,33 @@ function runningActionId(state, p) {
 function done(state, p, r = result(p.tool)) {
   state = staged(state, p);
   const actionId = runningActionId(state, p);
+  if(r.stdout==="observed"&&p.tool==="blender_run_plan"){
+    r={...r,stdout:JSON.stringify({status:"verified",worker:"blender",
+      full_plan_completed:true,verified_by_native_sha256:true,
+      artifact:{path:"/repo/blender.png",sha256:"b".repeat(64),bytes:8192}})};
+  }
+  if(r.stdout==="observed"&&p.tool==="motion_graphics_accept_final_remotion"){
+    const render=state.task_graph.steps.find(s=>s.expected_tool==="motion_graphics_run_remotion")?.evidence.find(e=>e.success);
+    r={...r,stdout:JSON.stringify({
+      schema_version:1,acceptance_action_id:actionId,render_action_id:render?.action_id,
+      output_file:"/repo/remotion.mp4",output_sha256:"a".repeat(64),
+      final_output_sha256_verified:true,visual_review_verified:true,
+      runtime_process_provenance_verified:true,delivery_acceptance_verified:true,
+      dependency_source_integrity_verified:false,production_ready:false
+    })};
+  }
+  if(r.stdout==="observed"&&p.tool==="motion_graphics_plan_premiere_insertion"){
+    const accept=state.task_graph.steps.find(s=>s.expected_tool==="motion_graphics_accept_final_remotion")
+      ?.evidence.find(e=>e.success);
+    r={...r,stdout:JSON.stringify({
+      schema_version:1,source:"verified_motion_graphics_delivery",
+      final_acceptance_action_id:accept?.action_id,
+      output_file:accept?.artifact?.path,output_sha256:accept?.artifact?.sha256,
+      premiere_tool_proposal:{tool:"premiere_insert_media",arguments:{path:accept?.artifact?.path,
+        expected_sha256:accept?.artifact?.sha256}},
+      automatic_execution:false,requires_normal_premiere_approval:true,production_ready:false
+    })};
+  }
   return agent.recordToolOutcome(
     state,
     p,
@@ -355,15 +385,31 @@ test("coding hard dependencies override a permissive graph", () => {
   }
 });
 test("successful coding sequence still enforces fresh same-repository review", () => {
+  const HEAD_A="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const HEAD_C="cccccccccccccccccccccccccccccccccccccccc";
+  const WORKTREE_A="dddddddddddddddddddddddddddddddddddddddd";
+  const gitResult=(tool,head)=>({
+    tool,success:true,exit_code:0,stderr:"",
+    stdout:"[SHUVI_GIT_CONTEXT_V1]"+JSON.stringify({
+      schema:1,repo_root:"/repo",branch:"main",head,upstream:"origin/main",
+      upstream_head:HEAD_A,worktree_clean:false,worktree_fingerprint:WORKTREE_A
+    })+"\nobserved"
+  });
+  const p=(tool,path="/repo")=>{
+    const args={path};
+    if(tool==="apply_patch") args.expected_worktree_fingerprint=WORKTREE_A;
+    if(tool==="git_commit") Object.assign(args,{message:"x",files:["a.ts"],expected_head:HEAD_A,expected_worktree_fingerprint:WORKTREE_A});
+    if(tool==="git_push") args.expected_head=HEAD_C;
+    return {tool,arguments:args};
+  };
   let s=agent.createAgentOrchestrationState();
-  const p=(tool,path="/repo")=>({tool,arguments:{path}});
-  s=done(s,p("git_status"));
-  s=done(s,p("apply_patch"));
+  s=done(s,p("git_status"),gitResult("git_status",HEAD_A));
+  s=done(s,p("apply_patch"),result("apply_patch"));
   assert.equal(agent.evaluateProposal(s,p("git_commit")).allowed,false);
-  s=done(s,p("git_status"));
-  s=done(s,p("git_diff"));
+  s=done(s,p("git_status"),gitResult("git_status",HEAD_A));
+  s=done(s,p("git_diff"),gitResult("git_diff",HEAD_A));
   assert.equal(agent.evaluateProposal(s,p("git_commit")).allowed,true);
-  s=done(s,p("git_commit"));
+  s=done(s,p("git_commit"),gitResult("git_commit",HEAD_C));
   assert.equal(agent.evaluateProposal(s,p("git_push","/other")).allowed,false);
   assert.equal(agent.evaluateProposal(s,p("git_push")).allowed,true);
 });
@@ -399,14 +445,15 @@ test("frontend correlates execution with exact Rust audit receipt before evidenc
     main.indexOf("function renderChatPermission")
   );
   const executeCall=execute.indexOf('"execute_action"');
-  const receiptCall=execute.indexOf('"action_audit_receipt"');
+  const receiptCall=execute.indexOf("readActionAuditReceipt(actionId)");
   const outcomeCall=execute.indexOf("recordToolOutcome");
   assert.ok(executeCall>=0);
   assert.ok(receiptCall>executeCall);
   assert.ok(outcomeCall>receiptCall);
-  assert.match(execute,/exactActionReceipt\([\s\S]{0,180}"executed"/);
+  assert.match(execute,/verifiedNativeActionResult\(proposal.tool, actionId, result, receipt\)/);
+  assert.match(execute,/if \(!receiptMatches\) \{[\s\S]*?await stopAgentForSafety/);
   assert.match(execute,/evidence_verification_failed: true/);
-  assert.match(execute,/execution_failure_audit_confirmed: confirmedFailure/);
+  assert.match(execute,/execution_failure_audit_confirmed: cancelledByUser \? false : confirmedFailure/);
   assert.match(main,/action_audit_receipt/);
 });
 
@@ -424,8 +471,8 @@ test("UI binds exact prepared action before approval or execution", () => {
   assert.ok(boundSave>bind);
   assert.ok(autoExecute>boundSave);
   assert.ok(permission>boundSave);
-  assert.match(main,/recordToolOutcome\([\s\S]{0,260}result\.success \? "success" : "failure",[\s\S]{0,180}actionId/);
-  assert.match(main,/recordToolOutcome\(orchestration, proposal, "denied", undefined, false, actionId\)/);
+  assert.match(main,/recordToolOutcome\([\s\S]{0,520}actionId,[\s\S]{0,80}receipt/);
+  assert.match(main,/deniedConfirmed \? "denied" : "failure"[\s\S]{0,260}actionId,[\s\S]{0,80}receipt/);
   assert.match(main,/taskGraphProgress\(orchestration.task_graph\)/);
   assert.match(main,/row.textContent/);
   assert.match(main,/progress.completed < progress.total/);
@@ -442,7 +489,8 @@ test("strict Rust event allowlist matches all graph audit events", () => {
 
 test("user stop finalizes a pending prepared graph action before resume", () => {
   const main=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
-  const stop=main.slice(main.indexOf('el<HTMLButtonElement>("#stopButton")'),main.indexOf("document.querySelectorAll<HTMLButtonElement>"));
+  const stopStart=main.indexOf('el<HTMLButtonElement>("#stopButton").addEventListener');
+  const stop=main.slice(stopStart,main.indexOf("document.querySelectorAll<HTMLButtonElement>",stopStart));
   assert.match(main,/let pendingChatProposal: ToolProposal \| null = null/);
   assert.match(stop,/pendingAction && pendingChatProposal/);
   assert.match(stop,/const proposal = pendingChatProposal/);
@@ -596,4 +644,429 @@ test("persisted coding step receipts can only advance the resume floor", () => {
   });
   assert.equal(state.next_step,8);
   assert.equal(state.coding.last_mutation_step,7);
+});
+
+test("visual pointer drag is gated by fresh screen inspection before and after",()=>{
+  let state=agent.createAgentOrchestrationState();
+  const drag={tool:"pointer_drag",arguments:{x1:50,y1:80,x2:200,y2:100,duration_ms:500}};
+  const unsafe=agent.evaluateProposal(state,drag);
+  assert.equal(unsafe.allowed,false);
+  assert.match(unsafe.reason,/inspect_screen/);
+  state={...state,last_tool:"inspect_screen",last_outcome:"success"};
+  assert.equal(agent.evaluateProposal(state,drag).allowed,true);
+  state={...state,last_tool:"pointer_drag",last_outcome:"success"};
+  const premature=agent.evaluateProposal(state,{tool:"read_file",arguments:{path:"/a"}});
+  assert.equal(premature.allowed,false);
+  assert.match(premature.reason,/Verify the pointer drag/);
+  assert.equal(agent.evaluateProposal(state,{tool:"inspect_screen",arguments:{prompt:"verify result"}}).allowed,true);
+});
+
+
+test("owner-authorized continuation persists steps above eight without implicit escalation",()=>{
+ let s=agent.createAgentOrchestrationState(24);
+ for(let i=0;i<10;i++){
+   const p={tool:"list_processes",arguments:{filter:"p"+i}};
+   assert.equal(agent.evaluateProposal(s,p).allowed,true);
+   s=agent.recordToolOutcome(s,p,"success",result("list_processes"));
+ }
+ assert.equal(s.next_step,11);
+ assert.equal(s.tool_actions,10);
+ assert.equal(s.max_steps,24);
+ const restored=agent.normalizeAgentOrchestrationState(json(s));
+ assert.equal(restored.recovery_mode,"normal");
+ assert.equal(restored.next_step,11);
+ assert.equal(restored.max_steps,24);
+ assert.equal(agent.evaluateProposal(restored,{tool:"list_processes",arguments:{filter:"new"}}).allowed,true);
+ const elevated=json(s);
+ elevated.max_steps=48;
+ delete elevated.task_expires_at_ms;
+ assert.equal(agent.normalizeAgentOrchestrationState(elevated).recovery_mode,"stopped");
+ const expired=json(s);
+ expired.task_expires_at_ms=Date.now()-1000;
+ assert.equal(agent.normalizeAgentOrchestrationState(expired).recovery_mode,"stopped");
+});
+
+
+test("extended owner graph completes ten dependent steps, persists audited receipts, and appends a stage",()=>{
+  const firstTen=Array.from({length:10},(_,i)=>step("long"+i,i?["long"+(i-1)]:[],"read_file"));
+  const metadata=plan(firstTen,1);
+  assert.equal(graph.parseTaskGraph(metadata).ok,false,"default legacy eight-step plan remains bounded");
+  assert.equal(graph.parseTaskGraph(metadata,24).ok,true,"owner 24-step contract permits extended graph");
+  assert.equal(graph.parseTaskGraph(metadata,8).ok,false);
+  let state=agent.createAgentOrchestrationState(24);
+  const first=proposal("long0","read_file",{task_graph:metadata,arguments:{path:"/repo/long0.txt"}});
+  state=agent.acceptProposalGraph(state,first).state;
+  assert.equal(state.task_graph.steps.length,10);
+  for(let i=0;i<10;i++){
+    const p=proposal("long"+i,"read_file",{arguments:{path:"/repo/long"+i+".txt"}});
+    state=done(state,p,result("read_file"));
+  }
+  assert.equal(state.next_step,11);
+  assert.equal(graph.taskGraphProgress(state.task_graph).completed,10);
+  const saved=json(state);
+  const resumed=agent.normalizeAgentOrchestrationState(saved);
+  assert.equal(resumed.recovery_mode,"normal");
+  assert.equal(resumed.task_graph.steps.length,10);
+  assert.equal(graph.taskGraphProgress(resumed.task_graph).completed,10);
+  assert.equal(resumed.task_graph.steps[9].evidence[0].orchestration_step,10);
+  const expanded=plan([...firstTen,step("long10",["long9"],"read_file")],2);
+  const next=proposal("long10","read_file",{task_graph:expanded,arguments:{path:"/repo/long10.txt"}});
+  const change=agent.acceptProposalGraph(resumed,next);
+  assert.equal(change.event,"task_graph_replanned");
+  assert.equal(change.state.task_graph.steps.length,11);
+  assert.equal(graph.taskGraphProgress(change.state.task_graph).completed,10);
+  assert.deepEqual(change.state.task_graph.steps[0].evidence,resumed.task_graph.steps[0].evidence);
+  const completed=done(change.state,proposal("long10","read_file",{arguments:{path:"/repo/long10.txt"}}),result("read_file"));
+  assert.equal(graph.taskGraphProgress(completed.task_graph).completed,11);
+});
+
+test("extended planner is still capped to owner budget and cannot erase verified steps",()=>{
+ const ten=Array.from({length:10},(_,i)=>step("s"+i,[],"read_file"));
+ const current=graph.reviseTaskGraph(null,plan(ten),null,0,24);
+ assert.equal(current.ok,true);
+ const over=plan(Array.from({length:25},(_,i)=>step("s"+i,[],"read_file")));
+ assert.equal(graph.reviseTaskGraph(current.graph,over,current.graph.objective,0,24).ok,false);
+ assert.equal(graph.parseTaskGraph(plan(undefined,25),24).ok,false);
+ assert.equal(graph.parseTaskGraph(plan(undefined,24),24).ok,true);
+ assert.equal(graph.restoreTaskGraph(current.graph,1,8).ok,false);
+});
+
+test("same Rust action UUID cannot be rebound to a second graph worker",()=>{
+ const first=done(initial(),proposal());
+ const p=proposal("edit","replace_text");
+ assert.equal(agent.evaluateProposal(first,p).allowed,true);
+ const running=agent.recordProposalStart(first,p);
+ const receipt=first.task_graph.steps[0].evidence[0].action_id;
+ const reused=agent.bindPreparedAction(running,p,receipt);
+ assert.equal(reused.ok,false);
+ assert.match(reused.error,/already been used by another worker/);
+ assert.equal(runningActionId(reused.state,p),null);
+ const fresh=agent.bindPreparedAction(running,p,actionIdFor(2));
+ assert.equal(fresh.ok,true);
+ assert.equal(runningActionId(fresh.state,p),actionIdFor(2));
+});
+
+test("crash recovery rejects two completed worker steps with the same action UUID",()=>{
+ let state=done(initial(),proposal());
+ state=done(state,proposal("edit","replace_text"));
+ const checkpoint=json(state.task_graph);
+ assert.equal(graph.restoreTaskGraph(checkpoint,state.next_step,state.max_steps).ok,true);
+ const receipt=checkpoint.steps[0].evidence[0].action_id;
+ checkpoint.steps[1].evidence[0].action_id=receipt;
+ const restored=graph.restoreTaskGraph(checkpoint,state.next_step,state.max_steps);
+ assert.equal(restored.ok,false);
+ assert.match(restored.error,/Duplicate native action ID/);
+});
+
+test("Master sees only permission-gated, audit-proven next worker handoffs",()=>{
+ const state=done(initial(),proposal());
+ const ready=graph.nextWorkerTurn(state.task_graph);
+ assert.equal(ready.step_id,"edit");
+ assert.equal(ready.worker,"coding");
+ assert.equal(ready.tool,"replace_text");
+ assert.equal(ready.requires_owner_approval,true);
+ assert.equal(ready.handoffs[0].from_step_id,"inspect");
+ assert.equal(ready.handoffs[0].action_id,state.task_graph.steps[0].evidence[0].action_id);
+ assert.match(agent.orchestrationContext(state),/next audited-safe worker handoff/);
+ assert.match(agent.orchestrationContext(state),/normal typed prepare\/Allow once\/audit flow/);
+});
+
+test("typed result without matching action receipt cannot mark graph completed or unlock worker",()=>{
+ const g=json(initial().task_graph);
+ g.steps[0].status="completed";
+ g.steps[0].evidence=[{
+  step_id:"inspect",tool:"read_file",fingerprint:"claimed",action_id:null,
+  audit_event:null,success:true,outcome:"success",source:"typed_result",
+  orchestration_step:1,summary:"Model says done"
+ }];
+ assert.equal(graph.taskGraphProgress(g).completed,0);
+ assert.match(graph.graphDependencyFailure(g,proposal("edit","replace_text")),/Task dependency missing: inspect/);
+ assert.equal(graph.nextWorkerTurn(g),null,
+  "completed-looking but unaudited evidence must not become cross-worker authority");
+});
+
+test("Blender inspection-to-model-to-Premiere insertion is a real typed worker chain",()=>{
+ const p=plan([
+  step("inspect3d",[],"blender_inspect"),
+  step("model3d",["inspect3d"],"blender_run_plan"),
+  step("insert",["model3d"],"premiere_insert_media")
+ ]);
+ let state=initial(p);
+ assert.equal(graph.nextWorkerTurn(state.task_graph).worker,"blender");
+ assert.equal(agent.evaluateProposal(state,proposal("insert","premiere_insert_media")).allowed,false);
+ state=done(state,proposal("inspect3d","blender_inspect"));
+ assert.equal(graph.nextWorkerTurn(state.task_graph).step_id,"model3d");
+ state=done(state,proposal("model3d","blender_run_plan"));
+ const next=graph.nextWorkerTurn(state.task_graph);
+ assert.equal(next.step_id,"insert");
+ assert.equal(next.worker,"premiere");
+ assert.equal(next.handoffs[0].from_worker,"blender");
+ assert.equal(next.handoffs[0].to_worker,"premiere");
+ assert.deepEqual(next.artifact,{
+  source:"blender",source_action_id:actionIdFor(2),
+  path:"/repo/blender.png",sha256:"b".repeat(64)
+ });
+ assert.match(agent.orchestrationContext(state),/verified import identity/);
+ assert.ok(agent.orchestrationContext(state).includes("/repo/blender.png"));
+ assert.equal(next.requires_owner_approval,true);
+ assert.equal(graph.taskGraphProgress(state.task_graph).completed,2);
+ const saved=json(state.task_graph);
+ assert.equal(graph.restoreTaskGraph(saved,state.next_step,state.max_steps).ok,true);
+ state=done(state,proposal("insert","premiere_insert_media",
+  {arguments:{path:"/repo/blender.png",expected_sha256:"b".repeat(64)}}));
+ assert.equal(graph.taskGraphProgress(state.task_graph).completed,3);
+ assert.equal(graph.nextWorkerTurn(state.task_graph),null);
+});
+
+test("an untrusted caller cannot bypass bindPreparedAction to reuse an audited worker receipt",()=>{
+ const previous=done(initial(),proposal());
+ const newProposal=proposal("edit","replace_text");
+ const running=agent.recordProposalStart(previous,newProposal);
+ const oldId=previous.task_graph.steps[0].evidence[0].action_id;
+ const target=running.task_graph.steps.find(x=>x.step_id==="edit");
+ target.running.action_id=oldId; // forged local state bypasses normal binding
+ const attempted=agent.recordToolOutcome(running,newProposal,"success",result("replace_text"),true,
+  oldId,auditReceipt(oldId,"replace_text",true,"executed"));
+ assert.equal(attempted.task_graph.steps[1].status,"failed");
+ assert.equal(graph.taskGraphProgress(attempted.task_graph).completed,0,
+  "a forged duplicate UUID taints the original worker handoff too");
+ assert.equal(attempted.task_graph.steps[1].evidence.at(-1).source,"local_failure");
+});
+
+test("owner-selected 24/48-step graph does not drop worker handoff validation after step eight",()=>{
+ for(const cap of [24,48]){
+  const steps=Array.from({length:cap},(_,i)=>step("job"+i));
+  const proposalForGraph=proposal("job0","read_file",{task_graph:plan(steps)});
+  const initialState=agent.createAgentOrchestrationState(cap);
+  const acceptedGraph=agent.acceptProposalGraph(initialState,proposalForGraph);
+  assert.equal(acceptedGraph.state.task_graph.steps.length,cap);
+  assert.equal(graph.nextWorkerTurn(acceptedGraph.state.task_graph).step_id,"job0");
+  const last=proposal("job"+(cap-1),"read_file",{arguments:{path:"/repo/last.ts"}});
+  assert.equal(agent.evaluateProposal(acceptedGraph.state,last).allowed,true);
+  const started=agent.recordProposalStart(acceptedGraph.state,last);
+  assert.equal(started.task_graph.steps[cap-1].status,"running");
+  assert.equal(graph.graphDependencyFailure(started.task_graph,proposal("job1","read_file")),
+   "Worker lane is busy, unavailable, or lacks exact Rust-audited dependency evidence.");
+ }
+});
+
+test("Master progress refuses premature child completion even with a synthetic typed receipt",()=>{
+ const initialState=done(initial(),proposal());
+ const g=json(initialState.task_graph);
+ const original=g.steps[0].evidence[0];
+ g.steps[0].evidence[0].orchestration_step=3;
+ g.steps[1].status="completed";
+ g.steps[1].evidence=[{...original,step_id:"edit",tool:"replace_text",
+  fingerprint:"second",action_id:actionIdFor(2),orchestration_step:2}];
+ assert.equal(graph.taskGraphProgress(g).completed,1,
+  "the earlier child action cannot precede its audited dependency");
+ assert.equal(graph.nextWorkerTurn(g),null);
+ const ctx=agent.orchestrationContext({...initialState,task_graph:g});
+ assert.match(ctx,/verified completed IDs: inspect/);
+ assert.doesNotMatch(ctx,/verified completed IDs: inspect,edit/);
+});
+
+test("real task graph will not stage Remotion-to-Premiere media before final acceptance and planning",()=>{
+ const invalid=plan([
+  step("render",[],"motion_graphics_run_remotion"),
+  step("insert",["render"],"premiere_insert_media")
+ ]);
+ let state=initial(invalid);
+ state=done(state,proposal("render","motion_graphics_run_remotion"));
+ assert.equal(graph.taskGraphProgress(state.task_graph).completed,1);
+ const candidate=proposal("insert","premiere_insert_media");
+ const denied=agent.evaluateProposal(state,candidate);
+ assert.equal(denied.allowed,false);
+ assert.match(denied.reason,/motion_graphics_accept_final_remotion/);
+ assert.equal(graph.nextWorkerTurn(state.task_graph),null);
+ const fake=json(state.task_graph);
+ fake.steps[1].status="completed";
+ fake.steps[1].evidence=[{
+  step_id:"insert",tool:"premiere_insert_media",fingerprint:"fabricated",
+  action_id:actionIdFor(2),audit_event:"executed",success:true,outcome:"success",
+  source:"typed_result",orchestration_step:2,summary:"Fake completion"
+ }];
+ assert.equal(graph.taskGraphProgress(fake).completed,1);
+ const restored=graph.restoreTaskGraph(fake,3);
+ assert.equal(restored.ok,false);
+ assert.match(restored.error,/cross-app artifact acceptance/);
+});
+
+test("Remotion accepted-final -> Premiere insertion plan -> native import survives checkpoint recovery",()=>{
+ const valid=plan([
+  step("render",[],"motion_graphics_run_remotion"),
+  step("accept",["render"],"motion_graphics_accept_final_remotion"),
+  step("insertion_plan",["accept"],"motion_graphics_plan_premiere_insertion"),
+  step("import",["insertion_plan"],"premiere_insert_media"),
+  step("review",["import"],"premiere_timeline")
+ ]);
+ let state=initial(valid);
+ assert.equal(graph.nextWorkerTurn(state.task_graph).step_id,"render");
+ state=done(state,proposal("render","motion_graphics_run_remotion"));
+ assert.equal(agent.evaluateProposal(state,proposal("import","premiere_insert_media")).allowed,false);
+ assert.equal(graph.nextWorkerTurn(state.task_graph).step_id,"accept");
+ state=done(state,proposal("accept","motion_graphics_accept_final_remotion"));
+ assert.equal(graph.nextWorkerTurn(state.task_graph).step_id,"insertion_plan");
+ state=done(state,proposal("insertion_plan","motion_graphics_plan_premiere_insertion"));
+ assert.equal(graph.nextWorkerTurn(state.task_graph).step_id,"import");
+ assert.deepEqual(graph.nextWorkerTurn(state.task_graph).artifact,{
+  source:"remotion",source_action_id:actionIdFor(3),
+  path:"/repo/remotion.mp4",sha256:"a".repeat(64)
+ });
+ assert.match(agent.orchestrationContext(state),/verified import identity/);
+ assert.equal(agent.evaluateProposal(state,proposal("import","premiere_insert_media")).allowed,true);
+ const saved=json(state);
+ const resumed=agent.normalizeAgentOrchestrationState(saved);
+ assert.equal(resumed.recovery_mode,"normal");
+ assert.equal(graph.taskGraphProgress(resumed.task_graph).completed,3);
+ assert.equal(graph.nextWorkerTurn(resumed.task_graph).step_id,"import");
+ state=done(resumed,proposal("import","premiere_insert_media"));
+ assert.equal(graph.nextWorkerTurn(state.task_graph).step_id,"review");
+ state=done(state,proposal("review","premiere_timeline"));
+ assert.equal(graph.taskGraphProgress(state.task_graph).completed,5);
+ assert.equal(graph.nextWorkerTurn(state.task_graph),null);
+});
+
+test("Premiere insertion for unrelated independently inspected assets remains available",()=>{
+ const g=plan([
+  step("context",[],"premiere_context"),
+  step("insert",["context"],"premiere_insert_media")
+ ]);
+ let state=initial(g);
+ state=done(state,proposal("context","premiere_context"));
+ assert.equal(agent.evaluateProposal(state,proposal("insert","premiere_insert_media")).allowed,true);
+ assert.equal(graph.nextWorkerTurn(state.task_graph).step_id,"insert");
+});
+
+test("Master planning context exposes missing acceptance rather than claiming a finished import",()=>{
+ const metadata=plan([
+  step("render",[],"motion_graphics_run_remotion"),
+  step("import",["render"],"premiere_insert_media")
+ ]);
+ let state=initial(metadata);
+ state=done(state,proposal("render","motion_graphics_run_remotion"));
+ const context=agent.orchestrationContext(state);
+ assert.match(context,/REQUIRED cross-app handoff repair/);
+ assert.match(context,/motion_graphics_accept_final_remotion/);
+ assert.match(context,/never skip missing evidence/);
+ assert.doesNotMatch(context,/next audited-safe worker handoff: step import/);
+});
+
+test("a forged running import receipt cannot bypass final cross-app handoff admission",()=>{
+ const p=plan([
+  step("render",[],"motion_graphics_run_remotion"),
+  step("import",["render"],"premiere_insert_media")
+ ]);
+ let s=done(initial(p),proposal("render","motion_graphics_run_remotion"));
+ const importProposal=proposal("import","premiere_insert_media");
+ const id=actionIdFor(2);
+ const target=s.task_graph.steps.find(x=>x.step_id==="import");
+ target.status="running"; // simulate an untrusted checkpoint bypassing the admission path
+ target.running={fingerprint:agent.proposalFingerprint(importProposal),orchestration_step:s.next_step,action_id:id};
+ const attempted=agent.recordToolOutcome(s,importProposal,"success",result("premiere_insert_media"),
+  true,id,auditReceipt(id,"premiere_insert_media",true,"executed"));
+ assert.equal(attempted.task_graph.steps[1].status,"failed");
+ assert.equal(graph.taskGraphProgress(attempted.task_graph).completed,1);
+ assert.match(attempted.task_graph.steps[1].evidence.at(-1).summary,/accepted artifact SHA-256/);
+ assert.equal(attempted.recovery_mode,"replan_required");
+});
+
+test("native batch receipt survives real coordinator dispatch and refuses modified restart manifest",()=>{
+ for(const tool of ["premiere_import_media","premiere_create_sequence_from_media"]){
+  const model=plan([
+   step("first",[],"blender_run_plan"),
+   step("second",[],"blender_run_plan"),
+   step("deliver",["first","second"],tool)
+  ]);
+  let state=initial(model);
+  state=done(state,proposal("first","blender_run_plan"));
+  const secondEvidence={status:"verified",worker:"blender",
+   full_plan_completed:true,verified_by_native_sha256:true,
+   artifact:{path:"/repo/blender-two.png",sha256:"c".repeat(64),bytes:4096}};
+  state=done(state,proposal("second","blender_run_plan",
+   {arguments:{path:"/repo/second-work-order.blend"}}),{
+   ...result("blender_run_plan"),stdout:JSON.stringify(secondEvidence)
+  });
+  const importProposal=proposal("deliver",tool,{arguments:{
+   paths:["/repo/blender-two.png","/repo/blender.png"],
+   expected_sha256:["c".repeat(64),"b".repeat(64)],
+   ...(tool==="premiere_create_sequence_from_media"?{name:"Two images"}:{})
+  }});
+  assert.equal(graph.nextWorkerTurn(state.task_graph).batch_sources.length,2);
+  assert.match(agent.orchestrationContext(state),/verified native batch sources/);
+  assert.equal(agent.evaluateProposal(state,importProposal).allowed,true);
+  state=done(state,importProposal);
+  const manifest=state.task_graph.steps[2].evidence[0].artifact;
+  assert.equal(manifest.kind,"premiere_worker_batch");
+  assert.equal(manifest.import_action_id,actionIdFor(3));
+  assert.deepEqual(manifest.sources.map(x=>x.path),
+   ["/repo/blender-two.png","/repo/blender.png"]);
+  assert.equal(graph.taskGraphProgress(state.task_graph).completed,3);
+  assert.equal(agent.normalizeAgentOrchestrationState(json(state)).recovery_mode,"normal");
+  const forged=json(state);
+  forged.task_graph.steps[2].evidence[0].artifact.sources[0].sha256="d".repeat(64);
+  assert.notEqual(agent.normalizeAgentOrchestrationState(forged).recovery_mode,"normal");
+ }
+});
+
+test("global native worker lease prevents cross-app staging until original audited action finishes",()=>{
+ const metadata=plan([
+  step("blender",[],"blender_inspect"),
+  step("premiere",[],"premiere_context"),
+  step("source",[],"read_file")
+ ]);
+ let state=initial(metadata);
+ const active=proposal("blender","blender_inspect");
+ state=staged(state,active);
+ for(const other of [proposal("premiere","premiere_context"),proposal("source","read_file")]){
+  const decision=agent.evaluateProposal(state,other);
+  assert.equal(decision.allowed,false);
+  assert.match(decision.reason,/Worker lane is busy/);
+ }
+ assert.equal(graph.nextWorkerTurn(state.task_graph),null);
+ assert.match(agent.orchestrationContext(state),/native worker lease: native_action_in_flight/);
+ assert.match(agent.orchestrationContext(state),/blocks all other worker dispatches/);
+ const actionId=runningActionId(state,active);
+ state=agent.recordToolOutcome(state,active,"success",result("blender_inspect"),
+  true,actionId,auditReceipt(actionId,"blender_inspect",true,"executed"));
+ assert.equal(state.task_graph.steps[0].status,"completed");
+ assert.equal(state.recovery_mode,"normal");
+ assert.equal(graph.nextWorkerTurn(state.task_graph).step_id,"premiere");
+ assert.equal(agent.evaluateProposal(state,proposal("premiere","premiere_context")).allowed,true);
+});
+test("interrupted native worker is quarantined on recovery, never silently replaced by a new app action",()=>{
+ const metadata=plan([
+  step("render",[],"motion_graphics_run_remotion"),
+  step("inspect",[],"premiere_context")
+ ]);
+ let state=initial(metadata);
+ state=staged(state,proposal("render","motion_graphics_run_remotion"));
+ assert.equal(graph.nextWorkerTurn(state.task_graph),null);
+ const resumed=agent.normalizeAgentOrchestrationState(json(state));
+ assert.notEqual(resumed.recovery_mode,"normal");
+ assert.equal(resumed.task_graph.steps[0].status,"failed");
+ assert.equal(graph.nextWorkerTurn(resumed.task_graph),null);
+ assert.match(agent.orchestrationContext(resumed),/recovery_required/);
+ assert.match(agent.orchestrationContext(resumed),/Only an independent recovery inspection is permitted/);
+});
+
+test("duplicate in-flight native leases cannot bind or fabricate audited task completion",()=>{
+ const metadata=plan([step("a",[],"read_file"),step("b",[],"premiere_context")]);
+ let state=initial(metadata);
+ state=staged(state,proposal("a","read_file"));
+ const boundId=runningActionId(state,proposal("a","read_file"));
+ state.task_graph.steps[1].status="running";
+ state.task_graph.steps[1].running={
+  fingerprint:agent.proposalFingerprint(proposal("b","premiere_context")),
+  orchestration_step:state.next_step,action_id:null
+ };
+ const prepare=agent.bindPreparedAction(state,proposal("b","premiere_context"),actionIdFor(2));
+ assert.equal(prepare.ok,false);
+ assert.match(prepare.error,/Exactly one Rust-owned native execution lease/);
+ const attempt=agent.recordToolOutcome(state,proposal("a","read_file"),
+  "success",result("read_file"),true,boundId,auditReceipt(boundId,"read_file"));
+ assert.equal(attempt.task_graph.steps[0].status,"failed");
+ assert.equal(graph.taskGraphProgress(attempt.task_graph).completed,0);
+ const resumed=agent.normalizeAgentOrchestrationState(json(state));
+ assert.notEqual(resumed.recovery_mode,"normal");
 });

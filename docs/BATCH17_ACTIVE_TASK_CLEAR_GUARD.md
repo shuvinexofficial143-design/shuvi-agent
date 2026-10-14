@@ -1,0 +1,1 @@
+Batch 17: Never clear all native chat histories while Windows action approval or AI request is in flight. In-flight model calls also block per-thread clear. This preserves per-thread native task state, evidence, and pending permission. Deny/success and later clear still function. No automatic paid calls/actions.

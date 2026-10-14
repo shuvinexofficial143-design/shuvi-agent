@@ -1,0 +1,1 @@
+Batch 37: Repeated exact-title window rows are ambiguous for ui_find and ui_discover, even when their native handle repeats. No automatic UI lookup, user consent or native execution is bypassed.

@@ -1,0 +1,1 @@
+Batch 81: Hide passwords, refresh tokens, ID tokens and client secrets in native/provider errors and JSON/URL diagnostic fields before chat display. Do not expose secrets or alter Rust audit records.

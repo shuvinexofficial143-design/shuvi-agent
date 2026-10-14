@@ -1,0 +1,1 @@
+Batch 13: Pre-staging guard for known observed UI windows; exact audited ui_windows inventories allow only a unique exact window title for later mutations. Unobserved work still follows strict native Rust resolution, so full app-target protection is not yet proved. Every action requires separate Allow once.

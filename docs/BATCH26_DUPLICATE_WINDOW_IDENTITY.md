@@ -1,0 +1,1 @@
+Batch 26: Require exactly one inventory entry for a window target. Two identical or contradictory rows cannot be treated as one unique target merely because their handle matches.

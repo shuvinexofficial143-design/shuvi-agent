@@ -1,0 +1,1 @@
+Batch 43: Error text from model providers or native IPC is bounded and redacted for common Bearer, sk- and explicit API key/token assignments before appearing in user-facing native action messages. The error's native audit still controls authorization.

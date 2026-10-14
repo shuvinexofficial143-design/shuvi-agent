@@ -107,7 +107,8 @@ test("capability reports SRT support without pretending native caption creation"
   assert.equal(capability.native_caption_creation, false);
   assert.equal(capability.native_caption_text_editing, false);
   assert.equal(capability.srt_generation, true);
-  assert.equal(capability.import_adapter.supported, false);
+  assert.equal(capability.import_adapter.supported, true);
+  assert.equal(capability.import_adapter.timeline_caption_creation, false);
 });
 
 test("transcript import requires canonical post-import export readback before success",()=>{

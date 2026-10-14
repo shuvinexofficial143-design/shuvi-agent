@@ -37,6 +37,20 @@ jobs:
         with:
           node-version: 22
       - uses: dtolnay/rust-toolchain@stable
+      - name: Windows read-only readiness script execution
+        shell: pwsh
+        run: |
+          $json = & ./scripts/windows-live-readiness.ps1
+          $report = $json | ConvertFrom-Json
+          if ($report.mode -ne "read_only_probe" -or $report.production_ready -ne $false) {
+            throw "Windows probe must remain read-only and never assert production readiness."
+          }
+          if ($report.live_host_tests_completed -ne 0 -or $report.native_ai_requests_sent -ne 0 -or $report.adobe_projects_modified -ne 0) {
+            throw "Windows readiness probe incorrectly claims actual host execution."
+          }
+          if (-not $report.windows_host -or -not $report.toolchain.git) {
+            throw "Windows runner discovery failed."
+          }
       - name: Rust verification with attestation
         run: npm run verify:rust
       - name: Upload Rust attestation

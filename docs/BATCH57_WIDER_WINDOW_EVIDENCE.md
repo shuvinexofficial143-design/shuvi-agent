@@ -1,0 +1,1 @@
+Batch 57: Uniquely audited application-window existence evidence now recognizes Media Encoder, Animate, Character Animator, Substance 3D and Frame.io. Only an actual matching native window entry counts; launch, project and export remain unverified.

@@ -1,0 +1,1 @@
+Batch 67: Add advisory verified-save checkpoint for an existing document/project. A save click or model claim cannot prove the intended artifact at the approved location. Native execution unchanged.

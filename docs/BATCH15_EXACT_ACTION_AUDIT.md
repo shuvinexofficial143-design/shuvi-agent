@@ -1,0 +1,2 @@
+# Batch 15 — exact approved-action audit verification
+Verify every reported successful Windows action against its exact prepared action id, kind and matching executed+success Rust audit. Reject conflicting success/failure records, different tool kinds and mismatched IDs. Preserve existing explicit owner Allow once and lack of automatic retry. Unit/mock source only, not live Windows acceptance.

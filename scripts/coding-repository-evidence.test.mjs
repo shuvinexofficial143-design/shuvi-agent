@@ -5,7 +5,8 @@ import {stripTypeScriptTypes} from "node:module";
 
 const source=readFileSync(new URL("../src/agent-orchestrator.ts",import.meta.url),"utf8");
 const executable=stripTypeScriptTypes(source).replace('"./task-graph.mjs"',
-  JSON.stringify(new URL("../src/task-graph.mjs",import.meta.url).href));
+  JSON.stringify(new URL("../src/task-graph.mjs",import.meta.url).href)).replace('"./task-runtime-budget.mjs"',
+  JSON.stringify(new URL("../src/task-runtime-budget.mjs",import.meta.url).href));
 const agent=await import("data:text/javascript;base64,"+Buffer.from(executable).toString("base64"));
 
 const HEAD_A="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -65,7 +66,7 @@ test("successful commit invalidates pre-commit validation and can bind validatio
   const push=proposal("git_push",{expected_head:HEAD_C});
   let pushDecision=agent.evaluateProposal(s,push);
   assert.equal(pushDecision.allowed,false);
-  assert.match(pushDecision.reason,/exact committed HEAD before git_push/);
+  assert.match(pushDecision.reason,/exact committed HEAD.*before git_push/);
   assert.equal(agent.evaluateProposal(s,proposal("git_push",{expected_head:HEAD_A,expected_worktree_fingerprint:WORKTREE_A})).allowed,false);
 
   s=done(s,proposal("run_project_task",{task:"test"}),gitResult("run_project_task",HEAD_C,"main","observed",true));

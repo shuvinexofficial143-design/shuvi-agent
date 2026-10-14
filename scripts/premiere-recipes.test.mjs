@@ -62,7 +62,7 @@ test("recipe application verifies every native setting readback",()=>{
 });
 
 test("desktop recipe callers do not promote accepted-unverified mutations",()=>{
- for(const name of ["PremiereApplyVideoRecipe","PremiereApplyAudioRecipe","PremierePopulateMogrt","PremiereTranscriptDucking","PremiereApplySavedRecipe"]){
+ for(const name of ["PremiereApplyVideoRecipe","PremiereApplyAudioRecipe","PremierePopulateMogrt","PremiereTranscriptDucking","PremiereApplySavedRecipe {"]){
   const start=rustSource.lastIndexOf("ToolAction::"+name);
   const end=rustSource.indexOf("\n        ToolAction::Premiere",start+10);
   const arm=rustSource.slice(start,end);

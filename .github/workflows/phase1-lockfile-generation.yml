@@ -1,0 +1,54 @@
+name: Phase 1 Lockfile Generation (No Deployment)
+
+on:
+  push:
+    branches:
+      - phase1/safety-reconciliation-oct9
+    paths:
+      - .github/workflows/phase1-lockfile-generation.yml
+
+permissions:
+  contents: read
+
+jobs:
+  generate-lockfiles:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Generate exact application lockfiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo generate-lockfile --manifest-path src-tauri/Cargo.toml
+          (cd web-dashboard && npm install --package-lock-only --ignore-scripts --no-audit --no-fund)
+          (cd remotion-runtime && npm install --package-lock-only --ignore-scripts --no-audit --no-fund)
+          test -s src-tauri/Cargo.lock
+          test -s web-dashboard/package-lock.json
+          test -s remotion-runtime/package-lock.json
+          (cd web-dashboard && npm ci --ignore-scripts --no-audit --no-fund)
+          (cd remotion-runtime && npm ci --ignore-scripts --no-audit --no-fund)
+      - name: Print generated files for offline source review
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in src-tauri/Cargo.lock web-dashboard/package-lock.json remotion-runtime/package-lock.json; do
+            echo "SHUVI_LOCKFILE_BEGIN:$f"
+            base64 -w 0 "$f"
+            echo
+            echo "SHUVI_LOCKFILE_END:$f"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phase1-generated-lockfiles
+          path: |
+            src-tauri/Cargo.lock
+            web-dashboard/package-lock.json
+            remotion-runtime/package-lock.json
+          if-no-files-found: error

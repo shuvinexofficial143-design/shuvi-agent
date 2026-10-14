@@ -58,6 +58,9 @@ export type AgentOrchestrationCheckpoint = {
   version: 1 | 2 | 3 | 4 | 5;
   next_step: number;
   tool_actions: number;
+  max_steps?: number;
+  task_expires_at_ms?: number | null;
+  model_requests_reserved?: number;
   consecutive_failures: number;
   blocked_repeats: number;
   last_proposal_fingerprint: string | null;
@@ -82,6 +85,7 @@ export type SessionCheckpoint = {
   base_url: string | null;
   messages: ChatMessage[];
   orchestration?: AgentOrchestrationCheckpoint | null;
+  worker_models?: Record<string,string> | null;
 };
 
 export type ToolProposal = {
@@ -106,6 +110,76 @@ export type ChatResponse = {
   model: string;
   tool_proposal: ToolProposal | null;
   usage: UsageStats | null;
+};
+
+export type NativeWorkerStatus = {
+  schemaVersion: 1;
+  observedAtMs: number;
+  state: "idle" | "native_action_in_flight" | "lease_held_unattributed" | "recovery_required";
+  leaseOwnedByThisProcess: boolean;
+  crossProcessLeaseState: "unknown_not_probed";
+  actionId: string | null;
+  tool: string | null;
+  startedAtMs: number | null;
+  observedActionAgeMs: number | null;
+  recoveryPhase: string | null;
+  recoveryTaskId: string | null;
+  requiresOwnerReview: boolean;
+  progressHeartbeatVerified: false;
+  safeToAutoRetry: false;
+  // Durable Rust supervision of THIS process, not Adobe/Blender progress.
+  durableJobPhase: "running" | "audit_verified" | "owner_reviewed_unknown" | null;
+  durableJobActionId: string | null;
+  durableJobTool: string | null;
+  supervisorHeartbeatAtMs: number | null;
+  supervisorHeartbeatAgeMs: number | null;
+  supervisorHeartbeatSeq: number | null;
+  supervisorHealth: "not_observed" | "supervisor_start_record_only" | "unattributed_or_interrupted" |
+    "supervisor_tick_stale" | "rust_supervisor_observed" | "last_action_audited" |
+    "audited_job_conflicts_with_live_lease" | "last_action_reviewed_unknown";
+};
+
+export type NativeTaskDelivery = {
+  version: 1;
+  objective: string;
+  revision: number;
+  recordedAtMs: number;
+  steps: Array<{
+    stepId: string;
+    tool: string;
+    actionId: string;
+    artifact: null | {
+      kind: string;
+      path: string;
+      sha256: string;
+      bytes: number;
+    };
+  }>;
+};
+
+export type NativeSchedule = {
+  version: 1;
+  objective: string;
+  revision: number;
+  jobs: Array<{
+    stepId: string;
+    tool: string;
+    dependsOn: string[];
+    phase: "queued" | "running" | "audited" | "failed" | "outcome_unknown" | "reviewed_failed";
+    actionId: string | null;
+  }>;
+};
+
+export type NativeJobHistory = {
+  version: 1;
+  items: Array<{
+    actionId: string;
+    tool: string;
+    phase: "running" | "audit_verified" | "owner_reviewed_unknown";
+    startedAtMs: number;
+    completedAtMs: number | null;
+    auditSuccess: boolean | null;
+  }>;
 };
 
 export type RuntimeStatus = {

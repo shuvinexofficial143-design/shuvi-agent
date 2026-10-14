@@ -1,0 +1,1 @@
+Batch 49: Reject hidden Unicode/control characters in Master-proposed native window names, instead of cleaning them into a silently authorized title. Applies to read and mutation target gates.

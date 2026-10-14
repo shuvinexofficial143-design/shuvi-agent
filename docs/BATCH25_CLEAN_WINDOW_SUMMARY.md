@@ -1,0 +1,1 @@
+Batch 25: Bounded read-only window inventory summaries clean invisible Unicode direction/control characters before display and before giving observations to Master. No Windows execution added.

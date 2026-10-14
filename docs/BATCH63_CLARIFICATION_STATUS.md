@@ -1,0 +1,1 @@
+Batch 63: A no-tool response that explicitly asks an app, project name or save destination now pauses as awaiting clarification, not as an ordinary failed task. Original objective remains unverified and no Windows tool is staged or auto-executed.

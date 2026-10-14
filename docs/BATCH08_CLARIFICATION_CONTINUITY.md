@@ -1,0 +1,2 @@
+# Batch 08 — Original task continuity across multiple clarifications
+Keep a bounded per-thread original goal only after successful native Master response. Recognize explicit short application, project-name, or save-location questions and append the user's answer as context, without losing prior user instructions. A fresh command/cancel or unrelated question does not reuse older task. All actions still require individual Allow once and matching audit, with no automatic paid retries. No live Windows acceptance, main writes, merge, deployment or installer.

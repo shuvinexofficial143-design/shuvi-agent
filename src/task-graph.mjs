@@ -1,4 +1,8 @@
+import { workerQueueView, nextWorkerTurn, evidenceForStep, handoffContractFailure, workerSupervisorView } from "./master-worker-queue.mjs";
+import {parseWorkerArtifact,validWorkerArtifact,artifactHandoffFailure,workerBatchSources} from "./worker-artifact-lineage.mjs";
+export { nextWorkerTurn, handoffContractFailure, workerSupervisorView };
 // Pure bounded coordinator. Provider metadata is never execution authority.
+import { MAX_RUNTIME_ACTIONS, allowedTaskBudget } from "./task-runtime-budget.mjs";
 export const GRAPH_LIMIT = 8;
 export const GRAPH_REVISION_LIMIT = 8;
 export const GRAPH_AUDIT_EVENTS = Object.freeze([
@@ -21,14 +25,15 @@ const clone = x => JSON.parse(JSON.stringify(x));
 const keys = (x, allowed) => Object.keys(x).every(k => allowed.includes(k));
 const fail = error => ({ ok: false, error });
 
-export function parseTaskGraph(value) {
+export function parseTaskGraph(value, maxSteps = GRAPH_LIMIT) {
+  if (!allowedTaskBudget(maxSteps)) return fail("Graph exceeds the owner-approved task budget.");
   if (!object(value) || !keys(value, ["objective", "revision", "steps", "recover_steps"])
       || !bounded(value.objective, 500) || !Array.isArray(value.steps)
-      || value.steps.length < 1 || value.steps.length > GRAPH_LIMIT) {
-    return fail("Task graph requires a bounded objective and 1..8 steps.");
+      || value.steps.length < 1 || value.steps.length > maxSteps) {
+    return fail(`Task graph requires a bounded objective and 1..${maxSteps} steps.`);
   }
   const revision = value.revision ?? 1;
-  if (!integer(revision, 1, GRAPH_REVISION_LIMIT)) return fail("Invalid graph revision (1..8).");
+  if (!integer(revision, 1, maxSteps)) return fail(`Invalid graph revision (1..${maxSteps}).`);
   const recover = value.recover_steps ?? [];
   if (!Array.isArray(recover) || recover.length > GRAPH_LIMIT || !recover.every(id)
       || new Set(recover).size !== recover.length) return fail("Invalid recovery step IDs.");
@@ -71,7 +76,9 @@ function spec(s) {
     success_criteria: s.success_criteria, expected_tool: s.expected_tool, depends_on: s.depends_on };
 }
 function completed(s) {
-  return s.status === "completed" && s.evidence.some(e => e.success === true && e.source === "typed_result");
+  // Model-authored success flags and incomplete local evidence cannot unlock
+  // graph dependencies, progress, or a cross-worker handoff.
+  return evidenceForStep(s) !== null;
 }
 export function refreshTaskGraph(graph) {
   if (!graph) return null;
@@ -85,8 +92,8 @@ export function refreshTaskGraph(graph) {
 }
 
 // A full replacement is accepted transactionally; history is copied only from local state.
-export function reviseTaskGraph(current, metadata, objective, recoveryStep = 0) {
-  const parsed = parseTaskGraph(metadata);
+export function reviseTaskGraph(current, metadata, objective, recoveryStep = 0, maxSteps = GRAPH_LIMIT) {
+  const parsed = parseTaskGraph(metadata, maxSteps);
   if (!parsed.ok) return parsed;
   const next = parsed.graph;
   if ((objective && next.objective !== objective) || (current && next.objective !== current.objective))
@@ -136,9 +143,24 @@ export function graphDependencyFailure(graph, proposal) {
   if (!["pending", "ready", "blocked"].includes(step.status))
     return "Task step " + stepId + " is " + step.status + "; completed steps cannot rerun and failed steps require recovery/replan.";
   const missing = step.depends_on.filter(d => !graph.steps.some(s => s.step_id === d && completed(s)));
-  if (missing.length) return "Task dependency missing: " + missing.join(", ");
+  if (missing.length) return "Task dependency missing: " + missing.join(", ") +
+    " (Rust-audited dependency evidence required).";
   if (step.status === "blocked") return "Task step must be recalculated as ready before execution.";
   if (step.expected_tool !== proposal.tool) return "Task step requires typed tool " + step.expected_tool + ".";
+  const handoff=handoffContractFailure(graph,stepId);
+  if(handoff)return handoff;
+  const identityFailure=artifactHandoffFailure(graph,stepId,proposal);
+  if(identityFailure)return identityFailure;
+  // Defense in depth: a model-proposed completed status is not enough to
+  // unlock cross-application work, and a shared app lane cannot be double-booked.
+  const lane = workerQueueView(graph);
+  if(lane.total!==graph.steps.length||!lane.jobs.length)
+    return "Native worker queue checkpoint is malformed or exceeds owner-approved limits; inspect and replan.";
+  const job = lane.jobs.find(j => j.id === stepId);
+  if (job?.worker === "unsupported") return "No native worker exists for this typed tool.";
+  if (job && !lane.ready_job_ids.includes(stepId)) {
+    return "Worker lane is busy, unavailable, or lacks exact Rust-audited dependency evidence.";
+  }
   return null;
 }
 
@@ -154,6 +176,8 @@ export function startTaskStep(graph, proposal, fingerprint, orchestrationStep) {
 export function bindTaskStepAction(graph, proposal, fingerprint, orchestrationStep, preparedActionId) {
   if (!graph || proposal.task_step_id == null) return { ok: true, graph };
   if (!actionId(preparedActionId)) return fail("Prepared action ID is invalid.");
+  if (graph.steps.filter(s=>s.status==="running").length!==1)
+    return fail("Exactly one Rust-owned native execution lease is required before preparing a worker action.");
   const target = graph.steps.find(s => s.step_id === proposal.task_step_id);
   if (!target || target.status !== "running" || target.running?.fingerprint !== fingerprint
       || target.running.orchestration_step !== orchestrationStep) {
@@ -161,6 +185,13 @@ export function bindTaskStepAction(graph, proposal, fingerprint, orchestrationSt
   }
   if (target.running.action_id != null && target.running.action_id !== preparedActionId) {
     return fail("Task step is already bound to a different prepared action.");
+  }
+  // A native prepared-action UUID is single-use across the entire graph.
+  // Never let a later worker inherit another worker's audit receipt.
+  if (graph.steps.some(s => s !== target &&
+    (s.running?.action_id === preparedActionId ||
+      s.evidence.some(e => e.action_id === preparedActionId)))) {
+    return fail("Prepared action ID has already been used by another worker step.");
   }
   return { ok: true, graph: { ...graph, steps: graph.steps.map(s => s !== target ? s :
     { ...s, running: { ...s.running, action_id: preparedActionId } }) } };
@@ -181,8 +212,12 @@ export function finishTaskStep(
   const target = graph.steps.find(s => s.step_id === proposal.task_step_id);
   if (!target || target.status !== "running" || target.running?.fingerprint !== fingerprint
       || target.running.orchestration_step !== stepNumber) return graph;
-  const boundAction = actionId(target.running.action_id) && target.running.action_id === preparedActionId;
-  const auditBound = boundAction && object(auditReceipt)
+  const singleNativeLease=graph.steps.filter(s=>s.status==="running").length===1;
+  const boundAction = singleNativeLease&&actionId(target.running.action_id) && target.running.action_id === preparedActionId;
+  const reusedAction = actionId(preparedActionId) && graph.steps.some(s => s !== target &&
+    (s.running?.action_id === preparedActionId ||
+      s.evidence.some(e => e.action_id === preparedActionId)));
+  const auditBound = boundAction && !reusedAction && object(auditReceipt)
     && auditReceipt.action_id === preparedActionId
     && auditReceipt.tool === proposal.tool
     && ["executed","failed","denied"].includes(auditReceipt.event)
@@ -192,54 +227,78 @@ export function finishTaskStep(
     && auditReceipt.success === result.success
     && typeof result.stdout === "string" && typeof result.stderr === "string"
     && (result.exit_code === null || Number.isInteger(result.exit_code));
+  // Defense in depth: even a forged/stale running receipt cannot complete
+  // Premiere import by skipping final Remotion acceptance and insertion plan.
+  const handoffSafe=!handoffContractFailure(graph,target.step_id)
+    &&!artifactHandoffFailure(graph,target.step_id,proposal);
+  const batchSources=workerBatchSources(graph,target.step_id);
+  const needsArtifact=["blender_run_plan","motion_graphics_accept_final_remotion",
+    "motion_graphics_plan_premiere_insertion"].includes(proposal.tool)||Boolean(batchSources);
+  const artifact=typed&&outcome==="success"&&result.success===true
+    ?batchSources
+      ?{kind:"premiere_worker_batch",import_action_id:preparedActionId,
+        sources:Array.isArray(proposal.arguments?.paths)
+         ?proposal.arguments.paths.map(path=>batchSources.find(src=>src.path===path))
+         :[]}
+      :parseWorkerArtifact(proposal.tool,result.stdout,preparedActionId)
+    :null;
+  const artifactValid=!needsArtifact||validWorkerArtifact(artifact,proposal.tool,preparedActionId);
   const success = outcome === "success" && typed && result.success === true
+    && handoffSafe && artifactValid
     && (proposal.tool !== "run_project_task" || result.exit_code === 0);
   const evidence = { step_id: target.step_id, tool: proposal.tool, fingerprint,
     action_id: actionId(preparedActionId) ? preparedActionId : null,
     audit_event: auditBound ? auditReceipt.event : null,
     success, outcome: success ? "success" : outcome === "success" ? "failure" : outcome,
     source: typed ? "typed_result" : "local_failure", orchestration_step: stepNumber,
+    ...(success&&artifact?{artifact}:{}),
     summary: success ? "Typed tool and Rust audit receipt matched the exact prepared action." :
+      !handoffSafe ? "Cross-app action cannot complete without exact accepted artifact SHA-256, plan and permission receipts." :
+      needsArtifact&&!artifactValid ? "Native worker batch or render lacked exact audited artifact SHA-256 provenance." :
       "Action lacked matching typed result and Rust audit evidence for the bound prepared action." };
   return refreshTaskGraph({ ...graph, steps: graph.steps.map(s => s !== target ? s :
     { ...s, status: success ? "completed" : "failed", running: null, blocked_reason: null,
-      evidence: [...s.evidence, evidence].slice(-GRAPH_LIMIT) }) });
+      evidence: [...s.evidence, evidence].slice(-MAX_RUNTIME_ACTIONS) }) });
 }
 
 export function taskGraphProgress(graph) {
   if (!graph) return { completed: 0, total: 0, current: null, steps: [] };
+  const queue=workerQueueView(graph);
+  const verifiedIds=new Set(queue.jobs.filter(job=>job.verified).map(job=>job.id));
   const steps = graph.steps.map(s => {
-    const verified = completed(s);
+    const verified = verifiedIds.has(s.step_id);
     const status = s.status === "completed" && !verified ? "pending" : s.status;
     const latestEvidence = s.evidence.at(-1);
     const reason = s.blocked_reason
       ?? (status === "failed" ? latestEvidence?.summary ?? "Step failed without completion evidence." : null);
     return { step_id: s.step_id, title: s.title, status, reason, evidence_verified: verified };
   });
-  return { completed: graph.steps.filter(completed).length, total: steps.length,
+  return { completed: verifiedIds.size, total: steps.length,
     current: steps.find(s => s.status === "running")?.title ?? steps.find(s => s.status === "ready")?.title ?? null,
     steps };
 }
 
 // Checkpoints are local receipts, not signatures. Malformed receipts stop resume.
-export function restoreTaskGraph(value, nextStep) {
+export function restoreTaskGraph(value, nextStep, maxSteps = GRAPH_LIMIT) {
+  if (!allowedTaskBudget(maxSteps)) return fail("Invalid owner-approved graph budget.");
   if (value == null) return { ok: true, graph: null, interrupted: [] };
-  if (!object(value) || !Array.isArray(value.steps) || value.steps.length > GRAPH_LIMIT)
+  if (!object(value) || !Array.isArray(value.steps) || value.steps.length > maxSteps)
     return fail("Invalid saved task graph.");
   const parsed = parseTaskGraph({ objective: value.objective, revision: value.revision,
-    steps: value.steps.map(s => object(s) ? spec(s) : s) });
+    steps: value.steps.map(s => object(s) ? spec(s) : s) }, maxSteps);
   if (!parsed.ok) return parsed;
   let count = 0;
   const interrupted = [];
   const seenNumbers = new Set();
+  const seenActionIds = new Set();
   const steps = [];
   for (const s of value.steps) {
     if (!["pending", "ready", "running", "completed", "failed", "blocked", "skipped"].includes(s.status)
-        || !Array.isArray(s.evidence) || s.evidence.length > GRAPH_LIMIT
+        || !Array.isArray(s.evidence) || s.evidence.length > maxSteps
         || (s.status === "blocked" && !bounded(s.blocked_reason, 500))) return fail("Invalid saved step state.");
     for (const e of s.evidence) {
       if (!object(e) || e.step_id !== s.step_id || !bounded(e.tool, 160)
-          || !bounded(e.fingerprint, 16384) || !integer(e.orchestration_step, 1, GRAPH_LIMIT)
+          || !bounded(e.fingerprint, 16384) || !integer(e.orchestration_step, 1, MAX_RUNTIME_ACTIONS)
           || e.orchestration_step >= nextStep || seenNumbers.has(e.orchestration_step)
           || !["success", "failure", "denied"].includes(e.outcome)
           || !["typed_result", "local_failure", "interrupted"].includes(e.source)
@@ -248,7 +307,15 @@ export function restoreTaskGraph(value, nextStep) {
           || (e.audit_event !== null && !["executed","failed","denied"].includes(e.audit_event))
           || (e.success && (!actionId(e.action_id) || e.audit_event !== "executed"
               || e.source !== "typed_result" || e.outcome !== "success" || e.tool !== s.expected_tool))
-          || (!e.success && e.outcome === "success")) return fail("Invalid saved completion evidence.");
+          || (!e.success && e.outcome === "success")
+          || (e.artifact!==undefined&&!validWorkerArtifact(e.artifact,e.tool,e.action_id))
+          || (e.success&&["blender_run_plan","motion_graphics_accept_final_remotion",
+                "motion_graphics_plan_premiere_insertion"].includes(e.tool)&&
+              !validWorkerArtifact(e.artifact,e.tool,e.action_id))) return fail("Invalid saved completion evidence.");
+      if (e.action_id !== null) {
+        if (seenActionIds.has(e.action_id)) return fail("Duplicate native action ID in saved worker evidence.");
+        seenActionIds.add(e.action_id);
+      }
       seenNumbers.add(e.orchestration_step);
       count++;
     }
@@ -260,9 +327,14 @@ export function restoreTaskGraph(value, nextStep) {
       blocked_reason: bounded(s.blocked_reason, 500) ? s.blocked_reason : null, running: null };
     if (s.status === "running") {
       if (!object(s.running) || !bounded(s.running.fingerprint, 16384)
-          || s.running.orchestration_step !== nextStep || nextStep > GRAPH_LIMIT
+          || s.running.orchestration_step !== nextStep || nextStep > MAX_RUNTIME_ACTIONS
           || (s.running.action_id !== null && !actionId(s.running.action_id)))
         return fail("Invalid saved in-flight action.");
+      if (s.running.action_id !== null) {
+        if (seenActionIds.has(s.running.action_id))
+          return fail("Interrupted native action ID was already used by another worker.");
+        seenActionIds.add(s.running.action_id);
+      }
       interrupted.push(s.running.fingerprint);
       restored = { ...restored, status: "failed", evidence: [...restored.evidence, {
         step_id: s.step_id, tool: s.expected_tool, fingerprint: s.running.fingerprint,
@@ -276,8 +348,11 @@ export function restoreTaskGraph(value, nextStep) {
     }
     steps.push(restored);
   }
-  if (count > GRAPH_LIMIT || interrupted.length > 1) return fail("Saved evidence exceeds the action ceiling.");
+  if (count > maxSteps || interrupted.length > 1) return fail("Saved evidence exceeds the owner-approved action ceiling.");
   const graph = refreshTaskGraph({ ...parsed.graph, steps });
+  if(graph.steps.some(s=>s.status==="completed"&&
+    (handoffContractFailure(graph,s.step_id)||artifactHandoffFailure(graph,s.step_id))))
+    return fail("Saved worker completion skips required cross-app artifact acceptance and insertion planning.");
   for (const s of graph.steps.filter(completed)) {
     const n = s.evidence.find(e => e.success).orchestration_step;
     if (s.depends_on.some(d => {

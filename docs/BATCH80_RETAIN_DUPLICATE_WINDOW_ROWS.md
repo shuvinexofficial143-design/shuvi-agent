@@ -1,0 +1,1 @@
+Batch 80: Preserve identical native window rows in user/model observation summaries rather than deduplicating them silently. Duplicate identities can signal ambiguity and are never a selected target or authorization.

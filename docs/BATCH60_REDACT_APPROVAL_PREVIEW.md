@@ -1,0 +1,1 @@
+Batch 60: Every owner-facing native action approval summary/risk/detail is passed through bounded credential redaction, including initial, continued and read-recovery steps. Approved action identity and Rust safeguards are unaffected.

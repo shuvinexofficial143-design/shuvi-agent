@@ -92,7 +92,7 @@ test("UI: New Chat, search, manage, archive, pin, split and no synthetic AI chat
   assert.doesNotMatch(main, /appendChatMessage\(/);
   assert.match(controllerSource, /dialog\.showModal\(\)/);
   assert.match(controllerSource, /Confirm delete/);
-  assert.match(controllerSource, /No AI response generated/);
+  assert.match(controllerSource, /No AI response or Windows action/);
   assert.match(controllerSource, /splitSelect\.addEventListener\("change"/);
   assert.match(styles, /\.chat-workspace-layout\.split-mode/);
   assert.match(styles, /@media\(max-width:620px\)/);
@@ -102,7 +102,7 @@ test("UI: New Chat, search, manage, archive, pin, split and no synthetic AI chat
 test("level 6 web chat exports only browser drafts and supports Ctrl+Enter", () => {
   assert.match(markup, /id="chatExport"/);
   assert.match(markup, /id="chatPlanningHint"/);
-  assert.match(markup, /Ctrl\+Enter to save/);
+  assert.match(markup, /Ctrl\+Enter to save locally/);
   assert.match(controllerSource, /schema: "shuvi-chat-export-v1"/);
   assert.match(controllerSource, /messages: t\.messages\.map/);
   assert.match(controllerSource, /JSON\.stringify\(safeCopy, null, 2\)/);

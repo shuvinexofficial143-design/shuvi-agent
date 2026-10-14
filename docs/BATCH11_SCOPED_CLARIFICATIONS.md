@@ -1,0 +1,1 @@
+Batch 11: Keep pending original native goal only when Master explicitly asks an application, name or save destination question. Preserve across separately approved audited steps. End the scope on ordinary prose, final claim, proposed tool, or new chat command. No new Windows capability, no paid retry or deployment.

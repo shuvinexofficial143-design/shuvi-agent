@@ -1,0 +1,1 @@
+Batch 22: A typed result marked unsuccessful but with a different tool kind than the owner's approved pending native action is an unknown outcome, not evidence to initiate UI recovery. Only an exact failed tool kind can enter receipt-verified read-only recovery. No auto retry, no native execution or merge/deploy.

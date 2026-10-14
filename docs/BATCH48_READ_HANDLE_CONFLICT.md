@@ -1,0 +1,1 @@
+Batch 48: The existing contradictory HWND/title/process guard is extended to read-only ui_find and ui_discover, not only mutations. Conflicting observed identity must not be treated as a selected target.

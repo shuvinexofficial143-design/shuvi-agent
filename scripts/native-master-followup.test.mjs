@@ -1,0 +1,1174 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import {build} from "esbuild";
+import {fileURLToPath} from "node:url";
+const entry=fileURLToPath(new URL("../web-dashboard/src/native-agent.ts",import.meta.url));
+const {outputFiles}=await build({
+ entryPoints:[entry],bundle:true,platform:"node",format:"esm",target:"node22",write:false,
+ plugins:[{name:"native-model-stub",setup(builder){
+  builder.onResolve({filter:/^\.\/native-model-setup$/},()=>({path:"model",namespace:"stub"}));
+  builder.onLoad({filter:/.*/,namespace:"stub"},()=>({
+   contents:'export function mountNativeModelSetup(){return {current:()=>({provider:"xkiro",base_url:"",roles:{chat:"model/chat",master:"model/master",premiere:"model/premiere"}})}}',
+   loader:"js"
+  }));
+ }}]
+});
+const {mountNativeAgent}=await import("data:text/javascript;base64,"+
+ Buffer.from(outputFiles[0].text).toString("base64"));
+function el(){
+ return {
+  textContent:"",hidden:false,disabled:false,value:"",
+  className:"",children:[],listeners:new Map(),attributes:{},
+  parentElement:null,classList:{toggle(){return true}},
+  setAttribute(name,value){this.attributes[name]=value;},
+  addEventListener(name,fn){this.listeners.set(name,fn);},
+  append(...children){this.children.push(...children);},
+  insertBefore(child){this.children.push(child);},
+  scrollIntoView(){},focus(){}
+ };
+}
+const detectedPath="C:\\Program Files\\Adobe\\Adobe Premiere Pro 2026\\Adobe Premiere Pro.exe";
+const detection={
+ content:JSON.stringify({tool:"premiere_detect",arguments:{}}),
+ provider:"xkiro",model:"model/master",
+ tool_proposal:{tool:"premiere_detect",arguments:{}}
+};
+const launch={
+ content:JSON.stringify({tool:"premiere_launch",arguments:{}}),
+ provider:"xkiro",model:"model/master",
+ tool_proposal:{tool:"premiere_launch",arguments:{}}
+};
+function setup({first=detection,second=launch,following=[],auditOk=true,failFind=false,softFailedRead=false,receiptMismatch=false,conflictingSuccessAudit=false,stdoutFor=null,wrongStageIndex=0,continuationRenderError=false,reusePendingId=false,recoveryStore=null,recoveryReceipt=null,recoveryTrail=null,rustRecord=null,rustFailPhase=null,rustClearFail=false,rustClearWait=null}={}){
+ const nodes=new Map(),created=[],calls=[],chatInputs=[],staged=[];
+ const domParent=el(),composerParent=el(),form=el(),chat=el();
+ form.parentElement=composerParent;chat.parentElement=domParent;
+ nodes.set("chatWorkspaceLayout",chat);nodes.set("chatForm",form);
+ globalThis.document={
+  getElementById(id){return nodes.get(id)??null},
+  createElement(){const e=el();created.push(e);return e},
+  querySelector(){return null}
+ };
+ const replies=[first,second,...following];
+ const invoke=async(name,params={})=>{
+  calls.push({name,params});
+  if(name==="runtime_status")return {shuvi_memory_mb:40,managed_children_count:0};
+  if(name==="save_native_recovery"){if(params.record?.phase===rustFailPhase)throw Error("Rust snapshot rejected");return;}
+  if(name==="load_native_recovery")return rustRecord;
+  if(name==="clear_native_recovery"){if(rustClearWait)await rustClearWait;if(rustClearFail)throw Error("simulated native recovery clear failure");return;}
+  if(name==="list_providers")return [{id:"xkiro",name:"xKiro"}];
+  if(name==="remote_agent_status")return {enabled:false};
+  if(name==="chat"){
+   chatInputs.push(params.input);
+   const response=replies.shift()??{content:"Done",tool_proposal:null};
+   if(continuationRenderError&&chatInputs.length===2){
+    let reads=0;
+    return {...response,get content(){reads++;if(reads>1)throw Error("UI lookup failed: synthetic continuation render failure");return "continue";}};
+   }
+   return response;
+  }
+  if(name==="prepare_tool"){
+   const id=reusePendingId?"action-1":"action-"+(staged.length+1);
+   staged.push({id,proposal:params.proposal});
+   return {id,kind:staged.length===wrongStageIndex?"wrong_tool":params.proposal.tool,
+    summary:"Run "+params.proposal.tool,detail:"Approval needed",risk:"medium"};
+  }
+  if(name==="execute_action"){
+   const action=staged.find(s=>s.id===params.actionId);
+   if(!action)throw Error("unexpected action ID");
+   if(failFind&&action.proposal.tool==="ui_find")
+    throw Error("UI lookup failed: Requested top-level window was not found.");
+   if(softFailedRead&&action.proposal.tool==="ui_find")
+    return {success:false,tool:"ui_find",stdout:"",stderr:"UI lookup failed: No matching UI element found",exit_code:1};
+   return {success:true,tool:action.proposal.tool,stdout:stdoutFor?.[action.proposal.tool]??(action.proposal.tool==="premiere_detect"?detectedPath:"Launch requested"),stderr:"",exit_code:0};
+  }
+  if(name==="action_audit_receipt"&&recoveryReceipt)return recoveryReceipt;
+  if(name==="action_audit_receipt")
+   return (failFind||softFailedRead)?{action_id:receiptMismatch?"mismatched-action":params.actionId,tool:"ui_find",event:"failed",success:false}:null;
+  if(name==="audit_log"&&recoveryTrail)return recoveryTrail;
+  if(name==="audit_log")return auditOk?staged.map(s=>{
+   const failed=(softFailedRead||failFind)&&s.proposal.tool==="ui_find"&&!conflictingSuccessAudit;
+   return {event:failed?"failed":"executed",action_id:s.id,tool:s.proposal.tool,success:!failed};
+  }):[];
+  if(name==="deny_action")return;
+  throw Error("unexpected native call: "+name);
+ };
+ const actualRecoveryStore=recoveryStore??(function(){
+  const data=new Map();
+  return {
+   getItem:key=>data.get(key)??null,
+   setItem:(key,value)=>data.set(key,String(value)),
+   removeItem:key=>data.delete(key)
+  };
+ })();
+ globalThis.window={__TAURI_INTERNALS__:{invoke},localStorage:actualRecoveryStore};
+ const transport=mountNativeAgent(()=>{});
+ const allow=created.find(x=>x.textContent==="Allow once");
+ const deny=created.find(x=>x.textContent==="Deny");
+ const approval=created.find(x=>x.attributes["aria-label"]==="Windows action needs your approval");
+ const recoveryCheck=created.find(x=>x.textContent==="Check interrupted action in Rust Audit");
+ const recoveryDismiss=created.find(x=>x.textContent==="Acknowledge old task and clear journal");
+ const recoveryNotice=created.find(x=>x.className==="shuvi-native-recovery");
+ return {transport,calls,chatInputs,staged,allow,deny,approval,recoveryCheck,recoveryDismiss,recoveryNotice};
+}
+async function until(predicate,label){
+ for(let i=0;i<80;i++){
+  if(predicate())return;
+  await new Promise(resolve=>setImmediate(resolve));
+ }
+ assert.fail("Timed out waiting for "+label);
+}
+test("A direct Premiere open request tells Master to launch, not only discover, with explicit approval",async()=>{
+ const s=setup({first:launch});
+ await until(()=>s.transport.connected(),"IPC");
+ const reply=await s.transport.send("Premiere Pro kholo","direct-premiere",0);
+ assert.equal(reply.ok,true);
+ assert.equal(s.chatInputs.length,1,"no additional paid call before first approval");
+ assert.equal(s.chatInputs[0].model,"model/master");
+ assert.match(s.chatInputs[0].orchestration_context,/premiere_launch with \{\} FIRST/);
+ assert.match(s.chatInputs[0].orchestration_context,/Do not stop at premiere_detect/);
+ assert.equal(s.staged.length,1);
+ assert.equal(s.staged[0].proposal.tool,"premiere_launch");
+ assert.deepEqual(s.staged[0].proposal.arguments,{});
+ assert.equal(s.approval.hidden,false);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,0);
+});
+test("short app-name clarification retains the previous open request as Master context",async()=>{
+ const clarification={content:"कौन-सा Adobe ऐप खोलूँ?",provider:"xkiro",model:"model/master",tool_proposal:null};
+ const s=setup({first:clarification,second:launch});
+ await until(()=>s.transport.connected(),"IPC");
+ await s.transport.send("adobe open karo","clarify",0);
+ await s.transport.send("Premiere Pro","clarify",1);
+ assert.equal(s.chatInputs[1].model,"model/master");
+ assert.match(s.chatInputs[1].orchestration_context,/previous opening request: adobe open karo/);
+ assert.equal(s.staged[0].proposal.tool,"premiere_launch");
+});
+
+test("Premiere: discovery audit triggers one Master continuation and a SECOND explicit launch approval",async()=>{
+ const s=setup();
+ await until(()=>s.transport.connected(),"native IPC");
+ const reply=await s.transport.send("Adobe open karo. Premiere Pro","chat-1",0);
+ assert.equal(reply.ok,true);
+ assert.equal(s.staged.length,1);
+ assert.equal(s.staged[0].proposal.tool,"premiere_detect");
+ assert.equal(s.approval.hidden,false);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"second prepared step");
+ assert.equal(s.staged[1].proposal.tool,"premiere_launch");
+ assert.deepEqual(s.staged[1].proposal.arguments,{});
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1,
+  "second app action must NOT run before another Allow once");
+ assert.equal(s.approval.hidden,false,"next approval survives previous-step finally");
+ assert.equal(s.chatInputs.length,2);
+ assert.equal(s.chatInputs[0].model,"model/master");
+ assert.equal(s.chatInputs[1].model,"model/master");
+ assert.match(s.chatInputs[1].messages.at(-1).content,/Previously approved Windows tool/);
+ assert.match(s.chatInputs[1].messages.at(-1).content,/Adobe Premiere Pro\.exe/);
+ assert.match(s.transport.getReplies("chat-1")[0],/Master next step/);
+});
+test("missing audit stops after first action and never calls model again",async()=>{
+ const s=setup({auditOk:false});
+ await until(()=>s.transport.connected(),"IPC");
+ await s.transport.send("Open Premiere Pro","c2",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.approval.hidden===true,"approval cleanup");
+ assert.equal(s.chatInputs.length,1);
+ assert.equal(s.staged.length,1);
+ assert.match(s.transport.getReplies("c2")[0],/not independently verified/);
+});
+test("user denial stops; no follow-up AI or Windows action",async()=>{
+ const s=setup();
+ await until(()=>s.transport.connected(),"IPC");
+ await s.transport.send("Open Premiere Pro","c3",0);
+ s.deny.listeners.get("click")();
+ await until(()=>s.approval.hidden===true,"denial cleanup");
+ assert.equal(s.chatInputs.length,1);
+ assert.equal(s.calls.some(x=>x.name==="execute_action"),false);
+});
+test("repeated identical proposal is blocked instead of staged or executed",async()=>{
+ const s=setup({second:detection});
+ await until(()=>s.transport.connected(),"IPC");
+ await s.transport.send("Open Premiere Pro","c4",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.transport.getReplies("c4")[0]?.includes("identical action"),"duplicate block");
+ assert.equal(s.staged.length,1);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+});
+
+test("short answer to Master clarification stays on Master, never drops into normal Chat",async()=>{
+ const prompt={content:"कौन-सा Adobe ऐप खोलूँ? Premiere Pro या Photoshop?",provider:"xkiro",model:"model/master",tool_proposal:null};
+ const s=setup({first:prompt,second:detection});
+ await until(()=>s.transport.connected(),"IPC");
+ const first=await s.transport.send("Adobe open karo","choice-thread",0);
+ assert.equal(first.ok,true);
+ assert.equal(s.staged.length,0);
+ const second=await s.transport.send("Premiere Pro","choice-thread",1);
+ assert.equal(second.ok,true);
+ assert.equal(s.chatInputs.length,2);
+ assert.equal(s.chatInputs[0].model,"model/master");
+ assert.equal(s.chatInputs[1].model,"model/master",
+  "single app name is the answer to prior Master clarification");
+ assert.equal(s.chatInputs[1].messages.at(-1).content,"Premiere Pro");
+ assert.equal(s.staged[0].proposal.tool,"premiere_detect");
+ assert.equal(s.approval.hidden,false);
+});
+
+test("eight distinct stages have no fixed six-action cutoff",async()=>{
+ const action=(i)=>({content:JSON.stringify({tool:"ui_find",arguments:{target:"window-"+i}}),
+  provider:"xkiro",model:"model/master",tool_proposal:{tool:"ui_find",arguments:{target:"window-"+i}}});
+ const s=setup({first:detection,second:action(2),
+  following:[action(3),action(4),action(5),action(6),action(7),action(8)]});
+ await until(()=>s.transport.connected(),"IPC");
+ await s.transport.send("Open Premiere and check the necessary windows","long-task",0);
+ for(let step=1;step<=7;step++){
+  await until(()=>s.staged.length===step,"stage "+step);
+  await until(()=>s.allow.disabled===false,"approval "+step);
+  assert.equal(s.approval.hidden,false);
+  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,step-1);
+  s.allow.listeners.get("click")();
+  await until(()=>s.staged.length===step+1,"next stage "+(step+1));
+ }
+ assert.equal(s.staged.length,8);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,7);
+ assert.equal(s.chatInputs.length,8);
+ assert.equal(s.approval.hidden,false);
+ assert.doesNotMatch(s.transport.getReplies("long-task")[0],/step safety limit/);
+});
+
+test("Premiere opening has separate detect, launch and window-inspection approvals",async()=>{
+ const inspect={content:JSON.stringify({tool:"ui_find",arguments:{name:"Adobe Premiere Pro"}}),
+  provider:"xkiro",model:"model/master",tool_proposal:{tool:"ui_find",arguments:{name:"Adobe Premiere Pro"}}};
+ const s=setup({following:[inspect]});
+ await until(()=>s.transport.connected(),"IPC");
+ await s.transport.send("Premiere Pro kholo","premiere-inspect",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"Premiere launch approval");
+ assert.equal(s.staged[1].proposal.tool,"premiere_launch");
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+ await until(()=>s.allow.disabled===false,"second action approval ready");
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===3,"Premiere window inspection approval");
+ assert.equal(s.staged[2].proposal.tool,"ui_find");
+ assert.deepEqual(s.staged[2].proposal.arguments,{name:"Adobe Premiere Pro"});
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,2,
+  "window inspection must NOT happen before a third approval");
+ assert.equal(s.approval.hidden,false);
+ assert.match(s.chatInputs[2].messages.at(-1).content,/Launching a process is not evidence/);
+});
+
+test("audited failed read-only UI lookup stages window recovery without paying AI again",async()=>{
+ const finding={content:JSON.stringify({tool:"ui_find",arguments:{name:"New Project",window:"Adobe Premiere Pro"}}),
+  provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_find",arguments:{name:"New Project",window:"Adobe Premiere Pro"}}};
+ const s=setup({first:finding,failFind:true});
+ await until(()=>s.transport.connected(),"native IPC");
+ await s.transport.send("Create Premiere project","repair-ui",0);
+ assert.equal(s.staged.length,1);
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"read-only recovery");
+ assert.equal(s.staged[1].proposal.tool,"ui_windows");
+ assert.equal(s.chatInputs.length,1,"no second paid model request before recovery approval");
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1,"no unapproved recovery execution");
+ assert.equal(s.approval.hidden,false);
+ assert.match(s.transport.getReplies("repair-ui")[0],/No automatic paid AI retry/);
+});
+
+test("Master receives actionable controls from deep inside a long UI discovery list",async()=>{
+ const entries=Array.from({length:110},(_,i)=>({
+  Name:i===90?"New Project":"Feature "+i,
+  AutomationId:i===90?"createProject":"feature-"+i,
+  ControlType:"ControlType.Button",IsEnabled:true,Bounds:"0,0,60,20",ClassName:"Button"
+ }));
+ const discovering={content:JSON.stringify({tool:"ui_discover",arguments:{window:"Adobe Premiere"}}),
+  provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_discover",arguments:{window:"Adobe Premiere"}}};
+ const s=setup({first:discovering,stdoutFor:{ui_discover:JSON.stringify(entries)}});
+ await until(()=>s.transport.connected(),"native IPC");
+ await s.transport.send("Create a Premiere Project","observed-ui",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.chatInputs.length===2,"Master continuation with discovery inventory");
+ const next=s.chatInputs[1].messages.at(-1).content;
+ assert.match(next,/New Project/);
+ assert.match(next,/createProject/);
+ assert.match(next,/"role":"Button"/);
+ assert.match(next,/untrusted observed data/);
+ assert.ok(next.length<=10800,"prevent unbounded provider input");
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
+});
+
+
+test("Premiere creation objective survives audited launch and is not mistaken for a finished task",async()=>{
+ const inspect={content:JSON.stringify({tool:"ui_windows",arguments:{}}),
+  provider:"xkiro",model:"model/master",tool_proposal:{tool:"ui_windows",arguments:{}}};
+ const s=setup({first:launch,second:inspect});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Premire kholo aur Shuvi AI Test 01 naam ka project banao","project-create",0);
+ assert.equal(s.staged.length,1);
+ assert.equal(s.staged[0].proposal.tool,"premiere_launch");
+ assert.match(s.chatInputs[0].orchestration_context,/Premiere project creation is an END GOAL/);
+ assert.match(s.chatInputs[0].orchestration_context,/exact user-requested name/);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"verified next step");
+ assert.match(s.chatInputs[1].orchestration_context,/Premiere project creation is an END GOAL/);
+ assert.match(s.chatInputs[1].orchestration_context,/Current approved step: 1/);
+ assert.equal(s.staged[1].proposal.tool,"ui_windows");
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1,
+  "the next readback action still requires separate approval");
+ assert.equal(s.approval.hidden,false);
+});
+
+test("app choice preserves original named project through native approval and follow-up",async()=>{
+ const clarification={content:"कौन-सा Adobe ऐप खोलूँ?",provider:"xkiro",
+  model:"model/master",tool_proposal:null};
+ const inspection={content:JSON.stringify({tool:"ui_windows",arguments:{}}),provider:"xkiro",
+  model:"model/master",tool_proposal:{tool:"ui_windows",arguments:{}}};
+ const s=setup({first:clarification,second:launch,following:[inspection]});
+ await until(()=>s.transport.connected(),"native app ready");
+ await s.transport.send("Adobe खोलकर Shuvi AI Test 01 नाम का नया प्रोजेक्ट बनाओ","choice-project",0);
+ assert.equal(s.staged.length,0);
+ await s.transport.send("Premiere Pro","choice-project",1);
+ assert.equal(s.staged.length,1);
+ assert.equal(s.staged[0].proposal.tool,"premiere_launch");
+ assert.match(s.chatInputs[1].orchestration_context,/Premiere project creation is an END GOAL/);
+ assert.match(s.chatInputs[1].orchestration_context,/Shuvi AI Test 01/);
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"audited window verification");
+ assert.match(s.chatInputs[2].orchestration_context,/Shuvi AI Test 01/);
+ assert.match(s.chatInputs[2].orchestration_context,/Premiere Pro/);
+ assert.match(s.chatInputs[2].messages.at(-1).content,/^Original user request:/);
+ assert.equal(s.staged[1].proposal.tool,"ui_windows");
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+ assert.equal(s.approval.hidden,false);
+});
+test("Master's prose-only completion claim remains visibly unverified",async()=>{
+ const claimed={content:"The project was created successfully",provider:"xkiro",
+  model:"model/master",tool_proposal:null};
+ const s=setup({first:launch,second:claimed});
+ await until(()=>s.transport.connected(),"native app ready");
+ await s.transport.send("Premiere kholo aur new project banao","unverified-finish",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.transport.getReplies("unverified-finish")[0]?.includes("NOT independently verified complete"),
+  "honest pause");
+ assert.equal(s.staged.length,1);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+});
+
+test("next Master proposal sees one audited step but still needs a new Allow once",async()=>{
+ const inspect={content:JSON.stringify({tool:"ui_windows",arguments:{}}),
+  provider:"xkiro",model:"model/master",tool_proposal:{tool:"ui_windows",arguments:{}}};
+ const s=setup({first:launch,second:inspect});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Premiere kholo aur project banao","progress-task",0);
+ assert.equal(s.staged.length,1);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"next permission");
+ assert.match(s.chatInputs[1].orchestration_context,/1 audited native step\(s\)/);
+ assert.match(s.chatInputs[1].orchestration_context,/Verified tools: premiere_launch/);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+ assert.equal(s.approval.hidden,false);
+});
+
+test("typed unsuccessful read-only ui_find result stages audited ui_windows without paid retry",async()=>{
+ const finding={content:JSON.stringify({tool:"ui_find",arguments:{name:"New Project",window:"Premiere"}}),
+  provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_find",arguments:{name:"New Project",window:"Premiere"}}};
+ const s=setup({first:finding,softFailedRead:true});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Find new project in Premiere","typed-ui-failure",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"typed failure recovery proposal");
+ assert.equal(s.staged[1].proposal.tool,"ui_windows");
+ assert.equal(s.chatInputs.length,1,"no additional paid Master request");
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1,
+  "read-only recovery still needs separate explicit approval");
+ assert.equal(s.approval.hidden,false);
+ assert.match(s.transport.getReplies("typed-ui-failure")[0],/verified native failure receipt/);
+});
+test("typed failure with mismatched native receipt never stages recovery or paid retry",async()=>{
+ const finding={content:JSON.stringify({tool:"ui_find",arguments:{name:"New Project",window:"Premiere"}}),
+  provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_find",arguments:{name:"New Project",window:"Premiere"}}};
+ const s=setup({first:finding,softFailedRead:true,receiptMismatch:true});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Find new project in Premiere","bad-receipt",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.approval.hidden===true,"recovery rejected");
+ assert.equal(s.staged.length,1);
+ assert.equal(s.chatInputs.length,1);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+ assert.match(s.transport.getReplies("bad-receipt")[0],/No automatic retry/);
+});
+
+test("conflicting successful audit on typed failure blocks read-only recovery",async()=>{
+ const finding={content:JSON.stringify({tool:"ui_find",arguments:{name:"New Project",window:"Premiere"}}),
+  provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_find",arguments:{name:"New Project",window:"Premiere"}}};
+ const s=setup({first:finding,softFailedRead:true,conflictingSuccessAudit:true});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Find new project in Premiere","contradictory-audit",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.approval.hidden===true,"contradictory audit blocked");
+ assert.equal(s.staged.length,1);
+ assert.equal(s.chatInputs.length,1);
+ assert.equal(s.calls.filter(x=>x.name==="action_audit_receipt").length,0);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+ assert.match(s.transport.getReplies("contradictory-audit")[0],/No automatic retry/);
+});
+
+test("verified UI recovery observation causes grounded replan advice, not a blind click",async()=>{
+ const finding={content:JSON.stringify({tool:"ui_find",arguments:{name:"New Project",window:"Adobe Premiere Pro"}}),
+  provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_find",arguments:{name:"New Project",window:"Adobe Premiere Pro"}}};
+ const discovery={content:JSON.stringify({tool:"ui_discover",arguments:{window:"Adobe Premiere Pro 2026"}}),
+  provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_discover",arguments:{window:"Adobe Premiere Pro 2026"}}};
+ const s=setup({first:finding,second:discovery,failFind:true,
+  stdoutFor:{ui_windows:JSON.stringify([{Name:"Adobe Premiere Pro 2026",ProcessId:3500,ProcessName:"Adobe Premiere Pro",NativeWindowHandle:909}])}});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Premiere me New Project banao","safe-replan",0);
+ assert.equal(s.staged.length,1);
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"recovery windows stage");
+ assert.equal(s.staged[1].proposal.tool,"ui_windows");
+ assert.equal(s.chatInputs.length,1,"confirmed failed ui_find does not trigger paid call");
+ await until(()=>s.allow.disabled===false,"recovery permission");
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===3,"new grounded inspection stage");
+ assert.equal(s.chatInputs.length,2,"only after separately approved and audited ui_windows");
+ assert.match(s.chatInputs[1].orchestration_context,/Recovery planning: an earlier ui_find/);
+ assert.match(s.chatInputs[1].orchestration_context,/Do not repeat the unsuccessful selector/);
+ assert.match(s.chatInputs[1].messages.at(-1).content,/Adobe Premiere Pro 2026/);
+ assert.equal(s.staged[2].proposal.tool,"ui_discover");
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,2);
+ assert.equal(s.approval.hidden,false);
+});
+
+test("same Master action with reordered argument keys is blocked before staging",async()=>{
+ const first={content:"find",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_find",arguments:{window:"Premiere",name:"New Project"}}};
+ const second={content:"find again",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_find",arguments:{name:"New Project",window:"Premiere"}}};
+ const s=setup({first,second});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Look for New Project in Premiere","canonical-duplicate",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.transport.getReplies("canonical-duplicate")[0]?.includes("identical action"),
+  "duplicate proposal rejected");
+ assert.equal(s.staged.length,1);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+ assert.equal(s.chatInputs.length,2,"no paid retry after repeated proposal");
+});
+test("a fresh read-only UI inspection after audited mutation is allowed once",async()=>{
+ const windows={content:"windows",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_windows",arguments:{}}};
+ const click={content:"click",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_click",arguments:{window:"Premiere",name:"New Project"}}};
+ const windowsAgain={content:"inspect changed UI",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_windows",arguments:{}}};
+ const repeatedWindows={content:"inspect same unchanged UI",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_windows",arguments:{}}};
+ const s=setup({first:windows,second:click,following:[windowsAgain,repeatedWindows],
+  stdoutFor:{ui_windows:JSON.stringify([{Name:"Premiere",ProcessId:100,NativeWindowHandle:101,ProcessName:"Adobe Premiere Pro"}])}});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Inspect Premiere, click New Project, and verify window","reobserve-after-change",0);
+ assert.equal(s.staged[0].proposal.tool,"ui_windows");
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"mutation proposed");
+ assert.equal(s.staged[1].proposal.tool,"ui_click");
+ await until(()=>!s.allow.disabled,"mutation approval");
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===3,"read-after-mutation proposed");
+ assert.equal(s.staged[2].proposal.tool,"ui_windows");
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,2,
+  "reobservation requires a fresh approval");
+ await until(()=>!s.allow.disabled,"reobservation approval");
+ s.allow.listeners.get("click")();
+ await until(()=>s.transport.getReplies("reobserve-after-change")[0]?.includes("identical action"),
+  "second unchanged read stopped");
+ assert.equal(s.staged.length,3);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,3);
+ assert.equal(s.chatInputs.length,4);
+});
+
+test("Batch 07 invalid provider tool is blocked BEFORE native preparation",async()=>{
+ const invalid={content:"not a valid tool",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_click",arguments:{payload:"x".repeat(20000)}}};
+ const s=setup({first:invalid});
+ await until(()=>s.transport.connected(),"ready");
+ const outcome=await s.transport.send("Click the observed button","bad-proposal",0);
+ assert.equal(outcome.ok,true,"paid reply already received, no automatic paid retry");
+ assert.equal(s.calls.filter(c=>c.name==="prepare_tool").length,0);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
+ assert.equal(s.approval.hidden,true);
+ assert.match(s.transport.getReplies("bad-proposal")[0],/preparation failed/);
+});
+test("Batch 07 first mismatched Rust prepared tool cannot create approval",async()=>{
+ const s=setup({first:launch,wrongStageIndex:1});
+ await until(()=>s.transport.connected(),"ready");
+ await s.transport.send("Open Premiere","wrong-initial-kind",0);
+ assert.equal(s.calls.filter(c=>c.name==="prepare_tool").length,1);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
+ assert.equal(s.approval.hidden,true);
+ assert.match(s.transport.getReplies("wrong-initial-kind")[0],/tool preparation failed or its outcome is unknown/);
+});
+test("Batch 07 continuation rejects mismatched prepared kind after audited first step",async()=>{
+ const read={content:'{"tool":"ui_windows","arguments":{}}',provider:"xkiro",
+  model:"model/master",tool_proposal:{tool:"ui_windows",arguments:{}}};
+ const s=setup({first:launch,second:read,wrongStageIndex:2});
+ await until(()=>s.transport.connected(),"ready");
+ await s.transport.send("Open Premiere and inspect window","wrong-followup-kind",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.transport.getReplies("wrong-followup-kind")[0]?.includes("Next Windows tool preparation failed"),
+  "mismatch fail closed");
+ assert.equal(s.staged.length,2,"Rust mocked staging was reached but mismatched tool was never approved");
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
+ assert.equal(s.approval.hidden,true);
+ assert.equal(s.chatInputs.length,2);
+});
+
+test("Batch 08 multi-turn app and folder clarification retains original goal",async()=>{
+ const app={content:"कौन-सा Adobe ऐप खोलूँ?",provider:"xkiro",model:"model/master",tool_proposal:null};
+ const destination={content:"Where should I save the new project?",provider:"xkiro",model:"model/master",tool_proposal:null};
+ const s=setup({first:app,second:destination,following:[launch]});
+ await until(()=>s.transport.connected(),"native IPC");
+ await s.transport.send("Adobe खोलकर Shuvi AI Test 01 नाम का नया प्रोजेक्ट बनाओ","multi-clarification",0);
+ await s.transport.send("Premiere Pro","multi-clarification",1);
+ await s.transport.send("D:\\Projects\\Test","multi-clarification",2);
+ assert.equal(s.chatInputs.length,3);
+ assert.equal(s.chatInputs[2].model,"model/master");
+ assert.match(s.chatInputs[2].orchestration_context,/Adobe खोलकर Shuvi AI Test 01/);
+ assert.match(s.chatInputs[2].orchestration_context,/Premiere Pro/);
+ assert.match(s.chatInputs[2].orchestration_context,/Projects/);
+ assert.equal(s.staged.length,1);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,0);
+ assert.equal(s.approval.hidden,false);
+});
+test("Batch 08 fresh command does not inherit older clarification goal",async()=>{
+ const app={content:"कौन-सा Adobe ऐप खोलूँ?",provider:"xkiro",model:"model/master",tool_proposal:null};
+ const s=setup({first:app,second:launch});
+ await until(()=>s.transport.connected(),"native IPC");
+ await s.transport.send("Adobe खोलकर Shuvi Test नाम का प्रोजेक्ट बनाओ","fresh-after-choice",0);
+ await s.transport.send("Photoshop खोलो","fresh-after-choice",1);
+ assert.equal(s.chatInputs.length,2);
+ assert.doesNotMatch(s.chatInputs[1].orchestration_context,/Shuvi Test/);
+ assert.equal(s.staged.length,1);
+});
+
+test("Batch 09 model continuation sees audit-only evidence and still requires next approval",async()=>{
+ const s=setup({first:launch,second:{content:"inspect",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_windows",arguments:{}}}});
+ await until(()=>s.transport.connected(),"native");
+ await s.transport.send("Premiere open aur new project banao","evidence-b9",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"next step");
+ assert.match(s.chatInputs[1].orchestration_context,/1 audited native action/);
+ assert.match(s.chatInputs[1].orchestration_context,/Overall application\/task goals NOT independently verified/);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
+ assert.equal(s.approval.hidden,false);
+});
+
+test("Batch 10 and 96 reject ambiguous UI lookup after a verified multi-window inventory",async()=>{
+ const inspect={content:"inspect",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_discover",arguments:{window:"Adobe Premiere Pro 2026"}}};
+ const windows={content:"windows",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_windows",arguments:{}}};
+ const stdout=JSON.stringify([
+  {Name:"Adobe Premiere Pro 2026",ProcessId:111,ProcessName:"Premiere",NativeWindowHandle:501},
+  {Name:"Adobe Premiere Pro 2026",ProcessId:222,ProcessName:"Premiere",NativeWindowHandle:502}
+ ]);
+ const s=setup({first:windows,second:inspect,stdoutFor:{ui_windows:stdout}});
+ await until(()=>s.transport.connected(),"native");
+ await s.transport.send("Premiere ko dekho","multi-window-evidence",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.transport.getReplies("multi-window-evidence")[0]?.includes("Ambiguous window lookup"),"ambiguous lookup blocked");
+ assert.equal(s.staged.length,1,"no ambiguous second approval staged");
+ assert.match(s.chatInputs[1].orchestration_context,/2 usable window identity/);
+ assert.match(s.chatInputs[1].orchestration_context,/NOT a selected target/);
+ assert.match(s.chatInputs[1].orchestration_context,/never pick the first matching window/);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+ assert.equal(s.approval.hidden,true);
+});
+
+test("Batch 11 post-action save-folder clarification retains the ORIGINAL goal",async()=>{
+ const question={content:"Where should I save the project?",provider:"xkiro",model:"model/master",tool_proposal:null};
+ const next={content:"windows",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_windows",arguments:{}}};
+ const s=setup({first:launch,second:question,following:[next]});
+ await until(()=>s.transport.connected(),"native IPC");
+ await s.transport.send("Premiere kholo aur Shuvi AI Test project banao","clarification-after-tool",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.chatInputs.length===2,"Master destination question");
+ await until(()=>s.transport.getReplies("clarification-after-tool")[0]?.includes("Task paused"),
+  "paused for owner choice");
+ await s.transport.send("D:\\Temporary Projects","clarification-after-tool",1);
+ assert.equal(s.chatInputs[2].model,"model/master");
+ assert.match(s.chatInputs[2].orchestration_context,/Premiere kholo aur Shuvi AI Test/);
+ assert.match(s.chatInputs[2].orchestration_context,/Temporary Projects/);
+ assert.equal(s.staged.length,2);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
+});
+test("Batch 11 no-tool final answer clears old clarification identity",async()=>{
+ const question={content:"Which Adobe app should I open?",provider:"xkiro",model:"model/master",tool_proposal:null};
+ const done={content:"All set!",provider:"xkiro",model:"model/master",tool_proposal:null};
+ const s=setup({first:question,second:done,following:[launch]});
+ await until(()=>s.transport.connected(),"native IPC");
+ await s.transport.send("Adobe kholo aur Shuvi Test project banao","scope-expiration",0);
+ await s.transport.send("Premiere Pro","scope-expiration",1);
+ await s.transport.send("Something else","scope-expiration",2);
+ assert.doesNotMatch(s.chatInputs[2].orchestration_context??"",/Shuvi Test/);
+});
+
+test("Batch 13 blocks cross-app model click after audited Premiere window read",async()=>{
+ const first={content:"windows",provider:"xkiro",model:"model/master",tool_proposal:{tool:"ui_windows",arguments:{}}};
+ const second={content:"click",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_click",arguments:{window:"Adobe Photoshop 2026",name:"New"}}};
+ const s=setup({first,second,stdoutFor:{ui_windows:JSON.stringify([
+  {Name:"Adobe Premiere Pro 2026",ProcessId:200,NativeWindowHandle:44,ProcessName:"Adobe Premiere Pro"}])}});
+ await until(()=>s.transport.connected(),"native");
+ await s.transport.send("Premiere kholo","guard-cross-app",0);
+ s.allow.listeners.get("click")();
+ await until(()=>/Unsafe app selection|Unsafe or ambiguous UI target/.test(s.transport.getReplies("guard-cross-app")[0]??""),"unsafe blocked");
+ assert.equal(s.staged.length,1);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+});
+test("Batch 13 allows uniquely observed exact window but still requires owner Allow once",async()=>{
+ const first={content:"windows",provider:"xkiro",model:"model/master",tool_proposal:{tool:"ui_windows",arguments:{}}};
+ const second={content:"click",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_click",arguments:{window:"Adobe Premiere Pro 2026",name:"New"}}};
+ const s=setup({first,second,stdoutFor:{ui_windows:JSON.stringify([
+  {Name:"Adobe Premiere Pro 2026",ProcessId:200,NativeWindowHandle:44,ProcessName:"Adobe Premiere Pro"}])}});
+ await until(()=>s.transport.connected(),"native");
+ await s.transport.send("Premiere kholo","guard-right-app",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"approval staged");
+ assert.equal(s.staged[1].proposal.tool,"ui_click");
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+ assert.equal(s.approval.hidden,false);
+});
+
+test("Batch 14 post-audit continuation exception does not start UI read recovery",async()=>{
+ const s=setup({first:launch,second:{content:"continue",provider:"xkiro",model:"model/master",tool_proposal:null},
+  continuationRenderError:true});
+ await until(()=>s.transport.connected(),"native");
+ await s.transport.send("Premiere kholo","audited-then-continuation-error",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.transport.getReplies("audited-then-continuation-error")[0]?.includes("Native action remained audit-verified"),"post-audit exception");
+ const reply=s.transport.getReplies("audited-then-continuation-error")[0];
+ assert.match(reply,/Master continuation errored/);
+ assert.doesNotMatch(reply,/Native action outcome unknown/);
+ assert.equal(s.calls.filter(c=>c.name==="action_audit_receipt").length,0);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
+ assert.equal(s.chatInputs.length,2);
+ assert.equal(s.staged.length,1);
+});
+
+test("Batch 16 blocks a second UI mutation after first click until new audited window read",async()=>{
+ const windows={content:"windows",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_windows",arguments:{}}};
+ const click={content:"click",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_click",arguments:{window:"Adobe Premiere Pro 2026",name:"New Project"}}};
+ const secondClick={content:"click again",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_click",arguments:{window:"Adobe Premiere Pro 2026",name:"Save"}}};
+ const s=setup({first:windows,second:click,following:[secondClick],
+  stdoutFor:{ui_windows:JSON.stringify([{Name:"Adobe Premiere Pro 2026",ProcessId:111,NativeWindowHandle:222}])}});
+ await until(()=>s.transport.connected(),"native");
+ await s.transport.send("Premiere me project bana ke save karo","stale-snapshot",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"first click approval");
+ await until(()=>!s.allow.disabled,"first click clickable");
+ s.allow.listeners.get("click")();
+ await until(()=>s.transport.getReplies("stale-snapshot")[0]?.includes("Unsafe or ambiguous UI target"),"stale target blocked");
+ assert.equal(s.staged.length,2,"second click never prepared from stale snapshot");
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,2);
+ assert.equal(s.chatInputs.length,3,"no automatic paid retry");
+});
+
+test("Batch 17 clearing chats cannot erase a pending native approval or its thread evidence",async()=>{
+ const s=setup({first:launch});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Premiere kholo","protected-clear",0);
+ assert.equal(s.staged.length,1);
+ assert.equal(s.approval.hidden,false);
+ assert.equal(s.transport.canClearChats(),false);
+ const before=s.transport.getReplies("protected-clear")[0];
+ s.transport.clearAllChats();
+ s.transport.clearChat("protected-clear");
+ assert.equal(s.transport.getReplies("protected-clear")[0],before);
+ assert.equal(s.approval.hidden,false);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
+ s.deny.listeners.get("click")();
+ await until(()=>s.transport.canClearChats(),"native deny complete");
+ s.transport.clearAllChats();
+ assert.deepEqual(s.transport.getReplies("protected-clear"),[]);
+});
+
+test("Batch 18 Master prose without next tool reports unverified outcome even if it says done",async()=>{
+ const first=launch;
+ const second={content:"The project is fully saved!",provider:"xkiro",model:"model/master",tool_proposal:null};
+ const s=setup({first,second});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Premiere kholo aur new project banao","model-completion-only",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.transport.getReplies("model-completion-only")[0]?.includes("Outcome: UNVERIFIED"),
+  "outcome evidence summary");
+ assert.equal(s.staged.length,1);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
+ assert.equal(s.chatInputs.length,2);
+});
+
+test("Batch 19 thrown read error with conflicting successful native audit cannot stage recovery",async()=>{
+ const finder={content:"find",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_find",arguments:{window:"Premiere",name:"New Project"}}};
+ const s=setup({first:finder,failFind:true,conflictingSuccessAudit:true});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Premiere me New Project khojo","thrown-contradiction",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.transport.getReplies("thrown-contradiction")[0]?.includes("Native action outcome unknown"),
+  "conflicting audit must fail closed");
+ assert.equal(s.staged.length,1,"no read-only recovery approval after contradiction");
+ assert.equal(s.chatInputs.length,1,"no further paid request");
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
+});
+
+test("Batch 51 ordinary chat ignores model-produced native tool proposals",async()=>{
+ const s=setup({first:{content:"I can help",provider:"xkiro",model:"model/chat",
+  tool_proposal:{tool:"premiere_launch",arguments:{}}}});
+ await until(()=>s.transport.connected(),"native ready");
+ const response=await s.transport.send("hello Shuvi","chat-only-proposal",0);
+ assert.equal(response.ok,true);
+ assert.match(response.reply,/Ordinary Chat cannot prepare Windows tools/);
+ assert.equal(s.staged.length,0);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,0);
+});
+
+test("Batch 52 Rust returning same prepared action ID cannot stage next approval",async()=>{
+ const s=setup({first:detection,second:launch,reusePendingId:true});
+ await until(()=>s.transport.connected(),"native");
+ await s.transport.send("Premiere kholo","id-reuse",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.transport.getReplies("id-reuse")[0]?.includes("Native action ID reused"),
+  "reused action ID blocked");
+ assert.equal(s.staged.length,2,"staging was attempted but second approval denied");
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+ assert.equal(s.approval.hidden,true);
+});
+
+test("Batch 53 a fresh Windows command excludes unrelated previous task messages",async()=>{
+ const noTool={content:"Ready",provider:"xkiro",model:"model/master",tool_proposal:null};
+ const s=setup({first:noTool,second:launch});
+ await until(()=>s.transport.connected(),"native");
+ await s.transport.send("Premiere kholo aur project banao","fresh-context",0);
+ await s.transport.send("Premiere kholo","fresh-context",1);
+ assert.equal(s.chatInputs.length,2);
+ assert.equal(s.chatInputs[1].messages.length,1);
+ assert.equal(s.chatInputs[1].messages[0].content,"Premiere kholo");
+ assert.equal(s.staged.length,1);
+});
+
+test("Batch 64 a Master question yields waiting-for-clarification rather than completed status",async()=>{
+ const q={content:"Which Adobe app should I open?",provider:"xkiro",model:"model/master",tool_proposal:null};
+ const s=setup({first:q,second:launch});
+ await until(()=>s.transport.connected(),"native");
+ const first=await s.transport.send("Open an Adobe app","app-clarification-status",0);
+ assert.equal(first.ok,true);
+ assert.equal(s.staged.length,0);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
+ const next=await s.transport.send("Premiere Pro","app-clarification-status",1);
+ assert.equal(next.ok,true);
+ assert.equal(s.staged.length,1);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
+});
+
+test("Batch 74 provider chat reply cannot echo API key to user-visible native chat",async()=>{
+ const key=["s","k","-",...["abcdefgh","ijklmnop"]].join("");
+ const s=setup({first:{content:"Response contained "+key,provider:"xkiro",model:"model/chat",tool_proposal:null}});
+ await until(()=>s.transport.connected(),"native ready");
+ const reply=await s.transport.send("Hello Shuvi","redacted-model-answer",0);
+ assert.equal(reply.ok,true);
+ assert.doesNotMatch(reply.reply,new RegExp(key));
+ assert.match(reply.reply,/\[REDACTED_API_KEY\]/);
+ assert.equal(s.staged.length,0);
+});
+
+test("Owner limit permits eight approvals but never stages a ninth action",async()=>{
+ const action=i=>({content:JSON.stringify({tool:"ui_find",arguments:{target:"window-"+i}}),
+  provider:"xkiro",model:"model/master",tool_proposal:{tool:"ui_find",arguments:{target:"window-"+i}}});
+ const s=setup({first:detection,second:action(2),
+  following:[action(3),action(4),action(5),action(6),action(7),action(8),action(9)]});
+ await until(()=>s.transport.connected(),"native budget setup");
+ await s.transport.send("Open Premiere and inspect available windows","budget-cap",0);
+ for(let step=1;step<=8;step++){
+  await until(()=>s.staged.length===step,"staged native action "+step);
+  await until(()=>s.allow.disabled===false,"owner approval "+step);
+  s.allow.listeners.get("click")();
+ }
+ await until(()=>s.transport.getReplies("budget-cap")[0]?.includes("owner-selected native action budget is exhausted"),"budget refusal");
+ assert.equal(s.chatInputs.length,9,"bounded final model observation is permitted");
+ assert.equal(s.staged.length,8,"no ninth native action prepared");
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,8);
+ assert.equal(s.approval.hidden,true);
+});
+
+function recoveryStore({unwritablePhase=null}={}){
+ const data=new Map(),writes=[];
+ return {
+  writes,
+  getItem:k=>data.get(k)??null,
+  setItem(k,value){
+   const record=JSON.parse(value);
+   if(record.phase===unwritablePhase)throw Error("Native storage denied");
+   writes.push(record);
+   data.set(k,value);
+  },
+  removeItem:k=>data.delete(k),
+  last(){const items=writes;return items.at(-1);}
+ };
+}
+test("real native approval journals executing BEFORE the actual IPC, then audit-verified before Master continuation",async()=>{
+ const store=recoveryStore();
+ const s=setup({recoveryStore:store,first:detection,second:launch});
+ await until(()=>s.transport.connected(),"native IPC");
+ await s.transport.send("Open Premiere Pro","execution-journal",0);
+ assert.equal(store.last().phase,"awaiting_approval");
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"next approved tool");
+ const sent=s.calls.findIndex(c=>c.name==="execute_action");
+ assert.ok(sent>=0);
+ const phases=store.writes.map(x=>x.phase);
+ assert.ok(phases.indexOf("executing")>phases.indexOf("awaiting_approval"));
+ assert.ok(phases.indexOf("audit_verified")>phases.indexOf("executing"));
+ assert.equal(store.last().phase,"awaiting_approval");
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
+});
+test("unwritable executing journal rejects the native action and makes ZERO execute calls",async()=>{
+ const store=recoveryStore({unwritablePhase:"executing"});
+ const s=setup({recoveryStore:store,first:detection});
+ await until(()=>s.transport.connected(),"native IPC");
+ await s.transport.send("Open Premiere Pro","execution-blocked",0);
+ assert.equal(s.staged.length,1);
+ s.allow.listeners.get("click")();
+ await until(()=>s.approval.hidden===true,"blocked pending approval cleared");
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
+ assert.equal(s.calls.filter(c=>c.name==="deny_action").length,1);
+ assert.match(s.transport.getReplies("execution-blocked")[0],/Could not durably mark native execution/);
+});
+test("missing Rust audit does not turn an attempted Windows action into a safe retry",async()=>{
+ const store=recoveryStore();
+ const s=setup({recoveryStore:store,first:detection,auditOk:false});
+ await until(()=>s.transport.connected(),"native IPC");
+ await s.transport.send("Open Premiere Pro","unknown-journal",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.approval.hidden===true,"unverified action paused");
+ assert.equal(store.last().phase,"outcome_unknown");
+ assert.equal(store.last().actionId,"action-1");
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
+ assert.equal(s.calls.filter(c=>c.name==="chat").length,1);
+});
+
+test("restart with an uncertain action blocks new desktop work until explicit owner acknowledgement",async()=>{
+ const store=recoveryStore();
+ const now=Date.now(),id="prior-action-456";
+ store.setItem("shuvi.native.task.recovery.v1",JSON.stringify({
+  version:1,maxActions:8,stagedActions:1,modelRequests:1,
+  expiresAt:now+600000,updatedAt:now,phase:"executing",actionId:id
+ }));
+ const receipt={action_id:id,event:"executed",tool:"premiere_launch",success:true};
+ const s=setup({recoveryStore:store,first:detection,recoveryReceipt:receipt,
+  recoveryTrail:[{...receipt,event:"prepared",success:false},receipt]});
+ await until(()=>s.transport.connected(),"native IPC recovery");
+ assert.equal(s.recoveryCheck.hidden,false);
+ assert.equal(s.recoveryDismiss.hidden,false);
+ const blocked=await s.transport.send("Open Premiere Pro","new-unsafe-task",0);
+ assert.equal(blocked.ok,false);
+ assert.match(blocked.error,/previous Windows task/);
+ assert.equal(s.calls.some(c=>c.name==="chat"||c.name==="prepare_tool"),false);
+ await s.recoveryCheck.listeners.get("click")();
+ assert.match(s.recoveryNotice.textContent,/Rust Audit confirms a successful action/);
+ assert.equal(s.calls.some(c=>c.name==="execute_action"),false);
+ assert.equal(s.calls.some(c=>c.name==="chat"),false);
+ await s.recoveryDismiss.listeners.get("click")();
+ const accepted=await s.transport.send("Open Premiere Pro","new-safe-task",0);
+ assert.equal(accepted.ok,true);
+ assert.equal(s.staged.length,1);
+ assert.equal(s.calls.some(c=>c.name==="execute_action"),false);
+});
+test("contradictory recovery audit stays unknown and cannot itself start a Windows action",async()=>{
+ const store=recoveryStore(),now=Date.now(),id="prior-action-789";
+ store.setItem("shuvi.native.task.recovery.v1",JSON.stringify({
+  version:1,maxActions:8,stagedActions:1,modelRequests:1,
+  expiresAt:now+600000,updatedAt:now,phase:"outcome_unknown",actionId:id
+ }));
+ const receipt={action_id:id,event:"executed",tool:"premiere_launch",success:true};
+ const s=setup({recoveryStore:store,recoveryReceipt:receipt,
+  recoveryTrail:[{...receipt,tool:"ui_windows"}]});
+ await until(()=>s.transport.connected(),"native IPC recovery");
+ await s.recoveryCheck.listeners.get("click")();
+ assert.match(s.recoveryNotice.textContent,/UNKNOWN/);
+ assert.equal(s.recoveryCheck.hidden,false);
+ assert.equal(s.calls.some(c=>c.name==="execute_action"||c.name==="prepare_tool"||c.name==="chat"),false);
+});
+
+test("unknown outcome in the same session blocks a second paid task until owner acknowledgement",async()=>{
+ const store=recoveryStore();
+ const s=setup({recoveryStore:store,auditOk:false,first:detection});
+ await until(()=>s.transport.connected(),"native IPC");
+ await s.transport.send("Open Premiere Pro","uncertain-original",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.approval.hidden===true&&s.allow.disabled===false,"native unknown settled");
+ assert.equal(store.last().phase,"outcome_unknown");
+ assert.equal(s.recoveryDismiss.hidden,false);
+ assert.equal(s.recoveryCheck.hidden,false);
+ const blocked=await s.transport.send("Open Premiere Pro","second-task",0);
+ assert.equal(blocked.ok,false);
+ assert.match(blocked.error,/previous Windows task/);
+ assert.equal(s.chatInputs.length,1);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+ await s.recoveryDismiss.listeners.get("click")();
+ const allowed=await s.transport.send("Open Premiere Pro","new-owner-approved-task",0);
+ assert.equal(allowed.ok,true);
+ assert.equal(s.chatInputs.length,2);
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
+});
+
+test("Rust recovery alone blocks new tasks even when WebView storage was lost",async()=>{
+ const now=Date.now(),id="rust-previous-21";
+ const rustRecord={version:1,maxActions:8,stagedActions:1,modelRequests:1,
+  expiresAt:now+600000,updatedAt:now,phase:"executing",actionId:id};
+ const s=setup({rustRecord});
+ await until(()=>s.transport.connected(),"native IPC and Rust checkpoint");
+ assert.equal(s.recoveryDismiss.hidden,false);
+ const blocked=await s.transport.send("Open Premiere Pro","lost-local",0);
+ assert.equal(blocked.ok,false);
+ assert.equal(s.chatInputs.length,0);
+ assert.match(s.recoveryNotice.textContent,/Rust has recovery evidence but WebView has no matching record/);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
+ await s.recoveryDismiss.listeners.get("click")();
+ assert.equal(s.calls.filter(c=>c.name==="clear_native_recovery").length,1);
+ const allowed=await s.transport.send("Open Premiere Pro","new-owner-task",0);
+ assert.equal(allowed.ok,true);
+ assert.equal(s.staged.length,1);
+});
+test("a Rust-only paused checkpoint requires owner acknowledgement even without an executing action",async()=>{
+ const now=Date.now();
+ const rustRecord={version:1,maxActions:8,stagedActions:1,modelRequests:1,
+  expiresAt:now+600000,updatedAt:now,phase:"paused",actionId:"paused-checkpoint"};
+ const s=setup({rustRecord});
+ await until(()=>s.transport.connected(),"native Rust paused checkpoint");
+ const blocked=await s.transport.send("Open Premiere Pro","old-paused-task",0);
+ assert.equal(blocked.ok,false);
+ assert.match(blocked.error,/previous Windows task/);
+ assert.equal(s.chatInputs.length,0);
+ assert.equal(s.recoveryDismiss.hidden,false);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
+ await s.recoveryDismiss.listeners.get("click")();
+ assert.equal(s.calls.filter(c=>c.name==="clear_native_recovery").length,1);
+ const allowed=await s.transport.send("Open Premiere Pro","after-paused-review",0);
+ assert.equal(allowed.ok,true);
+ assert.equal(s.chatInputs.length,1);
+});
+test("Rust snapshot failure prevents a paid model request and any prepared Windows action",async()=>{
+ const s=setup({rustFailPhase:"model_reserved"});
+ await until(()=>s.transport.connected(),"native IPC");
+ const answer=await s.transport.send("Open Premiere Pro","rust-write-failure",0);
+ assert.equal(answer.ok,false);
+ assert.equal(s.calls.filter(c=>c.name==="save_native_recovery").length,1);
+ assert.equal(s.chatInputs.length,0);
+ assert.equal(s.staged.length,0);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
+});
+test("Rust executing-phase write failure denies approval without executing Windows action",async()=>{
+ const s=setup({rustFailPhase:"executing"});
+ await until(()=>s.transport.connected(),"native IPC");
+ const answer=await s.transport.send("Open Premiere Pro","rust-exec-failure",0);
+ assert.equal(answer.ok,true);
+ assert.equal(s.staged.length,1);
+ s.allow.listeners.get("click")();
+ await until(()=>s.approval.hidden===true&&s.allow.disabled===false,"execution stopped at Rust checkpoint");
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
+ assert.equal(s.calls.filter(c=>c.name==="deny_action").length,1);
+});
+
+test("native transport assigns one durable UUID across reserved, approved and verified states",async()=>{
+ const s=setup();
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Open Premiere Pro","correlated-task",0);
+ const first=s.calls.filter(c=>c.name==="save_native_recovery").map(c=>c.params.record);
+ assert.ok(first.length>=2);
+ const taskId=first[0].taskId;
+ assert.match(taskId,/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+ assert.ok(first.every(record=>record.version===2&&record.taskId===taskId));
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"second audited step");
+ const saved=s.calls.filter(c=>c.name==="save_native_recovery").map(c=>c.params.record);
+ assert.ok(saved.some(record=>record.phase==="executing"));
+ assert.ok(saved.some(record=>record.phase==="audit_verified"));
+ assert.ok(saved.every(record=>record.version===2&&record.taskId===taskId));
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
+});
+
+test("failed Rust recovery save cannot be followed by a second Windows paid request",async()=>{
+ const s=setup({rustFailPhase:"model_reserved"});
+ await until(()=>s.transport.connected(),"native ready");
+ const failed=await s.transport.send("Open Premiere Pro","first-failed-checkpoint",0);
+ assert.equal(failed.ok,false);
+ const next=await s.transport.send("Open Premiere Pro","next-task-must-block",0);
+ assert.equal(next.ok,false);
+ assert.match(next.error,/previous Windows task/);
+ assert.equal(s.chatInputs.length,0);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
+ assert.equal(s.recoveryDismiss.hidden,false);
+});
+
+test("same-session successful no-action Master answer can retire only both journals on a fresh owner command",async()=>{
+ const noTool={content:"Completed clarification without Windows tool",provider:"xkiro",model:"model/master",tool_proposal:null};
+ const s=setup({first:noTool,second:launch});
+ await until(()=>s.transport.connected(),"native ready");
+ const first=await s.transport.send("Open Adobe app?","first-action-free",0);
+ assert.equal(first.ok,true);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
+ const next=await s.transport.send("Open Premiere Pro","new-goal-after-safe-pause",0);
+ assert.equal(next.ok,true);
+ assert.equal(s.calls.filter(c=>c.name==="clear_native_recovery").length,1);
+ assert.equal(s.chatInputs.length,2);
+ assert.equal(s.staged.length,1);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
+ const records=s.calls.filter(c=>c.name==="save_native_recovery").map(c=>c.params.record);
+ assert.equal(records[0].revision,1);
+ assert.equal(records[1].phase,"paused");
+ assert.equal(records[1].revision,2);
+ const newest=records.at(-1);
+ assert.equal(newest.revision,2,"new task has a fresh revision sequence");
+ assert.notEqual(newest.taskId,records[0].taskId,"unrelated fresh task must never inherit old UUID");
+});
+
+test("failure to retire no-action checkpoint blocks any later paid or native dispatch",async()=>{
+ const noTool={content:"No tool action necessary",provider:"xkiro",model:"model/master",tool_proposal:null};
+ const s=setup({first:noTool,second:launch,rustClearFail:true});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Inspect possible app","no-action-terminal",0);
+ const blocked=await s.transport.send("Launch Premiere Pro","new-task-blocked-by-disk",0);
+ assert.equal(blocked.ok,false);
+ assert.match(blocked.error,/could not be retired/);
+ assert.equal(s.chatInputs.length,1);
+ assert.equal(s.staged.length,0);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,0);
+ const stillBlocked=await s.transport.send("Open Photoshop","new-task-blocked-again",0);
+ assert.equal(stillBlocked.ok,false);
+ assert.match(stillBlocked.error,/previous Windows task/);
+});
+
+test("acted-on or uncertain tasks never qualify for no-action rollover",async()=>{
+ const noTool={content:"Cannot prove original goal complete",provider:"xkiro",model:"model/master",tool_proposal:null};
+ const s=setup({first:detection,second:noTool});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Open Premiere Pro","acted-task",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.approval.hidden===true&&s.allow.disabled===false,"audited task finished");
+ const prior=s.chatInputs.length;
+ const blocked=await s.transport.send("Open Photoshop instead","new-after-acted",0);
+ assert.equal(blocked.ok,false);
+ assert.equal(s.chatInputs.length,prior,"old Windows task cannot be silently erased");
+ assert.equal(s.calls.filter(c=>c.name==="clear_native_recovery").length,0);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1);
+});
+
+test("owner acknowledgement revokes old native task identity even when reusing the same chat thread",async()=>{
+ const s=setup({first:detection,second:launch,auditOk:false});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Open Premiere Pro","same-owner-thread",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.recoveryDismiss.hidden===false&&s.allow.disabled===false,"outcome unknown");
+ const old=s.calls.filter(c=>c.name==="save_native_recovery").map(c=>c.params.record);
+ const oldId=old[0].taskId;
+ assert.equal(old.at(-1).phase,"outcome_unknown");
+ await s.recoveryDismiss.listeners.get("click")();
+ assert.equal(s.calls.filter(c=>c.name==="clear_native_recovery").length,1);
+ const fresh=await s.transport.send("Open Photoshop","same-owner-thread",1);
+ assert.equal(fresh.ok,true);
+ assert.equal(s.chatInputs.length,2);
+ const all=s.calls.filter(c=>c.name==="save_native_recovery").map(c=>c.params.record);
+ const newReservation=all.find((r,i)=>i>=old.length&&r.phase==="model_reserved");
+ assert.ok(newReservation,"new owner command has an independent reservation");
+ assert.notEqual(newReservation.taskId,oldId);
+ assert.equal(newReservation.revision,1);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,1,
+  "acknowledging a task never automatically executes a new action");
+});
+
+test("failed WebView removal after Rust acknowledgement keeps Windows requests blocked",async()=>{
+ const values=new Map();
+ const storage={
+  getItem:key=>values.get(key)??null,
+  setItem:(key,value)=>values.set(key,String(value)),
+  removeItem(){throw Error("simulated WebView removal failure");}
+ };
+ const s=setup({recoveryStore:storage,auditOk:false});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Open Premiere Pro","uncertain-local-clear",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.recoveryDismiss.hidden===false&&s.allow.disabled===false,"native outcome unknown");
+ await s.recoveryDismiss.listeners.get("click")();
+ assert.equal(s.calls.filter(c=>c.name==="clear_native_recovery").length,1);
+ assert.match(s.recoveryNotice.textContent,/New Windows tasks remain blocked/);
+ const before=s.chatInputs.length;
+ const blocked=await s.transport.send("Open Photoshop","cannot-reuse-partial-clear",0);
+ assert.equal(blocked.ok,false);
+ assert.match(blocked.error,/previous Windows task/);
+ assert.equal(s.chatInputs.length,before);
+});
+
+test("owner recovery clear holds exclusive submit lock until Rust disk result is known",async()=>{
+ let release;
+ const blockedRust=new Promise(resolve=>{release=resolve;});
+ const s=setup({auditOk:false,rustClearWait:blockedRust});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Open Premiere Pro","clear-race-original",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.recoveryDismiss.hidden===false&&s.allow.disabled===false,"native outcome unknown");
+ const clearing=s.recoveryDismiss.listeners.get("click")();
+ await until(()=>s.calls.some(c=>c.name==="clear_native_recovery"),"Rust clear in flight");
+ const rejected=await s.transport.send("Open Photoshop","clear-race-new",0);
+ assert.equal(rejected.ok,false);
+ assert.match(rejected.error,/already running/);
+ assert.equal(s.chatInputs.length,1);
+ release();
+ await clearing;
+ const accepted=await s.transport.send("Open Photoshop","clear-race-new",0);
+ assert.equal(accepted.ok,true);
+ assert.equal(s.chatInputs.length,2);
+ assert.equal(s.calls.filter(c=>c.name==="clear_native_recovery").length,1);
+});
+
+test("divergent v2 WebView and Rust recovery revisions never replay paid or Windows actions",async()=>{
+ const now=Date.now(),taskId="14a40d18-4df8-4cb8-ab90-0137027f3a8b";
+ const local={version:2,taskId,revision:3,maxActions:8,stagedActions:1,modelRequests:1,
+  expiresAt:now+600000,updatedAt:now,phase:"executing",actionId:"prior-action-456"};
+ const rustRecord={...local,revision:4,phase:"outcome_unknown"};
+ const store=recoveryStore();
+ store.setItem("shuvi.native.task.recovery.v1",JSON.stringify(local));
+ const s=setup({recoveryStore:store,rustRecord});
+ await until(()=>s.transport.connected(),"native IPC and both recovery checkpoints");
+ assert.match(s.recoveryNotice.textContent,/WebView and Rust recovery records disagree/);
+ const blocked=await s.transport.send("Open Premiere Pro","restart-conflict",0);
+ assert.equal(blocked.ok,false);
+ assert.match(blocked.error,/previous Windows task/);
+ assert.equal(s.chatInputs.length,0);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action"||c.name==="prepare_tool").length,0);
+ assert.equal(s.calls.filter(c=>c.name==="save_native_recovery").length,0);
+});
+
+test("unreadable WebView recovery blocks new Windows tasks without paid model dispatch",async()=>{
+ const store={getItem(){throw Error("storage denied");},
+  setItem(){throw Error("storage denied");},
+  removeItem(){throw Error("storage denied");}};
+ const s=setup({recoveryStore:store});
+ await until(()=>s.transport.connected(),"native IPC");
+ assert.match(s.recoveryNotice.textContent,/WebView recovery evidence is invalid or unavailable/);
+ const blocked=await s.transport.send("Open Premiere Pro","unreadable-recovery",0);
+ assert.equal(blocked.ok,false);
+ assert.match(blocked.error,/previous Windows task/);
+ assert.equal(s.chatInputs.length,0);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action"||c.name==="prepare_tool").length,0);
+});

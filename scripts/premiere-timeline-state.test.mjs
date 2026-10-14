@@ -83,7 +83,7 @@ test("desktop clone and delete refuse unverified native deltas",()=>{
 
 
 test("project-item and media insertion verify exact insert deltas and keep overwrite unverified",()=>{
-  const project=uxp.slice(uxp.indexOf("async function insertProjectItem"),uxp.indexOf("async function insertMedia"));
+  const project=uxp.slice(uxp.indexOf("async function insertProjectItem"),uxp.indexOf("async function resolveKeyframeTarget"));
   const media=uxp.slice(uxp.indexOf("async function insertMedia"),uxp.indexOf("function closeTimelineSeconds"));
   for(const body of [project,media]){
     assert.match(body,/snapshotInsertionTracks/);

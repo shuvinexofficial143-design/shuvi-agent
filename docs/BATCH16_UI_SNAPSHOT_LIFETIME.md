@@ -1,0 +1,1 @@
+Batch 16 — successfully audited UI-changing steps mark a previously observed window inventory as stale. A second model-proposed UI mutation cannot use pre-change window evidence; it must await a fresh separately approved and audited ui_windows read. No new mutation/tool is auto-issued. Source and mock tests only.

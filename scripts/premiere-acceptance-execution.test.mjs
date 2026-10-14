@@ -41,7 +41,7 @@ test("acceptance start and finish merge fresh cancellation under a store lock",(
   const execution=desktop.slice(desktop.indexOf('ToolAction::PremiereAcceptanceExecute {action_id} =>'),desktop.indexOf('ToolAction::PremiereAcceptanceProbe {group} =>'));
   assert.doesNotMatch(execution,/premiere_acceptance_execution::save\(&path,&record\)/);
   assert.match(execution,/save_progress\(&path,&mut record\)/);
-  assert.equal((desktop.match(/PendingAction\{created_at_ms:now_ms\(\),premiere_expectation:Some\(target.expected.clone\(\)\)/g)||[]).length,2);
+  assert.equal((desktop.match(/PendingAction\{created_at_ms:now_ms\(\),task_graph:None,task_step_id:None,premiere_expectation:Some\(target.expected.clone\(\)\)/g)||[]).length,2);
 });
 
 test("persisted acceptance revalidates exact fixtures and backup recovery cannot replay prepared work",()=>{
@@ -59,7 +59,7 @@ test("ripple-delete acceptance is exact, checkpointed, media-aware and independe
   const execution=desktop.slice(desktop.indexOf('ToolAction::PremiereAcceptanceExecute {action_id} =>'),desktop.indexOf('ToolAction::PremiereAcceptanceProbe {group} =>'));
   assert.match(source,/"delete_ripple"/);
   assert.match(source,/fn verify_ripple_delete/);
-  assert.match(source,/row.get\("mediaId"\)/);
+  assert.match(source,/expected\.get\("mediaId"\)/);
   assert.match(source,/start>=target_end-0\.001/);
   assert.match(execution,/"delete_ripple"=>ToolAction::PremiereDeleteClip/);
   assert.match(execution,/ripple:true/);

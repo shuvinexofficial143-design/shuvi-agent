@@ -1,0 +1,1 @@
+Batch 66: Finished export artifact validation now applies to all desktop editors, not solely Premiere. Model claims or queued jobs are not accepted as proof. This is advisory only, without execution.

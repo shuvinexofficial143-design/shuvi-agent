@@ -1,0 +1,1 @@
+Batch 95: Preserve native ProcessName in window target inventory. A known Premiere title with a known Photoshop process (or vice versa) cannot ground a UI mutation or read-only selector. Unrecognized/empty process names still require regular native matching and Allow once.

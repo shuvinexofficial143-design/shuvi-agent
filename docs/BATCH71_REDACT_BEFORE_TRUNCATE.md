@@ -1,0 +1,1 @@
+Batch 71: Redact full diagnostics before length clipping, avoiding partial credential prefixes at the display boundary. Oversized diagnostic input is omitted before regex processing. Existing owner approval and native audit are unchanged.

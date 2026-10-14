@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{collections::HashSet, fs, path::Path};
+use std::{cmp::Ordering, collections::HashSet, fs, path::Path};
 
 const MAX_BYTES: usize = 96 * 1024;
 const CATEGORIES: &[&str] = &["exposure", "color", "framing", "continuity", "motion", "transition", "graphics", "caption", "audio_visual", "other"];
@@ -34,6 +34,20 @@ pub struct Attempt {
     pub outcome: String,
     pub before: String,
     pub after: Option<String>,
+    #[serde(default)]
+    pub category: String,
+    #[serde(default)]
+    pub before_severity: String,
+    #[serde(default)]
+    pub before_confidence: f64,
+    #[serde(default)]
+    pub frame_seconds: Vec<f64>,
+    #[serde(default)]
+    pub after_issue_id: Option<String>,
+    #[serde(default)]
+    pub approved_action_id: Option<String>,
+    #[serde(default)]
+    pub checkpoint_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,6 +66,8 @@ pub struct Session {
     #[serde(default)]
     pub model_calls: u8,
     pub status: String,
+    #[serde(default)]
+    pub stop_reason: Option<String>,
     pub reviews: Vec<Review>,
     pub attempted_fixes: Vec<Attempt>,
 }
@@ -59,6 +75,51 @@ pub struct Session {
 fn short(s: &str, max: usize) -> bool { !s.trim().is_empty() && s.chars().count() <= max }
 fn samples_ok(times: &[f64]) -> bool {
     !times.is_empty() && times.len() <= 4 && times.iter().all(|t| t.is_finite() && (0.0..=86_400.0).contains(t))
+}
+
+fn shared_sample(a:&[f64],b:&[f64])->bool{
+    a.iter().any(|left|b.iter().any(|right|left==right))
+}
+
+fn evaluate_attempt(attempt:&Attempt,review:&Review)->(String,String,Option<String>){
+    if review.overall_confidence<0.65 || attempt.category.is_empty() || attempt.frame_seconds.is_empty()
+        || !matches!(attempt.before_severity.as_str(),"low"|"medium"|"high")
+        || !attempt.before_confidence.is_finite() || !(0.0..=1.0).contains(&attempt.before_confidence) {
+        let after=review.issues.iter().map(|i|i.observation.as_str()).take(4)
+            .collect::<Vec<_>>().join("; ").chars().take(800).collect();
+        return ("uncertain".into(),after,None);
+    }
+    let mut candidates=review.issues.iter().filter(|issue|
+        issue.category==attempt.category && shared_sample(&issue.frame_seconds,&attempt.frame_seconds)
+    ).collect::<Vec<_>>();
+    if candidates.is_empty(){
+        return ("resolved".into(),"No matching issue remained at the grounded review sample.".into(),None);
+    }
+    candidates.sort_by(|a,b|{
+        severity_rank(&b.severity).cmp(&severity_rank(&a.severity))
+            .then_with(||b.confidence.partial_cmp(&a.confidence).unwrap_or(Ordering::Equal))
+            .then_with(||a.id.cmp(&b.id))
+    });
+    let after=candidates[0];
+    let before_rank=severity_rank(&attempt.before_severity);
+    let after_rank=severity_rank(&after.severity);
+    let outcome=if after_rank<before_rank || (after_rank==before_rank && after.confidence<=attempt.before_confidence-0.15){
+        "improved"
+    }else if after_rank>before_rank || (after_rank==before_rank && after.confidence>=attempt.before_confidence+0.15){
+        "regressed"
+    }else{
+        "unchanged"
+    };
+    (outcome.into(),after.observation.chars().take(800).collect(),Some(after.id.clone()))
+}
+
+fn grounded_non_improving_attempts(attempts: &[Attempt], baseline: &Attempt) -> usize {
+    if baseline.category.is_empty() || baseline.frame_seconds.is_empty() { return 0; }
+    attempts.iter().filter(|attempt| {
+        attempt.category == baseline.category
+            && shared_sample(&attempt.frame_seconds, &baseline.frame_seconds)
+            && matches!(attempt.outcome.as_str(), "unchanged" | "regressed")
+    }).count()
 }
 
 impl Session {
@@ -70,12 +131,13 @@ impl Session {
         }
         Ok(Self { schema_version: 2, created_at_ms, session_id: id, project_guid: project, sequence_guid: sequence,
             objective, reference, sample_times: samples, iteration: 1, max_iterations: max, model_calls: 0, status: "reviewing".into(),
-            reviews: vec![], attempted_fixes: vec![] })
+            stop_reason: None, reviews: vec![], attempted_fixes: vec![] })
     }
 
     pub fn check_identity(&mut self, project: &str, sequence: &str) -> Result<(), String> {
         if self.project_guid != project || self.sequence_guid != sequence {
             self.status = "stagnated".into();
+            self.stop_reason = Some("project_or_sequence_changed".into());
             return Err("Premiere project or active sequence changed; review session stopped.".into());
         }
         Ok(())
@@ -95,38 +157,98 @@ impl Session {
             else if count(&review) > count(before) { "regressed" }
             else { "unchanged" }
         } else { "uncertain" };
-        if let Some(attempt) = self.attempted_fixes.last_mut() {
-            if attempt.after.is_none() {
-                attempt.after = Some(review.issues.iter().map(|i| i.observation.as_str()).take(4).collect::<Vec<_>>().join("; ").chars().take(800).collect());
-                attempt.outcome = comparison.into();
+        let fix_evaluation=if self.attempted_fixes.last().is_some_and(|attempt|attempt.after.is_none()){
+            let baseline=self.attempted_fixes.last().cloned().expect("checked above");
+            let (outcome,after,after_issue_id)=evaluate_attempt(&baseline,&review);
+            if let Some(attempt)=self.attempted_fixes.last_mut(){
+                attempt.after=Some(after);
+                attempt.after_issue_id=after_issue_id.clone();
+                attempt.outcome=outcome.clone();
             }
-        }
+            Some(json!({
+                "issue_id":baseline.issue_id,
+                "category":baseline.category,
+                "grounded_frames":baseline.frame_seconds,
+                "before_severity":baseline.before_severity,
+                "before_confidence":baseline.before_confidence,
+                "after_issue_id":after_issue_id,
+                "outcome":outcome
+            }))
+        }else{None};
         let low_confidence = review.overall_confidence < 0.65;
-        let stop = review.stop_recommended || !actionable || low_confidence;
+        let latest_attempt = self.attempted_fixes.last().filter(|attempt| attempt.after.is_some());
+        let latest_outcome = latest_attempt.map(|attempt| attempt.outcome.as_str());
+        let non_improving_count = latest_attempt
+            .map(|attempt| grounded_non_improving_attempts(&self.attempted_fixes, attempt))
+            .unwrap_or(0);
+        let regression_stop = latest_outcome == Some("regressed");
+        let repeated_no_gain = latest_outcome == Some("unchanged") && non_improving_count >= 2;
+        let completed = review.stop_recommended || !actionable || low_confidence;
+        let stop_recommended = review.stop_recommended;
         self.reviews.push(review);
-        self.status = if stop { "completed" } else if self.iteration >= self.max_iterations { "stagnated" } else { "awaiting_approval" }.into();
-        Ok(json!({"comparison": comparison, "status": self.status, "iteration": self.iteration}))
+        let (status, reason) = if regression_stop {
+            ("stagnated", Some("correction_regressed"))
+        } else if repeated_no_gain {
+            ("stagnated", Some("repeated_grounded_no_gain"))
+        } else if completed {
+            ("completed", Some(if stop_recommended { "review_stop_recommended" } else if !actionable { "no_actionable_issues" } else { "review_confidence_too_low" }))
+        } else if self.iteration >= self.max_iterations {
+            ("stagnated", Some("max_iterations_reached"))
+        } else {
+            ("awaiting_approval", None)
+        };
+        self.status = status.into();
+        self.stop_reason = reason.map(str::to_string);
+        Ok(json!({
+            "comparison": comparison,
+            "fix_evaluation": fix_evaluation,
+            "retry_policy": {
+                "regression_stop": regression_stop,
+                "grounded_non_improving_attempts": non_improving_count,
+                "max_grounded_non_improving_attempts": 2,
+                "blind_retry_allowed": false
+            },
+            "status": self.status,
+            "stop_reason": self.stop_reason,
+            "iteration": self.iteration
+        }))
     }
 
     pub fn record_fix(&mut self, issue_id: &str, fingerprint: &str, before: &str) -> Result<(), String> {
+        self.record_fix_evidence(issue_id,fingerprint,before,None,None)
+    }
+
+    pub fn record_fix_evidence(&mut self, issue_id:&str, fingerprint:&str, before:&str,
+        approved_action_id:Option<&str>, checkpoint_path:Option<&str>) -> Result<(),String> {
         if self.status != "awaiting_approval" || !short(issue_id, 80) || !short(fingerprint, 300) || !short(before, 800) {
             return Err("Review session is not ready for an approved fix.".into());
         }
-        if !self.reviews.last().is_some_and(|r| r.issues.iter().any(|i| i.id == issue_id)) {
-            return Err("Fix references an unknown issue.".into());
+        if approved_action_id.is_some_and(|value|!short(value,80))
+            || checkpoint_path.is_some_and(|value|value.trim().is_empty()||value.len()>32768) {
+            return Err("Review fix execution evidence is missing or oversized.".into());
         }
-        if self.attempted_fixes.iter().any(|a| a.fingerprint == fingerprint && a.outcome != "improved") {
+        if approved_action_id.is_some()!=checkpoint_path.is_some() {
+            return Err("Approved action ID and pre-edit checkpoint must be recorded together.".into());
+        }
+        let issue=self.reviews.last().and_then(|r|r.issues.iter().find(|i|i.id==issue_id)).cloned()
+            .ok_or("Fix references an unknown issue.")?;
+        if self.attempted_fixes.iter().any(|a| a.fingerprint == fingerprint && !matches!(a.outcome.as_str(),"improved"|"resolved")) {
             self.status = "stagnated".into();
+            self.stop_reason = Some("duplicate_unsuccessful_fix".into());
             return Err("Same unsuccessful fix already attempted.".into());
         }
         self.attempted_fixes.push(Attempt { fingerprint: fingerprint.into(), issue_id: issue_id.into(),
-            outcome: "uncertain".into(), before: before.into(), after: None });
+            outcome: "uncertain".into(), before: before.into(), after: None, category:issue.category,
+            before_severity:issue.severity,before_confidence:issue.confidence,frame_seconds:issue.frame_seconds,
+            after_issue_id:None,approved_action_id:approved_action_id.map(str::to_owned),
+            checkpoint_path:checkpoint_path.map(str::to_owned) });
         self.iteration += 1;
         self.status = "reviewing".into();
+        self.stop_reason = None;
         Ok(())
     }
 
-    pub fn cancel(&mut self) { self.status = "cancelled".into(); }
+    pub fn cancel(&mut self) { self.status = "cancelled".into(); self.stop_reason = Some("cancelled_by_user".into()); }
 }
 
 impl Review {
@@ -185,6 +307,85 @@ pub fn proposal(issue: &Issue) -> Value {
                   else { "Inspect an exact target and parameters, then invoke the normal permission-gated typed tool." }})
 }
 
+fn severity_rank(value: &str) -> u8 {
+    match value {
+        "high" => 2,
+        "medium" => 1,
+        _ => 0,
+    }
+}
+
+pub fn next_actionable_issue(session: &Session) -> Result<Option<Issue>, String> {
+    if session.status != "awaiting_approval" {
+        return Err("Premiere review session is not awaiting a correction.".into());
+    }
+    let review = session.reviews.last().ok_or("Premiere review has no completed iteration.")?;
+    let mut issues = review.issues.iter()
+        .filter(|issue| {
+            issue.confidence >= 0.65
+                && matches!(issue.severity.as_str(), "medium" | "high")
+                && matches!(
+                    issue.category.as_str(),
+                    "exposure" | "color" | "framing" | "motion" | "transition" | "graphics" | "audio_visual"
+                )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    issues.sort_by(|a, b| {
+        severity_rank(&b.severity)
+            .cmp(&severity_rank(&a.severity))
+            .then_with(|| b.confidence.partial_cmp(&a.confidence).unwrap_or(Ordering::Equal))
+            .then_with(|| {
+                let a_time = a.frame_seconds.first().copied().unwrap_or(f64::MAX);
+                let b_time = b.frame_seconds.first().copied().unwrap_or(f64::MAX);
+                a_time.partial_cmp(&b_time).unwrap_or(Ordering::Equal)
+            })
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    Ok(issues.into_iter().next())
+}
+
+pub fn completion_summary(session:&Session)->Result<Value,String>{
+    validate_session(session)?;
+    let final_review=session.reviews.last().ok_or("Review session has no final review evidence.")?;
+    let final_actionable=final_review.issues.iter()
+        .filter(|issue|issue.confidence>=0.65&&matches!(issue.severity.as_str(),"medium"|"high"))
+        .count();
+    let resolved=session.attempted_fixes.iter().filter(|attempt|attempt.outcome=="resolved").count();
+    let improved=session.attempted_fixes.iter().filter(|attempt|attempt.outcome=="improved").count();
+    let unchanged=session.attempted_fixes.iter().filter(|attempt|attempt.outcome=="unchanged").count();
+    let regressed=session.attempted_fixes.iter().filter(|attempt|attempt.outcome=="regressed").count();
+    let uncertain=session.attempted_fixes.iter().filter(|attempt|attempt.outcome=="uncertain").count();
+    let accepted=session.status=="completed"
+        && final_review.overall_confidence>=0.65
+        && final_actionable==0
+        && regressed==0;
+    Ok(json!({
+        "session_id":session.session_id,
+        "status":session.status,
+        "stop_reason":session.stop_reason,
+        "iterations_completed":session.reviews.len(),
+        "corrections_attempted":session.attempted_fixes.len(),
+        "outcomes":{
+            "resolved":resolved,
+            "improved":improved,
+            "unchanged":unchanged,
+            "regressed":regressed,
+            "uncertain":uncertain
+        },
+        "final_review":{
+            "overall_confidence":final_review.overall_confidence,
+            "actionable_medium_high_count":final_actionable,
+            "stop_recommended":final_review.stop_recommended
+        },
+        "accepted":accepted,
+        "source_acceptance_gate_passed":accepted,
+        "runtime_verified":false,
+        "production_ready":false
+    }))
+}
+
 pub fn save(path: &Path, session: &Session) -> Result<(), String> {
     validate_session(session)?;
     let data = serde_json::to_vec(session).map_err(|e| e.to_string())?;
@@ -219,6 +420,12 @@ fn validate_session(session:&Session)->Result<(),String>{
         || session.model_calls > 32
         || !samples_ok(&session.sample_times) || !(1..=8).contains(&session.max_iterations)
         || session.iteration == 0 || session.iteration > session.max_iterations
+        || session.stop_reason.as_ref().is_some_and(|reason| reason.is_empty() || reason.len() > 240)
+        || session.attempted_fixes.iter().any(|attempt|{
+            attempt.approved_action_id.as_ref().is_some_and(|value|value.is_empty()||value.len()>80)
+                || attempt.checkpoint_path.as_ref().is_some_and(|value|value.is_empty()||value.len()>32768)
+                || attempt.approved_action_id.is_some()!=attempt.checkpoint_path.is_some()
+        })
         || !matches!(session.status.as_str(), "reviewing" | "awaiting_approval" | "completed" | "cancelled" | "stagnated" | "failed") {
         return Err("Invalid persisted Premiere review session.".into());
     }
@@ -255,6 +462,126 @@ mod tests {
         assert_eq!(s.add_review(review(2,vec![])).unwrap()["comparison"],"improved");
         assert_eq!(s.status,"completed");
     }
+    #[test] fn fix_evaluation_tracks_same_issue_not_global_count() {
+        let mut s=session();
+        let mut fixed=issue();fixed.id="fixed".into();fixed.frame_seconds=vec![1.0];
+        let mut unrelated=issue();unrelated.id="other".into();unrelated.category="graphics".into();
+        s.add_review(review(1,vec![fixed.clone(),unrelated.clone()])).unwrap();
+        s.record_fix("fixed","fp","too warm").unwrap();
+        let mut still=fixed.clone();still.id="fixed-after".into();still.confidence=0.88;
+        let result=s.add_review(review(2,vec![still,unrelated])).unwrap();
+        assert_eq!(result["fix_evaluation"]["outcome"],"unchanged");
+        assert_eq!(s.attempted_fixes[0].after_issue_id.as_deref(),Some("fixed-after"));
+    }
+    #[test] fn fix_evaluation_detects_resolved_improved_and_regressed() {
+        let mut resolved=session();resolved.add_review(review(1,vec![issue()])).unwrap();
+        resolved.record_fix("i","a","too warm").unwrap();
+        let r=resolved.add_review(review(2,vec![])).unwrap();
+        assert_eq!(r["fix_evaluation"]["outcome"],"resolved");
+
+        let mut improved=session();improved.add_review(review(1,vec![issue()])).unwrap();
+        improved.record_fix("i","b","too warm").unwrap();
+        let mut lower=issue();lower.id="i2".into();lower.severity="low".into();
+        let r=improved.add_review(review(2,vec![lower])).unwrap();
+        assert_eq!(r["fix_evaluation"]["outcome"],"improved");
+
+        let mut regressed=session();regressed.add_review(review(1,vec![issue()])).unwrap();
+        regressed.record_fix("i","c","too warm").unwrap();
+        let mut worse=issue();worse.id="i3".into();worse.severity="high".into();
+        let r=regressed.add_review(review(2,vec![worse])).unwrap();
+        assert_eq!(r["fix_evaluation"]["outcome"],"regressed");
+    }
+    #[test] fn approved_fix_can_bind_checkpoint_evidence() {
+        let mut s=session();s.add_review(review(1,vec![issue()])).unwrap();
+        s.record_fix_evidence("i","evidence-fp","too warm",Some("action-1"),Some("C:/Project/Shuvi Backups/edit.prproj")).unwrap();
+        let attempt=s.attempted_fixes.last().unwrap();
+        assert_eq!(attempt.approved_action_id.as_deref(),Some("action-1"));
+        assert_eq!(attempt.checkpoint_path.as_deref(),Some("C:/Project/Shuvi Backups/edit.prproj"));
+        let mut s2=session();s2.add_review(review(1,vec![issue()])).unwrap();
+        assert!(s2.record_fix_evidence("i","bad","too warm",Some("action-1"),None).is_err());
+    }
+
+    #[test] fn regression_immediately_stagnates_loop() {
+        let mut s = session();
+        s.add_review(review(1, vec![issue()])).unwrap();
+        s.record_fix("i", "regress-a", "too warm").unwrap();
+        let mut worse = issue();
+        worse.id = "worse".into();
+        worse.severity = "high".into();
+        let result = s.add_review(review(2, vec![worse])).unwrap();
+        assert_eq!(result["retry_policy"]["regression_stop"], true);
+        assert_eq!(s.status, "stagnated");
+        assert_eq!(s.stop_reason.as_deref(), Some("correction_regressed"));
+    }
+
+    #[test] fn two_grounded_unchanged_attempts_stop_blind_retry() {
+        let mut s = Session::new("id".into(), "p".into(), "s".into(), "clean edit".into(), "".into(), vec![1.0], 6, 1).unwrap();
+        s.add_review(review(1, vec![issue()])).unwrap();
+        s.record_fix("i", "try-1", "too warm").unwrap();
+        let mut same1 = issue();
+        same1.id = "same-1".into();
+        same1.confidence = 0.88;
+        let first = s.add_review(review(2, vec![same1])).unwrap();
+        assert_eq!(first["retry_policy"]["grounded_non_improving_attempts"], 1);
+        assert_eq!(s.status, "awaiting_approval");
+
+        s.record_fix("same-1", "try-2", "still warm").unwrap();
+        let mut same2 = issue();
+        same2.id = "same-2".into();
+        same2.confidence = 0.87;
+        let second = s.add_review(review(3, vec![same2])).unwrap();
+        assert_eq!(second["retry_policy"]["grounded_non_improving_attempts"], 2);
+        assert_eq!(s.status, "stagnated");
+        assert_eq!(s.stop_reason.as_deref(), Some("repeated_grounded_no_gain"));
+    }
+
+    #[test] fn completion_summary_requires_clean_high_confidence_completion() {
+        let mut accepted=session();
+        accepted.add_review(review(1,vec![])).unwrap();
+        let summary=completion_summary(&accepted).unwrap();
+        assert_eq!(summary["accepted"],true);
+        assert_eq!(summary["final_review"]["actionable_medium_high_count"],0);
+        assert_eq!(summary["runtime_verified"],false);
+
+        let mut blocked=session();
+        blocked.add_review(review(1,vec![issue()])).unwrap();
+        let summary=completion_summary(&blocked).unwrap();
+        assert_eq!(summary["accepted"],false);
+    }
+
+    #[test] fn completion_summary_counts_grounded_fix_outcomes() {
+        let mut s=session();
+        s.add_review(review(1,vec![issue()])).unwrap();
+        s.record_fix("i","summary-fp","too warm").unwrap();
+        s.add_review(review(2,vec![])).unwrap();
+        let summary=completion_summary(&s).unwrap();
+        assert_eq!(summary["outcomes"]["resolved"],1);
+        assert_eq!(summary["corrections_attempted"],1);
+        assert_eq!(summary["accepted"],true);
+    }
+
+    #[test] fn prioritizes_grounded_actionable_issue() {
+        let mut s = session();
+        let mut medium = issue();
+        medium.id = "medium".into();
+        medium.severity = "medium".into();
+        medium.confidence = 0.99;
+        let mut high = issue();
+        high.id = "high".into();
+        high.severity = "high".into();
+        high.confidence = 0.70;
+        let mut unsupported = issue();
+        unsupported.id = "caption".into();
+        unsupported.category = "caption".into();
+        unsupported.severity = "high".into();
+        unsupported.confidence = 1.0;
+        s.add_review(review(1, vec![medium, high, unsupported])).unwrap();
+        let selected = next_actionable_issue(&s).unwrap().unwrap();
+        assert_eq!(selected.id, "high");
+        s.status = "reviewing".into();
+        assert!(next_actionable_issue(&s).is_err());
+    }
+
     #[test] fn cancellation_duplicate_and_persistence() {
         let mut s=session(); s.add_review(review(1,vec![issue()])).unwrap();
         s.record_fix("i","same","before").unwrap();

@@ -1,0 +1,1 @@
+Batch 39: Oversized native window observations are rejected before JSON parsing and before Master sees a window identity claim. A fresh separately approved inspection is needed.

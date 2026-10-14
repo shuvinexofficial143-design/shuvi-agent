@@ -1,0 +1,78 @@
+name: Phase 1 Dependency Advisory Audit (Read Only)
+
+on:
+  push:
+    branches: [phase1/safety-reconciliation-oct9]
+    paths:
+      - ".github/workflows/phase1-a23-dependency-audit.yml"
+      - "scripts/phase1-a23-audit-policy.mjs"
+      - "scripts/phase1-a23-audit-policy.test.mjs"
+      - "src-tauri/Cargo.lock"
+      - "package-lock.json"
+      - "web-dashboard/package-lock.json"
+      - "remotion-runtime/package-lock.json"
+
+permissions:
+  contents: read
+
+jobs:
+  npm-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Audit the three exact npm dependency lockfiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .phase1-audit
+          node --test scripts/phase1-a23-audit-policy.test.mjs
+          for name in root web-dashboard remotion-runtime; do
+            case "$name" in
+              root) dir="." ;;
+              *) dir="$name" ;;
+            esac
+            (
+              cd "$dir"
+              npm audit --json --audit-level=high > "$GITHUB_WORKSPACE/.phase1-audit/$name.json" || true
+            )
+            node scripts/phase1-a23-audit-policy.mjs npm ".phase1-audit/$name.json"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: phase1-npm-advisory-report
+          path: .phase1-audit/*.json
+          if-no-files-found: warn
+
+  rust-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install pinned RustSec cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Audit checked-in native Cargo.lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .phase1-audit
+          cargo audit --json --file src-tauri/Cargo.lock > .phase1-audit/cargo.json || true
+          node scripts/phase1-a23-audit-policy.mjs cargo .phase1-audit/cargo.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: phase1-rustsec-advisory-report
+          path: .phase1-audit/*.json
+          if-no-files-found: warn

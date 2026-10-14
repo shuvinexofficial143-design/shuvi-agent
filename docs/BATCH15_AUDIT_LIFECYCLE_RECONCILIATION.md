@@ -1,0 +1,1 @@
+Batch 15 audit rule reconciliation: Ordinary prepared/approved Rust audit records do not contradict a terminal executed+success record on the same approved action/tool. Explicit failed or denied outcomes, mismatched tool IDs or conflicting executed statuses still fail closed. Tests ensure normal audit lifecycle can pass without weakening contradictory terminal detection.

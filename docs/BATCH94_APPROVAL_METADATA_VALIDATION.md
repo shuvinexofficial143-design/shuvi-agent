@@ -1,0 +1,1 @@
+Batch 94: Refuse initial, continuation or recovery action approvals with missing or excessively long summary/detail/risk metadata. Never present opaque permission text. Rust action-ID and explicit Allow once verification remain required.

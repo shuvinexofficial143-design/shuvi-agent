@@ -1,0 +1,1 @@
+Batch 55: Expand native Router's lightweight command recognition to common editing/import/select/rename and Roman-Hindi imperatives. Model still interprets the original text; all native actions require separate approval/audit.

@@ -1,0 +1,1 @@
+Batch 56: Extend explicit user-app scope checks to Media Encoder, Animate, Character Animator, Substance 3D, Frame.io without guessing an intended single target when multiple applications are requested. Generic native window approval rules remain.

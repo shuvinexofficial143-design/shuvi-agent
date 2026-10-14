@@ -134,3 +134,14 @@ A job may select at most one primary delivery path:
 - one interchange export (AAF, FCPXML or OTIO).
 
 Each delivery remains its normal separately approved Shuvi tool. No job silently exports every format.
+
+
+## Iterative review/correction phase
+
+A review phase may opt into the bounded correction loop:
+
+`{"seconds":[1,5],"prompt":"Check framing and graphics","iterative":true,"max_iterations":4,"reference":"optional brief"}`
+
+In this mode the job phase uses `premiere_review_session_start` instead of the one-shot `premiere_review_frames`. The start receipt alone cannot complete the job phase. Run `premiere_review_session_continue` through its separately approved correction/re-review cycle, then call `premiere_edit_job_record_review` with the completed review-session ID.
+
+The recorder rechecks the current project/sequence, exact sample times, objective/reference, iteration bound, review-session age, and final review evidence. The job advances only when final confidence is at least 0.65 and no medium/high issue at confidence 0.65+ remains. Runtime acceptance remains separate.

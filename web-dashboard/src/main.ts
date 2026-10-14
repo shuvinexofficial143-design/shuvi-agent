@@ -22,8 +22,10 @@ import { mountCreativeStudio } from "./creative-studio";
 import { mountTaskTimeline, type TaskTimelineController } from "./task-timeline";
 import { initializeAppearance } from "./appearance";
 import { mountChatWorkspace, type ChatWorkspace } from "./chat-workspace";
-import { mountOnlineChat } from "./online-chat";
-import "./online-chat.css";
+import { mountRemoteCommandClient } from "./remote-command-client";
+import { isNativeShuvi, mountNativeAgent } from "./native-agent";
+import "./native-agent.css";
+import "./remote-command-client.css";
 import "./testing-readiness.css";
 import {mountReadinessPanel} from "./testing-readiness";
 import { loadChatLibrary } from "./chat-store";
@@ -163,9 +165,51 @@ function showToast(message: string): void {
   toastTimer = window.setTimeout(() => toast.classList.remove("show"), 3200);
 }
 
+// A20: browser settings can be denied by policies or storage quotas.
+// Keep the Control Center usable with session-only values, never pretend
+// that an in-memory value has been saved to persistent browser storage.
+const temporaryPreferences = new Map<string,string>();
+const removedPreferences = new Set<string>();
+let storageWarningShown = false;
+function warnStorageUnavailable(): void {
+  if (storageWarningShown) return;
+  storageWarningShown = true;
+  showToast("Browser storage unavailable. New changes last only until this page reloads.");
+}
+function getSafePreference(key: string): string | null {
+  if (removedPreferences.has(key)) return null;
+  if (temporaryPreferences.has(key)) return temporaryPreferences.get(key) ?? null;
+  try { return window.localStorage.getItem(key); }
+  catch { warnStorageUnavailable(); return null; }
+}
+function setSafePreference(key: string, value: string): boolean {
+  removedPreferences.delete(key);
+  try {
+    window.localStorage.setItem(key, value);
+    temporaryPreferences.delete(key);
+    return true;
+  } catch {
+    temporaryPreferences.set(key, value);
+    warnStorageUnavailable();
+    return false;
+  }
+}
+function removeSafePreference(key: string): boolean {
+  temporaryPreferences.delete(key);
+  try {
+    window.localStorage.removeItem(key);
+    removedPreferences.delete(key);
+    return true;
+  } catch {
+    removedPreferences.add(key);
+    warnStorageUnavailable();
+    return false;
+  }
+}
+
 function readWebActivity(): WebActivity[] {
   try {
-    const raw = localStorage.getItem("shuvi.web.activity");
+    const raw = getSafePreference("shuvi.web.activity");
     const parsed: unknown = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(parsed)) return [];
     const valid: WebActivity[] = [];
@@ -190,7 +234,7 @@ function readWebActivity(): WebActivity[] {
 }
 
 function saveWebActivity(entries: WebActivity[]): void {
-  localStorage.setItem("shuvi.web.activity", JSON.stringify(entries.slice(0, 80)));
+  setSafePreference("shuvi.web.activity", JSON.stringify(entries.slice(0, 80)));
 }
 
 function recordWebActivity(type: string, message: string): void {
@@ -241,10 +285,10 @@ function exportPlanningLog(): void {
   const payload = {
     exportedAt: new Date().toISOString(),
     scope: "Shuvi web dashboard planning only",
-    provider: localStorage.getItem("shuvi.web.provider"),
-    preferredModel: localStorage.getItem("shuvi.web.preferredModel"),
-    workload: localStorage.getItem("shuvi.web.workload"),
-    routingPreset: localStorage.getItem("shuvi.web.routingPreset"),
+    provider: getSafePreference("shuvi.web.provider"),
+    preferredModel: getSafePreference("shuvi.web.preferredModel"),
+    workload: getSafePreference("shuvi.web.workload"),
+    routingPreset: getSafePreference("shuvi.web.routingPreset"),
     taskDrafts: readDraftTasks(),
     activity: readWebActivity()
   };
@@ -369,7 +413,7 @@ function renderDashboardStudioModules(): void {
 
 function renderProviders(): void {
   const target = byId<HTMLElement>("providerGrid");
-  const selected = localStorage.getItem("shuvi.web.provider");
+  const selected = getSafePreference("shuvi.web.provider");
   target.replaceChildren();
 
   modelProviders.forEach((provider) => {
@@ -400,7 +444,7 @@ function setProviderPreference(name: string): void {
   const provider = modelProviders.find((item) => item.name === name);
   if (!provider) return;
 
-  localStorage.setItem("shuvi.web.provider", provider.name);
+  setSafePreference("shuvi.web.provider", provider.name);
   byId<HTMLElement>("selectedProviderName").textContent = provider.name;
   byId<HTMLElement>("selectedProviderNote").textContent =
     provider.note + " · web planning preference only; Windows runtime remains the source of truth.";
@@ -412,7 +456,7 @@ function setProviderPreference(name: string): void {
 }
 
 function restoreProviderPreference(): void {
-  const saved = localStorage.getItem("shuvi.web.provider");
+  const saved = getSafePreference("shuvi.web.provider");
   const provider = modelProviders.find((item) => item.name === saved);
 
   if (!provider) return;
@@ -661,7 +705,7 @@ function restoreBridgePreference(): void {
 
 function readDraftTasks(): DraftTask[] {
   try {
-    const raw = localStorage.getItem("shuvi.web.draftTasks");
+    const raw = getSafePreference("shuvi.web.draftTasks");
     const parsed: unknown = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(parsed)) return [];
     return parsed.filter((task): task is DraftTask =>
@@ -682,7 +726,7 @@ function readDraftTasks(): DraftTask[] {
 }
 
 function saveDraftTasks(tasks: DraftTask[]): void {
-  localStorage.setItem("shuvi.web.draftTasks", JSON.stringify(tasks.slice(0, 20)));
+  setSafePreference("shuvi.web.draftTasks", JSON.stringify(tasks.slice(0, 20)));
 }
 
 function renderDraftTasks(): void {
@@ -766,9 +810,9 @@ function addDraftTask(title: string, type: string, priority = "Normal"): void {
 function renderDashboardPlanningQueue(): void {
   const target = byId<HTMLElement>("dashboardPlanningQueue");
   const tasks = readDraftTasks();
-  const provider = localStorage.getItem("shuvi.web.provider");
-  const model = localStorage.getItem("shuvi.web.preferredModel");
-  const workload = localStorage.getItem("shuvi.web.workload");
+  const provider = getSafePreference("shuvi.web.provider");
+  const model = getSafePreference("shuvi.web.preferredModel");
+  const workload = getSafePreference("shuvi.web.workload");
 
   target.replaceChildren();
 
@@ -870,7 +914,7 @@ function renderLocalOverview(): void {
 
 function renderRoutingPresets(): void {
   const target = byId<HTMLElement>("routingPresetGrid");
-  const activePreset = localStorage.getItem("shuvi.web.routingPreset");
+  const activePreset = getSafePreference("shuvi.web.routingPreset");
   target.replaceChildren();
 
   routingPresets.forEach((preset) => {
@@ -883,12 +927,12 @@ function renderRoutingPresets(): void {
     button.append(top, make("p", "", preset.description), make("small", "", preset.workload + " · " + preset.modelHint));
 
     button.addEventListener("click", () => {
-      localStorage.setItem("shuvi.web.routingPreset", preset.id);
-      localStorage.setItem("shuvi.web.provider", preset.provider);
-      localStorage.setItem("shuvi.web.workload", preset.workload);
+      setSafePreference("shuvi.web.routingPreset", preset.id);
+      setSafePreference("shuvi.web.provider", preset.provider);
+      setSafePreference("shuvi.web.workload", preset.workload);
       byId<HTMLInputElement>("preferredModelInput").value = "";
       byId<HTMLInputElement>("preferredModelInput").placeholder = preset.modelHint;
-      localStorage.removeItem("shuvi.web.preferredModel");
+      removeSafePreference("shuvi.web.preferredModel");
       renderProviders();
       restoreProviderPreference();
       restoreRoutingPreference();
@@ -903,14 +947,14 @@ function renderRoutingPresets(): void {
 }
 
 function restoreRoutingPreference(): void {
-  const model = localStorage.getItem("shuvi.web.preferredModel") ?? "";
-  const workload = localStorage.getItem("shuvi.web.workload") ?? "General";
-  const provider = localStorage.getItem("shuvi.web.provider");
+  const model = getSafePreference("shuvi.web.preferredModel") ?? "";
+  const workload = getSafePreference("shuvi.web.workload") ?? "General";
+  const provider = getSafePreference("shuvi.web.provider");
 
   byId<HTMLInputElement>("preferredModelInput").value = model;
   byId<HTMLSelectElement>("workloadSelect").value = workload;
 
-  const presetId = localStorage.getItem("shuvi.web.routingPreset");
+  const presetId = getSafePreference("shuvi.web.routingPreset");
   const preset = routingPresets.find((item) => item.id === presetId);
   if (!model && preset) byId<HTMLInputElement>("preferredModelInput").placeholder = preset.modelHint;
 
@@ -924,11 +968,11 @@ function saveRoutingPreference(): void {
   const model = byId<HTMLInputElement>("preferredModelInput").value.trim();
   const workload = byId<HTMLSelectElement>("workloadSelect").value;
 
-  if (model) localStorage.setItem("shuvi.web.preferredModel", model);
-  else localStorage.removeItem("shuvi.web.preferredModel");
+  if (model) setSafePreference("shuvi.web.preferredModel", model);
+  else removeSafePreference("shuvi.web.preferredModel");
 
-  localStorage.setItem("shuvi.web.workload", workload);
-  localStorage.removeItem("shuvi.web.routingPreset");
+  setSafePreference("shuvi.web.workload", workload);
+  removeSafePreference("shuvi.web.routingPreset");
   renderRoutingPresets();
   restoreRoutingPreference();
   renderDashboardPlanningQueue();
@@ -1091,7 +1135,7 @@ function bindInteractions(): void {
   byId<HTMLButtonElement>("saveRoutingPreference").addEventListener("click", saveRoutingPreference);
 
   byId<HTMLButtonElement>("clearPlanningActivity").addEventListener("click", () => {
-    localStorage.removeItem("shuvi.web.activity");
+    removeSafePreference("shuvi.web.activity");
     renderWebActivity();
     renderLocalOverview();
     taskTimeline?.refresh();
@@ -1140,7 +1184,7 @@ hydrateMetrics();
 restoreBridgePreference();
 readOnlyBridge = new ShuviReadOnlyBridge(renderNativeConnection);
 renderNativeConnection(readOnlyBridge.state());
-mountRemoteRuntimeNotice();
+if (!isNativeShuvi()) mountRemoteRuntimeNotice();
 restoreProviderPreference();
 restoreRoutingPreference();
 renderRoutingPresets();
@@ -1149,11 +1193,14 @@ renderDashboardPlanningQueue();
 renderWebActivity();
 renderLocalOverview();
 bindInteractions();
-mountOnlineChat();
+// Same Vercel command chat. Relay is explicitly opted into; drafts remain
+// offline-safe when it is disconnected. Native execution needs agent receipts.
+const nativeChat = mountNativeAgent(()=>chatWorkspace?.refreshChat());
+const remoteChat = nativeChat ? null : mountRemoteCommandClient(()=>chatWorkspace?.refreshChat());
 chatWorkspace = mountChatWorkspace(message => {
   showToast(message);
   renderLocalOverview();
-});
+}, nativeChat ?? remoteChat ?? undefined);
 taskTimeline = mountTaskTimeline({
   drafts: readDraftTasks,
   events: readWebActivity,

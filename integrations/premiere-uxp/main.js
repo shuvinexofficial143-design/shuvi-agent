@@ -6202,12 +6202,12 @@ async function createSubsequence(argumentsValue) {
   }
 
   const sequenceGuid = plainGuid(newSequence.guid);
-  let projectItemId = null;
+  let nestedProjectItemId = null;
   try {
     const projectItem = await newSequence.getProjectItem();
-    projectItemId = await projectItem.getId();
+    nestedProjectItemId = await projectItem.getId();
   } catch {
-    projectItemId = null;
+    nestedProjectItemId = null;
   }
 
   const afterSequences = await project.getSequences();
@@ -6215,10 +6215,10 @@ async function createSubsequence(argumentsValue) {
     ? afterSequences.filter(value => plainGuid(value.guid) === sequenceGuid)
     : [];
   let projectItemResolved = false;
-  if (projectItemId) {
+  if (nestedProjectItemId) {
     try {
       const root = await project.getRootItem();
-      projectItemResolved = Boolean(await findProjectItemById(root, projectItemId));
+      projectItemResolved = Boolean(await findProjectItemById(root, nestedProjectItemId));
     } catch {
       projectItemResolved = false;
     }
@@ -6266,7 +6266,7 @@ async function createSubsequence(argumentsValue) {
     warning: verified?null:"Subsequence identity may exist, but exact selected-only clip content semantics were not fully verified.",
     sequenceGuid,
     sequenceName: newSequence.name || null,
-    projectItemId,
+    projectItemId: nestedProjectItemId,
     sequenceIdentityVerified,
     projectItemResolved,
     verificationStatus: verified ? "verified_creation_identity" : "accepted_unverified",
@@ -7186,7 +7186,8 @@ async function insertMappedGraphic(args) {
     const verified = mappedPlan(mapping, event, inspected);
     for (const s of verified.settings) {
       const c = inspected.components.find(c => c.matchName === s.component_match_name && c.displayName === s.component_display_name);
-      if (c.params.find(p => p.displayName === s.param_display_name).value !== s.value) throw Error("Native graphics value readback mismatch.");
+      const observedParam = c.params.find(p => p.displayName === s.param_display_name);
+      if (!observedParam || !equivalentStaticEffectValue(s.value, observedParam.value)) throw Error("Native graphics value readback mismatch.");
     }
     result.field_count = verified.settings.length;
     result.status = "applied"; result.uncertain = false; result.stop_batch = false;

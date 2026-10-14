@@ -1,5 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import "./styles.css";
+import {assessMasterSchedulerAdmission} from "./native-scheduler-admission.mjs";
+import {pinNativeWorkerModels,restorePinnedWorkerModels,chooseSpecialistTurn,specialistProposalMatches,delegatedWorkerContext} from "./native-worker-model-routing.mjs";
+import {decideNativeContinuation} from "./native-continuation-driver.mjs";
+import {nativeTaskDeliveryClaims} from "./native-delivery-claims.mjs";
 import type {
   ActionResult,
   ChatMessage,
@@ -7,13 +11,16 @@ import type {
   PendingAction,
   ProviderDescriptor,
   RuntimeStatus,
+  NativeWorkerStatus,
+  NativeJobHistory,
+  NativeSchedule,
+  NativeTaskDelivery,
   ToolProposal,
   AuditEntry,
   SessionCheckpoint,
   PremiereBridgeStatus
 } from "./types";
 import {
-  MAX_AGENT_STEPS,
   createAgentOrchestrationState,
   codingPhase,
   evaluateProposal,
@@ -28,41 +35,82 @@ import {
   type AgentOrchestrationState
 } from "./agent-orchestrator";
 
-import { taskGraphProgress, type GraphAuditEvent } from "./task-graph.mjs";
+import { taskGraphProgress, handoffContractFailure, type GraphAuditEvent } from "./task-graph.mjs";
+import { editingMasterContext, orchestrationWithMasterEditor } from "./master-editor.mjs";
+import { workerQueueView, nextWorkerTurn, workerSupervisorView } from "./master-worker-queue.mjs";
+import { MODEL_ROLES, loadModelRoutes, validateModelRoute, selectTaskRoute } from "./model-routing.mjs";
+import type { ModelRoute, TaskModelRoute } from "./model-routing.mjs";
+import { chooseNativeRoute } from "../web-dashboard/src/native-model-routing.mjs";
+import {createTaskPermissionScope,grantTaskRead,allowsTaskRead,revokeTaskScope} from "./task-permission-scope.mjs";
+import {taskReadPermissionKey} from "./task-read-permission-key.mjs";
+import {allowedTaskBudget,taskDeadlineAllows,reserveTaskModelRequest} from "./task-runtime-budget.mjs";
+import {approvalRiskClass, validPendingDisplayMetadata} from "./approval-render-safety.mjs";
+import {stagingWasInvalidated} from "./approval-staging-guard.mjs";
+import {verifiedNativeActionResult, confirmedNativeActionFailure} from "./native-action-outcome.mjs";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) throw new Error("Missing app root");
 
 let providers: ProviderDescriptor[] = [];
+let modelRoutes: Record<string, ModelRoute> = {};
+let taskModelRoute: TaskModelRoute | null = null;
+let taskWorkerModels: ReturnType<typeof restorePinnedWorkerModels> = null;
 let messages: ChatMessage[] = [];
 let pendingAction: PendingAction | null = null;
 let pendingChatProposal: ToolProposal | null = null;
 let executingActionId: string | null = null;
 let executingCancellation: { actionId: string; promise: Promise<boolean> } | null = null;
 let orchestration: AgentOrchestrationState = createAgentOrchestrationState();
+let nativeHostStatus: NativeWorkerStatus | null = null;
+let nativeHostStatusUnavailable = true;
+let nativeHostReadPending = false;
+let nativeHistoryReadPending = false;
+let nativeSchedulerReadPending = false;
+let failedSchedulerStep: {stepId:string;actionId:string}|null = null;
+let masterEmptyToolReplies = 0;
 let busy = false;
 let manualActionRunning = false;
 let cancelRequested = false;
+type RemoteInboundMessage = {
+  ownerId:string; deviceId:string; threadId:string; messageId:string; taskId:string;
+  text:string; expiresAt:number;
+};
+type RemoteActiveTask = {
+  message:RemoteInboundMessage; revision:number; status:string;
+  evidenceActionId:string|null; hadFailure:boolean;
+};
+type RemoteInbox = {
+ messages:RemoteInboundMessage[];
+ decisions:Array<{taskId:string;approvalId:string;decision:string}>;
+ pending:Array<{taskId:string;request:string}>;
+};
+let remoteAgentEnabled = false;
+let remotePolling = false;
+let remoteTask:RemoteActiveTask|null = null;
+let remoteApproval:{id:string;expiresAt:number;proposal:ToolProposal;actionId:string}|null = null;
+
 let sessionInputTokens = 0;
 let sessionOutputTokens = 0;
 let sessionTotalTokens = 0;
-const sessionAllowedScopes = new Set<string>();
+let activePermissionScope=createTaskPermissionScope(crypto.randomUUID());
+function rotatePermissionScope():void{
+ revokeTaskScope(activePermissionScope);
+ activePermissionScope=createTaskPermissionScope(crypto.randomUUID());
+}
+function activeReadGrant(proposal:ToolProposal,risk:string){
+ return {taskId:activePermissionScope.taskId,key:taskReadPermissionKey(proposal) ?? "",tool:proposal.tool,risk};
+}
 
 root.innerHTML = `
 <div id="onboarding" class="onboarding hidden">
   <div class="onboarding-card">
     <div class="orb onboarding-orb">S</div>
     <h1>Set up Shuvi</h1>
-    <p>Choose the AI provider Shuvi should use. Your API key is stored in the operating-system credential store.</p>
+    <p>Shuvi supports multiple AI providers and task-specific models. You can connect providers here or configure a model team later.</p>
 
     <label>
       Provider
       <select id="onboardingProvider"></select>
-    </label>
-
-    <label>
-      Model
-      <input id="onboardingModel" autocomplete="off" />
     </label>
 
     <label id="onboardingBaseUrlLabel" class="hidden">
@@ -75,7 +123,8 @@ root.innerHTML = `
       <input id="onboardingKey" type="password" placeholder="Paste provider API key" autocomplete="off" />
     </label>
 
-    <button id="completeOnboarding" class="primary onboarding-button">Start using Shuvi</button>
+    <button id="completeOnboarding" class="primary onboarding-button">Save provider and open Shuvi</button>
+    <button id="skipOnboarding" type="button" class="onboarding-button">Configure models later</button>
     <p id="onboardingStatus" class="muted"></p>
   </div>
 </div>
@@ -102,6 +151,17 @@ root.innerHTML = `
       <small id="ramChildren" class="ram-children">0 managed processes</small>
       <small id="tokenMeter" class="ram-children">0 session tokens</small>
       <small id="agentProgress" class="ram-children">Agent idle</small>
+      <button id="reviewNativeJob" class="hidden" type="button">Review interrupted job</button>
+      <small id="reviewNativeHint" class="ram-children hidden"></small>
+      <small id="nativeSchedulerSummary" class="ram-children">Native scheduler: not yet checked</small>
+      <button id="checkNativeTaskDelivery" type="button">Verify last delivered task</button>
+      <small id="nativeDeliverySummary" class="ram-children">Previous delivery: not yet checked</small>
+      <button id="reviewFailedSchedulerStep" class="hidden" type="button">Review failed scheduled action</button>
+      <small id="reviewFailedSchedulerHint" class="ram-children hidden"></small>
+      <details id="nativeActionHistory" class="ram-children">
+        <summary>Native action history</summary>
+        <div id="nativeActionHistoryList">History not yet checked</div>
+      </details>
       <details id="taskProgress" class="ram-children hidden">
         <summary id="taskProgressSummary">Task progress</summary>
         <div id="taskProgressSteps"></div>
@@ -139,6 +199,13 @@ root.innerHTML = `
 
       <form id="chatForm" class="composer">
         <textarea id="prompt" rows="2" placeholder="Message Shuvi…" required></textarea>
+        <label title="Owner-approved task action limit. Every native action still requires its existing permission gate." style="font-size:12px">Actions
+          <select id="taskActionBudget" aria-label="Task action budget">
+            <option value="8">8 (standard)</option>
+            <option value="24">24 (extended)</option>
+            <option value="48">48 (long task)</option>
+          </select>
+        </label>
         <button id="stopButton" class="stop-button hidden" type="button">Stop</button>
         <button id="sendButton" type="submit">Send</button>
       </form>
@@ -256,6 +323,20 @@ root.innerHTML = `
 
         <p id="settingsStatus" class="muted"></p>
       </div>
+      <section class="panel form-grid" aria-label="Model team routes">
+        <h3>Model Team · Task Routing</h3>
+        <p class="muted">Assign a verified provider and exact model ID to each role. Shuvi routes a task to one AI model at a time; independent parallel workers remain under development. Provider keys are saved separately in Windows Credential Manager above.</p>
+        <label>Task role<select id="teamRole"></select></label>
+        <label>AI provider<select id="teamProvider"></select></label>
+        <label>Exact model ID<input id="teamModel" autocomplete="off" placeholder="Enter the provider's real model ID" /></label>
+        <label id="teamBaseUrlLabel" class="hidden">Custom/Local API URL<input id="teamBaseUrl" autocomplete="off" placeholder="https://.../v1/chat/completions" /></label>
+        <div class="button-row">
+          <button id="saveTeamRoute" class="primary" type="button">Assign model to role</button>
+          <button id="deleteTeamRoute" type="button">Clear role</button>
+        </div>
+        <p id="teamStatus" class="muted" role="status"></p>
+        <div id="teamSummary" class="muted"></div>
+      </section>
         <section class="panel" aria-label="Web Control Center pairing">
           <h3>Web Control Center · Read-only connection</h3>
           <p class="muted">Start a local pairing listener manually. It only confirms that this Shuvi Windows process is running. It cannot run computer commands, inspect private data or approve actions.</p>
@@ -268,6 +349,18 @@ root.innerHTML = `
           </label>
           <p id="webPairingStatus" class="muted" role="status">Bridge disabled. Nothing is listening on 127.0.0.1:47771.</p>
           <p class="muted">Web URL: http://127.0.0.1:1423 — code is session-only and must not be pasted into chat or shared publicly.</p>
+        </section>
+        <section class="panel" aria-label="Windows outbound remote agent">
+          <h3>Windows Remote Agent · Secure outbound control</h3>
+          <p class="muted">Opt in to commands from your Shuvi mobile dashboard. No public Windows port is opened. Native tool permission and exact audit receipts remain required.</p>
+          <label>Windows agent pairing code (not the mobile owner code)
+            <input id="remoteAgentAccess" type="password" autocomplete="off" spellcheck="false" maxlength="64" placeholder="64-character private agent code" />
+          </label>
+          <div class="button-row">
+            <button id="remoteAgentConnect" class="primary" type="button">Connect Windows Agent</button>
+            <button id="remoteAgentDisconnect" type="button">Disconnect and revoke on this PC</button>
+          </div>
+          <p id="remoteAgentStatus" class="muted" role="status">Remote agent disabled. No command polling.</p>
         </section>
     </section>
   </main>
@@ -292,12 +385,18 @@ const workspaceInput = el<HTMLInputElement>("#workspaceInput");
 const workspaceStatus = el<HTMLElement>("#workspaceStatus");
 const onboarding = el<HTMLElement>("#onboarding");
 const onboardingProvider = el<HTMLSelectElement>("#onboardingProvider");
-const onboardingModel = el<HTMLInputElement>("#onboardingModel");
 const onboardingBaseUrl = el<HTMLInputElement>("#onboardingBaseUrl");
 const onboardingBaseUrlLabel = el<HTMLElement>("#onboardingBaseUrlLabel");
 const onboardingKey = el<HTMLInputElement>("#onboardingKey");
 const onboardingKeyLabel = el<HTMLElement>("#onboardingKeyLabel");
 const onboardingStatus = el<HTMLElement>("#onboardingStatus");
+const teamRole = el<HTMLSelectElement>("#teamRole");
+const teamProvider = el<HTMLSelectElement>("#teamProvider");
+const teamModel = el<HTMLInputElement>("#teamModel");
+const teamBaseUrl = el<HTMLInputElement>("#teamBaseUrl");
+const teamBaseUrlLabel = el<HTMLElement>("#teamBaseUrlLabel");
+const teamStatus = el<HTMLElement>("#teamStatus");
+const teamSummary = el<HTMLElement>("#teamSummary");
 const resumeBanner = el<HTMLElement>("#resumeBanner");
 const resumeSummary = el<HTMLElement>("#resumeSummary");
 const premiereBridgeState = el<HTMLElement>("#premiereBridgeState");
@@ -315,15 +414,27 @@ function applyProviderDefaults(forceModel = false): void {
   if (!provider) return;
 
   if (forceModel || !modelInput.value) modelInput.value = provider.default_model;
+  modelInput.placeholder = provider.id === "xkiro"
+    ? "Enter the exact xKiro model ID (no default is assumed)"
+    : "Model ID";
   baseUrlLabel.classList.toggle("hidden", !provider.custom_base_url);
   apiKeyLabel.classList.toggle("hidden", !provider.api_key_required);
   activeProvider.textContent = `${provider.name} · ${modelInput.value || provider.default_model}`;
 }
 
+// A20: The browser can throw on localStorage access (policy, private mode,
+// WebView sandbox or quota). Provider UI must remain usable without storage.
+function readLocalPreference(key: string): string | null {
+  try { return window.localStorage.getItem(key); } catch { return null; }
+}
+function writeLocalPreference(key: string, value: string): boolean {
+  try { window.localStorage.setItem(key, value); return true; } catch { return false; }
+}
+
 function loadSavedProvider(): void {
-  const id = localStorage.getItem("shuvi.provider");
-  const model = localStorage.getItem("shuvi.model");
-  const baseUrl = localStorage.getItem("shuvi.baseUrl");
+  const id = readLocalPreference("shuvi.provider");
+  const model = readLocalPreference("shuvi.model");
+  const baseUrl = readLocalPreference("shuvi.baseUrl");
 
   if (id && providers.some((provider) => provider.id === id)) providerSelect.value = id;
   if (model) modelInput.value = model;
@@ -333,24 +444,24 @@ function loadSavedProvider(): void {
 }
 
 function saveProviderSettings(): void {
-  localStorage.setItem("shuvi.provider", providerSelect.value);
-  localStorage.setItem("shuvi.model", modelInput.value.trim());
-  localStorage.setItem("shuvi.baseUrl", baseUrlInput.value.trim());
+  const saved = [
+    writeLocalPreference("shuvi.provider", providerSelect.value),
+    writeLocalPreference("shuvi.model", modelInput.value.trim()),
+    writeLocalPreference("shuvi.baseUrl", baseUrlInput.value.trim()),
+  ].every(Boolean);
   applyProviderDefaults();
-  settingsStatus.textContent = "Provider settings saved.";
+  settingsStatus.textContent = saved
+    ? "Provider settings saved."
+    : "Local storage unavailable. Settings apply only until Shuvi restarts.";
 }
 
 function selectedOnboardingProvider(): ProviderDescriptor | undefined {
   return providers.find((provider) => provider.id === onboardingProvider.value);
 }
 
-function syncOnboardingProvider(forceModel = false): void {
+function syncOnboardingProvider(): void {
   const provider = selectedOnboardingProvider();
   if (!provider) return;
-
-  if (forceModel || !onboardingModel.value) {
-    onboardingModel.value = provider.default_model;
-  }
 
   onboardingKeyLabel.classList.toggle("hidden", !provider.api_key_required);
   onboardingBaseUrlLabel.classList.toggle("hidden", !provider.custom_base_url);
@@ -361,20 +472,101 @@ function syncOnboardingProvider(forceModel = false): void {
 }
 
 function prepareOnboarding(): void {
-  onboardingProvider.innerHTML = providers
-    .map((provider) => `<option value="${provider.id}">${provider.name}</option>`)
-    .join("");
+  onboardingProvider.replaceChildren(...providers.map(provider => {
+    const option = document.createElement("option");
+    option.value = provider.id;
+    option.textContent = provider.name;
+    return option;
+  }));
 
-  const savedProvider = localStorage.getItem("shuvi.provider");
+  const savedProvider = readLocalPreference("shuvi.provider");
   if (savedProvider && providers.some((provider) => provider.id === savedProvider)) {
     onboardingProvider.value = savedProvider;
   }
 
-  syncOnboardingProvider(true);
+  syncOnboardingProvider();
 
-  if (localStorage.getItem("shuvi.onboarded") !== "1") {
+  if (readLocalPreference("shuvi.onboarded") !== "1") {
     onboarding.classList.remove("hidden");
   }
+}
+
+function defaultModelRoute(): ModelRoute {
+  return {
+    provider: providerSelect.value,
+    model: modelInput.value.trim(),
+    base_url: baseUrlInput.value.trim()
+  };
+}
+function loadConfiguredModelRoutes(): void {
+  modelRoutes = loadModelRoutes(
+    readLocalPreference("shuvi.modelRoutes"),
+    providers.map(provider => provider.id)
+  );
+  teamRole.replaceChildren(...MODEL_ROLES.map(([id, label]) => {
+    const option = document.createElement("option");
+    option.value = id;
+    option.textContent = label;
+    return option;
+  }));
+  teamProvider.replaceChildren(...providers.map(provider => {
+    const option = document.createElement("option");
+    option.value = provider.id;
+    option.textContent = provider.name;
+    return option;
+  }));
+  updateTeamForm();
+  renderModelTeam();
+}
+function updateTeamForm(): void {
+  const configured = modelRoutes[teamRole.value];
+  teamProvider.value = configured?.provider ?? providerSelect.value;
+  teamModel.value = configured?.model ?? "";
+  teamBaseUrl.value = configured?.base_url ?? "";
+  updateTeamBaseUrlVisibility();
+}
+function updateTeamBaseUrlVisibility(): void {
+  teamBaseUrlLabel.classList.toggle("hidden", !["custom", "ollama"].includes(teamProvider.value));
+}
+function renderModelTeam(): void {
+  teamSummary.replaceChildren();
+  for (const [id, label] of MODEL_ROLES) {
+    const line = document.createElement("p");
+    const route = modelRoutes[id];
+    line.textContent = route
+      ? `${label}: ${route.provider} / ${route.model}`
+      : `${label}: uses Master or default provider`;
+    teamSummary.append(line);
+  }
+}
+function restoreTaskRoute(): void {
+  if (taskModelRoute) {
+    activeProvider.textContent = `Task model [${taskModelRoute.role}] · ${taskModelRoute.provider} / ${taskModelRoute.model}`;
+  }
+}
+function beginTaskRoute(text: string): void {
+  taskWorkerModels=null; // Pin only owner-configured models for the new task.
+  // The installed Dashboard and the existing native background coordinator
+  // share one non-secret model-team config. Remote mobile tasks must respect
+  // the owner's exact choices, just like commands typed in the visible UI.
+  const savedTeam = readLocalPreference("shuvi.native.model.team.v1");
+  if (savedTeam) {
+    try {
+      const team = JSON.parse(savedTeam) as {provider:string;base_url:string;roles:Record<string,string>};
+      if (team && typeof team.provider === "string" &&
+          providers.some(provider => provider.id === team.provider)) {
+        const chosen = chooseNativeRoute(text,team);
+        taskModelRoute = chosen.ok
+          ? {provider:chosen.provider,model:chosen.model,base_url:chosen.base_url,role:chosen.role}
+          : {provider:team.provider,model:"",base_url:"",role:chosen.role};
+        if(chosen.ok)taskWorkerModels=pinNativeWorkerModels(savedTeam,chosen.provider);
+        restoreTaskRoute();
+        return;
+      }
+    } catch { /* Fail closed into existing explicit native route checks. */ }
+  }
+  taskModelRoute = selectTaskRoute(text, modelRoutes, defaultModelRoute());
+  restoreTaskRoute();
 }
 
 const MAX_PROVIDER_MESSAGES = 80;
@@ -413,17 +605,152 @@ function currentCheckpoint(): SessionCheckpoint {
   return {
     version: 2,
     updated_at_ms: Date.now(),
-    provider: providerSelect.value,
-    model: modelInput.value.trim(),
-    base_url: baseUrlInput.value.trim() || null,
+    provider: taskModelRoute?.provider ?? providerSelect.value,
+    model: taskModelRoute?.model ?? modelInput.value.trim(),
+    base_url: (taskModelRoute?.base_url ?? baseUrlInput.value.trim()) || null,
     messages,
-    orchestration
+    orchestration,
+    worker_models:taskWorkerModels
   };
+}
+
+function nativeWorkerDisplay(): string {
+  if (nativeHostStatusUnavailable || !nativeHostStatus) return "Host worker: unavailable (do not infer idle)";
+  const host = nativeHostStatus;
+  if (host.requiresOwnerReview || host.state === "recovery_required")
+    return "Host worker: RECOVERY REQUIRED — inspect native action and durable job journal; no automatic retry";
+  if (host.durableJobPhase === "owner_reviewed_unknown")
+    return "Host worker: last interrupted action reviewed as UNKNOWN; never marked successful or retried";
+  if (host.state === "native_action_in_flight") {
+    const pulse=host.supervisorHealth==="rust_supervisor_observed"
+      ? "Rust supervisor check-in "+Math.floor((host.supervisorHeartbeatAgeMs??0)/1000)+"s ago"
+      : host.supervisorHealth==="supervisor_tick_stale"
+        ? "Rust supervisor heartbeat stale — inspect host; never assume completion"
+        : host.supervisorHealth==="supervisor_start_record_only"
+          ? "Durable job started; awaiting first real Rust supervisor tick"
+          : "No independently attributed supervisor heartbeat";
+    return "Host worker: native action active ("+(host.tool ?? "unknown")+
+      ", "+Math.floor((host.observedActionAgeMs ?? 0)/1000)+"s observed; "+
+      pulse+"; NOT a progress heartbeat)";
+  }
+  if (host.state === "lease_held_unattributed")
+    return "Host lease occupied — action identity not independently attributed";
+  return "Host worker: no action in this process (other instances unknown)";
+}
+// Only a read-only Rust IPC call can update host ownership observations.
+// Never use the web graph or this UI timer to grant another native lease.
+async function refreshNativeWorkerStatus(): Promise<void> {
+  if(nativeHostReadPending)return;
+  nativeHostReadPending=true;
+  try{
+    const status=await invoke<NativeWorkerStatus>("native_worker_status");
+    if(status.schemaVersion!==1||status.progressHeartbeatVerified!==false
+      ||status.safeToAutoRetry!==false
+      ||!["not_observed","unattributed_or_interrupted","supervisor_tick_stale",
+        "rust_supervisor_observed","supervisor_start_record_only","last_action_audited",
+        "audited_job_conflicts_with_live_lease","last_action_reviewed_unknown"].includes(status.supervisorHealth))
+      throw Error("Invalid native worker observation");
+    nativeHostStatus=status;
+    nativeHostStatusUnavailable=false;
+  }catch{
+    nativeHostStatus=null;
+    nativeHostStatusUnavailable=true;
+  }finally{
+    nativeHostReadPending=false;
+    renderOrchestrationStatus();
+  }
+}
+
+// Read-only display of UUID-bound Rust action history; no approval authority.
+async function refreshNativeWorkerHistory(): Promise<void> {
+  if (nativeHistoryReadPending) return;
+  nativeHistoryReadPending=true;
+  const output=el<HTMLElement>("#nativeActionHistoryList");
+  try {
+    const history=await invoke<NativeJobHistory>("native_worker_history");
+    if (history.version!==1 || !Array.isArray(history.items) || history.items.length>48
+        || history.items.some(entry=>typeof entry.actionId!=="string"
+          || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(entry.actionId)
+          ||typeof entry.tool!=="string" || entry.tool.length>160
+          ||!["running","audit_verified","owner_reviewed_unknown"].includes(entry.phase))) {
+      throw Error("Invalid native history format");
+    }
+    output.replaceChildren();
+    if (!history.items.length) {
+      output.textContent="No native actions recorded in this history yet.";
+      return;
+    }
+    for (const item of history.items.slice(-8).reverse()) {
+      const row=document.createElement("div");
+      const outcome=item.phase==="running"?"RUNNING / outcome unknown"
+        :item.phase==="owner_reviewed_unknown"?"OWNER REVIEWED / outcome unknown"
+        :item.auditSuccess===true?"RUST AUDIT SUCCESS":"RUST AUDIT FAILURE";
+      row.textContent=item.tool+" · "+outcome+" · "+item.actionId.slice(0,8);
+      row.title="Native audited action only; this does not certify an Adobe/Blender edit or render.";
+      output.append(row);
+    }
+  } catch {
+    output.textContent="Native history unavailable — status unknown. Inspect the Rust host before acting.";
+  } finally {
+    nativeHistoryReadPending=false;
+  }
+}
+
+// Read-only Rust schedule observation: actual execution admission is checked
+// separately by the Rust execute_action path, never by this UI status.
+async function refreshNativeSchedule(): Promise<void> {
+  if (nativeSchedulerReadPending) return;
+  nativeSchedulerReadPending=true;
+  const target=el<HTMLElement>("#nativeSchedulerSummary");
+  try {
+    const schedule=await invoke<NativeSchedule|null>("native_scheduler_status");
+    failedSchedulerStep=null;
+    const reviewButton=el<HTMLButtonElement>("#reviewFailedSchedulerStep");
+    reviewButton.classList.add("hidden");
+    if (schedule===null) {
+      target.textContent="Native scheduler: no persisted task graph";
+      return;
+    }
+    if (schedule.version!==1||!Array.isArray(schedule.jobs)
+        ||schedule.jobs.length===0||schedule.jobs.length>48
+        ||schedule.jobs.some(job=>!["queued","running","audited","failed","outcome_unknown","reviewed_failed"].includes(job.phase)
+          ||typeof job.stepId!=="string"||typeof job.tool!=="string")) {
+      throw Error("Invalid native scheduler status");
+    }
+    const failed=schedule.jobs.find(job=>job.phase==="failed"&&typeof job.actionId==="string");
+    if (failed && typeof failed.actionId==="string" &&
+        !schedule.jobs.some(job=>job.phase==="running"||job.phase==="outcome_unknown")) {
+      failedSchedulerStep={stepId:failed.stepId,actionId:failed.actionId};
+      reviewButton.classList.remove("hidden");
+    }
+    const audited=schedule.jobs.filter(job=>job.phase==="audited").length;
+    const running=schedule.jobs.filter(job=>job.phase==="running").length;
+    const unsafe=schedule.jobs.some(job=>job.phase==="failed"||job.phase==="outcome_unknown");
+    target.textContent="Rust scheduler: "+audited+"/"+schedule.jobs.length+
+      " native actions audited · "+running+" running"+
+      (unsafe?" · RECOVERY/REPLAN REQUIRED":" · permissioned step dispatch")+
+      " · not a full editing acceptance";
+  } catch {
+    failedSchedulerStep=null;
+    el<HTMLButtonElement>("#reviewFailedSchedulerStep").classList.add("hidden");
+    target.textContent="Native scheduler unavailable — do not assume a vacant worker.";
+  } finally { nativeSchedulerReadPending=false; }
 }
 
 function renderOrchestrationStatus(): void {
   const progress = el<HTMLElement>("#agentProgress");
+  const reviewButton = el<HTMLButtonElement>("#reviewNativeJob");
+  reviewButton.classList.toggle("hidden", !nativeHostStatus || nativeHostStatusUnavailable
+    ||nativeHostStatus.state!=="recovery_required"
+    ||nativeHostStatus.durableJobPhase!=="running"
+    ||nativeHostStatus.leaseOwnedByThisProcess
+    ||!nativeHostStatus.durableJobActionId||!nativeHostStatus.durableJobTool);
   const graphProgress = taskGraphProgress(orchestration.task_graph);
+  const workerQueue = workerQueueView(orchestration.task_graph);
+  const workerSupervisor = workerSupervisorView(orchestration.task_graph);
+  const nextTurn = nextWorkerTurn(orchestration.task_graph);
+  const nextMedia = nextTurn?.artifact ? " · Source: "+nextTurn.artifact.source+" SHA-256 "+nextTurn.artifact.sha256.slice(0,12)+"…" : "";
+  const nextBatch = nextTurn?.batch_sources ? " · Batch: "+nextTurn.batch_sources.length+" audited PNG sources (normal approval required)" : "";
   const graphView = el<HTMLElement>("#taskProgress");
   graphView.classList.toggle("hidden", !graphProgress.total);
   const list = el<HTMLElement>("#taskProgressSteps");
@@ -432,21 +759,28 @@ function renderOrchestrationStatus(): void {
     el<HTMLElement>("#taskProgressSummary").textContent =
       `${graphProgress.completed}/${graphProgress.total} evidence-verified steps complete`;
     const symbols: Record<string, string> = { completed: "✓", running: "→", ready: "→", pending: "○", failed: "!", blocked: "!", skipped: "–" };
+    const laneById = new Map(workerQueue.jobs.map(job => [job.id, job]));
     for (const step of graphProgress.steps) {
       const row = document.createElement("div");
       const verified = step.evidence_verified ? " · verified evidence" : "";
       const reason = step.reason && (step.status === "failed" || step.status === "blocked")
         ? ` — ${step.reason}`
         : "";
-      row.textContent = `${symbols[step.status]} ${step.title} (${step.status}${verified})${reason}`;
-      row.title = step.reason ?? (step.evidence_verified ? "Completion backed by local typed-tool evidence." : step.status);
+      const worker = laneById.get(step.step_id);
+      const missingHandoff = handoffContractFailure(orchestration.task_graph,step.step_id);
+      const handoffWarning = missingHandoff && worker?.status === "blocked" ? " — "+missingHandoff : "";
+      row.textContent = `${symbols[step.status]} [${worker?.worker ?? "master"}] ${step.title} (${worker?.status ?? step.status}${verified})${reason}${handoffWarning}`;
+      const exactHandoff = worker?.handoffs.map(h => h.from_worker+" → "+h.to_worker+
+        " · step "+h.from_step_id+" · Rust action "+h.action_id.slice(0,8)).join("; ");
+      row.title = missingHandoff ?? step.reason ?? (exactHandoff || (step.evidence_verified
+        ? "Exact typed-result and native audit receipt verified." : step.status));
       list.append(row);
     }
-    progress.textContent = `Task: ${orchestration.task_graph.objective} · ${graphProgress.completed}/${graphProgress.total} steps complete · Current: ${graphProgress.current ?? "none"} · Phase: ${orchestration.coding.active ? codingPhase(orchestration) : "general"} · State: ${orchestration.recovery_mode}`;
+    progress.textContent = `Task: ${orchestration.task_graph.objective} · ${workerQueue.verified}/${workerQueue.total} audited worker actions · ${workerQueue.ready} ready · ${workerQueue.running} running · ${workerQueue.blocked} blocked · Native lease: ${workerSupervisor.state}${workerSupervisor.quarantined ? " (recovery required)" : ""} · Next: ${nextTurn ? nextTurn.worker+" / "+nextTurn.step_id+" (approval needed)" : "awaiting safe handoff"}${nextMedia}${nextBatch} · ${nativeWorkerDisplay()} · Current: ${graphProgress.current ?? "none"} · Phase: ${orchestration.coding.active ? codingPhase(orchestration) : "general"} · State: ${orchestration.recovery_mode}`;
     return;
   }
   if (!orchestration.objective && orchestration.tool_actions === 0 && orchestration.next_step === 1) {
-    progress.textContent = "Agent idle";
+    progress.textContent = "Agent idle · "+nativeWorkerDisplay();
     return;
   }
 
@@ -457,7 +791,7 @@ function renderOrchestrationStatus(): void {
     ? ` · ${codingPhase(orchestration).replaceAll("_", " ")}`
     : "";
   progress.textContent =
-    `Agent ${Math.min(orchestration.next_step, MAX_AGENT_STEPS)}/${MAX_AGENT_STEPS}${coding}${mode}`;
+    `Agent ${Math.min(orchestration.next_step, orchestration.max_steps)}/${orchestration.max_steps}${coding}${mode} · ${nativeWorkerDisplay()}`;
 }
 
 async function saveActiveCheckpoint(): Promise<void> {
@@ -469,6 +803,7 @@ async function saveActiveCheckpoint(): Promise<void> {
 }
 
 async function clearActiveCheckpoint(): Promise<void> {
+  revokeTaskScope(activePermissionScope);
   try {
     await invoke("clear_session_checkpoint");
   } catch {
@@ -597,19 +932,31 @@ async function loadWorkspace(): Promise<void> {
 async function boot(): Promise<void> {
   try {
     providers = await invoke<ProviderDescriptor[]>("list_providers");
-    providerSelect.innerHTML = providers
-      .map((provider) => `<option value="${provider.id}">${provider.name}</option>`)
-      .join("");
+    providerSelect.replaceChildren(...providers.map(provider => {
+      const option = document.createElement("option");
+      option.value = provider.id;
+      option.textContent = provider.name;
+      return option;
+    }));
 
     loadSavedProvider();
+    loadConfiguredModelRoutes();
     prepareOnboarding();
     await loadWorkspace();
     await loadRecoveryCheckpoint();
     renderOrchestrationStatus();
+    await refreshNativeWorkerStatus();
+    await refreshNativeWorkerHistory();
+    await refreshNativeSchedule();
     await refreshRam();
     await refreshAudit();
     await refreshPremiereBridge();
+    await refreshRemoteAgent();
+    window.setInterval(() => void tickRemoteAgent(), 4000);
     window.setInterval(() => void refreshRam(), 5000);
+    window.setInterval(() => void refreshNativeWorkerStatus(), 4000);
+    window.setInterval(() => void refreshNativeWorkerHistory(), 8000);
+    window.setInterval(() => void refreshNativeSchedule(), 8000);
   } catch (error) {
     settingsStatus.textContent = String(error);
   }
@@ -725,52 +1072,16 @@ function toolResultMessage(result: ActionResult): ChatMessage {
   };
 }
 
-function normalizeScopePath(value: string): string {
-  return value.replaceAll("/", "\\").replace(/\\+$/, "").toLowerCase();
-}
-
-function sessionPermissionKey(proposal: ToolProposal): string {
-  const pathValue =
-    typeof proposal.arguments.path === "string"
-      ? proposal.arguments.path.trim()
-      : "";
-
-  if (pathValue) {
-    // Session auto-approval for filesystem/Git reads is deliberately exact-path only.
-    // A frontend string prefix cannot prove canonical containment because dot-dot segments,
-    // Windows junctions and symlinks can resolve outside the selected workspace.
-    return proposal.tool + "|exact:" + normalizeScopePath(pathValue);
-  }
-
-  const pid =
-    typeof proposal.arguments.pid === "number"
-      ? String(proposal.arguments.pid)
-      : "";
-  if (pid) return proposal.tool + "|pid:" + pid;
-
-  const windowName =
-    typeof proposal.arguments.window === "string"
-      ? proposal.arguments.window.trim().toLowerCase()
-      : "";
-  if (windowName) return proposal.tool + "|window:" + windowName;
-
-  return proposal.tool + "|session";
-}
-
-function sessionPermissionLabel(proposal: ToolProposal): string {
-  const key = sessionPermissionKey(proposal);
-
-  if (key.includes("|exact:")) return "Allow this exact path for session";
-  if (key.includes("|pid:")) return "Allow for this managed browser session";
-  if (key.includes("|window:")) return "Allow for this window session";
-  return "Allow this read tool for session";
+function sessionPermissionLabel(_proposal: ToolProposal): string {
+  // Every field of the next proposed read must match, not just path/PID/window.
+  return "Allow this exact read request for current task (5 min)";
 }
 
 function revokeBrowserSessionPermissions(pid?: number): void {
-  const exactSuffix = typeof pid === "number" ? "|pid:" + String(pid) : null;
-  for (const key of [...sessionAllowedScopes]) {
-    if (exactSuffix ? key.endsWith(exactSuffix) : key.includes("|pid:")) {
-      sessionAllowedScopes.delete(key);
+  const exactMarker = typeof pid === "number" ? "|pid:" + String(pid) + "|args:" : null;
+  for (const key of [...activePermissionScope.grants.keys()]) {
+    if (exactMarker ? key.includes(exactMarker) : key.includes("|pid:")) {
+      activePermissionScope.grants.delete(key);
     }
   }
 }
@@ -803,6 +1114,8 @@ async function recordOrchestrationAudit(
 }
 
 async function stopAgentForSafety(reason: string): Promise<void> {
+  revokeTaskScope(activePermissionScope);
+  if (remoteTask) await closeRemoteTask("stopped");
   orchestration = { ...orchestration, recovery_mode: "stopped", stop_reason: reason.slice(0, 800) };
   if (orchestration.task_graph) await recordOrchestrationAudit("task_graph_stopped", reason.slice(0, 1200));
   renderOrchestrationStatus();
@@ -813,9 +1126,25 @@ async function stopAgentForSafety(reason: string): Promise<void> {
   setBusy(false);
 }
 
+// A confirmed Rust receipt is not durable Master progress until THIS
+// orchestration checkpoint is fsync-published. Never purchase the next model
+// request after an unsuccessful write, including read-only inspection turns.
+async function persistRequiredContinuationCheckpoint(): Promise<boolean> {
+  try {
+    await invoke("save_session_checkpoint", { checkpoint: currentCheckpoint() });
+    return true;
+  } catch {
+    await stopAgentForSafety(
+      "Could not durably save the last audited action and worker handoff. "+
+      "Task stopped; review Rust audit/checkpoint before another provider request."
+    );
+    return false;
+  }
+}
+
 async function continueAfterOutcome(): Promise<void> {
   renderOrchestrationStatus();
-  await saveActiveCheckpoint();
+  if (!await persistRequiredContinuationCheckpoint()) return;
   if (orchestration.recovery_mode === "stopped") {
     await stopAgentForSafety(
       orchestration.stop_reason ??
@@ -823,10 +1152,65 @@ async function continueAfterOutcome(): Promise<void> {
     );
     return;
   }
+
+  // Never buy another AI turn just because a Rust action returned.
+  // Only dependency-ready work proceeds. An all-audited DAG ends here.
+  const continuation=decideNativeContinuation(orchestration.task_graph);
+  if (continuation.mode==="pause"){
+    await stopAgentForSafety(continuation.reason ??
+      "Native task has no verified next worker. Owner inspection required.");
+    return;
+  }
+  if (continuation.mode==="complete") {
+    let schedule: NativeSchedule | null;
+    try {
+      schedule=await invoke<NativeSchedule|null>("native_scheduler_status");
+    } catch {
+      await stopAgentForSafety("Cannot verify terminal Rust task schedule. Final output is not certified.");
+      return;
+    }
+    const admission=assessMasterSchedulerAdmission(schedule,orchestration.task_graph);
+    if(!schedule || !admission.ok ||
+        schedule.jobs.length!==orchestration.task_graph?.steps.length ||
+        !schedule.jobs.every(job=>job.phase==="audited")){
+      await stopAgentForSafety("Native task completion does not match every Rust-audited worker job. Inspect receipts before marking done.");
+      return;
+    }
+    // Finalization is NOT merely UI state: Rust rechecks EVERY stored action
+    // ID against its audit and hashes actual Blender/Remotion deliverables.
+    // Failure preserves the checkpoint and refuses a "completed" claim.
+    const claims=nativeTaskDeliveryClaims(orchestration.task_graph,schedule);
+    if(!claims){
+      await stopAgentForSafety("Cannot construct a SHA-256-bound native delivery from audited worker steps.");
+      return;
+    }
+    let nativeDelivery:NativeTaskDelivery;
+    try{
+      nativeDelivery=await invoke<NativeTaskDelivery>("finalize_native_task_delivery",{steps:claims});
+    }catch{
+      await stopAgentForSafety("Native delivery verification failed. Audit or output files require inspection; checkpoint retained.");
+      return;
+    }
+    const completed=taskGraphProgress(orchestration.task_graph);
+    messages.push({role:"assistant",content:
+      "All "+completed.total+" audited native steps are now in a durable delivery receipt; "+
+      nativeDelivery.steps.filter(s=>s.artifact).length+
+      " output files were rehashed by Rust. No more AI calls were sent. "+
+      "Final video or 3D quality still requires real Windows application acceptance."});
+    el<HTMLElement>("#nativeDeliverySummary").textContent=
+      "Last native delivery: "+nativeDelivery.steps.length+" audited steps, "+
+      nativeDelivery.steps.filter(s=>s.artifact).length+" SHA-256 checked files.";
+    renderMessages();
+    if(remoteTask)await closeRemoteTask(remoteTask.evidenceActionId&&!remoteTask.hadFailure
+      ?"succeeded":"outcome_unknown");
+    await clearActiveCheckpoint();
+    setBusy(false);
+    return;
+  }
   await runAgentStep();
 }
 
-async function stageProposal(proposal: ToolProposal): Promise<void> {
+async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Promise<void> {
   const decision = evaluateProposal(orchestration, proposal);
   if (!decision.allowed) {
     orchestration = recordProposalBlock(orchestration, proposal, decision);
@@ -842,10 +1226,24 @@ async function stageProposal(proposal: ToolProposal): Promise<void> {
     return;
   }
 
+  masterEmptyToolReplies=0;
   const accepted = acceptProposalGraph(orchestration, proposal);
   orchestration = accepted.state;
   if (accepted.event) await recordOrchestrationAudit(accepted.event, `Task graph revision ${orchestration.task_graph?.revision}`, proposal.tool);
   orchestration = recordProposalStart(orchestration, proposal);
+  // Ownership token + exact state identity prevent a slow native prepare reply
+  // from staging a different task after Stop, Resume, or a new instruction.
+  const stagingScope = activePermissionScope;
+  let stagingState = orchestration;
+  const staleStage = () => stagingWasInvalidated(
+    stagingScope, activePermissionScope, stagingState, orchestration, cancelRequested
+  );
+  const denyStaleAction = async (id: unknown): Promise<void> => {
+    if (typeof id === "string" && id.length > 0 && id.length < 128) {
+      try { await invoke("deny_action", { actionId: id }); } catch { /* never authorize */ }
+    }
+    if (pendingAction?.id === id && pendingChatProposal === proposal) clearChatPermission();
+  };
   renderOrchestrationStatus();
   // Persist the in-flight receipt before permission staging/execution. Failure closes the graph path.
   if (orchestration.task_graph) {
@@ -857,16 +1255,43 @@ async function stageProposal(proposal: ToolProposal): Promise<void> {
     }
   }
   const step = orchestration.next_step;
+  if (staleStage()) return;
   try {
-    pendingAction = await invoke<PendingAction>("prepare_tool", {
-      proposal,
-      provider: providerSelect.value,
-      model: modelInput.value.trim(),
-      baseUrl: baseUrlInput.value.trim() || null
+    // Bind the prepared native action to the same pinned model route that
+    // produced its tool proposal; UI Settings may differ from role routing.
+    // Always forward the locally validated current graph to the Rust
+    // scheduler. A restored task may have a valid WebView checkpoint but no
+    // native-scheduler.json yet (crash before its first approved action).
+    // Do NOT forward model-written status/evidence as scheduling authority.
+    const scheduledGraph=orchestration.task_graph
+      ? {objective:orchestration.task_graph.objective,
+         revision:orchestration.task_graph.revision,
+         steps:orchestration.task_graph.steps.map(job=>({
+           step_id:job.step_id,expected_tool:job.expected_tool,
+           depends_on:[...job.depends_on]
+         }))}
+      : null;
+    const staged = await invoke<PendingAction>("prepare_tool", {
+      proposal: scheduledGraph ? {...proposal,task_graph:scheduledGraph} : proposal,
+      provider: route.provider,
+      model: route.model,
+      baseUrl: route.base_url || null
     });
-
+    if (staleStage()) {
+      await denyStaleAction(staged?.id);
+      return;
+    }
+    pendingAction = staged;
     pendingChatProposal = proposal;
-    const preparedId = pendingAction.id;
+    const preparedId = pendingAction?.id;
+    if (!validPendingDisplayMetadata(pendingAction, proposal.tool)) {
+      if (typeof preparedId === "string" && preparedId.length < 128) {
+        try { await invoke("deny_action", { actionId: preparedId }); } catch { /* fail closed */ }
+      }
+      clearChatPermission();
+      await stopAgentForSafety("Native approval metadata does not match the requested tool. No execution authorized.");
+      return;
+    }
     const bound = bindPreparedAction(orchestration, proposal, preparedId);
     if (!bound.ok) {
       try { await invoke("deny_action", { actionId: preparedId }); } catch { /* best effort */ }
@@ -878,6 +1303,7 @@ async function stageProposal(proposal: ToolProposal): Promise<void> {
       return;
     }
     orchestration = bound.state;
+    stagingState = orchestration;
 
     // Once Rust has created an exact pending action UUID, persist that binding before
     // showing approval UI or auto-executing a session-scoped low-risk action.
@@ -895,31 +1321,73 @@ async function stageProposal(proposal: ToolProposal): Promise<void> {
       }
     }
 
+    if (staleStage()) {
+      await denyStaleAction(preparedId);
+      return;
+    }
+
     if (
+      !remoteTask &&
       pendingAction.risk === "low" &&
-      sessionAllowedScopes.has(sessionPermissionKey(proposal)) &&
+      allowsTaskRead(activePermissionScope,activeReadGrant(proposal,pendingAction.risk)) &&
       !cancelRequested
     ) {
       await executePendingProposal(proposal);
       return;
     }
 
+    if (remoteTask) {
+      const approvalId = crypto.randomUUID();
+      const approvalExpiresAt = Date.now() + 90_000;
+      try {
+        await sendRemoteReceipt("requires_approval", {approvalId,approvalExpiresAt});
+        if (staleStage()) {
+          await denyStaleAction(preparedId);
+          return;
+        }
+        remoteApproval = {id:approvalId,expiresAt:approvalExpiresAt,proposal,actionId:preparedId};
+      } catch {
+        try { await invoke("deny_action", {actionId:preparedId}); } catch { /* fail closed */ }
+        clearChatPermission();
+        await closeRemoteTask("outcome_unknown");
+        await stopAgentForSafety("Remote approval could not be securely requested. The native action was not authorized.");
+        return;
+      }
+    }
+    if (staleStage()) {
+      await denyStaleAction(preparedId);
+      return;
+    }
     renderChatPermission(proposal, step);
-  } catch (error) {
-    orchestration = recordToolOutcome(orchestration, proposal, "failure", undefined, false);
-    await auditGraphOutcome(proposal);
+    if (remoteTask) {
+      const approve = chatPermission.querySelector<HTMLButtonElement>("#chatApprove");
+      if(approve){approve.disabled=true;approve.textContent="Approve on mobile";}
+      const allowSession = chatPermission.querySelector<HTMLButtonElement>("#chatAllowSession");
+      if(allowSession)allowSession.disabled=true;
+    }
+  } catch {
+    // An IPC error can arrive after Rust has staged a pending native action.
+    // The UI cannot prove that nothing was staged; never spend another model
+    // request or plan another Windows action after this unknown outcome.
+    if (staleStage()) return;
+    const abandonedId = pendingChatProposal === proposal ? pendingAction?.id : null;
+    if (typeof abandonedId === "string" && abandonedId.length < 128) {
+      try { await invoke("deny_action", { actionId: abandonedId }); } catch { /* fail closed */ }
+    }
+    if (pendingChatProposal === proposal) clearChatPermission();
+    revokeTaskScope(activePermissionScope);
     await recordOrchestrationAudit(
       "orchestration_replan",
-      `Tool preparation failed and requires replanning: ${String(error)}`.slice(0, 1_200),
+      "Native action preparation outcome unknown. Task stopped; no automatic paid planning or native execution.",
       proposal.tool
     );
     messages.push(hiddenToolFailure(proposal, {
-      prepare_failed: true,
-      error: String(error),
+      prepare_outcome_unknown: true,
       retry_automatically: false
     }));
-    renderMessages();
-    await continueAfterOutcome();
+    await stopAgentForSafety(
+      "Native preparation outcome unknown. Shuvi cannot verify whether a Windows action remains pending. Inspect the native audit and start a new owner-approved task; no automatic retry."
+    );
   }
 }
 
@@ -982,6 +1450,12 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
   if (!pendingAction || cancelRequested) return;
 
   const actionId = pendingAction.id;
+  if (!taskDeadlineAllows(orchestration.task_expires_at_ms) || orchestration.next_step > orchestration.max_steps) {
+    try { await invoke("deny_action", { actionId }); } catch { /* conservative halt */ }
+    clearChatPermission();
+    await stopAgentForSafety("Owner-approved task budget expired before execution; no new native action authorized.");
+    return;
+  }
   executingActionId = actionId;
   executingCancellation = null;
   clearChatPermission();
@@ -989,13 +1463,7 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
   try {
     const result = await invoke<ActionResult>("execute_action", { actionId });
     const receipt = await readActionAuditReceipt(actionId);
-    const receiptMatches = exactActionReceipt(
-      receipt,
-      actionId,
-      result.tool,
-      "executed",
-      result.success
-    );
+    const receiptMatches = verifiedNativeActionResult(proposal.tool, actionId, result, receipt);
     const cancelledByUser = await actionCancellationConfirmed(actionId);
     if (!cancelledByUser && result.success) {
       if (proposal.tool === "browser_start") {
@@ -1008,6 +1476,11 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
       }
     }
     void refreshAudit();
+    void refreshNativeSchedule();
+    if (remoteTask) {
+      if (!cancelledByUser && result.success && receiptMatches) remoteTask.evidenceActionId=actionId;
+      if (cancelledByUser || !result.success || !receiptMatches) remoteTask.hadFailure=true;
+    }
     orchestration = recordToolOutcome(
       orchestration,
       proposal,
@@ -1018,26 +1491,39 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
       receipt
     );
     await auditGraphOutcome(proposal);
-    messages.push(toolResultMessage(result));
+    if (cancelledByUser || !result.success || !receiptMatches) revokeTaskScope(activePermissionScope);
+    // A returned tool result is not trusted until Rust corroborates the
+    // exact action UUID, proposed tool, typed result and executed receipt.
+    // Otherwise no further paid provider or Windows action is authorized.
     if (cancelledByUser) {
       messages.push(hiddenToolFailure(proposal, {
         cancelled_by_user: true,
         action_id: actionId,
         retry_automatically: false
       }));
-    } else if (proposal.task_step_id != null && !receiptMatches) {
+      if (remoteTask) await closeRemoteTask("stopped");
+      await stopAgentForSafety("Owner cancelled the native action. Shuvi stopped without another AI request.");
+      return;
+    }
+    if (!receiptMatches) {
       messages.push(hiddenToolFailure(proposal, {
+        outcome_unknown: true,
         evidence_verification_failed: true,
         action_id: actionId,
-        reason: "The typed result did not have a matching Rust executed audit receipt, so the task step was not completed.",
         retry_automatically: false
       }));
+      if (remoteTask) await closeRemoteTask("outcome_unknown");
+      await stopAgentForSafety("Native action outcome unknown: no matching Rust executed audit receipt for this exact tool and result. Inspect the audit before starting a new task. No automatic retry.");
+      return;
     }
+    messages.push(toolResultMessage(result));
     await continueAfterOutcome();
   } catch (error) {
+    revokeTaskScope(activePermissionScope);
     const receipt = await readActionAuditReceipt(actionId);
     const cancelledByUser = await actionCancellationConfirmed(actionId);
-    const confirmedFailure = exactActionReceipt(receipt, actionId, proposal.tool, "failed", false);
+    const confirmedFailure = confirmedNativeActionFailure(proposal.tool, actionId, receipt);
+    if(remoteTask)remoteTask.hadFailure=true;
     orchestration = recordToolOutcome(
       orchestration,
       proposal,
@@ -1048,13 +1534,23 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
       receipt
     );
     await auditGraphOutcome(proposal);
+    // Native IPC can throw AFTER a Windows action has executed. Without a
+    // matching failed receipt, neither success nor failure is established.
     messages.push(hiddenToolFailure(proposal, {
-      error: String(error),
+      error: confirmedFailure ? "Rust audited an execution failure." : "Native action outcome is unknown.",
       action_id: actionId,
       cancelled_by_user: cancelledByUser,
       execution_failure_audit_confirmed: cancelledByUser ? false : confirmedFailure,
       retry_automatically: false
     }));
+    if (cancelledByUser || !confirmedFailure) {
+      if (remoteTask) await closeRemoteTask(cancelledByUser ? "stopped" : "outcome_unknown");
+      await stopAgentForSafety(cancelledByUser
+        ? "Owner cancelled the native action. No further provider or Windows actions dispatched."
+        : "Native action outcome unknown after execution error. An exact Rust failed receipt was not available; review the audit before starting a new task. No automatic retry.");
+      return;
+    }
+    // The exact failed Rust action receipt permits bounded safety replanning.
     await continueAfterOutcome();
   } finally {
     clearExecutingAction(actionId);
@@ -1067,38 +1563,29 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
   }
 
   chatPermission.classList.remove("hidden");
-  chatPermission.innerHTML = `
-    <div class="permission-head">
-      <div>
-        <span class="risk ${pendingAction.risk}">${pendingAction.risk.toUpperCase()} RISK</span>
-        <strong>${pendingAction.summary}</strong>
-      </div>
-      <span class="permission-step">Agent step ${step}/${MAX_AGENT_STEPS}</span>
-    </div>
-    <p class="permission-reason"></p>
-    <pre class="permission-detail"></pre>
-    <div class="button-row">
-      <button id="chatApprove" class="primary">Allow once</button>
-      ${pendingAction.risk === "low" && (
-        proposal.tool === "read_file" ||
-        proposal.tool === "list_directory" ||
-        proposal.tool === "ui_find" ||
-        proposal.tool === "list_processes" ||
-        proposal.tool === "browser_dom_read" ||
-        proposal.tool === "workspace_scan" ||
-        proposal.tool === "search_text" ||
-        proposal.tool === "git_status" ||
-        proposal.tool === "git_diff" ||
-        proposal.tool === "premiere_bridge_status" ||
-        proposal.tool === "premiere_context" ||
-        proposal.tool === "premiere_list_items"
-      )
-        ? '<button id="chatAllowSession"></button>'
-        : ""}
-      <button id="chatDeny">Deny</button>
-    </div>
-  `;
-
+  const allowReadGrant = pendingAction.risk === "low" && taskReadPermissionKey(proposal) !== null && (
+    ["read_file","list_directory","ui_find","list_processes","browser_dom_read",
+     "workspace_scan","search_text","git_status","git_diff","premiere_bridge_status",
+     "premiere_context","premiere_list_items"].includes(proposal.tool)
+  );
+  // The skeleton contains only trusted markup; tool-supplied names are text.
+  chatPermission.innerHTML = [
+    '<div class="permission-head"><div><span class="risk"></span><strong class="permission-summary"></strong></div>',
+    '<span class="permission-step"></span></div>',
+    '<p class="permission-reason"></p><pre class="permission-detail"></pre>',
+    '<div class="button-row"><button id="chatApprove" class="primary">Allow once</button>',
+    ...(allowReadGrant ? ['<button id="chatAllowSession"></button>'] : []),
+    '<button id="chatDeny">Deny</button></div>'
+  ].join("");
+  const chatRisk = chatPermission.querySelector<HTMLElement>(".risk");
+  if (chatRisk) {
+    chatRisk.className = approvalRiskClass(pendingAction.risk);
+    chatRisk.textContent = pendingAction.risk.toUpperCase() + " RISK";
+  }
+  const chatSummary = chatPermission.querySelector<HTMLElement>(".permission-summary");
+  if (chatSummary) chatSummary.textContent = pendingAction.summary;
+  const chatStep = chatPermission.querySelector<HTMLElement>(".permission-step");
+  if (chatStep) chatStep.textContent = `Agent step ${step}/${orchestration.max_steps}`;
   const reason = chatPermission.querySelector<HTMLElement>(".permission-reason");
   if (reason) {
     const plannedStep = proposal.plan?.step?.trim();
@@ -1128,7 +1615,10 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
   const allowSession = chatPermission.querySelector<HTMLButtonElement>("#chatAllowSession");
   if (allowSession) {
     allowSession.onclick = async () => {
-      sessionAllowedScopes.add(sessionPermissionKey(proposal));
+      if(!pendingAction||!grantTaskRead(activePermissionScope,activeReadGrant(proposal,pendingAction.risk))){
+        await stopAgentForSafety("Invalid task-scoped read permission. No action executed.");
+        return;
+      }
       await executePendingProposal(proposal);
     };
   }
@@ -1139,6 +1629,14 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
       if (!pendingAction) return;
 
       const actionId = pendingAction.id;
+      revokeTaskScope(activePermissionScope);
+      if(remoteTask){
+        clearChatPermission();
+        try{await invoke("deny_action",{actionId});}catch{/* fail closed */}
+        await closeRemoteTask("stopped");
+        await stopAgentForSafety("The remote Windows action was denied locally.");
+        return;
+      }
       clearChatPermission();
 
       let deniedConfirmed = false;
@@ -1181,40 +1679,121 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
 
 async function runAgentStep(): Promise<void> {
   if (cancelRequested) {
+    revokeTaskScope(activePermissionScope);
     messages.push({ role: "assistant", content: "Task stopped." });
     renderMessages();
     if (orchestration.task_graph) {
       await recordOrchestrationAudit("task_graph_stopped", "User stopped the task; progress retained.");
       await saveActiveCheckpoint();
     } else await clearActiveCheckpoint();
+    if(remoteTask)await closeRemoteTask("stopped");
     setBusy(false);
     return;
   }
 
   if (
     orchestration.recovery_mode === "stopped" ||
-    orchestration.next_step > MAX_AGENT_STEPS
+    orchestration.next_step > orchestration.max_steps ||
+    !taskDeadlineAllows(orchestration.task_expires_at_ms)
   ) {
     await stopAgentForSafety(
       orchestration.stop_reason ??
-        `I stopped this task because it reached Shuvi's ${MAX_AGENT_STEPS}-step safety limit.`
+        `I stopped this task because its owner-approved ${orchestration.max_steps}-step or two-hour safety budget expired.`
     );
     return;
   }
 
   setBusy(true);
+  // A model response belongs ONLY to the task that dispatched it. A Stop,
+  // Resume, or replacement task rotates/revokes this local owner identity.
+  const requestScope = activePermissionScope;
+  const staleModelRequest = () => requestScope !== activePermissionScope ||
+    requestScope.revoked || cancelRequested || orchestration.recovery_mode === "stopped";
+  const route = taskModelRoute ?? { ...defaultModelRoute(), role: "default" };
+  // A scheduler READY step may use an explicitly configured specialist model
+  // from this task's immutable checkpoint. The exact native typed action
+  // still follows normal proposal validation, owner approval and Rust audit.
+  const delegation=chooseSpecialistTurn(nextWorkerTurn(orchestration.task_graph),taskWorkerModels,route);
+  if(!delegation){
+    await stopAgentForSafety("Specialist worker route could not be validated; no provider request was sent.");
+    return;
+  }
+  const selectedRoute=delegation.route;
+  // Local graph-owned role, exact step and tool; never model-supplied authority.
+  const workerContext=delegatedWorkerContext(
+    orchestrationWithMasterEditor(orchestrationContext(orchestration), messages),
+    delegation,orchestration.task_graph);
+  if(workerContext===null){
+    await stopAgentForSafety("Configured specialist has no verified READY step or task context. No model request sent.");
+    return;
+  }
+  // A blank model is never sent to a paid provider and never silently replaced.
+  if (!selectedRoute.model.trim()) {
+    messages.push({role:"assistant",content:"No exact AI model is configured for this task. Open Provider and assign a Master or task-specific model. No AI request was sent."});
+    renderMessages();
+    if(remoteTask)await closeRemoteTask("failed");
+    setBusy(false);
+    return;
+  }
+
+  if(remoteTask && remoteTask.status === "admitted"){
+    try {await sendRemoteReceipt("running");}
+    catch {
+      await closeRemoteTask("outcome_unknown");
+      setBusy(false);
+      return;
+    }
+  }
+
+  if (staleModelRequest()) return;
+  // Never pay for another Master turn while the Rust desktop lease records
+  // an action still executing. This applies after UI reload and restart.
+  if (orchestration.task_graph) {
+    let persistedSchedule: unknown = undefined;
+    try {
+      persistedSchedule=await invoke("native_scheduler_status");
+    } catch {
+      // Native status is unavailable, NOT evidence of an empty queue.
+    }
+    if (staleModelRequest()) return;
+    const admission=assessMasterSchedulerAdmission(persistedSchedule,orchestration.task_graph);
+    if (!admission.ok) {
+      await stopAgentForSafety(admission.reason ?? "Native scheduler requires owner inspection.");
+      return;
+    }
+  }
+  // Reserve ONE potentially billed model request before dispatch. The
+  // reservation persists across crash/restart and is not silently refunded
+  // for cancelled requests or provider errors with uncertain billing.
+  const reservation = reserveTaskModelRequest(orchestration);
+  if (!reservation.ok) {
+    await stopAgentForSafety(reservation.reason);
+    return;
+  }
+  orchestration = reservation.state;
+  // A12: if the durable reservation cannot be saved, do NOT call the provider.
+  try {
+    await invoke("save_session_checkpoint", { checkpoint: currentCheckpoint() });
+  } catch {
+    await stopAgentForSafety("Shuvi could not persist its model-request reservation. No AI provider request was sent.");
+    return;
+  }
+  if (staleModelRequest()) return;
 
   try {
     const response = await invoke<ChatResponse>("chat", {
       input: {
-        provider: providerSelect.value,
-        model: modelInput.value.trim(),
-        base_url: baseUrlInput.value.trim() || null,
+        provider: selectedRoute.provider,
+        model: selectedRoute.model,
+        base_url: selectedRoute.base_url || null,
         messages: providerMessageWindow(messages),
-        orchestration_context: orchestrationContext(orchestration)
+        orchestration_context: workerContext
       }
     });
 
+    // Do not use a stale provider reply to mutate task history, token UI,
+    // checkpoints, or stage a tool for a different owner request.
+    if (staleModelRequest()) return;
     if (response.usage) {
       sessionInputTokens += response.usage.input_tokens;
       sessionOutputTokens += response.usage.output_tokens;
@@ -1230,6 +1809,7 @@ async function runAgentStep(): Promise<void> {
         await recordOrchestrationAudit("task_graph_stopped", "User stopped the task after the provider returned; progress retained.");
         await saveActiveCheckpoint();
       } else await clearActiveCheckpoint();
+      if(remoteTask)await closeRemoteTask("outcome_unknown");
       setBusy(false);
       return;
     }
@@ -1239,12 +1819,49 @@ async function runAgentStep(): Promise<void> {
     await saveActiveCheckpoint();
 
     if (response.tool_proposal) {
-      await stageProposal(response.tool_proposal);
+      // A specialist is NEVER a second Master: it may only prepare the
+      // exact next ready step. It cannot author graph revisions or retry a
+      // recovery action by smuggling a task_graph into its tool proposal.
+      if(!specialistProposalMatches(delegation,response.tool_proposal)){
+        await stopAgentForSafety("Configured specialist returned a tool or step outside its delegated Rust task. No action was staged.");
+        return;
+      }
+      await stageProposal(response.tool_proposal, selectedRoute);
+      return;
+    }
+    if(delegation.isSpecialist){
+      // Do not purchase another specialist turn from an ambiguous reply.
+      await stopAgentForSafety("Specialist did not produce its exact delegated typed tool. Task saved; no automatic model retry.");
       return;
     }
 
     const progress = taskGraphProgress(orchestration.task_graph);
-    if (progress.total && progress.completed < progress.total) {
+    const needsDragReview = orchestration.last_tool === "pointer_drag"
+      && orchestration.last_outcome === "success";
+    if (needsDragReview) {
+      messages.push({ role: "assistant", content:
+        "Pointer drag was dispatched, but its visual result has not been verified. The edit is NOT complete. Inspect the screen before continuing." });
+      renderMessages();
+      await saveActiveCheckpoint();
+      await loadRecoveryCheckpoint();
+    } else if (progress.total && progress.completed < progress.total) {
+      const next=nextWorkerTurn(orchestration.task_graph);
+      // Master can continue a bounded approved task even when one provider
+      // reply is commentary rather than the required typed-tool proposal.
+      // At most two such follow-ups: prevent unbounded paid model loops.
+      if (next && masterEmptyToolReplies<2 && taskDeadlineAllows(orchestration.task_expires_at_ms)
+          && orchestration.next_step<=orchestration.max_steps) {
+        masterEmptyToolReplies+=1;
+        messages.push({role:"user",content:
+          "[SHUVI_INTERNAL_CONTINUE] The existing owner-approved task graph is unfinished. "+
+          "Next ready step is "+next.step_id+" with exact tool "+next.tool+
+          ". Provide one typed tool proposal for that step, keeping normal owner approval and evidence checks. "+
+          "If unsafe or unsupported, explain the blocking reason; never assert success without a Rust action receipt."});
+        if (!await persistRequiredContinuationCheckpoint()) return;
+        if (staleModelRequest()) return;
+        await runAgentStep();
+        return;
+      }
       messages.push({ role: "assistant", content: `Task paused with ${progress.completed}/${progress.total} steps supported by successful tool evidence. Unfinished steps remain saved.` });
       renderMessages();
       await saveActiveCheckpoint();
@@ -1252,10 +1869,29 @@ async function runAgentStep(): Promise<void> {
     } else {
       await clearActiveCheckpoint();
     }
+    // A native action receipt proves that action, not an entire creative edit.
+    // Master-edit requests must have a completed evidence-backed task graph
+    // before the mobile UI can display a completed task.
+    const masterEditing = Boolean(editingMasterContext(messages));
+    const graphSatisfied = progress.total > 0 && progress.completed === progress.total;
+    if(remoteTask)await closeRemoteTask(
+      remoteTask.evidenceActionId && !remoteTask.hadFailure && !needsDragReview &&
+      (masterEditing ? graphSatisfied : (!progress.total || graphSatisfied))
+        ? "succeeded" : "outcome_unknown"
+    );
     setBusy(false);
-  } catch (error) {
-    messages.push({ role: "assistant", content: `Error: ${String(error)}` });
+  } catch {
+    if (staleModelRequest()) return;
+    // A12/A14: provider errors/timeouts may occur AFTER an upstream charge.
+    // Do not store arbitrary URL/credential-bearing HTTP error strings in
+    // durable chat or let the recovery flow blindly retry this attempt.
+    const caution = "AI provider request outcome is unknown; the request may already have been billed. DO NOT automatically retry. Inspect provider usage before issuing a new instruction.";
+    orchestration = { ...orchestration, recovery_mode: "stopped", stop_reason: caution };
+    renderOrchestrationStatus();
+    messages.push({ role: "assistant", content: caution });
     renderMessages();
+    await saveActiveCheckpoint();
+    if(remoteTask)await closeRemoteTask("outcome_unknown");
     setBusy(false);
   }
 }
@@ -1264,6 +1900,39 @@ el<HTMLButtonElement>("#resumeTask").addEventListener("click", async () => {
   if (!savedCheckpoint || busy) return;
 
   const checkpoint = savedCheckpoint;
+  const restored = normalizeAgentOrchestrationState(checkpoint.orchestration);
+  // READ-ONLY preflight BEFORE replacing/removing the saved checkpoint.
+  // An interrupted Windows mutation or mismatched Rust schedule is never
+  // turned into another paid Master request by clicking Resume.
+  if (restored.recovery_mode !== "stopped") {
+    try {
+      const host=await invoke<NativeWorkerStatus>("native_worker_status");
+      if(host.state==="recovery_required"||host.state==="native_action_in_flight"
+          ||host.state==="lease_held_unattributed"||host.requiresOwnerReview
+          ||host.durableJobPhase==="running"){
+        resumeSummary.textContent="Native Windows action is still running or requires review. Saved checkpoint retained; no model request sent.";
+        return;
+      }
+      if(restored.task_graph){
+        const native=await invoke<NativeSchedule|null>("native_scheduler_status");
+        const admission=assessMasterSchedulerAdmission(native,restored.task_graph);
+        if(!admission.ok){
+          resumeSummary.textContent="Resume blocked: "+
+            (admission.reason??"Rust task state is unresolved.")+
+            " Saved checkpoint retained; inspect the original audit before replanning.";
+          return;
+        }
+      }
+    } catch {
+      resumeSummary.textContent="Native execution evidence unavailable. Original checkpoint retained; no provider request sent.";
+      return;
+    }
+    // Another Resume click must not race a checkpoint inspection.
+    if(savedCheckpoint!==checkpoint||busy)return;
+  }
+  if (restored.recovery_mode !== "stopped" && !window.confirm(
+    "Resuming may resend an unfinished AI request. The prior provider request may have been billed. Verify provider usage before continuing. Send a new request?"
+  )) return;
   savedCheckpoint = null;
   resumeBanner.classList.add("hidden");
 
@@ -1273,35 +1942,174 @@ el<HTMLButtonElement>("#resumeTask").addEventListener("click", async () => {
     baseUrlInput.value = checkpoint.base_url ?? "";
     applyProviderDefaults();
   }
+  taskModelRoute = {
+    provider: checkpoint.provider,
+    model: checkpoint.model,
+    base_url: checkpoint.base_url ?? "",
+    role: "resumed"
+  };
+  restoreTaskRoute();
 
+  rotatePermissionScope(); // Restoring progress never restores permission grants.
+  taskWorkerModels=restorePinnedWorkerModels(checkpoint.worker_models);
   messages = checkpoint.messages;
-  orchestration = normalizeAgentOrchestrationState(checkpoint.orchestration);
+  orchestration = restored;
   renderOrchestrationStatus();
   renderMessages();
   cancelRequested = false;
   await saveActiveCheckpoint();
+  if (orchestration.recovery_mode === "stopped") {
+    // Restore history for inspection, not a second paid generation call.
+    setBusy(false);
+    return;
+  }
   await runAgentStep();
+});
+
+el<HTMLButtonElement>("#reviewNativeJob").addEventListener("click", async () => {
+  const host=nativeHostStatus;
+  if (!host || nativeHostStatusUnavailable || host.leaseOwnedByThisProcess
+      || host.state!=="recovery_required" || host.durableJobPhase!=="running"
+      || !host.durableJobActionId || !host.durableJobTool) return;
+  // This is deliberately NOT an "approve/retry" button. The owner must
+  // inspect the external app and accept that side effects may be unknown.
+  const confirmation=window.prompt(
+    "Inspect Blender/Premiere/Windows and the saved project first.\n"+
+    "This records UNKNOWN outcome, does not undo or repeat the old action, and does not grant future permission.\n"+
+    "Action: "+host.durableJobActionId+"\nTool: "+host.durableJobTool+
+    "\nType REVIEW UNKNOWN to acknowledge:"
+  );
+  if (confirmation!=="REVIEW UNKNOWN") return;
+  const button=el<HTMLButtonElement>("#reviewNativeJob");
+  const message=el<HTMLElement>("#reviewNativeHint");
+  button.disabled=true;
+  message.classList.remove("hidden");
+  try {
+    const record=await invoke<{phase:string;auditSuccess:boolean|null}>(
+      "reconcile_native_worker_job",{
+        actionId:host.durableJobActionId,tool:host.durableJobTool,confirmation
+      });
+    message.textContent=record.phase==="audit_verified"
+      ? "Exact previous Rust audit receipt found. No job replayed. Review any separate task-recovery checkpoint."
+      : "Interrupted job marked owner-reviewed UNKNOWN, not successful. Review any separate task-recovery checkpoint.";
+  } catch {
+    // Native transport errors may contain file paths or private host details.
+    message.textContent="Recovery refused by native safety checks. Inspect the Rust host and audit before another action.";
+  } finally {
+    button.disabled=false;
+    await refreshNativeWorkerStatus();
+  }
+});
+
+el<HTMLButtonElement>("#reviewFailedSchedulerStep").addEventListener("click", async () => {
+  const failed=failedSchedulerStep;
+  if (!failed||busy||manualActionRunning)return;
+  // Offer only genuine Rust audit receipts from a SECOND approved
+  // read-only inspection. Do not ask the owner to guess/copy hidden UUIDs.
+  const hint=el<HTMLElement>("#reviewFailedSchedulerHint");
+  hint.classList.remove("hidden");
+  let inspection: string;
+  try {
+    const original=await invoke<AuditEntry|null>("action_audit_receipt",{
+      actionId:failed.actionId
+    });
+    const recent=await invoke<AuditEntry[]>("audit_log",{limit:100});
+    if (!original||original.success || !Array.isArray(recent)){
+      hint.textContent="Original failure audit unavailable. Review cannot proceed.";
+      return;
+    }
+    const readOnly=new Set([
+      "read_file","list_directory","workspace_scan","search_text",
+      "list_processes","ui_find","browser_dom_read",
+      "premiere_context","premiere_timeline","premiere_bridge_status",
+      "blender_inspect","git_status","git_diff"
+    ]);
+    const choices=recent.filter(entry=>entry.event==="executed"&&entry.success===true
+      &&typeof entry.action_id==="string"&&entry.action_id!==failed.actionId
+      &&readOnly.has(entry.tool)&&entry.timestamp_ms>original.timestamp_ms).slice(0,8);
+    if (!choices.length){
+      hint.textContent="First run and approve a fresh read-only inspection, then review the failed step.";
+      return;
+    }
+    const index=window.prompt(
+      "Choose a separately approved successful inspection receipt by number:\n"+
+      choices.map((entry,i)=>(i+1)+". "+entry.tool+" · "+entry.action_id).join("\n")+
+      "\nEnter 1-"+choices.length+":"
+    );
+    if (!index || !/^[1-8]$/.test(index) || Number(index)>choices.length)return;
+    inspection=choices[Number(index)-1].action_id!;
+  }catch{
+    hint.textContent="Rust audit history is unavailable. Recovery was not authorized.";
+    return;
+  }
+  const confirmation=window.prompt(
+    "The failed action will remain FAILED, never counted completed or retried. "+
+    "You must explicitly replan NEW work. Type REVIEW FAILED STEP:"
+  );
+  if (confirmation!=="REVIEW FAILED STEP")return;
+  const button=el<HTMLButtonElement>("#reviewFailedSchedulerStep");
+  button.disabled=true;
+  hint.classList.remove("hidden");
+  try {
+    await invoke("review_native_scheduler_failure",{
+      stepId:failed.stepId,failedActionId:failed.actionId,
+      inspectionActionId:inspection,confirmation
+    });
+    hint.textContent="Failed step reviewed; still not completed. Create a new graph revision and obtain fresh action approvals.";
+  }catch{
+    hint.textContent="Owner review refused: the Rust audit or worker state did not satisfy safe recovery.";
+  }finally{
+    button.disabled=false;
+    await refreshNativeSchedule();
+  }
+});
+
+el<HTMLButtonElement>("#checkNativeTaskDelivery").addEventListener("click",async ()=>{
+  const summary=el<HTMLElement>("#nativeDeliverySummary");
+  try {
+    const receipt=await invoke<NativeTaskDelivery|null>("native_task_delivery_status");
+    if(!receipt){
+      summary.textContent="No native delivery has been finalized on this host.";
+      return;
+    }
+    if(receipt.version!==1||!Array.isArray(receipt.steps)||receipt.steps.length>48)
+      throw Error("Malformed receipt");
+    const outputs=receipt.steps.filter(step=>step.artifact);
+    summary.textContent="Last delivered task: "+receipt.steps.length+
+      " audited steps; "+outputs.length+" output files reverified on disk. "+
+      (outputs.length?outputs.map(step=>step.artifact?.path).join(" | "):"No file artifact in this task.")+
+      " Creative review remains separate.";
+  } catch {
+    summary.textContent="Delivery receipt could not be reverified against Rust audit and current files.";
+  }
 });
 
 el<HTMLButtonElement>("#discardTask").addEventListener("click", async () => {
   savedCheckpoint = null;
   orchestration = createAgentOrchestrationState();
+  rotatePermissionScope();
   renderOrchestrationStatus();
   resumeBanner.classList.add("hidden");
   await clearActiveCheckpoint();
 });
 
+el<HTMLButtonElement>("#skipOnboarding").addEventListener("click", () => {
+  writeLocalPreference("shuvi.onboarded", "1");
+  onboarding.classList.add("hidden");
+  settingsStatus.textContent = "Add provider keys and exact model IDs in Provider before sending AI requests.";
+});
 onboardingProvider.addEventListener("change", () => {
   onboardingKey.value = "";
   onboardingBaseUrl.value = "";
-  syncOnboardingProvider(true);
+  syncOnboardingProvider();
 });
 
 el<HTMLButtonElement>("#completeOnboarding").addEventListener("click", async () => {
   const provider = selectedOnboardingProvider();
   if (!provider) return;
 
-  const model = onboardingModel.value.trim() || provider.default_model;
+  // Model selection is not an onboarding gate: assign different models per task in the Provider tab.
+  const model = readLocalPreference("shuvi.model") ?? provider.default_model;
   const baseUrl = onboardingBaseUrl.value.trim();
   const apiKey = onboardingKey.value.trim();
 
@@ -1322,10 +2130,12 @@ el<HTMLButtonElement>("#completeOnboarding").addEventListener("click", async () 
       await invoke("save_api_key", { provider: provider.id, apiKey });
     }
 
-    localStorage.setItem("shuvi.provider", provider.id);
-    localStorage.setItem("shuvi.model", model);
-    localStorage.setItem("shuvi.baseUrl", baseUrl);
-    localStorage.setItem("shuvi.onboarded", "1");
+    const stored = [
+      writeLocalPreference("shuvi.provider", provider.id),
+      writeLocalPreference("shuvi.model", model),
+      writeLocalPreference("shuvi.baseUrl", baseUrl),
+      writeLocalPreference("shuvi.onboarded", "1"),
+    ].every(Boolean);
 
     providerSelect.value = provider.id;
     modelInput.value = model;
@@ -1335,7 +2145,7 @@ el<HTMLButtonElement>("#completeOnboarding").addEventListener("click", async () 
 
     onboarding.classList.add("hidden");
     onboardingStatus.textContent = "";
-    settingsStatus.textContent = `${provider.name} is ready.`;
+    settingsStatus.textContent = stored ? `${provider.name} is ready.` : `${provider.name} ready for this session; local settings could not be saved.`;
   } catch (error) {
     onboardingStatus.textContent = `Setup failed: ${String(error)}`;
   }
@@ -1422,6 +2232,51 @@ modelInput.addEventListener("input", () => applyProviderDefaults());
 
 el<HTMLButtonElement>("#saveProvider").addEventListener("click", saveProviderSettings);
 
+teamRole.addEventListener("change", updateTeamForm);
+teamProvider.addEventListener("change", () => {
+  teamModel.value = "";
+  teamBaseUrl.value = "";
+  updateTeamBaseUrlVisibility();
+});
+el<HTMLButtonElement>("#saveTeamRoute").addEventListener("click", () => {
+  const role = teamRole.value;
+  const proposed = {
+    provider: teamProvider.value,
+    model: teamModel.value.trim(),
+    base_url: teamBaseUrl.value.trim()
+  };
+  const validated = validateModelRoute(role, proposed, providers.map(p => p.id));
+  if (!validated) {
+    teamStatus.textContent = "Enter a valid role, provider, exact model ID and (if custom) HTTPS API URL.";
+    return;
+  }
+  const next = { ...modelRoutes, [role]: validated };
+  const encoded = JSON.stringify(next);
+  if (!writeLocalPreference("shuvi.modelRoutes", encoded) ||
+      readLocalPreference("shuvi.modelRoutes") !== encoded) {
+    teamStatus.textContent = "Could not persist model routes. No role was changed.";
+    return;
+  }
+  modelRoutes = next;
+  teamStatus.textContent = `${role} route saved. Save that provider's API key separately above. No paid test request was made.`;
+  renderModelTeam();
+});
+el<HTMLButtonElement>("#deleteTeamRoute").addEventListener("click", () => {
+  const role = teamRole.value;
+  const next = { ...modelRoutes };
+  delete next[role];
+  const encoded = JSON.stringify(next);
+  if (!writeLocalPreference("shuvi.modelRoutes", encoded) ||
+      readLocalPreference("shuvi.modelRoutes") !== encoded) {
+    teamStatus.textContent = "Could not save removal. Previous role remains.";
+    return;
+  }
+  modelRoutes = next;
+  teamStatus.textContent = `${role} route cleared.`;
+  updateTeamForm();
+  renderModelTeam();
+});
+
 el<HTMLButtonElement>("#saveKey").addEventListener("click", async () => {
   const provider = selectedProvider();
   const apiKey = apiKeyInput.value.trim();
@@ -1467,8 +2322,11 @@ el<HTMLFormElement>("#chatForm").addEventListener("submit", async (event) => {
   prompt.setCustomValidity("");
 
   saveProviderSettings();
+  beginTaskRoute(content);
   cancelRequested = false;
-  orchestration = createAgentOrchestrationState();
+  rotatePermissionScope();
+  const selectedActions = Number(el<HTMLSelectElement>("#taskActionBudget").value);
+  orchestration = createAgentOrchestrationState(allowedTaskBudget(selectedActions) ? selectedActions : 8);
   renderOrchestrationStatus();
   messages.push({ role: "user", content });
   prompt.value = "";
@@ -1483,9 +2341,9 @@ el<HTMLButtonElement>("#prepareAction").addEventListener("click", async () => {
   if (!command) return;
 
   const output = el<HTMLElement>("#actionOutput");
-  if (manualActionRunning) {
+  if (manualActionRunning || busy) {
     output.classList.remove("hidden");
-    output.textContent = "A manual PowerShell action is already running. Resolve it before preparing another action.";
+    output.textContent = "Finish the active manual or Chat task before preparing another PowerShell action.";
     return;
   }
   if (pendingAction && pendingChatProposal) {
@@ -1511,6 +2369,14 @@ el<HTMLButtonElement>("#prepareAction").addEventListener("click", async () => {
   try {
     pendingChatProposal = null;
     pendingAction = await invoke<PendingAction>("prepare_powershell", { command });
+    if (!validPendingDisplayMetadata(pendingAction)) {
+      const rejectedId = pendingAction?.id;
+      pendingAction = null;
+      if (typeof rejectedId === "string" && rejectedId.length < 128) {
+        try { await invoke("deny_action", { actionId: rejectedId }); } catch { /* fail closed */ }
+      }
+      throw Error("Unsafe native PowerShell approval metadata; no execution authorized.");
+    }
     renderManualPending();
   } catch (error) {
     output.classList.remove("hidden");
@@ -1527,16 +2393,15 @@ function renderManualPending(): void {
   }
 
   box.classList.remove("hidden");
-  box.innerHTML = `
-    <div class="risk ${pendingAction.risk}">${pendingAction.risk.toUpperCase()} RISK</div>
-    <h3>${pendingAction.summary}</h3>
-    <pre></pre>
-    <div class="button-row">
-      <button id="approveAction" class="primary">Allow once</button>
-      <button id="denyAction">Deny</button>
-    </div>
-  `;
-
+  box.innerHTML = '<div class="risk"></div><h3></h3><pre></pre><div class="button-row">' +
+    '<button id="approveAction" class="primary">Allow once</button><button id="denyAction">Deny</button></div>';
+  const manualRisk = box.querySelector<HTMLElement>(".risk");
+  if (manualRisk) {
+    manualRisk.className = approvalRiskClass(pendingAction.risk);
+    manualRisk.textContent = pendingAction.risk.toUpperCase() + " RISK";
+  }
+  const manualSummary = box.querySelector<HTMLElement>("h3");
+  if (manualSummary) manualSummary.textContent = pendingAction.summary;
   const preview = box.querySelector("pre");
   if (preview) preview.textContent = pendingAction.detail;
 
@@ -1595,10 +2460,18 @@ el<HTMLButtonElement>("#refreshAudit").addEventListener("click", () => {
 
 el<HTMLButtonElement>("#stopButton").addEventListener("click", async () => {
   cancelRequested = true;
+  revokeTaskScope(activePermissionScope);
 
   if (pendingAction && pendingChatProposal) {
     const actionId = pendingAction.id;
     const proposal = pendingChatProposal;
+    if(remoteTask){
+      try{await invoke("deny_action",{actionId});}catch{/* conservative stop */}
+      clearChatPermission();
+      await closeRemoteTask("stopped");
+      await stopAgentForSafety("Windows owner stopped the remote task before its action.");
+      return;
+    }
     clearChatPermission();
 
     let denied = false;
@@ -1658,5 +2531,145 @@ document.querySelectorAll<HTMLButtonElement>(".nav").forEach((button) => {
     }
   });
 });
+
+
+function remoteStatusLabel(message:string){
+  el<HTMLElement>("#remoteAgentStatus").textContent=message;
+}
+async function refreshRemoteAgent():Promise<void>{
+  try {
+    const state=await invoke<{enabled:boolean}>("remote_agent_status");
+    remoteAgentEnabled=state.enabled;
+    remoteStatusLabel(state.enabled
+      ? "Windows native outbound agent enabled · waiting for authenticated mobile tasks"
+      : "Remote agent disabled · no polling");
+  }catch{remoteAgentEnabled=false;remoteStatusLabel("Remote agent unavailable in this Windows build");}
+}
+el<HTMLButtonElement>("#remoteAgentConnect").addEventListener("click",async()=>{
+  const field=el<HTMLInputElement>("#remoteAgentAccess");
+  const code=field.value.trim(); field.value="";
+  if(!/^[a-fA-F0-9]{64}$/.test(code)){
+    remoteStatusLabel("Agent code must be 64 hexadecimal characters.");return;
+  }
+  try {
+    await invoke("remote_agent_pair",{accessCode:code});
+    await refreshRemoteAgent();
+    void tickRemoteAgent();
+  }catch{remoteStatusLabel("Remote pairing failed. Check cloud configuration and dedicated agent code.");}
+});
+el<HTMLButtonElement>("#remoteAgentDisconnect").addEventListener("click",async()=>{
+  remoteAgentEnabled=false;
+  if(remoteTask){
+    cancelRequested=true;
+    if(pendingAction){
+      try{await invoke("deny_action",{actionId:pendingAction.id});}catch{/* fail closed */}
+      clearChatPermission();
+    }
+    await closeRemoteTask("outcome_unknown");
+  }
+  try{await invoke("remote_agent_disconnect");}
+  catch{remoteStatusLabel("Could not revoke OS credential. Verify in Windows credential manager.");return;}
+  await refreshRemoteAgent();
+});
+function remoteReceipt(status:string,task:RemoteActiveTask,extras:Record<string,unknown>={}){
+  const m=task.message;
+  return {
+   protocol:"shuvi.remote.v1",type:"task_receipt",
+   ownerId:m.ownerId,deviceId:m.deviceId,threadId:m.threadId,
+   messageId:m.messageId,taskId:m.taskId,
+   revision:task.revision+1,occurredAt:Date.now(),status,...extras
+  };
+}
+async function sendRemoteReceipt(status:string,extras:Record<string,unknown>={}):Promise<void>{
+  if(!remoteTask)throw Error("No remote task");
+  const receipt=remoteReceipt(status,remoteTask,extras);
+  await invoke("remote_agent_receipt",{receipt});
+  remoteTask.revision=receipt.revision;
+  remoteTask.status=status;
+}
+async function closeRemoteTask(status:"succeeded"|"failed"|"stopped"|"outcome_unknown"):Promise<void>{
+  if(!remoteTask)return;
+  const extras= status==="succeeded" && remoteTask.evidenceActionId
+    ? {evidence:{kind:"native_audit",id:remoteTask.evidenceActionId}} : {};
+  try {await sendRemoteReceipt(status,extras);}
+  catch {remoteStatusLabel("Task outcome was not accepted by server; do not retry blindly.");}
+  remoteTask=null;
+  remoteApproval=null;
+}
+async function tickRemoteAgent():Promise<void>{
+  if(remotePolling)return;
+  remotePolling=true;
+  try {
+    // The visible Dashboard can pair/revoke the agent after the hidden
+    // coordinator boots. Re-read native pairing before any remote poll.
+    await refreshRemoteAgent();
+    if(!remoteAgentEnabled)return;
+    const inbox=await invoke<RemoteInbox>("remote_agent_poll");
+    if(remoteTask) {
+      const t=remoteTask;
+      if(inbox.pending.some(p=>p.taskId===t.message.taskId&&p.request==="cancel")){
+        if(executingActionId){
+          // Stop is a request, not proof that the OS process has stopped.
+          el<HTMLButtonElement>("#stopButton").click();
+          remoteStatusLabel("Remote stop requested; native cancellation outcome pending");
+        }else{
+          if(pendingAction) {
+            try{await invoke("deny_action",{actionId:pendingAction.id});}catch{ /* fail closed */ }
+            clearChatPermission();
+          }
+          await closeRemoteTask("stopped");
+          await stopAgentForSafety("Remote owner cancelled this task before native execution.");
+        }
+        return;
+      }
+      const a=remoteApproval;
+      if(a) {
+        if(Date.now()>=a.expiresAt){
+          try{await invoke("deny_action",{actionId:a.actionId});}catch{ /* fail closed */ }
+          clearChatPermission();
+          await closeRemoteTask("stopped");
+          await stopAgentForSafety("Mobile approval expired; no action was run.");
+          return;
+        }
+        const d=inbox.decisions.find(x=>x.taskId===t.message.taskId&&x.approvalId===a.id);
+        if(d?.decision==="deny"){
+          try{await invoke("deny_action",{actionId:a.actionId});}catch{ /* fail closed */ }
+          clearChatPermission();
+          await closeRemoteTask("stopped");
+          await stopAgentForSafety("Mobile owner denied the proposed Windows action.");
+        }else if(d?.decision==="approve"){
+          // The cloud server checks task, approval ID, deadline and single use.
+          // Native Rust still checks its own prepared action UUID.
+          try{await sendRemoteReceipt("running");}
+          catch{await closeRemoteTask("outcome_unknown");return;}
+          remoteApproval=null;
+          await executePendingProposal(a.proposal);
+        }
+      }
+      return;
+    }
+    if(busy||manualActionRunning||pendingAction||!inbox.messages.length)return;
+    const m=inbox.messages[0];
+    // The durable journal must acknowledge admission before any provider
+    // or Windows action; unknown delivery outcomes fail closed.
+    remoteTask={message:m,revision:1,status:"received",evidenceActionId:null,hadFailure:false};
+    try{await sendRemoteReceipt("admitted");}
+    catch{
+      remoteTask=null;remoteStatusLabel("Remote admission unconfirmed; no command executed.");
+      return;
+    }
+    cancelRequested=false;
+    rotatePermissionScope();
+    orchestration=createAgentOrchestrationState();
+    renderOrchestrationStatus();
+    messages.push({role:"user",content:m.text});
+    beginTaskRoute(m.text);
+    renderMessages();
+    remoteStatusLabel("Remote command admitted · native execution not yet proven");
+    await runAgentStep();
+  }catch{
+    remoteStatusLabel("Remote transport unavailable; no unverified command executed.");
+  }finally{remotePolling=false;}
+}
 
 void boot();

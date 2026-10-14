@@ -23,6 +23,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Verify locked Remotion dependencies
+        run: npm ci --prefix remotion-runtime --ignore-scripts --no-audit --no-fund
       - name: Node syntax checks
         run: |
           node --check remotion-runtime/render.mjs

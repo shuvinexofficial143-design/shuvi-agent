@@ -1,0 +1,1 @@
+Batch 98: Owner approval metadata must not contain Unicode direction marks, invisible formatting or embedded control bytes that could disguise the summary/risk/detail. Newline formatting is still permitted. Invalid approval metadata is never staged to the owner as Allow once.

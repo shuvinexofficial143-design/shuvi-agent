@@ -285,6 +285,7 @@ export const toolModules: FeatureModule[] = [
 ];
 
 export const modelProviders = [
+  { name: "xKiro", short: "XK", note: "Shuvi native Master provider · Windows config required", state: "Native only" },
   { name: "OpenAI", short: "OA", note: "GPT family", state: "Configurable" },
   { name: "Anthropic", short: "AN", note: "Claude family", state: "Configurable" },
   { name: "Google", short: "GO", note: "Gemini family", state: "Configurable" },
@@ -300,8 +301,8 @@ export const routingPresets: RoutingPreset[] = [
     name: "Balanced",
     description: "General Shuvi planning and everyday tasks.",
     workload: "General",
-    provider: "OpenAI",
-    modelHint: "general-purpose model"
+    provider: "xKiro",
+    modelHint: "configured by Shuvi on Windows"
   },
   {
     id: "coding",

@@ -1,0 +1,1 @@
+Batch 85: Treat a mixed valid/malformed native window inventory as invalid in its entirety. Dropping malformed rows could make an ambiguous window appear unique. A fresh valid audited observation is required before UI mutations.

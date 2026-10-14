@@ -8,9 +8,10 @@ test("browser PID session grants can be revoked as a lifecycle boundary",()=>{
   const start=main.indexOf("function revokeBrowserSessionPermissions");
   const end=main.indexOf("function hiddenToolFailure",start);
   const block=main.slice(start,end);
-  assert.match(block,/for \(const key of \[\.\.\.sessionAllowedScopes\]\)/);
+  assert.match(block,/for \(const key of \[\.\.\.activePermissionScope\.grants\.keys\(\)\]\)/);
   assert.match(block,/key\.includes\("\|pid:"\)/);
-  assert.match(block,/sessionAllowedScopes\.delete\(key\)/);
+  assert.match(block,/key\.includes\(exactMarker\)/);
+  assert.match(block,/activePermissionScope\.grants\.delete\(key\)/);
 });
 
 test("new browser sessions cannot inherit an old PID-scoped read grant",()=>{

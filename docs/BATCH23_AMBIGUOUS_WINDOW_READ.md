@@ -1,0 +1,1 @@
+Batch 23: A prior exact-audited window inventory showing multiple distinct handles under the same exact title blocks a new read-only ui_find/ui_discover for that ambiguous title before staging. A fresh ui_windows read or user clarification is required; no tool is auto-approved.

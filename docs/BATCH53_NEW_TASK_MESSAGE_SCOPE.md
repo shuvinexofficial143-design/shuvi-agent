@@ -1,0 +1,1 @@
+Batch 53: Independent new Windows tasks do not forward previous unrelated prompts to their selected Master model. Informational Chat and explicit same-task clarifications retain prior context. Previous audits remain local evidence only.

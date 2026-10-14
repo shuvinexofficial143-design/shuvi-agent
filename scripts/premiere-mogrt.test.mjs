@@ -56,7 +56,7 @@ test("duplicate exact selectors and aliases to same parameter are rejected", asy
 });
 test("oversized strings and excessive fields are rejected", async () => {
  const f = fixture(); const inspected = await inspectProperties(f.item); f.field.value = "x".repeat(2049);
- assert.throws(() => planRecipe(f.request, inspected), /bounded native primitive/);
+ assert.throws(() => planRecipe(f.request, inspected), /bounded native value/);
  f.field.value = "ok"; f.request.fields = Array.from({length:17}, () => f.field); assert.throws(() => planRecipe(f.request, inspected), /1–16/);
 });
 test("inspection bounds components, parameters and output", async () => {

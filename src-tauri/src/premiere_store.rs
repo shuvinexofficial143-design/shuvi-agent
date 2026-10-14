@@ -35,11 +35,96 @@ pub fn replace(path:&Path,bytes:&[u8],limit:usize,validate:impl Fn(&[u8])->Resul
     Ok(())
 }
 
+/// Clear a snapshot and its recovery files under the SAME writer mutex as
+/// replace(). A concurrent save must not resurrect or partially delete a
+/// session after a clear request has been acknowledged.
+pub fn clear_snapshot(path:&Path)->Result<(),String>{
+    let _write=WRITES.lock().map_err(|_|"Snapshot persistence lock unavailable.")?;
+    // Verify every candidate first; an invalid backup must not delete the primary.
+    let mut verified=Vec::new();
+    for candidate in [
+        path.to_path_buf(),
+        path.with_extension("json.tmp"),
+        path.with_extension("json.bak")
+    ]{
+        match fs::symlink_metadata(&candidate){
+            Err(e) if e.kind()==std::io::ErrorKind::NotFound=>continue,
+            Err(e)=>return Err(format!("Cannot inspect snapshot for clear: {e}")),
+            Ok(meta) if meta.is_file()&&!meta.file_type().is_symlink()=>{
+                #[cfg(windows)]
+                {
+                    use std::os::windows::fs::MetadataExt;
+                    if meta.file_attributes()&0x400!=0{
+                        return Err("Refusing to clear Windows reparse snapshot.".into());
+                    }
+                }
+                verified.push(candidate);
+            }
+            Ok(_)=>return Err("Refusing to clear non-regular snapshot path.".into()),
+        }
+    }
+    for candidate in verified {
+        fs::remove_file(&candidate)
+            .map_err(|e|format!("Could not clear snapshot safely: {e}"))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]mod tests{
     use super::*;
     fn valid(bytes:&[u8])->Result<(),String>{
         let value:serde_json::Value=serde_json::from_slice(bytes).map_err(|e|e.to_string())?;
         if !value.is_object(){return Err("Object required".into());}Ok(())
+    }
+    #[test] fn clears_primary_temp_and_backup_idempotently(){
+        let dir=std::env::temp_dir().join(format!("shuvi-snapshot-clear-{}",uuid::Uuid::new_v4()));
+        fs::create_dir(&dir).unwrap();
+        let path=dir.join("checkpoint.json");
+        fs::write(&path,b"state").unwrap();
+        fs::write(path.with_extension("json.tmp"),b"interrupted").unwrap();
+        fs::write(path.with_extension("json.bak"),b"backup").unwrap();
+        clear_snapshot(&path).unwrap();
+        assert!(!path.exists());
+        assert!(!path.with_extension("json.tmp").exists());
+        assert!(!path.with_extension("json.bak").exists());
+        clear_snapshot(&path).unwrap();
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test] fn bad_later_backup_never_deletes_valid_primary_or_temp(){
+        let dir=std::env::temp_dir().join(format!("shuvi-clear-safety-{}",uuid::Uuid::new_v4()));
+        fs::create_dir(&dir).unwrap();
+        let file=dir.join("session.json");
+        let temp=file.with_extension("json.tmp");
+        let backup=file.with_extension("json.bak");
+        fs::write(&file,b"keep-primary").unwrap();
+        fs::write(&temp,b"keep-interrupted").unwrap();
+        fs::create_dir(&backup).unwrap();
+        assert!(clear_snapshot(&file).is_err());
+        assert_eq!(fs::read(&file).unwrap(),b"keep-primary");
+        assert_eq!(fs::read(&temp).unwrap(),b"keep-interrupted");
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test] fn refuses_to_delete_directory_named_as_checkpoint(){
+        let dir=std::env::temp_dir().join(format!("shuvi-snapshot-clear-{}",uuid::Uuid::new_v4()));
+        fs::create_dir(&dir).unwrap();
+        let path=dir.join("checkpoint.json");
+        fs::create_dir(&path).unwrap();
+        assert!(clear_snapshot(&path).is_err());
+        assert!(path.is_dir());
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[cfg(unix)]
+    #[test] fn refuses_to_delete_symlink_as_checkpoint(){
+        use std::os::unix::fs::symlink;
+        let dir=std::env::temp_dir().join(format!("shuvi-snapshot-clear-{}",uuid::Uuid::new_v4()));
+        fs::create_dir(&dir).unwrap();
+        let original=dir.join("protected.txt");
+        fs::write(&original,b"protected").unwrap();
+        let link=dir.join("checkpoint.json");
+        symlink(&original,&link).unwrap();
+        assert!(clear_snapshot(&link).is_err());
+        assert_eq!(fs::read(&original).unwrap(),b"protected");
+        fs::remove_dir_all(dir).unwrap();
     }
     #[test]fn preserves_valid_backup_when_primary_is_corrupt_and_refuses_stale_tmp(){
         let dir=std::env::temp_dir().join(format!("shuvi-store-{}",uuid::Uuid::new_v4()));fs::create_dir_all(&dir).unwrap();

@@ -7,7 +7,7 @@ const src = (name) => readFileSync(new URL("../src/" + name, import.meta.url), "
 test("remote guard is wired into dashboard after initial native status", () => {
   const main = src("main.ts");
   assert.match(main, /import \{ mountRemoteRuntimeNotice \} from "\.\/remote-runtime-notice";/);
-  assert.match(main, /renderNativeConnection\(readOnlyBridge\.state\(\)\);\s*mountRemoteRuntimeNotice\(\);/);
+  assert.match(main, /renderNativeConnection\(readOnlyBridge\.state\(\)\);\s*if \(!isNativeShuvi\(\)\) mountRemoteRuntimeNotice\(\);/);
 });
 
 test("public Vercel origin does not accept or retain native pairing code", () => {

@@ -1,0 +1,20 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
+const rust=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
+const scheduler=readFileSync(new URL("../src-tauri/src/native_scheduler.rs",import.meta.url),"utf8");
+const ui=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
+test("owner recovery requires exact failed Rust audit AND later independently approved read-only inspection",()=>{
+ assert.match(rust,/fn review_native_scheduler_failure\(/);
+ assert.match(rust,/confirmation!="REVIEW FAILED STEP"/);
+ assert.match(rust,/claim_monitored_native_execution\(state.inner\(\),&app\)/);
+ assert.match(rust,/read_action_audit_receipt\(&app,&failed_action_id\)/);
+ assert.match(rust,/read_action_audit_receipt\(&app,&inspection_action_id\)/);
+ assert.match(rust,/inspection.timestamp_ms<=failed.timestamp_ms/);
+ assert.match(rust,/native_scheduler::review_failed\(&app,&step_id,&failed_action_id\)/);
+ assert.match(scheduler,/reviewed_failed/);
+ assert.match(scheduler,/fn review_failed_at\(/);
+ assert.match(scheduler,/reviewed_failure_never_becomes_verified_dependency/);
+ assert.match(ui,/id="reviewFailedSchedulerStep"/);
+ assert.match(ui,/"review_native_scheduler_failure"/);
+});

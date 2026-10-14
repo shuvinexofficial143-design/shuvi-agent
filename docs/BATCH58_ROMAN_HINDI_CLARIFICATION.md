@@ -1,0 +1,1 @@
+Batch 58: Recognize common Roman-Hindi Master follow-up questions asking which app, where to save and what to name the file. Preserve original task only after explicit clarification, never after a new imperative.

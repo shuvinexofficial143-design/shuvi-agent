@@ -1,0 +1,1 @@
+Batch 64: Align native Dashboard status and user feedback with Master clarification questions before and after audited actions. Clarification is not task completion, does not automatically retry paid calls, and still requires separate Allow once for any subsequent Windows action.

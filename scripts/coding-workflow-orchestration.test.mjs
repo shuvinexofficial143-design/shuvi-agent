@@ -8,7 +8,8 @@ const main=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
 const types=readFileSync(new URL("../src/types.ts",import.meta.url),"utf8");
 const rust=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
 const executable=stripTypeScriptTypes(orchestrator).replace('"./task-graph.mjs"',
-  JSON.stringify(new URL("../src/task-graph.mjs",import.meta.url).href));
+  JSON.stringify(new URL("../src/task-graph.mjs",import.meta.url).href)).replace('"./task-runtime-budget.mjs"',
+  JSON.stringify(new URL("../src/task-runtime-budget.mjs",import.meta.url).href));
 const agent=await import("data:text/javascript;base64,"+Buffer.from(executable).toString("base64"));
 
 test("replace_text requires fresh exact file inspection and mutations invalidate stale reads",()=>{
@@ -93,7 +94,8 @@ test("coding dependency state persists across orchestration v5 and legacy non-gr
 test("UI exposes the current bounded coding phase without bypassing permissions",()=>{
   assert.match(main,/id="agentProgress"/);
   assert.match(main,/codingPhase\(orchestration\)\.replaceAll\("_", " "\)/);
-  assert.match(main,/pendingAction = await invoke<PendingAction>\("prepare_tool"/);
+  assert.match(main,/const staged = await invoke<PendingAction>\("prepare_tool"/);
+  assert.match(main,/if \(staleStage\(\)\) \{[\s\S]*?await denyStaleAction\(staged\?\.id\)/);
   assert.match(main,/renderChatPermission\(proposal, step\)/);
   assert.match(main,/execute_action/);
 });
@@ -160,7 +162,8 @@ test("project validation child process is included in managed RAM accounting",()
   assert.match(block,/\.spawn\(\)/);
   assert.match(block,/let child_pid = child\.id\(\)/);
   assert.match(block,/register_managed_process\(state, child_pid\)/);
-  assert.match(block,/child\.wait_with_output\(\)/);
+  assert.match(block,/bounded_child::collect_with_deadline\(\s*child, Duration::from_secs\(600\)/);
+  assert.doesNotMatch(block,/child\.wait_with_output\(\)/);
   assert.match(block,/unregister_managed_process\(state, child_pid\)/);
   assert.doesNotMatch(block,/\.output\(\)/);
   assert.match(block,/project task was stopped before execution could continue safely/);

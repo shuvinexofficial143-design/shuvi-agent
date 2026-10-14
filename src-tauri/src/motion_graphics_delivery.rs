@@ -220,6 +220,7 @@ impl PremiereInsertionPlanRequest{
                 "tool":"premiere_insert_media",
                 "arguments":{
                     "path":acceptance.output_file,
+                    "expected_sha256":acceptance.output_sha256,
                     "seconds":self.seconds,
                     "video_track":self.video_track,
                     "audio_track":self.audio_track,
@@ -300,5 +301,6 @@ mod tests{
         let value=req.plan(&acceptance).unwrap();
         assert_eq!(value["automatic_execution"],false);
         assert_eq!(value["premiere_tool_proposal"]["tool"],"premiere_insert_media");
+        assert_eq!(value["premiere_tool_proposal"]["arguments"]["expected_sha256"],acceptance.output_sha256);
     }
 }

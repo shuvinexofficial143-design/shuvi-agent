@@ -1,0 +1,1 @@
+Batch 99: Exact-ID success audit accepts only coherent prepared/approved/executed lifecycle events and rejects unknown or contradictory records. Failed-read recovery rejects unknown events, approvals with false success, and a failed event claiming success. No unapproved tool can execute.

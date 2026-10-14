@@ -1,0 +1,1 @@
+Batch 62: Extend the non-mutating native Master completion contract for Blender and other editors requesting project creation, not only Premiere. Observed saved project/name/path evidence and owner approval are required; no tool authorization granted.

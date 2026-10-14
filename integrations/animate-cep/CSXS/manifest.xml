@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ExtensionManifest Version="7.0"
+  ExtensionBundleId="com.shuvi.animate.bridge"
+  ExtensionBundleVersion="0.2.0"
+  ExtensionBundleName="Shuvi Animate Bridge"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <ExtensionList>
+    <Extension Id="com.shuvi.animate.bridge" Version="0.2.0">
+      <HostList><Host Name="FLPR" /></HostList>
+    </Extension>
+  </ExtensionList>
+  <ExecutionEnvironment>
+    <HostList><Host Name="FLPR" Version="[20.0,99.9]" /></HostList>
+    <LocaleList><Locale Code="All" /></LocaleList>
+    <RequiredRuntimeList><RequiredRuntime Name="CSXS" Version="10.0" /></RequiredRuntimeList>
+  </ExecutionEnvironment>
+  <DispatchInfoList>
+    <Extension Id="com.shuvi.animate.bridge">
+      <DispatchInfo>
+        <Resources>
+          <MainPath>./index.html</MainPath>
+          <ScriptPath>./jsx/ShuviAnimate.jsx</ScriptPath>
+          <CEFCommandLine><Parameter>--allow-file-access</Parameter></CEFCommandLine>
+        </Resources>
+        <Lifecycle><AutoVisible>true</AutoVisible></Lifecycle>
+        <UI>
+          <Type>Panel</Type>
+          <Menu>Shuvi Animate Bridge</Menu>
+          <Geometry>
+            <Size><Height>340</Height><Width>420</Width></Size>
+            <MinSize><Height>250</Height><Width>300</Width></MinSize>
+          </Geometry>
+        </UI>
+      </DispatchInfo>
+    </Extension>
+  </DispatchInfoList>
+</ExtensionManifest>

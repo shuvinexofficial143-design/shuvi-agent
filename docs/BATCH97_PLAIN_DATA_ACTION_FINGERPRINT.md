@@ -1,0 +1,1 @@
+Batch 97: Native action fingerprinting now rejects enumerable JavaScript accessor properties instead of evaluating getters. Only plain, bounded, deterministic JSON data can pass the preflight fingerprint and reach separately approved native staging.

@@ -20,13 +20,15 @@ test("agent orchestration has bounded failure and repeat circuit breakers",()=>{
 test("interrupted tasks resume their persisted orchestration step instead of step one",()=>{
   assert.match(types,/orchestration\?: AgentOrchestrationCheckpoint \| null/);
   assert.match(main,/version: 2,[\s\S]*messages,[\s\S]*orchestration/);
-  assert.match(main,/orchestration = normalizeAgentOrchestrationState\(checkpoint\.orchestration\)/);
+  assert.match(main,/const restored = normalizeAgentOrchestrationState\(checkpoint\.orchestration\)/);
+  assert.match(main,/orchestration = restored/);
   assert.doesNotMatch(main,/resumeTask[\s\S]{0,1800}runAgentStep\(1\)/);
-  assert.match(main,/orchestration_context: orchestrationContext\(orchestration\)/);
+  assert.match(main,/delegatedWorkerContext\([\s\S]*orchestrationWithMasterEditor\(orchestrationContext\(orchestration\), messages\)/);
+  assert.match(main,/orchestration_context: workerContext/);
 });
 
 test("new user instruction starts fresh state but failures do not auto retry",()=>{
-  assert.match(main,/orchestration = createAgentOrchestrationState\(\);[\s\S]{0,500}messages\.push\(\{ role: "user", content \}\)/);
+  assert.match(main,/orchestration = createAgentOrchestrationState\(allowedTaskBudget\(selectedActions\) \? selectedActions : 8\);[\s\S]{0,500}messages\.push\(\{ role: "user", content \}\)/);
   assert.match(main,/evaluateProposal\(orchestration, proposal\)/);
   assert.match(main,/recordProposalBlock\(orchestration, proposal, decision\)/);
   assert.match(main,/orchestration_blocked: true/);
@@ -51,8 +53,9 @@ test("session checkpoint v1 migrates to v2 without inventing orchestration state
 });
 
 test("permission gates remain between planning and execution",()=>{
-  assert.match(main,/pendingAction = await invoke<PendingAction>\("prepare_tool"/);
-  assert.match(main,/pendingAction\.risk === "low"[\s\S]*sessionAllowedScopes/);
+  assert.match(main,/const staged = await invoke<PendingAction>\("prepare_tool"/);
+  assert.match(main,/if \(staleStage\(\)\) \{[\s\S]*?await denyStaleAction\(staged\?\.id\)/);
+  assert.match(main,/pendingAction\.risk === "low"[\s\S]*allowsTaskRead\(activePermissionScope,activeReadGrant/);
   assert.match(main,/renderChatPermission\(proposal, step\)/);
   assert.match(main,/await invoke<ActionResult>\("execute_action", \{ actionId \}\)/);
 });

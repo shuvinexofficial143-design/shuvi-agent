@@ -1,0 +1,15 @@
+
+.shuvi-remote-link{padding:14px 18px;border:1px solid var(--border,#303747);border-radius:14px;margin-bottom:12px;background:rgba(18,27,43,.6)}
+.shuvi-remote-link-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.shuvi-remote-link-toolbar span{font-size:12px;opacity:.82}
+.shuvi-remote-link-controls{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.shuvi-remote-link-controls input{min-width:175px;flex:1;max-width:320px;padding:10px;border-radius:8px;background:transparent;border:1px solid #516078;color:inherit}
+.shuvi-remote-link-controls button{padding:9px 12px;border:1px solid #516078;border-radius:8px;background:transparent;color:inherit;cursor:pointer}
+.shuvi-remote-link-controls button:disabled{opacity:.45;cursor:not-allowed}
+.shuvi-remote-link-notice{font-size:12px;opacity:.8;margin:10px 0 0}
+.shuvi-remote-task-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.shuvi-remote-task-list p,.shuvi-remote-task-list small{font-size:11px;border:1px solid #43506a;padding:4px 8px;border-radius:8px;margin:0}
+
+.shuvi-remote-task-item{display:flex;align-items:center;gap:6px;flex-wrap:wrap;border:1px solid #43506a;border-radius:8px;padding:5px}
+.shuvi-remote-task-item button{background:transparent;color:inherit;border:1px solid #697892;padding:4px 7px;border-radius:6px;cursor:pointer;font-size:11px}
+.shuvi-remote-task-item button:disabled{opacity:.5}
