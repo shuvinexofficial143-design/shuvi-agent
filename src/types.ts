@@ -138,6 +138,18 @@ export type NativeWorkerStatus = {
     "audited_job_conflicts_with_live_lease" | "last_action_reviewed_unknown";
 };
 
+export type NativeJobHistory = {
+  version: 1;
+  items: Array<{
+    actionId: string;
+    tool: string;
+    phase: "running" | "audit_verified" | "owner_reviewed_unknown";
+    startedAtMs: number;
+    completedAtMs: number | null;
+    auditSuccess: boolean | null;
+  }>;
+};
+
 export type RuntimeStatus = {
   shuvi_memory_bytes: number;
   shuvi_memory_mb: number;

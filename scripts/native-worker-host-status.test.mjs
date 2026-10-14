@@ -118,3 +118,12 @@ test("bounded native multi-job history is bound to native begin/audit and explic
  assert.match(history,/mismatched_corrupt_or_orphaned_records_fail_closed/);
  assert.doesNotMatch(history,/fn\s+(?:auto_retry|auto_resume|auto_execute)\s*\(/);
 });
+
+test("native history dashboard reads actual Rust records without granting worker authority",()=>{
+ assert.match(lib,/fn native_worker_history\(app:AppHandle\)/);
+ assert.match(ui,/invoke<NativeJobHistory>\("native_worker_history"\)/);
+ assert.match(ui,/id="nativeActionHistoryList"/);
+ assert.match(ui,/Native history unavailable/);
+ assert.match(ui,/history\.items\.slice\(-8\)\.reverse\(\)/);
+ assert.doesNotMatch(ui,/history\.items\.map\(.*execute_action/);
+});

@@ -8,6 +8,7 @@ import type {
   ProviderDescriptor,
   RuntimeStatus,
   NativeWorkerStatus,
+  NativeJobHistory,
   ToolProposal,
   AuditEntry,
   SessionCheckpoint,
@@ -56,6 +57,7 @@ let orchestration: AgentOrchestrationState = createAgentOrchestrationState();
 let nativeHostStatus: NativeWorkerStatus | null = null;
 let nativeHostStatusUnavailable = true;
 let nativeHostReadPending = false;
+let nativeHistoryReadPending = false;
 let busy = false;
 let manualActionRunning = false;
 let cancelRequested = false;
@@ -141,6 +143,10 @@ root.innerHTML = `
       <small id="agentProgress" class="ram-children">Agent idle</small>
       <button id="reviewNativeJob" class="hidden" type="button">Review interrupted job</button>
       <small id="reviewNativeHint" class="ram-children hidden"></small>
+      <details id="nativeActionHistory" class="ram-children">
+        <summary>Native action history</summary>
+        <div id="nativeActionHistoryList">History not yet checked</div>
+      </details>
       <details id="taskProgress" class="ram-children hidden">
         <summary id="taskProgressSummary">Task progress</summary>
         <div id="taskProgressSteps"></div>
@@ -637,6 +643,41 @@ async function refreshNativeWorkerStatus(): Promise<void> {
   }
 }
 
+// Read-only display of UUID-bound Rust action history; no approval authority.
+async function refreshNativeWorkerHistory(): Promise<void> {
+  if (nativeHistoryReadPending) return;
+  nativeHistoryReadPending=true;
+  const output=el<HTMLElement>("#nativeActionHistoryList");
+  try {
+    const history=await invoke<NativeJobHistory>("native_worker_history");
+    if (history.version!==1 || !Array.isArray(history.items) || history.items.length>48
+        || history.items.some(entry=>typeof entry.actionId!=="string"
+          || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(entry.actionId)
+          ||typeof entry.tool!=="string" || entry.tool.length>160
+          ||!["running","audit_verified","owner_reviewed_unknown"].includes(entry.phase))) {
+      throw Error("Invalid native history format");
+    }
+    output.replaceChildren();
+    if (!history.items.length) {
+      output.textContent="No native actions recorded in this history yet.";
+      return;
+    }
+    for (const item of history.items.slice(-8).reverse()) {
+      const row=document.createElement("div");
+      const outcome=item.phase==="running"?"RUNNING / outcome unknown"
+        :item.phase==="owner_reviewed_unknown"?"OWNER REVIEWED / outcome unknown"
+        :item.auditSuccess===true?"RUST AUDIT SUCCESS":"RUST AUDIT FAILURE";
+      row.textContent=item.tool+" · "+outcome+" · "+item.actionId.slice(0,8);
+      row.title="Native audited action only; this does not certify an Adobe/Blender edit or render.";
+      output.append(row);
+    }
+  } catch {
+    output.textContent="Native history unavailable — status unknown. Inspect the Rust host before acting.";
+  } finally {
+    nativeHistoryReadPending=false;
+  }
+}
+
 function renderOrchestrationStatus(): void {
   const progress = el<HTMLElement>("#agentProgress");
   const reviewButton = el<HTMLButtonElement>("#reviewNativeJob");
@@ -846,6 +887,7 @@ async function boot(): Promise<void> {
     await loadRecoveryCheckpoint();
     renderOrchestrationStatus();
     await refreshNativeWorkerStatus();
+    await refreshNativeWorkerHistory();
     await refreshRam();
     await refreshAudit();
     await refreshPremiereBridge();
@@ -853,6 +895,7 @@ async function boot(): Promise<void> {
     window.setInterval(() => void tickRemoteAgent(), 4000);
     window.setInterval(() => void refreshRam(), 5000);
     window.setInterval(() => void refreshNativeWorkerStatus(), 4000);
+    window.setInterval(() => void refreshNativeWorkerHistory(), 8000);
   } catch (error) {
     settingsStatus.textContent = String(error);
   }
