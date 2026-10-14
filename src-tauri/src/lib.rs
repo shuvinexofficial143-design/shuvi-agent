@@ -18784,7 +18784,7 @@ fn native_worker_history(app:AppHandle)->Result<native_job_history::History,Stri
 }
 #[tauri::command]
 fn native_scheduler_status(app:AppHandle)->Result<Option<native_scheduler::Schedule>,String>{
-    native_scheduler::read(&app)
+    native_scheduler::verified_status(&app)
 }
 
 /// A failed scheduled action can be acknowledged only after a second,

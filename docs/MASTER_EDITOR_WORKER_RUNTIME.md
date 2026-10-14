@@ -243,3 +243,13 @@ Never mark a graphics task or full edit complete based solely on an AI claim, a 
 ## Native dependency-aware execution scheduler (October 14)
 
 The new `native-scheduler.json` is a bounded, fsync-published queue of up to 48 typed jobs. It validates the DAG, canonical step IDs, tool identity, revisions and real Rust-prepared action IDs. Unlike the older read-only queue projection, the Rust `execute_action` path checks dependencies BEFORE an external desktop action, persists a running UUID as the action begins, and records the exact audited success/failure after execution. A failed, running, or unknown job blocks dependent dispatch; native owner-reviewed recovery records unknown outcomes without inventing success. The Scheduler does not store commands, API secrets or executable arguments. The existing local Allow once, limits, task-scoped read grants and OS-wide exclusive Windows lease remain mandatory. The `native_scheduler_status` command is read-only; it cannot authorize any action. This is functional dispatch gating in the existing Master AI -> native action path, not a separate autonomous process pool. A successful Rust audit verifies that typed action ran and returned success; it does NOT certify a full Blender/Premiere/After Effects project or final render. Live Windows acceptance and independent workers remain outstanding.
+
+### Audited restart projection for Master dispatch
+The read-only `native_scheduler_status` IPC can now project a terminal
+Rust audit for an exact running job after a crash between the worker journal
+and DAG checkpoint. It refuses missing/mismatched audit identities and does
+not mutate the disk, retry, authorize or execute the worker. The subsequent
+permissioned native preflight commits the matching recovery under Rust locks
+before any new external action. An interrupted still-running journal is
+reported as running, not completed. A verified audit is not a final creative
+project acceptance.

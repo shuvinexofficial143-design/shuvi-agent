@@ -332,6 +332,47 @@ fn review_failed_at(file:&Path,step:&str,failed_action:&str)->Result<(),String>{
 pub(crate) fn review_failed(app:&AppHandle,step:&str,failed_action:&str)->Result<(),String>{
     review_failed_at(&path(app)?,step,failed_action)
 }
+/// Read-only projection after an interrupted write between the REAL Rust
+/// terminal audit and the separate DAG terminal checkpoint. The snapshot
+/// never writes or unlocks an interrupted native action. The normal Rust
+/// preflight commits any recovery before a new mutation is admitted.
+fn projected_terminal(
+    mut schedule:Option<Schedule>,
+    native:Option<&crate::native_worker_job::NativeJob>
+)->Result<Option<Schedule>,String>{
+    if let Some(s)=schedule.as_mut(){
+        let Some(running)=s.jobs.iter_mut().find(|j|j.phase=="running") else {
+            return Ok(schedule);
+        };
+        let journal=native.ok_or("Running scheduled action has no authoritative Rust journal.")?;
+        if running.action_id.as_deref()!=Some(journal.action_id.as_str())
+            ||running.tool!=journal.tool{
+            return Err("Scheduled running identity disagrees with Rust worker journal.".into());
+        }
+        match journal.phase.as_str(){
+            "running"=>{},
+            "audit_verified"=>{
+                running.phase=if journal.audit_success==Some(true){"audited"}
+                    else if journal.audit_success==Some(false){"failed"}
+                    else{return Err("Rust journal has no verified Boolean audit.".into())}.into();
+            },
+            "owner_reviewed_unknown"=>running.phase="outcome_unknown".into(),
+            _=>return Err("Rust journal has unsupported execution outcome.".into())
+        }
+        validate(s)?;
+    }
+    Ok(schedule)
+}
+/// Never trusts WebView status or supervisor ticks as successful execution.
+pub(crate) fn verified_status(app:&AppHandle)->Result<Option<Schedule>,String>{
+    let _guard=LOCK.lock().map_err(|_|"Native scheduler lock poisoned.")?;
+    let snapshot=read_at(&path(app)?)?;
+    if snapshot.as_ref().is_none_or(|s|s.jobs.iter().all(|j|j.phase!="running")){
+        return Ok(snapshot);
+    }
+    let journal=crate::native_worker_job::read(app)?;
+    projected_terminal(snapshot,journal.as_ref())
+}
 pub(crate) fn read(app:&AppHandle)->Result<Option<Schedule>,String>{
     let _guard=LOCK.lock().map_err(|_|"Native scheduler lock poisoned.")?;
     read_at(&path(app)?)
@@ -397,6 +438,38 @@ mod tests{
         recover_terminal_at(&p,Some(&native)).unwrap();
         assert_eq!(read_at(&p).unwrap().unwrap().jobs[0].phase,"audited");
         assert!(preflight_at(&p,None,"import","premiere_insert_media",B).is_ok());
+        cleanup(&p);
+    }
+    #[test]
+    fn read_only_status_projection_recovers_terminal_rust_receipt_without_disk_mutation(){
+        let p=file();let g=graph(1);
+        begin_at(&p,Some(&g),"model","blender_run_plan",A).unwrap();
+        let terminal=crate::native_worker_job::NativeJob{
+            version:1,action_id:A.into(),tool:"blender_run_plan".into(),
+            phase:"audit_verified".into(),started_at_ms:1000,updated_at_ms:2000,
+            heartbeat_seq:0,audit_success:Some(true),prior_action_ids:Vec::new()
+        };
+        let view=projected_terminal(read_at(&p).unwrap(),Some(&terminal)).unwrap().unwrap();
+        assert_eq!(view.jobs[0].phase,"audited");
+        assert_eq!(read_at(&p).unwrap().unwrap().jobs[0].phase,"running");
+        recover_terminal_at(&p,Some(&terminal)).unwrap();
+        assert_eq!(read_at(&p).unwrap().unwrap().jobs[0].phase,"audited");
+        cleanup(&p);
+    }
+    #[test]
+    fn read_only_status_projection_refuses_missing_or_foreign_audit(){
+        let p=file();let g=graph(1);
+        begin_at(&p,Some(&g),"model","blender_run_plan",A).unwrap();
+        let native=crate::native_worker_job::NativeJob{
+            version:1,action_id:B.into(),tool:"blender_run_plan".into(),
+            phase:"audit_verified".into(),started_at_ms:1000,updated_at_ms:2000,
+            heartbeat_seq:0,audit_success:Some(true),prior_action_ids:Vec::new()
+        };
+        assert!(projected_terminal(read_at(&p).unwrap(),Some(&native)).is_err());
+        assert!(projected_terminal(read_at(&p).unwrap(),None).is_err());
+        let still_running=crate::native_worker_job::NativeJob{action_id:A.into(),phase:"running".into(),audit_success:None,..native};
+        let view=projected_terminal(read_at(&p).unwrap(),Some(&still_running)).unwrap().unwrap();
+        assert_eq!(view.jobs[0].phase,"running");
         cleanup(&p);
     }
     #[test]
