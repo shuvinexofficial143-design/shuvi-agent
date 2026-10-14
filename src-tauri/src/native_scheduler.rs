@@ -477,13 +477,16 @@ mod tests{
     }
     #[test]
     fn new_owner_task_can_restart_after_reviewed_failed_terminal_history(){
-        let p=file();let g=graph(1);
+        let p=file();let mut g=graph(1);
+        // Only a fully terminal prior task may reset its initial revision;
+        // queued dependents are NOT silently discarded.
+        g["steps"].as_array_mut().unwrap().truncate(1);
         begin_at(&p,Some(&g),"model","blender_run_plan",A).unwrap();
         finish_at(&p,A,"blender_run_plan",Some(false)).unwrap();
         review_failed_at(&p,"model",A).unwrap();
         // Begin an independent task with the same objective and a fresh UUID;
         // the separate native Rust job journal still enforces replay protection.
-        let new=graph(1);
+        let new=g.clone();
         begin_at(&p,Some(&new),"model","blender_run_plan",B).unwrap();
         let restored=read_at(&p).unwrap().unwrap();
         assert_eq!(restored.jobs[0].action_id.as_deref(),Some(B));
