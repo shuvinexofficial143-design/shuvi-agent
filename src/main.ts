@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import "./styles.css";
 import {assessMasterSchedulerAdmission} from "./native-scheduler-admission.mjs";
+import {pinNativeWorkerModels,restorePinnedWorkerModels,chooseSpecialistTurn,specialistProposalMatches} from "./native-worker-model-routing.mjs";
 import type {
   ActionResult,
   ChatMessage,
@@ -50,6 +51,7 @@ if (!root) throw new Error("Missing app root");
 let providers: ProviderDescriptor[] = [];
 let modelRoutes: Record<string, ModelRoute> = {};
 let taskModelRoute: TaskModelRoute | null = null;
+let taskWorkerModels: ReturnType<typeof restorePinnedWorkerModels> = null;
 let messages: ChatMessage[] = [];
 let pendingAction: PendingAction | null = null;
 let pendingChatProposal: ToolProposal | null = null;
@@ -538,6 +540,7 @@ function restoreTaskRoute(): void {
   }
 }
 function beginTaskRoute(text: string): void {
+  taskWorkerModels=null; // Pin only owner-configured models for the new task.
   // The installed Dashboard and the existing native background coordinator
   // share one non-secret model-team config. Remote mobile tasks must respect
   // the owner's exact choices, just like commands typed in the visible UI.
@@ -551,6 +554,7 @@ function beginTaskRoute(text: string): void {
         taskModelRoute = chosen.ok
           ? {provider:chosen.provider,model:chosen.model,base_url:chosen.base_url,role:chosen.role}
           : {provider:team.provider,model:"",base_url:"",role:chosen.role};
+        if(chosen.ok)taskWorkerModels=pinNativeWorkerModels(savedTeam,chosen.provider);
         restoreTaskRoute();
         return;
       }
@@ -600,7 +604,8 @@ function currentCheckpoint(): SessionCheckpoint {
     model: taskModelRoute?.model ?? modelInput.value.trim(),
     base_url: (taskModelRoute?.base_url ?? baseUrlInput.value.trim()) || null,
     messages,
-    orchestration
+    orchestration,
+    worker_models:taskWorkerModels
   };
 }
 
@@ -1629,8 +1634,17 @@ async function runAgentStep(): Promise<void> {
   const staleModelRequest = () => requestScope !== activePermissionScope ||
     requestScope.revoked || cancelRequested || orchestration.recovery_mode === "stopped";
   const route = taskModelRoute ?? { ...defaultModelRoute(), role: "default" };
+  // A scheduler READY step may use an explicitly configured specialist model
+  // from this task's immutable checkpoint. The exact native typed action
+  // still follows normal proposal validation, owner approval and Rust audit.
+  const delegation=chooseSpecialistTurn(nextWorkerTurn(orchestration.task_graph),taskWorkerModels,route);
+  if(!delegation){
+    await stopAgentForSafety("Specialist worker route could not be validated; no provider request was sent.");
+    return;
+  }
+  const selectedRoute=delegation.route;
   // A blank model is never sent to a paid provider and never silently replaced.
-  if (!route.model.trim()) {
+  if (!selectedRoute.model.trim()) {
     messages.push({role:"assistant",content:"No exact AI model is configured for this task. Open Provider and assign a Master or task-specific model. No AI request was sent."});
     renderMessages();
     if(remoteTask)await closeRemoteTask("failed");
@@ -1685,9 +1699,9 @@ async function runAgentStep(): Promise<void> {
   try {
     const response = await invoke<ChatResponse>("chat", {
       input: {
-        provider: route.provider,
-        model: route.model,
-        base_url: route.base_url || null,
+        provider: selectedRoute.provider,
+        model: selectedRoute.model,
+        base_url: selectedRoute.base_url || null,
         messages: providerMessageWindow(messages),
         orchestration_context: orchestrationWithMasterEditor(orchestrationContext(orchestration), messages)
       }
@@ -1721,7 +1735,19 @@ async function runAgentStep(): Promise<void> {
     await saveActiveCheckpoint();
 
     if (response.tool_proposal) {
-      await stageProposal(response.tool_proposal, route);
+      // A specialist is NEVER a second Master: it may only prepare the
+      // exact next ready step. It cannot author graph revisions or retry a
+      // recovery action by smuggling a task_graph into its tool proposal.
+      if(!specialistProposalMatches(delegation,response.tool_proposal)){
+        await stopAgentForSafety("Configured specialist returned a tool or step outside its delegated Rust task. No action was staged.");
+        return;
+      }
+      await stageProposal(response.tool_proposal, selectedRoute);
+      return;
+    }
+    if(delegation.isSpecialist){
+      // Do not purchase another specialist turn from an ambiguous reply.
+      await stopAgentForSafety("Specialist did not produce its exact delegated typed tool. Task saved; no automatic model retry.");
       return;
     }
 
@@ -1812,6 +1838,7 @@ el<HTMLButtonElement>("#resumeTask").addEventListener("click", async () => {
   restoreTaskRoute();
 
   rotatePermissionScope(); // Restoring progress never restores permission grants.
+  taskWorkerModels=restorePinnedWorkerModels(checkpoint.worker_models);
   messages = checkpoint.messages;
   orchestration = restored;
   renderOrchestrationStatus();

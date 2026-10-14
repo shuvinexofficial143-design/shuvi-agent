@@ -556,6 +556,10 @@ struct SessionCheckpoint {
     messages: Vec<ChatMessage>,
     #[serde(default)]
     orchestration: Option<Value>,
+    // Optional pinned specialist model IDs; provider/endpoint are inherited
+    // from the original user-selected Master route, never model-supplied.
+    #[serde(default)]
+    worker_models:Option<HashMap<String,String>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -9717,6 +9721,22 @@ fn validate_session_checkpoint_payload(checkpoint: &SessionCheckpoint) -> Result
         checkpoint.base_url.as_deref(),
     )?;
 
+    if let Some(models)=checkpoint.worker_models.as_ref(){
+        if models.len()>14 {
+            return Err("Saved worker model route count exceeds native team role limit.".into());
+        }
+        for (role,model) in models {
+            if !matches!(role.as_str(),"coding"|"premiere"|"after-effects"|"blender"
+                |"photoshop"|"illustrator"|"audition"|"animate"|"character-animator"
+                |"substance-3d"|"media-encoder"|"frameio"|"research"|"vision")
+                ||model.is_empty()||model.len()>128
+                ||!model.bytes().enumerate().all(|(i,b)|
+                    b.is_ascii_alphanumeric()
+                    ||(i>0&&matches!(b,b'.'|b'_'|b':'|b'/'|b'+'|b'-'))){
+                return Err("Saved worker model route is invalid.".into());
+            }
+        }
+    }
     if checkpoint.messages.len() > MAX_CHAT_MESSAGES {
         return Err("Saved session contains too many chat messages.".into());
     }
@@ -9781,7 +9801,7 @@ mod session_checkpoint_durability_tests {
         serde_json::to_vec(&SessionCheckpoint {
             version, updated_at_ms: 1,
             provider: provider.into(), model: "local-test".into(),
-            base_url: None, messages: vec![], orchestration: None,
+            base_url: None, messages: vec![], orchestration: None, worker_models:None,
         }).unwrap()
     }
 
