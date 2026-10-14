@@ -20,8 +20,8 @@ test("clicking Resume checks authoritative Rust action and graph BEFORE touching
  assert.match(body,/if\(savedCheckpoint!==checkpoint\|\|busy\)return/);
 });
 test("unknown native status cannot silently resume a previous Windows edit",()=>{
- const s=main.slice(main.indexOf('el<HTMLButtonElement>("#resumeTask")'),
-   main.indexOf('el<HTMLButtonElement>("#reviewNativeJob")'));
+ const start=main.indexOf('el<HTMLButtonElement>("#resumeTask")');
+ const s=main.slice(start,main.indexOf('el<HTMLButtonElement>("#reviewNativeJob")',start));
  assert.match(s,/catch \{[\s\S]*Native execution evidence unavailable\.[\s\S]*return/);
  assert.doesNotMatch(s.slice(0,s.indexOf("savedCheckpoint = null;")),/execute_action|stageProposal\(|grantTaskRead/);
 });
