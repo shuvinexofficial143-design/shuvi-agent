@@ -277,3 +277,6 @@ one approved READY step ID and proposed typed tool. It cannot revise the
 Master graph, switch a pinned provider, bypass tool approval or retry
 interrupted Windows actions. Parallel independent worker processes remain
 out of scope; this is serial workflow execution.
+
+#### Artifact readback hardening
+The Master supervisor now rejects a checkpointed `completed` Blender or final Remotion handoff step unless its single typed Rust-linked success receipt also contains the exact allowed SHA-256 artifact identity. Reopening a saved WebView checkpoint never promotes a bare tool success to a verified saved 3D or video file. A full end-to-end Windows render is still required for host acceptance.

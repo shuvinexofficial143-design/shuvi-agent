@@ -36,7 +36,7 @@ test("failed task permits bounded Master replanning, never asserts success",()=>
 test("multi-worker graph completion requires every dependency-ordered native receipt",()=>{
  const g=graph(step("inspect","read_file",[],"completed",1,A),
    step("build","blender_run_plan",["inspect"],"completed",2,B));
- assert.equal(decide(g).mode,"pause"); // Blender plan must have artifact evidence.
+ assert.equal(decide(g).mode,"pause"); // Blender plan must have SHA-256-bound artifact evidence.
 });
 test("Master uses decision before sending another provider turn",()=>{
  const main=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
@@ -45,4 +45,16 @@ test("Master uses decision before sending another provider turn",()=>{
  assert.match(main,/assessMasterSchedulerAdmission\(schedule,orchestration.task_graph\)/);
  assert.match(main,/schedule.jobs.every\(job=>job.phase==="audited"\)/);
  assert.match(main,/await clearActiveCheckpoint\(\)/);
+});
+
+test("forged Blender media receipts cannot terminate even an otherwise audited DAG",()=>{
+ const fake=step("blender","blender_run_plan",[],"completed",1,A);
+ assert.equal(decide(graph(fake)).mode,"pause");
+ const valid={kind:"blender_artifact",producer_action_id:A,
+   path:"C:\\\\renders\\\\temple.blend",sha256:"a".repeat(64),bytes:1024};
+ const restored={...fake,evidence:[{...fake.evidence[0],artifact:valid}]};
+ // A static SHA-256 receipt can pass local graph eligibility, but the
+ // Desktop must STILL require Rust's exact terminal audit for every job.
+ const d=decide(graph(restored));
+ assert.ok(["complete","pause"].includes(d.mode));
 });

@@ -1,4 +1,4 @@
-import {artifactHandoffFailure,importArtifactIdentity,workerBatchSources} from "./worker-artifact-lineage.mjs";
+import {artifactHandoffFailure,importArtifactIdentity,workerBatchSources,validWorkerArtifact} from "./worker-artifact-lineage.mjs";
 // Shuvi Master Worker Queue projection (Phase 2).
 // Runs against the persisted, permission-first task graph. A worker is an
 // execution lane for typed tools, NOT a separate autonomous agent process.
@@ -48,6 +48,16 @@ export function evidenceForStep(step){
       ||!e.fingerprint||e.fingerprint.length>16384
       ||!Number.isInteger(e.orchestration_step)||e.orchestration_step<1
       ||e.orchestration_step>48)return null;
+  // A persisted WebView checkpoint is not enough to claim that Blender
+  // produced a real saved file or that Remotion accepted final media.
+  // The same typed SHA-256-bound native artifact contract used by
+  // finishTaskStep must also be enforced in the supervisor/read path.
+  const requiresArtifact=["blender_run_plan",
+    "motion_graphics_accept_final_remotion",
+    "motion_graphics_plan_premiere_insertion"].includes(step.expected_tool);
+  if((requiresArtifact||e.artifact!=null)
+      &&!validWorkerArtifact(e.artifact,step.expected_tool,e.action_id))
+    return null;
   return {action_id:e.action_id,tool:e.tool,orchestration_step:e.orchestration_step};
 }
 // Native Remotion renders are not automatically usable Premiere media. The

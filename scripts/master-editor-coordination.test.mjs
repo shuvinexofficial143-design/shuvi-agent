@@ -63,7 +63,8 @@ test("mobile editing completion requires an audited finished task graph",()=>{
 
 test("native UI routes through the existing permission-first chat, not a fake worker executor",()=>{
   const main=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
-  assert.match(main,/orchestration_context: orchestrationWithMasterEditor\(orchestrationContext\(orchestration\), messages\)/);
+  assert.match(main,/delegatedWorkerContext\([\s\S]*orchestrationWithMasterEditor\(orchestrationContext\(orchestration\), messages\)/);
+  assert.match(main,/orchestration_context: workerContext/);
   assert.match(main,/invoke<PendingAction>\("prepare_tool"/);
   assert.match(main,/invoke<ActionResult>\("execute_action"/);
 });
