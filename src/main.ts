@@ -1864,20 +1864,50 @@ el<HTMLButtonElement>("#reviewNativeJob").addEventListener("click", async () => 
 el<HTMLButtonElement>("#reviewFailedSchedulerStep").addEventListener("click", async () => {
   const failed=failedSchedulerStep;
   if (!failed||busy||manualActionRunning)return;
-  // This must be the UUID of a SECOND, independently approved read-only
-  // inspection, never the failed mutation's own ID.
-  const inspection=window.prompt(
-    "First inspect the failed Blender/Premiere/Windows action using a separately approved READ-ONLY tool. "+
-    "Paste that successful inspection's Rust action UUID:"
-  );
-  if (!inspection || !/^[0-9a-f]{8}-[0-9a-f-]{27,}$/.test(inspection))return;
+  // Offer only genuine Rust audit receipts from a SECOND approved
+  // read-only inspection. Do not ask the owner to guess/copy hidden UUIDs.
+  const hint=el<HTMLElement>("#reviewFailedSchedulerHint");
+  hint.classList.remove("hidden");
+  let inspection: string;
+  try {
+    const original=await invoke<AuditEntry|null>("action_audit_receipt",{
+      actionId:failed.actionId
+    });
+    const recent=await invoke<AuditEntry[]>("audit_log",{limit:100});
+    if (!original||original.success || !Array.isArray(recent)){
+      hint.textContent="Original failure audit unavailable. Review cannot proceed.";
+      return;
+    }
+    const readOnly=new Set([
+      "read_file","list_directory","workspace_scan","search_text",
+      "list_processes","ui_find","browser_dom_read",
+      "premiere_context","premiere_timeline","premiere_bridge_status",
+      "blender_inspect","git_status","git_diff"
+    ]);
+    const choices=recent.filter(entry=>entry.event==="executed"&&entry.success===true
+      &&typeof entry.action_id==="string"&&entry.action_id!==failed.actionId
+      &&readOnly.has(entry.tool)&&entry.timestamp_ms>original.timestamp_ms).slice(0,8);
+    if (!choices.length){
+      hint.textContent="First run and approve a fresh read-only inspection, then review the failed step.";
+      return;
+    }
+    const index=window.prompt(
+      "Choose a separately approved successful inspection receipt by number:\n"+
+      choices.map((entry,i)=>(i+1)+". "+entry.tool+" · "+entry.action_id).join("\n")+
+      "\nEnter 1-"+choices.length+":"
+    );
+    if (!index || !/^[1-8]$/.test(index) || Number(index)>choices.length)return;
+    inspection=choices[Number(index)-1].action_id!;
+  }catch{
+    hint.textContent="Rust audit history is unavailable. Recovery was not authorized.";
+    return;
+  }
   const confirmation=window.prompt(
     "The failed action will remain FAILED, never counted completed or retried. "+
     "You must explicitly replan NEW work. Type REVIEW FAILED STEP:"
   );
   if (confirmation!=="REVIEW FAILED STEP")return;
   const button=el<HTMLButtonElement>("#reviewFailedSchedulerStep");
-  const hint=el<HTMLElement>("#reviewFailedSchedulerHint");
   button.disabled=true;
   hint.classList.remove("hidden");
   try {
