@@ -10,6 +10,7 @@ mod execution_lease;
 mod native_worker_status;
 mod native_worker_job;
 mod native_job_history;
+mod native_scheduler;
 mod bounded_child;
 mod provider_request_guard;
 mod native_recovery;
@@ -997,6 +998,8 @@ enum ToolAction {
 struct PendingAction {
     created_at_ms: u64,
     premiere_expectation: Option<PremiereExpectation>,
+    task_graph: Option<Value>,
+    task_step_id: Option<String>,
     tool: String,
     detail: String,
     action: ToolAction,
@@ -8128,6 +8131,9 @@ fn stage_tool(
         PendingAction {
             created_at_ms: prepared_at_ms,
             premiere_expectation,
+            task_graph: proposal.task_graph.clone(),
+            task_step_id: proposal.task_step_id.as_ref()
+                .and_then(Value::as_str).map(str::to_string),
             tool: tool.clone(),
             detail: detail.clone(),
             action,
@@ -18733,6 +18739,10 @@ fn reconcile_native_worker_job(
     // checkpoint are not silently promoted. Owner review is still explicit.
     let record=native_worker_job::reconcile(&app,&action_id,&tool,verified,now_ms())?;
     native_job_history::finish(&app)?;
+    if native_scheduler::read(&app)?.as_ref().is_some_and(|plan|
+        plan.jobs.iter().any(|j|j.action_id.as_deref()==Some(action_id.as_str()))){
+        native_scheduler::finish(&app,&action_id,&tool,verified)?;
+    }
     append_audit(&app,&AuditEntry{
         timestamp_ms:now_ms(),
         event:"native_worker_owner_review".into(),
@@ -18751,6 +18761,10 @@ fn reconcile_native_worker_job(
 #[tauri::command]
 fn native_worker_history(app:AppHandle)->Result<native_job_history::History,String>{
     native_job_history::read(&app)
+}
+#[tauri::command]
+fn native_scheduler_status(app:AppHandle)->Result<Option<native_scheduler::Schedule>,String>{
+    native_scheduler::read(&app)
 }
 
 #[tauri::command]
@@ -18963,10 +18977,20 @@ async fn execute_action(
             (None, pending.remove(&action_id))
         } else {
             let active_tool = prepared.tool.clone();
+            // The persisted DAG must permit the exact prepared action before
+            // any application mutation or durable native worker start.
+            if let Some(step)=prepared.task_step_id.as_deref(){
+                native_scheduler::preflight(&app,prepared.task_graph.as_ref(),
+                    step,&active_tool,&action_id)?;
+            }
             // Publish the durable, action-bound worker record BEFORE any tool
             // can run. If disk state is unresolved, keep approval pending.
             native_worker_job::begin(&app,&action_id,&active_tool,now_ms())?;
             native_job_history::begin(&app)?;
+            if let Some(step)=prepared.task_step_id.as_deref(){
+                native_scheduler::begin(&app,prepared.task_graph.as_ref(),
+                    step,&active_tool,&action_id)?;
+            }
             // Hold the same lock order when publishing start time and tool
             // identity. The host-only observation never becomes permission.
             let mut running=state.running_action_tools.lock()
@@ -18999,6 +19023,7 @@ async fn execute_action(
     let action = action.ok_or_else(|| "Prepared action could not be claimed for execution.".to_string())?;
 
     let tool = action.tool.clone();
+    let scheduled_step=action.task_step_id.clone();
     let detail = action.detail.clone();
     let audit_detail = audit_safe_action_detail(&tool, &detail);
     // Supervisor ticks are host-process liveness evidence only; they
@@ -19039,6 +19064,9 @@ async fn execute_action(
             )?;
             native_worker_job::audit(&app,&action_id,result.success,now_ms())?;
             native_job_history::finish(&app)?;
+            if scheduled_step.is_some(){
+                native_scheduler::finish(&app,&action_id,&result.tool,Some(result.success))?;
+            }
             Ok(result)
         }
         Err(error) => {
@@ -19055,6 +19083,11 @@ async fn execute_action(
             )?;
             native_worker_job::audit(&app,&action_id,false,now_ms())?;
             native_job_history::finish(&app)?;
+            if scheduled_step.is_some(){
+                let native=native_worker_job::read(&app)?
+                    .ok_or("Failed native journal missing for scheduler.")?;
+                native_scheduler::finish(&app,&action_id,&native.tool,Some(false))?;
+            }
             Err(error)
         }
     }
@@ -19409,6 +19442,7 @@ pub fn run() {
             runtime_status,
             native_worker_status,
             native_worker_history,
+            native_scheduler_status,
             reconcile_native_worker_job,
             prepare_tool,
             prepare_powershell,

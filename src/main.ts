@@ -9,6 +9,7 @@ import type {
   RuntimeStatus,
   NativeWorkerStatus,
   NativeJobHistory,
+  NativeSchedule,
   ToolProposal,
   AuditEntry,
   SessionCheckpoint,
@@ -58,6 +59,8 @@ let nativeHostStatus: NativeWorkerStatus | null = null;
 let nativeHostStatusUnavailable = true;
 let nativeHostReadPending = false;
 let nativeHistoryReadPending = false;
+let nativeSchedulerReadPending = false;
+let masterEmptyToolReplies = 0;
 let busy = false;
 let manualActionRunning = false;
 let cancelRequested = false;
@@ -143,6 +146,7 @@ root.innerHTML = `
       <small id="agentProgress" class="ram-children">Agent idle</small>
       <button id="reviewNativeJob" class="hidden" type="button">Review interrupted job</button>
       <small id="reviewNativeHint" class="ram-children hidden"></small>
+      <small id="nativeSchedulerSummary" class="ram-children">Native scheduler: not yet checked</small>
       <details id="nativeActionHistory" class="ram-children">
         <summary>Native action history</summary>
         <div id="nativeActionHistoryList">History not yet checked</div>
@@ -678,6 +682,36 @@ async function refreshNativeWorkerHistory(): Promise<void> {
   }
 }
 
+// Read-only Rust schedule observation: actual execution admission is checked
+// separately by the Rust execute_action path, never by this UI status.
+async function refreshNativeSchedule(): Promise<void> {
+  if (nativeSchedulerReadPending) return;
+  nativeSchedulerReadPending=true;
+  const target=el<HTMLElement>("#nativeSchedulerSummary");
+  try {
+    const schedule=await invoke<NativeSchedule|null>("native_scheduler_status");
+    if (schedule===null) {
+      target.textContent="Native scheduler: no persisted task graph";
+      return;
+    }
+    if (schedule.version!==1||!Array.isArray(schedule.jobs)
+        ||schedule.jobs.length===0||schedule.jobs.length>48
+        ||schedule.jobs.some(job=>!["queued","running","audited","failed","outcome_unknown"].includes(job.phase)
+          ||typeof job.stepId!=="string"||typeof job.tool!=="string")) {
+      throw Error("Invalid native scheduler status");
+    }
+    const audited=schedule.jobs.filter(job=>job.phase==="audited").length;
+    const running=schedule.jobs.filter(job=>job.phase==="running").length;
+    const unsafe=schedule.jobs.some(job=>job.phase==="failed"||job.phase==="outcome_unknown");
+    target.textContent="Rust scheduler: "+audited+"/"+schedule.jobs.length+
+      " native actions audited · "+running+" running"+
+      (unsafe?" · RECOVERY/REPLAN REQUIRED":" · permissioned step dispatch")+
+      " · not a full editing acceptance";
+  } catch {
+    target.textContent="Native scheduler unavailable — do not assume a vacant worker.";
+  } finally { nativeSchedulerReadPending=false; }
+}
+
 function renderOrchestrationStatus(): void {
   const progress = el<HTMLElement>("#agentProgress");
   const reviewButton = el<HTMLButtonElement>("#reviewNativeJob");
@@ -888,6 +922,7 @@ async function boot(): Promise<void> {
     renderOrchestrationStatus();
     await refreshNativeWorkerStatus();
     await refreshNativeWorkerHistory();
+    await refreshNativeSchedule();
     await refreshRam();
     await refreshAudit();
     await refreshPremiereBridge();
@@ -896,6 +931,7 @@ async function boot(): Promise<void> {
     window.setInterval(() => void refreshRam(), 5000);
     window.setInterval(() => void refreshNativeWorkerStatus(), 4000);
     window.setInterval(() => void refreshNativeWorkerHistory(), 8000);
+    window.setInterval(() => void refreshNativeSchedule(), 8000);
   } catch (error) {
     settingsStatus.textContent = String(error);
   }
@@ -1094,6 +1130,7 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
     return;
   }
 
+  masterEmptyToolReplies=0;
   const accepted = acceptProposalGraph(orchestration, proposal);
   orchestration = accepted.state;
   if (accepted.event) await recordOrchestrationAudit(accepted.event, `Task graph revision ${orchestration.task_graph?.revision}`, proposal.tool);
@@ -1331,6 +1368,7 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
       }
     }
     void refreshAudit();
+    void refreshNativeSchedule();
     if (remoteTask) {
       if (!cancelledByUser && result.success && receiptMatches) remoteTask.evidenceActionId=actionId;
       if (cancelledByUser || !result.success || !receiptMatches) remoteTask.hadFailure=true;
@@ -1654,6 +1692,23 @@ async function runAgentStep(): Promise<void> {
       await saveActiveCheckpoint();
       await loadRecoveryCheckpoint();
     } else if (progress.total && progress.completed < progress.total) {
+      const next=nextWorkerTurn(orchestration.task_graph);
+      // Master can continue a bounded approved task even when one provider
+      // reply is commentary rather than the required typed-tool proposal.
+      // At most two such follow-ups: prevent unbounded paid model loops.
+      if (next && masterEmptyToolReplies<2 && taskDeadlineAllows(orchestration.task_expires_at_ms)
+          && orchestration.next_step<=orchestration.max_steps) {
+        masterEmptyToolReplies+=1;
+        messages.push({role:"user",content:
+          "[SHUVI_INTERNAL_CONTINUE] The existing owner-approved task graph is unfinished. "+
+          "Next ready step is "+next.step_id+" with exact tool "+next.tool+
+          ". Provide one typed tool proposal for that step, keeping normal owner approval and evidence checks. "+
+          "If unsafe or unsupported, explain the blocking reason; never assert success without a Rust action receipt."});
+        await saveActiveCheckpoint();
+        if (staleModelRequest()) return;
+        await runAgentStep();
+        return;
+      }
       messages.push({ role: "assistant", content: `Task paused with ${progress.completed}/${progress.total} steps supported by successful tool evidence. Unfinished steps remain saved.` });
       renderMessages();
       await saveActiveCheckpoint();

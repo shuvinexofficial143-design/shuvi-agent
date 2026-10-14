@@ -127,3 +127,22 @@ test("native history dashboard reads actual Rust records without granting worker
  assert.match(ui,/history\.items\.slice\(-8\)\.reverse\(\)/);
  assert.doesNotMatch(ui,/history\.items\.map\(.*execute_action/);
 });
+
+test("native scheduler is in permissioned execute_action rather than decorative queue",()=>{
+ const schedule=readFileSync(new URL("../src-tauri/src/native_scheduler.rs",import.meta.url),"utf8");
+ assert.match(lib,/mod native_scheduler;/);
+ assert.match(lib,/native_scheduler::preflight\(&app,prepared\.task_graph\.as_ref\(\)/);
+ assert.match(lib,/native_worker_job::begin\(&app,&action_id,&active_tool,now_ms\(\)\)\?/);
+ assert.match(lib,/native_scheduler::begin\(&app,prepared\.task_graph\.as_ref\(\)/);
+ assert.match(lib,/native_scheduler::finish\(&app,&action_id,&result\.tool,Some\(result\.success\)\)/);
+ assert.match(lib,/native_scheduler::finish\(&app,&action_id,&native\.tool,Some\(false\)\)/);
+ assert.match(lib,/native_scheduler::finish\(&app,&action_id,&tool,verified\)/);
+ assert.match(lib,/fn native_scheduler_status\(/);
+ assert.match(schedule,/fn allowed\(/);
+ assert.match(schedule,/fn begin_at\(/);
+ assert.match(schedule,/fn finish_at\(/);
+ assert.match(schedule,/fn from_graph\(/);
+ assert.match(schedule,/real_approved_steps_advance_when_exact_dependencies_are_audited/);
+ assert.match(schedule,/restart_keeps_running_unknown_and_blocks_duplicate_dispatch/);
+ assert.doesNotMatch(schedule,/fn\s+(?:auto_approve|auto_execute|blind_retry)\s*\(/);
+});

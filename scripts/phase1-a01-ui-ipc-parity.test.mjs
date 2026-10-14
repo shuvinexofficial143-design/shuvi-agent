@@ -25,6 +25,7 @@ const uniqueNames=[
   "list_providers",
   "load_session_checkpoint",
   "native_worker_history",
+  "native_scheduler_status",
   "native_worker_status",
   "premiere_bridge_start",
   "premiere_bridge_status",
