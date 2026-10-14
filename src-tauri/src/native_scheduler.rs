@@ -184,7 +184,7 @@ fn merged(prior:Option<Schedule>,proposed:Option<&Value>)->Result<Schedule,Strin
             // The WebView still requires a new user task and normal approval;
             // old audited action IDs remain in the separate Rust history.
             if next.revision==1 && old.jobs.iter().all(|j|
-                matches!(j.phase.as_str(),"audited"|"failed"|"outcome_unknown")){
+                matches!(j.phase.as_str(),"audited"|"failed"|"outcome_unknown"|"reviewed_failed")){
                 return Ok(next);
             }
             if next.revision!=old.revision && next.revision!=old.revision+1{
@@ -473,6 +473,20 @@ mod tests{
         let got=read_at(&p).unwrap().unwrap();
         assert_eq!(got.jobs.iter().find(|j|j.step_id=="model").unwrap().phase,"reviewed_failed");
         assert_eq!(got.jobs.iter().find(|j|j.step_id=="fresh_import").unwrap().phase,"running");
+        cleanup(&p);
+    }
+    #[test]
+    fn new_owner_task_can_restart_after_reviewed_failed_terminal_history(){
+        let p=file();let g=graph(1);
+        begin_at(&p,Some(&g),"model","blender_run_plan",A).unwrap();
+        finish_at(&p,A,"blender_run_plan",Some(false)).unwrap();
+        review_failed_at(&p,"model",A).unwrap();
+        // Begin an independent task with the same objective and a fresh UUID;
+        // the separate native Rust job journal still enforces replay protection.
+        let new=graph(1);
+        begin_at(&p,Some(&new),"model","blender_run_plan",B).unwrap();
+        let restored=read_at(&p).unwrap().unwrap();
+        assert_eq!(restored.jobs[0].action_id.as_deref(),Some(B));
         cleanup(&p);
     }
     #[test]
