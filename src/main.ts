@@ -1645,41 +1645,6 @@ async function runAgentStep(): Promise<void> {
   }
 }
 
-el<HTMLButtonElement>("#reviewNativeJob").addEventListener("click", async () => {
-  const host=nativeHostStatus;
-  if (!host || nativeHostStatusUnavailable || host.leaseOwnedByThisProcess
-      || host.state!=="recovery_required" || host.durableJobPhase!=="running"
-      || !host.durableJobActionId || !host.durableJobTool) return;
-  // This is deliberately NOT an "approve/retry" button. The owner must
-  // inspect the external app and accept that side effects may be unknown.
-  const confirmation=window.prompt(
-    "Inspect Blender/Premiere/Windows and the saved project first.\n"+
-    "This records UNKNOWN outcome, does not undo or repeat the old action, and does not grant future permission.\n"+
-    "Action: "+host.durableJobActionId+"\nTool: "+host.durableJobTool+
-    "\nType REVIEW UNKNOWN to acknowledge:"
-  );
-  if (confirmation!=="REVIEW UNKNOWN") return;
-  const button=el<HTMLButtonElement>("#reviewNativeJob");
-  const message=el<HTMLElement>("#reviewNativeHint");
-  button.disabled=true;
-  message.classList.remove("hidden");
-  try {
-    const record=await invoke<{phase:string;auditSuccess:boolean|null}>(
-      "reconcile_native_worker_job",{
-        actionId:host.durableJobActionId,tool:host.durableJobTool,confirmation
-      });
-    message.textContent=record.phase==="audit_verified"
-      ? "Exact previous Rust audit receipt found. No job replayed. Review any separate task-recovery checkpoint."
-      : "Interrupted job marked owner-reviewed UNKNOWN, not successful. Review any separate task-recovery checkpoint.";
-  } catch {
-    // Native transport errors may contain file paths or private host details.
-    message.textContent="Recovery refused by native safety checks. Inspect the Rust host and audit before another action.";
-  } finally {
-    button.disabled=false;
-    await refreshNativeWorkerStatus();
-  }
-});
-
 el<HTMLButtonElement>("#resumeTask").addEventListener("click", async () => {
   if (!savedCheckpoint || busy) return;
 
@@ -1718,6 +1683,41 @@ el<HTMLButtonElement>("#resumeTask").addEventListener("click", async () => {
     return;
   }
   await runAgentStep();
+});
+
+el<HTMLButtonElement>("#reviewNativeJob").addEventListener("click", async () => {
+  const host=nativeHostStatus;
+  if (!host || nativeHostStatusUnavailable || host.leaseOwnedByThisProcess
+      || host.state!=="recovery_required" || host.durableJobPhase!=="running"
+      || !host.durableJobActionId || !host.durableJobTool) return;
+  // This is deliberately NOT an "approve/retry" button. The owner must
+  // inspect the external app and accept that side effects may be unknown.
+  const confirmation=window.prompt(
+    "Inspect Blender/Premiere/Windows and the saved project first.\n"+
+    "This records UNKNOWN outcome, does not undo or repeat the old action, and does not grant future permission.\n"+
+    "Action: "+host.durableJobActionId+"\nTool: "+host.durableJobTool+
+    "\nType REVIEW UNKNOWN to acknowledge:"
+  );
+  if (confirmation!=="REVIEW UNKNOWN") return;
+  const button=el<HTMLButtonElement>("#reviewNativeJob");
+  const message=el<HTMLElement>("#reviewNativeHint");
+  button.disabled=true;
+  message.classList.remove("hidden");
+  try {
+    const record=await invoke<{phase:string;auditSuccess:boolean|null}>(
+      "reconcile_native_worker_job",{
+        actionId:host.durableJobActionId,tool:host.durableJobTool,confirmation
+      });
+    message.textContent=record.phase==="audit_verified"
+      ? "Exact previous Rust audit receipt found. No job replayed. Review any separate task-recovery checkpoint."
+      : "Interrupted job marked owner-reviewed UNKNOWN, not successful. Review any separate task-recovery checkpoint.";
+  } catch {
+    // Native transport errors may contain file paths or private host details.
+    message.textContent="Recovery refused by native safety checks. Inspect the Rust host and audit before another action.";
+  } finally {
+    button.disabled=false;
+    await refreshNativeWorkerStatus();
+  }
 });
 
 el<HTMLButtonElement>("#discardTask").addEventListener("click", async () => {
