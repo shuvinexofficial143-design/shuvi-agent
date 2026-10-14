@@ -170,10 +170,22 @@ fn merged(prior:Option<Schedule>,proposed:Option<&Value>)->Result<Schedule,Strin
         (Some(s),None)=>Ok(s),
         (Some(old),Some(mut next))=>{
             if next.objective!=old.objective{
-                if old.jobs.iter().all(|j|matches!(j.phase.as_str(),"audited"|"failed"|"outcome_unknown")){
-                    return Ok(next);
+                // A new explicit user task has its own owner-approval flow.
+                // Abandon ONLY a non-running queue; the old native action
+                // audit/history stays persisted separately. An interrupted
+                // Windows action must be owner-reviewed before a new task.
+                if old.jobs.iter().any(|j|j.phase=="running"){
+                    return Err("A running or interrupted native job blocks task replacement.".into());
                 }
-                return Err("A different task cannot replace an unfinished native schedule.".into());
+                return Ok(next);
+            }
+            // A fully terminal previous session may begin a fresh owner-
+            // approved task with the same objective and initial revision.
+            // The WebView still requires a new user task and normal approval;
+            // old audited action IDs remain in the separate Rust history.
+            if next.revision==1 && old.jobs.iter().all(|j|
+                matches!(j.phase.as_str(),"audited"|"failed"|"outcome_unknown")){
+                return Ok(next);
             }
             if next.revision!=old.revision && next.revision!=old.revision+1{
                 return Err("Native task graph revision is stale or skipped.".into());
@@ -385,6 +397,37 @@ mod tests{
         begin_at(&p,Some(&g),"model","blender_run_plan",A).unwrap();
         finish_at(&p,A,"blender_run_plan",Some(false)).unwrap();
         assert!(begin_at(&p,None,"import","premiere_insert_media",B).is_err());
+        cleanup(&p);
+    }
+    #[test]
+    fn new_user_objective_may_replace_idle_queue_but_never_active_windows_job(){
+        let p=file();
+        let original=graph(1);
+        let mut fresh=graph(1);
+        fresh["objective"]=serde_json::json!("Build a different edit");
+        begin_at(&p,Some(&original),"model","blender_run_plan",A).unwrap();
+        assert!(preflight_at(&p,Some(&fresh),"model","blender_run_plan",B).is_err());
+        finish_at(&p,A,"blender_run_plan",Some(true)).unwrap();
+        preflight_at(&p,Some(&fresh),"model","blender_run_plan",B).unwrap();
+        begin_at(&p,Some(&fresh),"model","blender_run_plan",B).unwrap();
+        let saved=read_at(&p).unwrap().unwrap();
+        assert_eq!(saved.objective,"Build a different edit");
+        assert_eq!(saved.jobs[0].action_id.as_deref(),Some(B));
+        cleanup(&p);
+    }
+    #[test]
+    fn repeating_completed_objective_requires_a_fresh_prepared_uuid(){
+        let p=file();let g=graph(1);
+        begin_at(&p,Some(&g),"model","blender_run_plan",A).unwrap();
+        finish_at(&p,A,"blender_run_plan",Some(true)).unwrap();
+        begin_at(&p,None,"import","premiere_insert_media",B).unwrap();
+        finish_at(&p,B,"premiere_insert_media",Some(true)).unwrap();
+        let fresh_id=uuid::Uuid::new_v4().to_string();
+        // Same objective, but this is a separate explicit owner session
+        // with a distinct prepared action identity.
+        begin_at(&p,Some(&g),"model","blender_run_plan",&fresh_id).unwrap();
+        assert_eq!(read_at(&p).unwrap().unwrap().jobs[0].action_id.as_deref(),
+            Some(fresh_id.as_str()));
         cleanup(&p);
     }
     #[test]
