@@ -8,7 +8,7 @@ export function assessMasterSchedulerAdmission(schedule,graph){
       ||!Array.isArray(schedule.jobs)||schedule.jobs.length<1||schedule.jobs.length>48
       ||schedule.jobs.some(job=>!job||typeof job.stepId!=="string"
         ||typeof job.tool!=="string"||!Array.isArray(job.dependsOn)
-        ||!["queued","running","audited","failed","outcome_unknown"].includes(job.phase))){
+        ||!["queued","running","audited","failed","outcome_unknown","reviewed_failed"].includes(job.phase))){
     return {ok:false,reason:"Native scheduler checkpoint is malformed."};
   }
   if(schedule.jobs.some(job=>job.phase==="running")){

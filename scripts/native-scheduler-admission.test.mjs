@@ -6,7 +6,7 @@ const graph={objective:"Edit",steps:[{step_id:"a",expected_tool:"blender_run_pla
 const job=phase=>({stepId:"a",tool:"blender_run_plan",dependsOn:[],phase,actionId:null});
 const schedule=phase=>({version:1,objective:"Edit",revision:1,jobs:[job(phase)]});
 test("Native scheduler allows initial, queued and verified/replan Master turns",()=>{
- for(const phase of ["queued","audited","failed","outcome_unknown"])
+ for(const phase of ["queued","audited","failed","outcome_unknown","reviewed_failed"])
    assert.equal(admit(schedule(phase),graph).ok,true);
  assert.equal(admit(null,graph).ok,true);
  assert.equal(admit(undefined,null).ok,true);
