@@ -1163,8 +1163,20 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
   try {
     // Bind the prepared native action to the same pinned model route that
     // produced its tool proposal; UI Settings may differ from role routing.
+    // Always forward the locally validated current graph to the Rust
+    // scheduler. A restored task may have a valid WebView checkpoint but no
+    // native-scheduler.json yet (crash before its first approved action).
+    // Do NOT forward model-written status/evidence as scheduling authority.
+    const scheduledGraph=orchestration.task_graph
+      ? {objective:orchestration.task_graph.objective,
+         revision:orchestration.task_graph.revision,
+         steps:orchestration.task_graph.steps.map(job=>({
+           step_id:job.step_id,expected_tool:job.expected_tool,
+           depends_on:[...job.depends_on]
+         }))}
+      : null;
     const staged = await invoke<PendingAction>("prepare_tool", {
-      proposal,
+      proposal: scheduledGraph ? {...proposal,task_graph:scheduledGraph} : proposal,
       provider: route.provider,
       model: route.model,
       baseUrl: route.base_url || null

@@ -146,3 +146,11 @@ test("native scheduler is in permissioned execute_action rather than decorative 
  assert.match(schedule,/restart_keeps_running_unknown_and_blocks_duplicate_dispatch/);
  assert.doesNotMatch(schedule,/fn\s+(?:auto_approve|auto_execute|blind_retry)\s*\(/);
 });
+
+test("restored Master graph is supplied to native scheduler without model-forged progress",()=>{
+ assert.match(ui,/const scheduledGraph=orchestration\.task_graph/);
+ assert.match(ui,/revision:orchestration\.task_graph\.revision/);
+ assert.match(ui,/step_id:job\.step_id,expected_tool:job\.expected_tool/);
+ assert.match(ui,/proposal: scheduledGraph \? \{\.\.\.proposal,task_graph:scheduledGraph\} : proposal/);
+ assert.doesNotMatch(ui,/status:job\.status,.*evidence:job\.evidence/);
+});
