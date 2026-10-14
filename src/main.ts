@@ -1833,6 +1833,35 @@ el<HTMLButtonElement>("#resumeTask").addEventListener("click", async () => {
 
   const checkpoint = savedCheckpoint;
   const restored = normalizeAgentOrchestrationState(checkpoint.orchestration);
+  // READ-ONLY preflight BEFORE replacing/removing the saved checkpoint.
+  // An interrupted Windows mutation or mismatched Rust schedule is never
+  // turned into another paid Master request by clicking Resume.
+  if (restored.recovery_mode !== "stopped") {
+    try {
+      const host=await invoke<NativeWorkerStatus>("native_worker_status");
+      if(host.state==="recovery_required"||host.state==="native_action_in_flight"
+          ||host.state==="lease_held_unattributed"||host.requiresOwnerReview
+          ||host.durableJobPhase==="running"){
+        resumeSummary.textContent="Native Windows action is still running or requires review. Saved checkpoint retained; no model request sent.";
+        return;
+      }
+      if(restored.task_graph){
+        const native=await invoke<NativeSchedule|null>("native_scheduler_status");
+        const admission=assessMasterSchedulerAdmission(native,restored.task_graph);
+        if(!admission.ok){
+          resumeSummary.textContent="Resume blocked: "+
+            (admission.reason??"Rust task state is unresolved.")+
+            " Saved checkpoint retained; inspect the original audit before replanning.";
+          return;
+        }
+      }
+    } catch {
+      resumeSummary.textContent="Native execution evidence unavailable. Original checkpoint retained; no provider request sent.";
+      return;
+    }
+    // Another Resume click must not race a checkpoint inspection.
+    if(savedCheckpoint!==checkpoint||busy)return;
+  }
   if (restored.recovery_mode !== "stopped" && !window.confirm(
     "Resuming may resend an unfinished AI request. The prior provider request may have been billed. Verify provider usage before continuing. Send a new request?"
   )) return;
