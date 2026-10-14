@@ -96,8 +96,12 @@ fn validate(s:&Schedule)->Result<(),String>{
 fn from_graph(graph:&Value)->Result<Schedule,String>{
     let objective=graph.get("objective").and_then(Value::as_str)
         .ok_or("Task graph objective missing.")?;
-    let revision=graph.get("revision").and_then(Value::as_u64)
-        .ok_or("Task graph revision missing.")?;
+    // Frontend graph parser defaults an omitted first revision to 1.
+    // A present-but-invalid revision must still be rejected, not defaulted.
+    let revision=match graph.get("revision"){
+        Some(value)=>value.as_u64().ok_or("Task graph revision invalid.")?,
+        None=>1
+    };
     let steps=graph.get("steps").and_then(Value::as_array)
         .ok_or("Native scheduler requires typed task graph steps.")?;
     if revision>MAX_JOBS as u64{return Err("Task graph revision too large.".into());}
@@ -309,6 +313,14 @@ mod tests{
           {"step_id":"import","expected_tool":"premiere_insert_media","depends_on":["model"]}]})
     }
     fn cleanup(p:&Path){let _=fs::remove_file(p);let _=fs::remove_file(p.with_extension("json.bak"));}
+    #[test]
+    fn omitted_initial_revision_defaults_to_one_but_invalid_revision_fails(){
+        let mut value=graph(1);
+        value.as_object_mut().unwrap().remove("revision");
+        assert_eq!(from_graph(&value).unwrap().revision,1);
+        value["revision"]=serde_json::json!("bad");
+        assert!(from_graph(&value).is_err());
+    }
     #[test]
     fn real_approved_steps_advance_when_exact_dependencies_are_audited(){
         let p=file();let g=graph(1);
