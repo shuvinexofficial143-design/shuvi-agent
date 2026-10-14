@@ -36,7 +36,7 @@ fn validate(v:&NativeJob)->Result<(),String>{
         return Err("Native job has invalid tool identity.".into());
     }
     if v.started_at_ms==0||v.updated_at_ms<v.started_at_ms
-       ||v.updated_at_ms>v.started_at_ms.saturating_add(86_400_000)
+       ||(v.phase=="running"&&v.updated_at_ms>v.started_at_ms.saturating_add(86_400_000))
        ||v.heartbeat_seq>1_000_000{
         return Err("Native job heartbeat timestamps or sequence invalid.".into());
     }
@@ -51,7 +51,7 @@ fn validate(v:&NativeJob)->Result<(),String>{
         }
     }
     match (v.phase.as_str(),v.audit_success){
-        ("running",None)|("audit_verified",Some(_))=>Ok(()),
+        ("running",None)|("audit_verified",Some(_))|("owner_reviewed_unknown",None)=>Ok(()),
         _=>Err("Native job state is inconsistent with local audit.".into()),
     }
 }
@@ -95,7 +95,7 @@ fn begin_at(path:&Path,action_id:&str,tool:&str,now:u64)->Result<NativeJob,Strin
     let _lock=JOB_LOCK.lock().map_err(|_|"Native job lock poisoned.")?;
     let mut history=Vec::new();
     if let Some(last)=read_at(path)?{
-        if last.phase!="audit_verified"{
+        if !matches!(last.phase.as_str(),"audit_verified"|"owner_reviewed_unknown"){
             return Err("Unresolved durable native worker job requires owner audit review before another action.".into());
         }
         if last.action_id==action_id||last.prior_action_ids.iter().any(|id|id==action_id){
@@ -136,6 +136,34 @@ fn audited_at(path:&Path,id:&str,success:bool,now:u64)->Result<(),String>{
     record.updated_at_ms=now;
     persist(path,&record)
 }
+/// Explicit post-crash reconciliation. A missing audit is never promoted to
+/// success. This only closes a *known* interrupted action after the owner
+/// confirms its external side effects have been inspected. Authorization,
+/// cross-process exclusion and audit-receipt validation are enforced by the
+/// Tauri entrypoint, NOT by this state transition.
+fn reconcile_at(
+    path:&Path,id:&str,tool:&str,verified_audit:Option<bool>,now:u64
+)->Result<NativeJob,String>{
+    let _lock=JOB_LOCK.lock().map_err(|_|"Native job lock poisoned.")?;
+    let mut job=read_at(path)?.ok_or("No interrupted native worker job exists.")?;
+    if job.phase!="running"||job.action_id!=id||job.tool!=tool{
+        return Err("Owner review must match the exact interrupted native action and tool.".into());
+    }
+    if now<job.updated_at_ms{
+        return Err("Owner review timestamp predates the durable native worker record.".into());
+    }
+    job.phase=if verified_audit.is_some(){"audit_verified".into()}
+        else{"owner_reviewed_unknown".into()};
+    job.audit_success=verified_audit;
+    job.updated_at_ms=now;
+    persist(path,&job)?;
+    Ok(job)
+}
+pub(crate) fn reconcile(
+    app:&AppHandle,id:&str,tool:&str,verified_audit:Option<bool>,now:u64
+)->Result<NativeJob,String>{
+    reconcile_at(&journal_path(app)?,id,tool,verified_audit,now)
+}
 pub(crate) fn begin(app:&AppHandle,id:&str,tool:&str,now:u64)->Result<(),String>{
     begin_at(&journal_path(app)?,id,tool,now).map(|_|())
 }
@@ -147,7 +175,7 @@ pub(crate) fn read(app:&AppHandle)->Result<Option<NativeJob>,String>{
     read_at(&journal_path(app)?)
 }
 pub(crate) fn require_resolved(app:&AppHandle)->Result<(),String>{
-    if read(app)?.is_some_and(|job|job.phase!="audit_verified"){
+    if read(app)?.is_some_and(|job|!matches!(job.phase.as_str(),"audit_verified"|"owner_reviewed_unknown")){
         return Err("An unfinished durable native worker job blocks all new desktop mutations until independent owner review.".into());
     }
     Ok(())
@@ -268,6 +296,48 @@ mod tests{
         begin_at(&p,B,"premiere_context",1300).unwrap();
         assert_eq!(read_at(&p).unwrap().unwrap().prior_action_ids,vec![A.to_string()]);
         fs::remove_file(p).unwrap();
+    }
+    #[test]
+    fn owner_review_unknown_preserves_uncertainty_and_blocks_exact_uuid_replay(){
+        let p=file();
+        begin_at(&p,A,"blender_run_plan",1000).unwrap();
+        assert!(begin_at(&p,B,"read_file",2000).is_err());
+        assert!(reconcile_at(&p,B,"blender_run_plan",None,3000).is_err());
+        assert!(reconcile_at(&p,A,"premiere_insert_media",None,3000).is_err());
+        assert_eq!(read_at(&p).unwrap().unwrap().phase,"running");
+        let reviewed=reconcile_at(&p,A,"blender_run_plan",None,90_000_000).unwrap();
+        assert_eq!(reviewed.phase,"owner_reviewed_unknown");
+        assert_eq!(reviewed.audit_success,None);
+        assert!(audited_at(&p,A,true,90_000_100).is_err());
+        assert!(reconcile_at(&p,A,"blender_run_plan",Some(true),90_000_200).is_err());
+        assert!(begin_at(&p,A,"read_file",90_000_300).is_err());
+        begin_at(&p,B,"read_file",90_000_400).unwrap();
+        assert_eq!(read_at(&p).unwrap().unwrap().prior_action_ids,vec![A.to_string()]);
+        audited_at(&p,B,true,90_000_500).unwrap();
+        assert!(begin_at(&p,A,"read_file",90_000_600).is_err());
+        fs::remove_file(&p).unwrap();
+    }
+    #[test]
+    fn owner_review_may_restore_only_an_externally_verified_rust_audit(){
+        let p=file();
+        begin_at(&p,A,"premiere_insert_media",1000).unwrap();
+        let confirmed=reconcile_at(&p,A,"premiere_insert_media",Some(false),2000).unwrap();
+        assert_eq!(confirmed.phase,"audit_verified");
+        assert_eq!(confirmed.audit_success,Some(false));
+        begin_at(&p,B,"read_file",3000).unwrap();
+        audited_at(&p,B,true,3100).unwrap();
+        fs::remove_file(&p).unwrap();
+    }
+    #[test]
+    fn malformed_owner_review_state_still_fails_closed(){
+        let p=file();
+        begin_at(&p,A,"read_file",1000).unwrap();
+        let mut value=read_at(&p).unwrap().unwrap();
+        value.phase="owner_reviewed_unknown".into();
+        value.audit_success=Some(true); // No result can be invented by a manual review.
+        fs::write(&p,serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(begin_at(&p,B,"read_file",2000).is_err());
+        fs::remove_file(&p).unwrap();
     }
     #[test]
     fn poisoned_or_orphaned_job_journal_fails_closed(){

@@ -24,6 +24,7 @@ pub(crate) struct NativeWorkerStatus {
     // Durable Rust supervisor pulse, not a tool/app progress heartbeat.
     pub durable_job_phase:Option<String>,
     pub durable_job_action_id:Option<String>,
+    pub durable_job_tool:Option<String>,
     pub supervisor_heartbeat_at_ms:Option<u64>,
     pub supervisor_heartbeat_age_ms:Option<u64>,
     pub supervisor_heartbeat_seq:Option<u64>,
@@ -104,7 +105,7 @@ pub(crate) fn snapshot(
         requires_owner_review,
         progress_heartbeat_verified:false,
         safe_to_auto_retry:false,
-        durable_job_phase:None,durable_job_action_id:None,
+        durable_job_phase:None,durable_job_action_id:None,durable_job_tool:None,
         supervisor_heartbeat_at_ms:None,supervisor_heartbeat_age_ms:None,
         supervisor_heartbeat_seq:None,supervisor_health:"not_observed".into(),
     }
@@ -121,6 +122,7 @@ pub(crate) fn attach_durable_job(
     let Some(job)=job else{return status};
     status.durable_job_phase=Some(job.phase.clone());
     status.durable_job_action_id=Some(job.action_id.clone());
+    status.durable_job_tool=Some(job.tool.clone());
     status.supervisor_heartbeat_at_ms=(job.heartbeat_seq>0).then_some(job.updated_at_ms);
     status.supervisor_heartbeat_age_ms=(job.heartbeat_seq>0)
         .then_some(now.saturating_sub(job.updated_at_ms));
@@ -148,6 +150,10 @@ pub(crate) fn attach_durable_job(
         status.state="recovery_required".into();
         status.requires_owner_review=true;
         status.supervisor_health="audited_job_conflicts_with_live_lease".into();
+    } else if job.phase=="owner_reviewed_unknown" {
+        // A human acknowledged uncertain external side effects; this is
+        // emphatically NOT an executed/successful audit receipt.
+        status.supervisor_health="last_action_reviewed_unknown".into();
     } else {
         status.supervisor_health="last_action_audited".into();
     }

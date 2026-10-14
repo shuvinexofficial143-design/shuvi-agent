@@ -204,3 +204,31 @@
 ## Safety criteria
 
 Never mark a graphics task or full edit complete based solely on an AI claim, a plan, a response path, a queued export, a claimed worker count, or an unaudited result. A failed/unknown Blender operation must be inspected rather than blindly replayed. This document describes source implementation, not live acceptance.
+
+## Interrupted native action — owner-reviewed recovery (development branch)
+
+- The installed desktop shows **Review interrupted job** only when the Rust host
+  observes a persisted `running` job without local execution ownership and
+  independently reports recovery required. The operator must inspect any
+  external Blender/Premiere/Windows side effects and type `REVIEW UNKNOWN`.
+  This is not a blind resume, an AI grant or a successful artifact acceptance.
+- Rust obtains the **same cross-process Windows desktop lease** used by
+  regular action execution, confirms no active or staged local action, and
+  compares the supplied tool and action UUID against the exact durable job.
+  An active second Shuvi process cannot be bypassed by WebView status.
+- If the separate Rust audit contains an exact matching `executed` or
+  `failed` receipt, the job journal restores its recorded Boolean result.
+  An absent receipt is recorded as `owner_reviewed_unknown`, with
+  `audit_success=null`. Contradictory/denied audit data prevents review.
+  Neither case reruns a tool, creates a new authorization, verifies external
+  project state, or automatically clears the independent task recovery
+  checkpoint. Both remain in the bounded UUID replay history when the next
+  separately approved action begins.
+- Normal API cancellation and timeout paths remain unchanged. The owner
+  reconciliation command must not be invoked by an autonomous worker.
+  A separate manual recovery path may still be needed for an orphaned or
+  corrupt journal, app-specific project side effects and outstanding WebView
+  task recovery states.
+- **Not yet present:** a persistent multi-job scheduler, genuine child/app
+  progress heartbeat, independent AI workers, or live Windows application
+  acceptance. Source tests are not proof of live editing.

@@ -85,3 +85,20 @@ test("durable native job replay history is bounded and survives restart without 
  assert.match(ui,/audited_job_conflicts_with_live_lease/);
  assert.doesNotMatch(jobs,/fn\s+(?:automatic_retry|force_release_worker|assume_completed)\s*\(/);
 });
+
+test("interrupted native jobs need owner confirmation, exact Rust audit binding and cross-process exclusion",()=>{
+ assert.match(lib,/fn reconcile_native_worker_job\(/);
+ assert.match(lib,/confirmation!="REVIEW UNKNOWN"/);
+ assert.match(lib,/execution_lease::claim_single_execution\(&state\.native_execution_owned\)/);
+ assert.match(lib,/native_worker_status::require_clear_for_new_dispatch\(&running,&started\)/);
+ assert.match(lib,/read_action_audit_receipt\(&app,&action_id\)/);
+ assert.match(lib,/native_worker_job::reconcile\(&app,&action_id,&tool,verified,now_ms\(\)\)/);
+ assert.match(lib,/\s+reconcile_native_worker_job,\s/);
+ assert.match(jobs,/owner_reviewed_unknown/);
+ assert.match(jobs,/reviewed.audit_success/);
+ assert.match(ui,/id="reviewNativeJob"/);
+ assert.match(ui,/window\.prompt\(/);
+ assert.match(ui,/"reconcile_native_worker_job"/);
+ assert.match(status,/last_action_reviewed_unknown/);
+ assert.doesNotMatch(jobs,/automatic_retry|auto_execute_recovery/);
+});

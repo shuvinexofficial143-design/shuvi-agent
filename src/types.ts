@@ -127,14 +127,15 @@ export type NativeWorkerStatus = {
   progressHeartbeatVerified: false;
   safeToAutoRetry: false;
   // Durable Rust supervision of THIS process, not Adobe/Blender progress.
-  durableJobPhase: "running" | "audit_verified" | null;
+  durableJobPhase: "running" | "audit_verified" | "owner_reviewed_unknown" | null;
   durableJobActionId: string | null;
+  durableJobTool: string | null;
   supervisorHeartbeatAtMs: number | null;
   supervisorHeartbeatAgeMs: number | null;
   supervisorHeartbeatSeq: number | null;
   supervisorHealth: "not_observed" | "supervisor_start_record_only" | "unattributed_or_interrupted" |
     "supervisor_tick_stale" | "rust_supervisor_observed" | "last_action_audited" |
-    "audited_job_conflicts_with_live_lease";
+    "audited_job_conflicts_with_live_lease" | "last_action_reviewed_unknown";
 };
 
 export type RuntimeStatus = {

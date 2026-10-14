@@ -18684,6 +18684,67 @@ fn native_worker_status(
     ))
 }
 
+/// An interrupted native mutation can only be reviewed from the local owner
+/// UI, under the same OS-wide lease used for real desktop actions. The review
+/// cannot grant a new tool action, retry a command or claim unknown work passed.
+#[tauri::command]
+fn reconcile_native_worker_job(
+    action_id:String,
+    tool:String,
+    confirmation:String,
+    state:State<'_,ActionState>,
+    app:AppHandle,
+)->Result<native_worker_job::NativeJob,String>{
+    if confirmation!="REVIEW UNKNOWN" {
+        return Err("Owner must explicitly acknowledge REVIEW UNKNOWN after inspecting external application effects.".into());
+    }
+    let _lease=execution_lease::claim_single_execution(&state.native_execution_owned)?;
+    {
+        let running=state.running_action_tools.lock()
+            .map_err(|_|"Running action records unavailable for owner reconciliation.".to_string())?;
+        let started=state.running_action_started_at_ms.lock()
+            .map_err(|_|"Native action time records unavailable for owner reconciliation.".to_string())?;
+        native_worker_status::require_clear_for_new_dispatch(&running,&started)?;
+    }
+    if !state.pending.lock()
+        .map_err(|_|"Pending approvals unavailable for owner reconciliation.".to_string())?
+        .is_empty(){
+        return Err("Resolve staged native approvals before reviewing an interrupted worker.".into());
+    }
+    let job=native_worker_job::read(&app)?
+        .ok_or("No interrupted native job is available for owner review.")?;
+    if job.phase!="running"||job.action_id!=action_id||job.tool!=tool{
+        return Err("An owner review must match the exact running journal UUID and tool.".into());
+    }
+    let verified=match read_action_audit_receipt(&app,&action_id)? {
+        None=>None,
+        Some(receipt)=>{
+            if receipt.action_id.as_deref()!=Some(action_id.as_str())
+                ||receipt.tool!=tool||!matches!(receipt.event.as_str(),"executed"|"failed")
+                ||(receipt.event=="failed"&&receipt.success){
+                return Err("Native action audit conflicts with interrupted worker; manual forensic inspection required.".into());
+            }
+            Some(receipt.event=="executed"&&receipt.success)
+        }
+    };
+    // Even if an executed receipt exists, the old task graph and recovery
+    // checkpoint are not silently promoted. Owner review is still explicit.
+    let record=native_worker_job::reconcile(&app,&action_id,&tool,verified,now_ms())?;
+    append_audit(&app,&AuditEntry{
+        timestamp_ms:now_ms(),
+        event:"native_worker_owner_review".into(),
+        tool,
+        detail:if verified.is_some(){
+            "Owner reviewed interrupted job; exact prior Rust execution audit receipt matched. No action replayed.".into()
+        }else{
+            "Owner reviewed interrupted job with UNKNOWN external effects. Not successful, not retried.".into()
+        },
+        success:false,
+        action_id:Some(action_id),
+    })?;
+    Ok(record)
+}
+
 #[tauri::command]
 fn prepare_tool(
     proposal: ToolProposal,
@@ -19336,6 +19397,7 @@ pub fn run() {
             chat,
             runtime_status,
             native_worker_status,
+            reconcile_native_worker_job,
             prepare_tool,
             prepare_powershell,
             deny_action,

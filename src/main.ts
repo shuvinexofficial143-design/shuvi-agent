@@ -139,6 +139,8 @@ root.innerHTML = `
       <small id="ramChildren" class="ram-children">0 managed processes</small>
       <small id="tokenMeter" class="ram-children">0 session tokens</small>
       <small id="agentProgress" class="ram-children">Agent idle</small>
+      <button id="reviewNativeJob" class="hidden" type="button">Review interrupted job</button>
+      <small id="reviewNativeHint" class="ram-children hidden"></small>
       <details id="taskProgress" class="ram-children hidden">
         <summary id="taskProgressSummary">Task progress</summary>
         <div id="taskProgressSteps"></div>
@@ -593,6 +595,8 @@ function nativeWorkerDisplay(): string {
   const host = nativeHostStatus;
   if (host.requiresOwnerReview || host.state === "recovery_required")
     return "Host worker: RECOVERY REQUIRED — inspect native action and durable job journal; no automatic retry";
+  if (host.durableJobPhase === "owner_reviewed_unknown")
+    return "Host worker: last interrupted action reviewed as UNKNOWN; never marked successful or retried";
   if (host.state === "native_action_in_flight") {
     const pulse=host.supervisorHealth==="rust_supervisor_observed"
       ? "Rust supervisor check-in "+Math.floor((host.supervisorHeartbeatAgeMs??0)/1000)+"s ago"
@@ -620,7 +624,7 @@ async function refreshNativeWorkerStatus(): Promise<void> {
       ||status.safeToAutoRetry!==false
       ||!["not_observed","unattributed_or_interrupted","supervisor_tick_stale",
         "rust_supervisor_observed","supervisor_start_record_only","last_action_audited",
-        "audited_job_conflicts_with_live_lease"].includes(status.supervisorHealth))
+        "audited_job_conflicts_with_live_lease","last_action_reviewed_unknown"].includes(status.supervisorHealth))
       throw Error("Invalid native worker observation");
     nativeHostStatus=status;
     nativeHostStatusUnavailable=false;
@@ -635,6 +639,12 @@ async function refreshNativeWorkerStatus(): Promise<void> {
 
 function renderOrchestrationStatus(): void {
   const progress = el<HTMLElement>("#agentProgress");
+  const reviewButton = el<HTMLButtonElement>("#reviewNativeJob");
+  reviewButton.classList.toggle("hidden", !nativeHostStatus || nativeHostStatusUnavailable
+    ||nativeHostStatus.state!=="recovery_required"
+    ||nativeHostStatus.durableJobPhase!=="running"
+    ||nativeHostStatus.leaseOwnedByThisProcess
+    ||!nativeHostStatus.durableJobActionId||!nativeHostStatus.durableJobTool);
   const graphProgress = taskGraphProgress(orchestration.task_graph);
   const workerQueue = workerQueueView(orchestration.task_graph);
   const workerSupervisor = workerSupervisorView(orchestration.task_graph);
@@ -1634,6 +1644,40 @@ async function runAgentStep(): Promise<void> {
     setBusy(false);
   }
 }
+
+el<HTMLButtonElement>("#reviewNativeJob").addEventListener("click", async () => {
+  const host=nativeHostStatus;
+  if (!host || nativeHostStatusUnavailable || host.leaseOwnedByThisProcess
+      || host.state!=="recovery_required" || host.durableJobPhase!=="running"
+      || !host.durableJobActionId || !host.durableJobTool) return;
+  // This is deliberately NOT an "approve/retry" button. The owner must
+  // inspect the external app and accept that side effects may be unknown.
+  const confirmation=window.prompt(
+    "Inspect Blender/Premiere/Windows and the saved project first.\n"+
+    "This records UNKNOWN outcome, does not undo or repeat the old action, and does not grant future permission.\n"+
+    "Action: "+host.durableJobActionId+"\nTool: "+host.durableJobTool+
+    "\nType REVIEW UNKNOWN to acknowledge:"
+  );
+  if (confirmation!=="REVIEW UNKNOWN") return;
+  const button=el<HTMLButtonElement>("#reviewNativeJob");
+  const message=el<HTMLElement>("#reviewNativeHint");
+  button.disabled=true;
+  message.classList.remove("hidden");
+  try {
+    const record=await invoke<{phase:string;auditSuccess:boolean|null}>(
+      "reconcile_native_worker_job",{
+        actionId:host.durableJobActionId,tool:host.durableJobTool,confirmation
+      });
+    message.textContent=record.phase==="audit_verified"
+      ? "Exact previous Rust audit receipt found. No job replayed. Review any separate task-recovery checkpoint."
+      : "Interrupted job marked owner-reviewed UNKNOWN, not successful. Review any separate task-recovery checkpoint.";
+  } catch (error) {
+    message.textContent="Recovery refused: "+String(error);
+  } finally {
+    button.disabled=false;
+    await refreshNativeWorkerStatus();
+  }
+});
 
 el<HTMLButtonElement>("#resumeTask").addEventListener("click", async () => {
   if (!savedCheckpoint || busy) return;
