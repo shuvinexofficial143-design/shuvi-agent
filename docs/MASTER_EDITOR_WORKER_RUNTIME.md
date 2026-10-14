@@ -260,3 +260,20 @@ Before another potentially billed model call, the desktop reconciles its saved t
 
 ### Owner Resume preflight
 The desktop Resume button now samples Rust worker ownership and the durable native scheduler **before** discarding/replacing the original checkpoint or invoking a paid AI provider. A running, unattributed, review-required, absent, or mismatched native state refuses continuation and keeps the saved checkpoint for human inspection. Stopped checkpoints can still be restored for viewing without dispatch. This check is read-only and never approves, retries or certifies an application edit.
+
+### Native Master-to-worker terminal loop (bounded)
+
+After a Rust-verified native step, the serial coordinator uses a pure
+dependency-aware continuation decision. A ready step proceeds to the next
+configured specialist or Master with the usual permission prompt, a failed
+step returns for bounded replanning, and blocked/unverified work stops.
+When all worker steps have valid Rust-correlated typed evidence, the desktop
+also checks the exact terminal audited job count in Rust's read-only scheduler
+and then completes without any further paid AI-model request. This certifies
+the bounded action pipeline, not a visually accepted creative project.
+
+A delegated specialist receives a bounded instruction identifying exactly
+one approved READY step ID and proposed typed tool. It cannot revise the
+Master graph, switch a pinned provider, bypass tool approval or retry
+interrupted Windows actions. Parallel independent worker processes remain
+out of scope; this is serial workflow execution.

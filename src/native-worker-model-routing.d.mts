@@ -10,3 +10,5 @@ export function pinNativeWorkerModels(raw:string|null,provider:string):WorkerMod
 export function specialistRoleForTurn(turn:unknown):string|null;
 export function chooseSpecialistTurn(turn:unknown,models:WorkerModelMap,master:{provider:string;model:string;base_url:string;role:string}):WorkerModelDelegation|null;
 export function specialistProposalMatches(delegation:WorkerModelDelegation|null,proposal:unknown):boolean;
+
+export function delegatedWorkerContext(base:string,delegation:WorkerModelDelegation|null,graph:unknown):string|null;

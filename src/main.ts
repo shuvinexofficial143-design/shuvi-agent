@@ -1,7 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import "./styles.css";
 import {assessMasterSchedulerAdmission} from "./native-scheduler-admission.mjs";
-import {pinNativeWorkerModels,restorePinnedWorkerModels,chooseSpecialistTurn,specialistProposalMatches} from "./native-worker-model-routing.mjs";
+import {pinNativeWorkerModels,restorePinnedWorkerModels,chooseSpecialistTurn,specialistProposalMatches,delegatedWorkerContext} from "./native-worker-model-routing.mjs";
+import {decideNativeContinuation} from "./native-continuation-driver.mjs";
 import type {
   ActionResult,
   ChatMessage,
@@ -1147,6 +1148,41 @@ async function continueAfterOutcome(): Promise<void> {
     );
     return;
   }
+
+  // Never buy another AI turn just because a Rust action returned.
+  // Only dependency-ready work proceeds. An all-audited DAG ends here.
+  const continuation=decideNativeContinuation(orchestration.task_graph);
+  if (continuation.mode==="pause"){
+    await stopAgentForSafety(continuation.reason ??
+      "Native task has no verified next worker. Owner inspection required.");
+    return;
+  }
+  if (continuation.mode==="complete") {
+    let schedule: NativeSchedule | null;
+    try {
+      schedule=await invoke<NativeSchedule|null>("native_scheduler_status");
+    } catch {
+      await stopAgentForSafety("Cannot verify terminal Rust task schedule. Final output is not certified.");
+      return;
+    }
+    const admission=assessMasterSchedulerAdmission(schedule,orchestration.task_graph);
+    if(!schedule || !admission.ok ||
+        schedule.jobs.length!==orchestration.task_graph?.steps.length ||
+        !schedule.jobs.every(job=>job.phase==="audited")){
+      await stopAgentForSafety("Native task completion does not match every Rust-audited worker job. Inspect receipts before marking done.");
+      return;
+    }
+    const completed=taskGraphProgress(orchestration.task_graph);
+    messages.push({role:"assistant",content:
+      "All "+completed.total+" owner-approved native task steps have matching Rust audit receipts and typed result evidence. "+
+      "No additional AI request was sent. Verify saved Blender/Adobe/project outputs before considering a creative edit delivered."});
+    renderMessages();
+    if(remoteTask)await closeRemoteTask(remoteTask.evidenceActionId&&!remoteTask.hadFailure
+      ?"succeeded":"outcome_unknown");
+    await clearActiveCheckpoint();
+    setBusy(false);
+    return;
+  }
   await runAgentStep();
 }
 
@@ -1659,6 +1695,14 @@ async function runAgentStep(): Promise<void> {
     return;
   }
   const selectedRoute=delegation.route;
+  // Local graph-owned role, exact step and tool; never model-supplied authority.
+  const workerContext=delegatedWorkerContext(
+    orchestrationWithMasterEditor(orchestrationContext(orchestration), messages),
+    delegation,orchestration.task_graph);
+  if(workerContext===null){
+    await stopAgentForSafety("Configured specialist has no verified READY step or task context. No model request sent.");
+    return;
+  }
   // A blank model is never sent to a paid provider and never silently replaced.
   if (!selectedRoute.model.trim()) {
     messages.push({role:"assistant",content:"No exact AI model is configured for this task. Open Provider and assign a Master or task-specific model. No AI request was sent."});
@@ -1719,7 +1763,7 @@ async function runAgentStep(): Promise<void> {
         model: selectedRoute.model,
         base_url: selectedRoute.base_url || null,
         messages: providerMessageWindow(messages),
-        orchestration_context: orchestrationWithMasterEditor(orchestrationContext(orchestration), messages)
+        orchestration_context: workerContext
       }
     });
 
