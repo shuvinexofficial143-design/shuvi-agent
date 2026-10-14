@@ -139,6 +139,24 @@ export type NativeWorkerStatus = {
     "audited_job_conflicts_with_live_lease" | "last_action_reviewed_unknown";
 };
 
+export type NativeTaskDelivery = {
+  version: 1;
+  objective: string;
+  revision: number;
+  recordedAtMs: number;
+  steps: Array<{
+    stepId: string;
+    tool: string;
+    actionId: string;
+    artifact: null | {
+      kind: string;
+      path: string;
+      sha256: string;
+      bytes: number;
+    };
+  }>;
+};
+
 export type NativeSchedule = {
   version: 1;
   objective: string;

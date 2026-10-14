@@ -3,6 +3,7 @@ import "./styles.css";
 import {assessMasterSchedulerAdmission} from "./native-scheduler-admission.mjs";
 import {pinNativeWorkerModels,restorePinnedWorkerModels,chooseSpecialistTurn,specialistProposalMatches,delegatedWorkerContext} from "./native-worker-model-routing.mjs";
 import {decideNativeContinuation} from "./native-continuation-driver.mjs";
+import {nativeTaskDeliveryClaims} from "./native-delivery-claims.mjs";
 import type {
   ActionResult,
   ChatMessage,
@@ -13,6 +14,7 @@ import type {
   NativeWorkerStatus,
   NativeJobHistory,
   NativeSchedule,
+  NativeTaskDelivery,
   ToolProposal,
   AuditEntry,
   SessionCheckpoint,
@@ -152,6 +154,8 @@ root.innerHTML = `
       <button id="reviewNativeJob" class="hidden" type="button">Review interrupted job</button>
       <small id="reviewNativeHint" class="ram-children hidden"></small>
       <small id="nativeSchedulerSummary" class="ram-children">Native scheduler: not yet checked</small>
+      <button id="checkNativeTaskDelivery" type="button">Verify last delivered task</button>
+      <small id="nativeDeliverySummary" class="ram-children">Previous delivery: not yet checked</small>
       <button id="reviewFailedSchedulerStep" class="hidden" type="button">Review failed scheduled action</button>
       <small id="reviewFailedSchedulerHint" class="ram-children hidden"></small>
       <details id="nativeActionHistory" class="ram-children">
@@ -1172,10 +1176,30 @@ async function continueAfterOutcome(): Promise<void> {
       await stopAgentForSafety("Native task completion does not match every Rust-audited worker job. Inspect receipts before marking done.");
       return;
     }
+    // Finalization is NOT merely UI state: Rust rechecks EVERY stored action
+    // ID against its audit and hashes actual Blender/Remotion deliverables.
+    // Failure preserves the checkpoint and refuses a "completed" claim.
+    const claims=nativeTaskDeliveryClaims(orchestration.task_graph,schedule);
+    if(!claims){
+      await stopAgentForSafety("Cannot construct a SHA-256-bound native delivery from audited worker steps.");
+      return;
+    }
+    let nativeDelivery:NativeTaskDelivery;
+    try{
+      nativeDelivery=await invoke<NativeTaskDelivery>("finalize_native_task_delivery",{steps:claims});
+    }catch{
+      await stopAgentForSafety("Native delivery verification failed. Audit or output files require inspection; checkpoint retained.");
+      return;
+    }
     const completed=taskGraphProgress(orchestration.task_graph);
     messages.push({role:"assistant",content:
-      "All "+completed.total+" owner-approved native task steps have matching Rust audit receipts and typed result evidence. "+
-      "No additional AI request was sent. Verify saved Blender/Adobe/project outputs before considering a creative edit delivered."});
+      "All "+completed.total+" audited native steps are now in a durable delivery receipt; "+
+      nativeDelivery.steps.filter(s=>s.artifact).length+
+      " output files were rehashed by Rust. No more AI calls were sent. "+
+      "Final video or 3D quality still requires real Windows application acceptance."});
+    el<HTMLElement>("#nativeDeliverySummary").textContent=
+      "Last native delivery: "+nativeDelivery.steps.length+" audited steps, "+
+      nativeDelivery.steps.filter(s=>s.artifact).length+" SHA-256 checked files.";
     renderMessages();
     if(remoteTask)await closeRemoteTask(remoteTask.evidenceActionId&&!remoteTask.hadFailure
       ?"succeeded":"outcome_unknown");
@@ -2037,6 +2061,26 @@ el<HTMLButtonElement>("#reviewFailedSchedulerStep").addEventListener("click", as
   }finally{
     button.disabled=false;
     await refreshNativeSchedule();
+  }
+});
+
+el<HTMLButtonElement>("#checkNativeTaskDelivery").addEventListener("click",async ()=>{
+  const summary=el<HTMLElement>("#nativeDeliverySummary");
+  try {
+    const receipt=await invoke<NativeTaskDelivery|null>("native_task_delivery_status");
+    if(!receipt){
+      summary.textContent="No native delivery has been finalized on this host.";
+      return;
+    }
+    if(receipt.version!==1||!Array.isArray(receipt.steps)||receipt.steps.length>48)
+      throw Error("Malformed receipt");
+    const outputs=receipt.steps.filter(step=>step.artifact);
+    summary.textContent="Last delivered task: "+receipt.steps.length+
+      " audited steps; "+outputs.length+" output files reverified on disk. "+
+      (outputs.length?outputs.map(step=>step.artifact?.path).join(" | "):"No file artifact in this task.")+
+      " Creative review remains separate.";
+  } catch {
+    summary.textContent="Delivery receipt could not be reverified against Rust audit and current files.";
   }
 });
 

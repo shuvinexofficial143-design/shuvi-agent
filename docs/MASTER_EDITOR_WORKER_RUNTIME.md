@@ -280,3 +280,7 @@ out of scope; this is serial workflow execution.
 
 #### Artifact readback hardening
 The Master supervisor now rejects a checkpointed `completed` Blender or final Remotion handoff step unless its single typed Rust-linked success receipt also contains the exact allowed SHA-256 artifact identity. Reopening a saved WebView checkpoint never promotes a bare tool success to a verified saved 3D or video file. A full end-to-end Windows render is still required for host acceptance.
+
+### Exact native task delivery acceptance
+
+Completing every native DAG step now requires a **separate Rust durable delivery receipt** before the active chat checkpoint is cleared. Rust checks the complete ordered audited scheduler, every exact step/tool/action UUID and successful executed audit event, and all Blender/Remotion file artifacts with actual on-disk size and SHA-256. Missing, changed, symlinked, oversized, or unreadable outputs cannot be marked delivered. A native-task-delivery.json receipt survives clearing the chat checkpoint. The read-only *Verify last delivered task* UI command rechecks audit and output bytes, without retrying an external action. The latest receipt is retained (not an unlimited event archive); a native Rust action audit and real Blender/Adobe visual acceptance remain separate. No file result from a UI-only model claim is accepted.

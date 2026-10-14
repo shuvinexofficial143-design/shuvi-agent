@@ -11,6 +11,7 @@ mod native_worker_status;
 mod native_worker_job;
 mod native_job_history;
 mod native_scheduler;
+mod native_task_delivery;
 mod bounded_child;
 mod provider_request_guard;
 mod native_recovery;
@@ -18782,6 +18783,25 @@ fn reconcile_native_worker_job(
 fn native_worker_history(app:AppHandle)->Result<native_job_history::History,String>{
     native_job_history::read(&app)
 }
+// Terminal worker delivery persists separately from the active chat checkpoint.
+// Only audited Rust job UUIDs and SHA-256-verified actual output files qualify.
+#[tauri::command]
+fn finalize_native_task_delivery(
+    steps:Vec<native_task_delivery::DeliveryStep>,
+    state:State<'_,ActionState>,
+    app:AppHandle
+)->Result<native_task_delivery::DeliveryReceipt,String>{
+    let _lease=claim_monitored_native_execution(state.inner(),&app)?;
+    if !state.pending.lock()
+        .map_err(|_|"Pending action state is unavailable.".to_string())?.is_empty(){
+        return Err("Resolve all native approvals before final delivery.".into());
+    }
+    native_task_delivery::finalize(&app,steps)
+}
+#[tauri::command]
+fn native_task_delivery_status(app:AppHandle)->Result<Option<native_task_delivery::DeliveryReceipt>,String>{
+    native_task_delivery::read(&app)
+}
 #[tauri::command]
 fn native_scheduler_status(app:AppHandle)->Result<Option<native_scheduler::Schedule>,String>{
     native_scheduler::verified_status(&app)
@@ -19520,6 +19540,8 @@ pub fn run() {
             runtime_status,
             native_worker_status,
             native_worker_history,
+            native_task_delivery_status,
+            finalize_native_task_delivery,
             native_scheduler_status,
             review_native_scheduler_failure,
             reconcile_native_worker_job,
