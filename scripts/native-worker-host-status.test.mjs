@@ -102,3 +102,19 @@ test("interrupted native jobs need owner confirmation, exact Rust audit binding 
  assert.match(status,/last_action_reviewed_unknown/);
  assert.doesNotMatch(jobs,/fn\s+(?:automatic_retry|auto_execute_recovery)\s*\(/);
 });
+
+test("bounded native multi-job history is bound to native begin/audit and explicit review",()=>{
+ const history=readFileSync(new URL("../src-tauri/src/native_job_history.rs",import.meta.url),"utf8");
+ assert.match(lib,/mod native_job_history;/);
+ assert.match(lib,/native_job_history::before_next\(app,native_worker_job::read\(app\)\?\.as_ref\(\)\)\?/);
+ assert.match(lib,/native_worker_job::begin\(&app,&action_id,&active_tool,now_ms\(\)\)\?;\s*native_job_history::begin\(&app\)\?/);
+ assert.match(lib,/native_worker_job::audit\(&app,&action_id,result\.success,now_ms\(\)\)\?;\s*native_job_history::finish\(&app\)\?/);
+ assert.match(lib,/native_worker_job::audit\(&app,&action_id,false,now_ms\(\)\)\?;\s*native_job_history::finish\(&app\)\?/);
+ assert.match(lib,/native_worker_job::reconcile\(&app,&action_id,&tool,verified,now_ms\(\)\)\?;\s*native_job_history::finish\(&app\)\?/);
+ assert.match(lib,/fn native_worker_history\(app:AppHandle\)/);
+ assert.match(lib,/\s+native_worker_history,\s/);
+ assert.match(history,/MAX_ITEMS:usize=48/);
+ assert.match(history,/two_real_actions_survive_restart_and_duplicate_uuid_fails/);
+ assert.match(history,/mismatched_corrupt_or_orphaned_records_fail_closed/);
+ assert.doesNotMatch(history,/fn\s+(?:auto_retry|auto_resume|auto_execute)\s*\(/);
+});

@@ -9,6 +9,7 @@ mod atomic_file;
 mod execution_lease;
 mod native_worker_status;
 mod native_worker_job;
+mod native_job_history;
 mod bounded_child;
 mod provider_request_guard;
 mod native_recovery;
@@ -1095,6 +1096,7 @@ fn claim_monitored_native_execution<'a>(
         .map_err(|_|"Running action start records are unavailable; owner review required.".to_string())?;
     native_worker_status::require_clear_for_new_dispatch(&running,&started)?;
     native_worker_job::require_resolved(app)?;
+    native_job_history::before_next(app,native_worker_job::read(app)?.as_ref())?;
     Ok(lease)
 }
 
@@ -18730,6 +18732,7 @@ fn reconcile_native_worker_job(
     // Even if an executed receipt exists, the old task graph and recovery
     // checkpoint are not silently promoted. Owner review is still explicit.
     let record=native_worker_job::reconcile(&app,&action_id,&tool,verified,now_ms())?;
+    native_job_history::finish(&app)?;
     append_audit(&app,&AuditEntry{
         timestamp_ms:now_ms(),
         event:"native_worker_owner_review".into(),
@@ -18743,6 +18746,11 @@ fn reconcile_native_worker_job(
         action_id:Some(action_id),
     })?;
     Ok(record)
+}
+
+#[tauri::command]
+fn native_worker_history(app:AppHandle)->Result<native_job_history::History,String>{
+    native_job_history::read(&app)
 }
 
 #[tauri::command]
@@ -18958,6 +18966,7 @@ async fn execute_action(
             // Publish the durable, action-bound worker record BEFORE any tool
             // can run. If disk state is unresolved, keep approval pending.
             native_worker_job::begin(&app,&action_id,&active_tool,now_ms())?;
+            native_job_history::begin(&app)?;
             // Hold the same lock order when publishing start time and tool
             // identity. The host-only observation never becomes permission.
             let mut running=state.running_action_tools.lock()
@@ -19029,6 +19038,7 @@ async fn execute_action(
                 },
             )?;
             native_worker_job::audit(&app,&action_id,result.success,now_ms())?;
+            native_job_history::finish(&app)?;
             Ok(result)
         }
         Err(error) => {
@@ -19044,6 +19054,7 @@ async fn execute_action(
                 },
             )?;
             native_worker_job::audit(&app,&action_id,false,now_ms())?;
+            native_job_history::finish(&app)?;
             Err(error)
         }
     }
@@ -19397,6 +19408,7 @@ pub fn run() {
             chat,
             runtime_status,
             native_worker_status,
+            native_worker_history,
             reconcile_native_worker_job,
             prepare_tool,
             prepare_powershell,

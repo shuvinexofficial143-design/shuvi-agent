@@ -232,3 +232,9 @@ Never mark a graphics task or full edit complete based solely on an AI claim, a 
 - **Not yet present:** a persistent multi-job scheduler, genuine child/app
   progress heartbeat, independent AI workers, or live Windows application
   acceptance. Source tests are not proof of live editing.
+
+## Durable multi-action native history
+
+- Rust now persists up to 48 actual executed-action lifecycle entries in native-worker-history.json: exact UUID, typed tool, start time, Rust-audited outcome or explicitly owner-reviewed unknown outcome. This never queues or executes a proposed model action.
+- Existing exclusive native lease remains the only dispatch authority. Before the next dispatch, a history entry that still says running can be reconciled only from the exact matching terminal native-worker-job journal; unrelated, absent or corrupt history fails closed. No stale timer, model response or supervisor pulse can finalize the job.
+- Native action begin/finish and explicit interrupted-job owner review now update this bounded history. Native read-only IPC native_worker_history exposes the diagnostics. Multiple actions survive restart but automatic pending-job scheduling, verified app heartbeat and independent AI workers are NOT implemented.
