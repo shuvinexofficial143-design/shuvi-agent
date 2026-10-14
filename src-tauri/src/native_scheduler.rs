@@ -8,7 +8,7 @@ use std::{collections::{HashMap,HashSet},fs,path::{Path,PathBuf},sync::Mutex};
 use tauri::{AppHandle,Manager};
 const MAX_JOBS:usize=48;
 const MAX_BYTES:usize=32768;
-static LOCK:Mutex<()>=Mutex::new();
+static LOCK:Mutex<()>=Mutex::new(());
 
 #[derive(Clone,Debug,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]

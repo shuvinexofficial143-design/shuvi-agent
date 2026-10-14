@@ -16889,7 +16889,7 @@ try {{
                     component_match_name:Some(target.component_match_name.clone()),component_display_name:None,
                     param_display_name:target.param_display_name.clone(),value:v}}
             };
-            let inner=PendingAction{created_at_ms:now_ms(),premiere_expectation:Some(target.expected.clone()),tool:if target.kind=="video"{"premiere_set_video_param_named"}else{"premiere_set_audio_param_named"}.into(),
+            let inner=PendingAction{created_at_ms:now_ms(),task_graph:None,task_step_id:None,premiere_expectation:Some(target.expected.clone()),tool:if target.kind=="video"{"premiere_set_video_param_named"}else{"premiere_set_audio_param_named"}.into(),
                 detail:"Disposable native parameter delta calibration".into(),action:make_action(value.clone())};
             let changed=Box::pin(execute_tool(inner,state,app)).await;
             let changed=match changed {Ok(result) if result.success=>result,Err(error)=>{
@@ -16916,7 +16916,7 @@ try {{
                         "reason":"After-delta native inspection missing; restoration not attempted blindly."}).to_string(),stderr:String::new(),exit_code:None});
                 }
             };
-            let restore=PendingAction{created_at_ms:now_ms(),premiere_expectation:Some(target.expected.clone()),tool:if target.kind=="video"{"premiere_set_video_param_named"}else{"premiere_set_audio_param_named"}.into(),
+            let restore=PendingAction{created_at_ms:now_ms(),task_graph:None,task_step_id:None,premiere_expectation:Some(target.expected.clone()),tool:if target.kind=="video"{"premiere_set_video_param_named"}else{"premiere_set_audio_param_named"}.into(),
                 detail:"Restore original disposable native value".into(),action:make_action(baseline.clone())};
             let restored=Box::pin(execute_tool(restore,state,app)).await;
             if !restored.is_ok_and(|r|r.success) {
@@ -17042,7 +17042,7 @@ try {{
                 "trim"=>"premiere_trim_clip","move"=>"premiere_move_clip","clone"=>"premiere_clone_clip",
                 "delete_ripple"=>"premiere_delete_clip","scene_markers"=>"premiere_detect_scene_markers",_=>return Err("Acceptance tool not allowlisted.".into())
             };
-            let inner=PendingAction {created_at_ms:now_ms(),premiere_expectation:Some(fixture.expected.clone()),tool:native_tool.into(),
+            let inner=PendingAction {created_at_ms:now_ms(),task_graph:None,task_step_id:None,premiere_expectation:Some(fixture.expected.clone()),tool:native_tool.into(),
                 detail:format!("Disposable acceptance {} action {}",record.step,action_id),action:native_action};
             let native=Box::pin(execute_tool(inner,state,app)).await;
             let native_result=match native {
