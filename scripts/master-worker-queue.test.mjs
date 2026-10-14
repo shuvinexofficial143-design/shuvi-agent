@@ -5,6 +5,21 @@ import {workerForTool,evidenceForStep,workerQueueView,workerQueueSummary,nextWor
 import {graphDependencyFailure} from "../src/task-graph.mjs";
 const UUID="123e4567-e89b-42d3-a456-426614174000";
 const step=(step_id,expected_tool,status="ready",depends_on=[],evidence=[])=>({step_id,expected_tool,status,depends_on,evidence,title:step_id});
+const completedArtifact=(tool,id,other=UUID)=> {
+  if(tool==="blender_run_plan")return {kind:"blender_artifact",
+    producer_action_id:id,path:"C:/renders/test.blend",sha256:"a".repeat(64),bytes:2048};
+  if(tool==="motion_graphics_accept_final_remotion")
+    return {kind:"accepted_remotion",acceptance_action_id:id,
+      render_action_id:other,path:"C:/renders/test.mp4",sha256:"b".repeat(64)};
+  if(tool==="motion_graphics_plan_premiere_insertion")
+    return {kind:"premiere_insertion_plan",final_acceptance_action_id:other,
+      path:"C:/renders/test.mp4",sha256:"b".repeat(64)};
+  throw Error("Unsupported fixture artifact");
+};
+const acceptedWithArtifact=(tool,stepId,orchestrationStep,actionId,other=UUID)=>
+ accepted(tool,stepId,orchestrationStep,actionId).map(receipt=>({
+  ...receipt,artifact:completedArtifact(tool,actionId,other)
+ }));
 const accepted=(tool,stepId,orchestrationStep=1,actionId=UUID)=>[{
   success:true,source:"typed_result",audit_event:"executed",outcome:"success",
   tool,step_id:stepId,fingerprint:"typed:"+tool+":"+stepId,orchestration_step:orchestrationStep,
@@ -135,7 +150,7 @@ test("duplicate native UUID across workers never unlocks a downstream handoff",(
 });
 test("a child action cannot complete before its parent action receipt",()=>{
  const g={steps:[
-  step("model","blender_run_plan","completed",[],accepted("blender_run_plan","model",4,UUID)),
+  step("model","blender_run_plan","completed",[],acceptedWithArtifact("blender_run_plan","model",4,UUID)),
   step("import","premiere_insert_media","completed",["model"],accepted("premiere_insert_media","import",2,
    "123e4567-e89b-42d3-a456-426614174004")),
   step("check","premiere_timeline","ready",["import"])
@@ -263,9 +278,9 @@ test("ambiguous two-render provenance and fake completed import fail closed",()=
   step("renderB","motion_graphics_run_remotion","completed",[],
    accepted("motion_graphics_run_remotion","renderB",2,id(2))),
   step("accept","motion_graphics_accept_final_remotion","completed",["renderA"],
-   accepted("motion_graphics_accept_final_remotion","accept",3,id(3))),
+   acceptedWithArtifact("motion_graphics_accept_final_remotion","accept",3,id(3),id(1))),
   step("plan","motion_graphics_plan_premiere_insertion","completed",["accept"],
-   accepted("motion_graphics_plan_premiere_insertion","plan",4,id(4))),
+   acceptedWithArtifact("motion_graphics_plan_premiere_insertion","plan",4,id(4),id(3))),
   step("import","premiere_insert_media","completed",["plan","renderB"],
    accepted("premiere_insert_media","import",5,id(5)))
  ];
