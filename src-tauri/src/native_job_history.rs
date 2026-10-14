@@ -114,6 +114,20 @@ fn before_next_at(file:&Path,native:Option<&crate::native_worker_job::NativeJob>
     let mut h=load_at(file)?;
     if h.items.is_empty(){return Ok(());}
     let journal=native.ok_or("Native worker journal missing while history exists.")?;
+    // Crash between native audit and history publication: restore only
+    // from an exact new *terminal* Rust journal, never from elapsed time.
+    if h.items.last().is_some_and(|entry|entry.action_id!=journal.action_id){
+        if !matches!(journal.phase.as_str(),"audit_verified"|"owner_reviewed_unknown")
+            ||h.items.last().is_some_and(|entry|entry.phase=="running"
+                ||journal.started_at_ms<entry.started_at_ms)
+            ||h.items.iter().any(|entry|entry.action_id==journal.action_id){
+            return Err("Native history cannot reconcile a different unverified action.".into());
+        }
+        if h.items.len()==MAX_ITEMS{h.items.remove(0);}
+        h.items.push(item_from_native(journal)?);
+        save_at(file,&h)?;
+        return Ok(());
+    }
     if reconcile_last(&mut h,journal)?{save_at(file,&h)?;}
     Ok(())
 }
@@ -147,9 +161,15 @@ fn finish_at(file:&Path,native:&crate::native_worker_job::NativeJob)->Result<(),
         return Err("Native history cannot finalize without a real audit/review.".into());
     }
     let mut h=load_at(file)?;
-    if h.items.is_empty(){
-        // Upgrade from older releases: preserve the exact terminal Rust
-        // receipt, but never pretend a missing action was executed.
+    if h.items.is_empty()||h.items.last().is_some_and(|entry|entry.action_id!=native.action_id){
+        // The single-job journal is already terminal, but the new history
+        // write was interrupted. No child or provider request is retried.
+        if h.items.last().is_some_and(|entry|entry.phase=="running"
+            ||native.started_at_ms<entry.started_at_ms)
+            ||h.items.iter().any(|entry|entry.action_id==native.action_id){
+            return Err("Native history conflicts with the terminal job receipt.".into());
+        }
+        if h.items.len()==MAX_ITEMS{h.items.remove(0);}
         h.items.push(item_from_native(native)?);
         return save_at(file,&h);
     }
@@ -219,6 +239,28 @@ mod tests{
         clean(&p);
         fs::write(p.with_extension("json.bak"),b"backup").unwrap();
         assert!(load_at(&p).is_err());
+        clean(&p);
+    }
+    #[test]
+    fn missing_history_publication_recovers_only_from_verified_terminal_record(){
+        let p=temp();
+        begin_at(&p,&native(A,"running",None,1000)).unwrap();
+        finish_at(&p,&native(A,"audit_verified",Some(true),1000)).unwrap();
+        // Second native action finished, but its history publication failed.
+        assert!(before_next_at(&p,Some(&native(B,"running",None,2000))).is_err());
+        before_next_at(&p,Some(&native(B,"audit_verified",Some(false),2000))).unwrap();
+        assert_eq!(load_at(&p).unwrap().items.len(),2);
+        assert_eq!(load_at(&p).unwrap().items[1].audit_success,Some(false));
+        assert!(begin_at(&p,&native(B,"running",None,2000)).is_err());
+        clean(&p);
+    }
+    #[test]
+    fn owner_review_terminal_record_can_rebuild_missing_history_publication(){
+        let p=temp();
+        begin_at(&p,&native(A,"running",None,1000)).unwrap();
+        finish_at(&p,&native(A,"audit_verified",Some(true),1000)).unwrap();
+        finish_at(&p,&native(B,"owner_reviewed_unknown",None,2000)).unwrap();
+        assert_eq!(load_at(&p).unwrap().items[1].phase,"owner_reviewed_unknown");
         clean(&p);
     }
     #[test]
