@@ -253,3 +253,7 @@ permissioned native preflight commits the matching recovery under Rust locks
 before any new external action. An interrupted still-running journal is
 reported as running, not completed. A verified audit is not a final creative
 project acceptance.
+
+## Durable Master continuation gate — October 14
+
+Before another potentially billed model call, the desktop reconciles its saved task graph with the read-only Rust scheduler: matching objective/revision, immutable typed jobs/dependencies, exact audited action IDs, and typed completion evidence. A running/unknown native job, absent Rust checkpoint after claimed progress, or mismatched terminal receipt blocks automatic continuation. A genuinely new unexecuted task may replace a fully terminal previous schedule. The Master now requires a successful durable checkpoint publication after action outcome (and before model-only continuation), rather than silently ignoring persistence errors. No failed save, supervisor heartbeat, model-generated prose, or task graph alone can authorize more paid planning or desktop execution. This is fail-closed source behavior, not live Windows acceptance.

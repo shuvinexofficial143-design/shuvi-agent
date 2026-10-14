@@ -1121,9 +1121,25 @@ async function stopAgentForSafety(reason: string): Promise<void> {
   setBusy(false);
 }
 
+// A confirmed Rust receipt is not durable Master progress until THIS
+// orchestration checkpoint is fsync-published. Never purchase the next model
+// request after an unsuccessful write, including read-only inspection turns.
+async function persistRequiredContinuationCheckpoint(): Promise<boolean> {
+  try {
+    await invoke("save_session_checkpoint", { checkpoint: currentCheckpoint() });
+    return true;
+  } catch {
+    await stopAgentForSafety(
+      "Could not durably save the last audited action and worker handoff. "+
+      "Task stopped; review Rust audit/checkpoint before another provider request."
+    );
+    return false;
+  }
+}
+
 async function continueAfterOutcome(): Promise<void> {
   renderOrchestrationStatus();
-  await saveActiveCheckpoint();
+  if (!await persistRequiredContinuationCheckpoint()) return;
   if (orchestration.recovery_mode === "stopped") {
     await stopAgentForSafety(
       orchestration.stop_reason ??
@@ -1773,7 +1789,7 @@ async function runAgentStep(): Promise<void> {
           "Next ready step is "+next.step_id+" with exact tool "+next.tool+
           ". Provide one typed tool proposal for that step, keeping normal owner approval and evidence checks. "+
           "If unsafe or unsupported, explain the blocking reason; never assert success without a Rust action receipt."});
-        await saveActiveCheckpoint();
+        if (!await persistRequiredContinuationCheckpoint()) return;
         if (staleModelRequest()) return;
         await runAgentStep();
         return;
