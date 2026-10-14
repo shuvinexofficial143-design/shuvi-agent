@@ -49,7 +49,7 @@ test("Master -> bounded specialist provider -> staged native permission executio
  assert.match(main,/pinNativeWorkerModels\(savedTeam,chosen.provider\)/);
  assert.match(main,/chooseSpecialistTurn\(nextWorkerTurn\(orchestration.task_graph\),taskWorkerModels,route\)/);
  assert.match(main,/specialistProposalMatches\(delegation,response.tool_proposal\)/);
- assert.match(main,/stageProposal\(response.tool_proposal,selectedRoute\)/);
+ assert.match(main,/stageProposal\(response.tool_proposal,\s*selectedRoute\)/);
  assert.match(main,/provider: selectedRoute.provider/);
  assert.match(main,/model: selectedRoute.model/);
  assert.match(main,/worker_models:taskWorkerModels/);

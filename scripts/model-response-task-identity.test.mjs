@@ -12,7 +12,7 @@ test("paid AI responses cannot cross task identity after Stop or replacement",()
  const sent=run.indexOf('const response = await invoke<ChatResponse>("chat"');
  const check=run.indexOf("if (staleModelRequest()) return;",sent);
  const usage=run.indexOf("if (response.usage)",sent);
- const stage=run.indexOf("await stageProposal(response.tool_proposal, route)",sent);
+ const stage=run.indexOf("await stageProposal(response.tool_proposal, selectedRoute)",sent);
  assert.ok(sent>=0 && check>sent && usage>check && stage>usage);
  const handleError=run.lastIndexOf("} catch {");
  assert.ok(handleError>sent);

@@ -43,7 +43,10 @@ test("native preparation uses the SAME task-pinned provider/model as paid planni
  const route=main.lastIndexOf("const route = taskModelRoute ??",planning);
  assert.ok(route>=0 && planning>route);
  assert.match(main,/async function stageProposal\(proposal: ToolProposal, route: TaskModelRoute\)/);
- assert.match(main,/await stageProposal\(response.tool_proposal, route\)/);
+ assert.match(main,/await stageProposal\(response.tool_proposal, selectedRoute\)/);
+ assert.match(main,/const selectedRoute=delegation.route/);
+ assert.match(main,/provider: selectedRoute.provider/);
+ assert.match(main,/model: selectedRoute.model/);
  const start=main.indexOf('const staged = await invoke<PendingAction>("prepare_tool"');
  const end=main.indexOf('pendingChatProposal = proposal',start);
  assert.ok(start>=0 && end>start);
