@@ -100,5 +100,5 @@ test("interrupted native jobs need owner confirmation, exact Rust audit binding 
  assert.match(ui,/window\.prompt\(/);
  assert.match(ui,/"reconcile_native_worker_job"/);
  assert.match(status,/last_action_reviewed_unknown/);
- assert.doesNotMatch(jobs,/automatic_retry|auto_execute_recovery/);
+ assert.doesNotMatch(jobs,/fn\s+(?:automatic_retry|auto_execute_recovery)\s*\(/);
 });

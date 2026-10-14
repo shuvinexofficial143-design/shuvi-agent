@@ -1671,8 +1671,9 @@ el<HTMLButtonElement>("#reviewNativeJob").addEventListener("click", async () => 
     message.textContent=record.phase==="audit_verified"
       ? "Exact previous Rust audit receipt found. No job replayed. Review any separate task-recovery checkpoint."
       : "Interrupted job marked owner-reviewed UNKNOWN, not successful. Review any separate task-recovery checkpoint.";
-  } catch (error) {
-    message.textContent="Recovery refused: "+String(error);
+  } catch {
+    // Native transport errors may contain file paths or private host details.
+    message.textContent="Recovery refused by native safety checks. Inspect the Rust host and audit before another action.";
   } finally {
     button.disabled=false;
     await refreshNativeWorkerStatus();
