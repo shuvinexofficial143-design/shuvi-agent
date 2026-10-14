@@ -18,13 +18,19 @@ export function nativeTaskDeliveryClaims(graph,schedule){
        job.tool!==node.expected_tool||job.actionId!==receipt.action_id
        ||ids.has(receipt.action_id))return null;
    ids.add(receipt.action_id);
+   // evidenceForStep is intentionally a minimal identity projection.
+   // Recover the one matching source evidence only AFTER verification;
+   // never accept an arbitrary untrusted artifact from an unrelated step.
+   const proof=node.evidence.filter(e=>e?.action_id===receipt.action_id
+     &&e.tool===receipt.tool&&e.success===true);
+   if(proof.length!==1)return null;
    const entry={stepId:node.step_id,tool:node.expected_tool,
      actionId:receipt.action_id,artifact:null};
    const required=new Set(["blender_run_plan",
      "motion_graphics_accept_final_remotion",
      "motion_graphics_plan_premiere_insertion"]);
    if(required.has(node.expected_tool)){
-     const a=receipt.artifact;
+     const a=proof[0].artifact;
      if(!a||typeof a.path!=="string"||typeof a.sha256!=="string"
         ||typeof a.kind!=="string")return null;
      entry.artifact={kind:a.kind,path:a.path,sha256:a.sha256,
