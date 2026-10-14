@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import "./styles.css";
+import {assessMasterSchedulerAdmission} from "./native-scheduler-admission.mjs";
 import type {
   ActionResult,
   ChatMessage,
@@ -1633,6 +1634,22 @@ async function runAgentStep(): Promise<void> {
   }
 
   if (staleModelRequest()) return;
+  // Never pay for another Master turn while the Rust desktop lease records
+  // an action still executing. This applies after UI reload and restart.
+  if (orchestration.task_graph) {
+    let persistedSchedule: unknown = undefined;
+    try {
+      persistedSchedule=await invoke("native_scheduler_status");
+    } catch {
+      // Native status is unavailable, NOT evidence of an empty queue.
+    }
+    if (staleModelRequest()) return;
+    const admission=assessMasterSchedulerAdmission(persistedSchedule,orchestration.task_graph);
+    if (!admission.ok) {
+      await stopAgentForSafety(admission.reason ?? "Native scheduler requires owner inspection.");
+      return;
+    }
+  }
   // Reserve ONE potentially billed model request before dispatch. The
   // reservation persists across crash/restart and is not silently refunded
   // for cancelled requests or provider errors with uncertain billing.
