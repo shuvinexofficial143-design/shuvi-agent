@@ -61,6 +61,7 @@ let nativeHostStatusUnavailable = true;
 let nativeHostReadPending = false;
 let nativeHistoryReadPending = false;
 let nativeSchedulerReadPending = false;
+let failedSchedulerStep: {stepId:string;actionId:string}|null = null;
 let masterEmptyToolReplies = 0;
 let busy = false;
 let manualActionRunning = false;
@@ -148,6 +149,8 @@ root.innerHTML = `
       <button id="reviewNativeJob" class="hidden" type="button">Review interrupted job</button>
       <small id="reviewNativeHint" class="ram-children hidden"></small>
       <small id="nativeSchedulerSummary" class="ram-children">Native scheduler: not yet checked</small>
+      <button id="reviewFailedSchedulerStep" class="hidden" type="button">Review failed scheduled action</button>
+      <small id="reviewFailedSchedulerHint" class="ram-children hidden"></small>
       <details id="nativeActionHistory" class="ram-children">
         <summary>Native action history</summary>
         <div id="nativeActionHistoryList">History not yet checked</div>
@@ -691,15 +694,24 @@ async function refreshNativeSchedule(): Promise<void> {
   const target=el<HTMLElement>("#nativeSchedulerSummary");
   try {
     const schedule=await invoke<NativeSchedule|null>("native_scheduler_status");
+    failedSchedulerStep=null;
+    const reviewButton=el<HTMLButtonElement>("#reviewFailedSchedulerStep");
+    reviewButton.classList.add("hidden");
     if (schedule===null) {
       target.textContent="Native scheduler: no persisted task graph";
       return;
     }
     if (schedule.version!==1||!Array.isArray(schedule.jobs)
         ||schedule.jobs.length===0||schedule.jobs.length>48
-        ||schedule.jobs.some(job=>!["queued","running","audited","failed","outcome_unknown"].includes(job.phase)
+        ||schedule.jobs.some(job=>!["queued","running","audited","failed","outcome_unknown","reviewed_failed"].includes(job.phase)
           ||typeof job.stepId!=="string"||typeof job.tool!=="string")) {
       throw Error("Invalid native scheduler status");
+    }
+    const failed=schedule.jobs.find(job=>job.phase==="failed"&&typeof job.actionId==="string");
+    if (failed && typeof failed.actionId==="string" &&
+        !schedule.jobs.some(job=>job.phase==="running"||job.phase==="outcome_unknown")) {
+      failedSchedulerStep={stepId:failed.stepId,actionId:failed.actionId};
+      reviewButton.classList.remove("hidden");
     }
     const audited=schedule.jobs.filter(job=>job.phase==="audited").length;
     const running=schedule.jobs.filter(job=>job.phase==="running").length;
@@ -709,6 +721,8 @@ async function refreshNativeSchedule(): Promise<void> {
       (unsafe?" · RECOVERY/REPLAN REQUIRED":" · permissioned step dispatch")+
       " · not a full editing acceptance";
   } catch {
+    failedSchedulerStep=null;
+    el<HTMLButtonElement>("#reviewFailedSchedulerStep").classList.add("hidden");
     target.textContent="Native scheduler unavailable — do not assume a vacant worker.";
   } finally { nativeSchedulerReadPending=false; }
 }
@@ -1844,6 +1858,39 @@ el<HTMLButtonElement>("#reviewNativeJob").addEventListener("click", async () => 
   } finally {
     button.disabled=false;
     await refreshNativeWorkerStatus();
+  }
+});
+
+el<HTMLButtonElement>("#reviewFailedSchedulerStep").addEventListener("click", async () => {
+  const failed=failedSchedulerStep;
+  if (!failed||busy||manualActionRunning)return;
+  // This must be the UUID of a SECOND, independently approved read-only
+  // inspection, never the failed mutation's own ID.
+  const inspection=window.prompt(
+    "First inspect the failed Blender/Premiere/Windows action using a separately approved READ-ONLY tool. "+
+    "Paste that successful inspection's Rust action UUID:"
+  );
+  if (!inspection || !/^[0-9a-f]{8}-[0-9a-f-]{27,}$/.test(inspection))return;
+  const confirmation=window.prompt(
+    "The failed action will remain FAILED, never counted completed or retried. "+
+    "You must explicitly replan NEW work. Type REVIEW FAILED STEP:"
+  );
+  if (confirmation!=="REVIEW FAILED STEP")return;
+  const button=el<HTMLButtonElement>("#reviewFailedSchedulerStep");
+  const hint=el<HTMLElement>("#reviewFailedSchedulerHint");
+  button.disabled=true;
+  hint.classList.remove("hidden");
+  try {
+    await invoke("review_native_scheduler_failure",{
+      stepId:failed.stepId,failedActionId:failed.actionId,
+      inspectionActionId:inspection,confirmation
+    });
+    hint.textContent="Failed step reviewed; still not completed. Create a new graph revision and obtain fresh action approvals.";
+  }catch{
+    hint.textContent="Owner review refused: the Rust audit or worker state did not satisfy safe recovery.";
+  }finally{
+    button.disabled=false;
+    await refreshNativeSchedule();
   }
 });
 

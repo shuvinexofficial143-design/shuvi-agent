@@ -146,7 +146,7 @@ export type NativeSchedule = {
     stepId: string;
     tool: string;
     dependsOn: string[];
-    phase: "queued" | "running" | "audited" | "failed" | "outcome_unknown";
+    phase: "queued" | "running" | "audited" | "failed" | "outcome_unknown" | "reviewed_failed";
     actionId: string | null;
   }>;
 };

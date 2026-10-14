@@ -18767,6 +18767,64 @@ fn native_scheduler_status(app:AppHandle)->Result<Option<native_scheduler::Sched
     native_scheduler::read(&app)
 }
 
+/// A failed scheduled action can be acknowledged only after a second,
+/// separately approved and successfully audited read-only inspection.
+/// The failed step remains historical evidence; a NEW graph revision must
+/// introduce independent work rather than marking the failed dependency done.
+#[tauri::command]
+fn review_native_scheduler_failure(
+    step_id:String,
+    failed_action_id:String,
+    inspection_action_id:String,
+    confirmation:String,
+    state:State<'_,ActionState>,
+    app:AppHandle,
+)->Result<(),String>{
+    if confirmation!="REVIEW FAILED STEP"{
+        return Err("Explicit owner confirmation is required before reviewing a failed job.".into());
+    }
+    if failed_action_id==inspection_action_id{
+        return Err("A failed mutation cannot serve as its own inspection receipt.".into());
+    }
+    let _lease=claim_monitored_native_execution(state.inner(),&app)?;
+    if !state.pending.lock()
+        .map_err(|_|"Pending native actions unavailable.".to_string())?.is_empty(){
+        return Err("Resolve pending native approvals before reviewing a failed task.".into());
+    }
+    let failed=read_action_audit_receipt(&app,&failed_action_id)?
+        .ok_or("Failed action audit receipt is unavailable.")?;
+    if failed.success || !matches!(failed.event.as_str(),"executed"|"failed"){
+        return Err("The referenced original action is not a documented failure.".into());
+    }
+    let inspection=read_action_audit_receipt(&app,&inspection_action_id)?
+        .ok_or("A separately approved inspection audit receipt is required.")?;
+    if inspection.event!="executed"||!inspection.success
+        ||inspection.timestamp_ms<=failed.timestamp_ms
+        ||!matches!(inspection.tool.as_str(),
+            "read_file"|"list_directory"|"workspace_scan"|"search_text"|
+            "list_processes"|"ui_find"|"browser_dom_read"|
+            "premiere_context"|"premiere_timeline"|"premiere_bridge_status"|
+            "blender_inspect"|"git_status"|"git_diff"){
+        return Err("Recovery inspection must be a later, independently audited read-only action.".into());
+    }
+    let schedule=native_scheduler::read(&app)?
+        .ok_or("No durable scheduler exists for this failure.")?;
+    let stored=schedule.jobs.iter().find(|j|j.step_id==step_id
+        &&j.action_id.as_deref()==Some(failed_action_id.as_str())
+        &&j.tool==failed.tool&&j.phase=="failed")
+        .ok_or("Original failed step, tool, and Rust receipt do not match the schedule.")?;
+    let _=stored;
+    native_scheduler::review_failed(&app,&step_id,&failed_action_id)?;
+    append_audit(&app,&AuditEntry{
+        timestamp_ms:now_ms(),
+        event:"native_scheduler_failure_owner_review".into(),
+        tool:"native_scheduler".into(),
+        detail:"Owner acknowledged a failed native step after a separate audited read-only inspection. No replay or completion was granted.".into(),
+        success:false,
+        action_id:Some(failed_action_id),
+    })?;
+    Ok(())
+}
 #[tauri::command]
 fn prepare_tool(
     proposal: ToolProposal,
@@ -19443,6 +19501,7 @@ pub fn run() {
             native_worker_status,
             native_worker_history,
             native_scheduler_status,
+            review_native_scheduler_failure,
             reconcile_native_worker_job,
             prepare_tool,
             prepare_powershell,

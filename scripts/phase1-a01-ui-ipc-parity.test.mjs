@@ -34,6 +34,7 @@ const uniqueNames=[
   "prepare_tool",
   "reconcile_native_worker_job",
   "record_agent_event",
+  "review_native_scheduler_failure",
   "remote_agent_disconnect",
   "remote_agent_pair",
   "remote_agent_poll",

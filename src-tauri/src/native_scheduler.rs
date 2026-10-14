@@ -57,7 +57,7 @@ fn validate(s:&Schedule)->Result<(),String>{
         if j.phase=="running"{running+=1;}
         match (j.phase.as_str(),j.action_id.as_deref()){
             ("queued",None)=>{},
-            ("running"|"audited"|"failed"|"outcome_unknown",Some(id))
+            ("running"|"audited"|"failed"|"outcome_unknown"|"reviewed_failed",Some(id))
                 if valid_uuid(id)&&actions.insert(id)=>{},
             _=>return Err("Native schedule has invalid action binding or phase.".into()),
         }
@@ -196,7 +196,8 @@ fn merged(prior:Option<Schedule>,proposed:Option<&Value>)->Result<Schedule,Strin
             for prior_job in &old.jobs{
                 if let Some(index)=next.jobs.iter().position(|j|j.step_id==prior_job.step_id){
                     let j=&mut next.jobs[index];
-                    if prior_job.phase=="audited" || (next.revision==old.revision&&prior_job.phase!="queued"){
+                    if matches!(prior_job.phase.as_str(),"audited"|"failed"|"outcome_unknown"|"reviewed_failed")
+                        || (next.revision==old.revision&&prior_job.phase!="queued"){
                         if j.tool!=prior_job.tool||j.depends_on!=prior_job.depends_on{
                             return Err("A started or audited native step cannot be redefined.".into());
                         }
@@ -308,6 +309,28 @@ fn finish_at(file:&Path,id:&str,tool:&str,success:Option<bool>)->Result<(),Strin
 }
 pub(crate) fn finish(app:&AppHandle,id:&str,tool:&str,success:Option<bool>)->Result<(),String>{
     finish_at(&path(app)?,id,tool,success)
+}
+/// This does not turn a failed action into an audited dependency. It
+/// records that its exact failure and a later separately approved read-only
+/// inspection were acknowledged by the owner. A new graph revision must
+/// introduce NEW work; the failed job remains forever non-successful.
+fn review_failed_at(file:&Path,step:&str,failed_action:&str)->Result<(),String>{
+    let _guard=LOCK.lock().map_err(|_|"Native scheduler lock poisoned.")?;
+    let mut schedule=read_at(file)?.ok_or("No failed scheduled task to review.")?;
+    if schedule.jobs.iter().any(|j|j.phase=="running"||j.phase=="outcome_unknown"){
+        return Err("An unresolved native action cannot be cleared by failure review.".into());
+    }
+    let job=schedule.jobs.iter_mut().find(|j|j.step_id==step
+        &&j.action_id.as_deref()==Some(failed_action))
+        .ok_or("Failed step/action identity does not match native scheduler.".to_string())?;
+    if job.phase!="failed"{
+        return Err("Only an audited failed action can be owner reviewed.".into());
+    }
+    job.phase="reviewed_failed".into();
+    persist(file,&schedule)
+}
+pub(crate) fn review_failed(app:&AppHandle,step:&str,failed_action:&str)->Result<(),String>{
+    review_failed_at(&path(app)?,step,failed_action)
 }
 pub(crate) fn read(app:&AppHandle)->Result<Option<Schedule>,String>{
     let _guard=LOCK.lock().map_err(|_|"Native scheduler lock poisoned.")?;
@@ -428,6 +451,40 @@ mod tests{
         begin_at(&p,Some(&g),"model","blender_run_plan",&fresh_id).unwrap();
         assert_eq!(read_at(&p).unwrap().unwrap().jobs[0].action_id.as_deref(),
             Some(fresh_id.as_str()));
+        cleanup(&p);
+    }
+    #[test]
+    fn reviewed_failure_never_becomes_verified_dependency_and_requires_new_revision(){
+        let p=file();
+        let old=graph(1);
+        begin_at(&p,Some(&old),"model","blender_run_plan",A).unwrap();
+        finish_at(&p,A,"blender_run_plan",Some(false)).unwrap();
+        assert!(begin_at(&p,None,"import","premiere_insert_media",B).is_err());
+        assert!(review_failed_at(&p,"model",B).is_err());
+        review_failed_at(&p,"model",A).unwrap();
+        assert!(review_failed_at(&p,"model",A).is_err());
+        assert_eq!(read_at(&p).unwrap().unwrap().jobs[0].phase,"reviewed_failed");
+        // Its dependent import is still blocked: review does NOT complete model.
+        assert!(begin_at(&p,None,"import","premiere_insert_media",B).is_err());
+        let mut new=graph(2);
+        new["steps"][1]["depends_on"]=serde_json::json!([]);
+        new["steps"][1]["step_id"]=serde_json::json!("fresh_import");
+        begin_at(&p,Some(&new),"fresh_import","premiere_insert_media",B).unwrap();
+        let got=read_at(&p).unwrap().unwrap();
+        assert_eq!(got.jobs.iter().find(|j|j.step_id=="model").unwrap().phase,"reviewed_failed");
+        assert_eq!(got.jobs.iter().find(|j|j.step_id=="fresh_import").unwrap().phase,"running");
+        cleanup(&p);
+    }
+    #[test]
+    fn replan_cannot_erase_unreviewed_native_failure(){
+        let p=file();
+        let old=graph(1);
+        begin_at(&p,Some(&old),"model","blender_run_plan",A).unwrap();
+        finish_at(&p,A,"blender_run_plan",Some(false)).unwrap();
+        let mut forged=graph(2);
+        forged["steps"][0]["expected_tool"]=serde_json::json!("read_file");
+        assert!(begin_at(&p,Some(&forged),"import","premiere_insert_media",B).is_err());
+        assert_eq!(read_at(&p).unwrap().unwrap().jobs[0].phase,"failed");
         cleanup(&p);
     }
     #[test]
