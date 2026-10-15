@@ -11,6 +11,7 @@ mod native_worker_status;
 mod native_worker_job;
 mod native_job_history;
 mod native_scheduler;
+mod native_task_grant;
 mod native_task_delivery;
 mod bounded_child;
 mod provider_request_guard;
@@ -1002,6 +1003,7 @@ enum ToolAction {
 #[derive(Debug, Clone)]
 struct PendingAction {
     created_at_ms: u64,
+    grant_signature: Option<String>,
     premiere_expectation: Option<PremiereExpectation>,
     task_graph: Option<Value>,
     task_step_id: Option<String>,
@@ -1061,6 +1063,7 @@ struct BrowserSession {
 #[derive(Default)]
 struct ActionState {
     native_execution_owned: AtomicBool,
+    task_read_grants: Mutex<native_task_grant::TaskReadGrantStore>,
     pending: Mutex<HashMap<String, PendingAction>>,
     managed_children: Mutex<HashSet<u32>>,
     managed_process_started_at: Mutex<HashMap<u32, u64>>,
@@ -8116,6 +8119,11 @@ fn stage_tool(
         _ => return Err("Unsupported tool.".into()),
     };
 
+    // Only native-validated LOW-risk typed reads can participate in an
+    // optional, short-lived owner's task grant. Mutations remain Allow once.
+    let grant_signature=if matches!(&risk,RiskLevel::Low){
+        native_task_grant::read_signature(&tool,&proposal.arguments)
+    }else{None};
     let id = Uuid::new_v4().to_string();
 
     let prepared_at_ms = now_ms();
@@ -8135,6 +8143,7 @@ fn stage_tool(
         id.clone(),
         PendingAction {
             created_at_ms: prepared_at_ms,
+            grant_signature,
             premiere_expectation,
             task_graph: proposal.task_graph.clone(),
             task_step_id: proposal.task_step_id.as_ref()
@@ -18905,6 +18914,38 @@ fn prepare_powershell(
     stage_tool(proposal, None, state.inner())
 }
 
+/// Only the native UI's explicit "Allow exact read for task" click calls
+/// this; AI/provider replies cannot issue Rust grant commands.
+#[tauri::command]
+fn issue_task_read_grant(
+    task_id: String,
+    action_id: String,
+    state: State<'_, ActionState>,
+) -> Result<String, String> {
+    let pending=state.pending.lock()
+        .map_err(|_|"Native prepared-action state is unavailable.".to_string())?;
+    let action=pending.get(&action_id)
+        .ok_or("Read permission requires a live, explicitly reviewed native action.")?;
+    if now_ms().saturating_sub(action.created_at_ms)>PENDING_ACTION_TTL_MS{
+        return Err("Prepared read action has expired.".into());
+    }
+    let sig=action.grant_signature.as_deref()
+        .ok_or("This action is not an eligible low-risk exact typed read.")?;
+    let mut grants=state.task_read_grants.lock()
+        .map_err(|_|"Rust read grant state is unavailable.".to_string())?;
+    grants.issue(&task_id,sig,now_ms())
+}
+#[tauri::command]
+fn revoke_task_read_grants(
+    task_id: String,
+    state: State<'_, ActionState>,
+) -> Result<(), String> {
+    Uuid::parse_str(&task_id).map_err(|_|"Invalid native task grant identity.")?;
+    let mut grants=state.task_read_grants.lock()
+        .map_err(|_|"Rust read grant state is unavailable.".to_string())?;
+    grants.revoke(&task_id);
+    Ok(())
+}
 #[tauri::command]
 fn deny_action(
     action_id: String,
@@ -19054,6 +19095,8 @@ fn cancel_running_action(
 #[tauri::command]
 async fn execute_action(
     action_id: String,
+    grant_id: Option<String>,
+    task_id: Option<String>,
     state: State<'_, ActionState>,
     app: AppHandle,
 ) -> Result<ActionResult, String> {
@@ -19080,6 +19123,19 @@ async fn execute_action(
             if let Some(step)=prepared.task_step_id.as_deref(){
                 native_scheduler::preflight(&app,prepared.task_graph.as_ref(),
                     step,&active_tool,&action_id)?;
+            }
+            // Fail closed if the UI requests task-scoped execution without
+            // a currently valid Rust grant for THIS prepared action's exact
+            // typed arguments. No permission extends to a second action or
+            // across restart; the grant is consumed before native dispatch.
+            if grant_id.is_some()||task_id.is_some() {
+                let id=grant_id.as_deref().ok_or("Missing native read grant ID.")?;
+                let task=task_id.as_deref().ok_or("Missing native grant task ID.")?;
+                let sig=prepared.grant_signature.as_deref()
+                    .ok_or("Task grant cannot execute a mutating or unscoped native tool.")?;
+                let mut grants=state.task_read_grants.lock()
+                    .map_err(|_|"Rust read grant state unavailable.".to_string())?;
+                grants.consume(task,id,sig,now_ms())?;
             }
             // Publish the durable, action-bound worker record BEFORE any tool
             // can run. If disk state is unresolved, keep approval pending.
@@ -19197,7 +19253,7 @@ async fn execute_powershell(
     state: State<'_, ActionState>,
     app: AppHandle,
 ) -> Result<ActionResult, String> {
-    execute_action(action_id, state, app).await
+    execute_action(action_id, None, None, state, app).await
 }
 
 #[tauri::command]
@@ -19547,6 +19603,8 @@ pub fn run() {
             reconcile_native_worker_job,
             prepare_tool,
             prepare_powershell,
+            issue_task_read_grant,
+            revoke_task_read_grants,
             deny_action,
             cancel_running_action,
             execute_action,
