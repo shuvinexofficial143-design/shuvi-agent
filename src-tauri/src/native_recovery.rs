@@ -284,6 +284,46 @@ mod tests{
             revision:Some(2),phase:"model_reserved".into(),..executed.clone()}).is_err());
     }
     #[test]
+    fn model_free_readback_requires_exact_previous_audit_and_new_prepared_uuid(){
+        let executing=state();
+        let audited=NativeRecoveryRecord{
+            revision:Some(2),phase:"audit_verified".into(),..executing.clone()};
+        let reserved=NativeRecoveryRecord{
+            revision:Some(3),phase:"readback_reserved".into(),..audited.clone()};
+        assert!(valid(&reserved).is_ok());
+        assert!(validate_advance(Some(&audited),&reserved).is_ok());
+        assert!(validate_advance(Some(&executing),&reserved).is_err(),
+            "Unknown or in-flight action must never authorize readback");
+        assert!(validate_advance(Some(&audited),&NativeRecoveryRecord{
+            model_requests:2,..reserved.clone()}).is_err(),
+            "Model-free readback cannot secretly spend another provider turn");
+        assert!(validate_advance(Some(&audited),&NativeRecoveryRecord{
+            action_id:Some("forged-uuid".into()),..reserved.clone()}).is_err(),
+            "Reservation must retain the last verified Rust action identity");
+        let staged=NativeRecoveryRecord{
+            revision:Some(4),phase:"awaiting_approval".into(),
+            action_id:Some("action-2".into()),staged_actions:2,..reserved.clone()};
+        assert!(validate_advance(Some(&reserved),&staged).is_ok(),
+            "A different prepared action still requires an owner permission");
+        assert!(validate_advance(Some(&audited),&staged).is_err(),
+            "Without a durable readback reservation the native action is refused");
+        assert!(validate_advance(Some(&reserved),&NativeRecoveryRecord{
+            action_id:Some("action-1".into()),..staged.clone()}).is_err(),
+            "A previously audited action cannot be replayed");
+        assert!(validate_advance(Some(&reserved),&NativeRecoveryRecord{
+            model_requests:2,..staged.clone()}).is_err(),
+            "Staged readback cannot stealthily increase billed request count");
+        assert!(validate_advance(Some(&reserved),&NativeRecoveryRecord{
+            staged_actions:1,..staged.clone()}).is_err(),
+            "Each new prepared action must consume the action-stage budget");
+        assert!(validate_advance(Some(&reserved),&NativeRecoveryRecord{
+            phase:"executing".into(),..staged.clone()}).is_err(),
+            "Owner approval phase may not be skipped");
+        assert!(validate_advance(Some(&reserved),&NativeRecoveryRecord{
+            phase:"model_reserved".into(),model_requests:2,..staged}).is_err(),
+            "A readback reservation cannot be silently turned into paid model consent");
+    }
+    #[test]
     fn cannot_downgrade_inflight_execution_or_reserve_again_from_unknown(){
         let base=state();
         assert!(validate_advance(None,&base).is_err(),"first checkpoint must be model_reserved");
