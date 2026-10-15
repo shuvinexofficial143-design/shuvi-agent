@@ -55,7 +55,9 @@ test('Refuses invalid original brief, proposals and conflicting executable targe
   assert.equal(admitDashboardMasterProposal('Premiere kholo',{tool:'premiere_launch'}).ok,false);
   assert.equal(admitDashboardMasterProposal('Premiere kholo',propose('invalid-tool')).ok,false);
   assert.equal(admitDashboardMasterProposal('Premiere kholo',propose('launch_app',{path:'C:/Blender/blender.exe'})).ok,false);
-  assert.equal(admitDashboardMasterProposal('Premiere kholo',propose('launch_app',{path:'C:/Adobe/Premiere.exe'})).ok,true);
+  assert.equal(admitDashboardMasterProposal('Premiere kholo',propose('launch_app',{path:'C:/Adobe/Premiere.exe'})).ok,false,
+    'generic process paths are not evidence of an authorized named editor');
+  assert.equal(admitDashboardMasterProposal('Premiere kholo',propose('write_file',{path:'C:/test.txt'})).ok,false);
 });
 test('Both first and audited-result Master proposals call the same hard gate before prepare_tool',()=>{
   const ui=readFileSync(new URL('../web-dashboard/src/native-agent.ts',import.meta.url),'utf8');
