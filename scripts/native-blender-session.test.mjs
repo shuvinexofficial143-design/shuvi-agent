@@ -23,6 +23,8 @@ test("four persistent-session actions are wired through ordinary audited ToolAct
   assert.match(lib,/blender_session_worker::close\(&state\.blender_session,state/);
   assert.match(lib,/blender_session: blender_session_worker::SessionRegistry/);
   assert.match(lib,/RiskLevel::High\)/);
+  assert.match(lib,/expected_scene_revision=arg_string\(&proposal.arguments,"expected_scene_revision"\)/);
+  assert.match(lib,/&plan,allow_render,&expected_scene_revision,execution_action_id/);
   assert.match(lib,/Persist(?:ent)? Blender plan requires 1\.\.6 typed steps/);
   assert.equal(bundle.bundle.resources[
     "../integrations/blender-worker/shuvi_blender_session.py"
@@ -65,7 +67,9 @@ test("session broker uses fixed authenticated Blender launch and no model Python
     "\"retry_automatically\": False",
     "capture_scene(controller, actual, require_saved_file=False)",
     "reopen_checkpoint(blender_exe, actual, before)",
-    "if request_allow_render and not args.allow_render"
+    "if request_allow_render and not args.allow_render",
+    'current.data.get("revision") != expected_scene_revision',
+    "Stale Blender scene revision: no plan steps dispatched"
   ]) assert.ok(broker.includes(text),text);
   assert.doesNotMatch(broker,/\beval\(|\bexec\(|subprocess\.run\(|shell=True/);
 });
@@ -88,5 +92,5 @@ test("persistent broker parses and fixture session protocol passes",{
     "-s","integrations/blender-worker","-p","test_shuvi_blender_session.py"],
     {cwd:root,timeout:30000,encoding:"utf8"});
   assert.equal(run.status,0,run.stderr);
-  assert.match(run.stderr,/Ran 11 tests/);
+  assert.match(run.stderr,/Ran 13 tests/);
 });
