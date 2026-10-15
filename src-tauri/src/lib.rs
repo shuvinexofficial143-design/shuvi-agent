@@ -207,7 +207,7 @@ Available tools:
 - blender_run_plan: {"python_exe":"absolute Python.exe","blender_exe":"absolute Blender.exe","blend_file":"optional existing absolute .blend","output_dir":"existing absolute delivery folder","allow_render":false,"plan":{"timeout_ms":90000,"steps":[{"name":"inspect","request":{"protocol_version":1,"request_id":"UUID","command_id":"UUID","operation":"scene.inspect","payload":{},"timeout_ms":10000},"bindings":[]}, ...]}} — HIGH RISK: execute 1..6 approved typed Blender operations in one authenticated owned session; final tool must be file.checkpoint or render.execute, with verified artifact SHA-256; never user-provided Python, auto-retry, or destructive ops
 - blender_session_start: {"python_exe":"absolute Python.exe","blender_exe":"absolute Blender.exe","blend_file":null,"output_dir":"existing output directory","allow_render":false} — HIGH RISK: start an authenticated 15-minute maximum Rust-owned Blender session. No mutation at start; each later plan requires a separately approved action with its exact live session_id.
 - blender_session_inspect: {"session_id":"exact UUID returned by blender_session_start"} — read-only authenticated health and scene revision.
-- blender_session_plan: {"session_id":"exact UUID","allow_render":false,"plan":{"timeout_ms":90000,"steps":[...]}} — HIGH RISK: up to six typed Blender operations ending in verified .blend checkpoint or PNG; render needs action-level approval and prior session policy ceiling; never automatically retry.
+- blender_session_plan: {"session_id":"exact UUID","expected_scene_revision":"exact scene_revision from blender_session_inspect","allow_render":false,"plan":{"timeout_ms":90000,"steps":[...]}} — HIGH RISK: up to six typed Blender operations ending in verified .blend checkpoint or PNG; render needs action-level approval and prior session policy ceiling; never automatically retry.
 - blender_session_close: {"session_id":"exact UUID"} — retire only that owned process and its authenticated Blender child.
 - motion_graphics_validate_plan: {"plan":{"schema_version":1,"objective":"short goal","renderer":"auto|after_effects|remotion","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":true},"delivery":"standalone_video|transparent_overlay","scenes":[{"id":"scene_1","start_seconds":0,"duration_seconds":4,"layers":[{"id":"title","kind":"text|shape|image|video|group","name":"Title","text":"optional text","asset_id":"optional_asset_id","shape":{"kind":"rectangle|ellipse","size":[640,160],"position":[0,0],"roundness":24,"fill_color":[0.1,0.2,0.3,1],"stroke_color":[1,1,1,1],"stroke_width":4},"tracks":[{"property":"x|y|scale_x|scale_y|rotation_degrees|opacity","keyframes":[{"time_seconds":0,"value":0,"easing":"linear|ease_in|ease_out|ease_in_out|hold"}]}]}]}],"review":{"sample_times_seconds":[1,2,3],"criteria":["readability"]}}}
 - motion_graphics_plan_after_effects: {"request":{"project_file":"absolute saved .aep/.aepx","composition_name":"Shuvi Motion","plan":{"schema_version":1,"objective":"...","renderer":"auto|after_effects","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":true},"delivery":"standalone_video|transparent_overlay","scenes":[...],"review":{"sample_times_seconds":[],"criteria":[]}},"asset_item_ids":{"asset_1":123}}} — read-only adapter planner; every emitted AE mutation still requires fresh inspect_context, exact project revision and normal after_effects_run approval
@@ -680,7 +680,7 @@ enum ToolAction {
     BlenderRunPlan { python_exe:String, blender_exe:String, blend_file:Option<String>, output_dir:String, allow_render:bool, plan:Value },
     BlenderSessionStart { python_exe:String, blender_exe:String, blend_file:Option<String>, output_dir:String, allow_render:bool },
     BlenderSessionInspect { session_id:String },
-    BlenderSessionPlan { session_id:String, allow_render:bool, plan:Value },
+    BlenderSessionPlan { session_id:String, allow_render:bool, expected_scene_revision:String, plan:Value },
     BlenderSessionClose { session_id:String },
     MotionGraphicsValidatePlan { plan: motion_graphics::Plan },
     MotionGraphicsPlanAfterEffects { request: motion_graphics::AfterEffectsPlanRequest },
@@ -3719,6 +3719,11 @@ fn stage_tool(
             uuid::Uuid::parse_str(&session_id).map_err(|_|"Invalid Blender session UUID.")?;
             let allow_render=proposal.arguments.get("allow_render").and_then(Value::as_bool)
                 .ok_or("Blender plan must state explicit action render approval.")?;
+            let expected_scene_revision=arg_string(&proposal.arguments,"expected_scene_revision")?;
+            if expected_scene_revision.len()!=64 ||
+                !expected_scene_revision.bytes().all(|c|c.is_ascii_hexdigit() && !c.is_ascii_uppercase()) {
+                return Err("Copy exact 64-character scene revision from fresh blender_session_inspect.".into());
+            }
             let plan=proposal.arguments.get("plan").cloned().ok_or("Typed Blender plan missing.")?;
             if serde_json::to_vec(&plan).map_err(|_|"Invalid Blender plan.")?.len()>64*1024 {
                 return Err("Blender plan exceeds 64 KiB.".into());
@@ -3736,9 +3741,9 @@ fn stage_tool(
                 .and_then(Value::as_str)==Some("render.execute")){
                 return Err("Persistent Blender render requires separate action approval.".into());
             }
-            (ToolAction::BlenderSessionPlan{session_id,allow_render,plan},
+            (ToolAction::BlenderSessionPlan{session_id,allow_render,expected_scene_revision:expected_scene_revision.clone(),plan},
                 "Run one approved plan in owned Blender session".into(),
-                format!("Reuse the exact inspected session for up to 6 typed operations; approved render={allow_render}; verified saved artifact required; no automatic retries."),
+                format!("Execute up to 6 typed operations only if the live Blender scene still has exact inspected revision {expected_scene_revision}; approved render={allow_render}; independently verified saved artifact and no automatic retries."),
                 RiskLevel::High)
         }
         "blender_session_close" => {
@@ -10650,9 +10655,9 @@ Write-Output 'SHUVI_WHATSAPP_DESKTOP_LAUNCH_REQUESTED'
             let response=blender_session_worker::status(&state.blender_session,state,&session_id)?;
             Ok(ActionResult{success:true,tool,stdout:response.to_string(),stderr:String::new(),exit_code:Some(0)})
         }
-        ToolAction::BlenderSessionPlan {session_id,allow_render,plan} => {
+        ToolAction::BlenderSessionPlan {session_id,allow_render,expected_scene_revision,plan} => {
             let response=blender_session_worker::plan(&state.blender_session,state,&session_id,
-                &plan,allow_render,execution_action_id)?;
+                &plan,allow_render,&expected_scene_revision,execution_action_id)?;
             Ok(ActionResult{success:true,tool,stdout:response.to_string(),stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::BlenderSessionClose {session_id} => {
