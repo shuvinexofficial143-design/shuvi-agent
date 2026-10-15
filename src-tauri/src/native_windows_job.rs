@@ -91,7 +91,7 @@ fn args_to_commandline(exe:&Path,args:&[OsString])->Vec<u16>{
 }
 fn minimal_environment()->Vec<u16>{
     let mut block=Vec::new();
-    for name in ["SystemRoot","WINDIR","TEMP","TMP"]{
+    for name in ["SystemRoot","TEMP","TMP","WINDIR"]{
         if let Some(value)=std::env::var_os(name){
             block.extend(OsStr::new(name).encode_wide());
             block.push(61);block.extend(value.encode_wide());block.push(0);
@@ -186,6 +186,30 @@ mod tests{
             assert_eq!(mem::size_of::<ExtendedLimit>(),144);
             assert_eq!(mem::size_of::<Accounting>(),48);
         }
+    }
+    #[test]
+    fn real_windows_grandchild_remains_contained_after_parent_exit(){
+        use std::path::PathBuf;
+        let exe=PathBuf::from(std::env::var_os("SystemRoot").expect("Windows CI root"))
+            .join("System32").join("WindowsPowerShell").join("v1.0").join("powershell.exe");
+        let script="Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe') -ArgumentList @('-NoProfile','-NonInteractive','-Command','Start-Sleep -Seconds 10') | Out-Null; exit 0";
+        let args=vec!["-NoProfile".into(),"-NonInteractive".into(),
+            "-Command".into(),script.into()];
+        let mut child=OwnedChild::spawn(&exe,&args,&std::env::temp_dir()).unwrap();
+        let deadline=Instant::now()+Duration::from_secs(6);
+        let mut grandchild_seen=false;
+        while Instant::now()<deadline{
+            // Grandchild is still subject to this exact Windows Job Object
+            // even after its original launcher has already exited.
+            if child.try_wait().unwrap().is_some()&&child.active_processes().unwrap()>0{
+                grandchild_seen=true;break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        let ended=child.terminate_tree().unwrap();
+        assert!(ended.is_some());
+        assert_eq!(child.active_processes().unwrap(),0);
+        assert!(grandchild_seen,"Windows spawned child must stay in the containing Job Object");
     }
     #[test]
     fn command_quote_escapes_trailing_backslashes(){
