@@ -4,6 +4,7 @@ import {readFileSync} from "node:fs";
 
 const rust=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
 const prep=readFileSync(new URL("../src-tauri/src/premiere_media_prep.rs",import.meta.url),"utf8");
+const relinkBatch=readFileSync(new URL("../src-tauri/src/premiere_batch_relink.rs",import.meta.url),"utf8");
 const uxp=readFileSync(new URL("../integrations/premiere-uxp/main.js",import.meta.url),"utf8");
 
 test("AD exposes media interpretation, batch prep, preset sequence and work area tools",()=>{
@@ -115,7 +116,15 @@ test("single and batch media relink/proxy callers stop on unverified readback",(
     const start=rust.lastIndexOf("ToolAction::"+name);
     const end=rust.indexOf("\n        ToolAction::"+next,start+10);
     const arm=rust.slice(start,end);
-    assert.match(arm,/verified_readback/);
+    if (name === "PremiereBatchRelink") {
+      // Batch receipts are checked by the typed exact-source proof helper.
+      assert.match(arm,/entry\.host_verified\(&result\)/);
+      assert.match(relinkBatch,/Some\("verified_readback"\)/);
+      assert.match(arm,/premiere_batch_relink::same_source\(entry,&proofs\[index\]\)/);
+      assert.match(arm,/success:durable/);
+    } else {
+      assert.match(arm,/verified_readback/);
+    }
     assert.match(arm,/if !verified/);
     assert.match(arm,/uncertain":!verified/);
   }
