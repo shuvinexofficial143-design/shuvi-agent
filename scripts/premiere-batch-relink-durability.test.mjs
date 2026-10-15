@@ -72,6 +72,9 @@ test("post-save project fingerprint and all previously relinked native items are
   assert.match(runtime,/premiere_project_persistence::assess\(/);
   assert.match(runtime,/request\("inspect_media_interpretation"/);
   assert.match(runtime,/entry\.post_save_verified\(value\)/);
+  assert.match(runtime,/let item_durable=verified&&saved&&identity_retained/);
+  assert.match(runtime,/results\[\*index\]\["success"\]=json!\(item_durable\)/);
+  assert.match(runtime,/"native_relink_verified":verified/);
   assert.match(runtime,/let durable=completed&&saved&&identity_retained&&after_save_verified/);
   assert.match(runtime,/persistence_verified/);
 });
