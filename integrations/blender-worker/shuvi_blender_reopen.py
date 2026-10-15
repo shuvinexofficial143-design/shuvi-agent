@@ -23,7 +23,7 @@ OBJECT_FIELDS = (
 )
 
 
-def capture_scene(controller, expected_path: Path) -> dict:
+def capture_scene(controller, expected_path: Path, *, require_saved_file: bool = True) -> dict:
     """Fingerprint full bounded object paging; deny missing/truncated/unstable reads."""
     from shuvi_blender_agent.contracts import Request, Status
 
@@ -36,7 +36,11 @@ def capture_scene(controller, expected_path: Path) -> dict:
         return result.data
 
     scene = call("scene.inspect")
-    if not isinstance(scene.get("file"), str) or Path(scene["file"]).resolve(strict=True) != saved:
+    # file.checkpoint deliberately preserves the writer's active source file.
+    # Only the second process is required to have loaded the saved checkpoint.
+    if not isinstance(scene.get("file"), str) or (
+        require_saved_file and Path(scene["file"]).resolve(strict=True) != saved
+    ):
         raise ValueError("Blender session is not reading the saved checkpoint")
     total = scene.get("object_count")
     if type(total) is not int or not 0 <= total <= MAX_REOPEN_OBJECTS:
