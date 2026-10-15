@@ -45,3 +45,20 @@ Important: Rust preflight and Adobe's subsequent pathname-based project creation
 Tests cover clean absolute Windows paths, reject overwrite, independent disk readback, host create and save, host open without implicit save/close, wrong active host identity and changed files. Runtime validation on a disposable authorized Windows Premiere installation is still required, as is a real project reopen and media relink check.
 
 Official Adobe Project UXP API reference: https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/project
+
+## Milestone 3 — source-bound relink, saved project durability, media audit
+
+This extends the existing Premiere native editing pipeline, not a parallel UI clicker.
+
+- Read-only tool: premiere_media_audit. The paired UXP panel traverses the active project in a bounded manner (maximum 1,000 visited items, 500 reported clips, 8 nested folders). Returns exact native itemId, mediaPath, offline state, project GUID/path and scanComplete. Incomplete/unknown inventories never become blanket editing authorization.
+- High-risk existing premiere_relink_media now requires expected_previous_path (copy the exact path from an actual inspection). The UXP panel checks the currently resolved project item ID and media path before performing any mutation and refuses no-op or stale source requests.
+- The local Rust host independently SHA256-hashes the replacement media before the approved edit, immediately after the edit, and after project save. Only nonempty, regular, non-symlink local files within a bounded 4 GiB budget may be hashed. This detects changes; it does not prove media codec decode or semantic suitability.
+- Prior project save/checkpoint happens before the media mutation. After exact successful UXP item/path/online readback, the same approved native action saves the active .prproj and independently fingerprints its on-disk bytes. The tool subsequently reinspects the active project/sequence and exact media item, requiring the new path and offline=false, as well as file SHA256 continuity and independently observed disk persistence.
+- If any check after Adobe mutation is uncertain, no automatic retry occurs. Shuvi leaves a unique existing backup and explicitly reports whether post-relink save was performed; the user can inspect the project and backup before another decision.
+- This is not a successful fresh-session reopen acceptance. To validate across a fresh session, explicitly reopen the saved project using premiere_open_project, then run premiere_media_audit / premiere_inspect_media_interpretation, matching the exact expected project GUID/item and media path. A fresh open does not automatically validate visual frames or an exported MP4.
+
+The existing native permission lease, audit receipts and risk confirmation remain unchanged. The new read-only media inventory is not write authorization. The existing PremiereRelinkMedia variant now carries expected_previous_path. Update proposals/client tests that previously supplied just item_id/new_path; do not silently default to a stale or unknown source path.
+
+Source mock fixtures: scripts/premiere-media-relink-durability.test.mjs. Rust SHA256 unit tests are in src-tauri/src/premiere_media_relink.rs. Existing Premiere transport and speed VM fixtures were extended for the newly added UXP modules; earlier frontend CI failures were caused by old fixed mock module allowlists, not by Windows Rust compilation. Full exact-head CI and Windows Adobe live acceptance must still be reported separately.
+
+Known limitations: file-path preflights and Adobe operations do not provide an atomic OS-wide lock. Large media over 4 GiB is rejected by this strict proof workflow. A successful native path readback is not proof of correct video frames, linked audio, source interpretation, relinked proxy health, export completion or new-session reopen.
