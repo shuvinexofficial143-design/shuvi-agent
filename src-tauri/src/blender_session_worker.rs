@@ -35,6 +35,7 @@ struct OwnedSession {
     allow_render:bool,
     created:Instant,
     watchdog_stop:Arc<AtomicBool>,
+    invalidated:Arc<AtomicBool>,
 }
 
 impl Drop for OwnedSession {
@@ -124,6 +125,9 @@ fn receive(session:&mut OwnedSession,state:&ActionState,deadline:Duration)->Resu
 }
 
 fn request(session:&mut OwnedSession,state:&ActionState,op:&str,plan:Option<&Value>,allow_render:bool,deadline:Duration)->Result<Value,String>{
+    if session.invalidated.load(Ordering::Acquire){
+        return Err("Blender session was invalidated by the native watchdog.".into());
+    }
     if session.created.elapsed()>SESSION_MAX_AGE{
         return Err("Blender session expired; inspect and start a fresh explicitly approved session.".into());
     }
@@ -139,6 +143,9 @@ fn request(session:&mut OwnedSession,state:&ActionState,op:&str,plan:Option<&Val
         .and_then(|_|session.input.flush())
         .map_err(|_|"Blender session command delivery uncertain; no replay allowed.".to_string())?;
     let answer=receive(session,state,deadline)?;
+    if session.invalidated.load(Ordering::Acquire){
+        return Err("Blender session invalidated while command was running; never replay.".into());
+    }
     if answer.get("session_id").and_then(Value::as_str)!=Some(session.session_id.as_str()){
         return Err("Blender broker returned a different session identity.".into());
     }
@@ -160,6 +167,7 @@ fn retire(state:&ActionState,slot:&mut Option<OwnedSession>) {
 // prevents PID reuse from turning into unrelated-process termination.
 fn spawn_watchdog(
     app:&AppHandle,id:&str,pid:u32,created:Instant,stop:Arc<AtomicBool>,
+    invalidated:Arc<AtomicBool>,
 )->Result<(),String>{
     let app=app.clone();
     let id=id.to_owned();
@@ -173,9 +181,13 @@ fn spawn_watchdog(
             let alive=managed_process_identity_matches(&state,pid);
             let memory=current_runtime_status(&state);
             let expired=created.elapsed()>=SESSION_MAX_AGE;
-            let must_retire=expired || !matches!(alive,Ok(true))
-                || memory.as_ref().is_err_or(|m|m.over_hard_limit);
+            let memory_unsafe=match memory {
+                Ok(ref m)=>m.over_hard_limit,
+                Err(_)=>true,
+            };
+            let must_retire=expired || !matches!(alive,Ok(true)) || memory_unsafe;
             if !must_retire {continue;}
+            invalidated.store(true,Ordering::Release);
             if !kill_attempted && matches!(alive,Ok(true)){
                 // Only kill the exact still-owned process tree. On Windows
                 // taskkill /T /F includes Blender descended from the broker.
@@ -232,8 +244,10 @@ pub(crate) fn start(
         return Err("Blender broker lacks a bounded response channel.".into());
     }};
     let watchdog_stop=Arc::new(AtomicBool::new(false));
+    let invalidated=Arc::new(AtomicBool::new(false));
     let mut session=OwnedSession{child,input,replies:reader(output),session_id:String::new(),
-        output_dir:output_dir.into(),allow_render,created:Instant::now(),watchdog_stop};
+        output_dir:output_dir.into(),allow_render,created:Instant::now(),watchdog_stop,
+        invalidated};
     let result=receive(&mut session,state,STARTUP_DEADLINE);
     match result {
         Ok(value)=>{
@@ -249,8 +263,9 @@ pub(crate) fn start(
             session.session_id=id.into();
             let start_time=session.created;
             let watchdog=session.watchdog_stop.clone();
+            let invalidated=session.invalidated.clone();
             *slot=Some(session);
-            if let Err(error)=spawn_watchdog(app,id,pid,start_time,watchdog) {
+            if let Err(error)=spawn_watchdog(app,id,pid,start_time,watchdog,invalidated) {
                 retire(state,&mut slot);
                 return Err(error);
             }
