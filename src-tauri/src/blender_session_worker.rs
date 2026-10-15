@@ -216,7 +216,7 @@ fn receive(session:&mut OwnedSession,state:&ActionState,deadline:Duration)->Resu
     }
 }
 
-fn request(session:&mut OwnedSession,state:&ActionState,op:&str,plan:Option<&Value>,allow_render:bool,deadline:Duration)->Result<Value,String>{
+fn request(session:&mut OwnedSession,state:&ActionState,op:&str,plan:Option<&Value>,allow_render:bool,expected_revision:Option<&str>,deadline:Duration)->Result<Value,String>{
     if session.invalidated.load(Ordering::Acquire){
         return Err("Blender session was invalidated by the native watchdog.".into());
     }
@@ -227,6 +227,7 @@ fn request(session:&mut OwnedSession,state:&ActionState,op:&str,plan:Option<&Val
     if let Some(value)=plan{
         command["plan"]=value.clone();
         command["allow_render"]=json!(allow_render);
+        command["expected_scene_revision"]=json!(expected_revision.ok_or("Fresh Blender scene revision required before native mutation.")?);
     }
     let mut encoded=serde_json::to_vec(&command).map_err(|_|"Cannot encode bounded Blender command.")?;
     if encoded.len()>65536{return Err("Blender session plan exceeds 64 KiB.".into());}
@@ -403,7 +404,7 @@ pub(crate) fn status(registry:&SessionRegistry,state:&ActionState,id:&str)->Resu
     let result=(||{
         let session=slot.as_mut().ok_or("No Blender session is owned by this Shuvi process.")?;
         if session.session_id!=id{return Err("Blender session ID mismatch.".into());}
-        let v=request(session,state,"inspect",None,false,PROBE_DEADLINE)?;
+        let v=request(session,state,"inspect",None,false,None,PROBE_DEADLINE)?;
         let revision=v.get("scene_revision").and_then(Value::as_str).unwrap_or_default();
         if v.get("status").and_then(Value::as_str)!=Some("alive")
             ||v.get("operation").and_then(Value::as_str)!=Some("inspect")
@@ -425,8 +426,12 @@ pub(crate) fn status(registry:&SessionRegistry,state:&ActionState,id:&str)->Resu
 
 pub(crate) fn plan(
     registry:&SessionRegistry,state:&ActionState,id:&str,plan:&Value,
-    allow_render:bool,execution_action_id:Option<&str>
+    allow_render:bool,expected_scene_revision:&str,execution_action_id:Option<&str>
 )->Result<Value,String>{
+    if expected_scene_revision.len()!=64
+        || !expected_scene_revision.bytes().all(|c|c.is_ascii_hexdigit() && !c.is_ascii_uppercase()){
+        return Err("Persistent Blender plan requires a 64-character lowercase inspected scene revision.".into());
+    }
     let action_id=execution_action_id.ok_or("Persistent Blender mutation requires a canonical audited action UUID.")?;
     uuid::Uuid::parse_str(action_id)
         .map_err(|_|"Persistent Blender action lineage UUID is invalid.")?;
@@ -440,7 +445,7 @@ pub(crate) fn plan(
         if allow_render && !session.allow_render{
             return Err("Blender plan requests rendering above the approved session policy ceiling.".into());
         }
-        let response=request(session,state,"run_plan",Some(plan),allow_render,PLAN_DEADLINE)?;
+        let response=request(session,state,"run_plan",Some(plan),allow_render,Some(expected_scene_revision),PLAN_DEADLINE)?;
         if response.get("status").and_then(Value::as_str)!=Some("verified")
             || response.get("complete").and_then(Value::as_bool)!=Some(true)
             || response.get("authenticated_blender_plan").and_then(Value::as_bool)!=Some(true)
@@ -468,7 +473,7 @@ pub(crate) fn close(registry:&SessionRegistry,state:&ActionState,id:&str)->Resul
     if session.session_id!=id{return Err("Blender session ID mismatch.".into());}
     // Even if the graceful close command is lost, the owned process tree is
     // stopped; never reuse the identity after a close attempt.
-    let response=request(session,state,"close",None,false,PROBE_DEADLINE);
+    let response=request(session,state,"close",None,false,None,PROBE_DEADLINE);
     let root_exited=retire(state,&mut slot);
     match response {
         Ok(v) if v.get("status").and_then(Value::as_str)==Some("closing") && root_exited=>
