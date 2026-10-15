@@ -25,7 +25,7 @@ test("Win32 validates HWND, native process, visibility and UIA element ownership
  assert.match(guard,/GetWindowThreadProcessId/);
  assert.match(guard,/IsWindowVisible/);
  assert.match(guard,/IsIconic/);
- assert.match(guard,/\$nativePid -ne \[uint32\]\$shuviExpectedPid/);
+ assert.match(guard,/\$nativePid -ne \$shuviExpectedPid/);
  assert.match(guard,/\$root\.Current\.NativeWindowHandle -ne/);
  assert.match(guard,/\$element\.Current\.ProcessId -ne/);
  assert.match(guard,/\$element\.Current\.IsOffscreen/);
@@ -41,7 +41,7 @@ test("keyboard fallback cannot send to the foreground approval UI",()=>{
  assert.match(guard,/GetForegroundWindow\(\) -ne \$shuviExpectedHwnd/);
 });
 test("no desktop-root or empty window is accepted for approved mutations",()=>{
- assert.match(guard,/window\s*\.map\(str::trim\)/);
+ assert.match(guard,/window\.map\(str::trim\)/);
  assert.match(guard,/name\.eq_ignore_ascii_case\("desktop"\)/);
  assert.match(guard,/UI mutation cannot target desktop/);
  assert.match(guard,/name\.chars\(\)\.any\(char::is_control\)/);
@@ -59,4 +59,23 @@ test("native guard remains inside original permissioned execute path",()=>{
  assert.match(core,/fn run_hidden_powershell\(/);
  assert.doesNotMatch(guard,/SetForegroundWindow\(/);
  assert.doesNotMatch(guard,/SendWait\(/);
+});
+
+test("OS-derived target is stored only in native Rust pending action, not supplied by model",()=>{
+ assert.match(core,/native_uia_target: Option<native_uia_window_guard::NativeUiaTarget>/);
+ assert.match(core,/let native_uia_target = prepare_native_uia_binding\(&action\)/);
+ assert.match(core,/let native_uia_target = action.native_uia_target.clone\(\)/);
+ assert.match(core,/let probe = native_uia_window_guard::prepared_window_probe\(&root\)/);
+ assert.match(core,/native_uia_window_guard::parse_prepared_window\(text\)/);
+ assert.equal((mutation.match(/native_uia_target\.as_ref\(\)/g)||[]).length,7);
+ assert.match(guard,/fn guarded_mutation_root\(/);
+ assert.match(guard,/target\.ok_or_else/);
+ assert.match(guard,/\$shuviExpectedTitle/);
+ assert.match(guard,/\$root\.Current\.Name -cne \$shuviExpectedTitle/);
+});
+test("no Rust prepared HWND is exposed as caller-selectable tool argument",()=>{
+ const stage=core.slice(core.indexOf("fn prepare_native_uia_binding("),core.indexOf("fn stage_tool(",core.indexOf("fn prepare_native_uia_binding(")));
+ assert.doesNotMatch(stage,/arg_[a-z0-9_]+\([^\n]*"expected_(?:hwnd|pid)"/);
+ assert.match(stage,/ToolAction::UiSendKeys/);
+ assert.match(stage,/run_hidden_powershell\(&probe\)/);
 });
