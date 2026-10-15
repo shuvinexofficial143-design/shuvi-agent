@@ -19,6 +19,9 @@ const TOOLS = Object.freeze({
   blender: /^blender_/
 });
 const fail = reason => ({ok:false,reason});
+const OPENING_ONLY_TOOLS=new Set(['ui_windows','ui_discover','ui_find',
+ 'inspect_screen','capture_screen','list_processes','premiere_launch',
+ 'premiere_detect','premiere_context','premiere_bridge_status','blender_inspect']);
 
 // The brief is preserved exactly. We never generate a project name, save path,
 // credential, tool UUID or app identity from a language-model guess.
@@ -86,6 +89,9 @@ export function admitDashboardMasterProposal(goal, proposal) {
     const foreign = Object.keys(TOOLS).find(app => app !== g.apps[0] && TOOLS[app].test(proposal.tool));
     if (foreign) return fail('Tool targets '+foreign+' but the original task names only '+g.apps[0]+'. Ask for a new explicit user instruction.');
   }
+  if(g.apps.length===1 && g.opening && !g.project && !g.editing && !g.exportFile &&
+      !OPENING_ONLY_TOOLS.has(proposal.tool))
+    return fail('Opening an editor does not authorize an unrelated process, file mutation, or export.');
   if (proposal.tool === 'launch_app' && g.apps.length === 1) {
     // launch_app may only be grounded by the existing native observed-target
     // checks; never accept a model-selected binary for a different editor.
