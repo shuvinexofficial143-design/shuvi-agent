@@ -449,11 +449,13 @@ pub(crate) fn plan(
             || response.get("destructive_allowed").and_then(Value::as_bool)!=Some(false) {
             return Err("Persistent Blender plan outcome is unknown; do not retry automatically.".into());
         }
-        blender_plan_worker::verify_output(&response,Path::new(&session.output_dir))?;
+        let manifest=crate::blender_artifact_manifest::build(
+            &response,Path::new(&session.output_dir),action_id,Some(id))?;
         Ok(json!({"status":"verified","session_id":id,"full_plan_completed":true,
             "source_action_id":execution_action_id,"artifact":response["artifact"],
             "checkpoint_reopen":response["checkpoint_reopen"],"plan_steps":response["executed_steps"],
-            "verified_by_native_sha256":true,"same_blender_session":true}))
+            "verified_by_native_sha256":true,"same_blender_session":true,
+            "artifact_manifest":manifest}))
     })();
     if result.is_err() && slot.as_ref().is_some_and(|s|s.session_id==id){
         retire(state,&mut slot);
