@@ -71,6 +71,13 @@ pub(crate) fn execute(
     output_dir:&str,plan:&Value,allow_render:bool,
     script:&Path,work_dir:&Path,state:&ActionState,execution_action_id:Option<&str>
 )->Result<Value,String>{
+    // Lineage must be checked BEFORE launching Blender, not after mutations.
+    let action_id=execution_action_id.ok_or("Blender mutation requires canonical native audit action UUID.")?;
+    let parsed=Uuid::parse_str(action_id)
+        .map_err(|_|"Blender native action UUID is invalid.")?;
+    if parsed.to_string()!=action_id.to_ascii_lowercase(){
+        return Err("Blender native action UUID must be canonical.".into());
+    }
     if !script.is_file(){return Err("Fixed Blender plan adapter missing.".into());}
     let plan_bytes=serde_json::to_vec(plan).map_err(|_|"Invalid Blender JSON plan.".to_string())?;
     if plan_bytes.is_empty() || plan_bytes.len()>64*1024{
@@ -159,7 +166,6 @@ pub(crate) fn execute(
         ||value.get("destructive_allowed").and_then(Value::as_bool)!=Some(false)
         ||value.get("render_approved").and_then(Value::as_bool)!=Some(allow_render)
     {return Err("Blender plan lacks authenticated complete readback evidence.".into());}
-    let action_id=execution_action_id.ok_or("Blender mutation requires canonical native audit action UUID.")?;
     let manifest=crate::blender_artifact_manifest::build(&value,Path::new(output_dir),action_id,None)?;
     drop(guard);
     Ok(json!({"status":"verified","worker":"blender","full_plan_completed":true,
