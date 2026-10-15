@@ -140,7 +140,13 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
         "objects": objects,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    topology = [(item["name"], item["geometry_sha256"])
+                for item in objects if item["type"] == "MESH"]
+    topology_bytes = json.dumps(
+        topology, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
     return {"fingerprint": hashlib.sha256(encoded).hexdigest(),
+            "mesh_fingerprint": hashlib.sha256(topology_bytes).hexdigest(),
             "object_count": total, "mesh_count": mesh_count,
             "total_vertices": total_vertices, "total_faces": total_faces}
 
@@ -161,6 +167,7 @@ def reopen_checkpoint(blender_exe: Path, saved: Path, original: dict) -> dict:
     if reopened != original:
         raise ValueError("Saved Blender checkpoint content differs after independent reopen")
     return {"verified": True, "fingerprint": reopened["fingerprint"],
+            "mesh_fingerprint": reopened["mesh_fingerprint"],
             "object_count": reopened["object_count"], "read_only": True,
             "mesh_geometry_verified": True, "mesh_count": reopened["mesh_count"],
             "total_vertices": reopened["total_vertices"], "total_faces": reopened["total_faces"]}
