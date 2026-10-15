@@ -59,7 +59,7 @@ test('Refuses invalid original brief, proposals and conflicting executable targe
 });
 test('Both first and audited-result Master proposals call the same hard gate before prepare_tool',()=>{
   const ui=readFileSync(new URL('../web-dashboard/src/native-agent.ts',import.meta.url),'utf8');
-  assert.match(ui,/import \{admitDashboardMasterProposal,masterAutonomyGuidance\} from "\.\.\/\.\.\/src\/master-autonomy-contract\.mjs"/);
+  assert.match(ui,/import \{admitDashboardMasterProposal,masterAutonomyGuidance,nextMasterReadbackProposal\} from "\.\.\/\.\.\/src\/master-autonomy-contract\.mjs"/);
   assert.match(ui,/const scope=admitDashboardMasterProposal\(task\.objective,response\.tool_proposal\)/);
   assert.match(ui,/const scope=admitDashboardMasterProposal\(effectiveObjective,response\.tool_proposal\)/);
   assert.match(ui,/if\(!scope\.ok\)/g);
