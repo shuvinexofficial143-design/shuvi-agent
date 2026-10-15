@@ -1,5 +1,6 @@
 const { entrypoints, host, versions } = require("uxp");
 const premiere = require("premierepro");
+const projectLifecycle = require("./project-lifecycle.js");
 const {validatedMediaPaths, assessSequenceMediaEvidence} = require("./media-workflow-evidence.js");
 const transcriptRebuild = require("./transcript-rebuild.js");
 const { planSpeed, SPEED_CAPABILITY } = require("./speed-workflows.js");
@@ -7506,6 +7507,10 @@ async function dispatchNativeCommand(command) {
       return await insertMulticamItem(command.arguments || {});
     case "save_project":
       return await saveProject();
+    case "create_project":
+      return await projectLifecycle.createProject(premiere.Project, command.arguments || {}, plainGuid);
+    case "open_project":
+      return await projectLifecycle.openProject(premiere.Project, command.arguments || {}, plainGuid);
     case "project_diagnostics":
       return await projectDiagnostics(command.arguments || {});
     case "inspect_mogrt_properties":
