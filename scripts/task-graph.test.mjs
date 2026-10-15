@@ -465,7 +465,7 @@ test("UI binds exact prepared action before approval or execution", () => {
   const prepare=stage.indexOf('"prepare_tool"');
   const bind=stage.indexOf("bindPreparedAction");
   const boundSave=stage.indexOf('"save_session_checkpoint"',prepare);
-  const autoExecute=stage.indexOf("executePendingProposal(proposal)",prepare);
+  const autoExecute=stage.indexOf("executePendingProposal(proposal,rustGrantId)",prepare);
   const permission=stage.indexOf("renderChatPermission(proposal, step)",prepare);
   assert.ok(prepare>=0 && bind>prepare);
   assert.ok(boundSave>bind);
