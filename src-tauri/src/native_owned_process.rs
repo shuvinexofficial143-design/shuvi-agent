@@ -11,6 +11,8 @@ use std::{
 use tauri::AppHandle;
 use crate::execution_lease::NativeExecutionLease;
 use super::{Schedule,validate};
+#[path = "native_process_receipt.rs"]
+mod process_receipt;
 #[cfg(windows)]
 #[path = "native_windows_job.rs"]
 mod windows_job;
@@ -71,6 +73,7 @@ pub(crate) struct OwnedProcess<'lease> {
     // Retain the actual Windows desktop lease until the owned worker tree
     // has exited or been independently confirmed terminated.
     lease:Option<NativeExecutionLease<'lease>>,
+    receipt_path:Option<std::path::PathBuf>,
 }
 fn identity_matches(
     schedule:&Schedule,native:&crate::native_worker_job::NativeJob,
@@ -129,7 +132,7 @@ fn spawn_checked<'lease>(schedule:&Schedule,native:&crate::native_worker_job::Na
     if slot.recent.len()>MAX_RECENT_LAUNCHES{slot.recent.remove(0);}
     Ok(OwnedProcess{action_id:action_id.to_owned(),tool:tool.to_owned(),
         child,start:Instant::now(),budget,final_phase:None,final_code:None,
-        lease:None})
+        lease:None,receipt_path:None})
 }
 /// No new Tauri command is exported. Only an existing authorized backend
 /// adapter with an acquired native OS lease can call this entrypoint.
@@ -142,12 +145,26 @@ pub(crate) fn spawn_for_active_action<'lease>(
     let schedule=super::read(app)?.ok_or("Native schedule missing at worker spawn.")?;
     let native=crate::native_worker_job::read(app)?
         .ok_or("Durable native action journal missing at worker spawn.")?;
+    // Durable intent precedes any OS launch. If launch crashes between
+    // intent and PID publication, the next request remains quarantined.
+    identity_matches(&schedule,&native,action_id,tool)?;
+    let receipt=process_receipt::path(app)?;
+    process_receipt::begin_at(&receipt,action_id,tool)?;
     let mut owned=spawn_checked(&schedule,&native,action_id,tool,program,args,cwd,budget)?;
     owned.lease=Some(lease);
+    owned.receipt_path=Some(receipt.clone());
+    process_receipt::started_at(&receipt,action_id,tool,
+        owned.pid(),owned.child.tree_contained())?;
     Ok(owned)
 }
 impl OwnedProcess<'_> {
     pub(crate) fn pid(&self)->u32{self.child.id()}
+    fn record_terminal(&self,phase:&str,code:Option<i32>)->Result<(),String>{
+        if let Some(path)=&self.receipt_path{
+            process_receipt::finish_at(path,&self.action_id,&self.tool,phase,code)?;
+        }
+        Ok(())
+    }
     fn observation(&self,phase:&'static str)->ProcessObservation{
         ProcessObservation{action_id:self.action_id.clone(),tool:self.tool.clone(),
             pid:self.pid(),phase,exit_code:self.final_code,
@@ -162,6 +179,7 @@ impl OwnedProcess<'_> {
             Some(code)=>{
                 self.final_code=Some(code);
                 if self.child.active_processes()?==0{
+                    self.record_terminal("exited",Some(code))?;
                     self.final_phase=Some("exited");
                     Ok(self.observation("exited"))
                 }else if self.start.elapsed()>=self.budget{
@@ -186,6 +204,7 @@ impl OwnedProcess<'_> {
         if self.child.active_processes()?!=0{
             return Err("Owned worker descendants remain active".into());
         }
+        self.record_terminal(phase,result)?;
         self.final_phase=Some(phase);
         self.final_code=result;
         Ok(self.observation(phase))
