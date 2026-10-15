@@ -32,7 +32,8 @@ test("native UI exposes owner choice and verifies each paid continuation before 
  const staging=follow.indexOf('invoke<Pending>("prepare_tool"');
  assert.ok(reserve>=0&&paid>reserve&&guard>=0&&staging>paid&&staging>guard);
  assert.match(follow,/plannedReadback\?canStageNativeAction\(taskBudget\):reserveNativeModelRequest\(taskBudget\)/);
- assert.match(follow,/if\(!plannedReadback&&!await persistRecovery\(taskBudget,"model_reserved"/);
+ assert.match(follow,/persistRecovery\(taskBudget,"readback_reserved",task.action.id\)/);
+ assert.match(follow,/else if\(!await persistRecovery\(taskBudget,"model_reserved",task.action.id\)/);
  assert.match(follow,/markNativeActionStaged\(taskBudget\)/);
  const first=native.slice(native.indexOf("async send(text,threadId"),native.lastIndexOf("\n } ;"));
  assert.match(native,/taskBudgets.set\(threadId,taskBudget\)/);
