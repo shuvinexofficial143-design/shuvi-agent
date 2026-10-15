@@ -26,7 +26,7 @@ test("saved Blender checkpoint requires independent read-only reopen evidence",(
   assert.match(rust,/checkpoint_reopen/);
   assert.match(rust,/proof\.get\("read_only"\)/);
   assert.match(rust,/proof\.get\("verified"\)/);
-  assert.match(rust,/"source_action_id":execution_action_id/);
+  assert.match(rust,/"source_action_id":action_id/);
   assert.match(rust,/Blender PNG receipt lacks validated dimensions/);
 });
 
