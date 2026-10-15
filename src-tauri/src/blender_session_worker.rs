@@ -3,13 +3,15 @@
 //! No model-supplied Python, shell, arbitrary op or permission bypass.
 use std::{
     io::{Read,Write}, path::Path, process::{Child,ChildStdin,Command,Stdio},
-    sync::{Mutex,mpsc::{self,Receiver,RecvTimeoutError}},
+    sync::{Arc,Mutex,atomic::{AtomicBool,Ordering},mpsc::{self,Receiver,RecvTimeoutError}},
     thread, time::{Duration,Instant},
 };
 use serde_json::{Value,json};
+use tauri::{AppHandle,Manager};
 use crate::{
     ActionState,register_managed_process,unregister_managed_process,
-    managed_process_identity_matches,terminate_managed_process_tree,current_runtime_status,
+    managed_process_identity_matches,terminate_managed_process_tree,
+    terminate_registered_process_tree,current_runtime_status,
     blender_plan_worker,
 };
 
@@ -32,10 +34,12 @@ struct OwnedSession {
     output_dir:String,
     allow_render:bool,
     created:Instant,
+    watchdog_stop:Arc<AtomicBool>,
 }
 
 impl Drop for OwnedSession {
     fn drop(&mut self) {
+        self.watchdog_stop.store(true,Ordering::Release);
         // Child handle ownership is stronger than a PID guess. Only an owned,
         // still-running launcher may be terminated, including its child Blender
         // on Windows. Never stop a process because of a stale numeric PID alone.
@@ -149,8 +153,55 @@ fn retire(state:&ActionState,slot:&mut Option<OwnedSession>) {
     }
 }
 
+
+// The watchdog is deliberately independent from the session Mutex: an active
+// plan holds that lock while waiting for Blender and must remain killable when
+// it exceeds the RAM ceiling or 15-minute lifetime. OS-start-time matching
+// prevents PID reuse from turning into unrelated-process termination.
+fn spawn_watchdog(
+    app:&AppHandle,id:&str,pid:u32,created:Instant,stop:Arc<AtomicBool>,
+)->Result<(),String>{
+    let app=app.clone();
+    let id=id.to_owned();
+    thread::Builder::new().name("shuvi-blender-watchdog".into()).spawn(move||{
+        let mut kill_attempted=false;
+        loop {
+            if stop.load(Ordering::Acquire){return;}
+            thread::sleep(Duration::from_millis(650));
+            if stop.load(Ordering::Acquire){return;}
+            let state=app.state::<ActionState>();
+            let alive=managed_process_identity_matches(&state,pid);
+            let memory=current_runtime_status(&state);
+            let expired=created.elapsed()>=SESSION_MAX_AGE;
+            let must_retire=expired || !matches!(alive,Ok(true))
+                || memory.as_ref().is_err_or(|m|m.over_hard_limit);
+            if !must_retire {continue;}
+            if !kill_attempted && matches!(alive,Ok(true)){
+                // Only kill the exact still-owned process tree. On Windows
+                // taskkill /T /F includes Blender descended from the broker.
+                let _=terminate_registered_process_tree(&state,pid);
+                kill_attempted=true;
+            }
+            match state.blender_session.current.try_lock(){
+                Ok(mut slot)=>{
+                    if slot.as_ref().is_some_and(|s|s.session_id==id && s.child.id()==pid){
+                        retire(&state,&mut slot);
+                    }
+                    return;
+                },
+                Err(std::sync::TryLockError::WouldBlock)=>{
+                    // Keep checking until the active native action releases
+                    // the Mutex. The process is already killed/invalidated.
+                },
+                Err(std::sync::TryLockError::Poisoned(_))=>return,
+            }
+        }
+    }).map(|_|()).map_err(|_|"Cannot start mandatory Blender lifetime/RAM watchdog.".to_string())
+}
+
 pub(crate) fn start(
-    registry:&SessionRegistry,state:&ActionState,python_exe:&str,blender_exe:&str,
+    registry:&SessionRegistry,state:&ActionState,app:&AppHandle,
+    python_exe:&str,blender_exe:&str,
     blend_file:Option<&str>,output_dir:&str,allow_render:bool,script:&Path
 )->Result<Value,String>{
     if !script.is_file(){return Err("Bundled persistent Blender session broker is missing.".into());}
@@ -180,8 +231,9 @@ pub(crate) fn start(
         unregister_managed_process(state,pid);
         return Err("Blender broker lacks a bounded response channel.".into());
     }};
+    let watchdog_stop=Arc::new(AtomicBool::new(false));
     let mut session=OwnedSession{child,input,replies:reader(output),session_id:String::new(),
-        output_dir:output_dir.into(),allow_render,created:Instant::now()};
+        output_dir:output_dir.into(),allow_render,created:Instant::now(),watchdog_stop};
     let result=receive(&mut session,state,STARTUP_DEADLINE);
     match result {
         Ok(value)=>{
@@ -195,7 +247,13 @@ pub(crate) fn start(
                 return Err("Blender session startup lacked authenticated readiness proof.".into());
             }
             session.session_id=id.into();
+            let start_time=session.created;
+            let watchdog=session.watchdog_stop.clone();
             *slot=Some(session);
+            if let Err(error)=spawn_watchdog(app,id,pid,start_time,watchdog) {
+                retire(state,&mut slot);
+                return Err(error);
+            }
             Ok(json!({"status":"ready","session_id":id,"authenticated":true,
                 "process_managed":true,"session_reconnect_allowed":false,
                 "render_ceiling":allow_render,"live_application_effect_unverified":true}))
