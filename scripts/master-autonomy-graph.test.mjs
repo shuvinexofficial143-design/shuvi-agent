@@ -53,6 +53,8 @@ test('An editor-opening brief cannot add unrequested mutating steps',()=>{
   assert.match(validateMasterPlan(brief,graph(brief,[step('mutate','premiere_insert_media')])).reason,/does not authorize/);
   assert.match(validateMasterAction(brief,native('premiere_insert_media')).reason,/does not authorize/);
   assert.match(validateMasterAction(brief,native('replace_text')).reason,/does not authorize/);
+  assert.match(validateMasterAction(brief,native('launch_app')).reason,/Generic process launch/);
+  assert.match(validateMasterPlan(brief,graph(brief,[step('launch','launch_app')])).reason,/Generic process launch/);
   assert.match(validateMasterPlan(brief,graph(brief,[step('unsafe','replace_text')])).reason,/unrelated file edit/);
   assert.equal(validateMasterAction(brief,native('premiere_context')).ok,true);
 });
