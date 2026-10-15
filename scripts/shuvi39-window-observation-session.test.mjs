@@ -113,7 +113,7 @@ test("source summary must not show plausible controls if source inventory is con
   win("Other",0,0,"")
  ]);
  const summary=summarizeWindowObservation(fake,true);
- assert.match(summary,/no trustworthy unique window inventory/);
+ assert.match(summary,/no usable window identity/);
  assert.doesNotMatch(summary,/Observed sample/);
 });
 
