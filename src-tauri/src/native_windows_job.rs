@@ -191,15 +191,29 @@ mod tests{
         }
     }
     #[test]
+    #[ignore = "Worker-only grandchild fixture"]
+    fn fixture_grandchild_sleep(){
+        thread::sleep(Duration::from_secs(12));
+    }
+    #[test]
+    #[ignore = "Worker-only parent fixture"]
+    fn fixture_parent_spawns_grandchild(){
+        use std::process::{Command,Stdio};
+        let exe=std::env::current_exe().expect("Own Rust test binary");
+        let _grandchild=Command::new(exe)
+            .args(["--ignored","--exact",
+                "native_scheduler::owned_process::windows_job::tests::fixture_grandchild_sleep"])
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+            .spawn().expect("Contained parent starts child");
+        // The child must remain alive after the parent fixture exits.
+    }
+    #[test]
     fn real_windows_grandchild_remains_contained_after_parent_exit(){
-        use std::path::PathBuf;
-        let exe=PathBuf::from(std::env::var_os("SystemRoot").expect("Windows CI root"))
-            .join("System32").join("WindowsPowerShell").join("v1.0").join("powershell.exe");
-        let script="Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe') -ArgumentList @('-NoProfile','-NonInteractive','-Command','Start-Sleep -Seconds 10') | Out-Null; exit 0";
-        let args=vec!["-NoProfile".into(),"-NonInteractive".into(),
-            "-Command".into(),script.into()];
+        let exe=std::env::current_exe().expect("Own Rust test binary");
+        let args=vec!["--ignored".into(),"--exact".into(),
+            "native_scheduler::owned_process::windows_job::tests::fixture_parent_spawns_grandchild".into()];
         let mut child=OwnedChild::spawn(&exe,&args,&std::env::temp_dir()).unwrap();
-        let deadline=Instant::now()+Duration::from_secs(6);
+        let deadline=Instant::now()+Duration::from_secs(9);
         let mut grandchild_seen=false;
         while Instant::now()<deadline{
             // Grandchild is still subject to this exact Windows Job Object

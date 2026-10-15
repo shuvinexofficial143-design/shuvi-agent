@@ -254,7 +254,17 @@ mod tests{
         schedule.jobs[0].phase="audited".into();
         assert!(identity_matches(&schedule,&journal,A,"blender_run_plan").is_err());
     }
-     #[cfg(windows)]
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "Worker-only child process fixture"]
+    fn worker_fixture_exit_zero() {}
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "Worker-only child process fixture"]
+    fn worker_fixture_sleep() {
+        std::thread::sleep(Duration::from_secs(12));
+    }
+    #[cfg(windows)]
     fn fresh_snapshots()->(Schedule,crate::native_worker_job::NativeJob){
         let (mut schedule,mut journal)=snapshots();
         let id=uuid::Uuid::new_v4().to_string();
@@ -263,26 +273,24 @@ mod tests{
         (schedule,journal)
     }
     #[cfg(windows)]
-    fn cmd_exe_for_test()->PathBuf {slow_exe()}
-    #[cfg(windows)]
-    fn slow_exe()->PathBuf {
-        PathBuf::from(std::env::var_os("SystemRoot").expect("Windows root"))
-            .join("System32").join("WindowsPowerShell").join("v1.0").join("powershell.exe")
+    fn fixture_exe()->PathBuf{
+        std::env::current_exe().expect("Test harness binary must exist")
     }
     #[cfg(windows)]
-    fn slow_args()->Vec<OsString>{
-        vec!["-NoProfile".into(),"-NonInteractive".into(),
-             "-Command".into(),"Start-Sleep -Seconds 8".into()]
+    fn fixture_args(name:&str)->Vec<OsString>{
+        vec!["--ignored".into(),"--exact".into(),
+            format!("native_scheduler::owned_process::tests::{name}").into()]
     }
+    #[cfg(windows)]
+    fn slow_args()->Vec<OsString>{fixture_args("worker_fixture_sleep")}
     #[cfg(windows)]
     #[test]
     fn observed_pid_and_real_child_exit_do_not_fabricate_app_progress(){
         let _serial=TEST_PROCESS_MUTEX.lock().unwrap();
         let (schedule,journal)=fresh_snapshots();
         let action=journal.action_id.clone();
-        let cmd=slow_exe();
-        let args=vec!["-NoProfile".into(),"-NonInteractive".into(),
-            "-Command".into(),"exit 0".into()];
+        let cmd=fixture_exe();
+        let args=fixture_args("worker_fixture_exit_zero");
         let mut child=spawn_checked(&schedule,&journal,&action,"blender_run_plan",
             &cmd,&args,&std::env::temp_dir(),Duration::from_secs(5)).unwrap();
         let pid=child.pid();
@@ -301,7 +309,7 @@ mod tests{
         let _serial=TEST_PROCESS_MUTEX.lock().unwrap();
         let (schedule,journal)=fresh_snapshots();
         let action=journal.action_id.clone();
-        let cmd=slow_exe();
+        let cmd=fixture_exe();
         let args=slow_args();
         let mut child=spawn_checked(&schedule,&journal,&action,"blender_run_plan",
             &cmd,&args,&std::env::temp_dir(),Duration::from_secs(5)).unwrap();
@@ -318,7 +326,7 @@ mod tests{
         let (schedule,journal)=fresh_snapshots();
         let action=journal.action_id.clone();
         let mut child=spawn_checked(&schedule,&journal,&action,"blender_run_plan",
-            &slow_exe(),&slow_args(),&std::env::temp_dir(),
+            &fixture_exe(),&slow_args(),&std::env::temp_dir(),
             Duration::from_millis(100)).unwrap();
         let obs=child.wait_bounded().unwrap();
         assert_eq!(obs.phase,"timed_out");
@@ -331,7 +339,7 @@ mod tests{
         let _serial=TEST_PROCESS_MUTEX.lock().unwrap();
         let (schedule,journal)=fresh_snapshots();
         let action=journal.action_id.clone();
-        let cmd=slow_exe();
+        let cmd=fixture_exe();
         let args=slow_args();
         let mut child=spawn_checked(&schedule,&journal,&action,"blender_run_plan",
             &cmd,&args,&std::env::temp_dir(),Duration::from_secs(5)).unwrap();
@@ -340,15 +348,14 @@ mod tests{
         assert!(second.is_err());
         child.cancel_exact(&action).unwrap();
         drop(child);
-        let fast=vec!["-NoProfile".into(),"-NonInteractive".into(),
-            "-Command".into(),"exit 0".into()];
+        let fast=fixture_args("worker_fixture_exit_zero");
         assert!(spawn_checked(&schedule,&journal,&action,"blender_run_plan",
-            &cmd_exe_for_test(),&fast,&std::env::temp_dir(),
+            &fixture_exe(),&fast,&std::env::temp_dir(),
             Duration::from_secs(5)).is_err()); // completed UUID cannot replay
         let (next_schedule,next_journal)=fresh_snapshots();
         let next_action=next_journal.action_id.clone();
         let mut after=spawn_checked(&next_schedule,&next_journal,&next_action,"blender_run_plan",
-            &cmd_exe_for_test(),&fast,&std::env::temp_dir(),Duration::from_secs(5)).unwrap();
+            &fixture_exe(),&fast,&std::env::temp_dir(),Duration::from_secs(5)).unwrap();
         assert_eq!(after.wait_bounded().unwrap().phase,"exited");
     }
 }
