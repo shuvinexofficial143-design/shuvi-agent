@@ -127,6 +127,14 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
         if next_offset != offset:
             raise ValueError("Non-contiguous Blender readback pagination")
 
+    # Geometry readback may take multiple calls. Ensure all pages and mesh
+    # snapshots belong to one unchanged source revision, not a mixed scene.
+    final_scene = call("scene.inspect")
+    if (final_scene.get("session_id") != session_id
+            or final_scene.get("revision") != revision
+            or final_scene.get("object_count") != total):
+        raise ValueError("Blender scene changed during geometry proof")
+
     payload = {
         "scene": {field: scene[field] for field in SCENE_FIELDS},
         "objects": objects,
