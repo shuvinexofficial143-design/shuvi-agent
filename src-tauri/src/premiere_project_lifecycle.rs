@@ -11,6 +11,9 @@ fn no_directory_links(path:&Path)->Result<(),String>{
             return Err("Premiere project paths may not contain dot traversal.".into());
         }
         cursor.push(component.as_os_str());
+        // On Windows a drive prefix like C: is not a complete absolute path;
+        // inspect it only once the root component has been accumulated.
+        if !cursor.is_absolute(){continue;}
         // Reject a redirecting parent (including Windows junctions) so a
         // previously approved output directory cannot silently change target.
         let meta=fs::symlink_metadata(&cursor)
