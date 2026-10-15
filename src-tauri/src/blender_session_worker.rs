@@ -301,7 +301,7 @@ fn spawn_watchdog(
                     // the Mutex. The process is already killed/invalidated.
                 },
                 Err(std::sync::TryLockError::Poisoned(_))=>return,
-            }
+            };
         }
     }).map(|_|()).map_err(|_|"Cannot start mandatory Blender lifetime/RAM watchdog.".to_string())
 }
