@@ -30,7 +30,9 @@ test("native UI exposes owner choice and verifies each paid continuation before 
  const paid=follow.indexOf('invoke<NativeChatResponse>("chat"');
  const guard=follow.indexOf("canStageNativeAction(taskBudget)");
  const staging=follow.indexOf('invoke<Pending>("prepare_tool"');
- assert.ok(reserve>=0&&paid>reserve&&guard>paid&&staging>guard);
+ assert.ok(reserve>=0&&paid>reserve&&guard>=0&&staging>paid&&staging>guard);
+ assert.match(follow,/plannedReadback\?canStageNativeAction\(taskBudget\):reserveNativeModelRequest\(taskBudget\)/);
+ assert.match(follow,/if\(!plannedReadback&&!await persistRecovery\(taskBudget,"model_reserved"/);
  assert.match(follow,/markNativeActionStaged\(taskBudget\)/);
  const first=native.slice(native.indexOf("async send(text,threadId"),native.lastIndexOf("\n } ;"));
  assert.match(native,/taskBudgets.set\(threadId,taskBudget\)/);
