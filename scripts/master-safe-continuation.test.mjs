@@ -173,9 +173,12 @@ test("Native status preflight cannot stage stale readback after Stop or task rep
  assert.match(driver,/remoteTask!==null/);
  const checks=[...driver.matchAll(/if\(readbackStale\(\)\)return;/g)];
  assert.ok(checks.length>=4,"owner identity must be revalidated before and after native awaits");
- const host=driver.indexOf('invoke<NativeWorkerStatus>("native_worker_status")');
- const scheduler=driver.indexOf('invoke<NativeSchedule|null>("native_scheduler_status")');
- const stage=driver.indexOf('await stageProposal(safeReadback,route)');
+ const planned=driver.indexOf("planVerifiedNativeReadback(");
+ const host=driver.indexOf('invoke<NativeWorkerStatus>("native_worker_status")',planned);
+ const scheduler=driver.indexOf('invoke<NativeSchedule|null>("native_scheduler_status")',host);
+ const stage=driver.indexOf('await stageProposal(safeReadback,route)',scheduler);
+ assert.ok(planned>=0&&host>planned&&scheduler>host&&stage>scheduler,
+   "check the readback-specific native preflight, not an earlier unrelated scheduler call");
  assert.ok(checks.some(x=>x.index>host && x.index<scheduler));
  assert.ok(checks.some(x=>x.index>scheduler && x.index<stage));
 });
