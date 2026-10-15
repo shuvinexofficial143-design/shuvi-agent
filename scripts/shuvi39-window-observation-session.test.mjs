@@ -51,7 +51,9 @@ test("separate native action IDs produce distinct observations, not portable con
  const a=observe();
  const b=newAuditedWindowObservation(inventory(base),actionB,10_000);
  assert.notEqual(a.sourceActionId,b.sourceActionId);
- assert.equal(newAuditedWindowObservation(inventory(base),"from-model",10_000),null);
+ assert.equal(newAuditedWindowObservation(inventory(base),"from\\nmodel",10_000),null);
+ assert.equal(newAuditedWindowObservation(inventory(base),"action-1",10_000).sourceActionId,"action-1");
+ assert.equal(newAuditedWindowObservation(inventory(base),"x".repeat(129),10_000),null);
  assert.equal(newAuditedWindowObservation(inventory(base),actionA,-1),null);
  assert.equal(newAuditedWindowObservation(inventory(base),actionA,Number.MAX_SAFE_INTEGER),null);
 });
