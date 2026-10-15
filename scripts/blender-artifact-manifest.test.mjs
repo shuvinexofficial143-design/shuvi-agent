@@ -37,11 +37,28 @@ test("handoff is action-correlated, path/hash verified, and explicitly not an im
   assert.doesNotMatch(rust,/Command::new|std::process::Command|eval\(/);
 });
 
+test("read-only downstream tool re-hashes bytes without trusting historical approval",()=>{
+  assert.match(lib,/BlenderVerifyArtifactManifest/);
+  assert.match(lib,/"blender_verify_artifact_manifest" => \{/);
+  assert.match(lib,/blender_artifact_manifest::reverify\(&manifest,Path::new\(&approved_output_dir\)\)/);
+  assert.match(rust,/pub\(crate\) fn reverify\(/);
+  assert.match(rust,/verify_output\(&receipt,approved_root\)\?/);
+  for(const guard of [
+    '"current_file_integrity_verified":true',
+    '"source_action_approval_reverified":false',
+    '"original_blender_reopen_reexecuted":false',
+    '"import_performed":false',
+    '"requires_new_action_approval":true'
+  ])assert.ok(rust.includes(guard),guard);
+});
+
 test("native unit cases cover valid lineage, missing proof, output tamper and denial",()=>{
   for(const caseName of [
     "authentic_handoff_contains_verified_provenance_but_no_import_claim",
     "tampering_on_disk_or_outside_approved_root_is_denied",
     "invalid_lineage_and_missing_reopen_evidence_are_denied",
     "incomplete_or_untrusted_worker_cannot_claim_handoff",
+    "downstream_rechecks_actual_bytes_but_never_promotes_prior_approval",
+    "downstream_rejects_changed_bytes_wrong_root_and_forged_lineage",
   ])assert.ok(rust.includes("fn "+caseName+"("),caseName);
 });
