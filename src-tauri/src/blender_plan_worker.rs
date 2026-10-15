@@ -159,11 +159,12 @@ pub(crate) fn execute(
         ||value.get("destructive_allowed").and_then(Value::as_bool)!=Some(false)
         ||value.get("render_approved").and_then(Value::as_bool)!=Some(allow_render)
     {return Err("Blender plan lacks authenticated complete readback evidence.".into());}
-    verify_output(&value,Path::new(output_dir))?;
+    let action_id=execution_action_id.ok_or("Blender mutation requires canonical native audit action UUID.")?;
+    let manifest=crate::blender_artifact_manifest::build(&value,Path::new(output_dir),action_id,None)?;
     drop(guard);
     Ok(json!({"status":"verified","worker":"blender","full_plan_completed":true,
         "artifact":value["artifact"],"verified_by_native_sha256":true,
         "plan_steps":value["executed_steps"],"allow_render":allow_render,
         "checkpoint_reopen":value["checkpoint_reopen"],
-        "source_action_id":execution_action_id}))
+        "source_action_id":action_id,"artifact_manifest":manifest}))
 }
