@@ -115,3 +115,11 @@ test("native execution wiring rechecks observation after owner approval and befo
  assert.match(src,/pendingUiReadback.set\(current.threadId,newPendingUiReadback/);
  assert.match(src,/auditUiReadback\(/);
 });
+
+test("native keyboard fallback also requires exact observed control and rejects offscreen or wrong window",()=>{
+ const w=initial(),s=discover(w);
+ assert.equal(checkObservedControlTarget(action("New Project","new_project",WIN,"ui_send_keys"),s,w,T+2000).allowed,true);
+ assert.equal(checkObservedControlTarget(action("Hidden","hidden",WIN,"ui_send_keys"),s,w,T+2000).allowed,false);
+ assert.equal(checkObservedControlTarget(action("New Project","wrong_id",WIN,"ui_send_keys"),s,w,T+2000).allowed,false);
+ assert.equal(checkObservedControlTarget(action("New Project","new_project","Another Window","ui_send_keys"),s,w,T+2000).allowed,false);
+});
