@@ -14,7 +14,8 @@ import {taskClarificationKind,extendTaskClarification,nextClarificationRoot} fro
 import {newEvidence,recordAuditedEvidence,evidenceSummary} from "./native-task-evidence.mjs";
 import {summarizeWindowObservation} from "./native-window-observation.mjs";
 import {windowGoalEvidence,goalEvidenceLabel} from "./native-goal-evidence.mjs";
-import {observedWindowInventory,checkObservedMutationTarget,checkAmbiguousReadWindow} from "./native-window-target-guard.mjs";
+import {checkObservedMutationTarget,checkAmbiguousReadWindow} from "./native-window-target-guard.mjs";
+import {newAuditedWindowObservation,currentObservedWindows} from "./native-window-observation-session.mjs";
 import {verifiedExecutionReceipt,contradictsFailureReceipt} from "./native-action-receipts.mjs";
 import {requiresNewWindowObservation} from "./native-ui-snapshot-lifetime.mjs";
 import {taskOutcomeSummary} from "./native-task-outcome.mjs";
@@ -356,7 +357,11 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  };
  const taskEvidence=new Map<string,ReturnType<typeof newEvidence>>();
  const verifiedWindows=new Map<string,NonNullable<ReturnType<typeof windowGoalEvidence>>>();
- const observedWindows=new Map<string,NonNullable<ReturnType<typeof observedWindowInventory>>>();
+ const observedWindows=new Map<string,ReturnType<typeof newAuditedWindowObservation>>();
+  // Keep a recorded-but-expired/invalidated observation distinct from no
+  // observation; never silently downgrade a stale snapshot to native fallback.
+  const activeObservedWindows=(id:string)=>observedWindows.has(id)
+   ? currentObservedWindows(observedWindows.get(id)):null;
  const getTask=(id:string)=>taskStates.get(id)??null;
  function updateTask(id:string,state:ReturnType<typeof createTask>|null){if(!state)return;taskStates.set(id,state);taskStatus.textContent=taskSummary(state);onChange();}
  function haltTask(id:string,why:string){const s=getTask(id);if(s)updateTask(id,pauseTask(s,why));}
@@ -538,13 +543,13 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    appendReply(task.threadId,task.promptIndex,"Unsafe app selection: "+appGate.reason+" Nothing staged.");
    return;
   }
-  const readGate=checkAmbiguousReadWindow(response.tool_proposal,observedWindows.get(task.threadId)??null);
+  const readGate=checkAmbiguousReadWindow(response.tool_proposal,activeObservedWindows(task.threadId));
   if(!readGate.allowed){
    haltTask(task.threadId,"prepare_failed");
    appendReply(task.threadId,task.promptIndex,"Ambiguous window lookup: "+readGate.reason+" Nothing staged.");
    return;
   }
-  const gate=checkObservedMutationTarget(response.tool_proposal,observedWindows.get(task.threadId)??null);
+  const gate=checkObservedMutationTarget(response.tool_proposal,activeObservedWindows(task.threadId));
   if(!gate.allowed){
    haltTask(task.threadId,"prepare_failed");
    appendReply(task.threadId,task.promptIndex,"Unsafe or ambiguous UI target: "+gate.reason+" No Windows action prepared.");
@@ -698,14 +703,14 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     }
     // Once a mutation is attempted, even a thrown native result may have changed the UI.
     if(requiresNewWindowObservation(observedWindows.has(current.threadId),current.action.kind)){
-     observedWindows.set(current.threadId,[]);
+     observedWindows.set(current.threadId,null);
      verifiedWindows.delete(current.threadId);
      goalStatus.textContent=taskGoalLabel(current.objective);
     }
     // A newly attempted window inspection supersedes earlier window proof,
     // even if native execution fails or its audit cannot be confirmed.
     if(current.action.kind==="ui_windows"){
-     observedWindows.set(current.threadId,[]);
+     observedWindows.set(current.threadId,null);
      verifiedWindows.delete(current.threadId);
      goalStatus.textContent=taskGoalLabel(current.objective);
     }
@@ -731,12 +736,12 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      taskEvidence.set(current.threadId,recordAuditedEvidence(
       taskEvidence.get(current.threadId)??newEvidence(),current.action.id,result,true));
      if(requiresNewWindowObservation(observedWindows.has(current.threadId),result.tool)){
-      observedWindows.set(current.threadId,[]); // Stale: UI mutations need a NEW audited read.
+      observedWindows.set(current.threadId,null); // Stale: UI mutations need a NEW audited read.
       verifiedWindows.delete(current.threadId);
       goalStatus.textContent=taskGoalLabel(current.objective);
      }
      if(result.tool==="ui_windows"){
-      observedWindows.set(current.threadId,observedWindowInventory(result,true)??[]);
+      observedWindows.set(current.threadId,newAuditedWindowObservation(result,current.action.id));
       const proof=windowGoalEvidence(current.objective,result,true);
       if(proof)verifiedWindows.set(current.threadId,proof);
       else verifiedWindows.delete(current.threadId);
@@ -966,9 +971,9 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       // Validate provider output before contacting the native staging queue.
       const appGate=checkRequestedAppTarget(effectiveObjective,response.tool_proposal);
       if(!appGate.allowed)throw Error("Unsafe app selection: "+appGate.reason);
-      const readGate=checkAmbiguousReadWindow(response.tool_proposal,observedWindows.get(threadId)??null);
+      const readGate=checkAmbiguousReadWindow(response.tool_proposal,activeObservedWindows(threadId));
       if(!readGate.allowed)throw Error("Ambiguous window lookup: "+readGate.reason);
-      const gate=checkObservedMutationTarget(response.tool_proposal,observedWindows.get(threadId)??null);
+      const gate=checkObservedMutationTarget(response.tool_proposal,activeObservedWindows(threadId));
       if(!gate.allowed)throw Error("Unsafe or ambiguous UI target: "+gate.reason);
       const first=fingerprint(response.tool_proposal);
       if(!first)throw Error("Invalid or oversized native tool proposal.");
