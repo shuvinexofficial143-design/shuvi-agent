@@ -85,6 +85,14 @@ test("both operations are routed through existing audited native tools and authe
   assert.match(desktop,/mod premiere_project_lifecycle;/);
   assert.match(desktop,/premiere_project_lifecycle::preflight_create\(&path\)/);
   assert.match(desktop,/premiere_project_lifecycle::preflight_open\(&path\)/);
+  const createArm=desktop.slice(desktop.indexOf('ToolAction::PremiereCreateProject{path} => {'),
+    desktop.indexOf('ToolAction::PremiereOpenProject{path} => {'));
+  const openArm=desktop.slice(desktop.indexOf('ToolAction::PremiereOpenProject{path} => {'),
+    desktop.indexOf('ToolAction::PremiereBridgeStart => {',desktop.indexOf('ToolAction::PremiereOpenProject{path} => {')));
+  assert.match(createArm,/state\.premiere_bridge\.request\("create_project"/);
+  assert.match(openArm,/state\.premiere_bridge\.request\("open_project"/);
+  assert.doesNotMatch(createArm,/premiere_bridge\.request\("create_project"/);
+  assert.doesNotMatch(openArm,/premiere_bridge\.request\("open_project"/);
 });
 
 test("Rust refuses target overwrite and separates Adobe accepted from verified on-disk bytes",()=>{
