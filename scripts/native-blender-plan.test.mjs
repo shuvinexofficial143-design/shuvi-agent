@@ -5,6 +5,7 @@ import {readFileSync} from "node:fs";
 const py=readFileSync(new URL("../integrations/blender-worker/shuvi_blender_plan.py",import.meta.url),"utf8");
 const rust=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
 const exec=readFileSync(new URL("../src-tauri/src/blender_plan_worker.rs",import.meta.url),"utf8");
+const receipt=readFileSync(new URL("../src-tauri/src/blender_artifact_manifest.rs",import.meta.url),"utf8");
 const bundle=JSON.parse(readFileSync(new URL("../src-tauri/tauri.conf.json",import.meta.url),"utf8"));
 
 test("The fixed Blender PlanRunner is bundled, not a provider-supplied Python string",()=>{
@@ -37,11 +38,13 @@ test("The plan must produce an actual verified output, not claim success after p
     "read_output(actual", "reread[\"sha256\"] != digest","actual.parent != args.output_dir.resolve"]){
     assert.ok(py.includes(expected),expected);
   }
-  for(const token of ["verify_output(&value,Path::new(output_dir))?","Sha256::new()",
+  for(const token of ["blender_artifact_manifest::build(&value,Path::new(output_dir),action_id,None)?","Sha256::new()",
     "parent!=root.canonicalize()","authenticated_blender_plan","destructive_allowed",
     "render_approved","full_plan_completed"]){
     assert.ok(exec.includes(token),token);
   }
+  assert.match(receipt,/verify_output\(output,output_root\)\?/);
+  assert.match(receipt,/source_action_id/);
   assert.match(exec,/register_managed_process\(state,pid\)/);
   assert.match(exec,/running_action_children\.lock\(\)/);
   assert.match(exec,/running\.insert\(action_id\.to_string\(\),pid\)/);
