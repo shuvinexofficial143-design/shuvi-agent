@@ -5,7 +5,7 @@ import {currentObservedWindows} from "./native-window-observation-session.mjs";
 // An observed UI control is not a native capability or permission to act.
 export const MAX_CONTROL_AGE_MS=45_000;
 const ACTION_ID=/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-const TARGETED=new Set(["ui_click","ui_set_value","ui_toggle","ui_focus","ui_expand_collapse","ui_scroll"]);
+const TARGETED=new Set(["ui_click","ui_set_value","ui_toggle","ui_focus","ui_expand_collapse","ui_scroll","ui_send_keys"]);
 const allowedString=(s,max=180)=>typeof s==="string"&&s.length<=max&&s.length>0&&
  cleanObservedLabel(s,max)===s.trim() ? s.trim() : "";
 
