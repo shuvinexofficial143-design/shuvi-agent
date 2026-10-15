@@ -97,14 +97,16 @@ let activePermissionScope=createTaskPermissionScope(crypto.randomUUID());
 // Mirrors owner-issued Rust grant IDs for exact read arguments. Local state
 // alone is NEVER authority to dispatch a consented follow-up action.
 const nativeReadGrantIds=new Map<string,string>();
-async function revokeNativeTaskReads(taskId:string):Promise<void>{
- try{await invoke("revoke_task_read_grants",{taskId});}
- catch{/* Existing local scope is revoked; fail closed and let Rust TTL expire. */}
+async function revokeNativeTaskReads(taskId:string):Promise<boolean>{
+ try{await invoke("revoke_task_read_grants",{taskId});return true;}
+ catch{return false; /* Local reuse disabled; Rust grant expires in <=5 minutes. */}
 }
 function rotatePermissionScope():void{
  const oldId=activePermissionScope.taskId;
  revokeTaskScope(activePermissionScope);
  nativeReadGrantIds.clear();
+ const revokeButton=document.querySelector<HTMLButtonElement>("#revokeTaskReadGrants");
+ if(revokeButton){revokeButton.disabled=true;revokeButton.textContent="Revoke read consent";}
  void revokeNativeTaskReads(oldId);
  activePermissionScope=createTaskPermissionScope(crypto.randomUUID());
 }
@@ -218,6 +220,7 @@ root.innerHTML = `
           </select>
         </label>
         <button id="stopButton" class="stop-button hidden" type="button">Stop</button>
+        <button id="revokeTaskReadGrants" type="button" disabled title="Revoke reusable, exact low-risk read consent without stopping the current task">Revoke read consent</button>
         <button id="sendButton" type="submit">Send</button>
       </form>
     </section>
@@ -1701,6 +1704,7 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
         return;
       }
       nativeReadGrantIds.set(key,grantId);
+      el<HTMLButtonElement>("#revokeTaskReadGrants").disabled=false;
       // The current owner's click authorizes this first action exactly once.
       // Further identical reads must consume the Rust grant separately.
       await executePendingProposal(proposal);
@@ -2545,6 +2549,17 @@ el<HTMLButtonElement>("#refreshAudit").addEventListener("click", () => {
   void refreshAudit();
 });
 
+el<HTMLButtonElement>("#revokeTaskReadGrants").addEventListener("click",async()=>{
+  // Explicit owner revocation. A running native action remains subject to
+  // normal cancellation/unknown-outcome handling; no promise of undo.
+  const taskId=activePermissionScope.taskId;
+  activePermissionScope.grants.clear();
+  nativeReadGrantIds.clear();
+  const button=el<HTMLButtonElement>("#revokeTaskReadGrants");
+  button.disabled=true;
+  const confirmed=await revokeNativeTaskReads(taskId);
+  button.textContent=confirmed?"Read grants revoked":"Read reuse disabled; Rust revoke unconfirmed";
+});
 el<HTMLButtonElement>("#stopButton").addEventListener("click", async () => {
   cancelRequested = true;
   const stoppingReadTaskId=activePermissionScope.taskId;
