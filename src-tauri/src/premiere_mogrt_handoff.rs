@@ -14,6 +14,8 @@ pub struct InsertRequest{
     pub seconds:f64,
     pub video_track:u32,
     pub audio_track:u32,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub ae_provenance_file:Option<String>,
 }
 fn clean_path(path:&str)->Result<&Path,String>{
     if path.len()<9||path.len()>4096||path.trim()!=path
@@ -49,6 +51,12 @@ pub fn inspect(path:&str)->Result<MediaFingerprint,String>{
 impl InsertRequest{
     pub fn validate(&self)->Result<(),String>{
         clean_path(&self.path)?;
+        if let Some(file)=self.ae_provenance_file.as_deref() {
+            if file.len()>4096||file.trim()!=file||file.chars().any(|c|c.is_control())
+                ||!Path::new(file).is_absolute()||!file.ends_with(".mogrt-provenance.json"){
+                return Err("AE-origin opt-in requires exact native .mogrt-provenance.json path.".into());
+            }
+        }
         if self.expected_sha256.len()!=64
             ||!self.expected_sha256.bytes().all(|b|b.is_ascii_hexdigit()){
             return Err("A 64-character expected SHA-256 is mandatory for MOGRT handoff.".into());
@@ -104,7 +112,7 @@ mod tests{
         let filename=path.to_str().unwrap().to_string();
         let hash=inspect(&filename).unwrap().sha256;
         let request=InsertRequest{path:filename.clone(),expected_sha256:hash.clone(),
-            seconds:4.0,video_track:2,audio_track:0};
+            seconds:4.0,video_track:2,audio_track:0,ae_provenance_file:None};
         let a=request.verify_source().unwrap();
         let receipt=json!({"verificationStatus":"verified_creation_identity",
             "insertedClipIdentityVerified":true,"source":"path","path":filename});
@@ -124,7 +132,7 @@ mod tests{
         fs::create_dir_all(&dir).unwrap();let path=dir.join("title.mogrt");
         fs::write(&path,b"test").unwrap();
         let good=InsertRequest{path:path.to_str().unwrap().into(),expected_sha256:"a".repeat(64),
-            seconds:0.0,video_track:0,audio_track:0};
+            seconds:0.0,video_track:0,audio_track:0,ae_provenance_file:None};
         let mut bad=good.clone();bad.expected_sha256="not hash".into();
         assert!(bad.validate().is_err());
         bad=good.clone();bad.seconds=f64::NAN;assert!(bad.validate().is_err());
