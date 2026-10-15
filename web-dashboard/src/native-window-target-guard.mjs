@@ -63,10 +63,16 @@ export function checkObservedMutationTarget(proposal,observed){
 // Repeated read-only UI lookup on two windows sharing a verified exact title
 // cannot identify a unique target. Avoid paid loops: ask for specificity.
 export function checkAmbiguousReadWindow(proposal,observed){
- if(!["ui_find","ui_discover"].includes(proposal?.tool)||!Array.isArray(observed))
+ // Image requests also need the same unique HWND/PID grounding as UIA reads:
+ // a stale or duplicated window must not trigger a paid capture of another app.
+ if(!["ui_find","ui_discover","inspect_screen"].includes(proposal?.tool)||!Array.isArray(observed))
   return {allowed:true,reason:"native_lookup_required"};
- if(observed.length===0)return {allowed:false,reason:"Window snapshot is stale or invalid; inspect ui_windows first."};
  const target=proposal?.arguments?.window;
+ // An explicitly approved full-desktop inspection has separate native consent
+ // and must not be mistaken for an observed application capture.
+ if(proposal.tool==="inspect_screen"&&typeof target==="string"&&target.trim().toLowerCase()==="desktop")
+  return {allowed:true,reason:"explicit_desktop_capture_requires_native_approval"};
+ if(observed.length===0)return {allowed:false,reason:"Window snapshot is stale or invalid; inspect ui_windows first."};
  if(typeof target!=="string"||!target.trim())return {allowed:true,reason:"native_lookup_required"};
  if(cleanObservedLabel(target,180)!==target.trim())
   return {allowed:false,reason:"Read-only window name contains hidden or control formatting."};
