@@ -28,7 +28,12 @@ pub(crate) fn verify_output(output:&Value,root:&Path)->Result<(),String>{
                 || proof.get("read_only").and_then(Value::as_bool)!=Some(true)
                 || !fingerprint.bytes().all(|c|c.is_ascii_hexdigit())
                 || fingerprint.len()!=64
-                || proof.get("object_count").and_then(Value::as_u64).is_none_or(|n|n>1000) {
+                || proof.get("object_count").and_then(Value::as_u64).is_none_or(|n|n>1000)
+                || proof.get("mesh_geometry_verified").and_then(Value::as_bool)!=Some(true)
+                || proof.get("mesh_count").and_then(Value::as_u64).is_none_or(|n|n>64)
+                || proof.get("total_vertices").and_then(Value::as_u64).is_none_or(|n|n>8192)
+                || proof.get("total_faces").and_then(Value::as_u64).is_none_or(|n|n>8192)
+                || proof.get("mesh_count").and_then(Value::as_u64)>proof.get("object_count").and_then(Value::as_u64) {
                 return Err("Blender checkpoint cannot be verified after independent reopen.".into());
             }
         },
