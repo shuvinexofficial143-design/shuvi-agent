@@ -14,7 +14,7 @@ const object=x=>x!==null&&typeof x==='object'&&!Array.isArray(x);
 const TOOL=/^[a-z][a-z0-9_]{0,159}$/;
 const OPENING_READ_TOOLS=new Set([
   'ui_windows','ui_discover','ui_find','inspect_screen','capture_screen',
-  'list_processes','launch_app','premiere_launch','premiere_detect',
+  'list_processes','premiere_launch','premiere_detect',
   'premiere_context','premiere_bridge_status','blender_inspect'
 ]);
 const pureOpening=goal=>goal.apps.length===1&&goal.opening&&
@@ -60,6 +60,8 @@ export function validateMasterPlan(ownerRequest,metadata) {
   }
   // A user's request to open an editor is not a request to edit/save/export.
   // Do not let a plan expand a simple launch into unrelated project actions.
+  if(goal.apps.length===1&&metadata.steps.some(s=>s.expected_tool==='launch_app'))
+    return deny('Generic process launch is not an exact named editor action; use a typed editor launcher.');
   if(pureOpening(goal)&&metadata.steps.some(s=>!OPENING_READ_TOOLS.has(s.expected_tool)))
     return deny('Opening an editor does not authorize an unrelated file edit, project mutation or export.');
   return {ok:true,reason:null};
@@ -76,6 +78,8 @@ export function validateMasterAction(ownerRequest,proposal){
     app!==goal.apps[0]&&EDITOR_TOOLS[app].test(proposal.tool));
   if(conflicting)return deny('Native action targets '+conflicting+
     ' but the owner requested only '+goal.apps[0]+'.');
+  if(goal.apps.length===1&&proposal.tool==='launch_app')
+    return deny('Generic process launch is not an exact named editor action; inspect and use a typed editor launcher.');
   if(pureOpening(goal)&&!OPENING_READ_TOOLS.has(proposal.tool))
     return deny('An editor-opening brief does not authorize editing or export.');
   return {ok:true,reason:null};
