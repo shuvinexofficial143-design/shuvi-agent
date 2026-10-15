@@ -26,7 +26,7 @@ def protocol(reply: dict) -> None:
 
 
 def validate(message: object, session_id: str) -> tuple[str, object]:
-    if not isinstance(message, dict) or set(message) - {"version", "session_id", "op", "plan", "allow_render"}:
+    if not isinstance(message, dict) or set(message) - {"version", "session_id", "op", "plan", "allow_render", "expected_scene_revision"}:
         raise ValueError("Invalid broker command")
     if message.get("version") != 1 or message.get("session_id") != session_id:
         raise ValueError("Broker session identity mismatch")
@@ -34,17 +34,22 @@ def validate(message: object, session_id: str) -> tuple[str, object]:
     if operation not in ("ping", "inspect", "run_plan", "close"):
         raise ValueError("Broker operation is not supported")
     if operation == "run_plan":
-        if set(message) != {"version", "session_id", "op", "plan", "allow_render"}:
+        if set(message) != {"version", "session_id", "op", "plan", "allow_render", "expected_scene_revision"}:
             raise ValueError("Run plan requires an exact typed payload")
         if type(message["allow_render"]) is not bool:
             raise ValueError("Render approval must be an explicit boolean")
-        return operation, message["plan"], message["allow_render"]
+        revision = message["expected_scene_revision"]
+        if (not isinstance(revision, str) or len(revision) != 64
+                or any(char not in "0123456789abcdef" for char in revision)):
+            raise ValueError("An exact fresh lowercase scene revision is required")
+        return operation, message["plan"], message["allow_render"], revision
     if set(message) != {"version", "session_id", "op"}:
         raise ValueError("Unexpected broker payload")
-    return operation, None, False
+    return operation, None, False, None
 
 
-def checked_plan(controller, json_plan, output_dir: Path, blender_exe: Path, allow_render: bool):
+def checked_plan(controller, json_plan, output_dir: Path, blender_exe: Path,
+                 allow_render: bool, expected_scene_revision: str):
     from shuvi_blender_agent.contracts import Status
     from shuvi_blender_agent.files import read_output
     from shuvi_blender_agent.plans import Plan, PlanRunner
@@ -62,6 +67,12 @@ def checked_plan(controller, json_plan, output_dir: Path, blender_exe: Path, all
     if not allow_render and any(s.request.operation == "render.execute" for s in plan.steps):
         raise ValueError("No rendering permission on this session")
 
+    # Validate the caller's scene revision immediately before any mutation.
+    from shuvi_blender_agent.contracts import Request
+    current = controller.execute(Request("scene.inspect", timeout_ms=10_000))
+    if (current.status != Status.SUCCEEDED or not isinstance(current.data, dict)
+            or current.data.get("revision") != expected_scene_revision):
+        raise ValueError("Stale Blender scene revision: no plan steps dispatched")
     report = PlanRunner(controller).run(plan)
     last = report.results.get(final_step.name)
     if not report.completed or last is None or last.status != Status.VERIFIED:
@@ -151,7 +162,7 @@ def serve(argv: list[str] | None = None) -> int:
                     return 0
                 if len(raw) > MAX_REQUEST_BYTES + 1 or not raw.endswith(b"\n"):
                     raise ValueError("Oversized or incomplete broker frame")
-                operation, payload, request_allow_render = validate(json.loads(raw), session_id)
+                operation, payload, request_allow_render, expected_revision = validate(json.loads(raw), session_id)
                 if operation == "close":
                     # Session's context manager closes the authenticated transport
                     # and terminates its *owned* Blender process on return.
@@ -161,7 +172,7 @@ def serve(argv: list[str] | None = None) -> int:
                     if request_allow_render and not args.allow_render:
                         raise ValueError("Action-level render approval exceeds session ceiling")
                     result = checked_plan(controller, payload, args.output_dir,
-                                          args.blender_exe, request_allow_render)
+                                          args.blender_exe, request_allow_render, expected_revision)
                     protocol({"version": 1, "session_id": session_id, **result})
                     continue
                 result = controller.execute(Request(
