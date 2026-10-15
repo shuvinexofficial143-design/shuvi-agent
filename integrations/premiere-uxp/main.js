@@ -1,5 +1,6 @@
 const { entrypoints, host, versions } = require("uxp");
 const premiere = require("premierepro");
+const {validatedMediaPaths, assessSequenceMediaEvidence} = require("./media-workflow-evidence.js");
 const transcriptRebuild = require("./transcript-rebuild.js");
 const { planSpeed, SPEED_CAPABILITY } = require("./speed-workflows.js");
 
@@ -712,34 +713,38 @@ async function createBin(argumentsValue) {
 }
 
 async function importMedia(argumentsValue) {
-  const paths = Array.isArray(argumentsValue?.paths)
-    ? argumentsValue.paths.filter((value) => typeof value === "string" && value.trim())
-    : [];
-
-  if (!paths.length) throw new Error("No media paths were supplied.");
-  if (paths.length > 100) throw new Error("A maximum of 100 files can be imported per command.");
-
+  const paths = validatedMediaPaths(argumentsValue?.paths, 100);
   const project = await requireProject();
   const root = await project.getRootItem();
-  const success = await project.importFiles(paths, true, root, false);
-
-  if (!success) throw new Error("Premiere reported that media import did not complete.");
-
+  // Inspect first: always importing every requested path duplicates pre-existing
+  // media, while the old readback could incorrectly certify those old clips.
+  const before = await findClipItemsForPaths(project, root, paths);
+  if (!before.scanComplete || before.duplicatePaths.length) {
+    throw new Error("Premiere media inventory is incomplete or ambiguous; no import was attempted.");
+  }
+  const missing = before.missing;
+  if (missing.length) {
+    const success = await project.importFiles(missing, true, root, false);
+    if (!success) throw new Error("Premiere reported that media import did not complete.");
+  }
   const observed = await findClipItemsForPaths(project, root, paths);
   const verified = observed.scanComplete
+    && observed.duplicatePaths.length === 0
     && observed.missing.length === 0
     && observed.clips.length === paths.length;
 
   return {
-    imported: paths.length,
+    imported: missing.length,
+    alreadyPresent: paths.length - missing.length,
     projectName: project.name || null,
     observedCount: observed.clips.length,
     missing: observed.missing,
+    duplicatePaths: observed.duplicatePaths,
     scanComplete: observed.scanComplete,
     scannedItems: observed.scannedItems,
     verificationStatus: verified ? "verified_readback" : "accepted_unverified",
     uncertain: !verified,
-    retrySafe: false
+    retrySafe: !missing.length && verified
   };
 }
 
@@ -833,9 +838,11 @@ async function findClipItemsForPaths(project, root, paths) {
   await collectClipMedia(root, media, budget);
 
   const matches = new Map();
+  const duplicatePaths = new Set();
   for (const item of media) {
-    if (wanted.has(item.normalizedPath) && !matches.has(item.normalizedPath)) {
-      matches.set(item.normalizedPath, item.clip);
+    if (wanted.has(item.normalizedPath)) {
+      if (matches.has(item.normalizedPath)) duplicatePaths.add(item.normalizedPath);
+      else matches.set(item.normalizedPath, item.clip);
     }
   }
 
@@ -844,6 +851,7 @@ async function findClipItemsForPaths(project, root, paths) {
       .map((path) => matches.get(normalizeMediaPath(path)))
       .filter(Boolean),
     missing: paths.filter((path) => !matches.has(normalizeMediaPath(path))),
+    duplicatePaths: paths.filter(path => duplicatePaths.has(normalizeMediaPath(path))),
     scanComplete: budget.complete,
     scannedItems: 1000 - budget.remaining
   };
@@ -854,9 +862,7 @@ async function createSequenceFromMedia(argumentsValue) {
     typeof argumentsValue?.name === "string"
       ? argumentsValue.name.trim()
       : "";
-  const paths = Array.isArray(argumentsValue?.paths)
-    ? argumentsValue.paths.filter((value) => typeof value === "string" && value.trim())
-    : [];
+  const paths = validatedMediaPaths(argumentsValue?.paths, 50);
 
   if (!name) throw new Error("Sequence name is required.");
   if (!paths.length) throw new Error("At least one media path is required.");
@@ -867,7 +873,7 @@ async function createSequenceFromMedia(argumentsValue) {
 
   let resolved = await findClipItemsForPaths(project, root, paths);
 
-  if (resolved.missing.length && !resolved.scanComplete) {
+  if (!resolved.scanComplete || resolved.duplicatePaths.length) {
     throw new Error("Project media scan exceeded the bounded inspection budget; cannot safely import missing media.");
   }
   if (resolved.missing.length) {
@@ -876,7 +882,7 @@ async function createSequenceFromMedia(argumentsValue) {
     resolved = await findClipItemsForPaths(project, root, paths);
   }
 
-  if (resolved.missing.length || !resolved.scanComplete) {
+  if (resolved.missing.length || !resolved.scanComplete || resolved.duplicatePaths.length) {
     throw new Error(
       !resolved.scanComplete
         ? "Project media scan exceeded the bounded inspection budget after import; sequence creation was not attempted."
@@ -884,6 +890,12 @@ async function createSequenceFromMedia(argumentsValue) {
     );
   }
 
+  // Bind the exact native project items before creating a sequence.
+  const expectedMediaIds = await Promise.all(resolved.clips.map(clip => projectItemId(clip)));
+  if (expectedMediaIds.some(id => id == null || String(id).length === 0)
+      || new Set(expectedMediaIds.map(String)).size !== paths.length) {
+    throw new Error("Cannot create an auditable sequence from ambiguous project-item IDs.");
+  }
   const beforeSequences = await project.getSequences();
   const beforeGuids = new Set((Array.isArray(beforeSequences) ? beforeSequences : [])
     .map(value => plainGuid(value.guid)).filter(Boolean));
@@ -907,7 +919,14 @@ async function createSequenceFromMedia(argumentsValue) {
     .filter(value => plainGuid(value.guid) === sequenceGuid);
   const sequenceWasNew = !beforeGuids.has(sequenceGuid) && matching.length === 1;
   const activeSequenceVerified = plainGuid(activeSequence?.guid) === sequenceGuid;
-  const verified = sequenceWasNew && activeSequenceVerified;
+  let timelineEvidence;
+  try {
+    timelineEvidence = await inspectNewSequenceTimeline(activeSequence, expectedMediaIds);
+  } catch {
+    // Creation may already have happened. Never retry blindly after a failed readback.
+    timelineEvidence = {verified: false, reason: "Native timeline readback failed after creation."};
+  }
+  const verified = sequenceWasNew && activeSequenceVerified && timelineEvidence.verified === true;
 
   return {
     created: true,
@@ -916,10 +935,51 @@ async function createSequenceFromMedia(argumentsValue) {
     mediaCount: resolved.clips.length,
     sequenceWasNew,
     activeSequenceVerified,
+    timelineContentVerified: timelineEvidence.verified === true,
+    timelineEvidence,
     verificationStatus: verified ? "verified_readback" : "accepted_unverified",
     uncertain: !verified,
     retrySafe: false
   };
+}
+
+
+// Read only the newly created sequence. An observed GUID without real,
+ // positive-duration project-item clips is not a verified editable timeline.
+async function inspectNewSequenceTimeline(sequence, expectedMediaIds) {
+  if (!sequence) return assessSequenceMediaEvidence(expectedMediaIds, [], false);
+  const videoCount = await sequence.getVideoTrackCount();
+  const audioCount = await sequence.getAudioTrackCount();
+  let scanComplete = Number.isInteger(videoCount) && Number.isInteger(audioCount)
+    && videoCount >= 0 && audioCount >= 0 && videoCount + audioCount <= 24;
+  const observed = [];
+  let budget = 240;
+  if (scanComplete) {
+    for (const kind of ["video", "audio"]) {
+      const count = kind === "video" ? videoCount : audioCount;
+      for (let index = 0; index < count; index += 1) {
+        const track = kind === "video" ? await sequence.getVideoTrack(index)
+          : await sequence.getAudioTrack(index);
+        const items = await track.getTrackItems(premiere.Constants.TrackItemType.CLIP, false);
+        if (!Array.isArray(items) || items.length > budget) {
+          scanComplete = false;
+          break;
+        }
+        for (const item of items) {
+          budget -= 1;
+          const [media, start, end] = await Promise.all([
+            item.getProjectItem(), item.getStartTime(), item.getEndTime()
+          ]);
+          observed.push({
+            mediaId: await projectItemId(media),
+            startSeconds: start?.seconds, endSeconds: end?.seconds
+          });
+        }
+      }
+      if (!scanComplete) break;
+    }
+  }
+  return assessSequenceMediaEvidence(expectedMediaIds, observed, scanComplete);
 }
 
 async function saveProject() {
