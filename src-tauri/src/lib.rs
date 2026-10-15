@@ -61,6 +61,7 @@ mod premiere_export_jobs;
 mod premiere_project_persistence;
 mod premiere_project_lifecycle;
 mod premiere_media_relink;
+mod premiere_mogrt_handoff;
 mod premiere_review_binding;
 mod premiere_edit_session;
 mod premiere_edit_job;
@@ -344,6 +345,8 @@ Transcript rebuild handles explicit interior text removal by creating and insert
 - premiere_batch_relink: {"items":[{"item_id":"clip project item id","new_path":"absolute replacement media path","override_compatibility":false}]}
 - premiere_batch_attach_proxy: {"items":[{"item_id":"clip project item id","proxy_path":"absolute proxy media path"}]}
 - premiere_insert_mogrt_path: {"path":"absolute .mogrt path","seconds":0,"video_track":0,"audio_track":0}
+- premiere_inspect_mogrt_artifact: {"path":"absolute existing .mogrt path"} — read-only SHA256 of exact bounded MOGRT file; does not establish AE origin.
+- premiere_insert_verified_mogrt: {"request":{"path":"absolute existing .mogrt path","expected_sha256":"64 hex from premiere_inspect_mogrt_artifact or separately verified AE output","seconds":0,"video_track":0,"audio_track":0}} — approved high-risk insertion with exact project/sequence expectation, checkpoint, SHA256 pre/post proof, native inserted-clip readback and independently persisted .prproj; no auto retry.
 - premiere_insert_mogrt_library: {"library_name":"library","element_name":"template","seconds":0,"video_track":0,"audio_track":0}
 - premiere_import_media: {"paths":["absolute media path 1","absolute media path 2"],"expected_sha256":["64-hex source1","64-hex source2"]} — optional for ordinary files; REQUIRED for approved cross-worker media; hashes strictly align with paths
 - premiere_import_caption_source: {"path":"absolute .srt or .vtt path"}
@@ -918,6 +921,8 @@ enum ToolAction {
     PremiereSetWorkArea { request: premiere_media_prep::WorkArea },
     PremiereBatchAttachProxy { items: Vec<Value> },
     PremiereInsertMogrtPath { path: String, seconds: f64, video_track: u32, audio_track: u32 },
+    PremiereInspectMogrtArtifact { path:String },
+    PremiereInsertVerifiedMogrt { request:premiere_mogrt_handoff::InsertRequest },
     PremiereInsertMogrtLibrary { library_name: String, element_name: String, seconds: f64, video_track: u32, audio_track: u32 },
     PremiereImportMedia { paths: Vec<String>, expected_sha256: Option<Vec<String>> },
     PremiereImportCaptionSource { path: String },
@@ -1855,6 +1860,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_batch_relink"
         | "premiere_batch_attach_proxy"
         | "premiere_insert_mogrt_path"
+        | "premiere_inspect_mogrt_artifact"
+        | "premiere_insert_verified_mogrt"
         | "premiere_insert_mogrt_library"
         | "premiere_import_media"
         | "premiere_import_caption_source"
@@ -6772,6 +6779,31 @@ fn stage_tool(
                 format!("Attach proxy {proxy_path} to clip project item {item_id}."),
                 RiskLevel::High,
             )
+        }
+        "premiere_inspect_mogrt_artifact" => {
+            let path=absolute_path(arg_string(&proposal.arguments,"path")?)?;
+            premiere_mogrt_handoff::inspect(&path)?;
+            (ToolAction::PremiereInspectMogrtArtifact{path:path.clone()},
+                "Inspect local MOGRT artifact".into(),
+                format!("Read only local file identity and SHA-256 for {path}; no Adobe request or project modification."),
+                RiskLevel::Low)
+        }
+        "premiere_insert_verified_mogrt" => {
+            let request:premiere_mogrt_handoff::InsertRequest=serde_json::from_value(
+                proposal.arguments.get("request").cloned().unwrap_or(Value::Null))
+                .map_err(|e|format!("Invalid SHA256-bound MOGRT request: {e}"))?;
+            request.validate()?;
+            let expected=premiere_expectation.as_ref()
+                .ok_or("Verified MOGRT insert requires an exact freshly inspected Premiere project/sequence expectation.")?;
+            expected.validate()?;
+            if expected.sequence_guid.is_none()||!expected.clips.is_empty(){
+                return Err("Verified MOGRT insert requires exact project and active sequence GUID without clip targets.".into());
+            }
+            (ToolAction::PremiereInsertVerifiedMogrt{request:request.clone()},
+                "Insert SHA256-verified MOGRT into Premiere".into(),
+                format!("Approved path={} at {} sec on V{}/A{}; independently verify exact SHA256 bytes, checkpoint original .prproj, insert native editable MOGRT clip, save and verify disk. No auto retry.",
+                    request.path,request.seconds,request.video_track,request.audio_track),
+                RiskLevel::High)
         }
         "premiere_insert_mogrt_path" => {
             let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
@@ -16348,6 +16380,91 @@ try {{
                 stderr: String::new(),
                 exit_code: Some(if verified {0}else{1}),
             })
+        }
+        ToolAction::PremiereInspectMogrtArtifact{path} => {
+            let artifact=premiere_mogrt_handoff::inspect(&path)?;
+            Ok(ActionResult{success:true,tool,
+                stdout:json!({"artifact":artifact,"read_only":true,"after_effects_origin_verified":false,
+                    "template_semantics_verified":false,"editable_in_premiere_verified":false}).to_string(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereInsertVerifiedMogrt{request} => {
+            let expected=premiere_bridge.expected.ok_or(
+                "Verified MOGRT insertion requires an exact freshly inspected project/sequence expectation.")?;
+            expected.validate()?;
+            if expected.sequence_guid.is_none()||!expected.clips.is_empty(){
+                return Err("Verified MOGRT insertion requires an exact sequence expectation without clip targets.".into());
+            }
+            let source_before=request.verify_source()?;
+            let backup=backup_premiere_project(&premiere_bridge).await?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let project_path=context.get("projectPath").and_then(Value::as_str)
+                .filter(|v|!v.is_empty()).ok_or("Active Premiere project path unavailable.")?.to_string();
+            let project_guid=context.get("projectGuid").and_then(Value::as_str)
+                .filter(|v|!v.is_empty()).ok_or("Active Premiere project GUID unavailable.")?.to_string();
+            let sequence_guid=context.pointer("/activeSequence/guid").and_then(Value::as_str)
+                .filter(|v|!v.is_empty()).ok_or("Active Premiere sequence GUID unavailable.")?.to_string();
+            if project_guid!=expected.project_guid
+                || expected.project_path.as_deref()!=Some(project_path.as_str())
+                || expected.sequence_guid.as_deref()!=Some(sequence_guid.as_str()){
+                return Err("Premiere project or sequence changed after approval; MOGRT insertion not dispatched.".into());
+            }
+            let project_before=premiere_project_persistence::fingerprint(&project_path)?;
+            let rechecked=request.verify_source()?;
+            if !premiere_media_relink::same_file(&source_before,&rechecked){
+                return Err("MOGRT artifact changed during checkpoint; native insertion not dispatched.".into());
+            }
+            let value=premiere_bridge.request("insert_mogrt_path",json!({
+                "path":request.path,"seconds":request.seconds,
+                "videoTrack":request.video_track,"audioTrack":request.audio_track
+            }),Duration::from_secs(45)).await?;
+            let inserted=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_creation_identity")
+                &&value.get("insertedClipIdentityVerified").and_then(Value::as_bool)==Some(true);
+            let source_after=premiere_mogrt_handoff::inspect(&request.path);
+            let still_exact=source_after.as_ref().is_ok_and(|a|
+                premiere_media_relink::same_file(&source_before,a));
+            if !inserted||!still_exact{
+                return Ok(ActionResult{success:false,tool,
+                    stdout:json!({"backup":backup,"insertion":value,"native_insert_verified":inserted,
+                        "source_unchanged":still_exact,"post_insert_save_started":false,
+                        "retry_safe":false,"note":"The MOGRT clip may have changed the Premiere timeline. Inspect host before retry."}).to_string(),
+                    stderr:"MOGRT source or native insertion identity uncertain. No automatic save/retry.".into(),exit_code:Some(1)});
+            }
+            // Only after independent insertion+source readback do we save the edited project.
+            let saved_request=premiere_bridge.request("save_project",json!({}),Duration::from_secs(20)).await;
+            let saved=saved_request.as_ref().is_ok_and(|v|
+                v.get("saved").and_then(Value::as_bool)==Some(true)
+                &&v.get("projectPath").and_then(Value::as_str)==Some(project_path.as_str()));
+            let current=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await.ok();
+            let same_project=current.as_ref().is_some_and(|v|
+                v.get("projectGuid").and_then(Value::as_str)==Some(project_guid.as_str())
+                &&v.get("projectPath").and_then(Value::as_str)==Some(project_path.as_str())
+                &&v.pointer("/activeSequence/guid").and_then(Value::as_str)==Some(sequence_guid.as_str()));
+            let after_project=premiere_project_persistence::fingerprint(&project_path);
+            let persistence=match &after_project {
+                Ok(after)=>premiere_project_persistence::assess(
+                    &project_before,after,saved&&same_project,&project_path),
+                Err(e)=>json!({"persistence_verified":false,"error":e})
+            };
+            let source_final=premiere_mogrt_handoff::inspect(&request.path);
+            let proof=match source_final {
+                Ok(after)=>premiere_mogrt_handoff::assess_receipt(
+                    &request,&source_before,&after,&value,saved,same_project,&persistence),
+                Err(e)=>json!({"handoff_verified":false,"source_error":e,
+                    "project_saved":saved,"active_project_identity_preserved":same_project,
+                    "on_disk_project_persistence_verified":persistence.get("persistence_verified"),
+                    "after_effects_producer_verified":false,"retry_safe":false})
+            };
+            let verified=proof.get("handoff_verified").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{success:verified,tool,
+                stdout:json!({"backup":backup,"insertion":value,"save":saved_request.as_ref().ok(),
+                    "save_error":saved_request.as_ref().err(),
+                    "project_persistence":persistence,"handoff":proof,
+                    "post_state_verified":verified,"retry_safe":false,
+                    "live_windows_verified":false}).to_string(),
+                stderr:if verified{String::new()}else{
+                    "MOGRT insertion/save incomplete or uncertain. Inspect current Premiere timeline and backup.".into()},
+                exit_code:Some(if verified{0}else{1})})
         }
         ToolAction::PremiereInsertMogrtPath { path, seconds, video_track, audio_track } => {
             let backup = backup_premiere_project(&premiere_bridge).await?;
