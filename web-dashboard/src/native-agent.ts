@@ -16,6 +16,8 @@ import {summarizeWindowObservation} from "./native-window-observation.mjs";
 import {windowGoalEvidence,goalEvidenceLabel} from "./native-goal-evidence.mjs";
 import {observedWindowInventory,checkObservedMutationTarget,checkAmbiguousReadWindow} from "./native-window-target-guard.mjs";
 import {newAuditedWindowObservation,currentObservedWindows} from "./native-window-observation-session.mjs";
+import {newAuditedControlObservation,checkObservedControlTarget} from "./native-ui-control-session.mjs";
+import {needsUiReadback,newPendingUiReadback,checkPendingUiReadback,auditUiReadback} from "./native-ui-readback-session.mjs";
 import {verifiedExecutionReceipt,contradictsFailureReceipt} from "./native-action-receipts.mjs";
 import {requiresNewWindowObservation} from "./native-ui-snapshot-lifetime.mjs";
 import {taskOutcomeSummary} from "./native-task-outcome.mjs";
@@ -36,7 +38,7 @@ type Runtime = {shuvi_memory_mb:number;managed_children_count:number};
 type NativeRoute = {role:string;provider:string;model:string;base_url:string};
 type PendingTask = {action:Pending;threadId:string;promptIndex:number;
  route:NativeRoute;objective:string;step:number;seen:Set<string>;usedIds:Set<string>;
- recoveryFrom?:"ui_find"|"ui_discover"|null};
+ recoveryFrom?:"ui_find"|"ui_discover"|null;proposal?:Record<string,unknown>};
 // UI discovery output must reach the Master as observed data, not be silently
 // cut after the first dozen controls. Keep a bounded, compact, field allowlisted
 // inventory to avoid forwarding arbitrary control content as instructions.
@@ -295,7 +297,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    taskStates.clear();
    taskEvidence.clear();
    verifiedWindows.clear();
-   observedWindows.clear();
+   observedWindows.clear();observedControls.clear();pendingUiReadback.clear();
    taskStatus.textContent="Previous task acknowledged; start a fresh Windows task.";
    goalStatus.textContent="Old task objective not independently verified.";
    recoveryAcknowledged=true;
@@ -360,6 +362,13 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  const taskEvidence=new Map<string,ReturnType<typeof newEvidence>>();
  const verifiedWindows=new Map<string,NonNullable<ReturnType<typeof windowGoalEvidence>>>();
  const observedWindows=new Map<string,ReturnType<typeof newAuditedWindowObservation>>();
+ const observedControls=new Map<string,ReturnType<typeof newAuditedControlObservation>>();
+ const pendingUiReadback=new Map<string,ReturnType<typeof newPendingUiReadback>>();
+ const nativeControlGate=(id:string,proposal:Record<string,unknown>)=>
+  checkObservedControlTarget(proposal,observedControls.has(id)?observedControls.get(id):undefined,
+   observedWindows.get(id)??null);
+ const nativeReadbackGate=(id:string,proposal:Record<string,unknown>)=>
+  checkPendingUiReadback(proposal,pendingUiReadback.get(id)??null);
   // Keep a recorded-but-expired/invalidated observation distinct from no
   // observation; never silently downgrade a stale snapshot to native fallback.
   const activeObservedWindows=(id:string)=>observedWindows.has(id)
@@ -486,6 +495,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    redactNativeMessage(goalEvidenceLabel(task.objective,verifiedWindows.get(task.threadId)??null))+" "+
    redactNativeMessage(summarizeWindowObservation(result,true))+" "+
    uiReplanGuidance(task.recoveryFrom,result.tool)+" "+
+   (pendingUiReadback.get(task.threadId)?.readbackRequired?
+    "Prior UI mutation has an audited execution receipt but its visible effect is NOT verified. Observe same HWND/PID via separately approved ui_windows then ui_find or ui_discover before further UI mutation. ":"")+
    actionLoopGuidance()+" "+taskGoalContext(task.objective)+" "+
    "After premiere_detect, propose the dedicated premiere_launch tool with empty arguments {} when the user wants Premiere opened; detection alone is not launch. "+
    "For other trusted discovered executable paths, propose launch_app with the exact observed path. "+
@@ -558,6 +569,14 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    showActionFeedback("UI target requires fresh observation or clarification. Nothing executed.");
    return;
   }
+  const controlGate=nativeControlGate(task.threadId,response.tool_proposal);
+  const readbackGate=nativeReadbackGate(task.threadId,response.tool_proposal);
+  if(!controlGate.allowed||!readbackGate.allowed){
+   haltTask(task.threadId,"prepare_failed");
+   appendReply(task.threadId,task.promptIndex,"UIA target or readback not grounded: "+
+    (controlGate.allowed?readbackGate.reason:controlGate.reason)+". No action staged.");
+   return;
+  }
   const seen=seenAfterAuditedChange(task.seen,result.tool,true);
   if(seen.has(fp)){
    haltTask(task.threadId,"repeated_tool");
@@ -590,7 +609,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     try{await invoke<void>("deny_action",{actionId:next.id});}catch{/* fail closed */}
     throw Error("Native recovery journal failed; no action authorized.");
    }
-   pending={...task,action:next,step:task.step+1,seen:new Set([...seen,fp]),
+   pending={...task,action:next,proposal:response.tool_proposal,step:task.step+1,seen:new Set([...seen,fp]),
     usedIds:new Set([...task.usedIds,next.id]),recoveryFrom:null};
    updateTask(task.threadId,stageTask(getTask(task.threadId),next.id,next.kind,task.step+1));
    pendingText.textContent="Step "+(task.step+1)+
@@ -638,7 +657,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     return false;
    }
    haltTask(current.threadId,"confirmed_read_failure");
-   pending={...current,action:next,step:current.step+1,seen:new Set([...current.seen,fp]),
+   pending={...current,action:next,proposal,step:current.step+1,seen:new Set([...current.seen,fp]),
     usedIds:new Set([...current.usedIds,next.id]),
     recoveryFrom:current.action.kind as "ui_find"|"ui_discover"};
    updateTask(current.threadId,stageTask(getTask(current.threadId),next.id,next.kind,current.step+1));
@@ -858,8 +877,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   connected:()=>ready,
   getReplies:(threadId:string)=>replies.get(threadId)||[],
   canClearChats:()=>!pending&&!sending,
-  clearChat:(threadId:string)=>{if(sending||pending)return;histories.delete(threadId);replies.delete(threadId);taskStates.delete(threadId);taskGoalRoots.delete(threadId);taskBudgets.delete(threadId);taskEvidence.delete(threadId);verifiedWindows.delete(threadId);observedWindows.delete(threadId);taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
-  clearAllChats:()=>{if(pending||sending)return;histories.clear();replies.clear();taskStates.clear();taskGoalRoots.clear();taskBudgets.clear();taskEvidence.clear();verifiedWindows.clear();observedWindows.clear();taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
+  clearChat:(threadId:string)=>{if(sending||pending)return;histories.delete(threadId);replies.delete(threadId);taskStates.delete(threadId);taskGoalRoots.delete(threadId);taskBudgets.delete(threadId);taskEvidence.delete(threadId);verifiedWindows.delete(threadId);observedWindows.delete(threadId);observedControls.delete(threadId);pendingUiReadback.delete(threadId);taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
+  clearAllChats:()=>{if(pending||sending)return;histories.clear();replies.clear();taskStates.clear();taskGoalRoots.clear();taskBudgets.clear();taskEvidence.clear();verifiedWindows.clear();observedWindows.clear();observedControls.clear();pendingUiReadback.clear();taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
   async send(text,threadId,promptIndex=0){
    if(!ready)return {ok:false,error:"Windows Shuvi is not connected yet."};
    // A short answer to a Master clarification is still part of the SAME
@@ -995,7 +1014,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
        try{await invoke<void>("deny_action",{actionId:proposed.id});}catch{/* fail closed */}
        throw Error("Native approval journal could not be saved. No Windows action authorized.");
       }
-      pending={action:proposed,threadId,promptIndex,objective:effectiveObjective,
+      pending={action:proposed,proposal:response.tool_proposal,threadId,promptIndex,objective:effectiveObjective,
        route:{role:route.role,provider:route.provider,model:route.model,base_url:route.base_url||""},
        step:1,seen:new Set([first]),usedIds:new Set([proposed.id])};
       updateTask(threadId,stageTask(createTask(),proposed.id,proposed.kind,1));
