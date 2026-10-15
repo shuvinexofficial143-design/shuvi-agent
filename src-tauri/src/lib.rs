@@ -10641,7 +10641,7 @@ Write-Output 'SHUVI_WHATSAPP_DESKTOP_LAUNCH_REQUESTED'
             let script=app.path().resource_dir()
                 .map_err(|e|format!("Blender session resource unavailable: {e}"))?
                 .join("blender-worker").join("shuvi_blender_session.py");
-            let response=blender_session_worker::start(&state.blender_session,state,
+            let response=blender_session_worker::start(&state.blender_session,state,app,
                 &python_exe,&blender_exe,blend_file.as_deref(),&output_dir,allow_render,&script)?;
             Ok(ActionResult{success:true,tool,stdout:response.to_string(),stderr:String::new(),exit_code:Some(0)})
         }
