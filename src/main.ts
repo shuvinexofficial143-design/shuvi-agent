@@ -814,7 +814,10 @@ async function saveActiveCheckpoint(): Promise<void> {
 }
 
 async function clearActiveCheckpoint(): Promise<void> {
+  const finishedTaskId=activePermissionScope.taskId;
   revokeTaskScope(activePermissionScope);
+  nativeReadGrantIds.clear();
+  await revokeNativeTaskReads(finishedTaskId);
   try {
     await invoke("clear_session_checkpoint");
   } catch {
@@ -1710,7 +1713,10 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
       if (!pendingAction) return;
 
       const actionId = pendingAction.id;
+      const deniedTaskId=activePermissionScope.taskId;
       revokeTaskScope(activePermissionScope);
+      nativeReadGrantIds.clear();
+      await revokeNativeTaskReads(deniedTaskId);
       if(remoteTask){
         clearChatPermission();
         try{await invoke("deny_action",{actionId});}catch{/* fail closed */}
@@ -2541,7 +2547,10 @@ el<HTMLButtonElement>("#refreshAudit").addEventListener("click", () => {
 
 el<HTMLButtonElement>("#stopButton").addEventListener("click", async () => {
   cancelRequested = true;
+  const stoppingReadTaskId=activePermissionScope.taskId;
   revokeTaskScope(activePermissionScope);
+  nativeReadGrantIds.clear();
+  await revokeNativeTaskReads(stoppingReadTaskId);
 
   if (pendingAction && pendingChatProposal) {
     const actionId = pendingAction.id;
