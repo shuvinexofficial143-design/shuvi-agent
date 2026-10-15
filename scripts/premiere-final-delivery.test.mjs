@@ -5,7 +5,7 @@ const runtime=readFileSync("src-tauri/src/lib.rs","utf8");
 const deliver=readFileSync("src-tauri/src/premiere_final_delivery.rs","utf8");
 const validator=readFileSync("src-tauri/src/after_effects_media_validation.rs","utf8");
 const exportJobs=readFileSync("src-tauri/src/premiere_export_jobs.rs","utf8");
-const arm=runtime.slice(runtime.indexOf("ToolAction::PremiereInspectFinalDelivery{job_id"),
+const arm=runtime.slice(runtime.lastIndexOf("ToolAction::PremiereInspectFinalDelivery{job_id"),
   runtime.indexOf("ToolAction::PremiereExportStatus {job_id} => {",
     runtime.indexOf("ToolAction::PremiereInspectFinalDelivery{job_id")));
 test("Final MP4 inspection is an independently registered read-only typed tool",()=>{
