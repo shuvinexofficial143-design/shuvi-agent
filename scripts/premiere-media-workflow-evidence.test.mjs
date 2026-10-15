@@ -22,7 +22,7 @@ const load = (source, name, deps) => new Function(...Object.keys(deps),
   '"use strict"; ' + source + '\nreturn ' + name + ';')(...Object.values(deps));
 
 test("strict media input prevents silent omissions, path aliases, and relative imports", () => {
-  assert.deepEqual(evidence.validatedMediaPaths(["C:\\video\\a.mp4", "/tmp/b.mov"], 50),
+  assert.deepEqual(Array.from(evidence.validatedMediaPaths(["C:\\video\\a.mp4", "/tmp/b.mov"], 50)),
     ["C:\\video\\a.mp4", "/tmp/b.mov"]);
   for (const paths of [
     [], ["C:\\a.mp4", ""], ["C:\\a.mp4", 123],
