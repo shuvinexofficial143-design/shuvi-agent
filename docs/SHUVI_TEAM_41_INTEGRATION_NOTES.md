@@ -145,14 +145,31 @@ policy, fail-closed behavior and no automatic replay. They cannot prove
 actual GUI or headless Blender process reuse, 3D object outcomes, artwork quality
 or artifact import into Premiere.
 
-The 4 GB Rust memory check currently operates while a broker command is
-pending, not as a guaranteed continuously running idle-session watchdog.
-The 15-minute age limit is checked on commands, not via a true independent
-idle reaper. On hard OS kill of Python the Blender grandchild could outlive the
-broker if the OS does not terminate the complete owned tree; native Windows
-job-object anchoring and disposable live host acceptance are still needed.
-Do not call the current session subsystem **production hardened** or
-Windows Live Verified.
+An independent Rust watchdog probes OS process identity, current managed
+memory, and the 15-minute lifetime every ~650 ms, even when the session is
+idle or an approved plan owns the command mutex. It invalidates the session
+before requesting termination on crash, stale identity, unknown memory
+status, RAM-hard-limit breach or expiry; the next lock opportunity retires
+the session. This is fail-closed rather than an automatic Blender reconnect.
+
+Windows uses a kernel-owned Job Object with
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, assigned to the broker child by Rust.
+Python must first receive an exact private `{"version":1,"op":"arm"}`
+frame before it can launch the Blender grandchild. Rust only sends this
+after it registers the OS process identity and successfully attaches the
+broker to its Job Object. Failed assignment prevents the session entirely,
+and closing the owned Job Object terminates associated descendants. The
+native shutdown wait is capped at three seconds and a successful close
+response requires an exact broker acknowledgement plus confirmed root exit.
+Individual descendant exits are not claimed as separately observed.
+
+`src-tauri/Cargo.toml` and `src-tauri/Cargo.lock` add only a direct
+Windows-target dependency on the already locked `windows-sys 0.61.2`.
+No Linux/macOS Job Object guarantee is claimed. Source CI, fixture tests
+and Rust compilation do **not** prove live Blender behavior. Windows kernel
+job containment, resource behavior and real project save/reopen/render
+still require disposable, approved runtime acceptance. This is **not**
+production hardened or Windows Live Verified.
 
 No private Avantika Verse assets, customer data, paid APIs or unrelated
 repositories are modified or used for tests. Main and other team branches
