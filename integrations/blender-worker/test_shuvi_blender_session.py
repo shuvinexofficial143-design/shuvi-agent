@@ -106,7 +106,8 @@ class PersistentSessionTests(unittest.TestCase):
 
     def serve(self, frames, *, allow_render=False, fake_plan=None):
         stdout = io.StringIO()
-        stdin = types.SimpleNamespace(buffer=io.BytesIO(frames.encode("utf-8")))
+        armed = '{"version":1,"op":"arm"}' + "\n" + frames
+        stdin = types.SimpleNamespace(buffer=io.BytesIO(armed.encode("utf-8")))
         with patch.object(sys, "stdin", stdin), patch.object(sys, "stdout", stdout):
             if fake_plan is None:
                 code = worker.serve(self.args(allow_render))
@@ -190,6 +191,15 @@ class PersistentSessionTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(len(replies), 1)
         self.assertTrue(self.sessions[0].closed)
+
+    def test_startup_requires_exact_arm_before_creating_blender(self):
+        stdout = io.StringIO()
+        wrong = types.SimpleNamespace(buffer=io.BytesIO(b'{"version":1,"op":"ping"}\\n'))
+        with patch.object(sys, "stdin", wrong), patch.object(sys, "stdout", stdout):
+            code = worker.serve(self.args())
+        self.assertEqual(code, 4)
+        self.assertEqual(len(self.sessions), 0)
+        self.assertEqual(json.loads(stdout.getvalue())["status"], "outcome_unknown")
 
     def test_oversized_command_denied(self):
         code, replies = self.serve("x" * 65538 + "\n")
