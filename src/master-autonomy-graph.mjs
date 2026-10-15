@@ -12,13 +12,28 @@ const EDITOR_TOOLS={
 const deny=reason=>({ok:false,reason});
 const object=x=>x!==null&&typeof x==='object'&&!Array.isArray(x);
 const TOOL=/^[a-z][a-z0-9_]{0,159}$/;
+const OPENING_READ_TOOLS=new Set([
+  'ui_windows','ui_discover','ui_find','inspect_screen','capture_screen',
+  'list_processes','launch_app','premiere_launch','premiere_detect',
+  'premiere_context','premiere_bridge_status','blender_inspect'
+]);
+const pureOpening=goal=>goal.apps.length===1&&goal.opening&&
+  !goal.project&&!goal.editing&&!goal.exportFile;
 
 // Long natural-language requests have a bounded native scheduler objective,
 // but the full original brief (up to the task guard's 2500 chars) stays in the
 // orchestration checkpoint. Never model-paraphrase the native DAG identity.
 export function pinnedMasterObjective(ownerRequest) {
   if(typeof ownerRequest!=='string'||!ownerRequest.trim()||ownerRequest.length>2500)return null;
-  return ownerRequest.trim().slice(0,500);
+  // Rust enforces UTF-8 bytes, while JS string.length counts UTF-16 units.
+  // Preserve full codepoints so Hindi tasks cannot exceed Rust's 500-byte cap.
+  const encoder=new TextEncoder();
+  let objective='';
+  for(const ch of ownerRequest.trim()){
+    if(encoder.encode(objective+ch).length>500)break;
+    objective+=ch;
+  }
+  return objective;
 }
 
 // A clear plan is not evidence that work has happened. We only validate
@@ -45,11 +60,8 @@ export function validateMasterPlan(ownerRequest,metadata) {
   }
   // A user's request to open an editor is not a request to edit/save/export.
   // Do not let a plan expand a simple launch into unrelated project actions.
-  if(goal.apps.length===1&&goal.opening&&!goal.project&&!goal.editing&&!goal.exportFile){
-    if(metadata.steps.some(s=>/^(?:premiere_|after_effects_|blender_)/.test(s.expected_tool)&&
-         !/(?:launch|detect|inspect|context|status|windows)$/.test(s.expected_tool)))
-      return deny('Opening an editor does not authorize a project mutation or export.');
-  }
+  if(pureOpening(goal)&&metadata.steps.some(s=>!OPENING_READ_TOOLS.has(s.expected_tool)))
+    return deny('Opening an editor does not authorize an unrelated file edit, project mutation or export.');
   return {ok:true,reason:null};
 }
 
@@ -64,9 +76,7 @@ export function validateMasterAction(ownerRequest,proposal){
     app!==goal.apps[0]&&EDITOR_TOOLS[app].test(proposal.tool));
   if(conflicting)return deny('Native action targets '+conflicting+
     ' but the owner requested only '+goal.apps[0]+'.');
-  if(goal.apps.length===1&&goal.opening&&!goal.project&&!goal.editing&&!goal.exportFile&&
-      /^(?:premiere_|after_effects_|blender_)/.test(proposal.tool)&&
-      !/(?:launch|detect|inspect|context|status)$/.test(proposal.tool))
+  if(pureOpening(goal)&&!OPENING_READ_TOOLS.has(proposal.tool))
     return deny('An editor-opening brief does not authorize editing or export.');
   return {ok:true,reason:null};
 }
