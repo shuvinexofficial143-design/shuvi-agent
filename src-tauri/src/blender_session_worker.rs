@@ -74,6 +74,21 @@ fn reader(mut stdout:impl Read+Send+'static)->Receiver<Vec<u8>> {
 fn receive(session:&mut OwnedSession,state:&ActionState,deadline:Duration)->Result<Value,String> {
     let start=Instant::now();
     loop {
+        // A graceful close may exit immediately after writing its final
+        // acknowledgement. Read already-buffered replies before probing exit.
+        match session.replies.try_recv() {
+            Ok(raw)=>{
+                let value:Value=serde_json::from_slice(&raw)
+                    .map_err(|_|"Malformed Blender broker response.".to_string())?;
+                if value.get("version").and_then(Value::as_u64)!=Some(1){
+                    return Err("Blender broker protocol version mismatch.".into());
+                }
+                return Ok(value);
+            },
+            Err(mpsc::TryRecvError::Empty)=>{},
+            Err(mpsc::TryRecvError::Disconnected)=>
+                return Err("Blender broker channel disconnected; outcome unknown.".into()),
+        }
         if !managed_process_identity_matches(state,session.child.id())?
             || session.child.try_wait().map_err(|_|"Owned Blender process state unavailable.")?.is_some() {
             return Err("Blender session process disappeared; never automatically reconnect.".into());
@@ -195,9 +210,11 @@ pub(crate) fn status(registry:&SessionRegistry,state:&ActionState,id:&str)->Resu
         let session=slot.as_mut().ok_or("No Blender session is owned by this Shuvi process.")?;
         if session.session_id!=id{return Err("Blender session ID mismatch.".into());}
         let v=request(session,state,"inspect",None,false,PROBE_DEADLINE)?;
+        let revision=v.get("scene_revision").and_then(Value::as_str).unwrap_or_default();
         if v.get("status").and_then(Value::as_str)!=Some("alive")
             ||v.get("operation").and_then(Value::as_str)!=Some("inspect")
-            ||v.get("scene_revision").and_then(Value::as_str).is_none(){
+            ||revision.len()!=64 || !revision.bytes().all(|c|c.is_ascii_hexdigit())
+            ||v.get("object_count").and_then(Value::as_u64).is_none(){
             return Err("Authenticated scene health proof missing.".into());
         }
         Ok(json!({"status":"alive","session_id":id,"scene_revision":v["scene_revision"],
@@ -216,6 +233,9 @@ pub(crate) fn plan(
     registry:&SessionRegistry,state:&ActionState,id:&str,plan:&Value,
     allow_render:bool,execution_action_id:Option<&str>
 )->Result<Value,String>{
+    let action_id=execution_action_id.ok_or("Persistent Blender mutation requires a canonical audited action UUID.")?;
+    uuid::Uuid::parse_str(action_id)
+        .map_err(|_|"Persistent Blender action lineage UUID is invalid.")?;
     if serde_json::to_vec(plan).map_err(|_|"Invalid typed Blender plan.")?.len()>65536{
         return Err("Blender plan exceeds 64 KiB.".into());
     }
