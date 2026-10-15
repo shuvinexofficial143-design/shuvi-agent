@@ -117,7 +117,7 @@ def run(argv: list[str] | None = None) -> int:
                 "render_approved": args.allow_render,
                 "checkpoint_reopen": checkpoint_reopen,
             }, ensure_ascii=False))
-            return 0
+        return 0
     except Exception:
         # A timed-out or partly-mutated Blender session must never be retried
         # blindly. No raw exception or bridge secrets are sent to a provider.
