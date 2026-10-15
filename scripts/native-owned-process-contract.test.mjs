@@ -19,9 +19,9 @@ test("PID lifetime and cancellation are bound to exact Rust action",()=>{
   assert.match(worker,/self\.child\.id\(\)/);
   assert.match(worker,/self\.child\.try_wait\(\)/);
   assert.match(worker,/if action_id!=self\.action_id/);
-  assert.match(worker,/self\.child\.kill\(\)/);
-  assert.match(worker,/self\.child\.wait\(\)/);
+  assert.match(worker,/self\.child\.terminate_tree\(\)/);
+  assert.match(worker,/self\.child\.active_processes\(\)/);
   assert.match(worker,/app_progress_verified:false/);
-  assert.match(worker,/descendants_contained:false/);
+  assert.match(worker,/descendants_contained:self\.child\.tree_contained\(\)/);
   assert.match(worker,/fn active_worker_blocks_second_owned_child_until_reaped/);
 });

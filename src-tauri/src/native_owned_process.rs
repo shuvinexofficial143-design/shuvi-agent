@@ -1,7 +1,7 @@
 // PID-owned subprocess lifecycle for trusted *Rust* worker adapters.
 // Compiled inside native_scheduler. No frontend/model command line is accepted.
 // Do not confuse OS liveness/exit with app progress, successful audit or output.
-// A direct child is owned; descendants are NOT yet independently contained.
+// Windows subprocesses are suspended until assigned to a Job Object.
 use std::{
     ffi::OsString, fs,
     path::Path, process::{Child,Command,Stdio},
@@ -11,6 +11,34 @@ use std::{
 use tauri::AppHandle;
 use crate::execution_lease::NativeExecutionLease;
 use super::{Schedule,validate};
+#[cfg(windows)]
+#[path = "native_windows_job.rs"]
+mod windows_job;
+#[cfg(windows)]
+use windows_job::OwnedChild;
+#[cfg(not(windows))]
+struct OwnedChild(Child);
+#[cfg(not(windows))]
+impl OwnedChild {
+    fn spawn(exe:&Path,args:&[OsString],cwd:&Path)->Result<Self,String>{
+        let mut cmd=Command::new(exe);
+        cmd.args(args).current_dir(cwd).stdin(Stdio::null())
+            .stdout(Stdio::null()).stderr(Stdio::null()).env_clear();
+        Ok(Self(cmd.spawn().map_err(|e|format!("Worker launch failed: {e}"))?))
+    }
+    fn id(&self)->u32{self.0.id()}
+    fn tree_contained(&self)->bool{false}
+    fn active_processes(&self)->Result<u32,String>{Ok(0)}
+    fn try_wait(&mut self)->Result<Option<i32>,String>{
+        self.0.try_wait().map(|x|x.map(|v|v.code().unwrap_or(-1)))
+            .map_err(|e|format!("Worker wait failed: {e}"))
+    }
+    fn terminate_tree(&mut self)->Result<Option<i32>,String>{
+        self.0.kill().map_err(|e|format!("Cannot terminate owned direct child: {e}"))?;
+        self.0.wait().map(|s|Some(s.code().unwrap_or(-1)))
+            .map_err(|e|format!("Worker reap failed: {e}"))
+    }
+}
 
 const MIN_BUDGET_MS:u64=100;
 const MAX_BUDGET_MS:u64=600_000;
@@ -35,7 +63,7 @@ pub(crate) struct ProcessObservation {
 pub(crate) struct OwnedProcess {
     action_id:String,
     tool:String,
-    child:Child,
+    child:OwnedChild,
     start:Instant,
     budget:Duration,
     final_phase:Option<&'static str>,
@@ -91,16 +119,8 @@ fn spawn_checked(schedule:&Schedule,native:&crate::native_worker_job::NativeJob,
     if slot.recent.iter().any(|seen|seen==action_id){
         return Err("Action UUID cannot launch another owned process.".into());
     }
-    let mut command=Command::new(&executable);
-    command.args(args).current_dir(cwd)
-        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
-        .env_clear();
-    // Explicitly pass only operating-system basics, never provider API keys.
-    #[cfg(windows)]
-    for key in ["SystemRoot","WINDIR","TEMP","TMP"] {
-        if let Some(value)=std::env::var_os(key){command.env(key,value);}
-    }
-    let child=command.spawn().map_err(|e|format!("Trusted worker process could not start: {e}"))?;
+    // Windows: suspend, contain process tree, then resume.
+    let child=OwnedChild::spawn(&executable,args,cwd)?;
     slot.active=Some(action_id.to_owned());
     slot.recent.push(action_id.to_owned());
     if slot.recent.len()>MAX_RECENT_LAUNCHES{slot.recent.remove(0);}
@@ -126,21 +146,23 @@ impl OwnedProcess {
         ProcessObservation{action_id:self.action_id.clone(),tool:self.tool.clone(),
             pid:self.pid(),phase,exit_code:self.final_code,
             process_observed:true,app_progress_verified:false,
-            descendants_contained:false}
+            descendants_contained:self.child.tree_contained()}
     }
     /// Samples this exact Child handle, not another PID's snapshot. Never
     /// turns supervisor liveness or exit=0 into Rust audit success.
     pub(crate) fn poll(&mut self)->Result<ProcessObservation,String>{
         if let Some(phase)=self.final_phase{return Ok(self.observation(phase));}
-        match self.child.try_wait().map_err(|e|format!("Owned process wait failed: {e}"))?{
-            Some(status)=>{
-                self.final_phase=Some("exited");
-                self.final_code=status.code();
-                Ok(self.observation("exited"))
+        match self.child.try_wait()?{
+            Some(code)=>{
+                self.final_code=Some(code);
+                if self.child.active_processes()?==0{
+                    self.final_phase=Some("exited");
+                    Ok(self.observation("exited"))
+                }else if self.start.elapsed()>=self.budget{
+                    self.stop_owned_tree("timed_out")
+                }else{Ok(self.observation("descendants_running"))}
             },
-            None if self.start.elapsed()>=self.budget=>{
-                self.stop_direct_child("timed_out")
-            },
+            None if self.start.elapsed()>=self.budget=>self.stop_owned_tree("timed_out"),
             None=>Ok(self.observation("running"))
         }
     }
@@ -151,20 +173,15 @@ impl OwnedProcess {
             return Err("Cannot cancel a process owned by another action UUID.".into());
         }
         if self.final_phase.is_some(){return Err("Owned process is already terminal.".into());}
-        self.stop_direct_child("cancelled")
+        self.stop_owned_tree("cancelled")
     }
-    fn stop_direct_child(&mut self,phase:&'static str)->Result<ProcessObservation,String>{
-        // A racing natural exit is terminal but still no app-effect proof.
-        if let Some(status)=self.child.try_wait().map_err(|e|format!("Owned process inspect failed: {e}"))?{
-            self.final_phase=Some("exited");
-            self.final_code=status.code();
-            return Ok(self.observation("exited"));
+    fn stop_owned_tree(&mut self,phase:&'static str)->Result<ProcessObservation,String>{
+        let result=self.child.terminate_tree()?;
+        if self.child.active_processes()?!=0{
+            return Err("Owned worker descendants remain active".into());
         }
-        self.child.kill().map_err(|e|format!("Owned child could not be stopped: {e}"))?;
-        let status=self.child.wait()
-            .map_err(|e|format!("Owned child termination could not be reaped: {e}"))?;
         self.final_phase=Some(phase);
-        self.final_code=status.code();
+        self.final_code=result;
         Ok(self.observation(phase))
     }
     /// Bounded blocking wait with real process polling; it cannot claim a
@@ -172,7 +189,7 @@ impl OwnedProcess {
     pub(crate) fn wait_bounded(&mut self)->Result<ProcessObservation,String>{
         loop {
             let obs=self.poll()?;
-            if obs.phase!="running"{return Ok(obs);}
+            if obs.phase!="running"&&obs.phase!="descendants_running"{return Ok(obs);}
             thread::sleep(Duration::from_millis(20));
         }
     }
@@ -269,7 +286,7 @@ mod tests{
         assert_eq!(finished.exit_code,Some(0));
         assert!(finished.process_observed);
         assert!(!finished.app_progress_verified);
-        assert!(!finished.descendants_contained);
+        assert!(finished.descendants_contained);
     }
     #[cfg(windows)]
     #[test]
@@ -285,7 +302,7 @@ mod tests{
         let result=child.cancel_exact(&action).unwrap();
         assert!(matches!(result.phase,"cancelled"|"exited"));
         assert!(!result.app_progress_verified);
-        assert!(!result.descendants_contained);
+        assert!(result.descendants_contained);
     }
     #[cfg(windows)]
     #[test]
@@ -299,7 +316,7 @@ mod tests{
         let obs=child.wait_bounded().unwrap();
         assert_eq!(obs.phase,"timed_out");
         assert!(!obs.app_progress_verified);
-        assert!(!obs.descendants_contained);
+        assert!(obs.descendants_contained);
     }
     #[cfg(windows)]
     #[test]
