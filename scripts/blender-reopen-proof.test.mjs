@@ -42,7 +42,7 @@ test("new Python reopen helper parses and fake-session regressions pass",
     "import ast,sys; [ast.parse(open(p, encoding='utf8').read()) for p in sys.argv[1:]]",
     plan,helper],{cwd:root,timeout:5000,encoding:"utf8"});
   assert.equal(parse.status,0,parse.stderr);
-  const result=spawnSync(binary,[...args,"-m","unittest","discover",
+  const result=spawnSync(binary,[...args,"-B","-m","unittest","discover",
     "-s","integrations/blender-worker","-p","test_shuvi_blender_reopen.py"],
     {cwd:root,timeout:30000,encoding:"utf8"});
   assert.equal(result.status,0,result.stderr);
