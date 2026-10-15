@@ -39,11 +39,11 @@ test("Batch 39 oversized native window observation never enters model window sum
  assert.equal(guide(giant,false),"");
 });
 
-test("Batch 80 duplicate OS window rows remain visible as ambiguous observations",()=>{
+test("Batch 80 duplicate OS window handle rows are rejected without misleading Master",()=>{
  const same={Name:"Adobe Premiere Pro",ProcessName:"Premiere",ProcessId:123,NativeWindowHandle:44};
  const text=guide({tool:"ui_windows",success:true,stdout:JSON.stringify([same,same])},true);
- assert.match(text,/2 usable window identity/);
- assert.match(text,/NOT a selected target/);
+ assert.match(text,/no usable window identity/);
+ assert.doesNotMatch(text,/Observed sample/);
 });
 
 test("Batch 86 unsuccessful or malformed typed window read is never described as verified",()=>{
