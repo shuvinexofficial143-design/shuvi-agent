@@ -27,6 +27,10 @@ test('Native objective is exact first 500 chars of the bounded original owner re
   assert.equal(pinnedMasterObjective(long).length,500);
   assert.equal(validateMasterPlan(long,graph(long,[step('inspect','ui_windows')])).ok,true);
   assert.equal(pinnedMasterObjective('x'.repeat(2501)),null);
+  const hindi='प्रोजेक्ट बनाओ '.repeat(90);
+  const bounded=pinnedMasterObjective(hindi);
+  assert.ok(Buffer.byteLength(bounded,'utf8')<=500,'Rust validates UTF-8, not JS character count');
+  assert.equal(validateMasterPlan(hindi,graph(hindi,[step('read','ui_windows')])).ok,true);
 });
 test('Master cannot paraphrase or change native DAG objective',()=>{
   const brief='Premiere me project banao';
@@ -48,6 +52,8 @@ test('An editor-opening brief cannot add unrequested mutating steps',()=>{
   assert.equal(validateMasterPlan(brief,graph(brief,[step('open','premiere_launch'),step('observe','ui_windows',['open'])])).ok,true);
   assert.match(validateMasterPlan(brief,graph(brief,[step('mutate','premiere_insert_media')])).reason,/does not authorize/);
   assert.match(validateMasterAction(brief,native('premiere_insert_media')).reason,/does not authorize/);
+  assert.match(validateMasterAction(brief,native('replace_text')).reason,/does not authorize/);
+  assert.match(validateMasterPlan(brief,graph(brief,[step('unsafe','replace_text')])).reason,/unrelated file edit/);
   assert.equal(validateMasterAction(brief,native('premiere_context')).ok,true);
 });
 test('Cross-editor proposals are rejected without a model-authored graph',()=>{
