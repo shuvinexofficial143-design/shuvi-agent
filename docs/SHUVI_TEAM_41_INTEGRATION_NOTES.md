@@ -218,3 +218,43 @@ No real Blender executable or AntCloud instance was started to run them.
 Review exact new module registration in `src-tauri/src/lib.rs` together
 with the original shared ToolAction insertion before eventual integration.
 Branch remains unmerged and runtime acceptance **LIVE UNVERIFIED**.
+
+## Follow-up milestone: stale-scene protection and downstream byte revalidation
+
+An independent `blender_session_inspect` returns `scene_revision`, a
+64-character SHA-256 scene-state revision sourced from the authenticated
+Blender adapter. For **each separately approved** `blender_session_plan`,
+the caller must now supply an exact
+`expected_scene_revision` copied from a fresh inspect. This field is
+enforced in the Rust proposal parser, Rust session worker, bounded IPC
+protocol, and the fixed Python broker. Python parses the entire typed plan,
+then performs a new `scene.inspect` in that *same authenticated Blender
+process* immediately before starting PlanRunner. If the scene has changed,
+the broker returns `outcome_unknown` and safely retires the owned session
+**without dispatching the plan**. No revised/widened expectation is silently
+substituted, and no plan is retried automatically. Python fake-session tests
+cover missing/malformed revisions and a stale preflight that never calls
+PlanRunner. Session identity and the previously required action-level render
+grant remain mandatory.
+
+A separate **read-only** `blender_verify_artifact_manifest` native action
+completes the receiving side of the team-41 output handoff. It accepts the
+original typed manifest plus an explicit existing `approved_output_dir`.
+The native verifier checks manifest structure, canonical action/session
+UUID formats, exact parent directory and on-disk file, bounded size, SHA-256,
+file extension and output-format-specific details. It rejects changed bytes,
+unsafe filesystem paths, forged/malformed lineage identifiers, and manifests
+falsely claiming that an import has already happened. The result intentionally
+reports `status=file_bytes_reverified`, not `status=imported`, and marks
+`source_action_approval_reverified=false`,
+`original_blender_reopen_reexecuted=false`,
+`import_performed=false`, and
+`requires_new_action_approval=true`. Historical auth cannot be established
+from untrusted JSON alone. Downstream scheduler/Adobe action must separately
+check canonical audit history, seek specific user approval, and import only
+through its own permission-gated tool after another safe path readback.
+
+These features are implemented in source and source/unit tests, **not** yet
+validated by actual Blender Windows model editing. Do not present source
+fixtures, file integrity or native Job Object tests as live creative-work
+acceptance.
