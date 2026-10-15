@@ -15,6 +15,50 @@ use crate::{
     blender_plan_worker,
 };
 
+
+#[cfg(target_os="windows")]
+mod windows_job {
+    use std::{mem,os::windows::io::AsRawHandle,process::Child,ptr};
+    use windows_sys::Win32::Foundation::{CloseHandle,HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject,CreateJobObjectW,SetInformationJobObject,
+        JobObjectExtendedLimitInformation,JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    // CloseHandle on this *owned* job terminates all associated child processes.
+    // A broker may never launch Blender until Rust has attached its PID here.
+    pub(super) struct OwnedJob(HANDLE);
+    unsafe impl Send for OwnedJob {}
+    impl OwnedJob {
+        pub(super) fn attach(child:&Child)->Result<Self,String> {
+            let handle=unsafe{CreateJobObjectW(ptr::null(),ptr::null())};
+            if handle.is_null(){
+                return Err("Cannot create mandatory Windows Blender process Job Object.".into());
+            }
+            let job=Self(handle);
+            let mut limits:JOBOBJECT_EXTENDED_LIMIT_INFORMATION=unsafe{mem::zeroed()};
+            limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let configured=unsafe{SetInformationJobObject(
+                job.0,JobObjectExtendedLimitInformation,
+                &limits as *const _ as *const core::ffi::c_void,
+                mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )};
+            if configured==0{
+                return Err("Cannot configure kill-on-close Windows Blender Job Object.".into());
+            }
+            let bound=unsafe{AssignProcessToJobObject(job.0,child.as_raw_handle() as HANDLE)};
+            if bound==0{
+                return Err("Could not assign exact Blender broker child to Windows Job Object.".into());
+            }
+            Ok(job)
+        }
+    }
+    impl Drop for OwnedJob {
+        fn drop(&mut self){unsafe{CloseHandle(self.0);}}
+    }
+}
+
 const MAX_FRAME:usize=131072;
 const SESSION_MAX_AGE:Duration=Duration::from_secs(15*60);
 const STARTUP_DEADLINE:Duration=Duration::from_secs(35);
@@ -36,6 +80,8 @@ struct OwnedSession {
     created:Instant,
     watchdog_stop:Arc<AtomicBool>,
     invalidated:Arc<AtomicBool>,
+    #[cfg(target_os="windows")]
+    _windows_job:windows_job::OwnedJob,
 }
 
 impl Drop for OwnedSession {
@@ -227,13 +273,27 @@ pub(crate) fn start(
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
     if let Some(source)=blend_file{command.arg("--blend-file").arg(source);}
     if allow_render{command.arg("--allow-render");}
+    #[cfg(target_os="windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        // Prevent a console window from flashing for the owned Python worker.
+        command.creation_flags(0x08000000);
+    }
     let mut child=command.spawn().map_err(|_|"Could not launch the fixed Blender session broker.".to_string())?;
     let pid=child.id();
+    #[cfg(target_os="windows")]
+    let job=match windows_job::OwnedJob::attach(&child){
+        Ok(job)=>job,
+        Err(error)=>{
+            let _=child.kill();let _=child.wait();
+            return Err(error);
+        },
+    };
     if let Err(error)=register_managed_process(state,pid) {
         let _=child.kill(); let _=child.wait();
         return Err(format!("Blender broker could not be bound to process identity: {error}"));
     }
-    let input=match child.stdin.take(){Some(v)=>v,None=>{
+    let mut input=match child.stdin.take(){Some(v)=>v,None=>{
         let _=terminate_managed_process_tree(pid);let _=child.kill();let _=child.wait();
         unregister_managed_process(state,pid);
         return Err("Blender broker lacks a private command channel.".into());
@@ -243,11 +303,24 @@ pub(crate) fn start(
         unregister_managed_process(state,pid);
         return Err("Blender broker lacks a bounded response channel.".into());
     }};
+    // This exact frame unblocks the Python broker only AFTER the owned PID
+    // is registered and (on Windows) bound to the kill-on-close job.
+    // No Blender grandchild can be started before this point.
+    if input.write_all(b"{\"version\":1,\"op\":\"arm\"}\n")
+        .and_then(|_|input.flush()).is_err(){
+        let _=terminate_registered_process_tree(state,pid);
+        let _=child.kill();let _=child.wait();
+        unregister_managed_process(state,pid);
+        return Err("Cannot safely arm the owned Blender broker; no session launched.".into());
+    }
     let watchdog_stop=Arc::new(AtomicBool::new(false));
     let invalidated=Arc::new(AtomicBool::new(false));
     let mut session=OwnedSession{child,input,replies:reader(output),session_id:String::new(),
         output_dir:output_dir.into(),allow_render,created:Instant::now(),watchdog_stop,
-        invalidated};
+        invalidated,
+        #[cfg(target_os="windows")]
+        _windows_job:job,
+    };
     let result=receive(&mut session,state,STARTUP_DEADLINE);
     match result {
         Ok(value)=>{
