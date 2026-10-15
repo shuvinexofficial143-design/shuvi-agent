@@ -99,6 +99,92 @@ pub(crate) fn build(
     }))
 }
 
+
+/// Read-only downstream receipt check. Only verifies the file bytes as they
+/// exist NOW; prior action approval, Blender reopen and visual quality are
+/// historical claims and cannot be re-authenticated from JSON alone.
+/// This never imports an asset or authorizes another mutation.
+pub(crate) fn reverify(manifest:&Value,approved_root:&Path)->Result<Value,String>{
+    if manifest.get("schema_version").and_then(Value::as_u64)!=Some(1)
+        ||manifest.get("producer").and_then(Value::as_str)!=Some("shuvi41.blender")
+        ||manifest.get("status").and_then(Value::as_str)!=Some("verified")
+        ||manifest.pointer("/handoff/requires_new_action_approval").and_then(Value::as_bool)!=Some(true)
+        ||manifest.pointer("/handoff/import_performed").and_then(Value::as_bool)!=Some(false) {
+        return Err("Blender handoff manifest schema or permission boundaries differ.".into());
+    }
+    let action_id=manifest.get("source_action_id").and_then(Value::as_str)
+        .ok_or("Blender handoff source action missing.")?;
+    let parsed=Uuid::parse_str(action_id).map_err(|_|"Invalid Blender source action UUID.")?;
+    if parsed.to_string()!=action_id {return Err("Noncanonical Blender source action UUID.".into());}
+    if let Some(session_id)=manifest.get("source_session_id").filter(|v|!v.is_null()){
+        let name=session_id.as_str().ok_or("Malformed Blender source session UUID.")?;
+        if Uuid::parse_str(name).map_err(|_|"Invalid Blender source session UUID.")?.to_string()!=name{
+            return Err("Noncanonical Blender session UUID.".into());
+        }
+    }
+    let artifact=manifest.get("artifact").ok_or("Blender handoff artifact missing.")?;
+    let file=artifact.get("absolute_path").and_then(Value::as_str)
+        .ok_or("Blender handoff has no absolute file path.")?;
+    if !Path::new(file).is_absolute(){return Err("Blender handoff path is not absolute.".into());}
+    let hash=artifact.get("sha256").and_then(Value::as_str)
+        .ok_or("Blender handoff SHA-256 missing.")?;
+    if hash.len()!=64 || !hash.bytes().all(|x|x.is_ascii_hexdigit() && !x.is_ascii_uppercase()){
+        return Err("Malformed Blender handoff SHA-256.".into());
+    }
+    let len=artifact.get("bytes").and_then(Value::as_u64)
+        .filter(|n|*n>=12 && *n<=128*1024*1024)
+        .ok_or("Blender handoff size outside bounds.")?;
+    let kind=artifact.get("format").and_then(Value::as_str)
+        .ok_or("Blender handoff format missing.")?;
+    let file_meta=std::fs::symlink_metadata(file)
+        .map_err(|_|"Blender handoff output is missing.")?;
+    if file_meta.file_type().is_symlink() || !file_meta.file_type().is_file(){
+        return Err("Blender handoff cannot use a symbolic link or non-file.".into());
+    }
+    let mut receipt=json!({"artifact":{"path":file,"bytes":len,
+        "sha256":hash,"format":kind}});
+    let kind_label=match kind{
+        "BLEND"=>{
+            let evidence=manifest.get("evidence").ok_or("Blender proof missing.")?;
+            if evidence.get("independent_read_only_reopen").and_then(Value::as_bool)!=Some(true){
+                return Err("Blender source reopen evidence missing.".into());
+            }
+            receipt["checkpoint_reopen"]=json!({
+                "verified":true,"read_only":true,
+                "fingerprint":evidence["scene_fingerprint"],
+                "object_count":evidence["object_count"]});
+            "BLEND"
+        },
+        "PNG"=>{
+            let image=artifact.get("image").ok_or("PNG image metadata missing.")?;
+            for field in ["width","height","bit_depth","color_mode"]{
+                if image.get(field).is_none(){return Err("PNG metadata incomplete.".into());}
+            }
+            for field in ["width","height","bit_depth","color_mode"]{
+                receipt["artifact"][field]=image[field].clone();
+            }
+            "PNG"
+        },
+        _=>return Err("Unsupported Blender handoff artifact format.".into())
+    };
+    // This native readback re-hashes the actual current file and checks it
+    // remains confined within an explicitly selected existing root.
+    verify_output(&receipt,approved_root)?;
+    Ok(json!({
+        "status":"file_bytes_reverified",
+        "source_action_id":action_id,
+        "artifact_format":kind_label,
+        "absolute_path":file,
+        "bytes":len,
+        "sha256":hash,
+        "current_file_integrity_verified":true,
+        "source_action_approval_reverified":false,
+        "original_blender_reopen_reexecuted":false,
+        "import_performed":false,
+        "requires_new_action_approval":true
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,6 +248,33 @@ mod tests {
         assert!(build(&good,&f.0,ACTION,Some("stale")).is_err());
         let mut bad=good.clone();bad.as_object_mut().unwrap().remove("checkpoint_reopen");
         assert!(build(&bad,&f.0,ACTION,None).is_err());
+    }
+
+    #[test]
+    fn downstream_rechecks_actual_bytes_but_never_promotes_prior_approval(){
+        let f=Fixture::new();let (path,size,sha)=f.save("blend");
+        let source=build(&proof(&path,size,&sha),&f.0,ACTION,Some(SESSION)).unwrap();
+        let check=reverify(&source,&f.0).unwrap();
+        assert_eq!(check["status"],"file_bytes_reverified");
+        assert_eq!(check["current_file_integrity_verified"],true);
+        assert_eq!(check["source_action_approval_reverified"],false);
+        assert_eq!(check["original_blender_reopen_reexecuted"],false);
+        assert_eq!(check["import_performed"],false);
+    }
+    #[test]
+    fn downstream_rejects_changed_bytes_wrong_root_and_forged_lineage(){
+        let f=Fixture::new();let other=Fixture::new();
+        let (path,size,sha)=f.save("blend");
+        let source=build(&proof(&path,size,&sha),&f.0,ACTION,None).unwrap();
+        assert!(reverify(&source,&other.0).is_err());
+        let mut forged=source.clone();
+        forged["source_action_id"]=json!("untracked");
+        assert!(reverify(&forged,&f.0).is_err());
+        let mut forged_permission=source.clone();
+        forged_permission["handoff"]["import_performed"]=json!(true);
+        assert!(reverify(&forged_permission,&f.0).is_err());
+        fs::write(&path,b"BLENDER-v430tampered-manifest").unwrap();
+        assert!(reverify(&source,&f.0).is_err());
     }
     #[test]
     fn incomplete_or_untrusted_worker_cannot_claim_handoff(){
