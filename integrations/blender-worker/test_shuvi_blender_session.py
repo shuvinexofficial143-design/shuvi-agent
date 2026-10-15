@@ -101,6 +101,8 @@ class PersistentSessionTests(unittest.TestCase):
         return out
 
     def frame(self, op, **kwargs):
+        if op == "run_plan" and "expected_scene_revision" not in kwargs:
+            kwargs["expected_scene_revision"] = "f" * 64
         return json.dumps({"version": 1, "session_id": SESSION_ID,
                            "op": op, **kwargs}) + "\n"
 
@@ -133,7 +135,8 @@ class PersistentSessionTests(unittest.TestCase):
     def test_render_approval_must_be_explicit_bool(self):
         with self.assertRaisesRegex(ValueError, "explicit boolean"):
             worker.validate({"version": 1, "session_id": SESSION_ID, "op": "run_plan",
-                             "plan": {}, "allow_render": 1}, SESSION_ID)
+                             "plan": {}, "allow_render": 1,
+                             "expected_scene_revision": "f" * 64}, SESSION_ID)
 
     def test_real_command_sequence_reuses_one_owned_fixture_session(self):
         code, replies = self.serve(self.frame("ping") + self.frame("inspect") + self.frame("close"))
@@ -147,8 +150,8 @@ class PersistentSessionTests(unittest.TestCase):
 
     def test_multiple_approved_plans_share_one_session_and_close(self):
         calls = []
-        def plan(controller, data, root, executable, render):
-            calls.append((id(controller), data, render))
+        def plan(controller, data, root, executable, render, expected_revision):
+            calls.append((id(controller), data, render, expected_revision))
             return {"status": "verified", "complete": True, "artifact": {"sha256": "a"*64}}
         inputs = (self.frame("run_plan", plan={"steps": ["first"]}, allow_render=False)
                   + self.frame("run_plan", plan={"steps": ["second"]}, allow_render=False)
@@ -158,6 +161,7 @@ class PersistentSessionTests(unittest.TestCase):
         self.assertEqual([r["status"] for r in replies], ["ready", "verified", "verified", "closing"])
         self.assertEqual([r[1]["steps"][0] for r in calls], ["first", "second"])
         self.assertEqual(calls[0][0], calls[1][0])
+        self.assertEqual(calls[0][3], "f" * 64)
         self.assertEqual(len(self.sessions), 1)
         self.assertTrue(self.sessions[0].closed)
 
@@ -200,6 +204,45 @@ class PersistentSessionTests(unittest.TestCase):
         self.assertEqual(code, 4)
         self.assertEqual(len(self.sessions), 0)
         self.assertEqual(json.loads(stdout.getvalue())["status"], "outcome_unknown")
+
+    def test_run_plan_rejects_missing_or_nonhex_revision(self):
+        for bad in [None, "x" * 64, "F" * 64, "f" * 63]:
+            message = {"version": 1, "session_id": SESSION_ID,
+                       "op": "run_plan", "allow_render": False, "plan": {}}
+            if bad is not None:
+                message["expected_scene_revision"] = bad
+            with self.assertRaises(ValueError):
+                worker.validate(message, SESSION_ID)
+
+    def test_stale_revision_stops_before_any_modeling_operation(self):
+        packages = {
+            "shuvi_blender_agent.plans": types.ModuleType("shuvi_blender_agent.plans"),
+            "shuvi_blender_agent.files": types.ModuleType("shuvi_blender_agent.files"),
+        }
+        class FakeStep:
+            name = "checkpoint"
+            request = types.SimpleNamespace(operation="file.checkpoint")
+        class FakePlan:
+            steps = [FakeStep()]
+            timeout_ms = 10_000
+            @staticmethod
+            def from_dict(_):
+                return FakePlan()
+        executed = []
+        class FakePlanRunner:
+            def __init__(self, _):
+                pass
+            def run(self, _):
+                executed.append("unsafe")
+                raise AssertionError("No mutation should occur after stale revision")
+        packages["shuvi_blender_agent.plans"].Plan = FakePlan
+        packages["shuvi_blender_agent.plans"].PlanRunner = FakePlanRunner
+        packages["shuvi_blender_agent.files"].read_output = lambda *_: None
+        with patch.dict(sys.modules, packages):
+            with self.assertRaisesRegex(ValueError, "Stale Blender scene revision"):
+                worker.checked_plan(FakeController(object()), {"steps": [1]},
+                                    self.output, self.blender, False, "e" * 64)
+        self.assertEqual(executed, [])
 
     def test_oversized_command_denied(self):
         code, replies = self.serve("x" * 65538 + "\n")
