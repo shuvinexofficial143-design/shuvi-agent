@@ -425,6 +425,7 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - premiere_create_project: {"path":"new absolute Windows .prproj destination (must not already exist)"} — high risk; initial save and independent host/disk verification; never overwrites.
 - premiere_open_project: {"path":"existing absolute Windows .prproj"} — high risk; host project identity plus independently unchanged disk fingerprint, no automatic save/close.
 - premiere_media_audit: {} — Read-only capped live Premiere project-media inventory; retrieve exact IDs and old paths before proposing a separate approved relink.
+- premiere_verify_saved_media: {"project_path":"saved .prproj","expected_project_guid":"from prior audited context","expected_project_fnv1a64":"16 hex from prior saved project fingerprint","item_id":"native clip ID","expected_media_path":"previously approved replacement file","expected_media_sha256":"64 hex from approved media proof"} — read-only live/disk item match after a separately approved project open; does not itself reopen or edit.
 - premiere_save_project: {}
 - after_effects_capability_report: {}
 - after_effects_readiness_report: {}
@@ -878,6 +879,7 @@ enum ToolAction {
     PremiereMoveProjectItem { item_id: String, target_bin_id: String },
     PremiereRelinkMedia { item_id: String, new_path: String, expected_previous_path: String, override_compatibility: bool },
     PremiereMediaAudit,
+    PremiereVerifySavedMedia { project_path:String, expected_project_guid:String, expected_project_fnv1a64:String, item_id:String, expected_media_path:String, expected_media_sha256:String },
     PremiereSetSourceInOut { item_id: String, in_seconds: f64, out_seconds: f64 },
     PremiereClearSourceInOut { item_id: String },
     PremiereCreateSubclip { item_id: String, name: String, start_seconds: f64, end_seconds: f64, hard_boundaries: bool, take_video: bool, take_audio: bool },
@@ -1825,6 +1827,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_move_project_item"
         | "premiere_relink_media"
         | "premiere_media_audit"
+        | "premiere_verify_saved_media"
         | "premiere_inspect_media_interpretation"
         | "premiere_prepare_media_item"
         | "premiere_prepare_media_batch"
@@ -6439,6 +6442,26 @@ fn stage_tool(
         "premiere_media_audit" => (ToolAction::PremiereMediaAudit,
             "Audit Premiere media inventory".into(),
             "Read-only bounded native clip IDs, recorded paths and offline flags. Does not authorize editing.".into(),RiskLevel::Low),
+        "premiere_verify_saved_media" => {
+            let project_path=absolute_path(arg_string(&proposal.arguments,"project_path")?)?;
+            premiere_project_lifecycle::preflight_open(&project_path)?;
+            let expected_project_guid=arg_string(&proposal.arguments,"expected_project_guid")?;
+            let expected_project_fnv1a64=arg_string(&proposal.arguments,"expected_project_fnv1a64")?;
+            let item_id=arg_string(&proposal.arguments,"item_id")?;
+            let expected_media_path=absolute_path(arg_string(&proposal.arguments,"expected_media_path")?)?;
+            let expected_media_sha256=arg_string(&proposal.arguments,"expected_media_sha256")?;
+            if expected_project_guid.is_empty()||expected_project_guid.len()>240
+                ||item_id.is_empty()||item_id.len()>240
+                ||expected_project_fnv1a64.len()!=16||!expected_project_fnv1a64.bytes().all(|b|b.is_ascii_hexdigit())
+                ||expected_media_sha256.len()!=64||!expected_media_sha256.bytes().all(|b|b.is_ascii_hexdigit()){
+                return Err("Saved Premiere media verification requires exact project/item identities and 16/64-hex fingerprints.".into());
+            }
+            (ToolAction::PremiereVerifySavedMedia{project_path,expected_project_guid,expected_project_fnv1a64,
+                item_id,expected_media_path,expected_media_sha256},
+                "Verify saved Premiere project media".into(),
+                "Read-only: check current active project GUID/path, saved .prproj fingerprint, source SHA256, and exact online native clip path. This does not reopen or save anything.".into(),
+                RiskLevel::Low)
+        }
         "premiere_relink_media" => {
             let item_id = arg_string(&proposal.arguments, "item_id")?;
             let new_path = absolute_path(arg_string(&proposal.arguments, "new_path")?)?;
@@ -15904,6 +15927,33 @@ try {{
                 stdout:json!({"inventory":value,"scan_complete":complete,"inspection_only":true,
                     "relink_authorized":false,"runtime_verified":false}).to_string(),
                 stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereVerifySavedMedia{project_path,expected_project_guid,expected_project_fnv1a64,
+            item_id,expected_media_path,expected_media_sha256} => {
+            let project_before=premiere_project_lifecycle::preflight_open(&project_path)?;
+            let media_before=premiere_media_relink::fingerprint(&expected_media_path)?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let item=premiere_bridge.request("inspect_media_interpretation",
+                json!({"itemId":item_id}),Duration::from_secs(12)).await?;
+            // Repeat exact file fingerprints after the host reads so an
+            // external writer cannot silently replace proof mid-inspection.
+            let project_after=premiere_project_lifecycle::preflight_open(&project_path)?;
+            let media_after=premiere_media_relink::fingerprint(&expected_media_path)?;
+            let files_unchanged=project_before.fnv1a64==project_after.fnv1a64
+                &&project_before.size_bytes==project_after.size_bytes
+                &&premiere_media_relink::same_file(&media_before,&media_after);
+            let report=premiere_media_relink::assess_saved_media(
+                &project_path,&expected_project_guid,&expected_project_fnv1a64,
+                &item_id,&expected_media_path,&expected_media_sha256,
+                &context,&project_after,&media_after,&item);
+            let verified=files_unchanged && report.get("saved_media_verified").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{success:verified,tool,
+                stdout:json!({"saved_media_verified":verified,"files_unchanged_during_audit":files_unchanged,
+                    "evidence":report,"read_only":true,"project_opened_by_this_action":false,
+                    "fresh_session_proven":false,"video_decode_verified":false,"retry_safe":true}).to_string(),
+                stderr:if verified{String::new()}else{
+                    "Current opened project/media did not match the exact previously recorded saved fingerprints.".into()},
+                exit_code:Some(if verified{0}else{1})})
         }
         ToolAction::PremiereRelinkMedia { item_id, new_path, expected_previous_path, override_compatibility } => {
             // Verify the replacement's real bytes BEFORE any Adobe project mutation.
