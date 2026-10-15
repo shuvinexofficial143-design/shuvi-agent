@@ -162,6 +162,14 @@ fn reconcile_at(
 pub(crate) fn reconcile(
     app:&AppHandle,id:&str,tool:&str,verified_audit:Option<bool>,now:u64
 )->Result<NativeJob,String>{
+    // This is called from the existing owner-confirmed Tauri reconciliation
+    // under an exclusive desktop lease. Confirm the native UUID before
+    // touching the associated unresolved OS-only subprocess receipt.
+    let existing=read(app)?.ok_or("No durable native action for owner review.")?;
+    if existing.phase!="running"||existing.action_id!=id||existing.tool!=tool{
+        return Err("Owner review cannot acknowledge a different active action.".into());
+    }
+    crate::native_scheduler::owned_process::review_process_receipt_for_owner(app,id,tool)?;
     reconcile_at(&journal_path(app)?,id,tool,verified_audit,now)
 }
 pub(crate) fn begin(app:&AppHandle,id:&str,tool:&str,now:u64)->Result<(),String>{
@@ -175,6 +183,9 @@ pub(crate) fn read(app:&AppHandle)->Result<Option<NativeJob>,String>{
     read_at(&journal_path(app)?)
 }
 pub(crate) fn require_resolved(app:&AppHandle)->Result<(),String>{
+    // A healthy action journal cannot erase missing/unknown owned process
+    // evidence, including a crash before the OS PID could be recorded.
+    crate::native_scheduler::owned_process::require_process_receipt_clear(app)?;
     if read(app)?.is_some_and(|job|!matches!(job.phase.as_str(),"audit_verified"|"owner_reviewed_unknown")){
         return Err("An unfinished durable native worker job blocks all new desktop mutations until independent owner review.".into());
     }

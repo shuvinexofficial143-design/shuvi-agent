@@ -38,3 +38,8 @@ Review any adapter calls and potential cross-team shared-file overlap. Keep owne
 - Launch-intent and running receipts persist across restart. Subsequent launches fail closed until an independent explicit owner review; no PID, exit=0, supervisor tick or receipt can claim application progress or tool audit. Existing `native_worker_job.json` and DAG audit authority remain unchanged.
 - `spawn_for_active_action` requires scheduler + native-worker-job exact running action, owns the Windows execution lease for process lifetime, writes intent, launches contained subprocess, stores real PID, and publishes exit/cancel/timeout. No new model/provider command, no `lib.rs` or external Adobe/Blender adapter dispatch change.
 - Rust unit regressions cover real on-disk crash/replay, UUID mismatch, exit vs audit, owner review seam, and corrupt/orphan receipt. `owner_review_at` is deliberately **not exposed** as IPC until the existing authenticated owner-review path is integrated; do not clear unknown on startup.
+
+## Owner-reconciled process receipt admission (integration)
+- Reuse the existing authorized `reconcile_native_worker_job` command and its exclusive desktop lease via `native_worker_job::reconcile`; validate current running NativeJob UUID+tool before marking matching process launch/PID evidence `owner_reviewed_unknown`.
+- `native_worker_job::require_resolved` now also rejects outstanding/corrupt process receipts even if the main worker journal was somehow marked terminal. Foreign UUID owner review fails closed.
+- Shared `src-tauri/src/lib.rs` unchanged; no UI or new IPC authority. Multi-file durable updates are deliberately ordered process review first, native job review last; on partial failure the still-running native job remains quarantined.

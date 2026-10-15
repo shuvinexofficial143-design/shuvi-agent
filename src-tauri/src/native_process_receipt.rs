@@ -26,7 +26,7 @@ fn check_record(r:&ProcessReceipt)->Result<(),String>{
        ||uuid::Uuid::parse_str(&r.action_id).map(|x|x.to_string()!=r.action_id).unwrap_or(true)
        ||r.tool.is_empty()||r.tool.len()>160
        ||!r.tool.bytes().all(|b|b.is_ascii_lowercase()||b.is_ascii_digit()||b==b'_')
-       ||r.app_progress_verified{
+       ||r.app_progress_verified||r.pid==Some(0){
         return Err("Native subprocess receipt identity or claimed progress is invalid.".into());
     }
     match (r.phase.as_str(),r.pid,r.exit_code,r.descendants_contained){
@@ -184,6 +184,7 @@ mod tests {
         let f=file();begin_at(&f,A,"blender_run_plan").unwrap();
         fs::write(&f,b"{").unwrap();
         assert!(begin_at(&f,B,"blender_run_plan").is_err());
+        fs::write(f.with_extension("json.bak"),b"{}").unwrap();
         fs::remove_file(&f).unwrap();
         assert!(begin_at(&f,B,"blender_run_plan").is_err());
         cleanup(&f);

@@ -13,6 +13,30 @@ use crate::execution_lease::NativeExecutionLease;
 use super::{Schedule,validate};
 #[path = "native_process_receipt.rs"]
 mod process_receipt;
+
+/// OS-only subprocess record is NOT an action audit. Invalid, interrupted or
+/// incomplete launch evidence blocks a new tool even after a process restart.
+pub(crate) fn require_process_receipt_clear(app:&AppHandle)->Result<(),String>{
+    if process_receipt::read(app)?.is_some_and(|receipt|
+        matches!(receipt.phase.as_str(),"launch_pending"|"running")){
+        return Err("Unresolved owned process launch/PID blocks new native execution; owner review required.".into());
+    }
+    Ok(())
+}
+/// Called ONLY from the existing authenticated owner reconciliation entrypoint
+/// while its exclusive native lease is held. No automatic restart cleanup.
+pub(crate) fn review_process_receipt_for_owner(
+    app:&AppHandle,id:&str,tool:&str
+)->Result<(),String>{
+    let Some(r)=process_receipt::read(app)? else {return Ok(());};
+    if matches!(r.phase.as_str(),"launch_pending"|"running"){
+        if r.action_id!=id||r.tool!=tool{
+            return Err("Foreign unresolved process receipt cannot be dismissed by owner review.".into());
+        }
+        process_receipt::owner_review_at(&process_receipt::path(app)?,id,tool)?;
+    }
+    Ok(())
+}
 #[cfg(windows)]
 #[path = "native_windows_job.rs"]
 mod windows_job;
