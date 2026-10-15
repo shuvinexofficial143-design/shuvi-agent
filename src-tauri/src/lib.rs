@@ -61,6 +61,7 @@ mod premiere_export_jobs;
 mod premiere_project_persistence;
 mod premiere_project_lifecycle;
 mod premiere_media_relink;
+mod premiere_batch_relink;
 mod premiere_mogrt_handoff;
 mod premiere_final_delivery;
 mod premiere_review_binding;
@@ -6876,65 +6877,23 @@ fn stage_tool(
             )
         }
         "premiere_batch_relink" => {
-            let items = proposal.arguments
-                .get("items")
-                .and_then(Value::as_array)
-                .cloned()
-                .ok_or_else(|| "premiere_batch_relink requires an items array.".to_string())?;
-
-            if items.is_empty() || items.len() > 100 {
-                return Err("Premiere batch relink requires between 1 and 100 items.".into());
+            let raw=proposal.arguments.get("items").and_then(Value::as_array)
+                .ok_or("Premiere batch relink requires an items array.")?;
+            let mut entries=Vec::with_capacity(raw.len());
+            for item in raw {
+                let entry:premiere_batch_relink::Entry=serde_json::from_value(item.clone())
+                    .map_err(|e|format!("Invalid exact Premiere batch relink item: {e}"))?;
+                entries.push(entry);
             }
-
-            let mut validated = Vec::with_capacity(items.len());
-            for item in items {
-                let object = item
-                    .as_object()
-                    .ok_or_else(|| "Each batch relink item must be an object.".to_string())?;
-
-                let item_id = object
-                    .get("item_id")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .ok_or_else(|| "Each batch relink item requires item_id.".to_string())?
-                    .to_string();
-
-                if item_id.chars().count() > 240 {
-                    return Err("Premiere batch relink item id is too long.".into());
-                }
-
-                let new_path_raw = object
-                    .get("new_path")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .ok_or_else(|| "Each batch relink item requires new_path.".to_string())?
-                    .to_string();
-                let new_path = absolute_path(new_path_raw)?;
-
-                if !Path::new(&new_path).is_file() {
-                    return Err(format!("Premiere batch relink media file does not exist: {new_path}"));
-                }
-
-                let override_compatibility = object
-                    .get("override_compatibility")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-
-                validated.push(json!({
-                    "itemId": item_id,
-                    "newPath": new_path,
-                    "overrideCompatibility": override_compatibility
-                }));
-            }
-
-            (
-                ToolAction::PremiereBatchRelink { items: validated.clone() },
-                "Batch relink Premiere media".to_string(),
-                format!("Relink {} Premiere project item(s).", validated.len()),
-                RiskLevel::High,
-            )
+            // No source content is mutated here. Reject duplicates, dirty source
+            // paths and unsafe aggregate byte budgets before owner approval.
+            premiere_batch_relink::validate_entries(&entries)?;
+            let items=entries.iter().map(|entry|serde_json::to_value(entry)
+                .map_err(|e|e.to_string())).collect::<Result<Vec<_>,_>>()?;
+            (ToolAction::PremiereBatchRelink{items},
+                "Batch relink exact Premiere media".into(),
+                format!("Relink {} exact native clip IDs from individually inspected source paths. All source SHA256s verified before Adobe mutation, one checkpoint and one final project save. Partial edits are retained and not retried automatically.",entries.len()),
+                RiskLevel::High)
         }
         "premiere_batch_attach_proxy" => {
             let items = proposal.arguments
@@ -16530,62 +16489,111 @@ try {{
             })
         }
         ToolAction::PremiereBatchRelink { items } => {
-            let _guard = state.media_prep_running.begin(&state.media_prep_cancelled)?;
-            let backup = backup_premiere_project(&premiere_bridge).await?;
-            let total = items.len();
-            let mut results = Vec::with_capacity(total);
-            let mut failures = 0_usize;
-
-            for item in items {
-                if state.media_prep_cancelled.load(Ordering::Acquire) { break; }
-                let item_id = item.get("itemId").and_then(Value::as_str).unwrap_or_default().to_string();
-                match premiere_bridge.request(
-                    "relink_media",
-                    item.clone(),
-                    Duration::from_secs(30),
-                ).await {
-                    Ok(result) => {
-                        let verified=result.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
-                        results.push(json!({
-                            "itemId":item_id,"success":verified,"uncertain":!verified,"result":result
-                        }));
-                        if !verified {
-                            failures += 1;
+            let _guard=state.media_prep_running.begin(&state.media_prep_cancelled)?;
+            let entries=items.iter().cloned().map(serde_json::from_value::<premiere_batch_relink::Entry>)
+                .collect::<Result<Vec<_>,_>>()
+                .map_err(|e|format!("Corrupt approved Premiere batch relink item: {e}"))?;
+            let proofs=premiere_batch_relink::fingerprint_sources(&entries)?;
+            let backup=backup_premiere_project(&premiere_bridge).await?;
+            let ctx=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let project_path=ctx.get("projectPath").and_then(Value::as_str)
+                .filter(|s|!s.is_empty()).ok_or("Batch relink requires a saved .prproj.")?.to_string();
+            let project_guid=ctx.get("projectGuid").and_then(Value::as_str)
+                .filter(|s|!s.is_empty()).ok_or("Batch relink requires project GUID.")?.to_string();
+            let sequence_guid=ctx.pointer("/activeSequence/guid").and_then(Value::as_str).map(str::to_owned);
+            let project_before=premiere_project_persistence::fingerprint(&project_path)?;
+            let total=entries.len();
+            let mut results=Vec::with_capacity(total);
+            let mut changed_indices=Vec::with_capacity(total);
+            let mut failures=0usize;
+            let mut cancelled=false;
+            for (index,entry) in entries.iter().enumerate() {
+                if state.media_prep_cancelled.load(Ordering::Acquire) {
+                    cancelled=true;break;
+                }
+                if !premiere_batch_relink::same_source(entry,&proofs[index]) {
+                    failures+=1;
+                    results.push(json!({"itemId":entry.item_id,"success":false,
+                        "uncertain":false,"error":"Approved replacement media changed before native relink."}));
+                    break;
+                }
+                let response=premiere_bridge.request("relink_media",entry.uxp_args(),
+                    Duration::from_secs(30)).await;
+                match response {
+                    Ok(result)=>{
+                        let verified=entry.host_verified(&result)
+                            &&premiere_batch_relink::same_source(entry,&proofs[index]);
+                        results.push(json!({"itemId":entry.item_id,
+                            "success":verified,"uncertain":!verified,"result":result,
+                            "source_sha256":proofs[index].sha256}));
+                        if !verified{
+                            failures+=1;
                             break;
                         }
-                    },
-                    Err(error) => {
-                        failures += 1;
-                        results.push(json!({
-                            "itemId": item_id,
-                            "success": false,
-                            "error": error
-                        }));
+                        changed_indices.push(index);
+                    }
+                    Err(error)=>{
+                        failures+=1;
+                        results.push(json!({"itemId":entry.item_id,"success":false,
+                            "uncertain":true,"error":error,"retry_safe":false}));
                         break;
                     }
                 }
             }
-
-            Ok(ActionResult {
-                success: failures == 0 && results.len() == total,
-                tool,
-                stdout: serde_json::to_string_pretty(&json!({
-                    "backup": backup,
-                    "total": total,
-                    "succeeded": results.len().saturating_sub(failures),
-                    "processed": results.len(),
-                    "unattempted": total.saturating_sub(results.len()),
-                    "uncertain": failures > 0,
-                    "failed": failures,
-                    "items": results
-                })).unwrap_or_default(),
-                stderr: if failures == 0 && results.len() == total {
-                    String::new()
-                } else {
-                    format!("{failures} of {total} Premiere relink operations failed or remained unverified; successful earlier items were not rolled back.")
-                },
-                exit_code: Some(if failures == 0 && results.len() == total { 0 } else { 1 }),
-            })
+            // Partial mutations remain in the open Adobe project. A verified
+            // subset is saved once, while overall batch success stays false.
+            let save=if changed_indices.is_empty(){None}else{
+                Some(premiere_bridge.request("save_project",json!({}),Duration::from_secs(20)).await)
+            };
+            let saved=save.as_ref().is_some_and(|s|s.as_ref().is_ok_and(|v|
+                v.get("saved").and_then(Value::as_bool)==Some(true)
+                &&v.get("projectPath").and_then(Value::as_str)==Some(project_path.as_str())));
+            let after_context=if !changed_indices.is_empty(){
+                premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await.ok()
+            }else{None};
+            let identity_retained=after_context.as_ref().is_some_and(|v|
+                v.get("projectGuid").and_then(Value::as_str)==Some(project_guid.as_str())
+                &&v.get("projectPath").and_then(Value::as_str)==Some(project_path.as_str())
+                &&v.pointer("/activeSequence/guid").and_then(Value::as_str)==sequence_guid.as_deref());
+            let persisted=if !changed_indices.is_empty(){
+                match premiere_project_persistence::fingerprint(&project_path){
+                    Ok(after)=>premiere_project_persistence::assess(
+                        &project_before,&after,saved&&identity_retained,&project_path),
+                    Err(error)=>json!({"persistence_verified":false,"error":error})
+                }
+            }else{json!({"persistence_verified":false,"reason":"No native relinks verified."})};
+            let mut after_save_verified=true;
+            for index in &changed_indices {
+                let entry=&entries[*index];
+                let current=premiere_bridge.request("inspect_media_interpretation",
+                    json!({"itemId":entry.item_id}),Duration::from_secs(12)).await;
+                let verified=current.as_ref().is_ok_and(|value|entry.post_save_verified(value))
+                    &&premiere_batch_relink::same_source(entry,&proofs[*index]);
+                if !verified{after_save_verified=false;}
+                results[*index]["post_save_item_verified"]=json!(verified);
+                results[*index]["saved_project_persistence_verified"]=json!(
+                    persisted.get("persistence_verified").and_then(Value::as_bool)==Some(true));
+                if let Ok(value)=current {results[*index]["post_save_readback"]=value;}
+            }
+            let completed=failures==0&&!cancelled&&changed_indices.len()==total;
+            let durable=completed&&saved&&identity_retained&&after_save_verified
+                &&persisted.get("persistence_verified").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{success:durable,tool,
+                stdout:json!({"backup":backup,"total":total,"processed":results.len(),
+                    "verified_before_save":changed_indices.len(),
+                    "unattempted":total.saturating_sub(results.len()),
+                    "failed":failures,"cancelled":cancelled,
+                    "partial_host_mutations_possible":!completed,
+                    "project_save_attempted":save.is_some(),
+                    "project_saved":saved,"identity_retained":identity_retained,
+                    "project_persistence":persisted,
+                    "post_save_item_checks_pass":after_save_verified,
+                    "batch_durable_verified":durable,
+                    "items":results,"retry_safe":false,
+                    "note":"A partial batch is never automatically rolled back or retried. Successful earlier relinks may have been persisted once; inspect exact items and backup before resuming."}).to_string(),
+                stderr:if durable{String::new()}else{
+                    "Batch relink incomplete, cancelled or not durably verified; inspect host items and backup before a new approved action.".into()},
+                exit_code:Some(if durable{0}else{1})})
         }
         ToolAction::PremiereBatchAttachProxy { items } => {
             let _guard = state.media_prep_running.begin(&state.media_prep_cancelled)?;
