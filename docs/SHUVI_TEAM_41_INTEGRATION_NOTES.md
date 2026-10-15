@@ -65,9 +65,9 @@ and a `checkpoint_reopen` field; other workers must never invent these.
 - The existing native 120 s deadline / 4 GB watchdog also covers reopen.
   Large project save+reopen can exceed this bound and must fail closed;
   no automatic retry of partially completed mutations.
-- Following milestones: process-owned persistent sessions with auth/consent
-  boundaries; full output manifest schema with action lineage; explicit
-  disposable Windows save/reopen/render acceptance.
+- Subsequent milestones are persistent-session acceptance on an explicitly
+  approved disposable Windows Blender host, robust visual QA and separate
+  Adobe import authorization; the typed manifest described below is present.
 
 ## Test proof
 
@@ -174,3 +174,47 @@ production hardened or Windows Live Verified.
 No private Avantika Verse assets, customer data, paid APIs or unrelated
 repositories are modified or used for tests. Main and other team branches
 remain unchanged; PR #19 stays **DRAFT**, no integration or merge.
+
+
+## Milestone — typed verified artifact handoff, no automatic import
+
+`src-tauri/src/blender_artifact_manifest.rs` is a deterministic native
+handoff constructor used by BOTH the legacy approved `blender_run_plan` and
+persistent approved `blender_session_plan`. It does not perform any filesystem
+writes, UI operations or uploads. Team-38 scheduler / team-40 Adobe workers
+can consume the `artifact_manifest` field *after* explicit downstream
+authorization; the artifact must be re-verified before later use.
+
+Version-1 schema includes:
+
+- `schema_version=1`, `producer="shuvi41.blender"`,
+  `status="verified"`, mandatory **canonical native action UUID**,
+  optional exact Blender session UUID.
+- Canonical absolute output path inside the approved output directory,
+  strict `BLEND|PNG` format, real file size and SHA-256; PNG color,
+  bit depth and bounded dimensions when present.
+- Evidence of independent native SHA-256 readback, typed step count,
+  non-destructive policy, and **independently reopened** `.blend` scene
+  fingerprint/object count where applicable.
+- Explicit `requires_new_action_approval=true`,
+  `import_performed=false`, `target_application=null`,
+  `host_live_acceptance_proven=false`,
+  `visual_quality_verified=false`.
+
+Rust rejects missing/malformed action IDs, forged session IDs, stale file
+SHA-256/size, outputs outside the approved directory, symbolic-link output
+paths, untrusted/partial plan receipts, and missing reopen proof. The
+native manifest is a **claim tied to fresh checked filesystem bytes when
+created**, not proof of subsequent file immutability. Consumers MUST re-hash
+the file before importing; a manifest alone is **not** permission to edit,
+render, move files or operate Premiere/After Effects.
+
+Four native unit tests exercise a real disposable filesystem fixture for
+valid manifest construction, output tampering/escape, missing reopen
+proof/invalid UUID, and untrusted/incomplete receipts. Frontend source tests
+check both execution paths and explicitly disallow false import claims.
+No real Blender executable or AntCloud instance was started to run them.
+
+Review exact new module registration in `src-tauri/src/lib.rs` together
+with the original shared ToolAction insertion before eventual integration.
+Branch remains unmerged and runtime acceptance **LIVE UNVERIFIED**.
