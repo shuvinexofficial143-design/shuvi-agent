@@ -709,6 +709,25 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      clearPending();
      return;
     }
+    // Approvals may sit for hours. Revalidate window and UIA evidence TTL
+    // after Allow once and BEFORE the durable execution intent.
+    if(current.proposal){
+     const gates=[checkAmbiguousReadWindow(current.proposal,activeObservedWindows(current.threadId)),
+      checkObservedMutationTarget(current.proposal,activeObservedWindows(current.threadId)),
+      nativeControlGate(current.threadId,current.proposal),
+      nativeReadbackGate(current.threadId,current.proposal)];
+     const rejected=gates.find(x=>!x.allowed);
+     if(rejected){
+      try{await invoke<void>("deny_action",{actionId:current.action.id});}catch{/* fail closed */}
+      await persistRecovery(currentBudget,"paused",current.action.id);
+      haltTask(current.threadId,"target_stale_before_execution");
+      appendReply(current.threadId,current.promptIndex,
+       "Native approval target expired or changed: "+rejected.reason+". Nothing executed.");
+      clearPending();
+      return;
+     }
+    }
+    const beforeWindowObservation=observedWindows.get(current.threadId)??null;
     // Crash boundary: after this durable marker, the action MUST be treated
     // as possibly executed until a matching Rust audit proves otherwise.
     // If this write fails, no execute_action IPC is sent.
@@ -721,6 +740,12 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      refreshState("No Windows action executed by Shuvi: journal write failed.");
      clearPending();
      return;
+    }
+    // Attempting a mutation/new observation invalidates old UIA controls,
+    // even if Rust throws and the native outcome becomes unknown.
+    if(needsUiReadback(current.action.kind)||current.action.kind==="ui_discover"||
+       current.action.kind==="ui_windows"){
+     if(observedControls.has(current.threadId))observedControls.set(current.threadId,null);
     }
     // Once a mutation is attempted, even a thrown native result may have changed the UI.
     if(requiresNewWindowObservation(observedWindows.has(current.threadId),current.action.kind)){
@@ -768,6 +793,19 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       if(proof)verifiedWindows.set(current.threadId,proof);
       else verifiedWindows.delete(current.threadId);
       goalStatus.textContent=proof?redactNativeMessage(goalEvidenceLabel(current.objective,proof)):taskGoalLabel(current.objective);
+     }
+     if(result.tool==="ui_discover"&&current.proposal){
+      const title=(current.proposal.arguments as Record<string,unknown>|undefined)?.window;
+      observedControls.set(current.threadId,newAuditedControlObservation(
+       result,current.action.id,title,observedWindows.get(current.threadId)??null));
+     }
+     if(needsUiReadback(result.tool)&&current.proposal){
+      pendingUiReadback.set(current.threadId,newPendingUiReadback(
+       current.action.id,current.proposal,beforeWindowObservation));
+     }else if((result.tool==="ui_find"||result.tool==="ui_discover")&&current.proposal){
+      const prior=pendingUiReadback.get(current.threadId)??null;
+      if(prior)pendingUiReadback.set(current.threadId,auditUiReadback(
+       prior,current.proposal,result,observedWindows.get(current.threadId)??null));
      }
     }
     else {
@@ -997,6 +1035,10 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       if(!readGate.allowed)throw Error("Ambiguous window lookup: "+readGate.reason);
       const gate=checkObservedMutationTarget(response.tool_proposal,activeObservedWindows(threadId));
       if(!gate.allowed)throw Error("Unsafe or ambiguous UI target: "+gate.reason);
+      const controlGate=nativeControlGate(threadId,response.tool_proposal);
+      if(!controlGate.allowed)throw Error("Unsafe UIA control: "+controlGate.reason);
+      const readbackGate=nativeReadbackGate(threadId,response.tool_proposal);
+      if(!readbackGate.allowed)throw Error("UIA readback required: "+readbackGate.reason);
       const first=fingerprint(response.tool_proposal);
       if(!first)throw Error("Invalid or oversized native tool proposal.");
       if(!canStageNativeAction(taskBudget))throw Error("Owner-selected Windows action budget exhausted; no tool staged.");
