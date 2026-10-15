@@ -24,10 +24,14 @@ pub(crate) fn verify_output(output:&Value,root:&Path)->Result<(),String>{
             let proof=output.get("checkpoint_reopen").ok_or("Independent Blender checkpoint reopen proof missing.")?;
             let fingerprint=proof.get("fingerprint").and_then(Value::as_str)
                 .ok_or("Blender reopen scene fingerprint missing.")?;
+            let mesh_fingerprint=proof.get("mesh_fingerprint").and_then(Value::as_str)
+                .ok_or("Blender reopen mesh fingerprint missing.")?;
             if proof.get("verified").and_then(Value::as_bool)!=Some(true)
                 || proof.get("read_only").and_then(Value::as_bool)!=Some(true)
                 || !fingerprint.bytes().all(|c|c.is_ascii_hexdigit())
                 || fingerprint.len()!=64
+                || mesh_fingerprint.len()!=64
+                || !mesh_fingerprint.bytes().all(|c|c.is_ascii_hexdigit())
                 || proof.get("object_count").and_then(Value::as_u64).is_none_or(|n|n>1000)
                 || proof.get("mesh_geometry_verified").and_then(Value::as_bool)!=Some(true)
                 || proof.get("mesh_count").and_then(Value::as_u64).is_none_or(|n|n>64)
