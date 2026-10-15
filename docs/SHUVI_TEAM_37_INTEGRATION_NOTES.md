@@ -62,3 +62,18 @@ Shared file edits (exact points):
 
 **Required future integration acceptance:** (1) Owner's Hindi Premiere project/save brief is retained as the task identity across crash/restart; (2) a graph with Blender execution under a Premiere-only brief is refused before native prepare; (3) two valid typed audited steps cannot make a project/export goal succeed without independently checked output; (4) Rust task-scoped grants are validated and revocable by Rust and do not bypass per-action approvals before that backend exists.
 
+## Third milestone — Rust-owned bounded read consent (15 October 2026)
+
+Security finding at start: prior exact read grants lived entirely in the frontend's \`task-permission-scope.mjs\`; neither their TTL nor exact key was enforced by the native Rust action executor. The existing normal \`Allow once\` path remains the permission for all non-read and ungranted actions.
+
+**Rust action boundary implemented:**
+- \`src-tauri/src/native_task_grant.rs\` new Rust-only grant store. A grant is issued for an already prepared, natively **LOW risk** action in one of twelve exact typed read families. The signature is SHA-256 of canonical Rust-serialized tool and arguments. Limits: 5 minutes, eight uses, 24 concurrent grants, per-task UUID. No wildcard, path prefix, app family, write, export, UI click, PowerShell, model-generated grant, or persistent grant file.
+- \`src-tauri/src/lib.rs\` exposes \`issue_task_read_grant\` and \`revoke_task_read_grants\` only inside the native Tauri command router. The exact signed read identity is captured when \`stage_tool\` validates its typed payload/risk, NOT computed from untrusted UI text. \`execute_action\` accepts optional \`grantId/taskId\` for reuse and checks both atomically with the pending action and native scheduler preflight *before* the Rust worker starts. Ungranted owner \`Allow once\` remains supported. The Rust grant table is memory-only and therefore unavailable after restart.
+- \`src/main.ts\` allows grant issuance **only** from the owner's explicit \`#chatAllowSession\` button. The first clicked action still uses the ordinary one-time execution path. Subsequent exact low-risk reads pass the native task/grant UUID pair on the existing \`execute_action\` call; a failed/missing grant stops before execution. On owner Stop, Deny, task rotation, browser session reset or checkpoint completion, local read grants are dropped and Rust revocation requested. Remote task approval cannot create a read grant.
+- \`scripts/native-task-read-grant.test.mjs\` checks source wiring and forbidden tool scope, plus four Rust unit tests in \`native_task_grant.rs\` exercise exact argument changes, foreign tasks, TTL exhaustion, revocation, and issue limits.
+
+**Boundaries:** This is a **narrow read-only task grant**, NOT a general unattended native mutation grant. It never means Adobe editing/export can automatically run. Manual \`Allow once\` actions do not carry a reusable grant. A full delegated mutation grant would require a separate native owner-approved and tool/path-scoped policy and real Windows safety review.
+
+**Regression fixed:** Last team's \`agent-orchestrator.ts\` missing comma in the Master's context array caused Web Dashboard CI failure (\`TS1005\`). Corrected before this milestone's CI rerun.
+
+**CI requirement:** Do not call this fully verified until both Node frontend tests/typecheck and Windows Rust tests complete on the exact feature-branch commit, and do not call it live Windows verified without real application acceptance.
