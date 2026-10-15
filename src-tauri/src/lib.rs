@@ -13050,7 +13050,9 @@ try {{
         }
         ToolAction::PremiereCreateProject{path} => {
             premiere_project_lifecycle::preflight_create(&path)?;
-            let host=premiere_bridge.request("create_project",json!({"path":path}),Duration::from_secs(75)).await?;
+            // New-project creation has no existing project/sequence expectation.
+            // Approval, exclusive native lease and authenticated action allowlist still apply.
+            let host=state.premiere_bridge.request("create_project",json!({"path":path}),Duration::from_secs(75)).await?;
             let proof=premiere_project_lifecycle::assess_create(&path,&host);
             let verified=proof.get("project_verified").and_then(Value::as_bool)==Some(true);
             Ok(ActionResult{success:verified,tool,
@@ -13062,7 +13064,9 @@ try {{
         }
         ToolAction::PremiereOpenProject{path} => {
             let before=premiere_project_lifecycle::preflight_open(&path)?;
-            let host=premiere_bridge.request("open_project",json!({"path":path}),Duration::from_secs(75)).await?;
+            // Switching projects is not a mutation of the previously active sequence;
+            // bind to the exact requested path and independent host/disk readback.
+            let host=state.premiere_bridge.request("open_project",json!({"path":path}),Duration::from_secs(75)).await?;
             let proof=premiere_project_lifecycle::assess_open(&path,&before,&host);
             let verified=proof.get("project_verified").and_then(Value::as_bool)==Some(true);
             Ok(ActionResult{success:verified,tool,
