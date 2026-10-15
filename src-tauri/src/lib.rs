@@ -2,6 +2,7 @@
 
 mod web_bridge;
 mod target_window_capture;
+mod native_uia_window_guard;
 mod remote_agent;
 mod blender_worker;
 mod blender_plan_worker;
@@ -10758,7 +10759,8 @@ $items | ConvertTo-Json -Compress"#
         }
         ToolAction::UiClick { name, automation_id, window } => {
             let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
-            let root_script = ui_root_script(window.as_deref());
+            let root_script = native_uia_window_guard::guarded_mutation_root(
+                window.as_deref(), ui_root_script(window.as_deref()))?;
             let script = format!(
                 r#"Add-Type -AssemblyName UIAutomationClient
 {condition}
@@ -10767,6 +10769,7 @@ $matches = Resolve-ShuviUiMatches -root $root -condition $condition
 if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Use automation_id or a more specific selector.') }}
 $e = $matches.Item(0)
+Assert-ShuviNativeTarget -root $root -element $e
 if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
 $pattern = $null
 if ($e.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {{
@@ -10798,7 +10801,8 @@ if ($e.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, 
         }
         ToolAction::UiSetValue { name, automation_id, window, value } => {
             let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
-            let root_script = ui_root_script(window.as_deref());
+            let root_script = native_uia_window_guard::guarded_mutation_root(
+                window.as_deref(), ui_root_script(window.as_deref()))?;
             let escaped_value = ps_single_quote(&value);
             let script = format!(
                 r#"Add-Type -AssemblyName UIAutomationClient
@@ -10808,6 +10812,7 @@ $matches = Resolve-ShuviUiMatches -root $root -condition $condition
 if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Use automation_id or a more specific selector.') }}
 $e = $matches.Item(0)
+Assert-ShuviNativeTarget -root $root -element $e
 if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
 $pattern = $null
 if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) {{
@@ -10835,7 +10840,8 @@ if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Patte
         }
         ToolAction::UiFocus { name, automation_id, window } => {
             let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
-            let root_script = ui_root_script(window.as_deref());
+            let root_script = native_uia_window_guard::guarded_mutation_root(
+                window.as_deref(), ui_root_script(window.as_deref()))?;
             let script = format!(
                 r#"Add-Type -AssemblyName UIAutomationClient
 {condition}
@@ -10844,6 +10850,7 @@ $matches = Resolve-ShuviUiMatches -root $root -condition $condition
 if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Use automation_id, window, or a more specific selector.') }}
 $e = $matches.Item(0)
+Assert-ShuviNativeTarget -root $root -element $e
 if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
 $e.SetFocus()
 'Focused element: ' + $e.Current.Name"#
@@ -10867,7 +10874,8 @@ $e.SetFocus()
         }
         ToolAction::UiScroll { name, automation_id, window, vertical } => {
             let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
-            let root_script = ui_root_script(window.as_deref());
+            let root_script = native_uia_window_guard::guarded_mutation_root(
+                window.as_deref(), ui_root_script(window.as_deref()))?;
             let amount = match vertical.as_str() {
                 "small_increment" => "SmallIncrement",
                 "small_decrement" => "SmallDecrement",
@@ -10884,6 +10892,7 @@ $matches = Resolve-ShuviUiMatches -root $root -condition $condition
 if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Use automation_id, window, or a more specific selector.') }}
 $e = $matches.Item(0)
+Assert-ShuviNativeTarget -root $root -element $e
 $pattern = $null
 if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern, [ref]$pattern)) {{
     throw 'Matching element does not expose ScrollPattern.'
@@ -10913,7 +10922,8 @@ if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ScrollPattern]::Patt
         }
         ToolAction::UiToggle { name, automation_id, window } => {
             let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
-            let root_script = ui_root_script(window.as_deref());
+            let root_script = native_uia_window_guard::guarded_mutation_root(
+                window.as_deref(), ui_root_script(window.as_deref()))?;
             let script = format!(
                 r#"Add-Type -AssemblyName UIAutomationClient
 {condition}
@@ -10922,6 +10932,7 @@ $matches = Resolve-ShuviUiMatches -root $root -condition $condition
 if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Refine the selector.') }}
 $e = $matches.Item(0)
+Assert-ShuviNativeTarget -root $root -element $e
 if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
 $pattern = $null
 if (-not $e.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$pattern)) {{
@@ -10949,7 +10960,8 @@ if (-not $e.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Patt
         }
         ToolAction::UiExpandCollapse { name, automation_id, window, action } => {
             let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
-            let root_script = ui_root_script(window.as_deref());
+            let root_script = native_uia_window_guard::guarded_mutation_root(
+                window.as_deref(), ui_root_script(window.as_deref()))?;
             let method = if action == "expand" { "Expand" } else { "Collapse" };
 
             let script = format!(
@@ -10960,6 +10972,7 @@ $matches = Resolve-ShuviUiMatches -root $root -condition $condition
 if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Refine the selector.') }}
 $e = $matches.Item(0)
+Assert-ShuviNativeTarget -root $root -element $e
 if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
 $pattern = $null
 if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$pattern)) {{
@@ -10988,7 +11001,8 @@ $expand.{method}()
         }
         ToolAction::UiSendKeys { name, automation_id, window, keys } => {
             let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
-            let root_script = ui_root_script(window.as_deref());
+            let root_script = native_uia_window_guard::guarded_mutation_root(
+                window.as_deref(), ui_root_script(window.as_deref()))?;
             let escaped_keys = ps_single_quote(&keys);
 
             let script = format!(
@@ -11000,9 +11014,11 @@ $matches = Resolve-ShuviUiMatches -root $root -condition $condition
 if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Refine the selector.') }}
 $e = $matches.Item(0)
+Assert-ShuviNativeTarget -root $root -element $e
 if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
 $e.SetFocus()
 Start-Sleep -Milliseconds 80
+Assert-ShuviNativeTarget -root $root -element $e -requireForeground
 [System.Windows.Forms.SendKeys]::SendWait('{escaped_keys}')
 'Keyboard fallback sent to element: ' + $e.Current.Name"#
             );
