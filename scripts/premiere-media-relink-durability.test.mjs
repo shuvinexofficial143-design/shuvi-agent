@@ -104,3 +104,24 @@ test("read-only audit is a distinct registered low risk native tool",()=>{
   assert.match(uxp,/case "inspect_project_media_audit":/);
   assert.match(uxp,/inspectionOnly:true,editingAuthorized:false/);
 });
+
+test("persisted project media audit is read-only and requires exact four-way evidence",()=>{
+  const start=native.indexOf('ToolAction::PremiereVerifySavedMedia{project_path');
+  const end=native.indexOf('ToolAction::PremiereRelinkMedia { item_id, new_path',start);
+  assert.ok(start>=0&&end>start);
+  const verify=native.slice(start,end);
+  assert.match(verify,/premiere_project_lifecycle::preflight_open/);
+  assert.match(verify,/premiere_media_relink::fingerprint/);
+  assert.match(verify,/request\("inspect_context"/);
+  assert.match(verify,/request\("inspect_media_interpretation"/);
+  assert.match(verify,/assess_saved_media/);
+  assert.match(verify,/files_unchanged/);
+  assert.match(verify,/fresh_session_proven":false/);
+  assert.doesNotMatch(verify,/request\("save_project"/);
+  assert.doesNotMatch(verify,/request\("relink_media"/);
+  assert.match(sha,/host_project_identity_matches/);
+  assert.match(sha,/disk_project_fingerprint_matches/);
+  assert.match(sha,/media_source_sha256_matches/);
+  assert.match(sha,/host_media_item_online_matches/);
+  assert.match(native,/"premiere_verify_saved_media"/);
+});
