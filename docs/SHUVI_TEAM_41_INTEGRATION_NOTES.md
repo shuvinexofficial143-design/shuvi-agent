@@ -321,3 +321,57 @@ already exist, and output files must be new, never overwritten.
 tests. The plan-only scenario requires an explicitly authorized disposable
 Windows host for live acceptance. A plan being syntactically valid does not
 prove Blender scene edits, project reopen, render quality, or system readiness.
+
+
+## Team 41 continuation — Native three-stage acceptance receipt consistency gate
+
+New \`src-tauri/src/blender_acceptance_chain.rs\` is a native, bounded,
+**read-only evidence reviewer** exposed as
+\`blender_review_acceptance_chain\` through ordinary native ToolAction parsing,
+approval and dispatch (no new runtime process, no Blender launch). It expects
+exactly three separately generated native \`blender_session_plan\` receipts
+plus one pre-existing approved output directory. It does not accept an
+unbounded catalog or inferred stage order.
+
+To pass the gate all of the following must hold:
+
+- Stage files are precisely \`shuvi41-proof-stage1.blend\`,
+  \`shuvi41-proof-stage2.blend\` and \`shuvi41-proof-render.png\` inside
+  the approved root. Existing \`artifact_manifest\` verification re-reads
+  actual on-disk bytes and SHA-256 for *each* stage before comparing anything.
+- Each native receipt has verified status and full-plan completion, an exact
+  canonical action UUID, session UUID and a matching manifest. Distinct
+  action IDs are required for each stage; the first two sessions must be the
+  **same**, and the render session must be **different**.
+- Both saved geometry stages require independent read-only reopen evidence,
+  bounded mesh/vertex/face counters and different stable scene fingerprints
+  and saved file hashes. No render result is marked verified if its image
+  metadata differs from 64×64 RGBA8.
+- The returned \`status=receipt_chain_consistent\` means only *current file
+  bytes and internally supplied receipt relationships are consistent*. It
+  explicitly says \`historical_owner_approval_reauthenticated=false\`,
+  \`render_source_stage2_binding_proven=false\`,
+  \`live_blender_runtime_verified_by_this_review=false\`,
+  \`visual_quality_verified=false\`, \`import_performed=false\`.
+  Review must not be promoted to live runtime acceptance without original
+  native audit lookup and independently confirmed stage2 input loading.
+
+**Additional Rust file structure safety:** The native
+\`blender_plan_worker::verify_output\` previously rehashed each saved file
+without independently inspecting its signature. It now checks actual .blend
+magic, pointer-size/endian flags and three version digits, and PNG's 8-byte
+signature and IHDR width, height, RGBA8 color type and encoding fields
+before accepting the matching file SHA. This detects wrong-header/mismatched
+metadata files; it is not a full .blend or PNG decoder, and artifact SHA
+alone never proves semantic model correctness.
+
+Dedicated Rust unit tests use disposable synthetic .blend headers and a
+real generated 64×64 transparent PNG to verify the native structural
+reviewer's happy path, wrong session/action IDs, forged geometry hashes,
+altered image bytes, swapped stage ordering and wrong approved root.
+Node source tests verify typed routing and structural guard presence.
+
+The review action does not import into Adobe, verify paid host state, create
+new checkpoints or exercise real Blender. It leaves the user's existing
+assets, other teams' branches and main untouched. Do not claim a real
+end-to-end Blender acceptance test has been run from these fixtures.
