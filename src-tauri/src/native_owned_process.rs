@@ -199,7 +199,7 @@ impl Drop for OwnedProcess{
         // Fail closed if an OS stop/reap operation failed: the current
         // process must not hand its slot to a competing owned child.
         let stopped=self.final_phase.is_some()
-            ||self.stop_direct_child("cancelled").is_ok();
+            ||self.stop_owned_tree("cancelled").is_ok();
         if stopped {
             if let Ok(mut owner)=PROCESS_OWNER.lock(){
                 if owner.active.as_deref()==Some(self.action_id.as_str()){
