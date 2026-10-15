@@ -84,6 +84,65 @@ Cross-team integration must review potential overlapping edits to the import,
 `compactObservedUi`, `observedWindows` Map and `decide()` block. The
 session data stays WebView-local; no implicit cross-branch integration.
 
+## Milestone 3 — UIA control grounding, approval expiry and post-mutation readback
+
+- New `web-dashboard/src/native-ui-control-session.mjs` ingests the actual
+  successfully audited `ui_discover` output into a bounded, immutable
+  45-second control inventory. Each selected control carries Name,
+  AutomationId, ControlType, enabled and offscreen state; the inventory is
+  bound to the exact observed WindowObservation source action, HWND and PID.
+- On supported selector-based UIA mutations (`ui_click`, `ui_set_value`,
+  `ui_toggle`, `ui_focus`, `ui_expand_collapse`, `ui_scroll`), previously
+  discovered controls must match exactly one observed selector in the same
+  window. Duplicated names, disabled/offscreen controls, stale inventory,
+  cross-process/title rebinding and mismatched selectors are rejected.
+  Prior to the first `ui_discover`, existing Rust exact UIA matching stays
+  operative; a failed attempted UIA discovery never grants a fallback.
+- The existing Native Agent now keeps the model's exact proposed tool input
+  alongside the Rust Prepared Action ID *within the same task only*. After
+  owner approval, and **before** writing execution intent, it rechecks
+  WindowObservation freshness, UIA control evidence and outstanding readback.
+  Existing Rust consent, receipts, budget, durable recovery and execution
+  lease still enforce the actual IPC call.
+- New `web-dashboard/src/native-ui-readback-session.mjs` records an
+  audited UI mutation's target HWND/PID and exact source action, requires
+  a separately approved/read-audited `ui_find` or `ui_discover` in that
+  same still-current target before the next mutation, and does not confuse
+  another `ui_windows` listing with proof of a control state.
+  Readback **does not assert that intended UI state changed**, only that a
+  fresh independent control inspection occurred. Project/output checks
+  remain necessary before claiming user task completion.
+- `native-agent.ts` clears UIA controls on **attempted** mutations,
+  window refresh and control rediscovery—even if an exception happens.
+  It records verified control observations and clears pending readback
+  only after the exact audited read action and HWND/PID match.
+  Owner-denied and failed/unknown native actions are never retried.
+- `scripts/shuvi39-ui-control-readback.test.mjs` exercises same-target
+  selector resolution, repeated labels, disabled/hidden roles, TTL,
+  changed native HWND/PID, malformed read output and required post-action
+  readback without granting any new consent.
+
+### Integration overlap (shared `native-agent.ts`)
+
+Exact shared wiring touched: imports, `PendingTask.proposal`, per-thread
+observation maps and cleanup, `compactObservedUi` role metadata,
+`continueAfterVerifiedAction` action staging and Master guidance, first-tool
+preparation, approval-time target checks, and the post-audit observation
+transition in `decide()`. The native Rust action journal and original action
+UUID remain canonical. Teams 37 and 38 must reconcile this logic explicitly
+in later owner-authorized integration; no shared `main` merge is implied.
+
+### Limitations remaining
+
+Control IDs are observed and compared on the WebView side but current Rust
+UIA actions still resolve from the typed title/selector in their own path.
+A true native IPC contract carrying an expected HWND/PID and verifying it
+atomically at the mutation boundary remains pending. Dynamic editor panels,
+GPU screenshots, accessibility parent/child control ownership, multi-monitor
+coordinate reliability and postcondition-specific UI effect verification
+require owner-authorized Windows host acceptance. Source tests cannot
+be presented as this live verification.
+
 ## Windows acceptance — explicitly NOT YET run
 
 Run only with separate owner consent on a disposable desktop/test fixture.
