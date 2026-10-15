@@ -158,3 +158,24 @@ test("Desktop stages only audit-backed readback through original Rust scheduler/
  assert.match(src,/await invoke<ActionResult>\("execute_action"/);
  assert.match(src,/const receiptMatches = verifiedNativeActionResult/);
 });
+
+test("Native status preflight cannot stage stale readback after Stop or task replacement",()=>{
+ const ui=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
+ const driver=ui.slice(ui.indexOf("async function continueAfterOutcome()"),
+   ui.indexOf("async function stageProposal("));
+ assert.match(driver,/const readbackScope=activePermissionScope/);
+ assert.match(driver,/const readbackGraph=orchestration.task_graph/);
+ assert.match(driver,/const readbackOwner=orchestration.owner_request/);
+ assert.match(driver,/readbackScope!==activePermissionScope/);
+ assert.match(driver,/readbackScope.revoked\|\|cancelRequested/);
+ assert.match(driver,/orchestration.task_graph!==readbackGraph/);
+ assert.match(driver,/orchestration.owner_request!==readbackOwner/);
+ assert.match(driver,/remoteTask!==null/);
+ const checks=[...driver.matchAll(/if\(readbackStale\(\)\)return;/g)];
+ assert.ok(checks.length>=4,"owner identity must be revalidated before and after native awaits");
+ const host=driver.indexOf('invoke<NativeWorkerStatus>("native_worker_status")');
+ const scheduler=driver.indexOf('invoke<NativeSchedule|null>("native_scheduler_status")');
+ const stage=driver.indexOf('await stageProposal(safeReadback,route)');
+ assert.ok(checks.some(x=>x.index>host && x.index<scheduler));
+ assert.ok(checks.some(x=>x.index>scheduler && x.index<stage));
+});
