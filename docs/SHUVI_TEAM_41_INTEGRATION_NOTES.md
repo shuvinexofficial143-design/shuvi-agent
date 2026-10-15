@@ -344,7 +344,10 @@ To pass the gate all of the following must hold:
   action IDs are required for each stage; the first two sessions must be the
   **same**, and the render session must be **different**.
 - Both saved geometry stages require independent read-only reopen evidence,
-  bounded mesh/vertex/face counters and different stable scene fingerprints
+  bounded mesh/vertex/face counters, different scene fingerprints **AND**
+  different mesh-only topology fingerprints (stable name + exact vertex/face
+  geometry digest). This prevents scene metadata or render changes from
+  being mistaken for a successful modeling mutation.
   and saved file hashes. No render result is marked verified if its image
   metadata differs from 64×64 RGBA8.
 - The returned \`status=receipt_chain_consistent\` means only *current file
