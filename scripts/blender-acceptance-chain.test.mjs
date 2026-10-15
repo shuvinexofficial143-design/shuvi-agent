@@ -27,6 +27,8 @@ test("reviewer compares exact separately approved stages, actual current bytes a
     "first_two_same_session",
     "render_uses_different_session",
     "mesh_geometry_verified",
+    "mesh_fingerprint",
+    "topology_fingerprints",
     "scene_fingerprint",
     "current_file_sha256_rechecked",
     "render_source_stage2_binding_proven",
@@ -37,6 +39,7 @@ test("reviewer compares exact separately approved stages, actual current bytes a
   assert.match(manifest,/pub\(crate\) fn reverify\(/);
   assert.match(chain,/sessions\[0\]!=sessions\[1\] \|\| sessions\[2\]==sessions\[1\]/);
   assert.match(chain,/fingerprints\[0\]==fingerprints\[1\]/);
+  assert.match(chain,/topology_fingerprints\[0\]==topology_fingerprints\[1\]/);
 });
 test("native proof refuses fake Blender header and PNG IHDR despite matching extension and supplied hash",()=>{
   for(const guard of [
