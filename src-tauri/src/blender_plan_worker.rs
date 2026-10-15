@@ -58,7 +58,35 @@ pub(crate) fn verify_output(output:&Value,root:&Path)->Result<(),String>{
         return Err("Blender output file type/size does not match the receipt.".into());
     }
     let mut f=File::open(&canonical).map_err(|_|"Blender output could not be verified.".to_string())?;
+    // Never rely on a filename/worker JSON alone: independently parse the
+    // fixed-length Blender or PNG signature and metadata before hashing.
+    // This is a structure/header check, NOT a full Blender/PNG decoder.
+    let prefix_len=if kind=="BLEND"{12usize}else{33usize};
+    let mut prefix=[0u8;33];
+    f.read_exact(&mut prefix[..prefix_len])
+        .map_err(|_|"Blender output is too short for its claimed file format.".to_string())?;
+    if kind=="BLEND" {
+        if &prefix[..7]!=b"BLENDER"
+            || !matches!(prefix[7],b'-'|b'_')
+            || !matches!(prefix[8],b'v'|b'V')
+            || !prefix[9..12].iter().all(u8::is_ascii_digit) {
+            return Err("Blender output has an invalid .blend header.".into());
+        }
+    }else{
+        let w=u32::from_be_bytes(prefix[16..20].try_into().map_err(|_|"Invalid PNG width.")?);
+        let h=u32::from_be_bytes(prefix[20..24].try_into().map_err(|_|"Invalid PNG height.")?);
+        if &prefix[..8]!=b"\x89PNG\r\n\x1a\n"
+            || &prefix[8..12]!=13u32.to_be_bytes().as_slice()
+            || &prefix[12..16]!=b"IHDR"
+            || w as u64!=artifact["width"].as_u64().unwrap_or(0)
+            || h as u64!=artifact["height"].as_u64().unwrap_or(0)
+            || prefix[24]!=8 || prefix[25]!=6
+            || prefix[26]!=0 || prefix[27]!=0 || prefix[28]>1 {
+            return Err("Blender PNG IHDR does not match the claimed RGBA8 render.".into());
+        }
+    }
     let mut hasher=Sha256::new();
+    hasher.update(&prefix[..prefix_len]);
     let mut buf=[0u8;65536];
     loop {
         let n=f.read(&mut buf).map_err(|_|"Blender artifact readback failed.".to_string())?;
