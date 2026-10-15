@@ -11,6 +11,9 @@ import json
 from pathlib import Path
 
 MAX_REOPEN_OBJECTS = 1000
+MAX_REOPEN_MESHES = 64
+MAX_REOPEN_TOTAL_VERTICES = 8192
+MAX_REOPEN_TOTAL_FACES = 8192
 PAGE_SIZE = 25
 SCENE_FIELDS = (
     "scene", "blender_version", "cursor", "units", "pivot", "world_present",
@@ -54,6 +57,9 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
         raise ValueError("Blender scene has no stable readback snapshot")
 
     objects = []
+    mesh_count = 0
+    total_vertices = 0
+    total_faces = 0
     offset = 0
     # Even an empty scene is explicitly paged to check the object count.
     while True:
@@ -72,7 +78,46 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
                 raise ValueError("Blender object snapshot was truncated")
             if any(field not in item for field in OBJECT_FIELDS if field not in ("camera", "light")):
                 raise ValueError("Blender object readback missing required fields")
-            objects.append({field: item.get(field) for field in OBJECT_FIELDS})
+            stable = {field: item.get(field) for field in OBJECT_FIELDS}
+            if item.get("type") == "MESH":
+                # Object names, transforms and counts alone DO NOT prove a
+                # modeled mesh survived: read actual vertex/face topology.
+                mesh_count += 1
+                if mesh_count > MAX_REOPEN_MESHES:
+                    raise ValueError("Blender mesh proof exceeds the bounded mesh budget")
+                object_id = item.get("object_id")
+                if not isinstance(object_id, str) or not object_id.startswith(session_id + ":"):
+                    raise ValueError("Blender mesh lacks live session-local object identity")
+                geometry = call("mesh.inspect", {"object_id": object_id})
+                if geometry.get("object_id") != object_id or geometry.get("name") != item["name"]:
+                    raise ValueError("Blender mesh identity changed during geometry inspection")
+                vertices, faces = geometry.get("vertices"), geometry.get("faces")
+                if (not isinstance(vertices, list) or not isinstance(faces, list)
+                        or len(vertices) > 4096 or len(faces) > 4096
+                        or any(not isinstance(vertex, list) or len(vertex) != 3
+                               or any(type(x) not in (int, float) for x in vertex)
+                               for vertex in vertices)
+                        or any(not isinstance(face, list) or not 3 <= len(face) <= 32
+                               or any(type(x) is not int or x < 0 or x >= len(vertices)
+                                      for x in face)
+                               for face in faces)):
+                    raise ValueError("Blender mesh geometry readback is malformed")
+                total_vertices += len(vertices)
+                total_faces += len(faces)
+                if (total_vertices > MAX_REOPEN_TOTAL_VERTICES
+                        or total_faces > MAX_REOPEN_TOTAL_FACES):
+                    raise ValueError("Blender mesh geometry proof exceeds total work budget")
+                mesh_payload = {"vertices": vertices, "faces": faces}
+                geometry_encoded = json.dumps(
+                    mesh_payload, sort_keys=True, separators=(",", ":"), allow_nan=False
+                ).encode("utf-8")
+                digest = hashlib.sha256(geometry_encoded).hexdigest()
+                if digest != geometry.get("geometry_revision"):
+                    raise ValueError("Blender mesh revision differs from actual geometry")
+                stable["geometry_sha256"] = digest
+                stable["vertex_count"] = len(vertices)
+                stable["face_count"] = len(faces)
+            objects.append(stable)
         offset += len(items)
         next_offset = page.get("next_offset")
         if offset == total:
@@ -87,7 +132,9 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
         "objects": objects,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
-    return {"fingerprint": hashlib.sha256(encoded).hexdigest(), "object_count": total}
+    return {"fingerprint": hashlib.sha256(encoded).hexdigest(),
+            "object_count": total, "mesh_count": mesh_count,
+            "total_vertices": total_vertices, "total_faces": total_faces}
 
 
 def reopen_checkpoint(blender_exe: Path, saved: Path, original: dict) -> dict:
@@ -106,4 +153,6 @@ def reopen_checkpoint(blender_exe: Path, saved: Path, original: dict) -> dict:
     if reopened != original:
         raise ValueError("Saved Blender checkpoint content differs after independent reopen")
     return {"verified": True, "fingerprint": reopened["fingerprint"],
-            "object_count": reopened["object_count"], "read_only": True}
+            "object_count": reopened["object_count"], "read_only": True,
+            "mesh_geometry_verified": True, "mesh_count": reopened["mesh_count"],
+            "total_vertices": reopened["total_vertices"], "total_faces": reopened["total_faces"]}
