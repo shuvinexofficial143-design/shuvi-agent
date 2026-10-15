@@ -7,12 +7,14 @@ const grants=readFileSync(new URL("../src-tauri/src/native_task_grant.rs",import
 const ui=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
 
 test("Rust never authorizes a write, UI click, powershell or untyped action under a reused read grant",()=>{
+  // Inspect only the actual production allowlist, not negative Rust test fixtures.
+  const allowlist=grants.slice(grants.indexOf('const READ_TOOLS:'),grants.indexOf('];',grants.indexOf('const READ_TOOLS:'))+2);
   for(const blocked of ['write_file','ui_click','powershell','premiere_insert_media','after_effects_run','blender_run_plan']){
-    assert.equal(grants.includes('"'+blocked+'"'),false,blocked);
+    assert.equal(allowlist.includes('"'+blocked+'"'),false,blocked);
   }
   for(const safe of ['read_file','list_directory','ui_find','list_processes','browser_dom_read',
      'git_status','git_diff','premiere_context']){
-    assert.ok(grants.includes('"'+safe+'"'),safe);
+    assert.ok(allowlist.includes('"'+safe+'"'),safe);
   }
   assert.match(grants,/let raw=serde_json::to_vec\(arguments\)\.ok\(\)\?/);
   assert.match(grants,/hasher\.update\(tool\.as_bytes\(\)\)/);
