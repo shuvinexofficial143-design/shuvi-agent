@@ -79,9 +79,12 @@ export function assessMasterGoalDelivery(ownerRequest,graph) {
   const goal=deriveMasterGoalContract(ownerRequest);
   if(!goal||!graph||!Array.isArray(graph.steps))
     return {verified:false,reason:'Original task or native graph is unavailable.'};
-  if(goal.project||goal.editing||goal.exportFile)
-    return {verified:false,reason:'Project creation, edit and export require independent app-state/artifact acceptance; audited tool steps alone are insufficient.'};
+  if(goal.apps.length&&(goal.project||goal.editing||goal.exportFile))
+    return {verified:false,requiresIndependentAcceptance:true,
+      reason:'Project creation, edit and export require independent app-state/artifact acceptance; audited tool steps alone are insufficient.'};
   if(goal.apps.length===1&&goal.opening)
-    return {verified:false,reason:'An audited UI inspection needs independently matched target-window evidence before the opening goal is verified.'};
-  return {verified:false,reason:'No model-neutral final goal verifier exists for this task type.'};
+    return {verified:false,requiresIndependentAcceptance:false,
+      reason:'An audited UI inspection needs independently matched target-window evidence before the opening goal is verified.'};
+  return {verified:false,requiresIndependentAcceptance:false,
+    reason:'No model-neutral final goal verifier exists for this task type.'};
 }
