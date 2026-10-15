@@ -174,8 +174,8 @@ fn merged(prior:Option<Schedule>,proposed:Option<&Value>)->Result<Schedule,Strin
                 // Abandon ONLY a non-running queue; the old native action
                 // audit/history stays persisted separately. An interrupted
                 // Windows action must be owner-reviewed before a new task.
-                if old.jobs.iter().any(|j|j.phase=="running"){
-                    return Err("A running or interrupted native job blocks task replacement.".into());
+                if old.jobs.iter().any(|j|matches!(j.phase.as_str(),"running"|"outcome_unknown"|"failed")){
+                    return Err("Unresolved native execution or unreviewed failure blocks task replacement.".into());
                 }
                 return Ok(next);
             }
@@ -184,7 +184,7 @@ fn merged(prior:Option<Schedule>,proposed:Option<&Value>)->Result<Schedule,Strin
             // The WebView still requires a new user task and normal approval;
             // old audited action IDs remain in the separate Rust history.
             if next.revision==1 && old.jobs.iter().all(|j|
-                matches!(j.phase.as_str(),"audited"|"failed"|"outcome_unknown"|"reviewed_failed")){
+                matches!(j.phase.as_str(),"audited"|"reviewed_failed")){
                 return Ok(next);
             }
             if next.revision!=old.revision && next.revision!=old.revision+1{
@@ -240,6 +240,14 @@ fn recover_terminal_at(file:&Path,native:Option<&crate::native_worker_job::Nativ
         _=>Err("Native journal has unsupported terminal state.".into())
     }
 }
+/// Deterministic owner DAG order. Reconstruct READY from persisted queued
+/// jobs and Rust-audited prerequisites, never from elapsed time or model claims.
+fn first_ready_step(s:&Schedule)->Option<&str>{
+    s.jobs.iter().find(|job|job.phase=="queued"
+        && job.depends_on.iter().all(|dep|s.jobs.iter()
+            .any(|parent|parent.step_id==*dep&&parent.phase=="audited")))
+        .map(|job|job.step_id.as_str())
+}
 fn allowed(s:&Schedule,step_id:&str,tool:&str,id:&str)->Result<(),String>{
     if !valid_uuid(id){return Err("Scheduled action requires a canonical prepared UUID.".into());}
     if s.jobs.iter().any(|j|j.action_id.as_deref()==Some(id)){
@@ -259,6 +267,10 @@ fn allowed(s:&Schedule,step_id:&str,tool:&str,id:&str)->Result<(),String>{
     if !job.depends_on.iter().all(|dep|s.jobs.iter()
         .any(|j|&j.step_id==dep&&j.phase=="audited")){
         return Err("Scheduled step is blocked by a non-audited dependency.".into());
+    }
+    // An independent later step cannot starve the earliest ready job.
+    if first_ready_step(s)!=Some(step_id){
+        return Err("An earlier dependency-ready native step must dispatch first.".into());
     }
     Ok(())
 }
@@ -575,6 +587,60 @@ mod tests{
         forged["steps"][0]["expected_tool"]=serde_json::json!("read_file");
         assert!(begin_at(&p,Some(&forged),"import","premiere_insert_media",B).is_err());
         assert_eq!(read_at(&p).unwrap().unwrap().jobs[0].phase,"failed");
+        cleanup(&p);
+    }
+    #[test]
+    fn restart_preserves_deterministic_ready_order_and_audited_dependencies(){
+        let p=file();
+        let g=serde_json::json!({"objective":"Audited multi-job edit","revision":1,
+            "steps":[
+                {"step_id":"render","expected_tool":"blender_run_plan","depends_on":[]},
+                {"step_id":"edit","expected_tool":"premiere_insert_media","depends_on":[]},
+                {"step_id":"assemble","expected_tool":"blender_run_plan","depends_on":["edit","render"]}
+            ]});
+        let c=uuid::Uuid::new_v4().to_string();
+        assert!(begin_at(&p,Some(&g),"edit","premiere_insert_media",B).is_err());
+        begin_at(&p,Some(&g),"render","blender_run_plan",A).unwrap();
+        let saved=read_at(&p).unwrap().unwrap();
+        assert_eq!(saved.jobs[0].phase,"running");
+        assert_eq!(saved.jobs[1].phase,"queued");
+        assert_eq!(first_ready_step(&saved),Some("edit"));
+        assert!(begin_at(&p,None,"edit","premiere_insert_media",B).is_err());
+        finish_at(&p,A,"blender_run_plan",Some(true)).unwrap();
+        assert!(begin_at(&p,None,"assemble","blender_run_plan",&c).is_err());
+        begin_at(&p,None,"edit","premiere_insert_media",B).unwrap();
+        finish_at(&p,B,"premiere_insert_media",Some(true)).unwrap();
+        let ready=read_at(&p).unwrap().unwrap();
+        assert_eq!(first_ready_step(&ready),Some("assemble"));
+        begin_at(&p,None,"assemble","blender_run_plan",&c).unwrap();
+        finish_at(&p,&c,"blender_run_plan",Some(true)).unwrap();
+        assert!(read_at(&p).unwrap().unwrap().jobs.iter().all(|j|j.phase=="audited"));
+        cleanup(&p);
+    }
+    #[test]
+    fn unknown_execution_cannot_be_erased_by_new_objective_or_same_objective(){
+        let p=file();let g=graph(1);
+        begin_at(&p,Some(&g),"model","blender_run_plan",A).unwrap();
+        finish_at(&p,A,"blender_run_plan",None).unwrap();
+        let mut different=graph(1);
+        different["objective"]=serde_json::json!("Different task");
+        assert!(begin_at(&p,Some(&different),"model","blender_run_plan",B).is_err());
+        assert!(begin_at(&p,Some(&g),"model","blender_run_plan",B).is_err());
+        assert_eq!(read_at(&p).unwrap().unwrap().jobs[0].phase,"outcome_unknown");
+        cleanup(&p);
+    }
+    #[test]
+    fn failed_execution_requires_owner_review_before_task_replacement(){
+        let p=file();let g=graph(1);
+        begin_at(&p,Some(&g),"model","blender_run_plan",A).unwrap();
+        finish_at(&p,A,"blender_run_plan",Some(false)).unwrap();
+        let mut different=graph(1);
+        different["objective"]=serde_json::json!("New owner task");
+        assert!(begin_at(&p,Some(&different),"model","blender_run_plan",B).is_err());
+        assert!(begin_at(&p,Some(&g),"model","blender_run_plan",B).is_err());
+        review_failed_at(&p,"model",A).unwrap();
+        begin_at(&p,Some(&different),"model","blender_run_plan",B).unwrap();
+        assert_eq!(read_at(&p).unwrap().unwrap().jobs[0].action_id.as_deref(),Some(B));
         cleanup(&p);
     }
     #[test]
