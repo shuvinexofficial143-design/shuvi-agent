@@ -14,6 +14,8 @@ export function summarizeWindowObservation(result,audited=false){
  }
  if(Array.isArray(source)&&source.length===0)
   return "Verified ui_windows returned no window identities; no target identity verified.";
+ if(Array.isArray(source)&&source.length>200)
+  return "Window observation input bounded (>200 native rows); no target identity verified.";
  const rows=observedWindowInventory(result,true);
  if(!Array.isArray(rows)||rows.length===0)
   return "Verified ui_windows provided no usable window identity: contradictory or malformed inventory. Inspect again; no target identity verified.";
