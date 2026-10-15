@@ -38,7 +38,7 @@ pub const ALLOWED_ACTIONS: &[&str] = &[
     "create_bin",
     "rename_project_item",
     "move_project_item",
-    "relink_media",
+    "relink_media", "inspect_project_media_audit",
     "set_source_inout",
     "clear_source_inout",
     "create_subclip",
