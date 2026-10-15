@@ -4,7 +4,7 @@
  * A browser (including the Vercel deployment) has no native transport.
  */
 import {mountNativeModelSetup, type ModelTeamHandle, type NativeInvoke} from "./native-model-setup";
-import {admitDashboardMasterProposal,masterAutonomyGuidance} from "../../src/master-autonomy-contract.mjs";
+import {admitDashboardMasterProposal,masterAutonomyGuidance,nextMasterReadbackProposal} from "../../src/master-autonomy-contract.mjs";
 import {chooseNativeRoute} from "./native-model-routing.mjs";
 import {masterGoalContext,resolveMasterObjective} from "./native-master-goal.mjs";
 import {createTask,stageTask,executeTask,verifyTask,pauseTask,taskSummary,taskContext} from "./native-task-progress.mjs";
@@ -444,8 +444,12 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   updateReply(threadId,index,(replies.get(threadId)?.[index]||"")+"\n\n"+extra);
  }
  async function continueAfterVerifiedAction(task:PendingTask,result:ActionResult){
+  const plannedReadback=nextMasterReadbackProposal(task.objective,result.tool);
   const taskBudget=taskBudgets.get(task.threadId);
-  if(!taskBudget||!reserveNativeModelRequest(taskBudget)){
+  // After a VERIFIED launch, an independent ui_windows observation is the
+  // deterministic next proposal; it spends no model tokens and STILL needs
+  // a fresh Rust prepared UUID and owner Allow once.
+  if(!taskBudget||!(plannedReadback?canStageNativeAction(taskBudget):reserveNativeModelRequest(taskBudget))){
    haltTask(task.threadId,"owner_budget_exhausted");
    appendReply(task.threadId,task.promptIndex,
     "Task paused: owner-selected Master AI request budget or deadline exhausted. No new provider request or native action was sent. Start a new task to authorize more work.");
@@ -455,7 +459,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   }
   // One provider request per confirmed, approved step. No retries for ambiguous
   // provider results and no auto execution of a newly proposed Windows action.
-  if(!await persistRecovery(taskBudget,"model_reserved",task.action.id)){
+  if(!plannedReadback&&!await persistRecovery(taskBudget,"model_reserved",task.action.id)){
    haltTask(task.threadId,"recovery_journal_failed");
    appendReply(task.threadId,task.promptIndex,"Native recovery journal could not be saved. No follow-up AI request sent.");
    return;
@@ -489,32 +493,38 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    "Propose ONE next typed action as JSON. Never re-execute a previous identical action, "+
    "never claim completion based only on a detection/launch request. Every new action requires user approval. "+
     masterGoalContext(task.objective);
-  refreshState("Master AI is continuing from the verified tool result (one new model request)…");
-  showActionFeedback("Verified previous action. Master is choosing the next step; another AI request may use tokens. No new Windows action has been approved.");
   let response:NativeChatResponse;
-  try{
-   response=await invoke<NativeChatResponse>("chat",{
-    input:{provider:task.route.provider,model:task.route.model,
-     base_url:task.route.base_url||null,messages,orchestration_context:orchestrator}
-   });
-   if(!response||typeof response.content!=="string")
-    throw Error("Invalid next-step AI response");
-  }catch(error){
-   await persistRecovery(taskBudget,"outcome_unknown",task.action.id);
-   haltTask(task.threadId,"model_failed");
-   appendReply(task.threadId,task.promptIndex,
-    "Master continuation failed or its result is unknown: "+redactNativeError(error)+
-    ". Stopped. No automatic paid retry.");
-   showActionFeedback("Master continuation failed or outcome unknown. No automatic retry or Windows action.");
-   return;
+  if(plannedReadback){
+   response={content:"Verified Premiere launch: stage a separate Windows window inspection. The application is not yet confirmed open; owner approval and native audit still required.",
+    provider:task.route.provider,model:task.route.model,tool_proposal:plannedReadback};
+   refreshState("Audited launch: preparing deterministic window readback, without a paid model request.");
+  }else{
+   refreshState("Master AI is continuing from the verified tool result (one new model request)…");
+   showActionFeedback("Verified previous action. Master is choosing the next step; another AI request may use tokens. No new Windows action has been approved.");
+   try{
+    response=await invoke<NativeChatResponse>("chat",{
+     input:{provider:task.route.provider,model:task.route.model,
+      base_url:task.route.base_url||null,messages,orchestration_context:orchestrator}
+    });
+    if(!response||typeof response.content!=="string")
+     throw Error("Invalid next-step AI response");
+   }catch(error){
+    await persistRecovery(taskBudget,"outcome_unknown",task.action.id);
+    haltTask(task.threadId,"model_failed");
+    appendReply(task.threadId,task.promptIndex,
+     "Master continuation failed or its result is unknown: "+redactNativeError(error)+
+     ". Stopped. No automatic paid retry.");
+    showActionFeedback("Master continuation failed or outcome unknown. No automatic retry or Windows action.");
+    return;
+   }
   }
   const answer=redactNativeMessage(response.content).slice(0,9000);
   // An audited step may be followed by an explicit name/folder question.
   const followupRoot=nextClarificationRoot(task.objective,answer,Boolean(response.tool_proposal),task.route.role);
   if(followupRoot)taskGoalRoots.set(task.threadId,followupRoot);
   else taskGoalRoots.delete(task.threadId);
-  histories.set(task.threadId,[...messages,{role:"assistant",content:answer}].slice(-22));
-  appendReply(task.threadId,task.promptIndex,"Master next step:\n"+answer);
+  histories.set(task.threadId,[...(plannedReadback?prev:messages),{role:"assistant",content:answer}].slice(-22));
+  appendReply(task.threadId,task.promptIndex,(plannedReadback?"Native readback step:\n":"Master next step:\n")+answer);
   if(!response.tool_proposal){
    await persistRecovery(taskBudget,"paused",task.action.id);
    haltTask(task.threadId,followupRoot?"awaiting_clarification":"no_next_tool");
