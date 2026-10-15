@@ -1172,3 +1172,54 @@ test("unreadable WebView recovery blocks new Windows tasks without paid model di
  assert.equal(s.chatInputs.length,0);
  assert.equal(s.calls.filter(c=>c.name==="execute_action"||c.name==="prepare_tool").length,0);
 });
+
+test("Shuvi39 audit-linked UIA inventory rejects unknown proposed native click after two owner approvals",async()=>{
+ const first={content:"windows",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_windows",arguments:{}}};
+ const second={content:"discover",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_discover",arguments:{window:"Adobe Premiere Pro 2026"}}};
+ const third={content:"guessed control",provider:"xkiro",model:"model/master",
+  tool_proposal:{tool:"ui_click",arguments:{window:"Adobe Premiere Pro 2026",name:"Fake Save"}}};
+ const s=setup({first,second,following:[third],stdoutFor:{
+  ui_windows:JSON.stringify([{Name:"Adobe Premiere Pro 2026",ProcessId:500,ProcessName:"Premiere",NativeWindowHandle:1000}]),
+  ui_discover:JSON.stringify([{Name:"New Project",AutomationId:"new_project",ControlType:"Button",IsEnabled:true,IsOffscreen:false}])
+ }});
+ await until(()=>s.transport.connected(),"native");
+ await s.transport.send("Premiere project banao","shuvi39-unknown-control",0);
+ s.allow.listeners.get("click")();
+ await until(()=>s.staged.length===2,"UIA discover stage");
+ await until(()=>!s.allow.disabled,"discover approval ready");
+ s.allow.listeners.get("click")();
+ await until(()=>/UIA target or readback not grounded/.test(s.transport.getReplies("shuvi39-unknown-control")[0]??""),"unobserved control stopped");
+ assert.equal(s.staged.length,2);
+ assert.equal(s.calls.filter(c=>c.name==="execute_action").length,2);
+});
+
+test("Shuvi39 chained native action requires fresh window and real UIA readback before another click",async()=>{
+ const prop=(tool,argumentsValue)=>({content:tool,provider:"xkiro",model:"model/master",tool_proposal:{tool,arguments:argumentsValue}});
+ const w=()=>prop("ui_windows",{});
+ const d=()=>prop("ui_discover",{window:"Adobe Premiere Pro 2026"});
+ const click=name=>prop("ui_click",{window:"Adobe Premiere Pro 2026",name,automation_id:name==="New Project"?"new_project":"save"});
+ const s=setup({first:w(),second:d(),following:[click("New Project"),w(),d(),click("Save")],
+  stdoutFor:{
+   ui_windows:JSON.stringify([{Name:"Adobe Premiere Pro 2026",ProcessId:500,ProcessName:"Premiere",NativeWindowHandle:1000}]),
+   ui_discover:JSON.stringify([
+    {Name:"New Project",AutomationId:"new_project",ControlType:"Button",IsEnabled:true,IsOffscreen:false},
+    {Name:"Save",AutomationId:"save",ControlType:"Button",IsEnabled:true,IsOffscreen:false}
+   ])}});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Premiere new project and save","shuvi39-readback-chain",0);
+ for(let i=1;i<=5;i++){
+  assert.equal(s.staged.length,i,"exactly one newly owner-reviewed native action");
+  await until(()=>!s.allow.disabled,"approved native task step ready");
+  s.allow.listeners.get("click")();
+  await until(()=>s.staged.length===i+1,"next native action stage "+i);
+ }
+ assert.equal(s.staged[2].proposal.tool,"ui_click");
+ assert.equal(s.staged[3].proposal.tool,"ui_windows");
+ assert.equal(s.staged[4].proposal.tool,"ui_discover");
+ assert.equal(s.staged[5].proposal.tool,"ui_click");
+ assert.equal(s.staged[5].proposal.arguments.automation_id,"save");
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,5);
+ assert.equal(s.approval.hidden,false,"second mutation remains separately approval gated");
+});
