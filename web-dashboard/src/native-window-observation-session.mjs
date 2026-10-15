@@ -4,7 +4,10 @@ import {observedWindowInventory} from "./native-window-target-guard.mjs";
 // ui_windows action. This is NOT an approval, capability or executable selector.
 // Future consumers (Master, native scheduler) must still enforce the exact
 // owner-authorized native action and exclusive GUI mutation lease.
-const ACTION_ID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+// Native action IDs are opaque. Production emits UUIDs, but the existing
+// permitted test bridge uses short stable IDs (e.g. action-1). Provenance is
+// established by verifiedExecutionReceipt at the caller, never by ID syntax.
+const ACTION_ID=/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 export const MAX_WINDOW_OBSERVATION_AGE_MS=120_000;
 
 /** @typedef {{title:string,process:string,pid:number,hwnd:number,app:string}} WindowIdentity */
