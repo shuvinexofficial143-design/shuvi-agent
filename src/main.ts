@@ -4,6 +4,7 @@ import {assessMasterSchedulerAdmission} from "./native-scheduler-admission.mjs";
 import {validateMasterPlan,validateMasterAction,assessMasterGoalDelivery} from "./master-autonomy-graph.mjs";
 import {pinNativeWorkerModels,restorePinnedWorkerModels,chooseSpecialistTurn,specialistProposalMatches,delegatedWorkerContext} from "./native-worker-model-routing.mjs";
 import {decideNativeContinuation} from "./native-continuation-driver.mjs";
+import {planVerifiedNativeReadback} from "./master-safe-continuation.mjs";
 import {nativeTaskDeliveryClaims} from "./native-delivery-claims.mjs";
 import type {
   ActionResult,
@@ -1239,6 +1240,37 @@ async function continueAfterOutcome(): Promise<void> {
       ?"succeeded":"outcome_unknown");
     await clearActiveCheckpoint();
     setBusy(false);
+    return;
+  }
+  // A dependency-ready native INSPECTION can be staged without buying
+  // another AI model request. Only original-brief-bound graph steps backed by
+  // exact previous native receipts qualify; NEVER auto-execute a mutation.
+  const safeReadback=planVerifiedNativeReadback(
+    orchestration.task_graph,orchestration.owner_request,{
+      lastOutcome:orchestration.last_outcome,
+      recoveryMode:orchestration.recovery_mode,
+      cancelRequested,remoteTask:remoteTask!==null
+    });
+  if(safeReadback) {
+    // Do not elide the existing host lease/Rust scheduler comparison simply
+    // because the next proposal is deterministic rather than model-authored.
+    let native:NativeSchedule|null;
+    try {native=await invoke<NativeSchedule|null>("native_scheduler_status");}
+    catch {
+      await stopAgentForSafety("Native scheduler status unavailable before an audited readback. No tool or provider dispatched.");
+      return;
+    }
+    const admission=assessMasterSchedulerAdmission(native,orchestration.task_graph);
+    if(!admission.ok){
+      await stopAgentForSafety("Native scheduler readback refused: "+
+        (admission.reason??"Rust state unresolved.")+" No tool or provider dispatched.");
+      return;
+    }
+    // The same UI path still requires native prepare, a fresh action UUID,
+    // bounded task accounting and explicit owner Allow once (or narrow,
+    // previously owner-issued and Rust-validated exact read consent).
+    const route=taskModelRoute??{...defaultModelRoute(),role:"default"};
+    await stageProposal(safeReadback,route);
     return;
   }
   await runAgentStep();
