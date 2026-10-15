@@ -1,7 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
-import evidence from "../integrations/premiere-uxp/media-workflow-evidence.js";
+import {runInNewContext} from "node:vm";
+
+// Adobe UXP loads CommonJS .js; the root Node package is ESM. Evaluate the
+// same helper as a CommonJS script without changing the Adobe package format.
+const helperModule = {exports:{}};
+runInNewContext(readFileSync(new URL("../integrations/premiere-uxp/media-workflow-evidence.js",import.meta.url),"utf8"),
+  {module:helperModule,exports:helperModule.exports});
+const evidence = helperModule.exports;
 
 const main = readFileSync(new URL("../integrations/premiere-uxp/main.js",import.meta.url), "utf8");
 const section = (start, end) => {
