@@ -13,7 +13,9 @@ test("process supervision is compiled into native scheduler, not a model-supplie
   assert.doesNotMatch(worker,/invoke_handler|tauri::command|execute_model_shell/);
 });
 test("PID lifetime and cancellation are bound to exact Rust action",()=>{
-  assert.match(worker,/PROCESS_OWNER:Mutex<Option<String>>/);
+  assert.match(worker,/PROCESS_OWNER:Mutex<ProcessSlot>/);
+  assert.match(worker,/MAX_RECENT_LAUNCHES:usize=48/);
+  assert.match(worker,/slot\.recent\.iter\(\)\.any/);
   assert.match(worker,/self\.child\.id\(\)/);
   assert.match(worker,/self\.child\.try_wait\(\)/);
   assert.match(worker,/if action_id!=self\.action_id/);
