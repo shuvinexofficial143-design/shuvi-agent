@@ -253,7 +253,7 @@ test("Premiere opening has separate detect, launch and window-inspection approva
  assert.equal(s.chatInputs.length,2,"audited launch uses deterministic readback instead of a new paid model call");
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,2,
   "window inspection must NOT happen before a third approval");
- assert.equal(s.approval.hidden,false);
+ await until(()=>s.approval.hidden===false,"third action approval visible");
  assert.match(s.transport.getReplies("premiere-inspect")[0],/window inspection|readback/i);
 });
 
@@ -630,7 +630,7 @@ test("Batch 13 blocks cross-app model click after audited Premiere window read",
  await until(()=>s.transport.connected(),"native");
  await s.transport.send("Premiere kholo","guard-cross-app",0);
  s.allow.listeners.get("click")();
- await until(()=>/Unsafe app selection|Unsafe or ambiguous UI target/.test(s.transport.getReplies("guard-cross-app")[0]??""),"unsafe blocked");
+ await until(()=>/Unsafe Master task proposal blocked|Unsafe app selection|Unsafe or ambiguous UI target/.test(s.transport.getReplies("guard-cross-app")[0]??""),"unsafe blocked");
  assert.equal(s.staged.length,1);
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,1);
 });
@@ -641,7 +641,7 @@ test("Batch 13 allows uniquely observed exact window but still requires owner Al
  const s=setup({first,second,stdoutFor:{ui_windows:JSON.stringify([
   {Name:"Adobe Premiere Pro 2026",ProcessId:200,NativeWindowHandle:44,ProcessName:"Adobe Premiere Pro"}])}});
  await until(()=>s.transport.connected(),"native");
- await s.transport.send("Premiere kholo","guard-right-app",0);
+ await s.transport.send("Premiere me naya project banao","guard-right-app",0);
  s.allow.listeners.get("click")();
  await until(()=>s.staged.length===2,"approval staged");
  assert.equal(s.staged[1].proposal.tool,"ui_click");
