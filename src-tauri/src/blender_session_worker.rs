@@ -90,11 +90,21 @@ impl Drop for OwnedSession {
         // Child handle ownership is stronger than a PID guess. Only an owned,
         // still-running launcher may be terminated, including its child Blender
         // on Windows. Never stop a process because of a stale numeric PID alone.
-        if matches!(self.child.try_wait(),Ok(None)) {
+        if !matches!(self.child.try_wait(),Ok(Some(_))) {
             let _=terminate_managed_process_tree(self.child.id());
             let _=self.child.kill();
         }
-        let _=self.child.wait();
+        // Never block Shuvi's native action indefinitely in a destructor.
+        // On Windows the owned Job Object closes immediately after Drop,
+        // providing kernel-backed child-tree termination even if a wait fails.
+        let deadline=Instant::now()+Duration::from_secs(3);
+        while Instant::now()<deadline {
+            match self.child.try_wait() {
+                Ok(Some(_))=>break,
+                Ok(None)=>thread::sleep(Duration::from_millis(40)),
+                Err(_)=>break,
+            }
+        }
     }
 }
 
@@ -198,12 +208,14 @@ fn request(session:&mut OwnedSession,state:&ActionState,op:&str,plan:Option<&Val
     Ok(answer)
 }
 
-fn retire(state:&ActionState,slot:&mut Option<OwnedSession>) {
+fn retire(state:&ActionState,slot:&mut Option<OwnedSession>)->bool {
     if let Some(session)=slot.take(){
         let pid=session.child.id();
         drop(session);
+        let root_exited=!managed_process_identity_matches(state,pid).unwrap_or(false);
         unregister_managed_process(state,pid);
-    }
+        root_exited
+    }else{false}
 }
 
 
@@ -419,10 +431,12 @@ pub(crate) fn close(registry:&SessionRegistry,state:&ActionState,id:&str)->Resul
     // Even if the graceful close command is lost, the owned process tree is
     // stopped; never reuse the identity after a close attempt.
     let response=request(session,state,"close",None,false,PROBE_DEADLINE);
-    retire(state,&mut slot);
+    let root_exited=retire(state,&mut slot);
     match response {
-        Ok(v) if v.get("status").and_then(Value::as_str)==Some("closing")=>
-            Ok(json!({"status":"closed","session_id":id,"process_retired":true,
+        Ok(v) if v.get("status").and_then(Value::as_str)==Some("closing") && root_exited=>
+            Ok(json!({"status":"closed","session_id":id,"broker_root_exit_confirmed":true,
+                "os_owned_job_closed":cfg!(target_os="windows"),
+                "descendant_exit_individually_unverified":true,
                 "no_automatic_reconnect":true})),
         _=>Err("Blender close outcome uncertain; owned launcher was retired.".into()),
     }
