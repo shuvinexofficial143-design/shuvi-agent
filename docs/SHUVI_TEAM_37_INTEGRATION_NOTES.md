@@ -17,6 +17,17 @@ Scope: source-only; LIVE WINDOWS UNVERIFIED.
 2. \`web-dashboard/src/native-agent.ts\` (shared Master orchestration only): one new import at module top; \`masterAutonomyGuidance(task.objective)\` prepended to \`continueAfterVerifiedAction\` orchestration context; \`admitDashboardMasterProposal(task.objective,response.tool_proposal)\` inserted *before* action fingerprint and \`prepare_tool\`; the same guidance and hard check inserted into the initial \`send\` path before \`prepare_tool\`. No changes to Tauri IPC tool names, Rust approvals, callbacks, or execution.
 3. \`scripts/master-autonomy-contract.test.mjs\` (new): language recognition, two distinct typed DAG readback steps, no project/export false-completion claim, app-scope filtering, model-authored graph rejection, immutable brief, invalid/circular payload, source-wiring regression.
 
+## First operational improvement: deterministic audited launch readback
+
+For a **pure Premiere-opening task** (English, Roman Hindi or Hindi, with no project/edit/export intent), the packaged native dashboard now:
+1. Obtains normal explicit Allow once and exact Rust audit for \`premiere_launch\`.
+2. Computes \`nextMasterReadbackProposal(originalObjective, auditedTool)\` after that confirmed success.
+3. Stages \`ui_windows\` using the same \`prepare_tool\`, bounded owner action budget, native recovery journal and a **new** Allow once approval.
+4. **Does not make a paid Master model request** for this predictable second step; it does not execute the observation itself.
+5. For project creation, editing/export, failed/unknown actions or other apps, returns no deterministic proposal and preserves existing fail-closed model/audit flow.
+
+This is a working, narrowly scoped continuation path, **not** a generic task-DAG executor or evidence of a launched app in a real Windows session.
+
 ## Contracts for the other teams
 
 - **38 Rust Scheduler**: remains authoritative for prepared UUID, immutable DAG identity, execution lease and grant enforcement. \`initialMasterInspectionDAG\` is **only a UI/planning hint**, not submitted as a scheduler checkpoint. A future real task-scoped grant requires a new explicitly validated Rust API with owner-visible tool/app/path/action/time bounds and revocation.
