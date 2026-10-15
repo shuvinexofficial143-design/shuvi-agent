@@ -60,6 +60,7 @@ mod premiere_calibration;
 mod premiere_export_jobs;
 mod premiere_project_persistence;
 mod premiere_project_lifecycle;
+mod premiere_media_relink;
 mod premiere_review_binding;
 mod premiere_edit_session;
 mod premiere_edit_job;
@@ -423,6 +424,7 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - premiere_acceptance_verify_recovery: {"action_id":"completed trim/move/clone/delete_ripple acceptance action UUID"} — read-only verification after manually opening the Shuvi checkpoint; never opens or overwrites a project automatically
 - premiere_create_project: {"path":"new absolute Windows .prproj destination (must not already exist)"} — high risk; initial save and independent host/disk verification; never overwrites.
 - premiere_open_project: {"path":"existing absolute Windows .prproj"} — high risk; host project identity plus independently unchanged disk fingerprint, no automatic save/close.
+- premiere_media_audit: {} — Read-only capped live Premiere project-media inventory; retrieve exact IDs and old paths before proposing a separate approved relink.
 - premiere_save_project: {}
 - after_effects_capability_report: {}
 - after_effects_readiness_report: {}
@@ -874,7 +876,8 @@ enum ToolAction {
     PremiereCreateBin { name: String },
     PremiereRenameProjectItem { item_id: String, name: String },
     PremiereMoveProjectItem { item_id: String, target_bin_id: String },
-    PremiereRelinkMedia { item_id: String, new_path: String, override_compatibility: bool },
+    PremiereRelinkMedia { item_id: String, new_path: String, expected_previous_path: String, override_compatibility: bool },
+    PremiereMediaAudit,
     PremiereSetSourceInOut { item_id: String, in_seconds: f64, out_seconds: f64 },
     PremiereClearSourceInOut { item_id: String },
     PremiereCreateSubclip { item_id: String, name: String, start_seconds: f64, end_seconds: f64, hard_boundaries: bool, take_video: bool, take_audio: bool },
@@ -1821,6 +1824,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_rename_project_item"
         | "premiere_move_project_item"
         | "premiere_relink_media"
+        | "premiere_media_audit"
         | "premiere_inspect_media_interpretation"
         | "premiere_prepare_media_item"
         | "premiere_prepare_media_batch"
@@ -6432,9 +6436,21 @@ fn stage_tool(
                 RiskLevel::High,
             )
         }
+        "premiere_media_audit" => (ToolAction::PremiereMediaAudit,
+            "Audit Premiere media inventory".into(),
+            "Read-only bounded native clip IDs, recorded paths and offline flags. Does not authorize editing.".into(),RiskLevel::Low),
         "premiere_relink_media" => {
             let item_id = arg_string(&proposal.arguments, "item_id")?;
             let new_path = absolute_path(arg_string(&proposal.arguments, "new_path")?)?;
+            let expected_previous_path=arg_string(&proposal.arguments,"expected_previous_path")?;
+            if expected_previous_path.is_empty()||expected_previous_path.len()>4096||
+               !Path::new(&expected_previous_path).is_absolute()||
+               expected_previous_path.chars().any(|ch|ch.is_control()){
+                return Err("Relink requires an exact previously inspected absolute media path.".into());
+            }
+            if expected_previous_path.eq_ignore_ascii_case(&new_path){
+                return Err("Relink destination already equals the approved original media path.".into());
+            }
             if item_id.chars().count() > 240 {
                 return Err("Premiere project item id is too long.".into());
             }
@@ -6449,10 +6465,11 @@ fn stage_tool(
                 ToolAction::PremiereRelinkMedia {
                     item_id: item_id.clone(),
                     new_path: new_path.clone(),
+                    expected_previous_path: expected_previous_path.clone(),
                     override_compatibility,
                 },
                 "Relink Premiere media".to_string(),
-                format!("Relink clip project item {item_id} to {new_path}; override_compatibility={override_compatibility}."),
+                format!("Relink clip {item_id} from EXACT observed source {expected_previous_path} to {new_path}; preserve backup and save updated project after native readback. override_compatibility={override_compatibility}. No automatic retry."),
                 RiskLevel::High,
             )
         }
@@ -15880,25 +15897,89 @@ try {{
                 exit_code: Some(if verified {0}else{1}),
             })
         }
-        ToolAction::PremiereRelinkMedia { item_id, new_path, override_compatibility } => {
-            let backup = backup_premiere_project(&premiere_bridge).await?;
-            let value = premiere_bridge.request(
-                "relink_media",
-                json!({
-                    "itemId": item_id,
-                    "newPath": new_path,
-                    "overrideCompatibility": override_compatibility
-                }),
-                Duration::from_secs(30),
-            ).await?;
-            let verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback");
-            Ok(ActionResult {
-                success: verified,
-                tool,
-                stdout: json!({"backup":backup,"result":value,"post_state_verified":verified,"retry_safe":false}).to_string(),
-                stderr: String::new(),
-                exit_code: Some(if verified {0}else{1}),
-            })
+        ToolAction::PremiereMediaAudit => {
+            let value=premiere_bridge.request("inspect_project_media_audit",json!({}),Duration::from_secs(25)).await?;
+            let complete=value.get("scanComplete").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult {success:true,tool,
+                stdout:json!({"inventory":value,"scan_complete":complete,"inspection_only":true,
+                    "relink_authorized":false,"runtime_verified":false}).to_string(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereRelinkMedia { item_id, new_path, expected_previous_path, override_compatibility } => {
+            // Verify the replacement's real bytes BEFORE any Adobe project mutation.
+            let media_before=premiere_media_relink::fingerprint(&new_path)?;
+            let backup=backup_premiere_project(&premiere_bridge).await?;
+            let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
+            let project_path=context.get("projectPath").and_then(Value::as_str)
+                .filter(|p|!p.is_empty()).ok_or("Premiere relink needs a saved active .prproj.")?.to_string();
+            let project_guid=context.get("projectGuid").and_then(Value::as_str)
+                .filter(|p|!p.is_empty()).ok_or("Premiere relink needs exact project GUID.")?.to_string();
+            let sequence_guid=context.pointer("/activeSequence/guid").and_then(Value::as_str).map(str::to_owned);
+            let project_before=premiere_project_persistence::fingerprint(&project_path)?;
+            let value=premiere_bridge.request("relink_media",json!({
+                "itemId":item_id,"newPath":new_path,"expectedPreviousPath":expected_previous_path,
+                "overrideCompatibility":override_compatibility
+            }),Duration::from_secs(30)).await?;
+            let native_verified=value.get("verificationStatus").and_then(Value::as_str)==Some("verified_readback")
+                &&value.get("observedId").and_then(Value::as_str)==Some(item_id.as_str())
+                &&value.get("observedOffline").and_then(Value::as_bool)==Some(false);
+            if !native_verified {
+                return Ok(ActionResult{success:false,tool,
+                    stdout:json!({"backup":backup,"relink":value,"native_relink_verified":false,
+                        "project_saved_after_relink":false,"retry_safe":false,
+                        "reason":"Adobe relink returned ambiguous native item/path/offline readback. The host might be changed; do not retry or save blindly."}).to_string(),
+                    stderr:"Premiere relink outcome requires owner inspection.".into(),exit_code:Some(1)});
+            }
+            let source_after=premiere_media_relink::fingerprint(&new_path);
+            let source_unchanged=source_after.as_ref().is_ok_and(|f|premiere_media_relink::same_file(&media_before,f));
+            if !source_unchanged {
+                return Ok(ActionResult{success:false,tool,
+                    stdout:json!({"backup":backup,"relink":value,"native_relink_verified":true,
+                        "replacement_sha256":media_before.sha256,"source_unchanged":false,
+                        "project_saved_after_relink":false,"retry_safe":false,
+                        "reason":"Replacement media bytes changed during Adobe relink; project not saved automatically."}).to_string(),
+                    stderr:"Replacement source changed; inspect the active Premiere project.".into(),exit_code:Some(1)});
+            }
+            // The first backup is of the PRE-EDIT project. Save once after the
+            // verified relink, without making the editor auto-retry on errors.
+            let save=premiere_bridge.request("save_project",json!({}),Duration::from_secs(20)).await;
+            let saved=save.as_ref().is_ok_and(|v|
+                v.get("saved").and_then(Value::as_bool)==Some(true)
+                &&v.get("projectPath").and_then(Value::as_str)==Some(project_path.as_str()));
+            let after_context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await.ok();
+            let same_project=after_context.as_ref().is_some_and(|v|
+                v.get("projectGuid").and_then(Value::as_str)==Some(project_guid.as_str())
+                &&v.get("projectPath").and_then(Value::as_str)==Some(project_path.as_str())
+                &&v.pointer("/activeSequence/guid").and_then(Value::as_str)==sequence_guid.as_deref());
+            let after_item=premiere_bridge.request("inspect_media_interpretation",
+                json!({"itemId":item_id}),Duration::from_secs(12)).await.ok();
+            let item_still_relinked=after_item.as_ref().is_some_and(|v|
+                v.get("itemId").and_then(Value::as_str)==Some(item_id.as_str())
+                &&v.get("offline").and_then(Value::as_bool)==Some(false)
+                &&v.get("mediaPath").and_then(Value::as_str)
+                    .is_some_and(|p|p.replace('/',"\\").eq_ignore_ascii_case(&new_path.replace('/',"\\"))));
+            let project_after=premiere_project_persistence::fingerprint(&project_path);
+            let persistence=match &project_after {
+                Ok(after)=>premiere_project_persistence::assess(&project_before,after,saved&&same_project,&project_path),
+                Err(error)=>json!({"persistence_verified":false,"error":error})
+            };
+            let media_final=premiere_media_relink::fingerprint(&new_path);
+            let media_unchanged=media_final.as_ref().is_ok_and(|f|premiere_media_relink::same_file(&media_before,f));
+            let durable=media_unchanged&&item_still_relinked&&saved&&same_project
+                &&persistence.get("persistence_verified").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{success:durable,tool,
+                stdout:json!({"backup":backup,"relink":value,"save":save.as_ref().ok(),
+                    "save_error":save.as_ref().err(),"project_persistence":persistence,
+                    "replacement_sha256":media_before.sha256,
+                    "media_source_unchanged":media_unchanged,
+                    "host_project_unchanged":same_project,"media_item_recheck":after_item,
+                    "item_still_relinked":item_still_relinked,
+                    "durable_relink_verified":durable,
+                    "live_windows_acceptance_verified":false,"retry_safe":false,
+                    "note":"Host readback, exact replacement SHA256, and disk persistence are distinct checks. Opening the project in a new session remains a separate acceptance."}).to_string(),
+                stderr:if durable{String::new()}else{
+                    "Relink/save/persistence was not fully verified; inspect project and backup before retrying.".into()},
+                exit_code:Some(if durable{0}else{1})})
         }
         ToolAction::PremiereInspectMediaInterpretation {item_id} => {
             let value=premiere_bridge.request(
