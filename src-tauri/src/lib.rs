@@ -63,6 +63,7 @@ mod premiere_project_lifecycle;
 mod premiere_media_relink;
 mod premiere_batch_relink;
 mod premiere_mogrt_handoff;
+mod after_effects_mogrt_provenance;
 mod premiere_final_delivery;
 mod premiere_review_binding;
 mod premiere_edit_session;
@@ -347,7 +348,8 @@ Transcript rebuild handles explicit interior text removal by creating and insert
 - premiere_batch_relink: {"items":[{"item_id":"clip project item id","new_path":"absolute replacement media path","override_compatibility":false}]}
 - premiere_batch_attach_proxy: {"items":[{"item_id":"clip project item id","proxy_path":"absolute proxy media path"}]}
 - premiere_insert_mogrt_path: {"path":"absolute .mogrt path","seconds":0,"video_track":0,"audio_track":0}
-- premiere_inspect_mogrt_artifact: {"path":"absolute existing .mogrt path"} — read-only SHA256 of exact bounded MOGRT file; does not establish AE origin.
+- premiere_inspect_mogrt_artifact: {"path":"absolute existing .mogrt path"}
+- premiere_inspect_ae_mogrt_provenance: {"proof_file":"exact native AE export .mogrt-provenance.json","output_file":"exact .mogrt file","expected_sha256":"64 hex"} — read-only check of AE export request-ID, persisted receipt SHA256 and unchanged MOGRT bytes. Unsigned local workspace evidence; no claim of tamper-proof origin. — read-only SHA256 of exact bounded MOGRT file; does not establish AE origin.
 - premiere_insert_verified_mogrt: {"request":{"path":"absolute existing .mogrt path","expected_sha256":"64 hex from premiere_inspect_mogrt_artifact or separately verified AE output","seconds":0,"video_track":0,"audio_track":0}} — approved high-risk insertion with exact project/sequence expectation, checkpoint, SHA256 pre/post proof, native inserted-clip readback and independently persisted .prproj; no auto retry.
 - premiere_insert_mogrt_library: {"library_name":"library","element_name":"template","seconds":0,"video_track":0,"audio_track":0}
 - premiere_import_media: {"paths":["absolute media path 1","absolute media path 2"],"expected_sha256":["64-hex source1","64-hex source2"]} — optional for ordinary files; REQUIRED for approved cross-worker media; hashes strictly align with paths
@@ -925,6 +927,7 @@ enum ToolAction {
     PremiereBatchAttachProxy { items: Vec<Value> },
     PremiereInsertMogrtPath { path: String, seconds: f64, video_track: u32, audio_track: u32 },
     PremiereInspectMogrtArtifact { path:String },
+    PremiereInspectAeMogrtProvenance { proof_file:String,output_file:String,expected_sha256:String },
     PremiereInsertVerifiedMogrt { request:premiere_mogrt_handoff::InsertRequest },
     PremiereInsertMogrtLibrary { library_name: String, element_name: String, seconds: f64, video_track: u32, audio_track: u32 },
     PremiereImportMedia { paths: Vec<String>, expected_sha256: Option<Vec<String>> },
@@ -1865,6 +1868,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_batch_attach_proxy"
         | "premiere_insert_mogrt_path"
         | "premiere_inspect_mogrt_artifact"
+        | "premiere_inspect_ae_mogrt_provenance"
         | "premiere_insert_verified_mogrt"
         | "premiere_insert_mogrt_library"
         | "premiere_import_media"
@@ -6784,6 +6788,18 @@ fn stage_tool(
                 format!("Attach proxy {proxy_path} to clip project item {item_id}."),
                 RiskLevel::High,
             )
+        }
+        "premiere_inspect_ae_mogrt_provenance" => {
+            let proof_file=absolute_path(arg_string(&proposal.arguments,"proof_file")?)?;
+            let output_file=absolute_path(arg_string(&proposal.arguments,"output_file")?)?;
+            let expected_sha256=arg_string(&proposal.arguments,"expected_sha256")?;
+            if expected_sha256.len()!=64||!expected_sha256.bytes().all(|b|b.is_ascii_hexdigit()){
+                return Err("AE provenance inspection requires exact 64-hex expected_sha256.".into());
+            }
+            (ToolAction::PremiereInspectAeMogrtProvenance{proof_file,output_file,expected_sha256},
+                "Inspect native AE MOGRT export receipt".into(),
+                "Read-only exact persisted AE request/receipt/hash correlation before owner-approved Premiere editing.".into(),
+                RiskLevel::Low)
         }
         "premiere_inspect_mogrt_artifact" => {
             let path=absolute_path(arg_string(&proposal.arguments,"path")?)?;
@@ -16358,6 +16374,15 @@ try {{
                 exit_code: Some(if verified {0}else{1}),
             })
         }
+        ToolAction::PremiereInspectAeMogrtProvenance{proof_file,output_file,expected_sha256} => {
+            let evidence=after_effects_mogrt_provenance::verify(&proof_file,&output_file,&expected_sha256)?;
+            Ok(ActionResult{success:true,tool,
+                stdout:json!({"read_only":true,"evidence":evidence,
+                    "local_ae_export_receipt_bound":true,
+                    "attestation_cryptographically_signed":false,
+                    "premiere_graphics_appearance_verified":false}).to_string(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
         ToolAction::PremiereInspectMogrtArtifact{path} => {
             let artifact=premiere_mogrt_handoff::inspect(&path)?;
             Ok(ActionResult{success:true,tool,
@@ -16373,6 +16398,11 @@ try {{
                 return Err("Verified MOGRT insertion requires an exact sequence expectation without clip targets.".into());
             }
             let source_before=request.verify_source()?;
+            // Optional AE request provenance is independently verified before
+            // any Premiere mutation, in addition to the existing SHA-256 gate.
+            let ae_pre=if let Some(path)=request.ae_provenance_file.as_deref(){
+                Some(after_effects_mogrt_provenance::verify(path,&request.path,&request.expected_sha256)?)
+            }else{None};
             let backup=backup_premiere_project(&premiere_bridge).await?;
             let context=premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await?;
             let project_path=context.get("projectPath").and_then(Value::as_str)
@@ -16432,11 +16462,24 @@ try {{
                     "on_disk_project_persistence_verified":persistence.get("persistence_verified"),
                     "after_effects_producer_verified":false,"retry_safe":false})
             };
-            let verified=proof.get("handoff_verified").and_then(Value::as_bool)==Some(true);
+            let ae_post=if let Some(path)=request.ae_provenance_file.as_deref(){
+                after_effects_mogrt_provenance::verify(path,&request.path,&request.expected_sha256).ok()
+            }else{None};
+            let ae_receipt_bound=ae_pre.as_ref().is_some_and(|before|
+                ae_post.as_ref().is_some_and(|after|
+                    before.get("request_id")==after.get("request_id")
+                    &&before.get("receipt_sha256")==after.get("receipt_sha256")
+                    &&before.get("output_sha256")==after.get("output_sha256")));
+            let verified=proof.get("handoff_verified").and_then(Value::as_bool)==Some(true)
+                &&(ae_pre.is_none()||ae_receipt_bound);
             Ok(ActionResult{success:verified,tool,
                 stdout:json!({"backup":backup,"insertion":value,"save":saved_request.as_ref().ok(),
                     "save_error":saved_request.as_ref().err(),
                     "project_persistence":persistence,"handoff":proof,
+                    "ae_local_receipt_provenance_required":ae_pre.is_some(),
+                    "ae_local_receipt_provenance_verified":ae_receipt_bound,
+                    "ae_local_receipt_provenance_after":ae_post,
+                    "ae_origin_cryptographically_attested":false,
                     "post_state_verified":verified,"retry_safe":false,
                     "live_windows_verified":false}).to_string(),
                 stderr:if verified{String::new()}else{
