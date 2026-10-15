@@ -168,9 +168,12 @@ impl OwnedChild{
         }
         let deadline=Instant::now()+Duration::from_secs(5);
         loop {
-            if self.active_processes()?==0{return self.try_wait();}
+            let root_exit=self.try_wait()?;
+            if self.active_processes()?==0 && root_exit.is_some(){
+                return Ok(root_exit);
+            }
             if Instant::now()>=deadline{
-                return Err("Owned worker descendants have not terminated".into());
+                return Err("Owned worker tree or primary process has not finished termination".into());
             }
             thread::sleep(Duration::from_millis(10));
         }

@@ -254,12 +254,7 @@ mod tests{
         schedule.jobs[0].phase="audited".into();
         assert!(identity_matches(&schedule,&journal,A,"blender_run_plan").is_err());
     }
-    #[cfg(windows)]
-    fn cmd()->PathBuf{
-        PathBuf::from(std::env::var_os("ComSpec")
-            .expect("Windows CI must supply COMSPEC"))
-    }
-    #[cfg(windows)]
+     #[cfg(windows)]
     fn fresh_snapshots()->(Schedule,crate::native_worker_job::NativeJob){
         let (mut schedule,mut journal)=snapshots();
         let id=uuid::Uuid::new_v4().to_string();
@@ -268,7 +263,7 @@ mod tests{
         (schedule,journal)
     }
     #[cfg(windows)]
-    fn cmd_exe_for_test()->PathBuf {cmd()}
+    fn cmd_exe_for_test()->PathBuf {slow_exe()}
     #[cfg(windows)]
     fn slow_exe()->PathBuf {
         PathBuf::from(std::env::var_os("SystemRoot").expect("Windows root"))
@@ -285,8 +280,9 @@ mod tests{
         let _serial=TEST_PROCESS_MUTEX.lock().unwrap();
         let (schedule,journal)=fresh_snapshots();
         let action=journal.action_id.clone();
-        let cmd=cmd();
-        let args=vec!["/D".into(),"/C".into(),"exit /B 0".into()];
+        let cmd=slow_exe();
+        let args=vec!["-NoProfile".into(),"-NonInteractive".into(),
+            "-Command".into(),"exit 0".into()];
         let mut child=spawn_checked(&schedule,&journal,&action,"blender_run_plan",
             &cmd,&args,&std::env::temp_dir(),Duration::from_secs(5)).unwrap();
         let pid=child.pid();
@@ -344,7 +340,8 @@ mod tests{
         assert!(second.is_err());
         child.cancel_exact(&action).unwrap();
         drop(child);
-        let fast=vec!["/D".into(),"/C".into(),"exit /B 0".into()];
+        let fast=vec!["-NoProfile".into(),"-NonInteractive".into(),
+            "-Command".into(),"exit 0".into()];
         assert!(spawn_checked(&schedule,&journal,&action,"blender_run_plan",
             &cmd_exe_for_test(),&fast,&std::env::temp_dir(),
             Duration::from_secs(5)).is_err()); // completed UUID cannot replay
