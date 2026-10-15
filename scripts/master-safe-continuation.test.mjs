@@ -145,11 +145,13 @@ test("Desktop stages only audit-backed readback through original Rust scheduler/
  const driver=src.slice(src.indexOf("async function continueAfterOutcome()"),
   src.indexOf("async function stageProposal("));
  const plan=driver.indexOf("planVerifiedNativeReadback(");
+ const host=driver.indexOf('invoke<NativeWorkerStatus>("native_worker_status")',plan);
  const status=driver.indexOf('invoke<NativeSchedule|null>("native_scheduler_status")',plan);
  const admission=driver.indexOf("assessMasterSchedulerAdmission(native,orchestration.task_graph)",plan);
  const stage=driver.indexOf("await stageProposal(safeReadback,route)",plan);
  const paid=driver.indexOf("await runAgentStep()",plan);
- assert.ok(plan>=0&&status>plan&&admission>status&&stage>admission&&paid>stage);
+ assert.ok(plan>=0&&host>plan&&status>host&&admission>status&&stage>admission&&paid>stage);
+ assert.match(driver,/host.state!=="idle"\|\|host.requiresOwnerReview\|\|host.durableJobPhase==="running"/);
  assert.match(src,/if\s*\(\s*!remoteTask\s*&&[\s\S]{0,400}allowsTaskRead\(activePermissionScope,activeReadGrant/);
  assert.match(src,/const bound = bindPreparedAction/);
  assert.match(src,/await invoke<PendingAction>\("prepare_tool"/);
