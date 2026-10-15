@@ -60,6 +60,40 @@ pub fn fingerprint(path:&str)->Result<MediaFingerprint,String>{
 pub fn same_file(a:&MediaFingerprint,b:&MediaFingerprint)->bool{
     a==b && a.size_bytes>0
 }
+/// Read-only proof for a *previously opened* Adobe project. This does not
+/// trigger a reopen or claim which application session loaded the bytes.
+pub fn assess_saved_media(
+    expected_project_path:&str,expected_project_guid:&str,expected_project_fnv1a64:&str,
+    expected_item_id:&str,expected_media_path:&str,expected_media_sha256:&str,
+    context:&serde_json::Value,
+    project:&crate::premiere_project_persistence::ProjectFileFingerprint,
+    media:&MediaFingerprint,item:&serde_json::Value
+)->serde_json::Value{
+    use serde_json::{json,Value};
+    let normalized=|path:&str|path.replace('/',"\\").to_ascii_lowercase();
+    let host_identity=context.get("projectGuid").and_then(Value::as_str)==Some(expected_project_guid)
+        &&context.get("projectPath").and_then(Value::as_str)
+            .is_some_and(|p|normalized(p)==normalized(expected_project_path));
+    let disk_matches=normalized(&project.path)==normalized(expected_project_path)
+        &&project.fnv1a64.eq_ignore_ascii_case(expected_project_fnv1a64)
+        &&project.size_bytes>0;
+    let media_hash_matches=normalized(&media.path)==normalized(expected_media_path)
+        &&media.sha256.eq_ignore_ascii_case(expected_media_sha256)
+        &&media.size_bytes>0;
+    let host_item_matches=item.get("itemId").and_then(Value::as_str)==Some(expected_item_id)
+        &&item.get("mediaPath").and_then(Value::as_str)
+            .is_some_and(|p|normalized(p)==normalized(expected_media_path))
+        &&item.get("offline").and_then(Value::as_bool)==Some(false);
+    let verified=host_identity&&disk_matches&&media_hash_matches&&host_item_matches;
+    json!({"saved_media_verified":verified,
+        "host_project_identity_matches":host_identity,
+        "disk_project_fingerprint_matches":disk_matches,
+        "media_source_sha256_matches":media_hash_matches,
+        "host_media_item_online_matches":host_item_matches,
+        "fresh_session_proven":false,
+        "project_path":expected_project_path,"item_id":expected_item_id,
+        "note":"All four checks are read-only evidence for the currently opened Premiere project. Fresh-session provenance must come from a separately audited open action; decoded frames and export are not verified."})
+}
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -73,6 +107,23 @@ mod tests{
         fs::write(&file,b"clip-2-different").unwrap();
         let c=fingerprint(file.to_str().unwrap()).unwrap();assert!(!same_file(&a,&c));
         fs::remove_file(file).unwrap();fs::remove_dir(dir).unwrap();
+    }
+    #[test] fn restored_project_verification_rejects_identity_hash_or_offline_mismatch(){
+        let project=crate::premiere_project_persistence::ProjectFileFingerprint{
+            path:"C:\\Project\\edit.prproj".into(),size_bytes:100,modified_ms:Some(5),fnv1a64:"0011223344556677".into()
+        };
+        let media=MediaFingerprint{path:"C:\\Media\\new.mp4".into(),size_bytes:25,
+            modified_ms:Some(7),sha256:"a".repeat(64)};
+        let context=serde_json::json!({"projectGuid":"P","projectPath":"C:\\Project\\edit.prproj"});
+        let item=serde_json::json!({"itemId":"item-1","mediaPath":"C:\\Media\\new.mp4","offline":false});
+        let assess=|j:&serde_json::Value,hash:&str|{
+            assess_saved_media("C:\\Project\\edit.prproj","P","0011223344556677",
+                "item-1","C:\\Media\\new.mp4",hash,&context,&project,&media,j)
+        };
+        assert_eq!(assess(&item,&"a".repeat(64))["saved_media_verified"],true);
+        assert_eq!(assess(&item,&"b".repeat(64))["saved_media_verified"],false);
+        let offline=serde_json::json!({"itemId":"item-1","mediaPath":"C:\\Media\\new.mp4","offline":true});
+        assert_eq!(assess(&offline,&"a".repeat(64))["saved_media_verified"],false);
     }
     #[test] fn empty_and_relative_sources_are_rejected(){
         assert!(fingerprint("../missing.mp4").is_err());
