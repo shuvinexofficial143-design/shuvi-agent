@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {deriveMasterGoalContract,initialMasterInspectionDAG,
-  admitDashboardMasterProposal,masterAutonomyGuidance} from '../src/master-autonomy-contract.mjs';
+  admitDashboardMasterProposal,masterAutonomyGuidance,nextMasterReadbackProposal} from '../src/master-autonomy-contract.mjs';
 const propose=(tool,argumentsValue={})=>({tool,arguments:argumentsValue});
 
 for(const input of ['Open Premiere Pro','premiere kholo','प्रीमियर खोलो']){
@@ -69,4 +69,21 @@ test('Both first and audited-result Master proposals call the same hard gate bef
 test('Circular model launch arguments do not escape admission handler',()=>{
   const args={path:'C:/Blender/blender.exe'};args.itself=args;
   assert.match(admitDashboardMasterProposal('Premiere kholo',propose('launch_app',args)).reason,/Invalid or circular/);
+});
+test('Successful audited launch selects only a new, separately approved observation proposal',()=>{
+  assert.deepEqual(nextMasterReadbackProposal('Premiere kholo','premiere_launch'),{tool:'ui_windows',arguments:{}});
+  assert.equal(nextMasterReadbackProposal('Premiere kholo','premiere_detect'),null);
+  assert.equal(nextMasterReadbackProposal('Premiere kholo','ui_windows'),null);
+  assert.equal(nextMasterReadbackProposal('Premiere me naya project banao','premiere_launch'),null,
+    'do not mistake a project creation goal for app opening');
+  assert.equal(nextMasterReadbackProposal('Open Blender','blender_inspect'),null);
+});
+test('Native continuation stages observed-window proposal without a second model request',()=>{
+  const ui=readFileSync(new URL('../web-dashboard/src/native-agent.ts',import.meta.url),'utf8');
+  assert.match(ui,/const plannedReadback=nextMasterReadbackProposal\(task\.objective,result\.tool\)/);
+  assert.match(ui,/if\(!plannedReadback&&!await persistRecovery\(taskBudget,"model_reserved"/);
+  assert.match(ui,/if\(plannedReadback\)\{\s*response=\{content:/);
+  assert.match(ui,/provider:task\.route\.provider,model:task\.route\.model,tool_proposal:plannedReadback/);
+  assert.match(ui,/plannedReadback\?canStageNativeAction\(taskBudget\):reserveNativeModelRequest\(taskBudget\)/);
+  assert.match(ui,/if\(!markNativeActionStaged\(taskBudget\)\)/);
 });
