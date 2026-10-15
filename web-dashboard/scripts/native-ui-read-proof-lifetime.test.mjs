@@ -5,6 +5,6 @@ test("Batch 77 failed new ui_windows inspection cannot leave old app proof activ
  const attempt=s.indexOf('if(current.action.kind==="ui_windows"){');
  const exec=s.indexOf('await invoke<ActionResult>("execute_action"');
  assert.ok(attempt!==-1&&attempt<exec,"invalidate proof before native execute");
- assert.match(s.slice(attempt,exec),/observedWindows.set\\(current.threadId,null\\)/);
+ assert.match(s.slice(attempt,exec),/observedWindows\.set\(current\.threadId,null\)/);
  assert.match(s.slice(attempt,exec),/verifiedWindows.delete\(current.threadId\)/);
 });
