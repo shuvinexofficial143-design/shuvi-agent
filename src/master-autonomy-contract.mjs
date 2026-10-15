@@ -54,6 +54,15 @@ export function initialMasterInspectionDAG(goal) {
   ])});
 }
 
+// The first verified launch can be followed by its deterministic inspection
+// without another paid Master request. This only returns a *proposal* for
+// normal native prepare/Allow once/audit; it NEVER executes a UI inspection.
+export function nextMasterReadbackProposal(goal, auditedTool) {
+  const graph=initialMasterInspectionDAG(goal);
+  if (!graph || auditedTool!==graph.steps[0].expected_tool) return null;
+  return {tool:graph.steps[1].expected_tool,arguments:{}};
+}
+
 // Scope is checked before *both* initial and follow-up native preparations.
 // This dashboard has NO task-DAG state machine: reject graph/step metadata
 // instead of passing unverifiable model-authored scheduling state to Rust.
