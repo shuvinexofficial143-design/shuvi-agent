@@ -70,7 +70,7 @@ test('Both first and audited-result Master proposals call the same hard gate bef
 });
 test('Circular model launch arguments do not escape admission handler',()=>{
   const args={path:'C:/Blender/blender.exe'};args.itself=args;
-  assert.match(admitDashboardMasterProposal('Premiere kholo',propose('launch_app',args)).reason,/Invalid or circular/);
+  assert.match(admitDashboardMasterProposal('Premiere me project banao',propose('launch_app',args)).reason,/Invalid or circular/);
 });
 test('Successful audited launch selects only a new, separately approved observation proposal',()=>{
   assert.deepEqual(nextMasterReadbackProposal('Premiere kholo','premiere_launch'),{tool:'ui_windows',arguments:{}});
