@@ -59,6 +59,7 @@ mod premiere_acceptance_execution;
 mod premiere_calibration;
 mod premiere_export_jobs;
 mod premiere_project_persistence;
+mod premiere_project_lifecycle;
 mod premiere_review_binding;
 mod premiere_edit_session;
 mod premiere_edit_job;
@@ -420,6 +421,8 @@ Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) API
 - premiere_acceptance_execute: {"action_id":"exact prepared acceptance action UUID"}
 - premiere_acceptance_cancel: {"action_id":"exact prepared acceptance action UUID"}
 - premiere_acceptance_verify_recovery: {"action_id":"completed trim/move/clone/delete_ripple acceptance action UUID"} — read-only verification after manually opening the Shuvi checkpoint; never opens or overwrites a project automatically
+- premiere_create_project: {"path":"new absolute Windows .prproj destination (must not already exist)"} — high risk; initial save and independent host/disk verification; never overwrites.
+- premiere_open_project: {"path":"existing absolute Windows .prproj"} — high risk; host project identity plus independently unchanged disk fingerprint, no automatic save/close.
 - premiere_save_project: {}
 - after_effects_capability_report: {}
 - after_effects_readiness_report: {}
@@ -785,6 +788,8 @@ enum ToolAction {
     FrameIoAcceptanceSummary,
     PremiereDetect,
     PremiereLaunch { project: Option<String> },
+    PremiereCreateProject { path:String },
+    PremiereOpenProject { path:String },
     PremiereBridgeStart,
     PremiereBridgeStatus,
     PremiereContext,
@@ -1711,6 +1716,8 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "audition_invoke_command"
         | "premiere_detect"
         | "premiere_launch"
+        | "premiere_create_project"
+        | "premiere_open_project"
         | "premiere_bridge_start"
         | "premiere_bridge_status"
         | "premiere_context"
@@ -4747,6 +4754,22 @@ fn stage_tool(
                     .unwrap_or_else(|| "Launch the newest detected Premiere installation.".to_string()),
                 RiskLevel::Medium,
             )
+        }
+        "premiere_create_project" => {
+            let path=arg_string(&proposal.arguments,"path")?;
+            premiere_project_lifecycle::preflight_create(&path)?;
+            (ToolAction::PremiereCreateProject{path:path.clone()},
+                "Create new Premiere project".into(),
+                format!("Create a NEW Adobe Premiere project and save the .prproj at {path}. Existing targets may never be overwritten. Verify active host identity and independent disk bytes. No auto retry."),
+                RiskLevel::High)
+        }
+        "premiere_open_project" => {
+            let path=arg_string(&proposal.arguments,"path")?;
+            premiere_project_lifecycle::preflight_open(&path)?;
+            (ToolAction::PremiereOpenProject{path:path.clone()},
+                "Open existing Premiere project".into(),
+                format!("Open the existing .prproj at {path} in Adobe Premiere without saving or closing an existing project. Verify active host identity and unchanged disk bytes. No auto retry."),
+                RiskLevel::High)
         }
         "premiere_bridge_start" => (
             ToolAction::PremiereBridgeStart,
@@ -13025,6 +13048,30 @@ try {{
                 exit_code: Some(0),
             })
         }
+        ToolAction::PremiereCreateProject{path} => {
+            premiere_project_lifecycle::preflight_create(&path)?;
+            let host=premiere_bridge.request("create_project",json!({"path":path}),Duration::from_secs(75)).await?;
+            let proof=premiere_project_lifecycle::assess_create(&path,&host);
+            let verified=proof.get("project_verified").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{success:verified,tool,
+                stdout:json!({"host":host,"project_evidence":proof,
+                    "post_state_verified":verified,"retry_safe":false}).to_string(),
+                stderr:if verified{String::new()}else{
+                    "Premiere project creation/persistence uncertain. Inspect the exact host and destination before retry.".into()
+                },exit_code:Some(if verified{0}else{1})})
+        }
+        ToolAction::PremiereOpenProject{path} => {
+            let before=premiere_project_lifecycle::preflight_open(&path)?;
+            let host=premiere_bridge.request("open_project",json!({"path":path}),Duration::from_secs(75)).await?;
+            let proof=premiere_project_lifecycle::assess_open(&path,&before,&host);
+            let verified=proof.get("project_verified").and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{success:verified,tool,
+                stdout:json!({"host":host,"project_evidence":proof,
+                    "post_state_verified":verified,"retry_safe":false}).to_string(),
+                stderr:if verified{String::new()}else{
+                    "Premiere project open identity/disk status uncertain. Inspect before retry.".into()
+                },exit_code:Some(if verified{0}else{1})})
+        }
         ToolAction::PremiereBridgeStart => {
             let status = state.premiere_bridge.start()?;
             Ok(ActionResult {
@@ -17599,6 +17646,8 @@ try {{
             let expected_project=context.get("projectGuid").and_then(Value::as_str).unwrap_or("").to_string();
             let before=if expected_path.is_empty(){Err("Active project path unavailable before save.".to_string())}
                 else{premiere_project_persistence::fingerprint(&expected_path)};
+            let checkpoint=if expected_path.is_empty(){return Err("Cannot save a project without an existing .prproj path.".into());}
+                else{premiere_checkpoint::create_checkpoint(Path::new(&expected_path),now_ms())?};
             let value = premiere_bridge
                 .request("save_project", json!({}), Duration::from_secs(15)).await?;
             let accepted = value.get("saved").and_then(Value::as_bool) == Some(true);
@@ -17624,6 +17673,7 @@ try {{
                 tool,
                 stdout: serde_json::to_string_pretty(&json!({
                     "save":value,
+                    "pre_save_checkpoint":checkpoint,
                     "project_guid":expected_project,
                     "expected_project_path":expected_path,
                     "native_accepted":accepted,
