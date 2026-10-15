@@ -3889,6 +3889,48 @@ async function moveProjectItem(argumentsValue) {
   };
 }
 
+// Bounded read-only project media inventory. Each row carries an exact Adobe
+// ProjectItem ID and observed path for a separately approved relink. No guessing.
+async function inspectProjectMediaAudit() {
+  const project = await requireProject();
+  const root = await project.getRootItem();
+  let budget = 1000, complete = true, scannedItems = 0;
+  const entries = [], ids = new Set();
+  async function walk(folder, depth) {
+    if (depth > 8) { complete = false; return; }
+    const children = await folder.getItems();
+    if (!Array.isArray(children)) { complete = false; return; }
+    for (const item of children) {
+      if (budget-- <= 0) { complete = false; return; }
+      scannedItems += 1;
+      const clip = asClipProjectItem(item);
+      if (clip) {
+        if (entries.length >= 500) { complete = false; return; }
+        const itemId = await projectItemId(clip);
+        let mediaPath = null, offline = null;
+        try { mediaPath = await clip.getMediaFilePath(); } catch { complete = false; }
+        try { offline = await clip.isOffline(); } catch { complete = false; }
+        if (!itemId || ids.has(String(itemId)) || typeof mediaPath !== "string"
+            || !mediaPath || mediaPath.length > 4096 || typeof offline !== "boolean") {
+          complete = false;
+        } else {
+          ids.add(String(itemId));
+          entries.push({itemId:String(itemId),name:String(item.name || "").slice(0,256),
+            mediaPath,offline});
+        }
+      } else {
+        const child = asFolderItem(item);
+        if (child) await walk(child,depth+1);
+      }
+    }
+  }
+  await walk(root,0);
+  return {projectGuid:plainGuid(project.guid),projectPath:project.path || null,
+    entries,entryCount:entries.length,scannedItems,scanComplete:complete,
+    inspectionOnly:true,editingAuthorized:false,
+    note:"An observed path and item ID are not approval to relink; verify file identity, obtain approval, then recheck host path before mutation."};
+}
+
 async function relinkMedia(argumentsValue) {
   const itemId =
     typeof argumentsValue?.itemId === "string"
@@ -3899,8 +3941,11 @@ async function relinkMedia(argumentsValue) {
       ? argumentsValue.newPath.trim()
       : "";
   const overrideCompatibility = Boolean(argumentsValue?.overrideCompatibility);
+  const expectedPreviousPath = typeof argumentsValue?.expectedPreviousPath === "string"
+    ? argumentsValue.expectedPreviousPath : "";
 
-  if (!itemId || !newPath) {
+  if (!itemId || !newPath || !expectedPreviousPath || expectedPreviousPath.length > 4096
+      || expectedPreviousPath !== expectedPreviousPath.trim()) {
     throw new Error("itemId and newPath are required.");
   }
 
@@ -3917,26 +3962,46 @@ async function relinkMedia(argumentsValue) {
   }
 
   const previousPath = await clip.getMediaFilePath();
-  const success = await clip.changeMediaFilePath(newPath, overrideCompatibility);
+  if (normalizeMediaPath(previousPath) !== normalizeMediaPath(expectedPreviousPath)) {
+    throw new Error("Premiere relink source changed since the observed media audit; no edit was sent.");
+  }
+  if (normalizeMediaPath(previousPath) === normalizeMediaPath(newPath)) {
+    throw new Error("Premiere relink is a no-op; source already matches the requested destination.");
+  }
+  const freshItemBefore = await findProjectItemById(root,itemId);
+  const freshClipBefore = freshItemBefore ? asClipProjectItem(freshItemBefore) : null;
+  if (!freshClipBefore || await projectItemId(freshClipBefore) !== itemId ||
+      normalizeMediaPath(await freshClipBefore.getMediaFilePath()) !== normalizeMediaPath(expectedPreviousPath)) {
+    throw new Error("Premiere media identity/path changed during relink preflight; inspect again.");
+  }
+  const success = await freshClipBefore.changeMediaFilePath(newPath, overrideCompatibility);
   if (!success) throw new Error("Premiere could not relink the requested media.");
 
-  let observedPath = null;
+  let observedPath = null, observedOffline = null, observedId = null;
   try {
     const freshItem = await findProjectItemById(root,itemId);
     const freshClip = freshItem ? asClipProjectItem(freshItem) : null;
-    if (freshClip) observedPath = await freshClip.getMediaFilePath();
+    if (freshClip) {
+      observedId = await projectItemId(freshClip);
+      observedPath = await freshClip.getMediaFilePath();
+      observedOffline = await freshClip.isOffline();
+    }
   } catch {
     observedPath = null;
   }
-  const verified = typeof observedPath === "string"
+  const verified = observedId === itemId && observedOffline === false
+    && typeof observedPath === "string"
     && normalizeMediaPath(observedPath) === normalizeMediaPath(newPath);
 
   return {
     relinked: true,
     itemId,
     previousPath,
+    expectedPreviousPath,
     newPath,
     observedPath,
+    observedId,
+    observedOffline,
     overrideCompatibility,
     verificationStatus: verified ? "verified_readback" : "accepted_unverified",
     uncertain: !verified,
@@ -7447,6 +7512,8 @@ async function dispatchNativeCommand(command) {
       return await moveProjectItem(command.arguments || {});
     case "relink_media":
       return await relinkMedia(command.arguments || {});
+    case "inspect_project_media_audit":
+      return await inspectProjectMediaAudit();
     case "inspect_media_interpretation":
       return await inspectMediaInterpretation(command.arguments || {});
     case "prepare_media_item":
