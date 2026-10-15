@@ -62,3 +62,11 @@ The existing native permission lease, audit receipts and risk confirmation remai
 Source mock fixtures: scripts/premiere-media-relink-durability.test.mjs. Rust SHA256 unit tests are in src-tauri/src/premiere_media_relink.rs. Existing Premiere transport and speed VM fixtures were extended for the newly added UXP modules; earlier frontend CI failures were caused by old fixed mock module allowlists, not by Windows Rust compilation. Full exact-head CI and Windows Adobe live acceptance must still be reported separately.
 
 Known limitations: file-path preflights and Adobe operations do not provide an atomic OS-wide lock. Large media over 4 GiB is rejected by this strict proof workflow. A successful native path readback is not proof of correct video frames, linked audio, source interpretation, relinked proxy health, export completion or new-session reopen.
+
+## Milestone 4 — independent verification after a separately approved project open
+
+New read-only premiere_verify_saved_media tool accepts exact previously recorded saved project path, project GUID, project FNV1a64 fingerprint (16 hex), native item ID, replacement media path and SHA256 (64 hex). The operator can call premiere_open_project first, then premiere_verify_saved_media.
+
+The tool independently re-fingerprints .prproj and media files before and after bounded paired UXP inspections, then compares all four gates: current host project identity, exact on-disk project fingerprint, exact replacement media SHA256 and online native item path/identity. The tool never opens/closes/saves/edits media; fresh_session_proven remains false because a standalone read-only scan cannot prove a separate process/session actually reopened the project. A prior audited premiere_open_project establishes separate open action evidence; a real host run is still needed.
+
+New Rust tests for assess_saved_media reject changed SHA and still-offline footage. Node source tests verify that no hidden host mutation occurs in the read-only execution arm. Windows/Adobe host performance and true playback semantics are unverified until authorized acceptance.
