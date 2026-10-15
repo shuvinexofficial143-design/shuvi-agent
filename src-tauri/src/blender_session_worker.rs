@@ -57,6 +57,43 @@ mod windows_job {
     impl Drop for OwnedJob {
         fn drop(&mut self){unsafe{CloseHandle(self.0);}}
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::{process::{Command,Stdio},thread,time::{Duration,Instant}};
+
+        #[test]
+        fn kill_on_close_reaps_disposable_windows_broker() {
+            // Disposable CI child only: never launches Blender, the desktop,
+            // Adobe or a customer process. Proves actual Windows job behavior.
+            let mut child=Command::new("cmd.exe")
+                .args(["/C","ping -n 30 127.0.0.1 >NUL"])
+                .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+                .spawn().expect("Windows test child could not launch");
+            let job=match OwnedJob::attach(&child){
+                Ok(job)=>job,
+                Err(error)=>{
+                    let _=child.kill();let _=child.wait();
+                    panic!("Windows job containment is unavailable: {error}");
+                }
+            };
+            assert!(child.try_wait().expect("Cannot inspect disposable child").is_none());
+            drop(job);
+            let deadline=Instant::now()+Duration::from_secs(5);
+            let mut confirmed=false;
+            while Instant::now()<deadline {
+                if child.try_wait().expect("Cannot inspect owned child").is_some(){
+                    confirmed=true;
+                    break;
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+            if !confirmed {let _=child.kill();}
+            let _=child.wait();
+            assert!(confirmed,"Windows kernel did not terminate disposable job child");
+        }
+    }
 }
 
 const MAX_FRAME:usize=131072;
