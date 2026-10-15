@@ -14,7 +14,7 @@ import {taskClarificationKind,extendTaskClarification,nextClarificationRoot} fro
 import {newEvidence,recordAuditedEvidence,evidenceSummary} from "./native-task-evidence.mjs";
 import {summarizeWindowObservation} from "./native-window-observation.mjs";
 import {windowGoalEvidence,goalEvidenceLabel} from "./native-goal-evidence.mjs";
-import {checkObservedMutationTarget,checkAmbiguousReadWindow} from "./native-window-target-guard.mjs";
+import {observedWindowInventory,checkObservedMutationTarget,checkAmbiguousReadWindow} from "./native-window-target-guard.mjs";
 import {newAuditedWindowObservation,currentObservedWindows} from "./native-window-observation-session.mjs";
 import {verifiedExecutionReceipt,contradictsFailureReceipt} from "./native-action-receipts.mjs";
 import {requiresNewWindowObservation} from "./native-ui-snapshot-lifetime.mjs";
@@ -42,6 +42,8 @@ type PendingTask = {action:Pending;threadId:string;promptIndex:number;
 // inventory to avoid forwarding arbitrary control content as instructions.
 function compactObservedUi(result:ActionResult):string|null {
  if(!["ui_windows","ui_discover","ui_find"].includes(result.tool))return null;
+ // No plausible-but-invalid windows in Master context.
+ if(result.tool==="ui_windows"&&!observedWindowInventory(result,true)?.length)return null;
  if(typeof result.stdout!=="string"||result.stdout.length>250000)return null;
  try{
   const raw=JSON.parse(result.stdout) as unknown;
@@ -741,8 +743,9 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       goalStatus.textContent=taskGoalLabel(current.objective);
      }
      if(result.tool==="ui_windows"){
-      observedWindows.set(current.threadId,newAuditedWindowObservation(result,current.action.id));
-      const proof=windowGoalEvidence(current.objective,result,true);
+      const snapshot=newAuditedWindowObservation(result,current.action.id);
+      observedWindows.set(current.threadId,snapshot);
+      const proof=snapshot?windowGoalEvidence(current.objective,result,true):null;
       if(proof)verifiedWindows.set(current.threadId,proof);
       else verifiedWindows.delete(current.threadId);
       goalStatus.textContent=proof?redactNativeMessage(goalEvidenceLabel(current.objective,proof)):taskGoalLabel(current.objective);
