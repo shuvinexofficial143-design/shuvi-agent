@@ -459,7 +459,17 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   }
   // One provider request per confirmed, approved step. No retries for ambiguous
   // provider results and no auto execution of a newly proposed Windows action.
-  if(!plannedReadback&&!await persistRecovery(taskBudget,"model_reserved",task.action.id)){
+  if(plannedReadback){
+   // Publish a distinct, validated model-FREE reservation to both durable
+   // journals before preparing a new inspection UUID. This only follows
+   // the exact previous audit_verified record: no replay, no extra tokens.
+   if(!await persistRecovery(taskBudget,"readback_reserved",task.action.id)){
+    haltTask(task.threadId,"recovery_journal_failed");
+    appendReply(task.threadId,task.promptIndex,
+     "Native model-free readback reservation failed. No further native action prepared.");
+    return;
+   }
+  }else if(!await persistRecovery(taskBudget,"model_reserved",task.action.id)){
    haltTask(task.threadId,"recovery_journal_failed");
    appendReply(task.threadId,task.promptIndex,"Native recovery journal could not be saved. No follow-up AI request sent.");
    return;
