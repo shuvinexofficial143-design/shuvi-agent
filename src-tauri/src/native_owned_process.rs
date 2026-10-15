@@ -170,13 +170,14 @@ impl OwnedProcess {
 }
 impl Drop for OwnedProcess{
     fn drop(&mut self){
-        if self.final_phase.is_none(){
-            // Never orphan a still-owned direct child. Still NOT full tree
-            // containment, nor evidence of externally visible side effects.
-            let _=self.stop_direct_child("cancelled");
-        }
-        if let Ok(mut owner)=PROCESS_OWNER.lock(){
-            if owner.as_deref()==Some(self.action_id.as_str()) {*owner=None;}
+        // Fail closed if an OS stop/reap operation failed: the current
+        // process must not hand its slot to a competing owned child.
+        let stopped=self.final_phase.is_some()
+            ||self.stop_direct_child("cancelled").is_ok();
+        if stopped {
+            if let Ok(mut owner)=PROCESS_OWNER.lock(){
+                if owner.as_deref()==Some(self.action_id.as_str()) {*owner=None;}
+            }
         }
     }
 }
@@ -185,6 +186,10 @@ mod tests{
     use super::*;
     #[cfg(windows)]
     use std::path::PathBuf;
+    // Real child fixtures share a single OS-supervised process slot. Their
+    // independent Rust tests must not race when cargo uses many test threads.
+    #[cfg(windows)]
+    static TEST_PROCESS_MUTEX:Mutex<()> = Mutex::new(());
     const A:&str="e8b36b21-1c6a-459e-9b6f-75dd5692ab81";
     const B:&str="0f2977ac-4f61-4d9c-bf74-ecf8a3ae2172";
     fn snapshots()->(Schedule,crate::native_worker_job::NativeJob){
@@ -216,8 +221,21 @@ mod tests{
             .expect("Windows CI must supply COMSPEC"))
     }
     #[cfg(windows)]
+    fn cmd_exe_for_test()->PathBuf {cmd()}
+    #[cfg(windows)]
+    fn slow_exe()->PathBuf {
+        PathBuf::from(std::env::var_os("SystemRoot").expect("Windows root"))
+            .join("System32").join("WindowsPowerShell").join("v1.0").join("powershell.exe")
+    }
+    #[cfg(windows)]
+    fn slow_args()->Vec<OsString>{
+        vec!["-NoProfile".into(),"-NonInteractive".into(),
+             "-Command".into(),"Start-Sleep -Seconds 8".into()]
+    }
+    #[cfg(windows)]
     #[test]
     fn observed_pid_and_real_child_exit_do_not_fabricate_app_progress(){
+        let _serial=TEST_PROCESS_MUTEX.lock().unwrap();
         let (schedule,journal)=snapshots();
         let cmd=cmd();
         let args=vec!["/D".into(),"/C".into(),"exit /B 0".into()];
@@ -236,9 +254,10 @@ mod tests{
     #[cfg(windows)]
     #[test]
     fn cancelled_owned_process_cannot_kill_a_foreign_action(){
+        let _serial=TEST_PROCESS_MUTEX.lock().unwrap();
         let (schedule,journal)=snapshots();
-        let cmd=cmd();
-        let args=vec!["/D".into(),"/C".into(),"ping -n 9 127.0.0.1 >NUL".into()];
+        let cmd=slow_exe();
+        let args=slow_args();
         let mut child=spawn_checked(&schedule,&journal,A,"blender_run_plan",
             &cmd,&args,&std::env::temp_dir(),Duration::from_secs(5)).unwrap();
         assert!(child.cancel_exact(B).is_err());
@@ -249,10 +268,24 @@ mod tests{
     }
     #[cfg(windows)]
     #[test]
-    fn active_worker_blocks_second_owned_child_until_reaped(){
+    fn deadline_stops_only_owned_direct_child_without_inventing_success(){
+        let _serial=TEST_PROCESS_MUTEX.lock().unwrap();
         let (schedule,journal)=snapshots();
-        let cmd=cmd();
-        let args=vec!["/D".into(),"/C".into(),"ping -n 9 127.0.0.1 >NUL".into()];
+        let mut child=spawn_checked(&schedule,&journal,A,"blender_run_plan",
+            &slow_exe(),&slow_args(),&std::env::temp_dir(),
+            Duration::from_millis(100)).unwrap();
+        let obs=child.wait_bounded().unwrap();
+        assert_eq!(obs.phase,"timed_out");
+        assert!(!obs.app_progress_verified);
+        assert!(!obs.descendants_contained);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn active_worker_blocks_second_owned_child_until_reaped(){
+        let _serial=TEST_PROCESS_MUTEX.lock().unwrap();
+        let (schedule,journal)=snapshots();
+        let cmd=slow_exe();
+        let args=slow_args();
         let mut child=spawn_checked(&schedule,&journal,A,"blender_run_plan",
             &cmd,&args,&std::env::temp_dir(),Duration::from_secs(5)).unwrap();
         let second=spawn_checked(&schedule,&journal,A,"blender_run_plan",
@@ -262,7 +295,7 @@ mod tests{
         drop(child);
         let fast=vec!["/D".into(),"/C".into(),"exit /B 0".into()];
         let mut after=spawn_checked(&schedule,&journal,A,"blender_run_plan",
-            &cmd,&fast,&std::env::temp_dir(),Duration::from_secs(5)).unwrap();
+            &cmd_exe_for_test(),&fast,&std::env::temp_dir(),Duration::from_secs(5)).unwrap();
         assert_eq!(after.wait_bounded().unwrap().phase,"exited");
     }
 }
