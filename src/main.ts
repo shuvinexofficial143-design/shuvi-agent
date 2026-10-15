@@ -1254,6 +1254,16 @@ async function continueAfterOutcome(): Promise<void> {
   if(safeReadback) {
     // Do not elide the existing host lease/Rust scheduler comparison simply
     // because the next proposal is deterministic rather than model-authored.
+    let host:NativeWorkerStatus;
+    try {host=await invoke<NativeWorkerStatus>("native_worker_status");}
+    catch {
+      await stopAgentForSafety("Native worker lease is unreadable before a deterministic readback; no provider or tool dispatched.");
+      return;
+    }
+    if(host.state!=="idle"||host.requiresOwnerReview||host.durableJobPhase==="running"){
+      await stopAgentForSafety("Native worker lease or recovery is unresolved. Inspection-only owner review required before another readback.");
+      return;
+    }
     let native:NativeSchedule|null;
     try {native=await invoke<NativeSchedule|null>("native_scheduler_status");}
     catch {
