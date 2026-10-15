@@ -106,7 +106,7 @@ test("read-only audit is a distinct registered low risk native tool",()=>{
 });
 
 test("persisted project media audit is read-only and requires exact four-way evidence",()=>{
-  const start=native.indexOf('ToolAction::PremiereVerifySavedMedia{project_path');
+  const start=native.lastIndexOf('ToolAction::PremiereVerifySavedMedia{project_path');
   const end=native.indexOf('ToolAction::PremiereRelinkMedia { item_id, new_path',start);
   assert.ok(start>=0&&end>start);
   const verify=native.slice(start,end);
