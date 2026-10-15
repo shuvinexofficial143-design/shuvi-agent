@@ -114,6 +114,11 @@ def serve(argv: list[str] | None = None) -> int:
         parser.error("Existing absolute output directory required")
 
     try:
+        # Rust must register this exact PID and bind its Windows kill-on-close
+        # Job Object before allowing Python to launch a Blender child.
+        arm = sys.stdin.buffer.readline(MAX_REQUEST_BYTES + 2)
+        if arm != b'{"version":1,"op":"arm"}\n':
+            raise ValueError("Blender session broker was not armed by its owner")
         from shuvi_blender_agent.client import BlenderController
         from shuvi_blender_agent.contracts import Request, Status
         from shuvi_blender_agent.process import LaunchConfig, launch
