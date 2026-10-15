@@ -13,7 +13,7 @@ test("owner action budgets are a narrow explicit allowlist",()=>{
  for(const x of [8,24,48]) assert.equal(allowedTaskBudget(x),true);
  for(const x of [undefined,null,0,9,49,1000,"48",NaN,1.5]) assert.equal(allowedTaskBudget(x),false);
  assert.match(main,/id="taskActionBudget"/);
- assert.match(main,/createAgentOrchestrationState\(allowedTaskBudget\(selectedActions\) \? selectedActions : 8\)/);
+ assert.match(main,/createAgentOrchestrationState\(allowedTaskBudget\(selectedActions\) \? selectedActions : 8, Date\.now\(\), content\)/);
  assert.match(orchestrator,/max_steps: allowedTaskBudget\(ownerBudget\) \? ownerBudget : MAX_AGENT_STEPS/);
 });
 
