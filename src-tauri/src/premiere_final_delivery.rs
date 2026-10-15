@@ -59,8 +59,9 @@ mod tests{
     use super::*;
     use crate::premiere_export_jobs::Job;
     #[test]fn matching_mp4_metadata_does_not_upgrade_encoder_completion(){
+        let file=std::env::temp_dir().join("shuvi-test.mp4");
         let job=Job::new("job-1".into(),"project-1","sequence-1",
-            "/tmp/shuvi-test.mp4",None,false).unwrap();
+            file.to_str().unwrap(),None,false).unwrap();
         let f=MediaFingerprint{path:job.output.clone(),size_bytes:500,
             modified_ms:Some(5),sha256:"a".repeat(64)};
         let parsed=json!({"media_structure_verified":true,"media_parse_verified":true,
@@ -73,7 +74,8 @@ mod tests{
         assert_eq!(assess(&job,&f,&changed,&parsed)["delivery_media_integrity_verified"],false);
     }
     #[test]fn reject_wrong_project_or_no_native_acceptance(){
-        let job=Job::new("job-2".into(),"P","S","/tmp/shuvi-test.mp4",None,false).unwrap();
+        let file=std::env::temp_dir().join("shuvi-test.mp4");
+        let job=Job::new("job-2".into(),"P","S",file.to_str().unwrap(),None,false).unwrap();
         assert!(eligible_job(&job,"P","S").is_err());
         assert!(eligible_job(&job,"wrong","S").is_err());
         let mut accepted=job.clone();accepted.bridge_state="accepted".into();
