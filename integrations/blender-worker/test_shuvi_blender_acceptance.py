@@ -1,0 +1,156 @@
+"""Plan-only acceptance regression: no Blender process, no filesystem edits."""
+import contextlib
+import io
+import json
+import sys
+import unittest
+
+import shuvi_blender_acceptance as scenario
+
+REV = "d" * 64
+EXPECTED_OPS = {
+    "model1": ["mesh.create", "mesh.inspect", "mesh.translate_vertices",
+               "scene.inspect", "file.checkpoint"],
+    "model2": ["objects.list", "mesh.inspect", "mesh.translate_vertices",
+               "scene.inspect", "file.checkpoint"],
+    "render": ["render.configure", "scene.inspect", "render.execute"],
+}
+
+
+def lookup(source, path):
+    result = source
+    for segment in path:
+        result = result[segment]
+    return result
+
+
+def assign(destination, path, value):
+    result = destination
+    for segment in path[:-1]:
+        result = result[segment]
+    result[path[-1]] = value
+
+
+class AcceptanceRecipeTests(unittest.TestCase):
+    def test_three_fixed_real_operation_sequences_fit_native_limits(self):
+        for stage, operations in EXPECTED_OPS.items():
+            recipe = scenario.build(stage, REV)
+            self.assertEqual(recipe["timeout_ms"], 90000)
+            self.assertEqual([s["request"]["operation"] for s in recipe["steps"]], operations)
+            self.assertLessEqual(len(recipe["steps"]), 6)
+            self.assertLess(len(json.dumps(recipe).encode()), 65536)
+            self.assertEqual(recipe["steps"][-1]["request"]["operation"],
+                             "render.execute" if stage == "render" else "file.checkpoint")
+
+    def test_request_and_command_ids_distinct_including_across_phases(self):
+        steps = [step for stage in EXPECTED_OPS
+                 for step in scenario.build(stage, REV)["steps"]]
+        requests = [step["request"]["request_id"] for step in steps]
+        commands = [step["request"]["command_id"] for step in steps]
+        self.assertEqual(len(requests), len(set(requests)))
+        self.assertEqual(len(commands), len(set(commands)))
+        self.assertTrue(set(requests).isdisjoint(set(commands)))
+
+    def test_every_binding_references_existing_prior_step_and_payload_leaf(self):
+        for stage in EXPECTED_OPS:
+            seen = {}
+            for step in scenario.build(stage, REV)["steps"]:
+                for binding in step["bindings"]:
+                    self.assertIn(binding["source_step"], seen)
+                    self.assertGreaterEqual(len(binding["source_path"]), 2)
+                    self.assertIsInstance(lookup(step["request"]["payload"],
+                                                 binding["target_path"]), str)
+                    self.assertTrue(lookup(step["request"]["payload"],
+                                           binding["target_path"]).startswith("BOUND_"))
+                seen[step["name"]] = step
+
+    def test_geometry_is_five_vertices_and_closed_pyramid_faces(self):
+        steps = scenario.build("model1", REV)["steps"]
+        first = steps[0]["request"]["payload"]
+        self.assertEqual(first["name"], scenario.MESH_NAME)
+        self.assertEqual(first["expected_scene_revision"], REV)
+        vertices = first["geometry"]["vertices"]
+        faces = first["geometry"]["faces"]
+        self.assertEqual(len(vertices), 5)
+        self.assertEqual(len(faces), 5)
+        for face in faces:
+            self.assertTrue(all(0 <= n < len(vertices) for n in face))
+            self.assertEqual(len(set(face)), len(face))
+        self.assertEqual(steps[2]["request"]["payload"]["indices"], [4])
+        self.assertEqual(steps[2]["request"]["payload"]["delta"], [0.0, 0.0, 0.25])
+
+    def test_moving_mesh_binds_live_identity_and_geometry_revision(self):
+        steps = scenario.build("model1", REV)["steps"]
+        refs = steps[2]["bindings"]
+        dests = [tuple(b["target_path"]) for b in refs]
+        self.assertEqual(dests, [("target", "object_id"),
+                                 ("target", "expected_revision"),
+                                 ("expected_geometry_revision",)])
+        outputs = {
+            "create": {"data": {"after": {"object": {
+                "object_id": "session:object-1", "revision": "c" * 64,
+            }}}},
+            "mesh_read": {"data": {"geometry_revision": "b" * 64}},
+        }
+        payload = json.loads(json.dumps(steps[2]["request"]["payload"]))
+        for binding in refs:
+            assign(payload, binding["target_path"],
+                   lookup(outputs[binding["source_step"]], binding["source_path"]))
+        self.assertEqual(payload["target"]["object_id"], "session:object-1")
+        self.assertEqual(payload["target"]["expected_revision"], "c" * 64)
+        self.assertEqual(payload["expected_geometry_revision"], "b" * 64)
+
+    def test_second_plan_finds_exact_named_target_and_edits_same_session(self):
+        steps = scenario.build("model2", REV)["steps"]
+        self.assertEqual(steps[0]["request"]["payload"]["name_prefix"], scenario.MESH_NAME)
+        self.assertEqual(steps[0]["request"]["payload"]["object_type"], "MESH")
+        self.assertEqual(steps[2]["request"]["payload"]["target"]["expected_name"],
+                         scenario.MESH_NAME)
+        self.assertEqual(steps[2]["request"]["payload"]["delta"], [0.0, 0.0, 0.5])
+        self.assertEqual(steps[-1]["request"]["payload"]["name"], scenario.STAGE2)
+
+    def test_checkpoint_always_binds_post_mutation_scene_revision(self):
+        for stage in ("model1", "model2"):
+            steps = scenario.build(stage, REV)["steps"]
+            self.assertEqual(steps[-2]["request"]["operation"], "scene.inspect")
+            self.assertEqual(steps[-1]["bindings"], [
+                {"source_step": "post_edit_scene", "source_path": ["data", "revision"],
+                 "target_path": ["expected_scene_revision"]}
+            ])
+            self.assertTrue(steps[-1]["request"]["payload"]["name"].endswith(".blend"))
+
+    def test_render_uses_small_cpu_budget_and_fresh_configured_revision(self):
+        steps = scenario.build("render", REV)["steps"]
+        cfg = steps[0]["request"]["payload"]
+        self.assertEqual([cfg[k] for k in ("width", "height", "samples")], [64, 64, 1])
+        self.assertEqual(cfg["expected_scene_revision"], REV)
+        self.assertEqual(steps[-1]["request"]["payload"]["name"], scenario.STAGE3)
+        self.assertEqual(steps[-1]["bindings"][0]["source_step"], "configured_scene")
+
+    def test_stale_or_malformed_revision_is_rejected_before_plan(self):
+        for bad in ("", "0" * 63, "g" * 64, "F" * 64, None, 1):
+            for stage in EXPECTED_OPS:
+                with self.assertRaises(ValueError):
+                    scenario.build(stage, bad)
+
+    def test_unknown_operation_or_stage_cannot_be_injected(self):
+        with self.assertRaises(ValueError):
+            scenario.build("arbitrary.python.run", REV)
+        with self.assertRaises(ValueError):
+            scenario.build("execute", REV)
+
+    def test_cli_only_prints_plan_and_never_launches_blender(self):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            status = scenario.main(["--stage", "model1", "--scene-revision", REV])
+        self.assertEqual(status, 0)
+        message = json.loads(stdout.getvalue())
+        self.assertEqual(message["mode"], "PLAN_ONLY_NO_BLENDER_LAUNCH")
+        self.assertTrue(message["requires_separate_native_owner_approval"])
+        self.assertFalse(message["render_action_approval_required"])
+        self.assertEqual(message["plan"]["steps"][0]["request"]["operation"], "mesh.create")
+        self.assertNotIn("bpy", sys.modules)
+
+
+if __name__ == "__main__":
+    unittest.main()
