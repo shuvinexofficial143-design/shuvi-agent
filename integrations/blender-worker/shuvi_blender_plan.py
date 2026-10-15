@@ -87,13 +87,25 @@ def run(argv: list[str] | None = None) -> int:
             actual = Path(saved).resolve(strict=True)
             if actual.parent != args.output_dir.resolve(strict=True) or actual.suffix.lower() != extension:
                 raise ValueError("Final output is outside the approved output directory")
-            # The package verifies the exact on-disk format and SHA-256, but
-            # rerun it at the end so the final deliverable is still intact.
+            # Capture only read-only, bounded, session-local observable state
+            # after the approved save; launch a DIFFERENT process for reopen.
+            if extension == ".blend":
+                from shuvi_blender_reopen import capture_scene
+                original_scene = capture_scene(controller, actual)
             from shuvi_blender_agent.files import read_output
             reread = read_output(actual, "BLEND" if extension == ".blend" else "PNG")
             if reread["sha256"] != digest:
                 raise ValueError("Final artifact changed after Blender verification")
-            print(json.dumps({
+        # The mutating session has closed before launching the new read-only
+        # Blender child. Reopen is never an automatic replay of plan mutations.
+        checkpoint_reopen = None
+        if extension == ".blend":
+            from shuvi_blender_reopen import reopen_checkpoint
+            checkpoint_reopen = reopen_checkpoint(args.blender_exe, actual, original_scene)
+            reread = read_output(actual, "BLEND")
+            if reread["sha256"] != digest:
+                raise ValueError("Checkpoint changed while verifying reopened scene")
+        print(json.dumps({
                 "protocol_version": 1,
                 "status": "verified",
                 "authenticated_blender_plan": True,
@@ -103,6 +115,7 @@ def run(argv: list[str] | None = None) -> int:
                 "artifact": reread,
                 "destructive_allowed": False,
                 "render_approved": args.allow_render,
+                "checkpoint_reopen": checkpoint_reopen,
             }, ensure_ascii=False))
             return 0
     except Exception:
