@@ -104,12 +104,15 @@ fn receive(session:&mut OwnedSession,state:&ActionState,deadline:Duration)->Resu
     }
 }
 
-fn request(session:&mut OwnedSession,state:&ActionState,op:&str,plan:Option<&Value>,deadline:Duration)->Result<Value,String>{
+fn request(session:&mut OwnedSession,state:&ActionState,op:&str,plan:Option<&Value>,allow_render:bool,deadline:Duration)->Result<Value,String>{
     if session.created.elapsed()>SESSION_MAX_AGE{
         return Err("Blender session expired; inspect and start a fresh explicitly approved session.".into());
     }
     let mut command=json!({"version":1,"session_id":session.session_id,"op":op});
-    if let Some(value)=plan{command["plan"]=value.clone();}
+    if let Some(value)=plan{
+        command["plan"]=value.clone();
+        command["allow_render"]=json!(allow_render);
+    }
     let mut encoded=serde_json::to_vec(&command).map_err(|_|"Cannot encode bounded Blender command.")?;
     if encoded.len()>65536{return Err("Blender session plan exceeds 64 KiB.".into());}
     encoded.push(b'\n');
@@ -117,7 +120,7 @@ fn request(session:&mut OwnedSession,state:&ActionState,op:&str,plan:Option<&Val
         .and_then(|_|session.input.flush())
         .map_err(|_|"Blender session command delivery uncertain; no replay allowed.".to_string())?;
     let answer=receive(session,state,deadline)?;
-    if answer.get("session_id").and_then(Value::as_str)!=Some(&session.session_id){
+    if answer.get("session_id").and_then(Value::as_str)!=Some(session.session_id.as_str()){
         return Err("Blender broker returned a different session identity.".into());
     }
     Ok(answer)
@@ -191,7 +194,7 @@ pub(crate) fn status(registry:&SessionRegistry,state:&ActionState,id:&str)->Resu
     let result=(||{
         let session=slot.as_mut().ok_or("No Blender session is owned by this Shuvi process.")?;
         if session.session_id!=id{return Err("Blender session ID mismatch.".into());}
-        let v=request(session,state,"inspect",None,PROBE_DEADLINE)?;
+        let v=request(session,state,"inspect",None,false,PROBE_DEADLINE)?;
         if v.get("status").and_then(Value::as_str)!=Some("alive")
             ||v.get("operation").and_then(Value::as_str)!=Some("inspect")
             ||v.get("scene_revision").and_then(Value::as_str).is_none(){
@@ -223,11 +226,11 @@ pub(crate) fn plan(
         if allow_render && !session.allow_render{
             return Err("Blender plan requests rendering above the approved session policy ceiling.".into());
         }
-        let response=request(session,state,"run_plan",Some(plan),PLAN_DEADLINE)?;
+        let response=request(session,state,"run_plan",Some(plan),allow_render,PLAN_DEADLINE)?;
         if response.get("status").and_then(Value::as_str)!=Some("verified")
             || response.get("complete").and_then(Value::as_bool)!=Some(true)
             || response.get("authenticated_blender_plan").and_then(Value::as_bool)!=Some(true)
-            || response.get("render_approved").and_then(Value::as_bool)!=Some(session.allow_render)
+            || response.get("render_approved").and_then(Value::as_bool)!=Some(allow_render)
             || response.get("destructive_allowed").and_then(Value::as_bool)!=Some(false) {
             return Err("Persistent Blender plan outcome is unknown; do not retry automatically.".into());
         }
@@ -249,7 +252,7 @@ pub(crate) fn close(registry:&SessionRegistry,state:&ActionState,id:&str)->Resul
     if session.session_id!=id{return Err("Blender session ID mismatch.".into());}
     // Even if the graceful close command is lost, the owned process tree is
     // stopped; never reuse the identity after a close attempt.
-    let response=request(session,state,"close",None,PROBE_DEADLINE);
+    let response=request(session,state,"close",None,false,PROBE_DEADLINE);
     retire(state,&mut slot);
     match response {
         Ok(v) if v.get("status").and_then(Value::as_str)==Some("closing")=>
