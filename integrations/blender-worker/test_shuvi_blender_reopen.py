@@ -110,6 +110,7 @@ class ReopenTests(unittest.TestCase):
         original = capture_scene(FakeController(self.file), self.file)
         modified = capture_scene(FakeController(self.file, vertex_shift=0.25), self.file)
         self.assertNotEqual(original["fingerprint"], modified["fingerprint"])
+        self.assertNotEqual(original["mesh_fingerprint"], modified["mesh_fingerprint"])
         self.assertEqual(original["mesh_count"], 1)
         self.assertEqual(original["total_vertices"], 3)
         self.assertEqual(original["total_faces"], 1)
@@ -196,6 +197,7 @@ class ReopenTests(unittest.TestCase):
             self.assertTrue(proof["verified"] and proof["read_only"])
             self.assertTrue(proof["mesh_geometry_verified"])
             self.assertEqual(proof["mesh_count"], 1)
+            self.assertEqual(proof["mesh_fingerprint"], original["mesh_fingerprint"])
             self.assertFalse(calls[0]["policy"].allow_mutations)
             client.BlenderController = lambda _transport: FakeController(
                 self.file, session="reopened", name="Sphere")
