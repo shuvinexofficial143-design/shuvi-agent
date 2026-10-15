@@ -31,7 +31,7 @@ test("native transport uses journal before provider dispatch and action approval
  assert.match(text,/const previousRecoveryState=inspectNativeRecoveryStore\(recoveryStorage\)/);
  assert.match(text,/No paid model call or Windows tool action has resumed/);
  assert.match(text,/if\(route.role!=="chat"&&!await persistRecovery\(taskBudget,"model_reserved"\)\)\{/);
- assert.match(text,/if\(!await persistRecovery\(taskBudget,"model_reserved",task.action.id\)\)/);
+ assert.match(text,/if\(!plannedReadback&&!await persistRecovery\(taskBudget,"model_reserved",task.action.id\)\)/);
  assert.match(text,/if\(!await persistRecovery\(taskBudget,"awaiting_approval",proposed.id\)\)/);
  assert.match(text,/if\(!await persistRecovery\(taskBudget,"awaiting_approval",next.id\)\)/);
  assert.match(text,/if\(verifiedBudget&&!await persistRecovery\(verifiedBudget,"audit_verified"/);
