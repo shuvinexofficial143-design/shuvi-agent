@@ -1252,6 +1252,18 @@ async function continueAfterOutcome(): Promise<void> {
       cancelRequested,remoteTask:remoteTask!==null
     });
   if(safeReadback) {
+    // Protect every async Rust-status await from Stop, revoked consent,
+    // new task admission and crash/recovery checkpoint replacement.
+    const readbackScope=activePermissionScope;
+    const readbackGraph=orchestration.task_graph;
+    const readbackOwner=orchestration.owner_request;
+    const readbackStale=()=>readbackScope!==activePermissionScope||
+      readbackScope.revoked||cancelRequested||
+      orchestration.recovery_mode==="stopped"||
+      orchestration.task_graph!==readbackGraph||
+      orchestration.owner_request!==readbackOwner||
+      remoteTask!==null;
+    if(readbackStale())return;
     // Do not elide the existing host lease/Rust scheduler comparison simply
     // because the next proposal is deterministic rather than model-authored.
     let host:NativeWorkerStatus;
@@ -1260,6 +1272,7 @@ async function continueAfterOutcome(): Promise<void> {
       await stopAgentForSafety("Native worker lease is unreadable before a deterministic readback; no provider or tool dispatched.");
       return;
     }
+    if(readbackStale())return;
     if(host.state!=="idle"||host.requiresOwnerReview||host.durableJobPhase==="running"){
       await stopAgentForSafety("Native worker lease or recovery is unresolved. Inspection-only owner review required before another readback.");
       return;
@@ -1270,6 +1283,7 @@ async function continueAfterOutcome(): Promise<void> {
       await stopAgentForSafety("Native scheduler status unavailable before an audited readback. No tool or provider dispatched.");
       return;
     }
+    if(readbackStale())return;
     const admission=assessMasterSchedulerAdmission(native,orchestration.task_graph);
     if(!admission.ok){
       await stopAgentForSafety("Native scheduler readback refused: "+
@@ -1279,6 +1293,7 @@ async function continueAfterOutcome(): Promise<void> {
     // The same UI path still requires native prepare, a fresh action UUID,
     // bounded task accounting and explicit owner Allow once (or narrow,
     // previously owner-issued and Rust-validated exact read consent).
+    if(readbackStale())return;
     const route=taskModelRoute??{...defaultModelRoute(),role:"default"};
     await stageProposal(safeReadback,route);
     return;
