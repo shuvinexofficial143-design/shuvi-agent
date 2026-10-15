@@ -258,3 +258,66 @@ These features are implemented in source and source/unit tests, **not** yet
 validated by actual Blender Windows model editing. Do not present source
 fixtures, file integrity or native Job Object tests as live creative-work
 acceptance.
+
+
+## Current milestone — independently verified **mesh geometry** and safe acceptance recipes
+
+Original checkpoint fingerprinting intentionally ignored session-local Blender
+object IDs and revisions, but did not inspect the actual vertex/face topology.
+This could give the same fingerprint to visibly different meshes if names,
+bounding boxes and object metadata agreed. That is now fixed.
+
+`shuvi_blender_reopen.capture_scene` uses the official package's
+**read-only** `mesh.inspect` operation for each visible MESH object. It
+hashes actual bounded vertex coordinates and indexed polygon faces,
+validates each returned geometry revision, correlates the exact session-local
+object ID/name, and re-inspects scene revision at the end so mixed
+concurrent snapshots cannot be called verified. It compares writer and a
+**different read-only process** opened on the saved .blend, using stable
+SHA-256 geometry digests rather than process-local identities.
+
+Conservative safety ceilings are **64 mesh objects**, 8,192 vertices and
+8,192 faces across the inspected scene, max 4,096 per mesh and 1,000 total
+objects. Larger projects are deliberately **not certified** by this gate,
+rather than mistakenly receiving a positive claim. Native Rust BLEND
+receipt verification now *requires* `mesh_geometry_verified=true`,
+bounded mesh/vertex/face counts in the independent reopen proof, and the
+versioned artifact manifest carries these values forward.
+This is still bounded geometry proof, not byte-exact Blender scene
+equivalence, shader graph / texture QA or artistic review.
+
+`integrations/blender-worker/shuvi_blender_acceptance.py` adds a
+**PLAN_ONLY_NO_BLENDER_LAUNCH** three-stage functional acceptance scenario.
+It generates real, bounded declarative PlanRunner steps and bindings from
+a caller's *fresh* inspected scene revision, with distinct command and request
+UUIDs. It never launches an executable, alters a project, or calls an API.
+
+- `model1`: create a five-vertex closed pyramid MESH, inspect it, edit
+  its top vertex using fresh object/geometry revision bindings,
+  re-inspect the scene and save `shuvi41-proof-stage1.blend`.
+- `model2`: run in the **same approved persistent Blender session**,
+  locate the exact named proof mesh, inspect/bind its session-local ID,
+  edit the top vertex again, re-inspect and save a **different**
+  `shuvi41-proof-stage2.blend`. This verifies session reuse and
+  independent checkpoint persistence without overwriting stage1.
+- `render`: start a **new, separately approved** Blender session by
+  loading stage2's verified checkpoint, inspect the new scene, explicitly
+  approve CPU rendering, configure 64x64 RGBA8 / one-sample render,
+  re-inspect and produce `shuvi41-proof-render.png` with native SHA and
+  structural PNG verification. A camera is necessary; no camera is invented
+  or silently created if the saved scene lacks one.
+
+Stage 1 and stage 2 must each be submitted as a separate owner-approved
+`blender_session_plan` with the exact current `expected_scene_revision`
+from `blender_session_inspect`. Stage 3 requires a new
+`blender_session_start` with `allow_render=true`, another fresh
+`blender_session_inspect`, and a separately approved render plan.
+The original hard bounds (<=6 plan steps, <=90 seconds per plan,
+<=120 seconds native action deadline, 15-minute session lifespan,
+4 GiB policy, non-destructive) are unchanged. Output directory must
+already exist, and output files must be new, never overwritten.
+
+**No actual Blender process has been run** in this chat or in fixture
+tests. The plan-only scenario requires an explicitly authorized disposable
+Windows host for live acceptance. A plan being syntactically valid does not
+prove Blender scene edits, project reopen, render quality, or system readiness.
