@@ -26,7 +26,7 @@ def protocol(reply: dict) -> None:
 
 
 def validate(message: object, session_id: str) -> tuple[str, object]:
-    if not isinstance(message, dict) or set(message) - {"version", "session_id", "op", "plan"}:
+    if not isinstance(message, dict) or set(message) - {"version", "session_id", "op", "plan", "allow_render"}:
         raise ValueError("Invalid broker command")
     if message.get("version") != 1 or message.get("session_id") != session_id:
         raise ValueError("Broker session identity mismatch")
@@ -34,12 +34,14 @@ def validate(message: object, session_id: str) -> tuple[str, object]:
     if operation not in ("ping", "inspect", "run_plan", "close"):
         raise ValueError("Broker operation is not supported")
     if operation == "run_plan":
-        if set(message) != {"version", "session_id", "op", "plan"}:
+        if set(message) != {"version", "session_id", "op", "plan", "allow_render"}:
             raise ValueError("Run plan requires an exact typed payload")
-        return operation, message["plan"]
+        if type(message["allow_render"]) is not bool:
+            raise ValueError("Render approval must be an explicit boolean")
+        return operation, message["plan"], message["allow_render"]
     if set(message) != {"version", "session_id", "op"}:
         raise ValueError("Unexpected broker payload")
-    return operation, None
+    return operation, None, False
 
 
 def checked_plan(controller, json_plan, output_dir: Path, blender_exe: Path, allow_render: bool):
@@ -144,15 +146,17 @@ def serve(argv: list[str] | None = None) -> int:
                     return 0
                 if len(raw) > MAX_REQUEST_BYTES + 1 or not raw.endswith(b"\n"):
                     raise ValueError("Oversized or incomplete broker frame")
-                operation, payload = validate(json.loads(raw), session_id)
+                operation, payload, request_allow_render = validate(json.loads(raw), session_id)
                 if operation == "close":
                     # Session's context manager closes the authenticated transport
                     # and terminates its *owned* Blender process on return.
                     protocol({"version": 1, "status": "closing", "session_id": session_id})
                     return 0
                 if operation == "run_plan":
+                    if request_allow_render and not args.allow_render:
+                        raise ValueError("Action-level render approval exceeds session ceiling")
                     result = checked_plan(controller, payload, args.output_dir,
-                                          args.blender_exe, args.allow_render)
+                                          args.blender_exe, request_allow_render)
                     protocol({"version": 1, "session_id": session_id, **result})
                     continue
                 result = controller.execute(Request(
