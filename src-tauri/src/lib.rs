@@ -10696,6 +10696,7 @@ for ($i=0; $i -lt [Math]::Min($all.Count, 1200); $i++) {{
             Name=$n; AutomationId=$id; ControlType=$role
             ClassName=[string]$e.Current.ClassName
             IsEnabled=[bool]$e.Current.IsEnabled
+            IsOffscreen=[bool]$e.Current.IsOffscreen
             Bounds=[string]$e.Current.BoundingRectangle.ToString()
         }}
         # All applications share UIA roles. Prioritize actionable elements;
