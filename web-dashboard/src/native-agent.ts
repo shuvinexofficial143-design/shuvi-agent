@@ -4,6 +4,7 @@
  * A browser (including the Vercel deployment) has no native transport.
  */
 import {mountNativeModelSetup, type ModelTeamHandle, type NativeInvoke} from "./native-model-setup";
+import {admitDashboardMasterProposal,masterAutonomyGuidance} from "../../src/master-autonomy-contract.mjs";
 import {chooseNativeRoute} from "./native-model-routing.mjs";
 import {masterGoalContext,resolveMasterObjective} from "./native-master-goal.mjs";
 import {createTask,stageTask,executeTask,verifyTask,pauseTask,taskSummary,taskContext} from "./native-task-progress.mjs";
@@ -471,7 +472,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   const prev=histories.get(task.threadId)||[];
   const reportBudget=["ui_windows","ui_discover","ui_find"].includes(result.tool)?10800:4000;
   const messages:NativeChatMessage[]=[...prev.slice(-18),{role:"user",content:report.slice(0,reportBudget)}];
-  const orchestrator="Continue the ORIGINAL computer task, not just its last inspection step. "+
+  const orchestrator=masterAutonomyGuidance(task.objective)+" "+
+   "Continue the ORIGINAL computer task, not just its last inspection step. "+
    "Objective: "+task.objective.slice(0,500)+". "+
    "Current approved step: "+task.step+". "+
    "Last audited tool: "+result.tool+". "+taskContext(getTask(task.threadId))+" "+
@@ -523,6 +525,13 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     "Master replied without a next executable tool. The original Windows task is not automatically verified as completed.");
    refreshState(followupRoot?"Waiting for your clarification to continue the same Windows task.":
     "Master did not propose another action; task paused.");
+   return;
+  }
+  const scope=admitDashboardMasterProposal(task.objective,response.tool_proposal);
+  if(!scope.ok){
+   haltTask(task.threadId,"prepare_failed");
+   appendReply(task.threadId,task.promptIndex,"Unsafe Master task proposal blocked: "+scope.reason+" No native action prepared.");
+   showActionFeedback("Master task scope requires a new user instruction or safe replan. Nothing executed.");
    return;
   }
   const fp=fingerprint(response.tool_proposal);
@@ -925,6 +934,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     " to "+route.provider+" / "+route.model+"…");
    try{
     const firstStepGuidance=route.role==="chat"?null:
+     masterAutonomyGuidance(effectiveObjective)+" "+
      "Continue the user\u0027s actual desktop request, not a preliminary inspection. "+
      (waitingForChoice&&lastRequest?"The user\u0027s current app name answers the previous opening request: "+lastRequest.content.slice(0,300)+". ":"")+
      (waitingForChoice?"Keep the original request as the task goal after this clarification: "+effectiveObjective.slice(0,440)+". ":"")+
@@ -964,6 +974,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      actionFeedback.hidden=true;
      try{
       // Validate provider output before contacting the native staging queue.
+      const scope=admitDashboardMasterProposal(effectiveObjective,response.tool_proposal);
+      if(!scope.ok)throw Error(scope.reason);
       const appGate=checkRequestedAppTarget(effectiveObjective,response.tool_proposal);
       if(!appGate.allowed)throw Error("Unsafe app selection: "+appGate.reason);
       const readGate=checkAmbiguousReadWindow(response.tool_proposal,observedWindows.get(threadId)??null);
