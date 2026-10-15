@@ -45,7 +45,7 @@ test("native registry checks real managed PID identity, resource limit and abort
     "recv_timeout(",
     "session_reconnect_allowed",
     "source_action_id",
-    "verify_output(&response"
+    "blender_artifact_manifest::build("
   ]) assert.ok(native.includes(text),text);
   assert.match(native,/SESSION_MAX_AGE:Duration=Duration::from_secs\(15\*60\)/);
   assert.match(native,/MAX_FRAME:usize=131072/);
