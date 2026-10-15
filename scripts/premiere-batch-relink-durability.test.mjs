@@ -17,7 +17,7 @@ const runtime=grab(rust,"ToolAction::PremiereBatchRelink { items } => {",
 test("batch relink is a typed high-risk operation with no defaulted source path",()=>{
   assert.match(parser,/serde_json::from_value\(item\.clone\(\)\)/);
   assert.match(parser,/premiere_batch_relink::validate_entries\(&entries\)/);
-  assert.match(parser,/expected_previous_path/); // contract present in Entry via deserializer error? No, ensure in type.
+  assert.match(parser,/premiere_batch_relink::Entry/);
   assert.match(parser,/RiskLevel::High/);
   assert.match(batch,/pub expected_previous_path:String/);
   assert.match(batch,/pub new_path:String/);
