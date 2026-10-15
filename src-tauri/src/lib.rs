@@ -1003,6 +1003,7 @@ enum ToolAction {
 #[derive(Debug, Clone)]
 struct PendingAction {
     created_at_ms: u64,
+    native_uia_target: Option<native_uia_window_guard::NativeUiaTarget>,
     premiere_expectation: Option<PremiereExpectation>,
     task_graph: Option<Value>,
     task_step_id: Option<String>,
@@ -3151,6 +3152,51 @@ fn managed_tree_pids(system: &System, roots: &HashSet<u32>) -> HashSet<Pid> {
     }
 
     included
+}
+
+
+// Native-only binding for the seven UIA tools that can mutate Windows state.
+// This performs a fresh OS probe during staging, before any owner approval.
+// No WebView-provided "expected_hwnd" or "expected_pid" is accepted.
+fn prepare_native_uia_binding(
+    action: &ToolAction,
+) -> Result<Option<native_uia_window_guard::NativeUiaTarget>, String> {
+    let window = match action {
+        ToolAction::UiClick { window, .. }
+        | ToolAction::UiSetValue { window, .. }
+        | ToolAction::UiFocus { window, .. }
+        | ToolAction::UiScroll { window, .. }
+        | ToolAction::UiToggle { window, .. }
+        | ToolAction::UiExpandCollapse { window, .. }
+        | ToolAction::UiSendKeys { window, .. } => window.as_deref(),
+        _ => return Ok(None),
+    };
+    let window = window
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && value.chars().count() <= 180)
+        .ok_or_else(|| "UIA mutation requires a named native target window.".to_string())?;
+    if window.eq_ignore_ascii_case("desktop") || window.chars().any(char::is_control) {
+        return Err("UIA mutation cannot use a desktop or control-formatted target.".into());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let root = ui_root_script(Some(window));
+        let probe = native_uia_window_guard::prepared_window_probe(&root);
+        let output = run_hidden_powershell(&probe)?;
+        if !output.status.success() {
+            return Err("Native target HWND/PID could not be bound at preparation; inspect ui_windows and try again.".into());
+        }
+        let text=std::str::from_utf8(&output.stdout)
+            .map_err(|_| "Prepared native HWND identity was not UTF-8.".to_string())?;
+        return native_uia_window_guard::parse_prepared_window(text).map(Some);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Existing non-Windows source-level staging tests still build. A
+        // mutation without a verified native identity is blocked at execute.
+        let _ = window;
+        Ok(None)
+    }
 }
 
 fn stage_tool(
@@ -8117,6 +8163,10 @@ fn stage_tool(
         _ => return Err("Unsupported tool.".into()),
     };
 
+    // Native binding is fetched from the actual OS at PREPARE; untrusted model
+    // arguments cannot supply or modify the HWND/PID in a PendingAction.
+    let native_uia_target = prepare_native_uia_binding(&action)?;
+
     let id = Uuid::new_v4().to_string();
 
     let prepared_at_ms = now_ms();
@@ -8136,6 +8186,7 @@ fn stage_tool(
         id.clone(),
         PendingAction {
             created_at_ms: prepared_at_ms,
+            native_uia_target,
             premiere_expectation,
             task_graph: proposal.task_graph.clone(),
             task_step_id: proposal.task_step_id.as_ref()
@@ -10040,6 +10091,7 @@ async fn execute_tool_with_action_id(
     execution_action_id: Option<&str>,
 ) -> Result<ActionResult, String> {
     let tool = action.tool.clone();
+    let native_uia_target = action.native_uia_target.clone();
     let premiere_bridge = PremiereClient { bridge: &state.premiere_bridge, expected: action.premiere_expectation.as_ref() };
 
     match action.action {
@@ -10761,7 +10813,8 @@ $items | ConvertTo-Json -Compress"#
         ToolAction::UiClick { name, automation_id, window } => {
             let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
             let root_script = native_uia_window_guard::guarded_mutation_root(
-                window.as_deref(), ui_root_script(window.as_deref()))?;
+                window.as_deref(), ui_root_script(window.as_deref()),
+                native_uia_target.as_ref())?;
             let script = format!(
                 r#"Add-Type -AssemblyName UIAutomationClient
 {condition}
@@ -10803,7 +10856,8 @@ if ($e.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, 
         ToolAction::UiSetValue { name, automation_id, window, value } => {
             let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
             let root_script = native_uia_window_guard::guarded_mutation_root(
-                window.as_deref(), ui_root_script(window.as_deref()))?;
+                window.as_deref(), ui_root_script(window.as_deref()),
+                native_uia_target.as_ref())?;
             let escaped_value = ps_single_quote(&value);
             let script = format!(
                 r#"Add-Type -AssemblyName UIAutomationClient
@@ -10842,7 +10896,8 @@ if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Patte
         ToolAction::UiFocus { name, automation_id, window } => {
             let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
             let root_script = native_uia_window_guard::guarded_mutation_root(
-                window.as_deref(), ui_root_script(window.as_deref()))?;
+                window.as_deref(), ui_root_script(window.as_deref()),
+                native_uia_target.as_ref())?;
             let script = format!(
                 r#"Add-Type -AssemblyName UIAutomationClient
 {condition}
@@ -10876,7 +10931,8 @@ $e.SetFocus()
         ToolAction::UiScroll { name, automation_id, window, vertical } => {
             let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
             let root_script = native_uia_window_guard::guarded_mutation_root(
-                window.as_deref(), ui_root_script(window.as_deref()))?;
+                window.as_deref(), ui_root_script(window.as_deref()),
+                native_uia_target.as_ref())?;
             let amount = match vertical.as_str() {
                 "small_increment" => "SmallIncrement",
                 "small_decrement" => "SmallDecrement",
@@ -10924,7 +10980,8 @@ if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ScrollPattern]::Patt
         ToolAction::UiToggle { name, automation_id, window } => {
             let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
             let root_script = native_uia_window_guard::guarded_mutation_root(
-                window.as_deref(), ui_root_script(window.as_deref()))?;
+                window.as_deref(), ui_root_script(window.as_deref()),
+                native_uia_target.as_ref())?;
             let script = format!(
                 r#"Add-Type -AssemblyName UIAutomationClient
 {condition}
@@ -10962,7 +11019,8 @@ if (-not $e.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Patt
         ToolAction::UiExpandCollapse { name, automation_id, window, action } => {
             let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
             let root_script = native_uia_window_guard::guarded_mutation_root(
-                window.as_deref(), ui_root_script(window.as_deref()))?;
+                window.as_deref(), ui_root_script(window.as_deref()),
+                native_uia_target.as_ref())?;
             let method = if action == "expand" { "Expand" } else { "Collapse" };
 
             let script = format!(
@@ -11003,7 +11061,8 @@ $expand.{method}()
         ToolAction::UiSendKeys { name, automation_id, window, keys } => {
             let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
             let root_script = native_uia_window_guard::guarded_mutation_root(
-                window.as_deref(), ui_root_script(window.as_deref()))?;
+                window.as_deref(), ui_root_script(window.as_deref()),
+                native_uia_target.as_ref())?;
             let escaped_keys = ps_single_quote(&keys);
 
             let script = format!(
@@ -17080,7 +17139,7 @@ try {{
                 "trim"=>"premiere_trim_clip","move"=>"premiere_move_clip","clone"=>"premiere_clone_clip",
                 "delete_ripple"=>"premiere_delete_clip","scene_markers"=>"premiere_detect_scene_markers",_=>return Err("Acceptance tool not allowlisted.".into())
             };
-            let inner=PendingAction {created_at_ms:now_ms(),task_graph:None,task_step_id:None,premiere_expectation:Some(fixture.expected.clone()),tool:native_tool.into(),
+            let inner=PendingAction {created_at_ms:now_ms(),native_uia_target:None,task_graph:None,task_step_id:None,premiere_expectation:Some(fixture.expected.clone()),tool:native_tool.into(),
                 detail:format!("Disposable acceptance {} action {}",record.step,action_id),action:native_action};
             let native=Box::pin(execute_tool(inner,state,app)).await;
             let native_result=match native {
