@@ -1,0 +1,52 @@
+import {currentObservedWindows} from "./native-window-observation-session.mjs";
+
+// A native executed action is *not* proof of an intended UI effect.
+// After a mutation, require independently audited, read-only UIA inspection
+// in the same target window before preparing a second UI mutation.
+const MUTATIONS=new Set(["ui_click","ui_set_value","ui_send_keys","ui_toggle","ui_focus","ui_scroll","ui_expand_collapse"]);
+const READS=new Set(["ui_find","ui_discover"]);
+const cleanTitle=t=>typeof t==="string"&&t.length>0&&t.length<=180?t.trim():"";
+const findUnique=(rows,title)=>rows.filter(w=>w.title.toLocaleLowerCase("en-US")===title.toLocaleLowerCase("en-US"));
+
+export function needsUiReadback(tool){return MUTATIONS.has(tool);}
+export function newPendingUiReadback(actionId,proposal,windowSession,nowMs=Date.now()){
+ if(!needsUiReadback(proposal?.tool)||typeof actionId!=="string"||!actionId||
+  !Number.isSafeInteger(nowMs)||nowMs<0)return null;
+ const title=cleanTitle(proposal?.arguments?.window);
+ // No truthful HWND/PID means do not invent readback evidence.
+ const rows=currentObservedWindows(windowSession,nowMs);
+ const matching=title?findUnique(rows,title):[];
+ if(matching.length!==1)return Object.freeze({version:1,sourceActionId:actionId,
+  title:title||"",hwnd:null,pid:null,observedAtMs:nowMs,readbackRequired:true});
+ return Object.freeze({version:1,sourceActionId:actionId,title:matching[0].title,
+  hwnd:matching[0].hwnd,pid:matching[0].pid,observedAtMs:nowMs,readbackRequired:true});
+}
+
+export function checkPendingUiReadback(proposal,pending){
+ if(!pending||pending.readbackRequired!==true||!MUTATIONS.has(proposal?.tool))
+  return {allowed:true,reason:"no_queued_second_mutation"};
+ return {allowed:false,reason:"Prior UI mutation has no fresh audited UIA readback. Request ui_windows then ui_discover or ui_find, with separate owner approval."};
+}
+
+// A window listing does not show control state. This function only clears
+// the "no independent UIA read" condition; it NEVER certifies intended effect.
+export function auditUiReadback(pending,proposal,result,windowSession,nowMs=Date.now()){
+ if(!pending)return null;
+ if(!READS.has(proposal?.tool)||result?.tool!==proposal.tool||
+  result?.success!==true||(result.exit_code!=null&&result.exit_code!==0))return pending;
+ const title=cleanTitle(proposal?.arguments?.window);
+ if(!title||title.toLocaleLowerCase("en-US")!==pending.title.toLocaleLowerCase("en-US")||
+  !Number.isSafeInteger(pending.hwnd)||!Number.isSafeInteger(pending.pid))return pending;
+ const matches=findUnique(currentObservedWindows(windowSession,nowMs),title);
+ if(matches.length!==1||matches[0].hwnd!==pending.hwnd||matches[0].pid!==pending.pid)return pending;
+ // No empty/unparseable read is evidence. Do not count a model assertion.
+ if(typeof result.stdout!=="string"||!result.stdout.trim()||
+  result.stdout.length>250_000)return pending;
+ try{
+  const rows=JSON.parse(result.stdout);
+  if(!Array.isArray(rows)||rows.length<1||rows.length>160)return pending;
+  if(!rows.every(x=>x&&typeof x==="object"&&!Array.isArray(x)&&
+   (typeof x.Name==="string"||typeof x.AutomationId==="string")))return pending;
+ }catch{return pending;}
+ return null; // readback performed, not effect verified
+}
