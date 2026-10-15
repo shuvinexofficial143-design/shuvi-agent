@@ -15,7 +15,35 @@ fn verify_output(output:&Value,root:&Path)->Result<(),String>{
     let name=artifact.get("path").and_then(Value::as_str).ok_or("Blender output path missing.")?;
     let expected=artifact.get("sha256").and_then(Value::as_str).ok_or("Blender output SHA-256 missing.")?;
     let expected_size=artifact.get("bytes").and_then(Value::as_u64).ok_or("Blender output size missing.")?;
+    let kind=artifact.get("format").and_then(Value::as_str).ok_or("Blender output format missing.")?;
     let canonical=Path::new(name).canonicalize().map_err(|_|"Blender output artifact is not accessible.".to_string())?;
+    // A checkpoint must be reopened in a different authenticated, read-only
+    // Blender child. This is evidence of actual persistence, not just a path.
+    match (kind,canonical.extension().and_then(|s|s.to_str()).map(|s|s.to_ascii_lowercase()).as_deref()) {
+        ("BLEND",Some("blend"))=>{
+            let proof=output.get("checkpoint_reopen").ok_or("Independent Blender checkpoint reopen proof missing.")?;
+            let fingerprint=proof.get("fingerprint").and_then(Value::as_str)
+                .ok_or("Blender reopen scene fingerprint missing.")?;
+            if proof.get("verified").and_then(Value::as_bool)!=Some(true)
+                || proof.get("read_only").and_then(Value::as_bool)!=Some(true)
+                || !fingerprint.bytes().all(|c|c.is_ascii_hexdigit())
+                || fingerprint.len()!=64
+                || proof.get("object_count").and_then(Value::as_u64).is_none_or(|n|n>1000) {
+                return Err("Blender checkpoint cannot be verified after independent reopen.".into());
+            }
+        },
+        ("PNG",Some("png"))=>{
+            let w=artifact.get("width").and_then(Value::as_u64);
+            let h=artifact.get("height").and_then(Value::as_u64);
+            if !w.is_some_and(|n|(16..=512).contains(&n))
+                || !h.is_some_and(|n|(16..=512).contains(&n))
+                || artifact.get("color_mode").and_then(Value::as_str)!=Some("RGBA")
+                || artifact.get("bit_depth").and_then(Value::as_u64)!=Some(8) {
+                return Err("Blender PNG receipt lacks validated dimensions/encoding.".into());
+            }
+        },
+        _=>return Err("Blender output format does not match the on-disk extension.".into()),
+    }
     let parent=canonical.parent().ok_or("Blender output has no parent.")?;
     if parent!=root.canonicalize().map_err(|_|"Blender output directory is unavailable.".to_string())? {
         return Err("Blender output escaped the approved output folder.".into());
@@ -135,5 +163,7 @@ pub(crate) fn execute(
     drop(guard);
     Ok(json!({"status":"verified","worker":"blender","full_plan_completed":true,
         "artifact":value["artifact"],"verified_by_native_sha256":true,
-        "plan_steps":value["executed_steps"],"allow_render":allow_render}))
+        "plan_steps":value["executed_steps"],"allow_render":allow_render,
+        "checkpoint_reopen":value["checkpoint_reopen"],
+        "source_action_id":execution_action_id}))
 }
