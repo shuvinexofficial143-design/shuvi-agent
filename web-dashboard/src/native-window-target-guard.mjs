@@ -31,6 +31,9 @@ export function observedWindowInventory(result,audited){
    typeof x.Name==="string"&&cleanObservedLabel(x.Name,180)&&
    Number.isSafeInteger(x.ProcessId)&&x.ProcessId>0&&
    Number.isSafeInteger(x.NativeWindowHandle)&&x.NativeWindowHandle>0))return [];
+  // A single native HWND must not appear twice, even with different titles.
+  // Otherwise one apparent unique label might resolve to contradictory rows.
+  if(new Set(rows.map(x=>x.NativeWindowHandle)).size!==rows.length)return [];
   return rows.map(x=>({title:cleanObservedLabel(x.Name,180),pid:x.ProcessId,hwnd:x.NativeWindowHandle,
    process:typeof x.ProcessName==="string"?cleanObservedLabel(x.ProcessName,120):""}));
  }catch{return [];}
@@ -73,6 +76,8 @@ export function checkAmbiguousReadWindow(proposal,observed){
  if(proposal.tool==="inspect_screen"&&typeof target==="string"&&target.trim().toLowerCase()==="desktop")
   return {allowed:true,reason:"explicit_desktop_capture_requires_native_approval"};
  if(observed.length===0)return {allowed:false,reason:"Window snapshot is stale or invalid; inspect ui_windows first."};
+ if(proposal.tool==="inspect_screen"&&(typeof target!=="string"||!target.trim()))
+  return {allowed:false,reason:"Screen inspection requires an explicit observed window title."};
  if(typeof target!=="string"||!target.trim())return {allowed:true,reason:"native_lookup_required"};
  if(cleanObservedLabel(target,180)!==target.trim())
   return {allowed:false,reason:"Read-only window name contains hidden or control formatting."};
