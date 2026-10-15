@@ -27,3 +27,21 @@ This feature branch changes only Team 40-owned `integrations/premiere-uxp/main.j
 `scripts/premiere-media-workflow-evidence.test.mjs` tests executable helper logic and runs the actual extracted UXP import/sequence functions against deterministic mock host fixtures: import only missing media; no duplicate import; fail-closed incomplete/ambiguous scans; correct new sequence track inventory; missing or disordered clips remain unverified; reject duplicate source requests before host mutation.
 
 These are source/mocked-host tests, **not** real Premiere/After Effects host acceptance. An owner-authorized disposable Windows/Premiere project is still required to verify native API behavior, persistence/reopen, real media relink, actual exported MP4 validation and editing quality. No host, Adobe installation, customer project, production deployment, or paid AI action was touched.
+
+
+## Milestone 2: native project lifecycle and safe project saves
+
+Implemented official Premiere UXP 25.6+ Project.createProject / Project.open as two **High risk, separately owner-approved** typed actions:
+- premiere_create_project: new absolute .prproj destination only. Rust rejects an existing destination/link, dot traversal, reparse-point parents and invalid paths. UXP creates, explicitly saves, and reads back the active project GUID/path. Rust independently fingerprints a newly persisted .prproj. Both host and disk proofs must agree.
+- premiere_open_project: requires a nonempty existing .prproj. UXP opens and reads the active project identity, without implicitly saving or closing an existing project; Rust fingerprints before/after to ensure same bytes. This does NOT verify timeline edits or relinked footage.
+- premiere_save_project: now creates a unique durable Shuvi Backups checkpoint BEFORE requesting a save. Failed checkpoint prevents save; existing independent persistence proof remains mandatory. Backup protects prior on-disk project, not unsaved in-memory Adobe edits.
+
+### Shared wiring overlap for integrator
+
+src-tauri/src/lib.rs: one module declaration, two ToolAction variants, two tool-catalog entries, two High-risk parsing arms, two runtime dispatcher arms, and a pre-save checkpoint call plus response field in the existing Save arm. src-tauri/src/premiere_bridge.rs: only two fixed allowlist strings. Editing engine logic is isolated in src-tauri/src/premiere_project_lifecycle.rs and integrations/premiere-uxp/project-lifecycle.js. No generic Rust scheduler, approval ledger, native worker, or other feature branch changed.
+
+Important: Rust preflight and Adobe's subsequent pathname-based project creation are not atomic; external writers could create a conflicting file during the gap. Never promise collision immunity or safe automatic retry. Rust's existing UUID audit and exclusive Windows mutation lane stay authoritative. This is source/mock-host tested, NOT live verified.
+
+Tests cover clean absolute Windows paths, reject overwrite, independent disk readback, host create and save, host open without implicit save/close, wrong active host identity and changed files. Runtime validation on a disposable authorized Windows Premiere installation is still required, as is a real project reopen and media relink check.
+
+Official Adobe Project UXP API reference: https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/project
