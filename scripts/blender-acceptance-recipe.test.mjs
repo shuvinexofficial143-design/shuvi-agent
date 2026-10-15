@@ -20,7 +20,8 @@ test("model acceptance has a fixed typed workflow without any unsafe Blender lau
     assert.ok(source.includes(label),label);
   }
   assert.match(broker,/current\.data\.get\("revision"\) != expected_scene_revision/);
-  assert.doesNotMatch(source,/\bimport bpy\b|\bfrom bpy\b|\bsubprocess\b|\bexec\(|\beval\(|\blaunch\(/);
+  // Docstrings may discuss subprocesses; reject executable imports/calls.
+  assert.doesNotMatch(source,/\bimport bpy\b|\bfrom bpy\b|\bimport subprocess\b|\bfrom subprocess\b|\bsubprocess\.|\bexec\(|\beval\(|\blaunch\(/);
 });
 
 const candidates=[["python3"],["python"],["py","-3"]];
