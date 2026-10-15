@@ -7,6 +7,7 @@ mod blender_worker;
 mod blender_plan_worker;
 mod blender_session_worker;
 mod blender_artifact_manifest;
+mod blender_acceptance_chain;
 mod atomic_file;
 mod execution_lease;
 mod native_worker_status;
@@ -208,6 +209,7 @@ Available tools:
 - blender_session_start: {"python_exe":"absolute Python.exe","blender_exe":"absolute Blender.exe","blend_file":null,"output_dir":"existing output directory","allow_render":false} — HIGH RISK: start an authenticated 15-minute maximum Rust-owned Blender session. No mutation at start; each later plan requires a separately approved action with its exact live session_id.
 - blender_session_inspect: {"session_id":"exact UUID returned by blender_session_start"} — read-only authenticated health and scene revision.
 - blender_session_plan: {"session_id":"exact UUID","expected_scene_revision":"exact scene_revision from blender_session_inspect","allow_render":false,"plan":{"timeout_ms":90000,"steps":[...]}} — HIGH RISK: up to six typed Blender operations ending in verified .blend checkpoint or PNG; render needs action-level approval and prior session policy ceiling; never automatically retry.
+- blender_review_acceptance_chain: {"approved_output_dir":"existing absolute output folder","receipts":[{...native Blender stage1 receipt...},{...native Blender stage2 receipt...},{...native Blender render receipt...}]} — read-only 3-stage on-disk SHA/mesh/session consistency review; does NOT prove historic action approval, that render loaded stage2, or live creative quality
 - blender_verify_artifact_manifest: {"approved_output_dir":"existing absolute folder containing exact output","manifest":{"schema_version":1,"producer":"shuvi41.blender","source_action_id":"canonical UUID","artifact":{...},"evidence":{...},"handoff":{...}}} — read-only, re-hash current .blend/PNG bytes and confirm path within the caller-selected output folder; prior approval/reopen are NOT re-authenticated and no import occurs
 - blender_session_close: {"session_id":"exact UUID"} — retire only that owned process and its authenticated Blender child.
 - motion_graphics_validate_plan: {"plan":{"schema_version":1,"objective":"short goal","renderer":"auto|after_effects|remotion","duration_seconds":4,"canvas":{"width":1920,"height":1080,"fps":30,"transparent_background":true},"delivery":"standalone_video|transparent_overlay","scenes":[{"id":"scene_1","start_seconds":0,"duration_seconds":4,"layers":[{"id":"title","kind":"text|shape|image|video|group","name":"Title","text":"optional text","asset_id":"optional_asset_id","shape":{"kind":"rectangle|ellipse","size":[640,160],"position":[0,0],"roundness":24,"fill_color":[0.1,0.2,0.3,1],"stroke_color":[1,1,1,1],"stroke_width":4},"tracks":[{"property":"x|y|scale_x|scale_y|rotation_degrees|opacity","keyframes":[{"time_seconds":0,"value":0,"easing":"linear|ease_in|ease_out|ease_in_out|hold"}]}]}]}],"review":{"sample_times_seconds":[1,2,3],"criteria":["readability"]}}}
@@ -684,6 +686,7 @@ enum ToolAction {
     BlenderSessionPlan { session_id:String, allow_render:bool, expected_scene_revision:String, plan:Value },
     BlenderSessionClose { session_id:String },
     BlenderVerifyArtifactManifest { approved_output_dir:String, manifest:Value },
+    BlenderReviewAcceptanceChain { approved_output_dir:String, receipts:Value },
     MotionGraphicsValidatePlan { plan: motion_graphics::Plan },
     MotionGraphicsPlanAfterEffects { request: motion_graphics::AfterEffectsPlanRequest },
     MotionGraphicsPlanAfterEffectsOutput { request: motion_graphics::AfterEffectsOutputPlanRequest },
@@ -1687,6 +1690,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "blender_session_plan"
         | "blender_session_close"
         | "blender_verify_artifact_manifest"
+        | "blender_review_acceptance_chain"
         | "motion_graphics_validate_plan"
         | "motion_graphics_plan_after_effects"
         | "motion_graphics_plan_after_effects_output"
@@ -3748,6 +3752,22 @@ fn stage_tool(
                 "Run one approved plan in owned Blender session".into(),
                 format!("Execute up to 6 typed operations only if the live Blender scene still has exact inspected revision {expected_scene_revision}; approved render={allow_render}; independently verified saved artifact and no automatic retries."),
                 RiskLevel::High)
+        }
+        "blender_review_acceptance_chain" => {
+            let approved_output_dir=absolute_path(arg_string(&proposal.arguments,"approved_output_dir")?)?;
+            if !Path::new(&approved_output_dir).is_dir(){
+                return Err("Blender acceptance review needs an existing approved output directory.".into());
+            }
+            let receipts=proposal.arguments.get("receipts").cloned()
+                .ok_or("Blender acceptance review needs three actual native plan receipts.")?;
+            if !receipts.as_array().is_some_and(|items|items.len()==3)
+                || serde_json::to_vec(&receipts).map_err(|_|"Malformed Blender acceptance receipts.")?.len()>65536 {
+                return Err("Blender acceptance review requires three bounded stage receipts.".into());
+            }
+            (ToolAction::BlenderReviewAcceptanceChain{approved_output_dir,receipts},
+                "Review three Blender acceptance receipts".into(),
+                "Read only: inspect three separately approved result receipts and current file hashes; verify two saved modeling stages share session, render uses another and SHA256/geometry differ. Does NOT authenticate historic approvals or verify a real Blender source handoff.".into(),
+                RiskLevel::Medium)
         }
         "blender_verify_artifact_manifest" => {
             let approved_output_dir=absolute_path(arg_string(&proposal.arguments,"approved_output_dir")?)?;
@@ -10677,6 +10697,10 @@ Write-Output 'SHUVI_WHATSAPP_DESKTOP_LAUNCH_REQUESTED'
             let response=blender_session_worker::plan(&state.blender_session,state,&session_id,
                 &plan,allow_render,&expected_scene_revision,execution_action_id)?;
             Ok(ActionResult{success:true,tool,stdout:response.to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::BlenderReviewAcceptanceChain {approved_output_dir,receipts} => {
+            let result=blender_acceptance_chain::review(&receipts,Path::new(&approved_output_dir))?;
+            Ok(ActionResult{success:true,tool,stdout:result.to_string(),stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::BlenderVerifyArtifactManifest {approved_output_dir,manifest} => {
             let check=blender_artifact_manifest::reverify(&manifest,Path::new(&approved_output_dir))?;
