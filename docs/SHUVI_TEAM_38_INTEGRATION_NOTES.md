@@ -43,3 +43,6 @@ Review any adapter calls and potential cross-team shared-file overlap. Keep owne
 - Reuse the existing authorized `reconcile_native_worker_job` command and its exclusive desktop lease via `native_worker_job::reconcile`; validate current running NativeJob UUID+tool before marking matching process launch/PID evidence `owner_reviewed_unknown`.
 - `native_worker_job::require_resolved` now also rejects outstanding/corrupt process receipts even if the main worker journal was somehow marked terminal. Foreign UUID owner review fails closed.
 - Shared `src-tauri/src/lib.rs` unchanged; no UI or new IPC authority. Multi-file durable updates are deliberately ordered process review first, native job review last; on partial failure the still-running native job remains quarantined.
+
+## Windows end-to-end journal integration test
+- Rust Windows CI starts the exact ignored worker test binary, reads persisted launch intent/PID, observes a real exit, reloads durable OS-only terminal receipt, and confirms app progress remains unverified.

@@ -348,6 +348,38 @@ mod tests{
     }
     #[cfg(windows)]
     #[test]
+    fn real_owned_child_exit_persists_pid_and_terminal_os_receipt(){
+        let _serial=TEST_PROCESS_MUTEX.lock().unwrap();
+        let (schedule,journal)=fresh_snapshots();
+        let action=journal.action_id.clone();
+        let path=std::env::temp_dir().join(format!(
+            "shuvi-owned-process-e2e-{}.json",uuid::Uuid::new_v4()));
+        process_receipt::begin_at(&path,&action,"blender_run_plan").unwrap();
+        let mut child=spawn_checked(&schedule,&journal,&action,"blender_run_plan",
+            &fixture_exe(),&fixture_args("worker_fixture_exit_zero"),
+            &std::env::temp_dir(),Duration::from_secs(5)).unwrap();
+        let real_pid=child.pid();
+        child.receipt_path=Some(path.clone());
+        process_receipt::started_at(&path,&action,"blender_run_plan",
+            real_pid,true).unwrap();
+        let running=process_receipt::read_at(&path).unwrap().unwrap();
+        assert_eq!(running.phase,"running");
+        assert_eq!(running.pid,Some(real_pid));
+        assert!(!running.app_progress_verified);
+        let finished=child.wait_bounded().unwrap();
+        assert_eq!(finished.phase,"exited");
+        drop(child);
+        let reloaded=process_receipt::read_at(&path).unwrap().unwrap();
+        assert_eq!(reloaded.phase,"exited");
+        assert_eq!(reloaded.pid,Some(real_pid));
+        assert_eq!(reloaded.exit_code,Some(0));
+        assert!(reloaded.descendants_contained);
+        assert!(!reloaded.app_progress_verified);
+        let _=std::fs::remove_file(&path);
+        let _=std::fs::remove_file(path.with_extension("json.bak"));
+    }
+    #[cfg(windows)]
+    #[test]
     fn cancelled_owned_process_cannot_kill_a_foreign_action(){
         let _serial=TEST_PROCESS_MUTEX.lock().unwrap();
         let (schedule,journal)=fresh_snapshots();

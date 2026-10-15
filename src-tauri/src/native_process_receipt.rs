@@ -43,7 +43,7 @@ fn check_bytes(raw:&[u8])->Result<(),String>{
         .map_err(|_|"Native process receipt is malformed.".to_string())?;
     check_record(&receipt)
 }
-fn read_at(file:&Path)->Result<Option<ProcessReceipt>,String>{
+pub(super) fn read_at(file:&Path)->Result<Option<ProcessReceipt>,String>{
     if !file.exists(){
         if file.with_extension("json.bak").exists(){
             return Err("Native process receipt is missing but backup exists; owner review required.".into());
