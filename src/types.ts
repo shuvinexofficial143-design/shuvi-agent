@@ -68,6 +68,7 @@ export type AgentOrchestrationCheckpoint = {
   last_outcome: "success" | "failure" | "denied" | "blocked" | null;
   recovery_mode: "normal" | "replan_required" | "stopped";
   objective: string | null;
+  owner_request?: string | null; // Exact original owner brief, not a model-authored goal.
   last_plan_step: string | null;
   last_success_criteria: string | null;
   stop_reason: string | null;
