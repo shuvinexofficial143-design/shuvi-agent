@@ -181,6 +181,42 @@ authorized, disposable Windows test fixture can establish whether these
 PowerShell and Win32 APIs behave correctly with real editor UIA providers,
 child/modal panels and multi-monitor setups.
 
+## Milestone 5 — Rust-owned prepared UI window identity
+
+- Every one of the seven native UIA mutation tools now performs a *trusted
+  Windows OS/UIA probe during `stage_tool`*. Rust obtains the currently
+  selected top-level native HWND, process PID and exact live UIA title,
+  rejecting missing/hidden/minimized/ambiguous or mismatched targets.
+- `PendingAction.native_uia_target` stores that OS-derived record, not a
+  caller/model-provided `expected_hwnd` or `expected_pid`. Existing
+  preparation approval, action UUID, budget, native scheduler, audit and
+  durable recovery remain canonical.
+- At execution, each UIA mutation uses the same Rust-Prepared identity,
+  verifying its native HWND/PID/title and selected control ownership inside
+  its own PowerShell invocation *immediately before* the pattern mutation.
+  A replaced window with the same title cannot silently acquire a previous
+  action's prepared token. Missing token is fail-closed.
+- Keyboard fallback retains a second check after SetFocus and before
+  SendWait, and now additionally participates in the WebView audited
+  control-selector guard after UIA discovery.
+- Tests: four Rust unit tests for typed target parsing, invalid/missing
+  binding, trusted native probe and prepared-token source generation;
+  `scripts/shuvi39-rust-native-uia-identity.test.mjs` asserts all seven
+  Rust arms use the exact pending OS identity; UIA control regression tests
+  verify SendKeys cannot reuse stale or hidden controls.
+
+### Remaining honest limitations
+
+The Rust binding derives from a fresh OS probe at preparation, **not**
+directly from the prior WebView window observation. The WebView's observed
+snapshot remains a separate prerequisite when previously recorded. The
+identity comparison is made inside the same PowerShell execution process,
+but Windows/UIA patterns are non-transactional; another process could still
+alter application state immediately *after* the check. Native Win32 identity
+cannot prove a click achieved a user-visible goal; readback and user task
+postcondition inspection are still separate. No Windows host mutation, GPU
+editor or multi-monitor acceptance test has been performed.
+
 ## Windows acceptance — explicitly NOT YET run
 
 Run only with separate owner consent on a disposable desktop/test fixture.
