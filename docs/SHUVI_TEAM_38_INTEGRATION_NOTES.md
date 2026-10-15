@@ -1,14 +1,20 @@
-# SHUVI 38 — scheduler integration / handoff
-Branch: `feature/shuvi38-native-scheduler` at frozen base `99c9e58ef0e43139edfe2d6464f6411be47e1aa0`.
+# Shuvi 38 — Native scheduler integration notes
 
-## Real behavior added
-- Admit only the earliest dependency-ready queued job in the persistent owner DAG. Readiness is reconstructed from Rust-audited predecessor states after restart; later ready jobs may not starve an older ready job.
-- A new objective cannot discard running, outcome-unknown, or unreviewed failed actions. A same-objective initial reset requires fully audited or explicitly reviewed failure outcomes.
-- Keep existing action UUID, Rust audit, exclusive Windows desktop lane, and v1 persisted schedule schema unchanged.
-- Rust module tests exercise multi-step dispatch, disk-reload ordering, dependency constraints and recovery bypass refusal. Node source-policy regressions add drift protection.
+Frozen shared base: `99c9e58ef0e43139edfe2d6464f6411be47e1aa0`; team branch: `feature/shuvi38-native-scheduler`.
 
-## Team boundary
-Only `src-tauri/src/native_scheduler.rs`, `scripts/native-scheduler-dispatch-policy.test.mjs` and this note changed. No shared `lib.rs` overlap, no UI changes and no merges. CI is source-level; no claim of live Windows application editing.
+## Milestone 1 (commit 33643435)
+- Ordered earliest dependency-ready native DAG admission, fail-closed unresolved outcome across task resets; Rust tests and source CI 9/9 workflows, 18/18 checks.
 
-## Remaining
-Real supervisor-owned worker process runner with observed PID/tree, app heartbeat/IPC, safe termination, independently guarded background concurrency and complete audited output lineage are NOT implemented. The one-at-a-time native action path remains authoritative. Continue from this branch's real HEAD on the next 'next'.
+## Milestone 2 (this change)
+- Add `src-tauri/src/native_owned_process.rs` compiled under `native_scheduler.rs`; real Rust `Child` PID and exit status, bounded runtime, direct-owned-child cancellation by exact action UUID, process-wide one-child slot, safe cleanup on drop.
+- Production spawn interface *requires* the existing `NativeExecutionLease` token, loads exact on-disk native scheduler and authoritative native-worker-job record, verifies the same running UUID/tool. No new public Tauri IPC, model executable or shell strings, no permission bypass, no provider retries or invented audit/progress.
+- Worker command uses absolute canonical existing executable and cwd, bounded arguments, empty environment with only essential Windows OS vars, discarded stdio (no sensitive log leakage). Only trusted Rust adapter code may provide a hardcoded/validated command, never the AI model.
+- Windows CI Rust tests spawn a real disposable `cmd.exe` and observe real PID/exit; cancellation tests kill the *direct owned child* and explicitly reject foreign action UUID. Node regression protects source guard contracts.
+
+### Explicit limits / integration boundary
+- This is a compiled **backend process supervision capability**, not yet called by Adobe/Blender adapters, and NOT an autonomous background worker scheduler. Code connecting `native_scheduler::owned_process::spawn_for_active_action` in a trusted adapter must maintain the same lease lifetime and native audit flow. No other team branch or shared `lib.rs` changed.
+- Descendants are **not** contained by a Windows Job Object; `Child::kill` stops only our directly owned child. Never claim full process-tree cancellation or safely start arbitrary subprocess trees until containment is implemented. Child OS liveness/exit does not prove app progress or output artifacts.
+- Owner-granted background resource lanes, IPC app heartbeat, crash-persistent owned PID registry, safe process-tree stop, full artifact receipt integration and live Windows editing all remain unfinished. Explicit safe-host consent is required for acceptance. Source CI success only attests runner tests.
+
+## Later integrator
+Review any adapter calls and potential cross-team shared-file overlap. Keep owner consent, OS lease, exact prepared UUID, audit journal and path/hash proof authoritative. No main merge without separate approval.

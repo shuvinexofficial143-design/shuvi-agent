@@ -6,6 +6,10 @@ use serde::{Deserialize,Serialize};
 use serde_json::Value;
 use std::{collections::{HashMap,HashSet},fs,path::{Path,PathBuf},sync::Mutex};
 use tauri::{AppHandle,Manager};
+// Built and unit-tested on Windows CI. Production adapters must present their
+// existing native lease + on-disk UUID journal before launching a child.
+#[path = "native_owned_process.rs"]
+pub(crate) mod owned_process;
 const MAX_JOBS:usize=48;
 const MAX_BYTES:usize=32768;
 static LOCK:Mutex<()>=Mutex::new(());
