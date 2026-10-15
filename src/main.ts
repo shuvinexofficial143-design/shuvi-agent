@@ -94,8 +94,18 @@ let sessionInputTokens = 0;
 let sessionOutputTokens = 0;
 let sessionTotalTokens = 0;
 let activePermissionScope=createTaskPermissionScope(crypto.randomUUID());
+// Mirrors owner-issued Rust grant IDs for exact read arguments. Local state
+// alone is NEVER authority to dispatch a consented follow-up action.
+const nativeReadGrantIds=new Map<string,string>();
+async function revokeNativeTaskReads(taskId:string):Promise<void>{
+ try{await invoke("revoke_task_read_grants",{taskId});}
+ catch{/* Existing local scope is revoked; fail closed and let Rust TTL expire. */}
+}
 function rotatePermissionScope():void{
+ const oldId=activePermissionScope.taskId;
  revokeTaskScope(activePermissionScope);
+ nativeReadGrantIds.clear();
+ void revokeNativeTaskReads(oldId);
  activePermissionScope=createTaskPermissionScope(crypto.randomUUID());
 }
 function activeReadGrant(proposal:ToolProposal,risk:string){
@@ -1083,8 +1093,14 @@ function revokeBrowserSessionPermissions(pid?: number): void {
   for (const key of [...activePermissionScope.grants.keys()]) {
     if (exactMarker ? key.includes(exactMarker) : key.includes("|pid:")) {
       activePermissionScope.grants.delete(key);
+      nativeReadGrantIds.delete(key);
     }
   }
+  // Native permissions are also invalidated; rotating a browser PID must not
+  // preserve any stale Rust read grant from the prior process identity.
+  activePermissionScope.grants.clear();
+  nativeReadGrantIds.clear();
+  void revokeNativeTaskReads(activePermissionScope.taskId);
 }
 
 function hiddenToolFailure(
@@ -1115,7 +1131,10 @@ async function recordOrchestrationAudit(
 }
 
 async function stopAgentForSafety(reason: string): Promise<void> {
+  const stoppedTaskId=activePermissionScope.taskId;
   revokeTaskScope(activePermissionScope);
+  nativeReadGrantIds.clear();
+  await revokeNativeTaskReads(stoppedTaskId);
   if (remoteTask) await closeRemoteTask("stopped");
   orchestration = { ...orchestration, recovery_mode: "stopped", stop_reason: reason.slice(0, 800) };
   if (orchestration.task_graph) await recordOrchestrationAudit("task_graph_stopped", reason.slice(0, 1200));
@@ -1361,7 +1380,13 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
       allowsTaskRead(activePermissionScope,activeReadGrant(proposal,pendingAction.risk)) &&
       !cancelRequested
     ) {
-      await executePendingProposal(proposal);
+      const exactReadKey=taskReadPermissionKey(proposal);
+      const rustGrantId=exactReadKey?nativeReadGrantIds.get(exactReadKey):null;
+      if(!rustGrantId){
+        await stopAgentForSafety("Local read permission has no corresponding Rust grant. No unattended action dispatched.");
+        return;
+      }
+      await executePendingProposal(proposal,rustGrantId);
       return;
     }
 
@@ -1475,7 +1500,7 @@ function clearExecutingAction(actionId: string): void {
   if (executingCancellation?.actionId === actionId) executingCancellation = null;
 }
 
-async function executePendingProposal(proposal: ToolProposal): Promise<void> {
+async function executePendingProposal(proposal: ToolProposal, rustGrantId:string|null=null): Promise<void> {
   if (!pendingAction || cancelRequested) return;
 
   const actionId = pendingAction.id;
@@ -1485,12 +1510,14 @@ async function executePendingProposal(proposal: ToolProposal): Promise<void> {
     await stopAgentForSafety("Owner-approved task budget expired before execution; no new native action authorized.");
     return;
   }
+  const permissionTaskId=activePermissionScope.taskId;
   executingActionId = actionId;
   executingCancellation = null;
   clearChatPermission();
 
   try {
-    const result = await invoke<ActionResult>("execute_action", { actionId });
+    const result = await invoke<ActionResult>("execute_action",
+      rustGrantId?{actionId,grantId:rustGrantId,taskId:permissionTaskId}:{actionId});
     const receipt = await readActionAuditReceipt(actionId);
     const receiptMatches = verifiedNativeActionResult(proposal.tool, actionId, result, receipt);
     const cancelledByUser = await actionCancellationConfirmed(actionId);
@@ -1644,10 +1671,35 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
   const allowSession = chatPermission.querySelector<HTMLButtonElement>("#chatAllowSession");
   if (allowSession) {
     allowSession.onclick = async () => {
-      if(!pendingAction||!grantTaskRead(activePermissionScope,activeReadGrant(proposal,pendingAction.risk))){
-        await stopAgentForSafety("Invalid task-scoped read permission. No action executed.");
+      const pendingId=pendingAction?.id;
+      const ownerTaskId=activePermissionScope.taskId;
+      const key=taskReadPermissionKey(proposal);
+      if(!pendingId||!key||remoteTask||cancelRequested){
+        await stopAgentForSafety("Invalid read grant request; no action was executed.");
         return;
       }
+      // The Rust host rechecks the exact prepared tool, its low native risk,
+      // its canonical argument fingerprint and TTL. AI cannot issue this grant.
+      let grantId:string;
+      try{
+        grantId=await invoke<string>("issue_task_read_grant",
+          {taskId:ownerTaskId,actionId:pendingId});
+      }catch{
+        await stopAgentForSafety("Rust refused this read grant; no action executed.");
+        return;
+      }
+      if(pendingAction?.id!==pendingId||activePermissionScope.taskId!==ownerTaskId||cancelRequested){
+        await revokeNativeTaskReads(ownerTaskId);
+        return;
+      }
+      if(!grantTaskRead(activePermissionScope,activeReadGrant(proposal,pendingAction.risk))){
+        await revokeNativeTaskReads(ownerTaskId);
+        await stopAgentForSafety("Local read grant rejected; no action executed.");
+        return;
+      }
+      nativeReadGrantIds.set(key,grantId);
+      // The current owner's click authorizes this first action exactly once.
+      // Further identical reads must consume the Rust grant separately.
       await executePendingProposal(proposal);
     };
   }
