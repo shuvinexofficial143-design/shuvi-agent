@@ -14,7 +14,11 @@ use super::{Schedule,validate};
 
 const MIN_BUDGET_MS:u64=100;
 const MAX_BUDGET_MS:u64=600_000;
-static PROCESS_OWNER:Mutex<Option<String>>=Mutex::new(None);
+const MAX_RECENT_LAUNCHES:usize=48;
+struct ProcessSlot {active:Option<String>,recent:Vec<String>}
+static PROCESS_OWNER:Mutex<ProcessSlot>=Mutex::new(ProcessSlot{
+    active:None,recent:Vec::new()
+});
 
 #[derive(Debug,Clone,PartialEq,Eq)]
 pub(crate) struct ProcessObservation {
@@ -83,7 +87,10 @@ fn spawn_checked(schedule:&Schedule,native:&crate::native_worker_job::NativeJob,
     identity_matches(schedule,native,action_id,tool)?;
     let executable=checked_program(program,cwd,args,budget)?;
     let mut slot=PROCESS_OWNER.lock().map_err(|_|"Native process owner lock poisoned.")?;
-    if slot.is_some(){return Err("An owned worker process is already supervised.".into());}
+    if slot.active.is_some(){return Err("An owned worker process is already supervised.".into());}
+    if slot.recent.iter().any(|seen|seen==action_id){
+        return Err("Action UUID cannot launch another owned process.".into());
+    }
     let mut command=Command::new(&executable);
     command.args(args).current_dir(cwd)
         .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
@@ -94,7 +101,9 @@ fn spawn_checked(schedule:&Schedule,native:&crate::native_worker_job::NativeJob,
         if let Some(value)=std::env::var_os(key){command.env(key,value);}
     }
     let child=command.spawn().map_err(|e|format!("Trusted worker process could not start: {e}"))?;
-    *slot=Some(action_id.to_owned());
+    slot.active=Some(action_id.to_owned());
+    slot.recent.push(action_id.to_owned());
+    if slot.recent.len()>MAX_RECENT_LAUNCHES{slot.recent.remove(0);}
     Ok(OwnedProcess{action_id:action_id.to_owned(),tool:tool.to_owned(),
         child,start:Instant::now(),budget,final_phase:None,final_code:None})
 }
@@ -176,7 +185,9 @@ impl Drop for OwnedProcess{
             ||self.stop_direct_child("cancelled").is_ok();
         if stopped {
             if let Ok(mut owner)=PROCESS_OWNER.lock(){
-                if owner.as_deref()==Some(self.action_id.as_str()) {*owner=None;}
+                if owner.active.as_deref()==Some(self.action_id.as_str()){
+                    owner.active=None;
+                }
             }
         }
     }
@@ -221,6 +232,14 @@ mod tests{
             .expect("Windows CI must supply COMSPEC"))
     }
     #[cfg(windows)]
+    fn fresh_snapshots()->(Schedule,crate::native_worker_job::NativeJob){
+        let (mut schedule,mut journal)=snapshots();
+        let id=uuid::Uuid::new_v4().to_string();
+        schedule.jobs[0].action_id=Some(id.clone());
+        journal.action_id=id;
+        (schedule,journal)
+    }
+    #[cfg(windows)]
     fn cmd_exe_for_test()->PathBuf {cmd()}
     #[cfg(windows)]
     fn slow_exe()->PathBuf {
@@ -236,10 +255,11 @@ mod tests{
     #[test]
     fn observed_pid_and_real_child_exit_do_not_fabricate_app_progress(){
         let _serial=TEST_PROCESS_MUTEX.lock().unwrap();
-        let (schedule,journal)=snapshots();
+        let (schedule,journal)=fresh_snapshots();
+        let action=journal.action_id.clone();
         let cmd=cmd();
         let args=vec!["/D".into(),"/C".into(),"exit /B 0".into()];
-        let mut child=spawn_checked(&schedule,&journal,A,"blender_run_plan",
+        let mut child=spawn_checked(&schedule,&journal,&action,"blender_run_plan",
             &cmd,&args,&std::env::temp_dir(),Duration::from_secs(5)).unwrap();
         let pid=child.pid();
         assert!(pid>0);
@@ -255,13 +275,14 @@ mod tests{
     #[test]
     fn cancelled_owned_process_cannot_kill_a_foreign_action(){
         let _serial=TEST_PROCESS_MUTEX.lock().unwrap();
-        let (schedule,journal)=snapshots();
+        let (schedule,journal)=fresh_snapshots();
+        let action=journal.action_id.clone();
         let cmd=slow_exe();
         let args=slow_args();
-        let mut child=spawn_checked(&schedule,&journal,A,"blender_run_plan",
+        let mut child=spawn_checked(&schedule,&journal,&action,"blender_run_plan",
             &cmd,&args,&std::env::temp_dir(),Duration::from_secs(5)).unwrap();
         assert!(child.cancel_exact(B).is_err());
-        let result=child.cancel_exact(A).unwrap();
+        let result=child.cancel_exact(&action).unwrap();
         assert!(matches!(result.phase,"cancelled"|"exited"));
         assert!(!result.app_progress_verified);
         assert!(!result.descendants_contained);
@@ -270,8 +291,9 @@ mod tests{
     #[test]
     fn deadline_stops_only_owned_direct_child_without_inventing_success(){
         let _serial=TEST_PROCESS_MUTEX.lock().unwrap();
-        let (schedule,journal)=snapshots();
-        let mut child=spawn_checked(&schedule,&journal,A,"blender_run_plan",
+        let (schedule,journal)=fresh_snapshots();
+        let action=journal.action_id.clone();
+        let mut child=spawn_checked(&schedule,&journal,&action,"blender_run_plan",
             &slow_exe(),&slow_args(),&std::env::temp_dir(),
             Duration::from_millis(100)).unwrap();
         let obs=child.wait_bounded().unwrap();
@@ -283,18 +305,24 @@ mod tests{
     #[test]
     fn active_worker_blocks_second_owned_child_until_reaped(){
         let _serial=TEST_PROCESS_MUTEX.lock().unwrap();
-        let (schedule,journal)=snapshots();
+        let (schedule,journal)=fresh_snapshots();
+        let action=journal.action_id.clone();
         let cmd=slow_exe();
         let args=slow_args();
-        let mut child=spawn_checked(&schedule,&journal,A,"blender_run_plan",
+        let mut child=spawn_checked(&schedule,&journal,&action,"blender_run_plan",
             &cmd,&args,&std::env::temp_dir(),Duration::from_secs(5)).unwrap();
-        let second=spawn_checked(&schedule,&journal,A,"blender_run_plan",
+        let second=spawn_checked(&schedule,&journal,&action,"blender_run_plan",
             &cmd,&args,&std::env::temp_dir(),Duration::from_secs(5));
         assert!(second.is_err());
-        child.cancel_exact(A).unwrap();
+        child.cancel_exact(&action).unwrap();
         drop(child);
         let fast=vec!["/D".into(),"/C".into(),"exit /B 0".into()];
-        let mut after=spawn_checked(&schedule,&journal,A,"blender_run_plan",
+        assert!(spawn_checked(&schedule,&journal,&action,"blender_run_plan",
+            &cmd_exe_for_test(),&fast,&std::env::temp_dir(),
+            Duration::from_secs(5)).is_err()); // completed UUID cannot replay
+        let (next_schedule,next_journal)=fresh_snapshots();
+        let next_action=next_journal.action_id.clone();
+        let mut after=spawn_checked(&next_schedule,&next_journal,&next_action,"blender_run_plan",
             &cmd_exe_for_test(),&fast,&std::env::temp_dir(),Duration::from_secs(5)).unwrap();
         assert_eq!(after.wait_bounded().unwrap().phase,"exited");
     }
