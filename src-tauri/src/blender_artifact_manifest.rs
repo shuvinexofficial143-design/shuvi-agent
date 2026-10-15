@@ -86,6 +86,10 @@ pub(crate) fn build(
             "independent_read_only_reopen":saved,
             "scene_fingerprint":if saved {proof.unwrap()["fingerprint"].clone()}else{Value::Null},
             "object_count":if saved {proof.unwrap()["object_count"].clone()}else{Value::Null},
+            "mesh_geometry_verified":saved,
+            "mesh_count":if saved {proof.unwrap()["mesh_count"].clone()}else{Value::Null},
+            "total_vertices":if saved {proof.unwrap()["total_vertices"].clone()}else{Value::Null},
+            "total_faces":if saved {proof.unwrap()["total_faces"].clone()}else{Value::Null},
             "executed_typed_steps":steps,
             "destructive_allowed":false,
         },
@@ -152,7 +156,11 @@ pub(crate) fn reverify(manifest:&Value,approved_root:&Path)->Result<Value,String
             receipt["checkpoint_reopen"]=json!({
                 "verified":true,"read_only":true,
                 "fingerprint":evidence["scene_fingerprint"],
-                "object_count":evidence["object_count"]});
+                "object_count":evidence["object_count"],
+                "mesh_geometry_verified":evidence["mesh_geometry_verified"],
+                "mesh_count":evidence["mesh_count"],
+                "total_vertices":evidence["total_vertices"],
+                "total_faces":evidence["total_faces"]});
             "BLEND"
         },
         "PNG"=>{
@@ -212,7 +220,8 @@ mod tests {
             "destructive_allowed":false,"executed_steps":2,
             "artifact":{"path":path,"bytes":size,"sha256":digest,"format":"BLEND"},
             "checkpoint_reopen":{"verified":true,"read_only":true,"fingerprint":"a".repeat(64),
-                "object_count":2}
+                "object_count":2,"mesh_geometry_verified":true,
+                "mesh_count":1,"total_vertices":3,"total_faces":1}
         })
     }
     const ACTION:&str="e5f8c84b-e405-4339-b6fd-e8ca80c457aa";
