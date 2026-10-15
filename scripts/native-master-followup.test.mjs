@@ -248,12 +248,13 @@ test("Premiere opening has separate detect, launch and window-inspection approva
  await until(()=>s.allow.disabled===false,"second action approval ready");
  s.allow.listeners.get("click")();
  await until(()=>s.staged.length===3,"Premiere window inspection approval");
- assert.equal(s.staged[2].proposal.tool,"ui_find");
- assert.deepEqual(s.staged[2].proposal.arguments,{name:"Adobe Premiere Pro"});
+ assert.equal(s.staged[2].proposal.tool,"ui_windows");
+ assert.deepEqual(s.staged[2].proposal.arguments,{});
+ assert.equal(s.chatInputs.length,2,"audited launch uses deterministic readback instead of a new paid model call");
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,2,
   "window inspection must NOT happen before a third approval");
  assert.equal(s.approval.hidden,false);
- assert.match(s.chatInputs[2].messages.at(-1).content,/Launching a process is not evidence/);
+ assert.match(s.transport.getReplies("premiere-inspect")[0],/window inspection|readback/i);
 });
 
 test("audited failed read-only UI lookup stages window recovery without paying AI again",async()=>{
@@ -518,7 +519,7 @@ test("Batch 07 continuation rejects mismatched prepared kind after audited first
   model:"model/master",tool_proposal:{tool:"ui_windows",arguments:{}}};
  const s=setup({first:launch,second:read,wrongStageIndex:2});
  await until(()=>s.transport.connected(),"ready");
- await s.transport.send("Open Premiere and inspect window","wrong-followup-kind",0);
+ await s.transport.send("Open Premiere and edit project footage","wrong-followup-kind",0);
  s.allow.listeners.get("click")();
  await until(()=>s.transport.getReplies("wrong-followup-kind")[0]?.includes("Next Windows tool preparation failed"),
   "mismatch fail closed");
@@ -652,7 +653,7 @@ test("Batch 14 post-audit continuation exception does not start UI read recovery
  const s=setup({first:launch,second:{content:"continue",provider:"xkiro",model:"model/master",tool_proposal:null},
   continuationRenderError:true});
  await until(()=>s.transport.connected(),"native");
- await s.transport.send("Premiere kholo","audited-then-continuation-error",0);
+ await s.transport.send("Premiere me naya project banao","audited-then-continuation-error",0);
  s.allow.listeners.get("click")();
  await until(()=>s.transport.getReplies("audited-then-continuation-error")[0]?.includes("Native action remained audit-verified"),"post-audit exception");
  const reply=s.transport.getReplies("audited-then-continuation-error")[0];
