@@ -20,6 +20,10 @@ test("saved Blender checkpoint requires independent read-only reopen evidence",(
   assert.match(check,/policy=SafetyPolicy\(\)/);
   assert.match(check,/blend_file=saved/);
   assert.match(check,/if reopened != original:/);
+  assert.match(check,/call\("mesh.inspect", \{"object_id": object_id\}\)/);
+  assert.match(check,/digest != geometry.get\("geometry_revision"\)/);
+  assert.match(check,/scene changed during geometry proof/);
+  assert.match(rust,/proof.get\("mesh_geometry_verified"\)/);
   assert.match(check,/require_saved_file and Path\(scene\["file"\]\)\.resolve/);
   assert.equal(bundle.bundle.resources["../integrations/blender-worker/shuvi_blender_reopen.py"],
     "blender-worker/shuvi_blender_reopen.py");
@@ -46,5 +50,5 @@ test("new Python reopen helper parses and fake-session regressions pass",
     "-s","integrations/blender-worker","-p","test_shuvi_blender_reopen.py"],
     {cwd:root,timeout:30000,encoding:"utf8"});
   assert.equal(result.status,0,result.stderr);
-  assert.match(result.stderr,/Ran 7 tests/);
+  assert.match(result.stderr,/Ran 10 tests/);
 });
