@@ -37,6 +37,53 @@ Integration status: **source implementation; Windows live unverified**.
 No shared `src-tauri/src/lib.rs`, `Cargo.toml`, package or workflow change.
 No other team-owned files changed. The caller signature and native action ID remain unchanged.
 
+## Milestone 2 — Audited task-scoped window observation and screen guard
+
+- `web-dashboard/src/native-window-observation-session.mjs` defines immutable
+  WindowObservation v1 with `sourceTool=ui_windows`, exact Rust audit
+  `sourceActionId`, observed and expiry times (2 minute maximum), and
+  actual named HWND/PID/process/app identities. This is evidence, not approval.
+- `web-dashboard/src/native-agent.ts` now stores the immutable snapshot in
+  the existing per-thread map only after exact `verifiedExecutionReceipt`.
+  It checks expiry before subsequent `ui_find`, `ui_discover`,
+  `inspect_screen` and desktop UI mutations. An invalidated snapshot stays
+  recorded as null so it cannot silently fall back to no-observation mode.
+  Prior task/global clearing and existing owner-consent flows are preserved.
+- The strict `observedWindowInventory` parser now rejects repeated HWNDs
+  even with plausible titles. The Master observation summary and compact
+  UI context reject the same malformed source evidence that staging rejects.
+- `inspect_screen` for a named app now observes the same strict uniqueness
+  checks as UIA discovery, including stale inventory and duplicate title.
+  Explicit `window=desktop` remains subject to separate Rust owner scope;
+  it is not treated as a named-app observation.
+- `scripts/shuvi39-window-observation-session.test.mjs` covers distinct
+  audited action IDs, expiry boundary, stale map semantics, process/title
+  conflicts, duplicate HWNDs, exact target, screen capture preparation,
+  and source-summary fail-closed behavior.
+
+**Security boundary:** An expired snapshot is not a Rust permission revoke.
+Native approved actions still need separate audited execution and GUI resource
+lease. The existing no-prior-observation native-matching path is maintained
+for backward compatibility; this update prohibits *downgrading* from a
+previously audited but now stale snapshot.
+
+**Limitations:** Staleness refers to time and local UI mutation invalidation;
+external process/window changes between observation and action are not yet
+bound by a native HWND/PID token. Source CI does not demonstrate real GUI
+success or absence of foreign overlays on a GPU accelerated editor. Windows
+acceptance listed below remains unverified.
+
+## Shared-file integration review
+
+`web-dashboard/src/native-agent.ts` is a shared wiring file. This team
+modified only the observation import, the per-thread snapshot map/lookup,
+the `ui_windows` success transition and the compact observation guard.
+No action-preparation IPC parameters, ownership checks, task budgets,
+`src-tauri/src/lib.rs`, scheduler, or other team modules were changed.
+Cross-team integration must review potential overlapping edits to the import,
+`compactObservedUi`, `observedWindows` Map and `decide()` block. The
+session data stays WebView-local; no implicit cross-branch integration.
+
 ## Windows acceptance — explicitly NOT YET run
 
 Run only with separate owner consent on a disposable desktop/test fixture.
