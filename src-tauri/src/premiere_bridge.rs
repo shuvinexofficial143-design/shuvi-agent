@@ -59,7 +59,7 @@ pub const ALLOWED_ACTIONS: &[&str] = &[
     "insert_project_item",
     "inspect_multicam_item",
     "insert_multicam_item",
-    "save_project",
+    "save_project", "create_project", "open_project",
     "inspect_timeline", "inspect_assembly_items", "timeline_capabilities", "inspect_object_masks", "inspect_linked_candidates", "plan_video_recipe", "plan_audio_automation", "inspect_mogrt_properties", "plan_mogrt_recipe", "project_diagnostics",
     "caption_tracks",
     "set_caption_track_name",
