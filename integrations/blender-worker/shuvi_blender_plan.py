@@ -91,7 +91,7 @@ def run(argv: list[str] | None = None) -> int:
             # after the approved save; launch a DIFFERENT process for reopen.
             if extension == ".blend":
                 from shuvi_blender_reopen import capture_scene
-                original_scene = capture_scene(controller, actual)
+                original_scene = capture_scene(controller, actual, require_saved_file=False)
             from shuvi_blender_agent.files import read_output
             reread = read_output(actual, "BLEND" if extension == ".blend" else "PNG")
             if reread["sha256"] != digest:
