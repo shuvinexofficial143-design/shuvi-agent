@@ -42,9 +42,9 @@ test("keyboard fallback cannot send to the foreground approval UI",()=>{
 });
 test("no desktop-root or empty window is accepted for approved mutations",()=>{
  assert.match(guard,/window\s*\.map\(str::trim\)/);
- assert.match(guard,/window\.eq_ignore_ascii_case\("desktop"\)/);
+ assert.match(guard,/name\.eq_ignore_ascii_case\("desktop"\)/);
  assert.match(guard,/UI mutation cannot target desktop/);
- assert.match(guard,/window\.chars\(\)\.any\(char::is_control\)/);
+ assert.match(guard,/name\.chars\(\)\.any\(char::is_control\)/);
 });
 test("read-only window discovery remains available separately from mutation lease",()=>{
  const read=core.slice(core.indexOf("ToolAction::UiDiscover { window } => {",550000),from);
