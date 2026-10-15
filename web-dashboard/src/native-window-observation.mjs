@@ -7,7 +7,7 @@ export function summarizeWindowObservation(result,audited=false){
  if(result.exit_code!=null&&(!Number.isSafeInteger(result.exit_code)||result.exit_code!==0))
   return "Window observation exit status invalid; no target identity verified.";
  if(typeof result.stdout!=="string"||result.stdout.length>250000)
-  return "Window observation too large or unavailable; no target identity verified.";
+  return "Window observation too large or unavailable (input bounded); no target identity verified.";
  let source;
  try{source=JSON.parse(result.stdout);}catch{
   return "Window observation unavailable or unparseable; no target identity verified.";
