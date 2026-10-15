@@ -172,8 +172,8 @@ impl OwnedProcess<'_> {
             None=>Ok(self.observation("running"))
         }
     }
-    /// Cancellation requires exact action UUID and kills ONLY the directly
-    /// owned Child handle. Descendant termination must be separately designed.
+    /// Cancellation requires exact action UUID. Windows terminates the
+    /// contained Job Object; non-Windows support remains direct-child only.
     pub(crate) fn cancel_exact(&mut self,action_id:&str)->Result<ProcessObservation,String>{
         if action_id!=self.action_id{
             return Err("Cannot cancel a process owned by another action UUID.".into());
