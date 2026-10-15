@@ -91,3 +91,13 @@ Changed/new files:
 Cross-team boundaries: Team 38 owns native scheduler and worker lease, Team 39 owns UI evidence and window identity, Team 40/41 own Premiere/AE/Blender output acceptance. The planning bridge does not invent output file paths, automate cross-application editing, auto-confirm project completion, create a permission bypass or edit other teams' branches. An opening goal remains UNVERIFIED until application-specific target-window acceptance is available.
 
 **Integration rule:** Do not replace \`prepare_tool\`, \`execute_action\`, \`action_audit_receipt\`, \`assessMasterSchedulerAdmission\`, owner Stop/Revocation or typed graph recovery. One model-free readback requires a verified predecessor receipt and a separately prepared UUID; 2 consecutive readbacks require **2 separate** owner approvals unless an owner-created, Rust-validated exact-read grant is still active.
+
+## Fifth milestone — exact-head CI repair and async readback identity fence (15 October 2026)
+
+Prior exact HEAD \`4783ac23cd4274f7a4c411362a3022eee7beaab3\` achieved:
+- **Rust full CI successful** and **Web Dashboard CI successful**, with several Adobe source workflows successful; overall \`CI\` failed **only in frontend tests** (3 known tests): one approval visibility assertion raced asynchronous UI render, and two tests expected an edit-click under a pure Premiere-opening brief now forbidden by the actual safety policy.
+- \`scripts/native-master-followup.test.mjs\`: race assertion waits for actual third native approval render. Negative case now explicitly expects the original brief gate to refuse unrequested cross-app click; positive editing case uses a real project-creation brief that *can* be routed to a separately approved click.
+- \`src/main.ts\` follow-up readback adds a stale-task guard, capturing live owner permission-scope identity, revocation, cancellation, graph reference and immutable task brief, and checking again after every asynchronous Rust worker-status/scheduler-status IPC before \`stageProposal\`. A Stop/new task/remote takeover cannot cause a previously authorized readback to be staged under the new task identity.
+- \`scripts/master-safe-continuation.test.mjs\` now tests the async native status guard location and exact post-await freshness policy.
+
+**CI honesty:** The new exact feature-head needs its own GitHub checks; prior green workflow results are useful evidence but do not automatically apply to a later commit. Neither source/mocked checks nor GitHub CI are real Windows app action tests. No \`main\` merge or installer.
