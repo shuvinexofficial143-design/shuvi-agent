@@ -101,7 +101,15 @@ test("single and batch media relink/proxy callers stop on unverified readback",(
     const end=rust.indexOf("\n        ToolAction::Premiere",start+10);
     const arm=rust.slice(start,end);
     assert.match(arm,/verified_readback/);
-    assert.match(arm,/success: verified/);
+    if (name === "PremiereRelinkMedia") {
+      // Durable relink is stronger than a bare host acknowledgement:
+      // exact media readback, source hash continuity and persisted .prproj.
+      assert.match(arm,/let durable=media_unchanged&&item_still_relinked&&saved&&same_project/);
+      assert.match(arm,/persistence\.get\("persistence_verified"\)/);
+      assert.match(arm,/success:durable/);
+    } else {
+      assert.match(arm,/success: verified/);
+    }
   }
   for(const [name,next] of [["PremiereBatchRelink","PremiereBatchAttachProxy"],["PremiereBatchAttachProxy","PremiereImportMedia"]]){
     const start=rust.lastIndexOf("ToolAction::"+name);
