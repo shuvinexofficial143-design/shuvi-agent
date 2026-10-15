@@ -31,7 +31,9 @@ test("native transport uses journal before provider dispatch and action approval
  assert.match(text,/const previousRecoveryState=inspectNativeRecoveryStore\(recoveryStorage\)/);
  assert.match(text,/No paid model call or Windows tool action has resumed/);
  assert.match(text,/if\(route.role!=="chat"&&!await persistRecovery\(taskBudget,"model_reserved"\)\)\{/);
- assert.match(text,/if\(!plannedReadback&&!await persistRecovery\(taskBudget,"model_reserved",task.action.id\)\)/);
+ assert.match(text,/if\(plannedReadback\)\{/);
+ assert.match(text,/persistRecovery\(taskBudget,"readback_reserved",task.action.id\)/);
+ assert.match(text,/else if\(!await persistRecovery\(taskBudget,"model_reserved",task.action.id\)\)/);
  assert.match(text,/if\(!await persistRecovery\(taskBudget,"awaiting_approval",proposed.id\)\)/);
  assert.match(text,/if\(!await persistRecovery\(taskBudget,"awaiting_approval",next.id\)\)/);
  assert.match(text,/if\(verifiedBudget&&!await persistRecovery\(verifiedBudget,"audit_verified"/);
@@ -295,4 +297,69 @@ test("a possibly executed action must become unknown or audited before a new app
   stagedActions:2,actionId:"read-only-inspection"};
  assert.equal(writeNativeRecovery(store,observed,1004),true,
   "separately verified UI recovery can stage a fresh inspection after an unknown outcome");
+});
+
+test("model-free audited readback uses two durable transitions without a new paid request",()=>{
+ const store=makeStore(), taskId="0f2977ac-4f61-4d9c-bf74-ecf8a3ae2172";
+ const first={
+   version:2,taskId,revision:1,maxActions:8,stagedActions:0,
+   modelRequests:1,expiresAt:7201000,phase:"model_reserved",actionId:null
+ };
+ const attempt=(patch,now)=>writeNativeRecovery(store,{...patch},now);
+ assert.equal(attempt(first,1000),true);
+ const approved={...first,revision:2,phase:"awaiting_approval",stagedActions:1,actionId:"action-1"};
+ assert.equal(attempt(approved,1001),true);
+ const running={...approved,revision:3,phase:"executing"};
+ assert.equal(attempt(running,1002),true);
+ const audited={...running,revision:4,phase:"audit_verified"};
+ assert.equal(attempt(audited,1003),true);
+ const second={...audited,revision:5,phase:"awaiting_approval",stagedActions:2,actionId:"action-2"};
+ assert.equal(attempt(second,1004),false,"a new UUID cannot appear directly after an audit without a reservation");
+ const readback={...audited,revision:5,phase:"readback_reserved"};
+ assert.equal(attempt(readback,1004),true);
+ const recorded=readNativeRecovery(store,1005);
+ assert.equal(recorded.phase,"readback_reserved");
+ assert.equal(recorded.modelRequests,1,"deterministic readback spends no provider request");
+ assert.equal(recorded.stagedActions,1,"native staging count changes only for a new action");
+ assert.equal(attempt({...second,revision:6,actionId:"action-1"},1005),false,
+   "cannot replay the old audited UUID");
+ assert.equal(attempt({...second,revision:6,modelRequests:2},1005),false,
+   "no hidden paid provider reservation");
+ assert.equal(attempt({...second,revision:6,stagedActions:1},1005),false,
+   "readback must consume another bounded native action stage");
+ assert.equal(attempt({...second,revision:6,phase:"executing"},1005),false,
+   "fresh owner approval phase is mandatory");
+ assert.equal(attempt({...second,revision:6},1005),true);
+ const approvedRecord=readNativeRecovery(store,1006);
+ assert.equal(approvedRecord.actionId,"action-2");
+ assert.equal(approvedRecord.modelRequests,1);
+ assert.equal(approvedRecord.stagedActions,2);
+});
+test("readback reservation rejects unknown, executing, forged and stale native records",()=>{
+ const taskId="0f2977ac-4f61-4d9c-bf74-ecf8a3ae2172";
+ const base={version:2,taskId,revision:1,maxActions:8,stagedActions:0,
+   modelRequests:1,expiresAt:7201000,phase:"model_reserved",actionId:null};
+ const setup=phase=>{
+   const store=makeStore();assert.equal(writeNativeRecovery(store,base,1000),true);
+   const approved={...base,revision:2,phase:"awaiting_approval",stagedActions:1,actionId:"action-1"};
+   assert.equal(writeNativeRecovery(store,approved,1001),true);
+   const executing={...approved,revision:3,phase:"executing"};
+   assert.equal(writeNativeRecovery(store,executing,1002),true);
+   if(phase==="executing")return {store,previous:executing,revision:4};
+   const audited={...executing,revision:4,phase:"audit_verified"};
+   assert.equal(writeNativeRecovery(store,audited,1003),true);
+   return {store,previous:audited,revision:5};
+ };
+ for(const [previousPhase,patch] of [
+   ["executing",{}],
+   ["audit_verified",{modelRequests:2}],
+   ["audit_verified",{actionId:"forged-action"}],
+   ["audit_verified",{stagedActions:2}],
+   ["audit_verified",{taskId:"e8b36b21-1c6a-459e-9b6f-75dd5692ab81"}]
+ ]){
+   const x=setup(previousPhase);
+   assert.equal(writeNativeRecovery(x.store,{...x.previous,
+     revision:x.revision,phase:"readback_reserved",...patch},1005),false,
+     JSON.stringify({previousPhase,patch}));
+ }
 });
