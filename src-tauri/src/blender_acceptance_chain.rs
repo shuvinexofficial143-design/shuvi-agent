@@ -38,6 +38,7 @@ pub(crate) fn review(reports:&Value,approved_root:&Path)->Result<Value,String>{
     let mut paths=Vec::with_capacity(3);
     let mut hashes=Vec::with_capacity(3);
     let mut fingerprints=Vec::with_capacity(2);
+    let mut topology_fingerprints=Vec::with_capacity(2);
     let mut mesh_counts=Vec::with_capacity(2);
     for (index,receipt) in items.iter().enumerate(){
         if receipt.get("status").and_then(Value::as_str)!=Some("verified")
@@ -86,6 +87,10 @@ pub(crate) fn review(reports:&Value,approved_root:&Path)->Result<Value,String>{
                 .filter(|x|x.len()==64 && x.bytes().all(|c|c.is_ascii_hexdigit()))
                 .ok_or("Blender stage scene fingerprint missing.")?;
             fingerprints.push(fingerprint.to_string());
+            let topology=evidence.get("mesh_fingerprint").and_then(Value::as_str)
+                .filter(|x|x.len()==64 && x.bytes().all(|c|c.is_ascii_hexdigit()))
+                .ok_or("Blender stage has no exact independent mesh topology fingerprint.")?;
+            topology_fingerprints.push(topology.to_string());
             mesh_counts.push(json!({"meshes":count,"vertices":vertices,"faces":faces}));
         }else{
             let image=artifact.get("image").ok_or("Blender render metadata missing.")?;
@@ -110,7 +115,7 @@ pub(crate) fn review(reports:&Value,approved_root:&Path)->Result<Value,String>{
     if paths[0]==paths[1] || hashes[0]==hashes[1]{
         return Err("Blender acceptance requires different saved stage1/stage2 checkpoints.".into());
     }
-    if fingerprints[0]==fingerprints[1]{
+    if fingerprints[0]==fingerprints[1] || topology_fingerprints[0]==topology_fingerprints[1]{
         return Err("Blender acceptance found no independently observable modeled scene change.".into());
     }
     Ok(json!({
@@ -170,7 +175,9 @@ mod tests {
             "artifact":artifact,
             "checkpoint_reopen":{"verified":true,"read_only":true,
                 "fingerprint":if which==0{"a".repeat(64)}else{"b".repeat(64)},
-                "object_count":2,"mesh_geometry_verified":true,"mesh_count":2,
+                "object_count":2,"mesh_geometry_verified":true,
+                "mesh_fingerprint":if which==0{"c".repeat(64)}else{"d".repeat(64)},
+                "mesh_count":2,
                 "total_vertices":13,"total_faces":11}
         });
         let manifest=crate::blender_artifact_manifest::build(&evidence,&work.0,action,Some(session)).unwrap();
@@ -255,6 +262,10 @@ mod tests {
     #[test]
     fn rejects_unchanged_geometry_missing_proof_and_tampered_bytes(){
         let workspace=Workspace::new();let receipt=fixtures(&workspace);
+        let mut same=receipt.clone();
+        same[1]["artifact_manifest"]["evidence"]["mesh_fingerprint"]=
+            same[0]["artifact_manifest"]["evidence"]["mesh_fingerprint"].clone();
+        assert!(review(&same,&workspace.0).is_err());
         let mut same=receipt.clone();
         same[1]["artifact_manifest"]["evidence"]["scene_fingerprint"]=
             same[0]["artifact_manifest"]["evidence"]["scene_fingerprint"].clone();
