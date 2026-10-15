@@ -81,7 +81,9 @@ export function admitDashboardMasterProposal(goal, proposal) {
     // launch_app may only be grounded by the existing native observed-target
     // checks; never accept a model-selected binary for a different editor.
     const app = g.apps[0];
-    const serialized = JSON.stringify(proposal.arguments).slice(0,4096).toLowerCase();
+    let serialized;
+    try { serialized = JSON.stringify(proposal.arguments).slice(0,4096).toLowerCase(); }
+    catch { return fail('Invalid or circular launch arguments.'); }
     if (Object.keys(EDITORS).some(other => other !== app &&
         new RegExp(other === 'after_effects' ? 'after[ _-]?effects|afterfx' : other).test(serialized)))
       return fail('Launch target conflicts with the named editor.');
