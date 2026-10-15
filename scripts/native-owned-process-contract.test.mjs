@@ -6,7 +6,9 @@ const scheduler=readFileSync(new URL("../src-tauri/src/native_scheduler.rs",impo
 test("process supervision is compiled into native scheduler, not a model-supplied IPC",()=>{
   assert.match(scheduler,/#\[path = "native_owned_process.rs"\]/);
   assert.match(worker,/fn spawn_for_active_action\(/);
-  assert.match(worker,/_lease:&NativeExecutionLease<'_>/);
+  assert.match(worker,/lease:NativeExecutionLease<'lease>/);
+  assert.match(worker,/owned\.lease=Some\(lease\)/);
+  assert.match(worker,/std::mem::forget\(lease\)/);
   assert.match(worker,/super::read\(app\)/);
   assert.match(worker,/native_worker_job::read\(app\)/);
   assert.match(worker,/identity_matches\(/);

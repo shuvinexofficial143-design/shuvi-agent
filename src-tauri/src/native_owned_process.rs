@@ -60,7 +60,7 @@ pub(crate) struct ProcessObservation {
     pub app_progress_verified:bool,
     pub descendants_contained:bool,
 }
-pub(crate) struct OwnedProcess {
+pub(crate) struct OwnedProcess<'lease> {
     action_id:String,
     tool:String,
     child:OwnedChild,
@@ -68,6 +68,9 @@ pub(crate) struct OwnedProcess {
     budget:Duration,
     final_phase:Option<&'static str>,
     final_code:Option<i32>,
+    // Retain the actual Windows desktop lease until the owned worker tree
+    // has exited or been independently confirmed terminated.
+    lease:Option<NativeExecutionLease<'lease>>,
 }
 fn identity_matches(
     schedule:&Schedule,native:&crate::native_worker_job::NativeJob,
@@ -109,9 +112,9 @@ fn checked_program(program:&Path,cwd:&Path,args:&[OsString],budget:Duration)
 }
 // Internal seam: receives only authoritative Rust snapshots. Production
 // entrypoint below loads them from native disk state while caller holds lease.
-fn spawn_checked(schedule:&Schedule,native:&crate::native_worker_job::NativeJob,
+fn spawn_checked<'lease>(schedule:&Schedule,native:&crate::native_worker_job::NativeJob,
     action_id:&str,tool:&str,program:&Path,args:&[OsString],
-    cwd:&Path,budget:Duration)->Result<OwnedProcess,String>{
+    cwd:&Path,budget:Duration)->Result<OwnedProcess<'lease>,String>{
     identity_matches(schedule,native,action_id,tool)?;
     let executable=checked_program(program,cwd,args,budget)?;
     let mut slot=PROCESS_OWNER.lock().map_err(|_|"Native process owner lock poisoned.")?;
@@ -125,22 +128,25 @@ fn spawn_checked(schedule:&Schedule,native:&crate::native_worker_job::NativeJob,
     slot.recent.push(action_id.to_owned());
     if slot.recent.len()>MAX_RECENT_LAUNCHES{slot.recent.remove(0);}
     Ok(OwnedProcess{action_id:action_id.to_owned(),tool:tool.to_owned(),
-        child,start:Instant::now(),budget,final_phase:None,final_code:None})
+        child,start:Instant::now(),budget,final_phase:None,final_code:None,
+        lease:None})
 }
 /// No new Tauri command is exported. Only an existing authorized backend
 /// adapter with an acquired native OS lease can call this entrypoint.
 /// It must NOT pass executable paths/arguments originating from model output.
-pub(crate) fn spawn_for_active_action(
-    app:&AppHandle,_lease:&NativeExecutionLease<'_>,
+pub(crate) fn spawn_for_active_action<'lease>(
+    app:&AppHandle,lease:NativeExecutionLease<'lease>,
     action_id:&str,tool:&str,program:&Path,args:&[OsString],
     cwd:&Path,budget:Duration
-)->Result<OwnedProcess,String>{
+)->Result<OwnedProcess<'lease>,String>{
     let schedule=super::read(app)?.ok_or("Native schedule missing at worker spawn.")?;
     let native=crate::native_worker_job::read(app)?
         .ok_or("Durable native action journal missing at worker spawn.")?;
-    spawn_checked(&schedule,&native,action_id,tool,program,args,cwd,budget)
+    let mut owned=spawn_checked(&schedule,&native,action_id,tool,program,args,cwd,budget)?;
+    owned.lease=Some(lease);
+    Ok(owned)
 }
-impl OwnedProcess {
+impl OwnedProcess<'_> {
     pub(crate) fn pid(&self)->u32{self.child.id()}
     fn observation(&self,phase:&'static str)->ProcessObservation{
         ProcessObservation{action_id:self.action_id.clone(),tool:self.tool.clone(),
@@ -194,7 +200,7 @@ impl OwnedProcess {
         }
     }
 }
-impl Drop for OwnedProcess{
+impl Drop for OwnedProcess<'_>{
     fn drop(&mut self){
         // Fail closed if an OS stop/reap operation failed: the current
         // process must not hand its slot to a competing owned child.
@@ -206,6 +212,11 @@ impl Drop for OwnedProcess{
                     owner.active=None;
                 }
             }
+        }else if let Some(lease)=self.lease.take(){
+            // The worker outcome or termination is uncertain. Keep the OS
+            // desktop lane exclusively claimed for this process lifetime:
+            // neither TTL expiry nor a failed kill may unlock mutations.
+            std::mem::forget(lease);
         }
     }
 }
