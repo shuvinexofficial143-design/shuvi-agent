@@ -17072,7 +17072,7 @@ try {{
                 "trim"=>"premiere_trim_clip","move"=>"premiere_move_clip","clone"=>"premiere_clone_clip",
                 "delete_ripple"=>"premiere_delete_clip","scene_markers"=>"premiere_detect_scene_markers",_=>return Err("Acceptance tool not allowlisted.".into())
             };
-            let inner=PendingAction {created_at_ms:now_ms(),task_graph:None,task_step_id:None,premiere_expectation:Some(fixture.expected.clone()),tool:native_tool.into(),
+            let inner=PendingAction {created_at_ms:now_ms(),grant_signature:None,task_graph:None,task_step_id:None,premiere_expectation:Some(fixture.expected.clone()),tool:native_tool.into(),
                 detail:format!("Disposable acceptance {} action {}",record.step,action_id),action:native_action};
             let native=Box::pin(execute_tool(inner,state,app)).await;
             let native_result=match native {
