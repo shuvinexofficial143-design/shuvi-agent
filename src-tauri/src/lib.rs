@@ -16524,7 +16524,8 @@ try {{
                         let verified=entry.host_verified(&result)
                             &&premiere_batch_relink::same_source(entry,&proofs[index]);
                         results.push(json!({"itemId":entry.item_id,
-                            "success":verified,"uncertain":!verified,"result":result,
+                            "success":false,"native_relink_verified":verified,
+                            "uncertain":!verified,"result":result,
                             "source_sha256":proofs[index].sha256}));
                         if !verified{
                             failures+=1;
@@ -16571,6 +16572,9 @@ try {{
                     &&premiere_batch_relink::same_source(entry,&proofs[*index]);
                 if !verified{after_save_verified=false;}
                 results[*index]["post_save_item_verified"]=json!(verified);
+                let item_durable=verified&&saved&&identity_retained
+                    &&persisted.get("persistence_verified").and_then(Value::as_bool)==Some(true);
+                results[*index]["success"]=json!(item_durable);
                 results[*index]["saved_project_persistence_verified"]=json!(
                     persisted.get("persistence_verified").and_then(Value::as_bool)==Some(true));
                 if let Ok(value)=current {results[*index]["post_save_readback"]=value;}
