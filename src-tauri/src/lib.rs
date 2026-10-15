@@ -313,7 +313,7 @@ Available tools:
 - premiere_create_bin: {"name":"bin name"}
 - premiere_rename_project_item: {"item_id":"project item id","name":"new name"}
 - premiere_move_project_item: {"item_id":"project item id","target_bin_id":"destination bin id"}
-- premiere_relink_media: {"item_id":"clip project item id","new_path":"absolute replacement media path","override_compatibility":false}
+- premiere_relink_media: {"item_id":"exact ID from premiere_media_audit or premiere_inspect_media_interpretation","expected_previous_path":"exact previously inspected old absolute media path","new_path":"absolute replacement media path","override_compatibility":false} — High-risk approved, SHA256-bound, checkpointed, native readback + save-to-.prproj verification; never auto-retry.
 - premiere_inspect_media_interpretation: {"item_id":"exact clip project item id"}
 - premiere_prepare_media_item: {"request":{"item_id":"exact clip project item id","expected_media_path":"copy inspected path or null","override_frame_rate":23.976,"pixel_aspect":{"numerator":1,"denominator":1},"scale_to_frame_size":false,"input_lut_id":"exact native LUT ID or null"},"expected":{"project_guid":"...","sequence_guid":"optional active sequence","clips":[]}}
 - premiere_prepare_media_batch: {"batch":{"schema_version":1,"items":[{"item_id":"exact clip project item id","expected_media_path":"copy inspected path","override_frame_rate":25,"pixel_aspect":null,"scale_to_frame_size":true,"input_lut_id":null}]},"expected":{"project_guid":"...","sequence_guid":"optional","clips":[]}}
