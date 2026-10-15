@@ -32,6 +32,12 @@ test("four persistent-session actions are wired through ordinary audited ToolAct
 test("native registry checks real managed PID identity, resource limit and aborts on unknown",()=>{
   for(const text of [
     "register_managed_process(state,pid)",
+    "JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE",
+    "AssignProcessToJobObject",
+    "SetInformationJobObject",
+    "spawn_watchdog(app,id,pid,start_time,watchdog,invalidated)",
+    "invalidated.store(true,Ordering::Release)",
+    "session.invalidated.load(Ordering::Acquire)",
     "managed_process_identity_matches(state,session.child.id())",
     "current_runtime_status(state)",
     "terminate_managed_process_tree(self.child.id())",
@@ -53,6 +59,7 @@ test("session broker uses fixed authenticated Blender launch and no model Python
     "from shuvi_blender_agent.plans import Plan, PlanRunner",
     "MAX_REQUEST_BYTES = 65536",
     "MAX_COMMANDS = 48",
+    'arm != b\'{"version":1,"op":"arm"}\\n\'',
     "allow_destructive=False",
     "status\": \"outcome_unknown",
     "\"retry_automatically\": False",
@@ -81,5 +88,5 @@ test("persistent broker parses and fixture session protocol passes",{
     "-s","integrations/blender-worker","-p","test_shuvi_blender_session.py"],
     {cwd:root,timeout:30000,encoding:"utf8"});
   assert.equal(run.status,0,run.stderr);
-  assert.match(run.stderr,/Ran 10 tests/);
+  assert.match(run.stderr,/Ran 11 tests/);
 });
