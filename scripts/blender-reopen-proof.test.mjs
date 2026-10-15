@@ -22,6 +22,8 @@ test("saved Blender checkpoint requires independent read-only reopen evidence",(
   assert.match(check,/if reopened != original:/);
   assert.match(check,/call\("mesh.inspect", \{"object_id": object_id\}\)/);
   assert.match(check,/digest != geometry.get\("geometry_revision"\)/);
+  assert.match(check,/mesh_fingerprint/);
+  assert.match(rust,/proof.get\("mesh_fingerprint"\)/);
   assert.match(check,/scene changed during geometry proof/);
   assert.match(rust,/proof.get\("mesh_geometry_verified"\)/);
   assert.match(check,/require_saved_file and Path\(scene\["file"\]\)\.resolve/);
