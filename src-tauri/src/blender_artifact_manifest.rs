@@ -87,6 +87,7 @@ pub(crate) fn build(
             "scene_fingerprint":if saved {proof.unwrap()["fingerprint"].clone()}else{Value::Null},
             "object_count":if saved {proof.unwrap()["object_count"].clone()}else{Value::Null},
             "mesh_geometry_verified":saved,
+            "mesh_fingerprint":if saved {proof.unwrap()["mesh_fingerprint"].clone()}else{Value::Null},
             "mesh_count":if saved {proof.unwrap()["mesh_count"].clone()}else{Value::Null},
             "total_vertices":if saved {proof.unwrap()["total_vertices"].clone()}else{Value::Null},
             "total_faces":if saved {proof.unwrap()["total_faces"].clone()}else{Value::Null},
@@ -158,6 +159,7 @@ pub(crate) fn reverify(manifest:&Value,approved_root:&Path)->Result<Value,String
                 "fingerprint":evidence["scene_fingerprint"],
                 "object_count":evidence["object_count"],
                 "mesh_geometry_verified":evidence["mesh_geometry_verified"],
+                "mesh_fingerprint":evidence["mesh_fingerprint"],
                 "mesh_count":evidence["mesh_count"],
                 "total_vertices":evidence["total_vertices"],
                 "total_faces":evidence["total_faces"]});
@@ -221,6 +223,7 @@ mod tests {
             "artifact":{"path":path,"bytes":size,"sha256":digest,"format":"BLEND"},
             "checkpoint_reopen":{"verified":true,"read_only":true,"fingerprint":"a".repeat(64),
                 "object_count":2,"mesh_geometry_verified":true,
+                "mesh_fingerprint":"c".repeat(64),
                 "mesh_count":1,"total_vertices":3,"total_faces":1}
         })
     }
