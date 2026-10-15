@@ -1192,6 +1192,14 @@ async function continueAfterOutcome(): Promise<void> {
       await stopAgentForSafety("Native delivery verification failed. Audit or output files require inspection; checkpoint retained.");
       return;
     }
+    // Rust hashes native delivery files, but cannot certify the user's
+    // original creative objective from generic step success alone.
+    const goalAcceptance=assessMasterGoalDelivery(orchestration.owner_request,orchestration.task_graph);
+    if(goalAcceptance.requiresIndependentAcceptance && !goalAcceptance.verified){
+      await stopAgentForSafety("All native worker steps have successful Rust receipts, but ORIGINAL TASK UNVERIFIED: "+
+        goalAcceptance.reason+" The confirmed task delivery is retained for owner inspection.");
+      return;
+    }
     const completed=taskGraphProgress(orchestration.task_graph);
     messages.push({role:"assistant",content:
       "All "+completed.total+" audited native steps are now in a durable delivery receipt; "+
