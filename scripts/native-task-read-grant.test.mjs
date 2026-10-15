@@ -22,7 +22,7 @@ test("Rust never authorizes a write, UI click, powershell or untyped action unde
 test("Rust binds native action's low risk and exact arguments at staging",()=>{
   assert.match(rust,/grant_signature=if matches!\(&risk,RiskLevel::Low\)/);
   assert.match(rust,/native_task_grant::read_signature\(&tool,&proposal\.arguments\)/);
-  assert.match(rust,/grant_signature,\s*task_graph: proposal\.task_graph\.clone\(\)/);
+  assert.match(rust,/grant_signature,\s*premiere_expectation,\s*task_graph: proposal\.task_graph\.clone\(\)/);
   assert.match(rust,/let sig=action\.grant_signature\.as_deref\(\)/);
   assert.match(rust,/grants\.issue\(&task_id,sig,now_ms\(\)\)/);
 });
