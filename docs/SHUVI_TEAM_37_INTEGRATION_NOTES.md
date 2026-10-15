@@ -43,3 +43,22 @@ This is a working, narrowly scoped continuation path, **not** a generic task-DAG
 - Project creation, actual edit/export, real Windows tool execution, and independent final artifact acceptance have **not** been live tested by this team.
 
 No merge, deployment, installer, native action, production data, or cross-team branch mutation was performed.
+
+## Second milestone — original-goal-bound multi-worker DAG admission (15 October 2026)
+
+New files:
+- \`src/master-autonomy-graph.mjs\`: deterministic, non-executing preflight for **the existing** typed DAG. It pins \`task_graph.objective\` to the first 500 UTF-8 bytes of the original local user request, verifies every declared step maps to a supported native worker, enforces one-editor scope even when the later model proposal omits a graph, and makes pure editor-opening tasks read-only/launch-only. Unknown/unsupported/cross-editor steps fail before Rust \`prepare_tool\`.
+- \`scripts/master-autonomy-graph.test.mjs\`: local+remote original-brief wiring, checkpoint restoration, model graph forgery, app isolation, 8/24/48 task budgets, Hindi UTF-8 bounds, opening-only mutation escalation, false creative-goal completion refusal.
+
+Shared file edits (exact points):
+- \`src/agent-orchestrator.ts\`: \`AgentOrchestrationState.owner_request\` is set **once** at task creation, preserved in checkpoint restoration and shown as a bounded original owner brief at start of Master orchestration context. An invalid restored owner_request closes the task; legacy checkpoints remain explicitly unbound. No graph execution/recovery scheduling was duplicated.
+- \`src/types.ts\`: one optional checkpoint field, \`owner_request\`.
+- \`src/main.ts\`: two task-creation sites, local \`#chatForm\` and remote admission, now pin the request. \`stageProposal\` rejects a missing unbound brief, out-of-scope tool and forged/unsupported new graph before \`evaluateProposal\`, \`recordProposalStart\`, or native \`prepare_tool\`. Existing task-graph dependency checks, audit, scheduler admission, approvals, and single execution lease are preserved.
+- \`src/main.ts\` terminal \`continueAfterOutcome\`: **after** Rust finalization has checked exact audits/hashes, a Premiere/After Effects/Blender goal that requires project/save/edit/export verification no longer closes as a successful completed creative task solely from all-step audits. It stops safely, keeps the task checkpoint, and explicitly labels the full original goal UNVERIFIED. The Rust delivery receipt remains inspectable.
+
+**Intentional conservative behavior:** A creative DAG with only step success is not independent proof that the exact project exists, requested edit is visible or final export is complete. The final acceptance must remain UNVERIFIED until Team 39/40/41 supply typed and independently verifiable app-state/project/export acceptance. The task-scoped, revocable Rust grant is **not implemented**. Per-action approval still applies. This team does not claim true autonomous multi-app editing.
+
+**Compatibility note:** The full Desktop UI now requires a locally pinned original request for new native actions. Legacy recovery checkpoints that lack it are not silently upgraded into new execution authority. More than 2500 characters is not silently truncated into a new authorization; the owner must resubmit a bounded request if necessary. Native objective identity is truncated on a Unicode code point at **500 UTF-8 bytes**, satisfying the existing Rust scheduler bound.
+
+**Required future integration acceptance:** (1) Owner's Hindi Premiere project/save brief is retained as the task identity across crash/restart; (2) a graph with Blender execution under a Premiere-only brief is refused before native prepare; (3) two valid typed audited steps cannot make a project/export goal succeed without independently checked output; (4) Rust task-scoped grants are validated and revocable by Rust and do not bypass per-action approvals before that backend exists.
+
