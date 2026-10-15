@@ -77,3 +77,83 @@ and a `checkpoint_reopen` field; other workers must never invent these.
 - Node source-test integration runs the fixture suite and statically checks
   Rust gates/resource bundling. These tests are source/fixture checks, **not
   live Blender tests**.
+
+
+## Team-41 persistent authenticated session milestone (follow-up)
+
+A new normal native owner-approval surface has been integrated into
+\`src-tauri/src/lib.rs\`, not just sketched:
+
+- \`blender_session_start\`: exact absolute installed Python/Blender executables,
+  optional exact existing .blend, existing output directory and boolean render
+  *ceiling*. High-risk explicit approval. Rust creates/registers the Python
+  broker PID; the fixed broker launches Blender via the separate package's
+  authenticated loopback bridge, obtains scene.inspect session UUID, then
+  reports ready.
+- \`blender_session_inspect\`: fresh authenticated read-only scene revision,
+  same session UUID, managed root PID identity and Rust memory status.
+- \`blender_session_plan\`: distinct high-risk approved action each time, exact
+  UUID, <=6 typed PlanRunner operations, <=90 sec Python plan, <=120 sec
+  native response budget, <=64 KiB input. No arbitrary Python, no destructive
+  actions; action-level render flag must also fit the immutable launch ceiling.
+  Success requires actual verified .blend/reopen or PNG artifact, Rust independent
+  SHA-256 readback and canonical source action ID when present.
+- \`blender_session_close\`: retire the exact owned launcher process tree after
+  the closed/closing acknowledgment, not an unrelated Blender PID.
+
+The session lifetime is bounded to **15 minutes** from launch and at most **48
+commands**; all calls share the same one Python broker and authenticated Blender
+client until retired. A session does not restart automatically after bridge
+crash, bad response, expired session, failed plan, timeout or a process/resource
+identity violation. Because a partially applied plan can have side effects,
+the entire owned session is retired on such uncertainty before another plan
+can execute. This is *not* replay-based resume or unattended autonomy.
+
+The broker uses a private Rust-owned child stdin/stdout command pipe rather
+than opening another unauthenticated localhost server. It implements a
+bounded JSON-lines protocol with a UUID matched to the Blender inspection
+response. Exactly four allowlisted operations exist (ping, inspect, run_plan,
+close); unknown keys, script strings, arbitrary tools and implicit rendering
+are prohibited. Authenticated Blender transport/session is provided by the
+verified external source package and is **not** claimed as independently live
+tested here.
+
+### Precise shared-file overlap for later integration
+
+- \`src-tauri/src/lib.rs\` gained **one** module declaration, **four**
+  ToolAction enum variants, one \`ActionState\` session-registry field,
+  four parse/approval arms, four audited dispatch arms, allowlisted typed tool
+  names, and model-visible fixed tool guidance. Canonical action UUID and Rust
+  native execution lease remain untouched. This overlaps other teams only in
+  common type/parse/dispatch declarations; review these exact insertions during
+  integration.
+- \`src-tauri/tauri.conf.json\` adds
+  \`blender-worker/shuvi_blender_session.py\` as a bundled fixed resource.
+- \`src-tauri/src/blender_plan_worker.rs\` exposes only the pre-existing native
+  artifact gate to the new typed worker (\`pub(crate)\`), preserving its behavior.
+- New isolated Rust/Python modules:
+  \`src-tauri/src/blender_session_worker.rs\` and
+  \`integrations/blender-worker/shuvi_blender_session.py\`.
+- Regression files: \`integrations/blender-worker/test_shuvi_blender_session.py\`
+  and \`scripts/native-blender-session.test.mjs\`.
+
+### Verification boundaries and known gaps
+
+Fixture-based Python tests simulate a bridge, Blender client and plans only.
+They can prove framing, reusable in-process controller identity, explicit render
+policy, fail-closed behavior and no automatic replay. They cannot prove
+actual GUI or headless Blender process reuse, 3D object outcomes, artwork quality
+or artifact import into Premiere.
+
+The 4 GB Rust memory check currently operates while a broker command is
+pending, not as a guaranteed continuously running idle-session watchdog.
+The 15-minute age limit is checked on commands, not via a true independent
+idle reaper. On hard OS kill of Python the Blender grandchild could outlive the
+broker if the OS does not terminate the complete owned tree; native Windows
+job-object anchoring and disposable live host acceptance are still needed.
+Do not call the current session subsystem **production hardened** or
+Windows Live Verified.
+
+No private Avantika Verse assets, customer data, paid APIs or unrelated
+repositories are modified or used for tests. Main and other team branches
+remain unchanged; PR #19 stays **DRAFT**, no integration or merge.
