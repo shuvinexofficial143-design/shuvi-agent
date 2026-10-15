@@ -961,7 +961,7 @@ export function orchestrationContext(state: AgentOrchestrationState): string {
   const parts = [
     "Agent orchestration state:",
     `- owner original brief (immutable): ${state.owner_request?.slice(0,450) ?? "legacy/unbound; inspect task before new native work"}`,
-    `- owner objective: ${state.objective ?? state.task_graph?.objective ?? "unresolved"}`
+    `- owner objective: ${state.objective ?? state.task_graph?.objective ?? "unresolved"}`,
     ...(state.task_graph ? [
       `- graph revision ${state.task_graph.revision}; verified completed IDs: ${verifiedProgress.steps.filter(s=>s.evidence_verified).map(s=>s.step_id).join(",") || "none"}`,
       `- native worker lease: ${supervisor.state}`+
