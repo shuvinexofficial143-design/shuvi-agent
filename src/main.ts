@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import "./styles.css";
 import {assessMasterSchedulerAdmission} from "./native-scheduler-admission.mjs";
+import {validateMasterPlan,validateMasterAction,assessMasterGoalDelivery} from "./master-autonomy-graph.mjs";
 import {pinNativeWorkerModels,restorePinnedWorkerModels,chooseSpecialistTurn,specialistProposalMatches,delegatedWorkerContext} from "./native-worker-model-routing.mjs";
 import {decideNativeContinuation} from "./native-continuation-driver.mjs";
 import {nativeTaskDeliveryClaims} from "./native-delivery-claims.mjs";
@@ -1211,6 +1212,26 @@ async function continueAfterOutcome(): Promise<void> {
 }
 
 async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Promise<void> {
+  // An AI response is not authority to redefine the original owner brief.
+  // Check the durable task identity and every proposed graph/step BEFORE
+  // touching Rust prepare_tool, approval UI or provider-driven continuation.
+  const ownerBrief=orchestration.owner_request;
+  if(!ownerBrief){
+    await stopAgentForSafety("Original owner brief is absent/oversized in the task checkpoint. No native action staged; start a new bounded task.");
+    return;
+  }
+  const actionScope=validateMasterAction(ownerBrief,proposal);
+  if(!actionScope.ok){
+    await stopAgentForSafety("Master tool scope refused: "+actionScope.reason+" No native action staged.");
+    return;
+  }
+  if(proposal.task_graph!=null){
+    const planScope=validateMasterPlan(ownerBrief,proposal.task_graph);
+    if(!planScope.ok){
+      await stopAgentForSafety("Master DAG scope refused: "+planScope.reason+" No native action staged.");
+      return;
+    }
+  }
   const decision = evaluateProposal(orchestration, proposal);
   if (!decision.allowed) {
     orchestration = recordProposalBlock(orchestration, proposal, decision);
@@ -2326,7 +2347,7 @@ el<HTMLFormElement>("#chatForm").addEventListener("submit", async (event) => {
   cancelRequested = false;
   rotatePermissionScope();
   const selectedActions = Number(el<HTMLSelectElement>("#taskActionBudget").value);
-  orchestration = createAgentOrchestrationState(allowedTaskBudget(selectedActions) ? selectedActions : 8);
+  orchestration = createAgentOrchestrationState(allowedTaskBudget(selectedActions) ? selectedActions : 8, Date.now(), content);
   renderOrchestrationStatus();
   messages.push({ role: "user", content });
   prompt.value = "";
@@ -2660,7 +2681,7 @@ async function tickRemoteAgent():Promise<void>{
     }
     cancelRequested=false;
     rotatePermissionScope();
-    orchestration=createAgentOrchestrationState();
+    orchestration=createAgentOrchestrationState(8,Date.now(),m.text);
     renderOrchestrationStatus();
     messages.push({role:"user",content:m.text});
     beginTaskRoute(m.text);
