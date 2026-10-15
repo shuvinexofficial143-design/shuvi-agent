@@ -47,7 +47,7 @@ fn valid(value:&NativeRecoveryRecord)->Result<(),String>{
     if value.staged_actions>value.max_actions||value.model_requests>value.max_actions+1{
         return Err("Native recovery budget counters exceed the owner limits.".into());
     }
-    if !matches!(value.phase.as_str(),"model_reserved"|"awaiting_approval"|"executing"|
+    if !matches!(value.phase.as_str(),"model_reserved"|"readback_reserved"|"awaiting_approval"|"executing"|
         "audit_verified"|"paused"|"outcome_unknown"){
         return Err("Unsupported native recovery transition.".into());
     }
@@ -62,7 +62,7 @@ fn valid(value:&NativeRecoveryRecord)->Result<(),String>{
             return Err("Invalid native recovery action identifier.".into());
         }
     }
-    if matches!(value.phase.as_str(),"awaiting_approval"|"executing"|"audit_verified")&&
+    if matches!(value.phase.as_str(),"readback_reserved"|"awaiting_approval"|"executing"|"audit_verified")&&
        (value.action_id.is_none()||value.staged_actions==0){
         return Err("Native recovery action phase has no staged identity.".into());
     }
@@ -112,6 +112,17 @@ fn validate_advance(old:Option<&NativeRecoveryRecord>,next:&NativeRecoveryRecord
                !matches!(previous.phase.as_str(),"paused"|"audit_verified"){
                 return Err("Unresolved native action cannot reserve a new paid request.".into());
             }
+            // A deterministic, read-only next step cannot skip the last
+            // Rust-audited result or silently increase provider spending.
+            // It preserves the OLD audited UUID until its new prepared
+            // action has a different, separately owner-approved identity.
+            if next.phase=="readback_reserved"&&
+               (previous.phase!="audit_verified"||
+                next.action_id!=previous.action_id||
+                next.staged_actions!=previous.staged_actions||
+                next.model_requests!=previous.model_requests){
+                return Err("Model-free readback must follow an exact audited action without new paid authorization.".into());
+            }
             // A new revision alone cannot authorize a second execution of
             // an old approved action or forge an audit success.
             if next.phase=="executing"&&
@@ -125,9 +136,10 @@ fn validate_advance(old:Option<&NativeRecoveryRecord>,next:&NativeRecoveryRecord
                 return Err("Native audit verification must follow that action's execution.".into());
             }
             if next.phase=="awaiting_approval"&&
-               (!matches!(previous.phase.as_str(),"model_reserved"|"outcome_unknown")||
+               (!matches!(previous.phase.as_str(),"model_reserved"|"outcome_unknown"|"readback_reserved")||
                 next.staged_actions!=previous.staged_actions.saturating_add(1)||
-                previous.action_id==next.action_id){
+                previous.action_id==next.action_id||
+                (previous.phase=="readback_reserved"&&next.model_requests!=previous.model_requests)){
                 return Err("Native approval must stage one NEW bounded action.".into());
             }
             if next.phase=="model_reserved"&&next.model_requests!=previous.model_requests.saturating_add(1){
