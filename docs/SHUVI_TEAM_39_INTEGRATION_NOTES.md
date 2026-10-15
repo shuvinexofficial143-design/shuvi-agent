@@ -143,6 +143,44 @@ coordinate reliability and postcondition-specific UI effect verification
 require owner-authorized Windows host acceptance. Source tests cannot
 be presented as this live verification.
 
+## Milestone 4 — Native Rust Win32/UIA execution-boundary checks
+
+- `src-tauri/src/native_uia_window_guard.rs` implements a fail-closed,
+  same-PowerShell-process validation of the selected top-level HWND and native
+  PID, window visibility/minimized status, exact live UIA root HWND/PID, and
+  the selected control's own PID, enabled and offscreen state. Explicitly
+  selected app title is mandatory for native UIA mutations; desktop-root
+  fallback is no longer accepted for these seven actions.
+- Shared Rust wiring in `src-tauri/src/lib.rs` integrates the helper with
+  **all seven UIA mutation arms**: click, set value, focus, scroll, toggle,
+  expand/collapse, and keyboard fallback. Every pattern call has a native
+  identity check immediately before mutation.
+- Keyboard fallback performs a second Win32 root/element check **after
+  SetFocus and before SendWait**, including foreground HWND match. This
+  prevents keystrokes being sent to the Shuvi approval window when Windows
+  refuses application focus.
+- `ui_discover` now returns actual `IsOffscreen` from the native UIA
+  provider, so the earlier WebView control gate can reject hidden controls
+  using observed data rather than guessing.
+- Rust unit tests exercise invalid target arguments and the injected Win32
+  safety script. `scripts/shuvi39-rust-native-uia-identity.test.mjs`
+  verifies seven real Rust branches receive execution-time checks.
+
+**Important distinction:** This is a native Win32/UIA identity cross-check
+at action execution, but it is **not** a fully atomic Rust-level comparison
+against the HWND/PID recorded in an earlier `ui_windows` receipt.
+The earlier snapshot is checked in the WebView before prepare and execute,
+while native selection still resolves the model's approved title. A trusted
+native `expected_hwnd/expected_pid` binding carried through the
+prepared action and verified against OS state without TOCTOU would
+strengthen this further. It must not be taken directly from untrusted model
+proposals or bypass existing owner approval and GUI lease.
+
+**Source CI is not Windows Live acceptance.** Only a separately
+authorized, disposable Windows test fixture can establish whether these
+PowerShell and Win32 APIs behave correctly with real editor UIA providers,
+child/modal panels and multi-monitor setups.
+
 ## Windows acceptance — explicitly NOT YET run
 
 Run only with separate owner consent on a disposable desktop/test fixture.
