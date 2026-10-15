@@ -82,3 +82,11 @@ test("New native IPC commands are registered and retain existing explicit approv
   assert.match(rust,/execute_action\(action_id, None, None, state, app\)\.await/);
   assert.match(ui,/const approve = chatPermission\.querySelector<HTMLButtonElement>\("#chatApprove"\)/);
 });
+
+test("Owner can revoke read reuse explicitly without aborting a running task",()=>{
+  assert.match(ui,/id="revokeTaskReadGrants" type="button" disabled/);
+  assert.match(ui,/el<HTMLButtonElement>\("#revokeTaskReadGrants"\)\.addEventListener\("click",async/);
+  assert.match(ui,/const confirmed=await revokeNativeTaskReads\(taskId\)/);
+  assert.match(ui,/button\.textContent=confirmed\?"Read grants revoked":"Read reuse disabled; Rust revoke unconfirmed"/);
+  assert.match(ui,/el<HTMLButtonElement>\("#revokeTaskReadGrants"\)\.disabled=false/);
+});
