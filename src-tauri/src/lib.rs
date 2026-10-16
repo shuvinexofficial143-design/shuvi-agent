@@ -9,6 +9,7 @@ mod blender_session_worker;
 mod blender_artifact_manifest;
 mod blender_input_checkpoint;
 mod blender_acceptance_chain;
+mod blender_action_audit;
 mod atomic_file;
 mod execution_lease;
 mod native_worker_status;
@@ -8352,6 +8353,8 @@ fn successful_execution_audit_detail(tool:&str,base:&str,result:&ActionResult)->
         };
     };
     match tool{
+        "blender_session_plan"|"blender_run_plan"=>
+            blender_action_audit::append(base,&value),
         "motion_graphics_run_remotion"=>{
             let output_sha=value.pointer("/receipt_evidence/final_render/sha256")
                 .and_then(Value::as_str)
@@ -10717,7 +10720,28 @@ Write-Output 'SHUVI_WHATSAPP_DESKTOP_LAUNCH_REQUESTED'
             Ok(ActionResult{success:true,tool,stdout:response.to_string(),stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::BlenderReviewAcceptanceChain {approved_output_dir,receipts} => {
-            let result=blender_acceptance_chain::review(&receipts,Path::new(&approved_output_dir))?;
+            let mut result=blender_acceptance_chain::review(&receipts,Path::new(&approved_output_dir))?;
+            let stages=receipts.as_array().ok_or("Blender acceptance requires exactly three receipts.")?;
+            for receipt in stages{
+                let id=receipt.get("source_action_id").and_then(Value::as_str)
+                    .ok_or("A Blender plan result is missing its original action UUID.")?;
+                let evidence=read_action_audit_receipt(app,id)?
+                    .ok_or("Blender acceptance lacks persisted approval/execution evidence.")?;
+                if evidence.event!="executed" || !evidence.success
+                    || evidence.tool!="blender_session_plan"
+                    || evidence.action_id.as_deref()!=Some(id){
+                    return Err("Blender acceptance stage was not a successful approved persistent-plan action.".into());
+                }
+                blender_action_audit::verify_detail(&evidence.detail,receipt)?;
+            }
+            // This upgrades only the LOCAL native audit corroboration claim.
+            // App-data JSONL logs are not cryptographically signed, nor is this
+            // a test that an actual Blender process ran in this environment.
+            result["historical_owner_approval_reauthenticated"]=json!(true);
+            result["render_source_stage2_binding_proven"]=json!(true);
+            result["local_native_audit_correlated"]=json!(true);
+            result["local_audit_cryptographically_tamper_proof"]=json!(false);
+            result["live_blender_runtime_verified_by_this_review"]=json!(false);
             Ok(ActionResult{success:true,tool,stdout:result.to_string(),stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::BlenderVerifyArtifactManifest {approved_output_dir,manifest} => {
