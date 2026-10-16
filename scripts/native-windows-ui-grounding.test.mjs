@@ -85,7 +85,13 @@ test("universal UI discovery scans past early text-only nodes and prioritizes ac
   assert.match(discovery,/\$interactive\.Add\(\$item\)/);
   assert.match(discovery,/Select-Object -First 110/);
   assert.doesNotMatch(discovery,/if \(\$items.Count -ge 120\)/);
-  assert.match(src,/NativeWindowHandle = \[int\]\$e.Current.NativeWindowHandle/);
+  // Native inventory now validates OS HWND/PID twice and preserves i64 identity.
+  const list=src.slice(src.indexOf("ToolAction::UiWindows => {"),
+    src.indexOf("ToolAction::UiDiscover { window } => {"));
+  assert.match(list,/GetWindowThreadProcessId/);
+  assert.match(list,/\$nativePidAfter -ne \[uint32\]\$pidValue/);
+  assert.match(list,/NativeWindowHandle = \[int64\]\$handle/);
+  assert.match(list,/ProcessStartTicks = \$birthTicks.ToString/);
 });
 
 test("Vision targets the observed application rather than Shuvi when permission UI is foreground",()=>{
