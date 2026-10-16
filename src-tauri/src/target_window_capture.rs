@@ -61,6 +61,29 @@ if ($target -eq [IntPtr]::Zero -or -not [ShuviTargetCaptureWin32]::IsWindow($tar
 if ($uiPid -le 0 -or $nativePid -ne [uint32]$uiPid) {
     throw 'Window identity changed before capture. Re-run ui_windows.'
 }
+# OS process birth-time binds the exact app instance, not just numeric PID
+# and HWND values, which Windows may recycle after an application restart.
+try {
+    $shuviCaptureProcess = Get-Process -Id $uiPid -ErrorAction Stop
+    [int64]$shuviCaptureStartTicks = $shuviCaptureProcess.StartTime.ToUniversalTime().Ticks
+} catch {
+    throw 'Cannot establish original app process start time; no screenshot sent.'
+}
+if ($shuviCaptureStartTicks -le 0) {
+    throw 'Invalid app process generation; no screenshot sent.'
+}
+function Assert-ShuviCaptureProcessGeneration {
+    try {
+        $process = Get-Process -Id $uiPid -ErrorAction Stop
+        [int64]$liveStartTicks = $process.StartTime.ToUniversalTime().Ticks
+    } catch {
+        throw 'Captured application process exited; no screenshot sent.'
+    }
+    if ($liveStartTicks -ne $shuviCaptureStartTicks) {
+        throw 'Application process restarted during window capture. No screenshot sent.'
+    }
+}
+Assert-ShuviCaptureProcessGeneration
 # No implicit restore: unminimizing an owner's app is an independent mutation.
 if ([ShuviTargetCaptureWin32]::IsIconic($target) -or
     -not [ShuviTargetCaptureWin32]::IsWindowVisible($target)) {
@@ -98,6 +121,7 @@ try {
         [int]$root.Current.ProcessId -ne $uiPid) {
         throw 'Target identity changed after focus. No screenshot sent.'
     }
+    Assert-ShuviCaptureProcessGeneration
     $rect = New-Object ShuviTargetCaptureWin32+RECT
     if (-not [ShuviTargetCaptureWin32]::GetWindowRect($target, [ref]$rect)) {
         throw 'Could not read target window rectangle.'
@@ -150,6 +174,7 @@ try {
             $afterRect.Right -ne $rect.Right -or $afterRect.Bottom -ne $rect.Bottom) {
             throw 'Target moved or changed identity during capture. No screenshot sent.'
         }
+        Assert-ShuviCaptureProcessGeneration
         $bitmap.Save('__SHUVI_SCREENSHOT_PATH__', [System.Drawing.Imaging.ImageFormat]::Png)
     } finally {
         $graphics.Dispose()
