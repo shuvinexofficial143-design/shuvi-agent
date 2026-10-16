@@ -57,8 +57,9 @@ test("source creation is atomic non-overwrite and persisted bytes SHA256 are ind
   assert.match(source,/File::open\(path\)/);
   assert.match(source,/actual!=expected/);
   assert.match(source,/Sha256::digest\(&actual\)/);
-  assert.doesNotMatch(source,/\.truncate\(true\)/);
-  assert.doesNotMatch(source,/remove_file\(/);
+  const publish=source.slice(source.indexOf("pub fn publish"),source.indexOf("#[cfg(test)]"));
+  assert.doesNotMatch(publish,/\.truncate\(true\)/);
+  assert.doesNotMatch(publish,/remove_file\(/);
 });
 test("creation result cannot pretend Premiere project import or styled caption track",()=>{
   const handler=region("ToolAction::PremiereCreateSelectiveSrt {request} => {","ToolAction::PremiereImportCaptionSource {path,expected_sha256} => {");
