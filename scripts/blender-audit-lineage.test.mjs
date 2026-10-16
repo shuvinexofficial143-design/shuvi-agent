@@ -20,6 +20,9 @@ test("approved Blender action stores exact source/output lineage in a durable na
     "blender_input_sha256",
     "blender_input_path_sha256",
     "blender_input_bytes",
+    "blender_mesh_fingerprint",
+    "blender_scene_fingerprint",
+    "mesh_geometry_verified",
     "source_action_id",
     "source_session_id"
   ]) assert.ok(audit.includes(needle),needle);
