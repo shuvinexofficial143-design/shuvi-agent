@@ -10,6 +10,7 @@ mod blender_artifact_manifest;
 mod blender_input_checkpoint;
 mod blender_acceptance_chain;
 mod blender_action_audit;
+mod blender_plan_lineage;
 mod atomic_file;
 mod execution_lease;
 mod native_worker_status;
