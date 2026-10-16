@@ -16816,6 +16816,14 @@ try {{
                 ||!timeline["audioTracks"].as_array().is_some_and(|rows|rows.iter().any(|t|t["index"]==batch.audio_track)){
                 return Err("Caption MOGRT insertion needs a complete active timeline and existing tracks.".into());
             }
+            // The native host also checks each placement immediately before
+            // insertion. This independent complete snapshot prevents known
+            // video/audio occupancy collisions before ANY batch checkpoint.
+            let occupancy=premiere_caption_graphics::preflight_timeline(
+                &batch,&timeline,&expected.project_guid,
+                expected.project_path.as_deref(),
+                expected.sequence_guid.as_deref().ok_or("Missing expected caption sequence GUID.")?
+            )?;
             let expected_batch=serde_json::to_value(&batch).map_err(|e|e.to_string())?;
             let result=premiere_graphics::run_batch(&batch,&saved,&state.graphics_cancelled,|step|{
                 let client=&premiere_bridge;
@@ -16843,6 +16851,7 @@ try {{
             Ok(ActionResult{success:complete,tool,
                 stdout:json!({"source_srt_sha256":generated["source_srt_sha256"],
                     "mapped_caption_role":"caption_text",
+                    "preflight_occupancy":occupancy,
                     "batch":result,
                     "native_caption_graphics_complete_receipts":complete,
                     "premiere_project_save_verified":false,
