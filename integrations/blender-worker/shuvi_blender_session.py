@@ -28,12 +28,12 @@ def protocol(reply: dict) -> None:
 
 
 def validate(message: object, session_id: str) -> tuple[str, object]:
-    if not isinstance(message, dict) or set(message) - {"version", "session_id", "op", "plan", "allow_render", "expected_scene_revision"}:
+    if not isinstance(message, dict) or set(message) - {"version", "session_id", "op", "plan", "allow_render", "expected_scene_revision", "query"}:
         raise ValueError("Invalid broker command")
     if message.get("version") != 1 or message.get("session_id") != session_id:
         raise ValueError("Broker session identity mismatch")
     operation = message.get("op")
-    if operation not in ("ping", "inspect", "run_plan", "close"):
+    if operation not in ("ping", "inspect", "objects", "run_plan", "close"):
         raise ValueError("Broker operation is not supported")
     if operation == "run_plan":
         if set(message) != {"version", "session_id", "op", "plan", "allow_render", "expected_scene_revision"}:
@@ -45,6 +45,26 @@ def validate(message: object, session_id: str) -> tuple[str, object]:
                 or any(char not in "0123456789abcdef" for char in revision)):
             raise ValueError("An exact fresh lowercase scene revision is required")
         return operation, message["plan"], message["allow_render"], revision
+    if operation == "objects":
+        if set(message) != {"version", "session_id", "op", "query", "expected_scene_revision"}:
+            raise ValueError("Read-only object page needs exact query and revision")
+        revision = message["expected_scene_revision"]
+        if (not isinstance(revision, str) or len(revision) != 64
+                or any(c not in "0123456789abcdef" for c in revision)):
+            raise ValueError("Read-only object query requires a fresh lowercase scene revision")
+        query = message["query"]
+        if (not isinstance(query, dict)
+                or set(query) != {"offset", "limit", "name_prefix", "object_type"}
+                or type(query["offset"]) is not int or not 0 <= query["offset"] <= 1000
+                or type(query["limit"]) is not int or not 1 <= query["limit"] <= 5
+                or not isinstance(query["name_prefix"], str)
+                or len(query["name_prefix"]) > 80
+                or "\x00" in query["name_prefix"]
+                or (query["object_type"] is not None
+                    and (not isinstance(query["object_type"], str)
+                         or not 1 <= len(query["object_type"]) <= 32))):
+            raise ValueError("Read-only Blender object query exceeds allowlisted bounds")
+        return operation, query, False, revision
     if set(message) != {"version", "session_id", "op"}:
         raise ValueError("Unexpected broker payload")
     return operation, None, False, None
@@ -230,6 +250,49 @@ def serve(argv: list[str] | None = None) -> int:
                     result = checked_plan(controller, payload, args.output_dir,
                                           args.blender_exe, request_allow_render, expected_revision)
                     protocol({"version": 1, "session_id": session_id, **result})
+                    continue
+                if operation == "objects":
+                    from shuvi_blender_agent.contracts import Request
+                    result = controller.execute(Request("objects.list", payload={
+                        "offset": payload["offset"], "limit": payload["limit"],
+                        "name_prefix": payload["name_prefix"],
+                        "object_type": payload["object_type"],
+                        "expected_revision": expected_revision,
+                    }, timeout_ms=10000))
+                    if result.status != Status.SUCCEEDED or not isinstance(result.data, dict):
+                        raise ValueError("Authenticated Blender object page failed")
+                    page = result.data
+                    if (page.get("session_id") != session_id
+                            or page.get("revision") != expected_revision
+                            or page.get("offset") != payload["offset"]
+                            or type(page.get("total")) is not int
+                            or not 0 <= page["total"] <= 10000
+                            or not isinstance(page.get("items"), list)
+                            or len(page["items"]) > payload["limit"]):
+                        raise ValueError("Blender object page does not match fresh scene identity")
+                    objects = []
+                    for item in page["items"]:
+                        if not isinstance(item, dict):
+                            raise ValueError("Invalid Blender object page item")
+                        obj_id, name, kind, rev = (
+                            item.get("object_id"), item.get("name"),
+                            item.get("type"), item.get("revision"))
+                        if (not isinstance(obj_id, str)
+                                or not obj_id.startswith(session_id + ":")
+                                or not isinstance(name, str) or len(name) > 256
+                                or not isinstance(kind, str) or len(kind) > 32
+                                or not isinstance(rev, str) or len(rev) != 64):
+                            raise ValueError("Blender object page item identity is invalid")
+                        objects.append({
+                            "object_id": obj_id, "name": name,
+                            "type": kind, "revision": rev,
+                            "details_truncated": bool(item.get("details_truncated")),
+                        })
+                    protocol({"version": 1, "status": "alive", "session_id": session_id,
+                              "operation": "objects", "scene_revision": expected_revision,
+                              "total": page["total"], "offset": payload["offset"],
+                              "next_offset": page.get("next_offset"),
+                              "objects": objects, "read_only": True})
                     continue
                 result = controller.execute(Request(
                     "system.ping" if operation == "ping" else "scene.inspect",
