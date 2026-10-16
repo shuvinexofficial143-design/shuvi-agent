@@ -373,6 +373,25 @@ UIA providers can legitimately lag state changes or rebuild RuntimeIds,
 and modal overlays may be exposed imperfectly. Fail closed, inspect and
 ask for separate approval; do not retry a potentially mutating action.
 
+## Milestone 9.1 — Audit-confirmed UIA expiry recovery, never replayed
+
+- Native UIA approvals use a 60-second Rust-only prepared identity expiry.
+  Rust removes the PendingAction and emits a specific denied audit BEFORE
+  any tool execution, then returns its explicit expiry error.
+- The WebView now distinguishes this narrow, audit-confirmed no-execution
+  denial from ordinary UI mutation errors. A string or model assertion
+  alone is not trusted. It must retrieve an exact native audit_log receipt
+  with original action UUID, tool kind, event=denied and success=false.
+  Any conflicting executed/started/failed event for the same UUID forces
+  the original conservative unknown-outcome handling.
+- With a corroborated denial, a paused recovery journal is written and
+  owner feedback requests fresh ui_windows/ui_discover and a NEW approval.
+  If the recovery journal cannot be saved, the task is quarantined.
+  No automatic mutation replay, provider retries or owner-approval bypass.
+- New pure guard + tests cover denials, contradictions, cross-tool spoofing,
+  missing/malformed/truncated audits, exact UUID, seven allowed mutation
+  tool kinds and wiring ahead of the ordinary unknown outcome path.
+
 ## Windows acceptance — explicitly NOT YET run
 
 Run only with separate owner consent on a disposable desktop/test fixture.
