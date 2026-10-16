@@ -319,6 +319,60 @@ without owner authorization. No merge or live desktop action was performed.
   and team39's native UIA module/tests. No merge, Windows live action,
   direct approval bypass or new automated retry was introduced.
 
+## Milestone 9 — Bounded action freshness, real UIA postconditions and diagnostic readiness
+
+- **Native consent freshness:** a Rust-prepared UIA control identity now expires
+  after 60 seconds, even if the normal 10-minute pending-action TTL has not
+  elapsed. The original Rust action ID is denied and audited on expiry.
+  A new OS scan and a fresh owner approval are required; no automatic replay.
+  Unrelated native tools retain their original 10-minute TTL.
+- **Exact selector input:** all UIA name/AutomationId selectors are checked
+  before native preparation for empty, padded, control-formatted and >180
+  character names. These are model-provided selectors, NOT OS-derived
+  authorization data.
+- **Modal owner-safety:** both the prepare probe and the execution-time
+  Rust/Win32 guard reject UIA owner roots whose IsEnabled is false or
+  whose IsOffscreen is true, including many blocked owner windows behind
+  modal dialogs. The guard never focuses or restores a hidden window.
+- **Value:** SetValue executes at most once; bounded state-only reads compare
+  ValuePattern.Current.Value against the approved exact Unicode value.
+  Missing readback is an *uncertain side effect*, never an automatic retry.
+- **Toggle and Expand/Collapse:** each mutation runs at most once; the
+  same exact native RuntimeId is revalidated while polling the observed
+  state, with up to five reads and bounded 60ms spacing.
+- **Scroll:** rejects NoScroll/unavailable state and scroll attempts already
+  at the requested boundary. A single ScrollPattern.Scroll call must show
+  actual movement of VerticalScrollPercent in the requested direction.
+- **Focus:** waits for HasKeyboardFocus on the same exact native control
+  before claiming verified focus.
+- **SelectionItem click:** Select() is not repeated; the selected state is
+  read back and checked on the original approved RuntimeId.
+- **InvokePattern click and SendKeys:** delivery/audit is not an independently
+  proven user objective. The existing separately approved UIA readback and
+  project postconditions remain mandatory.
+- **Read-only acceptance diagnostic:** new explicit-operator script
+  scripts/shuvi39-windows-uia-readonly-diagnostics.ps1 validates one exact
+  named top-level Windows UIA target, HWND/PID, minimized/visible state,
+  native monitor and DPI, modal state and bounded accessibility controls.
+  It cannot click/type/focus/launch apps. Private titles and element labels
+  are SHA-256 fingerprinted by default; -IncludeNames must be opted into
+  explicitly. This diagnostic was not executed on a Windows desktop.
+- **Regression coverage:** expanded existing native-identity and
+  state-readback tests, Rust TTL/modal unit tests and new read-only
+  diagnostic tests. Windows CI source success is not a proof of real
+  editor accessibility-provider behavior.
+
+### Shared integration / remaining limits
+
+Only team39's Windows Vision branch was modified. Shared Rust
+src-tauri/src/lib.rs overlap includes the prepared-action expiry check,
+selector validation and focus/scroll/value/toggle/expand/selection executors.
+All native consent, audit, original UUID, journal and worker leases remain
+in their original places. No merge/deploy/live Windows action performed.
+UIA providers can legitimately lag state changes or rebuild RuntimeIds,
+and modal overlays may be exposed imperfectly. Fail closed, inspect and
+ask for separate approval; do not retry a potentially mutating action.
+
 ## Windows acceptance — explicitly NOT YET run
 
 Run only with separate owner consent on a disposable desktop/test fixture.
