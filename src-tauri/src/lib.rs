@@ -17671,8 +17671,14 @@ try {{
         }
         ToolAction::PremiereExportStatus {job_id} => {
             let path=premiere_export_jobs_path(app)?;
-            let identity=if state.premiere_bridge.status()?.paired {
+            let paired=state.premiere_bridge.status()?.paired;
+            let identity=if paired {
                 premiere_bridge.request("inspect_context",json!({}),Duration::from_secs(8)).await.ok()
+            }else{None};
+            // Observe the existing host queue/event ring without writing to it.
+            // Request the complete bounded ring before taking the Rust jobs mutex.
+            let native_events=if paired {
+                premiere_bridge.request("media_encoder_events",json!({"limit":100}),Duration::from_secs(8)).await.ok()
             }else{None};
             let _io=state.premiere_export_jobs_io.lock().map_err(|_|"Export job store unavailable.")?;
             let mut jobs=premiere_export_jobs::load(&path)?;
@@ -17681,8 +17687,11 @@ try {{
                 context.get("projectGuid").and_then(Value::as_str)!=Some(job.project_guid.as_str())
                 || context.pointer("/activeSequence/guid").and_then(Value::as_str)!=Some(job.sequence_guid.as_str()));
             let mut result=job.observe_once()?;
+            let native_observation=job.native_event_observation(native_events.as_ref());
             let media_validation_challenge=job.media_validation_challenge().ok();
-            if let Some(map)=result.as_object_mut(){map.insert("identity_checked".into(),json!(identity.is_some()));
+            if let Some(map)=result.as_object_mut(){
+                map.insert("native_encoder_event_observation".into(),native_observation);
+                map.insert("identity_checked".into(),json!(identity.is_some()));
                 map.insert("stale_project_or_sequence".into(),json!(stale));
                 map.insert("media_validation_challenge".into(),json!(media_validation_challenge));}
             premiere_export_jobs::save(&path,&jobs)?;
@@ -18057,6 +18066,15 @@ try {{
                             if queue_to_ame{"queued"}else{"accepted"}
                         }else{"execution_status_unknown"}.into();
                     let accepted=matches!(record.bridge_state.as_str(),"accepted"|"queued");
+                    // Save the actual bridge command identity only for the exact
+                    // accepted output. This is NOT an Adobe encoder job ID.
+                    if accepted && value.get("output").and_then(Value::as_str)==Some(output.as_str()){
+                        if let Some(id)=value.get("bridgeRequestId").and_then(Value::as_str)
+                            .filter(|id|!id.is_empty()&&id.len()<=160
+                                &&id.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'||b==b'_')) {
+                            record.bridge_request_id=Some(id.to_owned());
+                        }
+                    }
                     premiere_export_jobs::save(&jobs_path,&jobs)?;
                     Ok(ActionResult {success:accepted,tool,
                         stdout:serde_json::to_string_pretty(&json!({"job_id":job_id,"encoder":value,
