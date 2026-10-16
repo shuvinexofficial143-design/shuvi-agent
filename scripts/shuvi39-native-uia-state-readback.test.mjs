@@ -100,6 +100,8 @@ test("Native UIA approval ages out before durable execution while unrelated tool
  assert.match(fn,/native_uia_window_guard::expired_native_uia_binding/);
  assert.match(fn,/prepared.native_uia_target.as_ref\(\)/);
  assert.match(fn,/PENDING_ACTION_TTL_MS/);
- assert.match(fn,/event: "denied"\.into\(\)/);
- assert.doesNotMatch(fn,/execute_tool_with_action_id\(/);
+ const expired=rust.slice(rust.indexOf("if let Some(action) = expired_action {",rust.indexOf("async fn execute_action(")),
+   rust.indexOf("let action = action.ok_or_else",rust.indexOf("async fn execute_action(")));
+ assert.match(expired,/event: "denied"\.into\(\)/);
+ assert.doesNotMatch(expired,/execute_tool_with_action_id\(/);
 });
