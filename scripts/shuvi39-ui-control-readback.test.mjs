@@ -158,3 +158,38 @@ test("ui_find readback requires a requested selector and a nonempty actual contr
  assert.equal(auditUiReadback(pending,{...proposal,arguments:{window:WIN,name:"New Project"}},
   {...result,stdout:JSON.stringify({Name:"",AutomationId:""})},w,T+3000),pending);
 });
+
+test("generic discovery of unrelated controls never clears readback for the actual mutated control",()=>{
+ const w=initial(),pending=newPendingUiReadback(C,action("New Project","new_project"),w,T+2000);
+ const unrelated=found([controls[1]]);
+ assert.equal(auditUiReadback(pending,find(),unrelated,w,T+3000),pending);
+});
+test("two controls with the same original selector are ambiguous even in an audited discovery",()=>{
+ const w=initial(),pending=newPendingUiReadback(C,action("New Project","new_project"),w,T+2000);
+ assert.equal(auditUiReadback(pending,find(),found([controls[0],controls[0]]),w,T+3000),pending);
+});
+test("ui_find may return exactly one original control, but a second response row is not an exact proof",()=>{
+ const w=initial(),pending=newPendingUiReadback(C,action("New Project","new_project"),w,T+2000);
+ const proposal={tool:"ui_find",arguments:{window:WIN,name:"New Project",automation_id:"new_project"}};
+ const response={tool:"ui_find",success:true,exit_code:0,stdout:JSON.stringify([controls[0],controls[1]])};
+ assert.equal(auditUiReadback(pending,proposal,response,w,T+3000),pending);
+});
+test("malformed native control role or state cannot clear audited readback",()=>{
+ const w=initial(),pending=newPendingUiReadback(C,action("New Project","new_project"),w,T+2000);
+ for(const c of [{...controls[0],IsEnabled:"yes"},
+                 {...controls[0],IsOffscreen:"false"},
+                 {...controls[0],ControlType:7},
+                 {...controls[0],ControlType:"x".repeat(101)}]){
+  assert.equal(auditUiReadback(pending,find(),found([c]),w,T+3000),pending);
+ }
+});
+test("native ui_find exposes bounded independent state without leaking field or password values",()=>{
+ const source=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
+ const begin=source.indexOf("        ToolAction::UiFind {",550000),end=source.indexOf("        ToolAction::UiClick {",begin);
+ assert.ok(begin>=0&&end>begin);
+ const read=source.slice(begin,end);
+ for(const field of ["ToggleState","ExpandCollapseState","HasKeyboardFocus","VerticalScrollPercent","IsSelected","IsOffscreen"])
+  assert.match(read,new RegExp(field+" = "));
+ assert.doesNotMatch(read,/(?:ValuePattern\]\$p\)\.Current\.Value|Password\s*=|Value\s*=\s*\$e)/);
+ assert.match(read,/ConvertTo-Json -Compress/);
+});
