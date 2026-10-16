@@ -109,7 +109,8 @@ test("both UIA read-only actions Win32-check the same root before and after coll
  for(const text of [lib.slice(a,b),lib.slice(b,c)]){
   const before=text.indexOf("{attestation}");
   const enumerate=Math.max(text.indexOf("$all = $root.FindAll("),text.indexOf("$matches = Resolve-ShuviUiMatches"));
-  const after=text.lastIndexOf("Assert-ShuviObservedWindow");
+  const after=Math.max(text.lastIndexOf("Assert-ShuviObservedWindow\nConvertTo-Json"),
+   text.lastIndexOf("{finish_attestation}\n$items | ConvertTo-Json"));
   const output=text.lastIndexOf("ConvertTo-Json");
   assert.ok(text.includes("readonly_window_attestation_script()"));
   assert.ok(before>=0&&enumerate>before&&after>enumerate&&output>after);
@@ -118,6 +119,10 @@ test("both UIA read-only actions Win32-check the same root before and after coll
    "$shuviNativeReadPid", "Assert-ShuviObservedWindow","Discard readback"]){
   assert.ok(guard.includes(condition),"missing "+condition);
  }
- assert.doesNotMatch(guard.slice(guard.indexOf("pub(super) fn readonly_window_attestation_script()"),
+ const globalRead=lib.slice(b,c);
+ assert.match(globalRead,/if window\.is_some\(\)/);
+ assert.match(globalRead,/else \{ String::new\(\) \}/);
+ assert.match(globalRead,/\{finish_attestation\}/);
+  assert.doesNotMatch(guard.slice(guard.indexOf("pub(super) fn readonly_window_attestation_script()"),
     guard.indexOf("fn valid_label(")),/SetForegroundWindow|SendWait\(/);
 });
