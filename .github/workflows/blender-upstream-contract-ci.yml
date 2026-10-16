@@ -1,0 +1,59 @@
+name: Blender Upstream Contract CI
+
+on:
+  pull_request:
+    paths:
+      - 'integrations/blender-worker/**'
+      - 'src-tauri/src/blender_**'
+      - '.github/workflows/blender-upstream-contract-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: blender-contract-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typed-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout Shuvi 41 owned branch
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Checkout exact reviewed read-only upstream source
+        uses: actions/checkout@v4
+        with:
+          repository: shuvinexofficial143-design/shuvi-blender-agent
+          ref: 96b88c2513152f772399f247989ef602d5e0a7d7
+          path: upstream-blender-contract
+          persist-credentials: false
+      - name: Pin exact Blender upstream commit
+        shell: bash
+        run: |
+          actual="$(git -C upstream-blender-contract rev-parse HEAD)"
+          test "$actual" = "96b88c2513152f772399f247989ef602d5e0a7d7"
+      - name: Setup Python for read-only typed parser tests
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Real upstream PlanRunner end-to-end contract tests
+        shell: bash
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          export PYTHONPATH="$PWD/upstream-blender-contract/src:$PWD/integrations/blender-worker"
+          python -B -m unittest discover -s integrations/blender-worker -p 'test_shuvi_blender_real_contract.py' -v
+          python -B -m unittest discover -s integrations/blender-worker -p 'test_shuvi_blender_acceptance.py' -v
+          python -B -m unittest discover -s integrations/blender-worker -p 'test_shuvi_blender_reopen.py' -v
+          python -B -m unittest discover -s integrations/blender-worker -p 'test_shuvi_blender_session.py' -v
+          python -B -m unittest discover -s integrations/blender-worker -p 'test_shuvi_blender_plan_input.py' -v
+      - name: Confirm no tracked worktree mutations
+        shell: bash
+        run: |
+          rm -rf upstream-blender-contract
+          git diff --exit-code
+          test -z "$(git status --porcelain)"
