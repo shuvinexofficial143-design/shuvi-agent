@@ -66,3 +66,25 @@ export function summarizeMasterMissingProof(outcome){
    (missing.length?" Required proof: "+missing.join("; ")+".":"")+
    " The audited native delivery may be inspected, but is not an end-goal success claim.";
 }
+
+
+// Bounded, deterministic instructions for the NEXT Master or specialist turn.
+// They declare proof obligations only; they NEVER grant permission, create a
+// native tool, assert a native app capability, or ask for paid retries.
+export function masterGoalEvidenceContext(owner){
+ const goal=deriveMasterGoalContract(owner);
+ if(!goal)return "SHUVI ORIGINAL GOAL: unavailable; do not stage native work.";
+ const ids=goal.required.length?goal.required:["task_specific_result"];
+ const proofs=ids.map(id=>id+": "+(REQUIREMENT_REASONS[id]??
+   "No independent goal-specific native verifier is installed"));
+ const eligibleSimpleOpening=goal.apps.length===1&&goal.apps[0]==="premiere"&&
+   goal.opening&&!goal.project&&!goal.editing&&!goal.exportFile;
+ return "SHUVI INDEPENDENT GOAL ACCEPTANCE: Preserve the owner's ORIGINAL "+
+   "request; a completed native DAG or successful tool count is NOT task completion. "+
+   "Before any final success claim independently satisfy each proof obligation: "+
+   proofs.join("; ").slice(0,1100)+". "+
+   (eligibleSimpleOpening?"A separately audited Premiere launcher and unique matching native window inspection can prove opening only. ":
+    "Independent verified native result acceptance for this full goal is not yet installed; report unverified until actually available. ")+
+   "Never invent a Premiere project path, .prproj hash, timeline change, export, UI observation, action ID or Rust receipt. "+
+   "Keep owner approvals, typed tool scope, Rust worker lease and independent audits mandatory.";
+}
