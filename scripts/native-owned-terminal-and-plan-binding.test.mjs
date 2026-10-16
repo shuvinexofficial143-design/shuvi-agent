@@ -18,4 +18,6 @@ test("scheduled Blender plan binds authenticated final result to exact approved 
  assert.match(plan,/value\.get\("final_operation"\)\.and_then\(Value::as_str\)!=Some\(expected_operation\)/);
  assert.match(plan,/value\.get\("executed_steps"\)\.and_then\(Value::as_u64\)!=Some\(expected_steps as u64\)/);
  assert.match(plan,/Blender completed operation\/step count differs from exact approved plan/);
+ assert.match(plan,/let expected_extension=if expected_operation=="render.execute"\{"png"\}else\{"blend"\}/);
+ assert.match(plan,/correct_hash_of_wrong_output_type_never_satisfies_approved_render/);
 });
