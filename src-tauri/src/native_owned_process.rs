@@ -100,6 +100,22 @@ pub(crate) fn request_cancel_exact(id:&str)->Result<bool,String>{
     slot.cancel_requested=true;
     Ok(true)
 }
+/// Called by EXISTING authorized local owner Stop IPC. Serialize durable
+/// stop intent against terminal publication using the same process slot lock.
+/// If disk persistence fails, still request OS termination, return an error,
+/// and require independent owner review before any further task is run.
+pub(crate) fn request_cancel_exact_persisted(app:&AppHandle,id:&str)->Result<bool,String>{
+    if uuid::Uuid::parse_str(id).map(|x|x.to_string()!=id).unwrap_or(true){
+        return Err("Invalid owner Stop action UUID.".into());
+    }
+    let mut owner=PROCESS_OWNER.lock()
+        .map_err(|_|"Native owner cancellation lock poisoned.")?;
+    if owner.active.as_deref()!=Some(id){return Ok(false);}
+    let durable=process_receipt::path(app)
+        .and_then(|path|process_receipt::mark_cancel_requested_at(&path,id));
+    owner.cancel_requested=true;
+    durable.map(|_|true)
+}
 /// Bind the real owned PID to the existing Shuvi RAM/tree accounting
 /// while the Rust-owned child is alive. Never permit raw-PID cancellation:
 /// that always flows through the separate retained Windows Job Object.

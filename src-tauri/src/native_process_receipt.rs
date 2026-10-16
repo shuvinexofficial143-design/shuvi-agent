@@ -21,6 +21,9 @@ pub(crate) struct ProcessReceipt {
     pub descendants_contained:bool,
     // A separate Rust app/worker audit is required; this field is never true.
     pub app_progress_verified:bool,
+    // Durable owner Stop intent; neither OS termination nor app audit proof.
+    #[serde(default)]
+    pub cancel_requested:bool,
     // Backwards compatible with older v1 files, never trusted as an audit.
     #[serde(default)]
     pub previous_action_ids:Vec<String>,
@@ -30,7 +33,8 @@ fn check_record(r:&ProcessReceipt)->Result<(),String>{
        ||uuid::Uuid::parse_str(&r.action_id).map(|x|x.to_string()!=r.action_id).unwrap_or(true)
        ||r.tool.is_empty()||r.tool.len()>160
        ||!r.tool.bytes().all(|b|b.is_ascii_lowercase()||b.is_ascii_digit()||b==b'_')
-       ||r.app_progress_verified||r.pid==Some(0){
+       ||r.app_progress_verified||r.pid==Some(0)
+       ||(r.phase=="exited"&&r.cancel_requested){
         return Err("Native subprocess receipt identity or claimed progress is invalid.".into());
     }
     if r.previous_action_ids.len()>MAX_HISTORY{
@@ -94,7 +98,8 @@ pub(super) fn begin_at(file:&Path,id:&str,tool:&str)->Result<(),String>{
     let _lock=JOURNAL_LOCK.lock().map_err(|_|"Native process receipt lock poisoned.")?;
     let mut next=ProcessReceipt{version:1,action_id:id.to_string(),tool:tool.to_string(),
         phase:"launch_pending".into(),pid:None,exit_code:None,
-        descendants_contained:false,app_progress_verified:false,previous_action_ids:Vec::new()};
+        descendants_contained:false,app_progress_verified:false,
+        cancel_requested:false,previous_action_ids:Vec::new()};
     if let Some(prior)=read_at(file)? {
         if !matches!(prior.phase.as_str(),"exited"|"cancelled"|"timed_out"|"owner_reviewed_unknown"){
             return Err("Previous subprocess launch or process outcome is unresolved; owner review required.".into());
@@ -133,6 +138,20 @@ pub(super) fn finish_at(file:&Path,id:&str,tool:&str,phase:&str,code:Option<i32>
     prior.phase=phase.into();
     prior.exit_code=code;
     write_at(file,&prior)
+}
+/// Persist exact in-process owner Stop before reporting acknowledgement.
+/// Does not claim a Windows process stopped, nor any Blender output succeeded.
+pub(super) fn mark_cancel_requested_at(file:&Path,id:&str)->Result<(),String>{
+    let _lock=JOURNAL_LOCK.lock()
+        .map_err(|_|"Native process stop-intent journal lock poisoned.")?;
+    let mut current=read_at(file)?.ok_or("Owned process receipt missing at owner Stop.")?;
+    if current.action_id!=id
+       ||!matches!(current.phase.as_str(),"launch_pending"|"running"){
+        return Err("Owner Stop requires the exact unresolved process action UUID.".into());
+    }
+    if current.cancel_requested{return Ok(());}
+    current.cancel_requested=true;
+    write_at(file,&current)
 }
 /// Only a separately authorized OWNER REVIEW may call this seam. No auto-clear.
 /// It records unknown effects without claiming that the application was updated.
@@ -226,6 +245,20 @@ mod tests {
         let mut corrupted=read_at(&f).unwrap().unwrap();
         corrupted.previous_action_ids.push(A.into());
         assert!(check_record(&corrupted).is_err());
+        cleanup(&f);
+    }
+    #[test]
+    fn owner_cancel_persists_through_restart_and_prevents_forged_clean_exit(){
+        let f=file();
+        begin_at(&f,A,"blender_run_plan").unwrap();
+        assert!(mark_cancel_requested_at(&f,B).is_err());
+        mark_cancel_requested_at(&f,A).unwrap();
+        assert!(read_at(&f).unwrap().unwrap().cancel_requested);
+        started_at(&f,A,"blender_run_plan",444,true).unwrap();
+        assert!(read_at(&f).unwrap().unwrap().cancel_requested);
+        assert!(finish_at(&f,A,"blender_run_plan","exited",Some(0)).is_err());
+        finish_at(&f,A,"blender_run_plan","cancelled",Some(0)).unwrap();
+        assert_eq!(read_at(&f).unwrap().unwrap().phase,"cancelled");
         cleanup(&f);
     }
     #[test]

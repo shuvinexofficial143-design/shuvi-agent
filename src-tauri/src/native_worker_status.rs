@@ -36,6 +36,7 @@ pub(crate) struct NativeWorkerStatus {
     pub process_pid:Option<u32>,
     pub process_exit_code:Option<i32>,
     pub process_tree_contained:bool,
+    pub process_cancel_requested:bool,
     pub process_os_liveness_verified:bool,
     pub process_app_progress_verified:bool,
     pub process_health:String,
@@ -120,7 +121,8 @@ pub(crate) fn snapshot(
         supervisor_heartbeat_seq:None,supervisor_health:"not_observed".into(),
         process_receipt_phase:None,process_receipt_action_id:None,
         process_receipt_tool:None,process_pid:None,process_exit_code:None,
-        process_tree_contained:false,process_os_liveness_verified:false,
+        process_tree_contained:false,process_cancel_requested:false,
+        process_os_liveness_verified:false,
         process_app_progress_verified:false,process_health:"not_observed".into(),
     }
 }
@@ -189,6 +191,7 @@ pub(crate) fn attach_owned_process_receipt(
     status.process_pid=receipt.pid;
     status.process_exit_code=receipt.exit_code;
     status.process_tree_contained=receipt.descendants_contained;
+    status.process_cancel_requested=receipt.cancel_requested;
     // A durable record cannot prove an OS process is still present. Only an
     // owned process handle/protocol can do so, even if the PID matches.
     status.process_os_liveness_verified=false;
@@ -202,7 +205,11 @@ pub(crate) fn attach_owned_process_receipt(
             &&status.durable_job_tool.as_deref()==Some(receipt.tool.as_str())
             &&status.durable_job_phase.as_deref()==Some("running");
         if identity_live{
-            status.process_health="owned_launch_record_not_liveness_verified".into();
+            status.process_health=if receipt.cancel_requested{
+                "owner_stop_requested_os_outcome_unverified".into()
+            }else{
+                "owned_launch_record_not_liveness_verified".into()
+            };
         }else{
             status.state="recovery_required".into();
             status.requires_owner_review=true;
@@ -228,8 +235,21 @@ mod tests{
             pid:if phase=="launch_pending"{None}else{Some(4321)},
             exit_code:if phase=="exited"{Some(0)}else{None},
             descendants_contained:phase!="launch_pending",app_progress_verified:false,
-            previous_action_ids:vec![]
+            previous_action_ids:vec![],cancel_requested:false
         }
+    }
+    #[test]
+    fn stopped_on_previous_host_is_a_recovery_case_not_a_verified_process_exit(){
+        let mut os=receipt("running",&uuid(),"blender_run_plan");
+        os.cancel_requested=true;
+        let base=snapshot(false,&HashMap::new(),&HashMap::new(),None,6_000);
+        let report=attach_owned_process_receipt(base,Some(&os));
+        assert_eq!(report.state,"recovery_required");
+        assert!(report.requires_owner_review);
+        assert!(report.process_cancel_requested);
+        assert!(!report.process_os_liveness_verified);
+        assert!(!report.process_app_progress_verified);
+        assert!(!report.safe_to_auto_retry);
     }
     #[test]
     fn persisted_pid_without_host_lease_requires_owner_review_not_liveness(){

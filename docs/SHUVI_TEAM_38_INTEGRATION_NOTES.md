@@ -121,3 +121,8 @@ Review any adapter calls and potential cross-team shared-file overlap. Keep owne
 
 ## Milestone 18 — output format cross-check
 - Final delivery now also checks approved final operation against file type at the Rust boundary: `render.execute` must deliver `.png` and `file.checkpoint` must deliver `.blend`, independent of Python-side safety. SHA-256 alone cannot make the wrong kind of file valid. A Rust on-disk forged-output regression constructs a **correct hash for a wrong-type artifact** and expects rejection, with Node static guard for the exact extension decision.
+
+## Milestone 19 — durable owner Stop intent and restart-safe read-only status
+- Existing approved Remote Stop `cancel_running_action` now calls `request_cancel_exact_persisted(app,uuid)` and commits `cancelRequested=true` into the bounded PID receipt **before acknowledging owner Stop**. Terminal publication holds the same Rust process-owner mutex, closing the acceptance race. No PID-based kill or new IPC. If disk evidence cannot be written, still request termination but return an error; owner must review uncertain effects.
+- Backward compatible serde(default) record field; a stop-requested receipt cannot be forged into `exited`/success, and prior launch/PID state persists across restart. `native_worker_status` reports `processCancelRequested` and distinguishes pending Stop from actual application progress. A crashed host remains `recovery_required` without automatic retry.
+- Real on-disk Rust tests cover foreign UUID rejection, accepted stop before PID acknowledgement, restart readback and forged zero exit. Status tests cover unresolved owner Stop after host restart; Node checks verify only the existing owner IPC is wired.
