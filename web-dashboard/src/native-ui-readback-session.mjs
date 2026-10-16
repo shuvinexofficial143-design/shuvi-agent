@@ -95,7 +95,9 @@ export function auditUiReadback(pending,proposal,result,windowSession,nowMs=Date
      pending.expectedExpansion==="collapse"?"Collapsed":null;
     if(!expected||row.ExpandCollapseState!==expected)return pending;
    }
-   if(pending.mutationTool==="ui_focus"&&row.HasKeyboardFocus!==true)return pending;
+   // An owner approval itself can move focus to Shuvi. Require real native
+   // focus-status evidence, not current focus=true as a permanent postcondition.
+   if(pending.mutationTool==="ui_focus"&&typeof row.HasKeyboardFocus!=="boolean")return pending;
    if(pending.mutationTool==="ui_scroll"&&
       (typeof row.VerticalScrollPercent!=="number"||
        !Number.isFinite(row.VerticalScrollPercent)||
