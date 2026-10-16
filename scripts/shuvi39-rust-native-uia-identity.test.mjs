@@ -83,7 +83,7 @@ test("no Rust prepared HWND is exposed as caller-selectable tool argument",()=>{
 test("the native prepared action binds one exact UIA RuntimeId before owner approval",()=>{
  const prepare=core.slice(core.indexOf("fn prepare_native_uia_binding("),core.indexOf("fn stage_tool(",core.indexOf("fn prepare_native_uia_binding(")));
  assert.match(prepare,/let condition = ui_condition_script\(name, automation_id\)\?/);
- assert.match(prepare,/native_uia_window_guard::prepared_control_probe\(&root, &condition\)/);
+ assert.match(prepare,/native_uia_window_guard::prepared_control_probe\(&root, &condition, native_tool\)\?/);
  assert.match(prepare,/native_uia_window_guard::parse_prepared_control\(text\)/);
  assert.match(guard,/Resolve-ShuviUiMatches -root \$root -condition \$condition/);
  assert.match(guard,/\$matches.Count -ne 1/);
@@ -106,4 +106,25 @@ test("executing a prepared action cannot rebind an identical-label UIA control",
   const body=mutation.slice(start,next<0?mutation.length:next);
   assert.match(body,/native_uia_target.as_ref\(\)/);
  }
+});
+
+test("Rust capability preflight is read only, typed and does not grant approval",()=>{
+ const prep=core.slice(core.indexOf("fn prepare_native_uia_binding("),
+   core.indexOf("fn stage_tool(",core.indexOf("fn prepare_native_uia_binding(")));
+ for(const [name,tool] of [
+   ["UiClick","ui_click"],["UiSetValue","ui_set_value"],["UiFocus","ui_focus"],
+   ["UiScroll","ui_scroll"],["UiToggle","ui_toggle"],
+   ["UiExpandCollapse","ui_expand_collapse"],["UiSendKeys","ui_send_keys"]]){
+  assert.match(prep,new RegExp("ToolAction::"+name+" \\{[\\s\\S]{0,130}?\\("+name.toLowerCase().replace("u","")+"?","i").test(prep)
+    ? new RegExp("ToolAction::"+name+" \\{")
+    : new RegExp("ToolAction::"+name+" \\{"));
+  assert.ok(prep.includes('"' + tool + '"'),"missing Rust allowlisted "+tool);
+ }
+ assert.match(guard,/fn capability_preflight\(tool: &str\)/);
+ assert.match(guard,/TryGetCurrentPattern/);
+ assert.match(guard,/Prepared ValuePattern is read-only/);
+ assert.match(guard,/VerticallyScrollable/);
+ assert.match(guard,/IsKeyboardFocusable/);
+ assert.match(guard,/Unrecognized UIA mutation capability/);
+ assert.match(prep,/let probe = native_uia_window_guard::prepared_control_probe\(&root, &condition, native_tool\)\?/);
 });
