@@ -39,6 +39,18 @@ class FakeController:
                                             "file": FakeController.loaded_file or ""})
         if request.operation == "system.ping":
             return FakeResult("succeeded", {"ready": True})
+        if request.operation == "objects.list":
+            return FakeResult("succeeded", {
+                "session_id": SESSION_ID, "revision": "f" * 64,
+                "offset": request.payload["offset"], "total": 2,
+                "next_offset": None,
+                "items": [
+                    {"object_id": SESSION_ID + ":mesh-one", "name": "ShuviMesh",
+                     "type": "MESH", "revision": "a" * 64, "details_truncated": False},
+                    {"object_id": SESSION_ID + ":camera", "name": "ShuviCamera",
+                     "type": "CAMERA", "revision": "b" * 64, "details_truncated": False},
+                ],
+            })
         raise AssertionError("Unapproved fake operation")
 
 
@@ -292,6 +304,44 @@ class PersistentSessionTests(unittest.TestCase):
         self.assertEqual(code, 4)
         self.assertEqual(replies[-1]["status"], "outcome_unknown")
         self.assertEqual(len(self.sessions), 0)
+
+    def test_persistent_read_only_object_discovery_reuses_same_authenticated_session(self):
+        query = {"offset": 0, "limit": 5, "name_prefix": "Shuvi", "object_type": None}
+        frames = (self.frame("objects", query=query, expected_scene_revision="f" * 64)
+                  + self.frame("close"))
+        code, replies = self.serve(frames)
+        self.assertEqual(code, 0)
+        self.assertEqual([v["status"] for v in replies],
+                         ["ready", "alive", "closing"])
+        result = replies[1]
+        self.assertEqual(result["operation"], "objects")
+        self.assertTrue(result["read_only"])
+        self.assertEqual(result["total"], 2)
+        self.assertEqual(len(result["objects"]), 2)
+        self.assertEqual(result["objects"][0]["name"], "ShuviMesh")
+        self.assertEqual(result["objects"][0]["revision"], "a" * 64)
+        self.assertEqual(len(self.sessions), 1)
+        self.assertTrue(self.sessions[0].closed)
+
+    def test_read_only_object_query_rejects_oversized_or_malformed_payload(self):
+        query = {"offset": 0, "limit": 5, "name_prefix": "", "object_type": None}
+        for wrong in [
+            {**query, "limit": 6}, {**query, "offset": -1},
+            {**query, "name_prefix": "x" * 81},
+            {**query, "extra_python": "exec('unsafe')"},
+        ]:
+            with self.assertRaises(ValueError):
+                worker.validate(json.loads(self.frame(
+                    "objects", query=wrong, expected_scene_revision="f" * 64)), SESSION_ID)
+
+    def test_read_only_objects_stale_revision_fails_closed(self):
+        query = {"offset": 0, "limit": 5, "name_prefix": "", "object_type": None}
+        code, replies = self.serve(self.frame(
+            "objects", query=query, expected_scene_revision="e" * 64))
+        self.assertEqual(code, 4)
+        self.assertEqual(replies[-1]["status"], "outcome_unknown")
+        self.assertFalse(replies[-1]["retry_automatically"])
+        self.assertTrue(self.sessions[0].closed)
 
     def test_oversized_command_denied(self):
         code, replies = self.serve("x" * 65538 + "\n")
