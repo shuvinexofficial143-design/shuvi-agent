@@ -89,7 +89,7 @@ test("Desktop proof UI only presents text and never becomes a permission or task
  const src=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
  assert.match(src,/id="premiereProjectProofStatus"/);
  assert.match(src,/function renderPremiereProjectProofProgress\(\):void/);
- assert.match(src,/target\.textContent=progress\.label\+"\."?\+?/);
+ assert.match(src,/target\.textContent=progress\.label\+"\. "\+progress\.remaining/);
  assert.doesNotMatch(src,/target\.innerHTML=progress/);
  assert.match(src,/renderPremiereProjectProofProgress\(\);\s*executingActionId = actionId/);
  assert.match(src,/projectShaFileProof=null;\s*projectReopenEvidence=null;\s*renderPremiereProjectProofProgress\(\)/);
