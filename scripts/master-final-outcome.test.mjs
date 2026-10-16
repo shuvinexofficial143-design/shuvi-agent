@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
-import {assessMasterFinalOutcome,summarizeMasterMissingProof} from "../src/master-final-outcome.mjs";
+import {assessMasterFinalOutcome,summarizeMasterMissingProof,masterGoalEvidenceContext} from "../src/master-final-outcome.mjs";
 
 const A="e8b36b21-1c6a-459e-9b6f-75dd5692ab81";
 const B="0f2977ac-4f61-4d9c-bf74-ecf8a3ae2172";
@@ -110,4 +110,26 @@ test("native desktop finalization refuses ANY unsupported original goal before s
  assert.ok(start>0&&guard>start&&finish>guard&&remote>finish);
  assert.match(ui,/await stopAgentForSafety\(summarizeMasterMissingProof\(finalOutcome\)\)/);
  assert.match(ui,/if\(goalAcceptance.requiresIndependentAcceptance&&!openingAcceptance.verified\)/);
+});
+
+test("Master gets independent proof requirements BEFORE any paid model proposal",()=>{
+ const plan=masterGoalEvidenceContext("Premiere me naya project banao aur export karo");
+ assert.match(plan,/new_project_identity/);
+ assert.match(plan,/saved_project_location/);
+ assert.match(plan,/persisted_export_artifact/);
+ assert.match(plan,/\.prproj/);
+ assert.match(plan,/not yet installed/);
+ assert.match(plan,/Never invent/);
+ assert.ok(plan.length<1900,"model context must remain bounded");
+ const opening=masterGoalEvidenceContext("Premiere kholo");
+ assert.match(opening,/Premiere launcher/);
+ assert.match(opening,/opening only/);
+ assert.doesNotMatch(opening,/project path.*verified/);
+ const bad=masterGoalEvidenceContext(null);
+ assert.match(bad,/do not stage native work/);
+ const desktop=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
+ assert.match(desktop,/orchestration_context: workerContext\+"\\n"\+masterGoalEvidenceContext\(orchestration.owner_request\)/);
+ const evidenceAt=desktop.indexOf('orchestration_context: workerContext+"\\n"+masterGoalEvidenceContext(orchestration.owner_request)');
+ const modelCall=desktop.indexOf('const response = await invoke<ChatResponse>("chat"');
+ assert.ok(evidenceAt>modelCall,"proof guidance must be included in the actual native model dispatch");
 });
