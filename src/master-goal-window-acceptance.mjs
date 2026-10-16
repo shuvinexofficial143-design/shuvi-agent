@@ -6,6 +6,7 @@ import {pinnedMasterObjective,validateMasterPlan} from "./master-autonomy-graph.
 import {assessMasterSchedulerAdmission} from "./native-scheduler-admission.mjs";
 import {evidenceForStep} from "./master-worker-queue.mjs";
 import {windowGoalEvidence} from "../web-dashboard/src/native-goal-evidence.mjs";
+import {strictlySimplePremiereOpening} from "../web-dashboard/src/native-opening-completion.mjs";
 
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const obj=v=>v!==null&&typeof v==="object"&&!Array.isArray(v);
@@ -13,7 +14,7 @@ const deny=reason=>({verified:false,scope:"unverified",reason});
 const purePremiereOpening=owner=>{
  const g=deriveMasterGoalContract(owner);
  return !!g&&g.apps.length===1&&g.apps[0]==="premiere"&&g.opening&&
-  !g.project&&!g.editing&&!g.exportFile;
+  !g.project&&!g.editing&&!g.exportFile&&strictlySimplePremiereOpening(owner);
 };
 
 // Called only after executing an explicitly owner-approved native action and
