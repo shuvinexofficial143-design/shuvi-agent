@@ -180,9 +180,13 @@ try {
         $graphics.Dispose()
         $bitmap.Dispose()
     }
+    # Reject a restart between PNG write and capture receipt publication.
+    # Rust deletes the unsigned PNG if the bounded PowerShell run fails.
+    Assert-ShuviCaptureProcessGeneration
     [PSCustomObject]@{
         Title = $title
         ProcessId = $uiPid
+        ProcessStartTicks = [int64]$shuviCaptureStartTicks
         NativeWindowHandle = [int64]$target
         Width = $width
         Height = $height
@@ -250,6 +254,9 @@ fn verify_capture_receipt(receipt: &Value, png: &[u8], bytes: u64) -> Result<Str
     let pid = receipt.get("ProcessId").and_then(Value::as_u64)
         .filter(|v| *v > 0 && *v <= u32::MAX as u64)
         .ok_or_else(|| "Target screenshot lacks verified process identity.".to_string())?;
+    let birth_ticks = receipt.get("ProcessStartTicks").and_then(Value::as_i64)
+        .filter(|v| *v > 0)
+        .ok_or_else(|| "Target screenshot lacks verified OS process generation; no image sent.".to_string())?;
     let hwnd = receipt.get("NativeWindowHandle").and_then(Value::as_i64)
         .filter(|v| *v > 0)
         .ok_or_else(|| "Target screenshot lacks valid window handle.".to_string())?;
@@ -265,6 +272,9 @@ fn verify_capture_receipt(receipt: &Value, png: &[u8], bytes: u64) -> Result<Str
     if bytes < 33 || width != u64::from(png_width) || height != u64::from(png_height) {
         return Err("Screenshot dimensions disagree with observed HWND; no image sent.".into());
     }
+    // Avoid exporting the raw birth tick value to the model; validation is
+    // performed here in Rust before publishing the target identity label.
+    let _ = birth_ticks;
     Ok(format!("{} [PID {}, HWND {}]", title, pid, hwnd))
 }
 
@@ -283,7 +293,8 @@ mod tests {
         bytes
     }
     fn receipt() -> serde_json::Value {
-        json!({"Title":"Adobe Premiere Pro","ProcessId":451,"NativeWindowHandle":8122,
+        json!({"Title":"Adobe Premiere Pro","ProcessId":451,"ProcessStartTicks":638962980000000000_i64,
+            "NativeWindowHandle":8122,
             "Width":1920,"Height":1080,"Left":-1920,"Top":0})
     }
     #[test]
@@ -302,7 +313,9 @@ mod tests {
     }
     #[test]
     fn fails_closed_for_invalid_or_missing_window_identity_and_geometry() {
-        for patch in [json!({"ProcessId":0}), json!({"NativeWindowHandle":0}),
+        for patch in [json!({"ProcessId":0}), json!({"ProcessStartTicks":0}),
+            json!({"ProcessStartTicks":-1}), json!({"ProcessStartTicks":null}),
+            json!({"NativeWindowHandle":0}),
             json!({"Width":123}), json!({"Title":""}), json!({"Left":null})] {
             let mut broken = receipt();
             for (key, value) in patch.as_object().unwrap() { broken[key] = value.clone(); }
