@@ -507,6 +507,7 @@ pub(crate) fn plan(
     if serde_json::to_vec(plan).map_err(|_|"Invalid typed Blender plan.")?.len()>65536{
         return Err("Blender plan exceeds 64 KiB.".into());
     }
+    let plan_lineage=crate::blender_plan_lineage::derive(plan)?;
     let mut slot=registry.current.lock().map_err(|_|"Blender session ownership lock poisoned.".to_string())?;
     let result=(||{
         let session=slot.as_mut().ok_or("No Blender session is owned by this Shuvi process.")?;
@@ -535,6 +536,7 @@ pub(crate) fn plan(
             "checkpoint_reopen":response["checkpoint_reopen"],"plan_steps":response["executed_steps"],
             "verified_by_native_sha256":true,"same_blender_session":true,
             "artifact_manifest":manifest,
+            "approved_plan_lineage":plan_lineage,
             "input_checkpoint":session.source_checkpoint.as_ref().map(|s|s.json())}))
     })();
     if result.is_err() && slot.as_ref().is_some_and(|s|s.session_id==id){
