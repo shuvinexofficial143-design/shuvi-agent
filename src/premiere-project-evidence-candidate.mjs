@@ -45,12 +45,14 @@ export function inspectPremiereProjectCreateCandidate(
     h.uncertain!==false||h.retrySafe!==false||
     typeof h.projectGuid!=="string"||!h.projectGuid.trim()||
     h.projectGuid.length>160||h.projectGuid!==h.activeGuid||
+    h.persistenceVerified!==false||h.reopenVerified!==false||
     !samePath(proposal.arguments.path,h.projectPath)||
     !samePath(proposal.arguments.path,h.activePath)||
     p.operation!=="create"||p.host_identity_verified!==true||
     p.disk_persistence_verified!==true||p.project_verified!==true||
     p.edit_semantics_verified!==false||p.reopen_verified!==false||
-    p.retry_safe!==false||!obj(p.disk_fingerprint))return null;
+    p.retry_safe!==false||p.disk_error!==null||
+    !obj(p.disk_fingerprint))return null;
  const d=p.disk_fingerprint;
  if(!samePath(proposal.arguments.path,d.path)||
     !Number.isSafeInteger(d.size_bytes)||d.size_bytes<1||
