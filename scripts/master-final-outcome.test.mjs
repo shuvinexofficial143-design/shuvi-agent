@@ -64,7 +64,7 @@ test("a project save needs BOTH native application identity and independently ha
   assert.ok(result.missing.some(x=>x.id==="saved_project_location"),request);
   const message=summarizeMasterMissingProof(result);
   assert.match(message,/\.prproj/);
-  assert.match(message,/Rust-rehashed/);
+  assert.match(message,/Rust SHA-256/);
   assert.doesNotMatch(message,/COMPLETED/);
  }
 });
@@ -118,6 +118,7 @@ test("Master gets independent proof requirements BEFORE any paid model proposal"
  assert.match(plan,/saved_project_location/);
  assert.match(plan,/persisted_export_artifact/);
  assert.match(plan,/\.prproj/);
+ assert.match(plan,/FNV-1a64 is not cryptographic/);
  assert.match(plan,/not yet installed/);
  assert.match(plan,/Never invent/);
  assert.ok(plan.length<1900,"model context must remain bounded");
