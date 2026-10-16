@@ -16,7 +16,7 @@ const controls=[
  {Name:"Hidden",AutomationId:"hidden",ControlType:"ControlType.Button",IsEnabled:true,IsOffscreen:true}
 ].map(row=>({...row,ObservedWindowHwnd:900,ObservedWindowPid:50}));
 const found=(rows=controls,patch={})=>({tool:"ui_discover",success:true,exit_code:0,stdout:JSON.stringify(rows),...patch});
-const discover=(w=initial(),rows=controls)=>newAuditedControlObservation(found(rows),B,WIN,w,T+1000);
+const discover=(w=initial(),rows=controls)=>newAuditedControlObservation(found(rows.map(r=>({...r,ObservedWindowHwnd:900,ObservedWindowPid:50}))),B,WIN,w,T+1000);
 const action=(name,automation_id,window=WIN,tool="ui_click")=>({tool,arguments:{name,automation_id,window}});
 const find=(window=WIN)=>({tool:"ui_discover",arguments:{window}});
 
@@ -243,4 +243,18 @@ test("fresh UIA discoveries must include native HWND/PID for every returned cont
  const w=initial(),pending=newPendingUiReadback(C,action("New Project","new_project"),w,T+2000);
  assert.equal(auditUiReadback(pending,find(),
   found([{...controls[0]},{...controls[1],ObservedWindowPid:800}]),w,T+3000),pending);
+});
+
+test("forged or absent native root evidence cannot mint a fresh audited control observation",()=>{
+ const w=initial();
+ for(const patch of [
+  {ObservedWindowHwnd:901},
+  {ObservedWindowPid:51},
+  {ObservedWindowHwnd:null},
+  {ObservedWindowPid:undefined},
+  {ObservedWindowHwnd:"900"}
+ ]){
+  const payload=found([{...controls[0],...patch}]);
+  assert.equal(newAuditedControlObservation(payload,B,WIN,w,T+1000),null);
+ }
 });
