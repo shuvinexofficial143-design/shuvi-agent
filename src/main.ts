@@ -14,6 +14,7 @@ import {bindNativePremiereShaProof,nativePremiereShaProgress} from "./native-pro
 import type {NativePremiereShaReceipt,BoundPremiereProjectShaProof} from "./native-project-sha-proof.mjs";
 import {inspectPremiereProjectReopenCandidate,bindPremiereReopenShaAfterReadback} from "./premiere-project-reopen-evidence.mjs";
 import type {PremiereReopenEvidence} from "./premiere-project-reopen-evidence.mjs";
+import {assessPremiereProjectProofProgress} from "./master-project-proof-progress.mjs";
 import type {AuditedOpeningObservation} from "./master-goal-window-acceptance.mjs";
 import {nativeTaskDeliveryClaims} from "./native-delivery-claims.mjs";
 import type {
@@ -114,6 +115,16 @@ let openingWindowObservation:AuditedOpeningObservation|null=null;
 let projectCreationEvidence:PremiereProjectEvidenceCandidate|null=null;
 let projectShaFileProof:BoundPremiereProjectShaProof|null=null;
 let projectReopenEvidence:PremiereReopenEvidence|null=null;
+function renderPremiereProjectProofProgress():void{
+ const target=document.querySelector<HTMLElement>("#premiereProjectProofStatus");
+ if(!target)return;
+ const progress=assessPremiereProjectProofProgress(
+  activePermissionScope.taskId,projectCreationEvidence,
+  projectShaFileProof,projectReopenEvidence);
+ // Only task-scoped observed evidence. No untrusted path, host title or
+ // model-generated HTML is inserted, and this UI never authorizes work.
+ target.textContent=progress.label+". "+progress.remaining;
+}
 // Mirrors owner-issued Rust grant IDs for exact read arguments. Local state
 // alone is NEVER authority to dispatch a consented follow-up action.
 const nativeReadGrantIds=new Map<string,string>();
@@ -127,6 +138,7 @@ function rotatePermissionScope():void{
  projectCreationEvidence=null;
  projectShaFileProof=null;
  projectReopenEvidence=null;
+ renderPremiereProjectProofProgress();
  revokeTaskScope(activePermissionScope);
  nativeReadGrantIds.clear();
  const revokeButton=document.querySelector<HTMLButtonElement>("#revokeTaskReadGrants");
@@ -193,6 +205,10 @@ root.innerHTML = `
       <small id="nativeSchedulerSummary" class="ram-children">Native scheduler: not yet checked</small>
       <button id="checkNativeTaskDelivery" type="button">Verify last delivered task</button>
       <small id="nativeDeliverySummary" class="ram-children">Previous delivery: not yet checked</small>
+      <details id="premiereProjectProof" class="ram-children">
+        <summary>Premiere project verification</summary>
+        <div id="premiereProjectProofStatus" role="status">No task-bound project evidence. Original goal UNVERIFIED.</div>
+      </details>
       <button id="reviewFailedSchedulerStep" class="hidden" type="button">Review failed scheduled action</button>
       <small id="reviewFailedSchedulerHint" class="ram-children hidden"></small>
       <details id="nativeActionHistory" class="ram-children">
@@ -1630,9 +1646,16 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
   }
   const permissionTaskId=activePermissionScope.taskId;
   if(proposal.tool==="premiere_open_project"){
-    // Preserve the ORIGINAL create + prior SHA, but invalidate any previous
-    // reopen outcome while the NEW separately approved open is unresolved.
+    // Preserve the original project create/SHA ONLY for a separately
+    // approved reopen of its exact same path. Opening a different project
+    // can change the active Adobe host identity and invalidates all prior
+    // project evidence rather than allowing cross-project reuse.
     projectReopenEvidence=null;
+    if(!projectCreationEvidence||!projectShaFileProof||
+       proposal.arguments.path!==projectCreationEvidence.projectPath){
+      projectCreationEvidence=null;
+      projectShaFileProof=null;
+    }
   }else if(proposal.tool==="premiere_create_project"||
     !["ui_windows","list_processes","ui_find","ui_discover",
       "premiere_context","premiere_bridge_status"].includes(proposal.tool)){
@@ -1645,6 +1668,7 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
   if(proposal.tool==="ui_windows"||
      !["list_processes","ui_find","ui_discover","premiere_context","premiere_bridge_status"].includes(proposal.tool))
     openingWindowObservation=null;
+  renderPremiereProjectProofProgress();
   executingActionId = actionId;
   executingCancellation = null;
   clearChatPermission();
@@ -1751,6 +1775,7 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
         }
       }
     }
+    renderPremiereProjectProofProgress();
     if(proposal.tool==="ui_windows"&&receiptMatches&&!cancelledByUser&&
        activePermissionScope.taskId===permissionTaskId&&!activePermissionScope.revoked&&!cancelRequested){
       openingWindowObservation=captureMasterOpeningObservation(
