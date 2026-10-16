@@ -138,7 +138,9 @@ pub fn plan(req:&Request,saved:&premiere_graphics::SavedMapping)->Result<Value,S
             "library_name":"Shuvi","element_name":"Dynamic Caption"},
             "fields":[
               {"role":"caption_text","component_match_name":"native.text","component_display_name":null,"param_display_name":"Source Text","primitive_type":"string"},
-              {"role":"accent","component_match_name":"native.accent","component_display_name":null,"param_display_name":"Show Accent","primitive_type":"boolean"}]
+              {"role":"accent","component_match_name":"native.accent","component_display_name":null,"param_display_name":"Show Accent","primitive_type":"boolean"},
+              {"role":"position","component_match_name":"native.position","component_display_name":null,"param_display_name":"Text Position","primitive_type":"point"},
+              {"role":"accent_color","component_match_name":"native.color","component_display_name":null,"param_display_name":"Accent RGBA","primitive_type":"color"}]
         }})).unwrap()
     }
     fn fixture()->(Request,std::path::PathBuf) {
@@ -156,7 +158,11 @@ pub fn plan(req:&Request,saved:&premiere_graphics::SavedMapping)->Result<Value,S
         fs::write(&path,&bytes).unwrap();
         (Request{schema_version:1,captions,expected_srt_sha256:sha,
             mapping:"Captions".into(),revision:4,video_track:2,audio_track:0,
-            static_fields:BTreeMap::from([("accent".into(),json!(true))])},path)
+            static_fields:BTreeMap::from([
+                ("accent".into(),json!(true)),
+                ("position".into(),json!({"type":"point","x":0.5,"y":0.82})),
+                ("accent_color".into(),json!({"type":"color","red":1,"green":0.28,"blue":0.08,"alpha":1}))
+            ])},path)
     }
     #[test] fn exact_manifest_hash_and_mapping_yield_native_executable_batch_without_host_write(){
         let (request,path)=fixture();
@@ -168,6 +174,9 @@ pub fn plan(req:&Request,saved:&premiere_graphics::SavedMapping)->Result<Value,S
         assert_eq!(result["generated_batch"]["items"][1]["seconds"],2.2);
         assert!((result["generated_batch"]["items"][1]["duration_seconds"].as_f64().unwrap()-1.9).abs()<1e-9);
         assert_eq!(result["selected_original_cue_indexes"],json!([0,2]));
+        assert_eq!(result["generated_batch"]["items"][0]["fields"]["position"]["type"],"point");
+        assert_eq!(result["generated_batch"]["items"][0]["fields"]["accent_color"]["type"],"color");
+        assert_eq!(result["generated_batch"]["items"][1]["fields"]["accent_color"]["green"],json!(0.28));
         assert_eq!(result["requires_new_high_risk_approval"],true);
         assert_eq!(result["native_graphics_inserted"],false);
         fs::remove_file(path).unwrap();
@@ -181,6 +190,18 @@ pub fn plan(req:&Request,saved:&premiere_graphics::SavedMapping)->Result<Value,S
         assert!(plan(&request,&mapping()).is_err());
         fs::remove_file(path).unwrap();
         assert!(plan(&request,&mapping()).is_err());
+    }
+    #[test] fn structured_caption_style_coordinates_and_rgba_must_match_saved_types(){
+        let (mut request,path)=fixture();
+        plan(&request,&mapping()).unwrap();
+        request.static_fields.insert("position".into(),json!({"x":0.5,"y":0.82}));
+        assert!(plan(&request,&mapping()).is_err());
+        request.static_fields.insert("position".into(),json!({"type":"point","x":0.5,"y":0.82,"script":"bad"}));
+        assert!(plan(&request,&mapping()).is_err());
+        request.static_fields.insert("position".into(),json!({"type":"point","x":0.5,"y":0.82}));
+        request.static_fields.insert("accent_color".into(),json!({"type":"color","red":1,"green":1,"blue":1,"alpha":-0.5}));
+        assert!(plan(&request,&mapping()).is_err());
+        fs::remove_file(path).unwrap();
     }
     #[test] fn missing_caption_role_bad_static_field_and_too_many_cues_fail(){
         let (mut request,path)=fixture();
