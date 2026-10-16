@@ -9,6 +9,7 @@ use std::{
 use serde_json::{Value,json};
 use tauri::{AppHandle,Manager};
 use crate::{
+    blender_input_checkpoint::{self,SourceCheckpoint},
     ActionState,register_managed_process,unregister_managed_process,
     managed_process_identity_matches,terminate_managed_process_tree,
     terminate_registered_process_tree,current_runtime_status,
@@ -113,6 +114,7 @@ struct OwnedSession {
     session_id:String,
     output_dir:String,
     allow_render:bool,
+    source_checkpoint:Option<SourceCheckpoint>,
     created:Instant,
     watchdog_stop:Arc<AtomicBool>,
     invalidated:Arc<AtomicBool>,
@@ -309,9 +311,13 @@ fn spawn_watchdog(
 pub(crate) fn start(
     registry:&SessionRegistry,state:&ActionState,app:&AppHandle,
     python_exe:&str,blender_exe:&str,
-    blend_file:Option<&str>,output_dir:&str,allow_render:bool,script:&Path
+    blend_file:Option<&str>,expected_blend_sha256:Option<&str>,
+    output_dir:&str,allow_render:bool,script:&Path
 )->Result<Value,String>{
     if !script.is_file(){return Err("Bundled persistent Blender session broker is missing.".into());}
+    // Fail closed before launch: a model-supplied filename alone is never
+    // sufficient to authorize loading a previous checkpoint.
+    let source_checkpoint=blender_input_checkpoint::inspect(blend_file,expected_blend_sha256)?;
     let mut slot=registry.current.lock().map_err(|_|"Blender session ownership lock poisoned.".to_string())?;
     if slot.is_some(){
         return Err("Blender session already exists; explicit close/recovery required before a new start.".into());
@@ -320,7 +326,10 @@ pub(crate) fn start(
     command.arg("-B").arg(script).arg("--blender-exe").arg(blender_exe)
         .arg("--output-dir").arg(output_dir)
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
-    if let Some(source)=blend_file{command.arg("--blend-file").arg(source);}
+    if let Some(ref source)=source_checkpoint{
+        command.arg("--blend-file").arg(&source.canonical_path)
+            .arg("--expected-blend-sha256").arg(&source.sha256);
+    }
     if allow_render{command.arg("--allow-render");}
     #[cfg(target_os="windows")]
     {
@@ -365,7 +374,9 @@ pub(crate) fn start(
     let watchdog_stop=Arc::new(AtomicBool::new(false));
     let invalidated=Arc::new(AtomicBool::new(false));
     let mut session=OwnedSession{child,input,replies:reader(output),session_id:String::new(),
-        output_dir:output_dir.into(),allow_render,created:Instant::now(),watchdog_stop,
+        output_dir:output_dir.into(),allow_render,
+        source_checkpoint:source_checkpoint.clone(),
+        created:Instant::now(),watchdog_stop,
         invalidated,
         #[cfg(target_os="windows")]
         _windows_job:job,
@@ -378,9 +389,17 @@ pub(crate) fn start(
                 ||value.get("authenticated").and_then(Value::as_bool)!=Some(true)
                 ||value.get("mutations_by_approval_only").and_then(Value::as_bool)!=Some(true)
                 ||value.get("render_approved").and_then(Value::as_bool)!=Some(allow_render)
-                ||uuid::Uuid::parse_str(id).is_err() {
+                ||uuid::Uuid::parse_str(id).is_err()
+                ||value.get("input_checkpoint")!=Some(&source_checkpoint.as_ref()
+                    .map(|checkpoint|checkpoint.json()).unwrap_or(Value::Null)) {
                 drop(session);unregister_managed_process(state,pid);
                 return Err("Blender session startup lacked authenticated readiness proof.".into());
+            }
+            if let Some(ref src)=source_checkpoint{
+                if let Err(error)=blender_input_checkpoint::still_current(src){
+                    drop(session);unregister_managed_process(state,pid);
+                    return Err(format!("Blender checkpoint changed during session launch: {error}"));
+                }
             }
             session.session_id=id.into();
             let start_time=session.created;
@@ -393,7 +412,9 @@ pub(crate) fn start(
             }
             Ok(json!({"status":"ready","session_id":id,"authenticated":true,
                 "process_managed":true,"session_reconnect_allowed":false,
-                "render_ceiling":allow_render,"live_application_effect_unverified":true}))
+                "render_ceiling":allow_render,
+                "input_checkpoint":source_checkpoint.as_ref().map(|s|s.json()),
+                "live_application_effect_unverified":true}))
         },
         Err(error)=>{drop(session);unregister_managed_process(state,pid);Err(error)}
     }
@@ -445,7 +466,13 @@ pub(crate) fn plan(
         if allow_render && !session.allow_render{
             return Err("Blender plan requests rendering above the approved session policy ceiling.".into());
         }
+        if let Some(ref input)=session.source_checkpoint {
+            blender_input_checkpoint::still_current(input)?;
+        }
         let response=request(session,state,"run_plan",Some(plan),allow_render,Some(expected_scene_revision),PLAN_DEADLINE)?;
+        if let Some(ref input)=session.source_checkpoint {
+            blender_input_checkpoint::still_current(input)?;
+        }
         if response.get("status").and_then(Value::as_str)!=Some("verified")
             || response.get("complete").and_then(Value::as_bool)!=Some(true)
             || response.get("authenticated_blender_plan").and_then(Value::as_bool)!=Some(true)
@@ -459,7 +486,8 @@ pub(crate) fn plan(
             "source_action_id":execution_action_id,"artifact":response["artifact"],
             "checkpoint_reopen":response["checkpoint_reopen"],"plan_steps":response["executed_steps"],
             "verified_by_native_sha256":true,"same_blender_session":true,
-            "artifact_manifest":manifest}))
+            "artifact_manifest":manifest,
+            "input_checkpoint":session.source_checkpoint.as_ref().map(|s|s.json())}))
     })();
     if result.is_err() && slot.as_ref().is_some_and(|s|s.session_id==id){
         retire(state,&mut slot);
