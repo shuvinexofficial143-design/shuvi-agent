@@ -58,6 +58,11 @@ if ($shuviBoundHwnd -eq [IntPtr]::Zero -or $shuviBoundPid -le 0 -or
     [ShuviUiaNativeIdentity]::IsIconic($shuviBoundHwnd)) {
  throw 'Cannot bind UI action: target HWND absent, hidden or minimized.'
 }
+# A blocked owner window behind a modal dialog is not an eligible target.
+# UIA IsEnabled/IsOffscreen is read-only evidence; no focus/restore is attempted.
+if (-not [bool]$root.Current.IsEnabled -or [bool]$root.Current.IsOffscreen) {
+ throw 'Cannot bind disabled or offscreen native application root.'
+}
 [uint32]$shuviBoundNativePid = 0
 [void][ShuviUiaNativeIdentity]::GetWindowThreadProcessId($shuviBoundHwnd,[ref]$shuviBoundNativePid)
 if ($shuviBoundNativePid -eq 0 -or $shuviBoundNativePid -ne [uint32]$shuviBoundPid) {
@@ -209,6 +214,9 @@ function Assert-ShuviNativeTarget {
  }
  [uint32]$nativePid = 0
  [void][ShuviUiaNativeIdentity]::GetWindowThreadProcessId($shuviExpectedHwnd, [ref]$nativePid)
+ if (-not [bool]$root.Current.IsEnabled -or [bool]$root.Current.IsOffscreen) {
+  throw 'Prepared UIA owner window became disabled or offscreen. No mutation sent.'
+ }
  if ($nativePid -ne $shuviExpectedPid -or
      [int64]$root.Current.NativeWindowHandle -ne [int64]$shuviExpectedHwnd -or
      [int]$root.Current.ProcessId -ne [int]$shuviExpectedPid -or
@@ -343,6 +351,13 @@ mod tests {
         let mut t = target();
         t.runtime_id.clear();
         assert!(guarded_mutation_root(Some("Premiere"), "$root=42".into(), Some(&t)).is_err());
+    }
+    #[test]
+    fn modal_blocked_or_offscreen_application_roots_are_never_ui_targets() {
+        let pre=prepared_control_probe("$root=42","$condition=1","ui_click").unwrap();
+        assert!(pre.contains("Cannot bind disabled or offscreen native application root."));
+        let executed=guarded_mutation_root(Some("Premiere"),"$root=42".into(),Some(&target())).unwrap();
+        assert!(executed.contains("Prepared UIA owner window became disabled or offscreen"));
     }
     #[test]
     fn native_uia_approval_expires_after_one_minute_without_affecting_non_uia_actions() {
