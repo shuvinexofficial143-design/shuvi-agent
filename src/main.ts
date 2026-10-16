@@ -5,6 +5,7 @@ import {validateMasterPlan,validateMasterAction,assessMasterGoalDelivery} from "
 import {pinNativeWorkerModels,restorePinnedWorkerModels,chooseSpecialistTurn,specialistProposalMatches,delegatedWorkerContext} from "./native-worker-model-routing.mjs";
 import {decideNativeContinuation} from "./native-continuation-driver.mjs";
 import {planVerifiedNativeReadback} from "./master-safe-continuation.mjs";
+import {attachNativePremiereOpeningBlueprint} from "./master-opening-blueprint.mjs";
 import {captureMasterOpeningObservation,verifyMasterOpeningDelivery} from "./master-goal-window-acceptance.mjs";
 import {assessMasterFinalOutcome,summarizeMasterMissingProof,masterGoalEvidenceContext} from "./master-final-outcome.mjs";
 import type {AuditedOpeningObservation} from "./master-goal-window-acceptance.mjs";
@@ -1332,6 +1333,12 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
   if(!ownerBrief){
     await stopAgentForSafety("Original owner brief is absent/oversized in the task checkpoint. No native action staged; start a new bounded task.");
     return;
+  }
+  // The ONLY locally synthesized graph is the two-step, readback-only
+  // Premiere opening workflow; don't accept this shortcut for remote jobs,
+  // project/edit requests or any already staged/recovered native graph.
+  if(!remoteTask&&!cancelRequested){
+    proposal=attachNativePremiereOpeningBlueprint(ownerBrief,proposal,orchestration);
   }
   const actionScope=validateMasterAction(ownerBrief,proposal);
   if(!actionScope.ok){
