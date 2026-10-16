@@ -227,9 +227,16 @@ fn request(session:&mut OwnedSession,state:&ActionState,op:&str,plan:Option<&Val
     }
     let mut command=json!({"version":1,"session_id":session.session_id,"op":op});
     if let Some(value)=plan{
-        command["plan"]=value.clone();
-        command["allow_render"]=json!(allow_render);
-        command["expected_scene_revision"]=json!(expected_revision.ok_or("Fresh Blender scene revision required before native mutation.")?);
+        if op=="run_plan"{
+            command["plan"]=value.clone();
+            command["allow_render"]=json!(allow_render);
+            command["expected_scene_revision"]=json!(expected_revision.ok_or("Fresh Blender scene revision required before native mutation.")?);
+        }else if op=="objects"{
+            command["query"]=value.clone();
+            command["expected_scene_revision"]=json!(expected_revision.ok_or("Fresh scene revision required for read-only object discovery.")?);
+        }else{
+            return Err("Blender broker operation does not accept model-supplied payload.".into());
+        }
     }
     let mut encoded=serde_json::to_vec(&command).map_err(|_|"Cannot encode bounded Blender command.")?;
     if encoded.len()>65536{return Err("Blender session plan exceeds 64 KiB.".into());}
@@ -440,6 +447,47 @@ pub(crate) fn status(registry:&SessionRegistry,state:&ActionState,id:&str)->Resu
     // A stale identity or interrupted response quarantines the owned session.
     // Wrong caller-supplied ID is not evidence the current child is unhealthy.
     if result.is_err() && slot.as_ref().is_some_and(|s|s.session_id==id) {
+        retire(state,&mut slot);
+    }
+    result
+}
+
+pub(crate) fn objects(
+    registry:&SessionRegistry,state:&ActionState,id:&str,
+    scene_revision:&str,offset:u64,limit:u64,name_prefix:&str,object_type:Option<&str>
+)->Result<Value,String>{
+    if scene_revision.len()!=64
+        || !scene_revision.bytes().all(|c|c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        || offset>1000 || !(1..=5).contains(&limit)
+        || name_prefix.len()>80 || name_prefix.contains('\0')
+        || object_type.is_some_and(|v|v.is_empty()||v.len()>32){
+        return Err("Read-only Blender object query exceeds native bounds.".into());
+    }
+    let query=json!({"offset":offset,"limit":limit,
+        "name_prefix":name_prefix,"object_type":object_type});
+    let mut slot=registry.current.lock().map_err(|_|"Blender session lock poisoned.".to_string())?;
+    let result=(||{
+        let session=slot.as_mut().ok_or("No Blender session is owned by Shuvi.")?;
+        if session.session_id!=id{return Err("Blender object lookup session ID mismatch.".into());}
+        let response=request(session,state,"objects",Some(&query),false,
+            Some(scene_revision),PROBE_DEADLINE)?;
+        if response.get("status").and_then(Value::as_str)!=Some("alive")
+            ||response.get("operation").and_then(Value::as_str)!=Some("objects")
+            ||response.get("read_only").and_then(Value::as_bool)!=Some(true)
+            ||response.get("scene_revision").and_then(Value::as_str)!=Some(scene_revision)
+            ||response.get("offset").and_then(Value::as_u64)!=Some(offset)
+            ||response.get("objects").and_then(Value::as_array)
+                .is_none_or(|items|items.len()>limit as usize)
+            ||response.get("total").and_then(Value::as_u64).is_none_or(|n|n>10000){
+            return Err("Authenticated Blender object page evidence was incomplete.".into());
+        }
+        Ok(json!({"status":"read_only_object_page","session_id":id,
+            "scene_revision":scene_revision,"offset":offset,
+            "total":response["total"],"next_offset":response["next_offset"],
+            "objects":response["objects"],"read_only":true,
+            "requires_new_action_approval_for_mutation":true}))
+    })();
+    if result.is_err() && slot.as_ref().is_some_and(|s|s.session_id==id){
         retire(state,&mut slot);
     }
     result
