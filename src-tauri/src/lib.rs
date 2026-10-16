@@ -67,6 +67,7 @@ mod after_effects_mogrt_provenance;
 mod premiere_final_delivery;
 mod premiere_full_decode;
 mod premiere_delivery_spec;
+mod premiere_selective_captions;
 mod premiere_review_binding;
 mod premiere_edit_session;
 mod premiere_edit_job;
@@ -355,6 +356,7 @@ Transcript rebuild handles explicit interior text removal by creating and insert
 - premiere_insert_verified_mogrt: {"request":{"path":"absolute existing .mogrt path","expected_sha256":"64 hex from premiere_inspect_mogrt_artifact or separately verified AE output","seconds":0,"video_track":0,"audio_track":0}} — approved high-risk insertion with exact project/sequence expectation, checkpoint, SHA256 pre/post proof, native inserted-clip readback and independently persisted .prproj; no auto retry.
 - premiere_insert_mogrt_library: {"library_name":"library","element_name":"template","seconds":0,"video_track":0,"audio_track":0}
 - premiere_import_media: {"paths":["absolute media path 1","absolute media path 2"],"expected_sha256":["64-hex source1","64-hex source2"]} — optional for ordinary files; REQUIRED for approved cross-worker media; hashes strictly align with paths
+- premiere_create_selective_srt: {"request":{"schema_version":1,"output":"new absolute .srt","duration_seconds":30,"cues":[{"start_seconds":0,"end_seconds":1,"text":"selected words","selected":true}],"source_transcript_sha256":null}} — owner-approved create-new only, SHA256-verified local subtitle interchange; DOES NOT add Premiere caption-track text
 - premiere_import_caption_source: {"path":"absolute .srt or .vtt path"}
 - premiere_create_sequence_from_media: {"name":"sequence name","paths":["absolute media path 1","absolute media path 2"],"expected_sha256":["64-hex source1","64-hex source2"]} — optional for ordinary files, required for verified worker sources
 - premiere_create_subsequence: {"targets":[{"kind":"video|audio","track":0,"clip_index":0}]}
@@ -986,6 +988,7 @@ enum ToolAction {
     PremiereInspectFinalDelivery { job_id:String,expected_project_guid:String,expected_sequence_guid:String },
     PremiereVerifyMp4Decode {job_id:String,expected_project_guid:String,expected_sequence_guid:String,budget_secs:u64},
     PremiereInspectDeliverySpec {job_id:String,expected_project_guid:String,expected_sequence_guid:String,spec:premiere_delivery_spec::Spec},
+    PremiereCreateSelectiveSrt {request:premiere_selective_captions::Request},
     PremiereReadinessReport,
     PremiereSaveProject,
     AfterEffectsCapabilityReport,
@@ -1879,6 +1882,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_insert_mogrt_library"
         | "premiere_import_media"
         | "premiere_import_caption_source"
+        | "premiere_create_selective_srt"
         | "premiere_create_sequence_from_media"
         | "premiere_create_subsequence"
         | "premiere_replace_with_subsequence"
@@ -7170,6 +7174,16 @@ fn stage_tool(
                 "Verify isMulticamClip() first, checkpoint the project, insert through native SequenceEditor, then require exact insertion delta.".into(),
                 RiskLevel::High,
             )
+        }
+        "premiere_create_selective_srt" => {
+            let request:premiere_selective_captions::Request=serde_json::from_value(
+                proposal.arguments.get("request").cloned().ok_or("Selective SRT request is required.")?
+            ).map_err(|e|format!("Invalid selective caption SRT request: {e}"))?;
+            request.validate()?;
+            (ToolAction::PremiereCreateSelectiveSrt {request:request.clone()},
+                "Create a selected-caption SRT source".into(),
+                format!("Create NEW SRT source at {} from {} bounded cues; selected text is owner-supplied, no Adobe timeline operation or automatic import.",request.output,request.cues.len()),
+                RiskLevel::High)
         }
         "premiere_import_caption_source" => {
             let path=absolute_path(arg_string(&proposal.arguments,"path")?)?;
@@ -16743,6 +16757,17 @@ try {{
                 },
                 exit_code: Some(if failures == 0 && results.len() == total { 0 } else { 1 }),
             })
+        }
+        ToolAction::PremiereCreateSelectiveSrt {request} => {
+            // This is a separately approved real new-file write with independent
+            // SHA256 readback. Never claim native Adobe caption-track creation.
+            let evidence=premiere_selective_captions::publish(&request)?;
+            Ok(ActionResult{success:true,tool,
+                stdout:json!({"source":evidence,"source_tested":false,
+                    "premiere_caption_track_created":false,
+                    "adobe_live_tested":false,"requires_separate_import_approval":true,
+                    "retry_automatically":false}).to_string(),
+                stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::PremiereImportCaptionSource {path} => {
             let checkpoint=backup_premiere_project(&premiere_bridge).await?;
