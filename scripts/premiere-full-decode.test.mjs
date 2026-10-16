@@ -37,7 +37,7 @@ test("cannot run arbitrary model-supplied shell command or decoder from PATH",()
   assert.match(source,/pub fn detect_trusted_decoder\(\)->Option<PathBuf>/);
   assert.match(source,/std::env::var_os\("ProgramFiles"\)/);
   assert.match(source,/join\("ffmpeg.exe"\)/);
-  assert.match(source,/canonical\.starts_with/);
+  assert.match(source,/canon\.starts_with\(&root_c\)/);
   assert.match(source,/file_attributes\(\)&0x400/);
   assert.match(source,/detect_trusted_decoder\(\)\.as_deref\(\)!=Some\(exe\)/);
   assert.doesNotMatch(source,/cmd\.exe|powershell\.exe|Command::new\("ffmpeg"\)|env::var\("PATH"\)/);
@@ -63,6 +63,7 @@ test("full decode needs final progress=end, decoded frames and nearly full expec
   assert.match(source,/frames>0&&seconds\.is_finite\(\)/);
   assert.match(source,/seconds>=expected_duration\*0\.97/);
   assert.match(source,/one_final_progress_end_and_full_duration_are_mandatory/);
+  assert.match(source,/stream_0_0_q=-1\.0/);
   assert.match(source,/invalid_or_truncated_progress_never_promotes_success/);
 });
 test("native handler selects only exact job, releases mutex before expensive decoder, never writes export store",()=>{
