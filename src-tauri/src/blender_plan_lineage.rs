@@ -163,6 +163,43 @@ mod tests{
         assert!(receipt_matches(&json!({"approved_plan_lineage":forged}),"render").is_err());
     }
     #[test]
+    fn model1_and_model2_are_recognized_only_with_safe_named_mesh_and_revision_bindings(){
+        let checkpoint=json!([{"source_step":"post_edit_scene",
+            "source_path":["data","revision"],"target_path":["expected_scene_revision"]}]);
+        let mesh_source=json!([{"source_step":"create",
+            "source_path":["data","after","object","object_id"],"target_path":["object_id"]}]);
+        let locate_source=json!([{"source_step":"locate",
+            "source_path":["data","items",0,"object_id"],"target_path":["object_id"]}]);
+        let geometry=json!({"vertices":[[0,0,0],[1,0,0],[1,1,0],[0,1,0],[0,0,1]],
+            "faces":[[0,1,2,3],[0,1,4],[1,2,4],[2,3,4],[3,0,4]]});
+        let m1=json!({"steps":[
+            step("create","mesh.create",json!({"name":"Shuvi41ProofMesh","geometry":geometry}),json!([])),
+            step("mesh_read","mesh.inspect",json!({"object_id":"BOUND"}),mesh_source),
+            step("shape","mesh.translate_vertices",json!({"target":{"expected_name":"Shuvi41ProofMesh"},
+                "indices":[4],"delta":[0.0,0.0,0.25]}),json!([{"source_step":"mesh_read"}])),
+            step("post_edit_scene","scene.inspect",json!({}),json!([])),
+            step("checkpoint","file.checkpoint",json!({"name":"shuvi41-proof-stage1.blend"}),checkpoint)
+        ]});
+        assert_eq!(derive(&m1).unwrap()["acceptance_stage"],"model1");
+        let mut altered=m1.clone();
+        altered["steps"][2]["request"]["payload"]["delta"]=json!([5,0,0]);
+        assert_eq!(derive(&altered).unwrap()["acceptance_stage"],"other");
+        let m2=json!({"steps":[
+            step("locate","objects.list",json!({"name_prefix":"Shuvi41ProofMesh",
+                "object_type":"MESH","offset":0}),json!([])),
+            step("mesh_read","mesh.inspect",json!({"object_id":"BOUND"}),locate_source),
+            step("shape_again","mesh.translate_vertices",json!({"target":{"expected_name":"Shuvi41ProofMesh"},
+                "indices":[4],"delta":[0.0,0.0,0.5]}),json!([{"source_step":"mesh_read"}])),
+            step("post_edit_scene","scene.inspect",json!({}),json!([])),
+            step("checkpoint","file.checkpoint",json!({"name":"shuvi41-proof-stage2.blend"}),checkpoint)
+        ]});
+        assert_eq!(derive(&m2).unwrap()["acceptance_stage"],"model2");
+        let mut switched=m2.clone();
+        switched["steps"][4]["request"]["payload"]["name"]=json!("different-output.blend");
+        assert_eq!(derive(&switched).unwrap()["acceptance_stage"],"other");
+    }
+
+    #[test]
     fn duplicate_steps_malformed_receipts_and_zero_steps_denied(){
         assert!(derive(&json!({"steps":[]})).is_err());
         let plan=json!({"steps":[
