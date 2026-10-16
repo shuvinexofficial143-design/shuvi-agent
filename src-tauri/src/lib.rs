@@ -3187,6 +3187,15 @@ fn prepare_native_uia_binding(
     if window.eq_ignore_ascii_case("desktop") || window.chars().any(char::is_control) {
         return Err("UIA mutation cannot use a desktop or control-formatted target.".into());
     }
+    // Bound all native selectors before creating or approving the action.
+    // Exact UIA control identity can legitimately contain punctuation, but
+    // never accept whitespace-only, control characters or oversized labels.
+    for selector in [name, automation_id].into_iter().flatten() {
+        if selector.is_empty() || selector.trim() != selector ||
+            selector.chars().count() > 180 || selector.chars().any(char::is_control) {
+            return Err("Native UIA selector must be a bounded exact control identity.".into());
+        }
+    }
     #[cfg(target_os = "windows")]
     {
         // One OS probe binds window HWND/PID AND the exact selected UIA
@@ -10844,7 +10853,16 @@ if ($e.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, 
 }} elseif ($e.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) {{
     $shuviSelectedItem = [System.Windows.Automation.SelectionItemPattern]$pattern
     $shuviSelectedItem.Select()
-    if (-not [bool]$shuviSelectedItem.Current.IsSelected) {{
+    $shuviSelectionVerified = $false
+    for ($shuviAttempt=0; $shuviAttempt -lt 5; $shuviAttempt++) {{
+        Assert-ShuviNativeTarget -root $root -element $e
+        if ([bool]$shuviSelectedItem.Current.IsSelected) {{
+            $shuviSelectionVerified = $true
+            break
+        }}
+        Start-Sleep -Milliseconds 60
+    }}
+    if (-not $shuviSelectionVerified) {{
         throw 'UIA SelectionItem action has no confirmed selected state; inspect before retry.'
     }}
     'SelectionItem state verified for element: ' + $e.Current.Name
@@ -10889,10 +10907,20 @@ $pattern = $null
 if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) {{
     throw 'Matching element does not expose ValuePattern.'
 }}
-([System.Windows.Automation.ValuePattern]$pattern).SetValue('{escaped_value}')
-# Native state readback: do not certify SetValue merely because the pattern call returned.
-$readbackValue = [string]([System.Windows.Automation.ValuePattern]$pattern).Current.Value
-if (-not [string]::Equals($readbackValue, '{escaped_value}', [System.StringComparison]::Ordinal)) {{
+$shuviValuePattern = [System.Windows.Automation.ValuePattern]$pattern
+$shuviValuePattern.SetValue('{escaped_value}')
+# Poll state ONLY, never repeat SetValue after an uncertain side effect.
+$shuviValueVerified = $false
+for ($shuviAttempt=0; $shuviAttempt -lt 5; $shuviAttempt++) {{
+    Assert-ShuviNativeTarget -root $root -element $e
+    $readbackValue = [string]$shuviValuePattern.Current.Value
+    if ([string]::Equals($readbackValue, '{escaped_value}', [System.StringComparison]::Ordinal)) {{
+        $shuviValueVerified = $true
+        break
+    }}
+    Start-Sleep -Milliseconds 60
+}}
+if (-not $shuviValueVerified) {{
     throw 'UIA ValuePattern readback differs from requested value; outcome requires independent inspection.'
 }}
 'Value state verified on element: ' + $e.Current.Name"#
@@ -11056,8 +11084,17 @@ if (-not $e.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Patt
 $togglePattern = [System.Windows.Automation.TogglePattern]$pattern
 $toggleBefore = $togglePattern.Current.ToggleState
 $togglePattern.Toggle()
-$toggleAfter = $togglePattern.Current.ToggleState
-if ($toggleAfter -eq $toggleBefore) {{
+$shuviToggleVerified = $false
+for ($shuviAttempt=0; $shuviAttempt -lt 5; $shuviAttempt++) {{
+    Assert-ShuviNativeTarget -root $root -element $e
+    $toggleAfter = $togglePattern.Current.ToggleState
+    if ($toggleAfter -ne $toggleBefore) {{
+        $shuviToggleVerified = $true
+        break
+    }}
+    Start-Sleep -Milliseconds 60
+}}
+if (-not $shuviToggleVerified) {{
     throw 'UIA TogglePattern did not show a state transition; outcome requires independent inspection.'
 }}
 'Toggle state changed and read back on element: ' + $e.Current.Name"#
@@ -11106,7 +11143,16 @@ $expectedExpansionState = [System.Windows.Automation.ExpandCollapseState]::Expan
 if ('{method}' -eq 'Collapse') {{
     $expectedExpansionState = [System.Windows.Automation.ExpandCollapseState]::Collapsed
 }}
-if ($expand.Current.ExpandCollapseState -ne $expectedExpansionState) {{
+$shuviExpansionVerified = $false
+for ($shuviAttempt=0; $shuviAttempt -lt 5; $shuviAttempt++) {{
+    Assert-ShuviNativeTarget -root $root -element $e
+    if ($expand.Current.ExpandCollapseState -eq $expectedExpansionState) {{
+        $shuviExpansionVerified = $true
+        break
+    }}
+    Start-Sleep -Milliseconds 60
+}}
+if (-not $shuviExpansionVerified) {{
     throw 'UIA ExpandCollapsePattern readback does not match approved state; outcome requires independent inspection.'
 }}
 '{method} state verified on element: ' + $e.Current.Name"#
