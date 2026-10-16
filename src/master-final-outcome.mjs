@@ -9,7 +9,7 @@ import {verifyMasterOpeningDelivery} from "./master-goal-window-acceptance.mjs";
 const REQUIREMENT_REASONS=Object.freeze({
  window:"Unique target-app window identity from a fresh Rust-audited OS inspection",
  new_project_identity:"Actual application project identity observed after a native project-create action",
- saved_project_location:"Native file identity, absolute .prproj path and Rust-rehashed project bytes",
+ saved_project_location:"Native file identity, absolute .prproj path and independent Rust SHA-256 file-byte attestation (Team 40 FNV-1a64 is not cryptographic)",
  observed_edit_effect:"Independent application timeline before/after evidence of the requested edit",
  persisted_export_artifact:"Rust-rehashed final exported video linked to the requested project and timeline"
 });
