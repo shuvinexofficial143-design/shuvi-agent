@@ -529,3 +529,37 @@ Adobe import permission. Local JSONL audit files are not externally
 signed or immutable, so an adversary with filesystem write permission
 may still tamper with them. Independent live host verification and
 cryptographic attestation remain separate possible future milestones.
+
+
+## Milestone — read-only authenticated persistent-session object discovery
+
+Modeling commands previously required guessing object names or embedding
+\`objects.list\` inside a plan whose final operation must checkpoint/render.
+The new typed action \`blender_session_objects\` is read-only and is subject
+to the canonical Shuvi proposal/owner-approval/audit path. It accepts
+\`session_id\`, a fresh exact \`expected_scene_revision\` from
+\`blender_session_inspect\`, \`offset\` (0..1000), \`limit\` (1..5),
+optional \`name_prefix\` (at most 80 UTF-8 bytes) and optional
+\`object_type\` (max 32 chars).
+
+Rust checks the immutable session ID and all bounds. The existing private,
+owned Python broker exposes ONLY a new allowlisted \`objects\` verb;
+it constructs a fixed \`objects.list\` operation in the authenticated
+Blender Agent transport, carrying \`expected_revision\`. The Python
+broker verifies exact returned session/revision/offset/page length,
+then sanitizes object readback to name/type/object_id/revision and the
+\`details_truncated\` flag. Rust checks the same bounded response before
+returning a \`status=read_only_object_page\` record. No scene mutation,
+model-provider Python, code injection, file write or UI interaction occurs.
+
+Object IDs are scoped to the current authenticated Blender session and
+must not be reused across restarts/reopens. Scene mismatch, transport loss
+or uncertain results retire the owned session, never silently continue
+with an older object identity. Any follow-up mutation still requires a
+fresh separately owner-approved \`blender_session_plan\` and its
+scene-revision compare-and-swap; object discovery alone grants no edit.
+
+Session fixtures cover happy-path pagination, exact allowlist/bounds,
+rejection of unsupported extra command keys and stale-scene failure.
+Source tests check native Rust parsing, broker IPC and the fixture suite.
+No live Blender executable was launched during development.
