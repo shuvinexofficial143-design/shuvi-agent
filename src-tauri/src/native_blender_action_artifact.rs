@@ -146,15 +146,19 @@ pub(crate) fn record_verified(app:&AppHandle,action_id:&str,evidence:&Value)->Re
     };
     create_at(&root(app)?,&record)
 }
-pub(crate) fn require_exact(app:&AppHandle,id:&str,
+fn require_exact_at(dir:&Path,id:&str,
     path:&str,sha256:&str,bytes:u64)->Result<(),String>{
-    let _io=IO.lock().map_err(|_|"Blender certificate journal lock poisoned.")?;
-    let record=read_at(&root(app)?,id)?
+    let record=read_at(dir,id)?
         .ok_or("Native Blender delivery lacks matching supervised worker certificate.")?;
     if record.path!=path||record.sha256!=sha256||record.bytes!=bytes{
         return Err("Blender delivered artifact was not produced by the exact audited action UUID.".into());
     }
     verify_file_record(&record)
+}
+pub(crate) fn require_exact(app:&AppHandle,id:&str,
+    path:&str,sha256:&str,bytes:u64)->Result<(),String>{
+    let _io=IO.lock().map_err(|_|"Blender certificate journal lock poisoned.")?;
+    require_exact_at(&root(app)?,id,path,sha256,bytes)
 }
 #[cfg(test)]
 mod tests{
@@ -192,6 +196,20 @@ mod tests{
         assert!(verify_file_record(&record).is_err());
         let forged=VerifiedBlenderArtifact{sha256:"0".repeat(64),..record};
         assert!(verify_file_record(&forged).is_err());
+        let _=fs::remove_dir_all(dir);
+    }
+    #[test]
+    fn full_final_delivery_requires_exact_uuid_path_hash_and_bytes(){
+        let (dir,output,record)=prepare();
+        create_at(&dir,&record).unwrap();
+        require_exact_at(&dir,A,&record.path,&record.sha256,record.bytes).unwrap();
+        assert!(require_exact_at(&dir,B,&record.path,&record.sha256,record.bytes).is_err());
+        assert!(require_exact_at(&dir,A,&format!("{}.copy",record.path),
+            &record.sha256,record.bytes).is_err());
+        assert!(require_exact_at(&dir,A,&record.path,&"0".repeat(64),record.bytes).is_err());
+        assert!(require_exact_at(&dir,A,&record.path,&record.sha256,record.bytes+1).is_err());
+        fs::write(&output,b"TAMPERED AFTER ATTESTATION").unwrap();
+        assert!(require_exact_at(&dir,A,&record.path,&record.sha256,record.bytes).is_err());
         let _=fs::remove_dir_all(dir);
     }
     #[test]
