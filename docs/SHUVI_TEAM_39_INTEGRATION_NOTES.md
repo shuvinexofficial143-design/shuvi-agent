@@ -297,6 +297,28 @@ These checks cannot atomically freeze an external application or prove
 a complete editing objective. Real Windows UIA acceptance remains untested
 without owner authorization. No merge or live desktop action was performed.
 
+## Milestone 8 — Native read-only capability preflight before approval
+
+- The seven Rust UIA mutation variants now choose a matching, immutable
+  native UIA capability probe, based exclusively on the typed ToolAction.
+  Arbitrary AI-provided capability scripts or selector-derived code are
+  not executed. The probe runs inside the same OS HWND/PID/RuntimeId
+  discovery that produces the prepared control identity.
+- ui_click requires either InvokePattern or SelectionItemPattern.
+- ui_set_value requires ValuePattern and refuses read-only controls.
+- ui_toggle requires TogglePattern, and ui_expand_collapse requires
+  ExpandCollapsePattern; ui_scroll requires a vertically scrollable
+  ScrollPattern; ui_focus and ui_send_keys require keyboard-focus capability.
+- Unsupported and ambiguous controls fail at native preparation *before*
+  the owner reviews/approves. Existing execution-time RuntimeId and
+  pattern checks are still mandatory; a capability can disappear later.
+- PowerShell uses grouped ValuePattern/ScrollPattern property reads.
+  New Rust unit and Node tests cover every variant plus unknown-tool
+  rejection and read-only probe semantics.
+- Scope overlaps only native UIA preparation in shared src-tauri/src/lib.rs
+  and team39's native UIA module/tests. No merge, Windows live action,
+  direct approval bypass or new automated retry was introduced.
+
 ## Windows acceptance — explicitly NOT YET run
 
 Run only with separate owner consent on a disposable desktop/test fixture.
