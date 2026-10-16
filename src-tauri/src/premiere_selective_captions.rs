@@ -51,7 +51,7 @@ fn check_parent(path:&Path)->Result<(),String>{
     let uppercase=stem.split('.').next().unwrap_or("").to_ascii_uppercase();
     let forbidden=matches!(uppercase.as_str(),"CON"|"PRN"|"AUX"|"NUL"|"COM1"|"COM2"|"COM3"|"COM4"|"COM5"|"COM6"|"COM7"|"COM8"|"COM9"|"LPT1"|"LPT2"|"LPT3"|"LPT4"|"LPT5"|"LPT6"|"LPT7"|"LPT8"|"LPT9");
     if name.starts_with('.')||name.ends_with('.')||name.ends_with(' ')
-        ||name.chars().any(|c| "<>:\\"|?*".contains(c))||forbidden {
+        ||name.chars().any(|c| matches!(c, '<'|'>'|':'|'"'|'|'|'?'|'*'))||forbidden {
         return Err("Caption output basename is unsupported.".into());
     }
     let mut ancestor=path.parent();
