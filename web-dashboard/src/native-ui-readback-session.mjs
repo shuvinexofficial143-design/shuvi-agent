@@ -62,6 +62,13 @@ export function auditUiReadback(pending,proposal,result,windowSession,nowMs=Date
   if(!rows.every(x=>x&&typeof x==="object"&&!Array.isArray(x)&&
    ((typeof x.Name==="string"&&x.Name.trim())||
     (typeof x.AutomationId==="string"&&x.AutomationId.trim()))))return pending;
+  // A prior window listing alone cannot prove the *fresh* read ran in the
+  // original app. Require the native root HWND/PID attached to every row
+  // of this separately audited UIA read. A same-title replacement is unsafe.
+  if(!rows.every(x=>Number.isSafeInteger(x.ObservedWindowHwnd)&&
+   Number.isSafeInteger(x.ObservedWindowPid)&&
+   x.ObservedWindowHwnd===pending.hwnd&&
+   x.ObservedWindowPid===pending.pid))return pending;
   // The verified new observation must contain the SAME unique control as
   // the previous mutation. A generic ui_discover showing unrelated buttons
   // cannot silently unlock a second mutation on a different UIA element.
