@@ -68,6 +68,7 @@ mod premiere_final_delivery;
 mod premiere_full_decode;
 mod premiere_delivery_spec;
 mod premiere_selective_captions;
+mod premiere_caption_graphics;
 mod premiere_review_binding;
 mod premiere_edit_session;
 mod premiere_edit_job;
@@ -356,6 +357,7 @@ Transcript rebuild handles explicit interior text removal by creating and insert
 - premiere_insert_verified_mogrt: {"request":{"path":"absolute existing .mogrt path","expected_sha256":"64 hex from premiere_inspect_mogrt_artifact or separately verified AE output","seconds":0,"video_track":0,"audio_track":0}} — approved high-risk insertion with exact project/sequence expectation, checkpoint, SHA256 pre/post proof, native inserted-clip readback and independently persisted .prproj; no auto retry.
 - premiere_insert_mogrt_library: {"library_name":"library","element_name":"template","seconds":0,"video_track":0,"audio_track":0}
 - premiere_import_media: {"paths":["absolute media path 1","absolute media path 2"],"expected_sha256":["64-hex source1","64-hex source2"]} — optional for ordinary files; REQUIRED for approved cross-worker media; hashes strictly align with paths
+- premiere_plan_caption_graphics: {"request":{"schema_version":1,"captions":{"schema_version":1,"output":"existing exact .srt","duration_seconds":30,"cues":[{"start_seconds":0,"end_seconds":1,"text":"Hello","selected":true}]},"expected_srt_sha256":"64-hex saved file SHA256","mapping":"existing inspected MOGRT mapping","revision":1,"video_track":2,"audio_track":0,"static_fields":{}}} — READ-ONLY exact selected SRT -> existing premiere_batch_graphics parameters; requires separate High-risk batch approval; no caption-track claims
 - premiere_create_selective_srt: {"request":{"schema_version":1,"output":"new absolute .srt","duration_seconds":30,"cues":[{"start_seconds":0,"end_seconds":1,"text":"selected words","selected":true}],"source_transcript_sha256":null}} — owner-approved create-new only, SHA256-verified local subtitle interchange; DOES NOT add Premiere caption-track text
 - premiere_import_caption_source: {"path":"absolute .srt or .vtt path","expected_sha256":"optional exact 64-hex SHA256 from inspected/selective SRT"} — checkpoint + stable source-hash readback; native import does NOT automatically create a caption track or save .prproj
 - premiere_create_sequence_from_media: {"name":"sequence name","paths":["absolute media path 1","absolute media path 2"],"expected_sha256":["64-hex source1","64-hex source2"]} — optional for ordinary files, required for verified worker sources
@@ -989,6 +991,7 @@ enum ToolAction {
     PremiereVerifyMp4Decode {job_id:String,expected_project_guid:String,expected_sequence_guid:String,budget_secs:u64},
     PremiereInspectDeliverySpec {job_id:String,expected_project_guid:String,expected_sequence_guid:String,spec:premiere_delivery_spec::Spec},
     PremiereCreateSelectiveSrt {request:premiere_selective_captions::Request},
+    PremierePlanCaptionGraphics {request:premiere_caption_graphics::Request},
     PremiereReadinessReport,
     PremiereSaveProject,
     AfterEffectsCapabilityReport,
@@ -1883,6 +1886,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_import_media"
         | "premiere_import_caption_source"
         | "premiere_create_selective_srt"
+        | "premiere_plan_caption_graphics"
         | "premiere_create_sequence_from_media"
         | "premiere_create_subsequence"
         | "premiere_replace_with_subsequence"
@@ -7174,6 +7178,16 @@ fn stage_tool(
                 "Verify isMulticamClip() first, checkpoint the project, insert through native SequenceEditor, then require exact insertion delta.".into(),
                 RiskLevel::High,
             )
+        }
+        "premiere_plan_caption_graphics" => {
+            let request:premiere_caption_graphics::Request=serde_json::from_value(
+                proposal.arguments.get("request").cloned().ok_or("Selected SRT + mapped MOGRT planning request is required.")?
+            ).map_err(|e|format!("Invalid caption graphics request: {e}"))?;
+            request.validate()?;
+            (ToolAction::PremierePlanCaptionGraphics{request},
+                "Plan selected captions as native MOGRT graphics".into(),
+                "Read-only verify an exact SRT SHA256 and saved MOGRT field-mapping revision. Return a bounded editable native premiere_batch_graphics payload for separate High-risk approval; never insert or encode in this stage.".into(),
+                RiskLevel::Low)
         }
         "premiere_create_selective_srt" => {
             let request:premiere_selective_captions::Request=serde_json::from_value(
@@ -16762,6 +16776,18 @@ try {{
                 },
                 exit_code: Some(if failures == 0 && results.len() == total { 0 } else { 1 }),
             })
+        }
+        ToolAction::PremierePlanCaptionGraphics {request} => {
+            let expected=premiere_bridge.expected.ok_or("Caption graphics plan requires current inspected Premiere project and sequence expectation.")?;
+            if expected.sequence_guid.is_none() || !expected.clips.is_empty() {
+                return Err("Caption graphics plan requires exact project+sequence expectation without old clip targets.".into());
+            }
+            let saved=premiere_graphics::list(&graphics_library_path(app)?)?
+                .into_iter().find(|row|row.mapping.name==request.mapping)
+                .ok_or("Caption MOGRT mapping unavailable; inspect and save exact template selectors first.")?;
+            let result=premiere_caption_graphics::plan(&request,&saved)?;
+            Ok(ActionResult{success:true,tool,stdout:result.to_string(),
+                stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::PremiereCreateSelectiveSrt {request} => {
             // This is a separately approved real new-file write with independent
