@@ -1,6 +1,7 @@
 const { entrypoints, host, versions } = require("uxp");
 const premiere = require("premierepro");
 const projectLifecycle = require("./project-lifecycle.js");
+const {newExportProbe, assessExportProbe, rememberProbe} = require("./encoder-export-evidence.js");
 const {validatedMediaPaths, assessSequenceMediaEvidence} = require("./media-workflow-evidence.js");
 const transcriptRebuild = require("./transcript-rebuild.js");
 const { planSpeed, SPEED_CAPABILITY } = require("./speed-workflows.js");
@@ -24,6 +25,7 @@ let deliverySession = null;
 const deliveredCommands = new Set();
 
 const mediaEncoderEvents = [];
+const recentShuviExportProbes = [];
 let mediaEncoderListenersBound = false;
 let mediaEncoderEventSequence = 0;
 
@@ -319,7 +321,8 @@ async function inspectMediaEncoderEvents(argumentsValue) {
     count: Math.min(limit, mediaEncoderEvents.length),
     events: mediaEncoderEvents.slice(-limit),
     correlatedToShuviExport: false,
-    note: "Encoder jobID/event evidence is observational until an exact Shuvi request-to-native-job correlation is proven."
+    shuviExportObservations: recentShuviExportProbes.slice(-16).map(probe => assessExportProbe(probe, mediaEncoderEvents)),
+    note: "Output-matched native queue/completion candidates are observational. External Adobe writers, exact request attribution, real output bytes and encoder completion remain unverified."
   };
 }
 
@@ -1908,7 +1911,7 @@ async function exportSequenceFrame(argumentsValue) {
   };
 }
 
-async function exportSequence(argumentsValue) {
+async function exportSequence(argumentsValue, bridgeRequestId) {
   requireDeliveryCapability("sequence");
   const output =
     typeof argumentsValue?.output === "string"
@@ -1931,8 +1934,11 @@ async function exportSequence(argumentsValue) {
   const sequence = await project.getActiveSequence();
   if (!sequence) throw new Error("No active Premiere sequence.");
 
+  // The bridge request ID is distinct from any Adobe native encoder jobID.
+  // Snapshot before export: an event seen earlier is never retroactively ours.
+  const probe = newExportProbe(bridgeRequestId, output, mediaEncoderEventSequence, Date.now());
   const manager = premiere.EncoderManager.getManager();
-  if (queueToAme) bindMediaEncoderListeners();
+  bindMediaEncoderListeners();
 
   if (queueToAme && !manager.isAMEInstalled) {
     throw new Error("Adobe Media Encoder is not installed.");
@@ -1953,9 +1959,15 @@ async function exportSequence(argumentsValue) {
   if (!success) {
     throw new Error("Premiere rejected the export request.");
   }
+  // Retain an observational readback after a successful native dispatch. A
+  // delayed queued event may appear in a later media_encoder_events call.
+  rememberProbe(recentShuviExportProbes, probe);
+  const exportEventEvidence = assessExportProbe(probe, mediaEncoderEvents);
 
   return {
     accepted: true,
+    bridgeRequestId,
+    exportEventEvidence,
     state: queueToAme ? "queued" : "accepted",
     completionVerified: false,
     overwriteRequested: overwrite,
@@ -7697,7 +7709,7 @@ async function dispatchNativeCommand(command) {
     case "export_sequence_frame":
       return await exportSequenceFrame(command.arguments || {});
     case "export_sequence":
-      return await exportSequence(command.arguments || {});
+      return await exportSequence(command.arguments || {}, command.id);
     default:
       throw new Error("Unsupported Shuvi Premiere command: " + command.action);
   }
