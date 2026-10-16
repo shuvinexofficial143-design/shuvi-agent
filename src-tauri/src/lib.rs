@@ -10802,12 +10802,48 @@ $matches = Resolve-ShuviUiMatches -root $root -condition $condition
 $items = @()
 for ($i = 0; $i -lt [Math]::Min($matches.Count, 25); $i++) {{
     $e = $matches.Item($i)
+    # Independent, read-only native state observation. Never export the
+    # ValuePattern string or password contents into the model audit.
+    $shuviToggleState = $null
+    $shuviExpansionState = $null
+    $shuviSelected = $null
+    $shuviVerticalPercent = $null
+    try {{
+        $p = $null
+        if ($e.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern,[ref]$p)) {{
+            $shuviToggleState = [string]([System.Windows.Automation.TogglePattern]$p).Current.ToggleState
+        }}
+    }} catch {{}}
+    try {{
+        $p = $null
+        if ($e.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern,[ref]$p)) {{
+            $shuviExpansionState = [string]([System.Windows.Automation.ExpandCollapsePattern]$p).Current.ExpandCollapseState
+        }}
+    }} catch {{}}
+    try {{
+        $p = $null
+        if ($e.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern,[ref]$p)) {{
+            $shuviSelected = [bool]([System.Windows.Automation.SelectionItemPattern]$p).Current.IsSelected
+        }}
+    }} catch {{}}
+    try {{
+        $p = $null
+        if ($e.TryGetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern,[ref]$p)) {{
+            $shuviVerticalPercent = [double]([System.Windows.Automation.ScrollPattern]$p).Current.VerticalScrollPercent
+        }}
+    }} catch {{}}
     $items += [PSCustomObject]@{{
         Name = $e.Current.Name
         AutomationId = $e.Current.AutomationId
         ControlType = $e.Current.ControlType.ProgrammaticName
         ClassName = $e.Current.ClassName
         IsEnabled = $e.Current.IsEnabled
+        IsOffscreen = $e.Current.IsOffscreen
+        HasKeyboardFocus = $e.Current.HasKeyboardFocus
+        ToggleState = $shuviToggleState
+        ExpandCollapseState = $shuviExpansionState
+        IsSelected = $shuviSelected
+        VerticalScrollPercent = $shuviVerticalPercent
         Bounds = $e.Current.BoundingRectangle.ToString()
     }}
 }}
