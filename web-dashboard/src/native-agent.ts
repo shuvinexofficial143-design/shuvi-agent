@@ -331,10 +331,13 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    modelRequests:b.modelRequests,expiresAt:b.expiresAt,phase,actionId
   });
   if(saved)taskRecoveryRevisions.set(b,revision);
-  if(saved&&phase==="outcome_unknown"){
-   // Protect an uncertain action/provider request even without a restart.
+  if(saved&&(phase==="outcome_unknown"||phase==="native_denied")){
+   // An audited denial is nonexecution evidence, but still requires owner
+   // review before creating a new Windows task. It cannot grant new approval.
    recoveryAcknowledged=false;
-   recoveryNotice.textContent="Current Windows task outcome is UNKNOWN. Review Rust Activity/Audit before acknowledging and starting another desktop task. No automatic retry.";
+   recoveryNotice.textContent=phase==="native_denied"
+    ?"Rust Audit recorded an expired, denied native UIA approval. No execution was requested by that action. Review Activity/Audit and acknowledge this prior task before starting another desktop task."
+    :"Current Windows task outcome is UNKNOWN. Review Rust Activity/Audit before acknowledging and starting another desktop task. No automatic retry.";
    recoveryNotice.hidden=false;
    recoveryCheck.hidden=!actionId;
    recoveryDismiss.hidden=false;
