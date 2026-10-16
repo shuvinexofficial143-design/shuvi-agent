@@ -13,7 +13,7 @@ function arm(tool){
 }
 test("SetValue verifies the exact approved value using ValuePattern.Current, not just invocation",()=>{
  const source=arm("UiSetValue");
- const invoke=source.indexOf(").SetValue('{escaped_value}')");
+ const invoke=source.indexOf("$shuviValuePattern.SetValue('{escaped_value}')");
  const read=source.indexOf("$readbackValue");
  const mismatch=source.indexOf("readback differs from requested value");
  assert.ok(invoke>=0&&read>invoke&&mismatch>read);
@@ -104,4 +104,30 @@ test("Native UIA approval ages out before durable execution while unrelated tool
    rust.indexOf("let action = action.ok_or_else",rust.indexOf("async fn execute_action(")));
  assert.match(expired,/event: "denied"\.into\(\)/);
  assert.doesNotMatch(expired,/execute_tool_with_action_id\(/);
+});
+
+test("ValuePattern performs exactly one mutation and bounded independent state polling",()=>{
+ const source=arm("UiSetValue");
+ assert.equal((source.match(/\$shuviValuePattern\.SetValue\(/g)||[]).length,1);
+ assert.match(source,/for \(\$shuviAttempt=0; \$shuviAttempt -lt 5;/);
+ assert.match(source,/Assert-ShuviNativeTarget -root \$root -element \$e/);
+ assert.match(source,/StringComparison\]::Ordinal/);
+ assert.match(source,/if \(-not \$shuviValueVerified\)/);
+});
+test("Toggle and ExpandCollapse never automatically repeat their mutations during state wait",()=>{
+ for(const [name,pattern] of [
+  ["UiToggle",/\$togglePattern\.Toggle\(\)/g],
+  ["UiExpandCollapse",/\$expand\.\{method\}\(\)/g]]){
+  const source=arm(name);
+  assert.equal((source.match(pattern)||[]).length,1,name);
+  assert.match(source,/for \(\$shuviAttempt=0; \$shuviAttempt -lt 5;/);
+  assert.match(source,/Assert-ShuviNativeTarget -root \$root -element \$e/);
+ }
+});
+test("UI selection polls only read-only state; never clicks repeatedly after uncertain outcome",()=>{
+ const source=arm("UiClick");
+ assert.equal((source.match(/\$shuviSelectedItem\.Select\(\)/g)||[]).length,1);
+ assert.match(source,/for \(\$shuviAttempt=0; \$shuviAttempt -lt 5;/);
+ assert.match(source,/if \(-not \$shuviSelectionVerified\)/);
+ assert.match(source,/Assert-ShuviNativeTarget -root \$root -element \$e/);
 });
