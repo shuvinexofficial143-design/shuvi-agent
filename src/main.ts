@@ -6,6 +6,7 @@ import {pinNativeWorkerModels,restorePinnedWorkerModels,chooseSpecialistTurn,spe
 import {decideNativeContinuation} from "./native-continuation-driver.mjs";
 import {planVerifiedNativeReadback} from "./master-safe-continuation.mjs";
 import {captureMasterOpeningObservation,verifyMasterOpeningDelivery} from "./master-goal-window-acceptance.mjs";
+import {assessMasterFinalOutcome,summarizeMasterMissingProof} from "./master-final-outcome.mjs";
 import type {AuditedOpeningObservation} from "./master-goal-window-acceptance.mjs";
 import {nativeTaskDeliveryClaims} from "./native-delivery-claims.mjs";
 import type {
@@ -1231,9 +1232,18 @@ async function continueAfterOutcome(): Promise<void> {
     const openingAcceptance=verifyMasterOpeningDelivery(
       orchestration.owner_request,orchestration.task_graph,schedule,nativeDelivery,
       openingWindowObservation,activePermissionScope.taskId);
+    // All native actions can be perfectly audited and still leave the
+    // ORIGINAL GOAL unfinished. Unsupported app/coding/creative goals must
+    // not fall through to 'success' merely because they lacked a verifier.
+    const finalOutcome=assessMasterFinalOutcome(
+      orchestration.owner_request,orchestration.task_graph,schedule,nativeDelivery,
+      openingWindowObservation,activePermissionScope.taskId);
     if(goalAcceptance.requiresIndependentAcceptance&&!openingAcceptance.verified){
-      await stopAgentForSafety("All native worker steps have successful Rust receipts, but ORIGINAL TASK UNVERIFIED: "+
-        (goalAcceptance.reason||openingAcceptance.reason)+" The confirmed task delivery is retained for owner inspection.");
+      await stopAgentForSafety(summarizeMasterMissingProof(finalOutcome));
+      return;
+    }
+    if(!finalOutcome.verified){
+      await stopAgentForSafety(summarizeMasterMissingProof(finalOutcome));
       return;
     }
     const completed=taskGraphProgress(orchestration.task_graph);
