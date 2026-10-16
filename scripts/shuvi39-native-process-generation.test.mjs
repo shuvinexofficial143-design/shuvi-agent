@@ -47,3 +47,22 @@ test("refusal is no side-effect, not an invitation to retry a possibly executed 
  assert.doesNotMatch(src,/SetForegroundWindow\(/);
  assert.doesNotMatch(src,/SendWait\(/);
 });
+
+test("named-app ui_find/ui_discover readback rejects app restart during enumeration",()=>{
+ const st=guard.indexOf("pub(super) fn readonly_window_attestation_script()");
+ const en=guard.indexOf("\nfn valid_label(",st);
+ assert.ok(st>=0&&en>st);
+ const src=guard.slice(st,en);
+ const initial=src.indexOf("$shuviReadStartTicks = ");
+ const check=src.indexOf("function Assert-ShuviObservedWindow");
+ const live=src.indexOf("$shuviReadLiveTicks = ",check);
+ assert.ok(initial>=0&&check>initial&&live>check);
+ assert.match(src,/GetWindowThreadProcessId\(\$shuviReadHwnd/);
+ assert.match(src,/\$shuviReadLiveTicks -ne \$shuviReadStartTicks/);
+ assert.match(src,/Observed UIA process restarted during readback/);
+ const begin=core.indexOf("        ToolAction::UiDiscover { window } => {");
+ const finish=core.indexOf("        ToolAction::UiClick {",begin);
+ const part=core.slice(begin,finish);
+ assert.match(part,/readonly_window_attestation_script/);
+ assert.match(part,/Assert-ShuviObservedWindow/);
+});
