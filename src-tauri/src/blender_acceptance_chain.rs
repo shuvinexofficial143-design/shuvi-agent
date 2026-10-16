@@ -74,6 +74,23 @@ pub(crate) fn review(reports:&Value,approved_root:&Path)->Result<Value,String>{
         if (index<2 && kind!="BLEND") || (index==2 && kind!="PNG") {
             return Err("Blender acceptance stage file format mismatch.".into());
         }
+        if index==2 {
+            // The authenticated broker already had to confirm Blender loaded
+            // this canonical file and that its bytes matched the source SHA
+            // both before and after opening. This reviewer additionally
+            // ties those result claims to the CURRENT stage2 manifest bytes.
+            // The receipts remain caller-supplied: historic audit origin is
+            // explicitly NOT re-authenticated by this read-only review.
+            let input=receipt.get("input_checkpoint")
+                .ok_or("Render stage lacks the authenticated Blender input-checkpoint receipt.")?;
+            if input.get("path").and_then(Value::as_str)!=Some(paths[1].as_str())
+                ||input.get("sha256").and_then(Value::as_str)!=Some(hashes[1].as_str())
+                ||input.get("bytes")!=items[1].pointer("/artifact_manifest/artifact/bytes")
+                ||input.get("verified_loaded_file_path").and_then(Value::as_bool)!=Some(true)
+                ||input.get("loaded_file_hash_checked").and_then(Value::as_bool)!=Some(true){
+                return Err("Render source does not match the verified stage2 checkpoint identity.".into());
+            }
+        }
         if index<2 {
             let evidence=manifest.get("evidence").ok_or("Blender stage reopen evidence missing.")?;
             if evidence.get("independent_read_only_reopen").and_then(Value::as_bool)!=Some(true)
@@ -133,6 +150,7 @@ pub(crate) fn review(reports:&Value,approved_root:&Path)->Result<Value,String>{
         "mesh_change_observed_in_supplied_reopen_evidence":true,
         "historical_owner_approval_reauthenticated":false,
         "render_source_stage2_binding_proven":false,
+        "render_source_stage2_binding_consistent":true,
         "live_blender_runtime_verified_by_this_review":false,
         "visual_quality_verified":false,
         "import_performed":false,
@@ -231,7 +249,16 @@ mod tests {
             "session_id":session,"source_action_id":action,"artifact_manifest":manifest})
     }
     fn fixtures(work:&Workspace)->Value{
-        json!([blend_receipt(work,0,A1,S1),blend_receipt(work,1,A2,S1),render_receipt(work,A3,S3)])
+        let first=blend_receipt(work,0,A1,S1);
+        let second=blend_receipt(work,1,A2,S1);
+        let mut render=render_receipt(work,A3,S3);
+        render["input_checkpoint"]=json!({
+            "path":second["artifact_manifest"]["artifact"]["absolute_path"],
+            "sha256":second["artifact_manifest"]["artifact"]["sha256"],
+            "bytes":second["artifact_manifest"]["artifact"]["bytes"],
+            "verified_loaded_file_path":true,"loaded_file_hash_checked":true,
+        });
+        json!([first,second,render])
     }
 
     #[test]
@@ -242,9 +269,31 @@ mod tests {
         assert_eq!(value["first_two_same_session"],true);
         assert_eq!(value["render_uses_different_session"],true);
         assert_eq!(value["render_source_stage2_binding_proven"],false);
+        assert_eq!(value["render_source_stage2_binding_consistent"],true);
         assert_eq!(value["historical_owner_approval_reauthenticated"],false);
         assert_eq!(value["live_blender_runtime_verified_by_this_review"],false);
         assert_eq!(value["import_performed"],false);
+    }
+
+    #[test]
+    fn rejects_substituted_render_input_path_sha_size_or_missing_load_proof(){
+        let workspace=Workspace::new();let good=fixtures(&workspace);
+        let mut wrong_path=good.clone();
+        wrong_path[2]["input_checkpoint"]["path"]=
+            wrong_path[0]["artifact_manifest"]["artifact"]["absolute_path"].clone();
+        assert!(review(&wrong_path,&workspace.0).is_err());
+        let mut wrong_hash=good.clone();
+        wrong_hash[2]["input_checkpoint"]["sha256"]=json!("0".repeat(64));
+        assert!(review(&wrong_hash,&workspace.0).is_err());
+        let mut wrong_size=good.clone();
+        wrong_size[2]["input_checkpoint"]["bytes"]=json!(1);
+        assert!(review(&wrong_size,&workspace.0).is_err());
+        let mut missing=good.clone();
+        missing[2].as_object_mut().unwrap().remove("input_checkpoint");
+        assert!(review(&missing,&workspace.0).is_err());
+        let mut no_proof=good.clone();
+        no_proof[2]["input_checkpoint"]["verified_loaded_file_path"]=json!(false);
+        assert!(review(&no_proof,&workspace.0).is_err());
     }
 
     #[test]
