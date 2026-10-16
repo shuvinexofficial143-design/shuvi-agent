@@ -7,6 +7,7 @@ explicitly approved plan with a verified saved output can succeed.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -48,7 +49,11 @@ def run(argv: list[str] | None = None) -> int:
         from shuvi_blender_agent.safety import SafetyPolicy
         from shuvi_blender_agent.contracts import Status
 
-        plan_json = json.loads(args.python_plan.read_text(encoding="utf-8"))
+        staged_bytes = args.python_plan.read_bytes()
+        if not 0 < len(staged_bytes) <= MAX_PLAN_BYTES:
+            raise ValueError("Staged plan exceeded the approved byte budget")
+        approved_plan_sha256 = hashlib.sha256(staged_bytes).hexdigest()
+        plan_json = json.loads(staged_bytes.decode("utf-8"))
         plan = Plan.from_dict(plan_json)
         if not 1 <= len(plan.steps) <= MAX_STEPS or plan.timeout_ms > 90_000:
             raise ValueError("Plan exceeds Shuvi bounded action limits")
@@ -107,6 +112,7 @@ def run(argv: list[str] | None = None) -> int:
                 "artifact": reread,
                 "destructive_allowed": False,
                 "render_approved": args.allow_render,
+                "approved_plan_sha256": approved_plan_sha256,
             }
             payload = json.dumps(response, ensure_ascii=False, separators=(",", ":"))
             if args.result_file is not None:

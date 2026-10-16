@@ -8,6 +8,7 @@ use tauri::{AppHandle,Manager};
 use uuid::Uuid;
 use crate::execution_lease::NativeExecutionLease;
 use crate::ActionState;
+use sha2::{Digest,Sha256};
 
 const MAX_PLAN_BYTES:usize=64*1024;
 const MAX_RECEIPT_BYTES:usize=1024*1024;
@@ -43,8 +44,17 @@ fn approved_plan_contract(plan:&Value,allow_render:bool)->Result<(usize,&str),St
     }
     Ok((steps.len(),final_op))
 }
+fn approved_plan_hash_matches(response:&Value,expected:&str)->Result<(),String>{
+    let actual=response.get("approved_plan_sha256").and_then(Value::as_str)
+        .ok_or("Authenticated Blender plan response lacks exact input fingerprint.")?;
+    if actual!=expected ||actual.len()!=64 ||!actual.bytes().all(|b|
+        b.is_ascii_digit()||(b'a'..=b'f').contains(&b)){
+        return Err("Blender worker result does not match the exact approved plan bytes.".into());
+    }
+    Ok(())
+}
 fn native_plan_response(file:&Path,dir:&Path,output_dir:&Path,render:bool,
-    expected_operation:&str,expected_steps:usize)->Result<Value,String>{
+    expected_operation:&str,expected_steps:usize,expected_plan_sha256:&str)->Result<Value,String>{
     let meta=fs::symlink_metadata(file)
         .map_err(|_|"Owned Blender plan final evidence is missing.")?;
     if !meta.is_file()||meta.file_type().is_symlink()
@@ -74,6 +84,10 @@ fn native_plan_response(file:&Path,dir:&Path,output_dir:&Path,render:bool,
         ||value.get("executed_steps").and_then(Value::as_u64).is_none_or(|steps|steps==0||steps>6){
         return Err("Owned Blender plan lacks complete authenticated host readback.".into());
     }
+    // The Python child hashes precisely the staged UTF-8 JSON bytes before
+    // parsing. Rust hashes its independently prepared copy prior to launch;
+    // the full approved plan, not only final operation/step count, is bound.
+    approved_plan_hash_matches(&value,expected_plan_sha256)?;
     if value.get("final_operation").and_then(Value::as_str)!=Some(expected_operation)
         ||value.get("executed_steps").and_then(Value::as_u64)!=Some(expected_steps as u64){
         return Err("Blender completed operation/step count differs from exact approved plan.".into());
@@ -94,7 +108,8 @@ fn native_plan_response(file:&Path,dir:&Path,output_dir:&Path,render:bool,
     Ok(json!({"status":"verified","worker":"blender",
         "full_plan_completed":true,"artifact":value["artifact"],
         "verified_by_native_sha256":true,
-        "plan_steps":value["executed_steps"],"allow_render":render}))
+        "plan_steps":value["executed_steps"],"allow_render":render,
+        "approved_plan_sha256":expected_plan_sha256}))
 }
 fn prepare_plan(root:&Path,bytes:&[u8])->Result<TemporaryFile,String>{
     if bytes.is_empty()||bytes.len()>MAX_PLAN_BYTES{
@@ -146,6 +161,7 @@ pub(crate) fn execute<'a>(app:&AppHandle,state:&ActionState,
         .map_err(|_|"Cannot locate private owned Blender plan data.")?
         .join("owned-blender-plan");
     let bytes=serde_json::to_vec(plan).map_err(|_|"Cannot encode declarative Blender plan.")?;
+    let expected_plan_sha256=format!("{:x}",Sha256::digest(&bytes));
     let input=prepare_plan(&root,&bytes)?;
     let evidence=TemporaryFile(root.join(format!("{}.json",Uuid::new_v4())));
     let cwd=script.parent().ok_or("Bundled Blender plan script has no parent directory.")?;
@@ -175,7 +191,8 @@ pub(crate) fn execute<'a>(app:&AppHandle,state:&ActionState,
         return Err("Owned Blender plan cancelled/failed/timed out; inspect Blender output before retry.".into());
     }
     let verified=native_plan_response(&evidence.0,&root,
-        Path::new(output_dir),render,expected_operation,expected_steps)?;
+        Path::new(output_dir),render,expected_operation,expected_steps,
+        &expected_plan_sha256)?;
     // Bind the verified worker artifact to the exact scheduled UUID before
     // the outer native action audit. No file hash or PID alone is an audit.
     crate::native_blender_action_artifact::record_verified(app,action_id,&verified)?;
@@ -184,6 +201,20 @@ pub(crate) fn execute<'a>(app:&AppHandle,state:&ActionState,
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn exact_approved_plan_hash_blocks_stale_or_substituted_result(){
+        let first=serde_json::json!({"steps":[{"name":"cube","request":{"operation":"file.checkpoint"}}]});
+        let second=serde_json::json!({"steps":[{"name":"sphere","request":{"operation":"file.checkpoint"}}]});
+        let first_hash=format!("{:x}",Sha256::digest(serde_json::to_vec(&first).unwrap()));
+        let second_hash=format!("{:x}",Sha256::digest(serde_json::to_vec(&second).unwrap()));
+        assert_ne!(first_hash,second_hash);
+        let response=serde_json::json!({"approved_plan_sha256":first_hash});
+        assert!(approved_plan_hash_matches(&response,&first_hash).is_ok());
+        assert!(approved_plan_hash_matches(&response,&second_hash).is_err());
+        assert!(approved_plan_hash_matches(&serde_json::json!({}),&first_hash).is_err());
+        assert!(approved_plan_hash_matches(
+            &serde_json::json!({"approved_plan_sha256":first_hash.to_uppercase()}),&first_hash).is_err());
+    }
     #[test]
     fn exact_approved_plan_preflight_rejects_unknown_final_operation_and_unapproved_render(){
         let valid=json!({"timeout_ms":90_000,"steps":[{"name":"save",
@@ -213,8 +244,8 @@ mod tests{
             "final_operation":"render.execute","artifact":{}
         })).unwrap()).unwrap();
         // Both fail before inspecting absent artifact bytes or trusting success.
-        assert!(native_plan_response(&response,&dir,&dir,true,"file.checkpoint",2).is_err());
-        assert!(native_plan_response(&response,&dir,&dir,true,"render.execute",1).is_err());
+        assert!(native_plan_response(&response,&dir,&dir,true,"file.checkpoint",2,&"0".repeat(64)).is_err());
+        assert!(native_plan_response(&response,&dir,&dir,true,"render.execute",1,&"0".repeat(64)).is_err());
         let _=fs::remove_dir_all(dir);
     }
     #[test]
@@ -234,7 +265,7 @@ mod tests{
             "final_operation":"render.execute",
             "artifact":{"path":output.to_str().unwrap(),"bytes":bytes,"sha256":hash}
         })).unwrap()).unwrap();
-        assert!(native_plan_response(&response,&dir,&dir,true,"render.execute",1).is_err());
+        assert!(native_plan_response(&response,&dir,&dir,true,"render.execute",1,&"0".repeat(64)).is_err());
         let _=fs::remove_dir_all(dir);
     }
     #[test]
@@ -263,7 +294,7 @@ mod tests{
             "artifact":{"path":output.to_str().unwrap(),"sha256":expected,
                 "bytes":fs::metadata(&output).unwrap().len()}
         })).unwrap()).unwrap();
-        assert!(native_plan_response(&response,&dir,&dir,false,"file.checkpoint",1).is_err());
+        assert!(native_plan_response(&response,&dir,&dir,false,"file.checkpoint",1,&"0".repeat(64)).is_err());
         let _=fs::remove_file(&response);
         let _=fs::remove_file(&output);
         let _=fs::remove_dir(&dir);
@@ -279,7 +310,7 @@ mod tests{
             "render_approved":false,"executed_steps":2,
             "final_operation":"file.checkpoint","artifact":{}
         })).unwrap()).unwrap();
-        assert!(native_plan_response(&file,&root,&root,false,"file.checkpoint",2).is_err());
+        assert!(native_plan_response(&file,&root,&root,false,"file.checkpoint",2,&"0".repeat(64)).is_err());
         let _=fs::remove_file(&file);let _=fs::remove_dir(&root);
     }
 }
