@@ -15,6 +15,7 @@ import type {NativePremiereShaReceipt,BoundPremiereProjectShaProof} from "./nati
 import {inspectPremiereProjectReopenCandidate,bindPremiereReopenShaAfterReadback} from "./premiere-project-reopen-evidence.mjs";
 import type {PremiereReopenEvidence} from "./premiere-project-reopen-evidence.mjs";
 import {assessPremiereProjectProofProgress} from "./master-project-proof-progress.mjs";
+import {captureNativeProjectProofFence,isNativeProjectProofFenceCurrent} from "./master-project-proof-fence.mjs";
 import type {AuditedOpeningObservation} from "./master-goal-window-acceptance.mjs";
 import {nativeTaskDeliveryClaims} from "./native-delivery-claims.mjs";
 import type {
@@ -1180,6 +1181,12 @@ async function stopAgentForSafety(reason: string): Promise<void> {
   const stoppedTaskId=activePermissionScope.taskId;
   revokeTaskScope(activePermissionScope);
   nativeReadGrantIds.clear();
+  // An owner Stop invalidates all volatile evidence before Rust revocation awaits.
+  openingWindowObservation=null;
+  projectCreationEvidence=null;
+  projectShaFileProof=null;
+  projectReopenEvidence=null;
+  renderPremiereProjectProofProgress();
   await revokeNativeTaskReads(stoppedTaskId);
   if (remoteTask) await closeRemoteTask("stopped");
   orchestration = { ...orchestration, recovery_mode: "stopped", stop_reason: reason.slice(0, 800) };
@@ -1209,8 +1216,18 @@ async function persistRequiredContinuationCheckpoint(): Promise<boolean> {
 }
 
 async function continueAfterOutcome(): Promise<void> {
+  // Scheduler and native delivery await: never continue or clear another task.
+  const continuationScope=activePermissionScope;
+  const continuationGraph=orchestration.task_graph;
+  const continuationOwner=orchestration.owner_request;
+  const continuationCurrent=()=>continuationScope===activePermissionScope&&
+    !continuationScope.revoked&&!cancelRequested&&
+    orchestration.recovery_mode==="normal"&&
+    orchestration.task_graph===continuationGraph&&
+    orchestration.owner_request===continuationOwner;
   renderOrchestrationStatus();
   if (!await persistRequiredContinuationCheckpoint()) return;
+  if(!continuationCurrent())return;
   if (orchestration.recovery_mode === "stopped") {
     await stopAgentForSafety(
       orchestration.stop_reason ??
@@ -1235,6 +1252,7 @@ async function continueAfterOutcome(): Promise<void> {
       await stopAgentForSafety("Cannot verify terminal Rust task schedule. Final output is not certified.");
       return;
     }
+    if(!continuationCurrent())return;
     const admission=assessMasterSchedulerAdmission(schedule,orchestration.task_graph);
     if(!schedule || !admission.ok ||
         schedule.jobs.length!==orchestration.task_graph?.steps.length ||
@@ -1257,6 +1275,7 @@ async function continueAfterOutcome(): Promise<void> {
       await stopAgentForSafety("Native delivery verification failed. Audit or output files require inspection; checkpoint retained.");
       return;
     }
+    if(!continuationCurrent())return;
     // Rust hashes native delivery files, but cannot certify the user's
     // original creative objective from generic step success alone.
     const goalAcceptance=assessMasterGoalDelivery(orchestration.owner_request,orchestration.task_graph);
@@ -1303,6 +1322,7 @@ async function continueAfterOutcome(): Promise<void> {
     renderMessages();
     if(remoteTask)await closeRemoteTask(remoteTask.evidenceActionId&&!remoteTask.hadFailure
       ?"succeeded":"outcome_unknown");
+    if(!continuationCurrent())return;
     await clearActiveCheckpoint();
     setBusy(false);
     return;
@@ -1645,6 +1665,18 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
     return;
   }
   const permissionTaskId=activePermissionScope.taskId;
+  const protectProjectProof=proposal.tool==="premiere_create_project"||
+    proposal.tool==="premiere_open_project";
+  const actionProofFence=protectProjectProof
+    ? captureNativeProjectProofFence(activePermissionScope,
+      orchestration.task_graph,orchestration.owner_request,actionId):null;
+  const proofFenceCurrent=(fence:ReturnType<typeof captureNativeProjectProofFence>)=>
+    isNativeProjectProofFenceCurrent(fence,{
+      scope:activePermissionScope,graph:orchestration.task_graph,
+      ownerRequest:orchestration.owner_request,actionId,
+      recoveryMode:orchestration.recovery_mode,cancelRequested
+    });
+  if(protectProjectProof&&!proofFenceCurrent(actionProofFence))return;
   if(proposal.tool==="premiere_open_project"){
     // Preserve the original project create/SHA ONLY for a separately
     // approved reopen of its exact same path. Opening a different project
@@ -1679,6 +1711,7 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
     const receipt = await readActionAuditReceipt(actionId);
     const receiptMatches = verifiedNativeActionResult(proposal.tool, actionId, result, receipt);
     const cancelledByUser = await actionCancellationConfirmed(actionId);
+    if(protectProjectProof&&!proofFenceCurrent(actionProofFence))return;
     if (!cancelledByUser && result.success) {
       if (proposal.tool === "browser_start") {
         // A newly launched browser may receive an OS PID used by an older session.
@@ -1705,6 +1738,12 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
       receipt
     );
     await auditGraphOutcome(proposal);
+    // A successful audit legitimately replaces the DAG; pin its new identity
+    // for separately awaited SHA create/reopen success AND failure responses.
+    const postAuditProofFence=protectProjectProof
+      ? captureNativeProjectProofFence(activePermissionScope,
+        orchestration.task_graph,orchestration.owner_request,actionId):null;
+    if(protectProjectProof&&!proofFenceCurrent(postAuditProofFence))return;
     if(proposal.tool==="premiere_create_project"&&result.success&&receiptMatches&&
        !cancelledByUser&&!cancelRequested&&
        activePermissionScope.taskId===permissionTaskId&&!activePermissionScope.revoked){
@@ -1726,9 +1765,9 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
               expectedFnv1a64:candidate.fnv1a64,
               expectedSizeBytes:candidate.sizeBytes
             });
-          if(activePermissionScope.taskId===permissionTaskId&&
-             projectCreationEvidence===candidate&&!cancelRequested&&
-             !activePermissionScope.revoked&&!cancelledByUser){
+          if(proofFenceCurrent(postAuditProofFence)&&
+             activePermissionScope.taskId===permissionTaskId&&
+             projectCreationEvidence===candidate&&!cancelledByUser){
             projectShaFileProof=bindNativePremiereShaProof(
               candidate,fileProof,permissionTaskId);
           }
@@ -1736,7 +1775,8 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
           // A failed verification can mean a changed file or missing native
           // Team 40 integration. Never retry an uncertain mutation or
           // manufacture an SHA-256 from the weaker FNV-1a64 value.
-          projectShaFileProof=null;
+          if(proofFenceCurrent(postAuditProofFence)&&
+             projectCreationEvidence===candidate)projectShaFileProof=null;
         }
       }
     }
@@ -1761,17 +1801,19 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
             });
           const verifiedAfter=bindNativePremiereShaProof(
             candidate,bytesAfter,permissionTaskId);
-          if(activePermissionScope.taskId===permissionTaskId&&
+          if(proofFenceCurrent(postAuditProofFence)&&
+             activePermissionScope.taskId===permissionTaskId&&
              projectCreationEvidence===candidate&&
-             projectShaFileProof===originalSha&&
-             !cancelRequested&&!activePermissionScope.revoked&&!cancelledByUser){
+             projectShaFileProof===originalSha&&!cancelledByUser){
             projectReopenEvidence=bindPremiereReopenShaAfterReadback(
               reopen,verifiedAfter,permissionTaskId);
           }
         }catch{
           // A failed/changed file read never makes a past Adobe acceptance
           // or FNV read look like a cryptographic post-reopen verification.
-          projectReopenEvidence=null;
+          if(proofFenceCurrent(postAuditProofFence)&&
+             projectCreationEvidence===candidate&&
+             projectShaFileProof===originalSha)projectReopenEvidence=null;
         }
       }
     }
@@ -1810,10 +1852,16 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
     messages.push(toolResultMessage(result));
     await continueAfterOutcome();
   } catch (error) {
+    if(protectProjectProof&&!proofFenceCurrent(actionProofFence))return;
     revokeTaskScope(activePermissionScope);
     const receipt = await readActionAuditReceipt(actionId);
     const cancelledByUser = await actionCancellationConfirmed(actionId);
     const confirmedFailure = confirmedNativeActionFailure(proposal.tool, actionId, receipt);
+    if(protectProjectProof&&
+      (activePermissionScope!==actionProofFence?.scope||
+       activePermissionScope.taskId!==permissionTaskId||cancelRequested||
+       orchestration.task_graph!==actionProofFence?.graph||
+       orchestration.owner_request!==actionProofFence?.ownerRequest))return;
     if(remoteTask)remoteTask.hadFailure=true;
     orchestration = recordToolOutcome(
       orchestration,
@@ -1949,6 +1997,11 @@ function renderChatPermission(proposal: ToolProposal, step: number): void {
       const deniedTaskId=activePermissionScope.taskId;
       revokeTaskScope(activePermissionScope);
       nativeReadGrantIds.clear();
+      openingWindowObservation=null;
+      projectCreationEvidence=null;
+      projectShaFileProof=null;
+      projectReopenEvidence=null;
+      renderPremiereProjectProofProgress();
       await revokeNativeTaskReads(deniedTaskId);
       if(remoteTask){
         clearChatPermission();
@@ -2794,6 +2847,11 @@ el<HTMLButtonElement>("#stopButton").addEventListener("click", async () => {
   const stoppingReadTaskId=activePermissionScope.taskId;
   revokeTaskScope(activePermissionScope);
   nativeReadGrantIds.clear();
+  openingWindowObservation=null;
+  projectCreationEvidence=null;
+  projectShaFileProof=null;
+  projectReopenEvidence=null;
+  renderPremiereProjectProofProgress();
   await revokeNativeTaskReads(stoppingReadTaskId);
 
   if (pendingAction && pendingChatProposal) {

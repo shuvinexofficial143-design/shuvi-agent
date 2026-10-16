@@ -218,3 +218,9 @@ New owner-visible verified progress:
 - \`scripts/master-project-proof-progress.test.mjs\` has positive 0→3 stage transitions, foreign task/project/UUID, spoofed SHA/FNV, premature goal flags, stale reopen, reset/DOM safety assertions. Local isolated V8 execution passed **four pure test cases and nine UI static assertions**. Full Node+Rust CI for the new exact HEAD remains pending.
 
 Scope restrictions unchanged: no modifications to Team 40 or main branch; no automatic create/reopen/creative side effects; native Team 40 project actions remain on a separate unmerged branch; never claim live Windows Adobe verification.
+
+## Fifteenth milestone — bounded async owner-task proof isolation (16 October 2026)
+
+Added `master-project-proof-fence.mjs` and typed declarations. Premiere native create/open callbacks now capture exact permission-scope object/UUID, active DAG instance, immutable owner brief and native action UUID before async execution. After Rust execute/audit/cancellation and post-audit SHA-256 awaits, both success and error paths check that same owner's task is still current. Stop, Deny, revoked scope, replaced DAG/owner and foreign action prevent stale proof acceptance or clearing a newer task's candidate. A native uncertain outcome is not replayed. The existing Rust authority/permission model is unchanged.
+
+Stop/Deny/safety-stop synchronously clear volatile project-create/SHA/reopen/window evidence before asynchronous native grant revocation. Terminal scheduler and native-delivery callbacks also verify the original task scope, graph and owner after awaits and before clearing the checkpoint. New `scripts/master-project-proof-fence.test.mjs` verifies identity fences and Desktop wiring. This is source/mock verification, NOT Windows Adobe live acceptance. Team 40 create/open executors remain on an unmerged branch; Rust final `.prproj` delivery is still unsupported, so original creative-goal success is UNVERIFIED.
