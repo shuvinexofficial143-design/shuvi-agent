@@ -140,3 +140,26 @@ test("desktop captures volatile proof only after executed Rust audit and never r
  assert.doesNotMatch(src.slice(src.indexOf("function currentCheckpoint(): SessionCheckpoint"),
   src.indexOf("function nativeWorkerDisplay(): string")),/openingWindowObservation/);
 });
+
+test("mixed-command owner briefs cannot be satisfied by merely opening Premiere",()=>{
+ for(const request of [
+  "Open Premiere and WhatsApp",
+  "Open Premiere then read a file",
+  "Premiere kholo aur WhatsApp",
+  "Premiere kholo aur Instagram",
+  "Open Premiere and run PowerShell",
+  "Premiere kholo aur folder delete kar do",
+  "Open Premiere; move the timeline",
+  "Premiere mein edit karo",
+  "Open Premiere and create a project"
+ ]){
+  const g=graph();g.objective=request;
+  assert.equal(captureMasterOpeningObservation(request,g,proposed,observedResult(),READ,TASK,true),
+    null,request);
+  assert.equal(verifyMasterOpeningDelivery(request,g,schedule(),delivery(),proofFor(request),TASK).verified,
+    false,request);
+ }
+});
+function proofFor(request){
+ return {...evidence(),objective:request};
+}
