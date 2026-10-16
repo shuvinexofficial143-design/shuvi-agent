@@ -265,6 +265,38 @@ editor or multi-monitor acceptance test has been performed.
   permits considering a next separately approved action; it does **not**
   assert the previous UI operation achieved its intended effect.
 
+## Milestone 7 — Rust-owned exact UIA RuntimeId through owner approval
+
+- Baseline 580444990277b0c6b82979caccfa402a3ebb275e passed all 21 checks.
+  This new milestone has a separate CI result; do not inherit baseline status.
+- Native preparation now resolves exactly one selected UIA control, in the
+  same non-mutating PowerShell probe as the selected top-level window.
+  The OS supplies native HWND, PID, title, bounded GetRuntimeId integer array,
+  Name, AutomationId and ControlType. Ambiguous, foreign, hidden or disabled
+  controls cannot become a prepared mutation.
+- The selected control identity is parsed in Rust and held only in the
+  original PendingAction, under its original action UUID and owner approval.
+  Model and WebView inputs cannot forge an expected RuntimeId.
+- Every one of the seven native UIA mutation arms re-resolves the element
+  at execute time and compares its real RuntimeId, name, AutomationId and
+  ControlType plus native HWND/PID/title to the Rust-prepared identity.
+  Keyboard fallback revalidates after focus and before SendWait.
+  Reused labels or AutomationIds cannot silently inherit an earlier approval.
+- The PowerShell probe is composed by one-pass concatenation, not recursive
+  template expansion. Strings from OS observation are safely escaped.
+- Rust unit and Node source tests cover exact identity, ambiguous selectors,
+  invalid/bounded RuntimeId, stale approval rejection and all seven paths.
+
+### Scope / acceptance limitations
+
+The shared src-tauri/src/lib.rs overlap is limited to the UIA native
+preparation path. The existing PendingAction native_uia_target field, Rust
+permission lease, audit and recovery are preserved. RuntimeId may change
+legitimately when apps rebuild their UI: fail closed and inspect again.
+These checks cannot atomically freeze an external application or prove
+a complete editing objective. Real Windows UIA acceptance remains untested
+without owner authorization. No merge or live desktop action was performed.
+
 ## Windows acceptance — explicitly NOT YET run
 
 Run only with separate owner consent on a disposable desktop/test fixture.
