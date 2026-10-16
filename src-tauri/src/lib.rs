@@ -210,6 +210,7 @@ Available tools:
 - blender_run_plan: {"python_exe":"absolute Python.exe","blender_exe":"absolute Blender.exe","blend_file":null,"expected_blend_sha256":null,"output_dir":"existing absolute delivery folder","allow_render":false,"plan":{"timeout_ms":90000,"steps":[{"name":"inspect","request":{"protocol_version":1,"request_id":"UUID","command_id":"UUID","operation":"scene.inspect","payload":{},"timeout_ms":10000},"bindings":[]}, ...]}} — HIGH RISK: an input .blend requires an exact SHA-256 (or supply both fields null); execute 1..6 approved typed Blender operations with authenticated loaded-source verification; final tool must checkpoint or render; never arbitrary Python, blind retry, or destructive ops
 - blender_session_start: {"python_exe":"absolute Python.exe","blender_exe":"absolute Blender.exe","blend_file":null,"expected_blend_sha256":null,"output_dir":"existing output directory","allow_render":false} — HIGH RISK: start a Rust-owned Blender session. A non-null .blend requires exact SHA-256, verified before and after authenticated load; each later plan needs separate approval and its exact live session_id.
 - blender_session_inspect: {"session_id":"exact UUID returned by blender_session_start"} — read-only authenticated health and scene revision.
+- blender_session_objects: {"session_id":"exact UUID","expected_scene_revision":"fresh scene_revision from inspect","offset":0,"limit":5,"name_prefix":"","object_type":null} — read-only authenticated paginated discovery, at most 5 object IDs/names/types/revisions with no edits; re-inspect if scene changes.
 - blender_session_plan: {"session_id":"exact UUID","expected_scene_revision":"exact scene_revision from blender_session_inspect","allow_render":false,"plan":{"timeout_ms":90000,"steps":[...]}} — HIGH RISK: up to six typed Blender operations ending in verified .blend checkpoint or PNG; render needs action-level approval and prior session policy ceiling; never automatically retry.
 - blender_review_acceptance_chain: {"approved_output_dir":"existing absolute output folder","receipts":[{...native Blender stage1 receipt...},{...native Blender stage2 receipt...},{...native Blender render receipt...}]} — read-only 3-stage on-disk SHA/mesh/session consistency review; does NOT prove historic action approval, that render loaded stage2, or live creative quality
 - blender_verify_artifact_manifest: {"approved_output_dir":"existing absolute folder containing exact output","manifest":{"schema_version":1,"producer":"shuvi41.blender","source_action_id":"canonical UUID","artifact":{...},"evidence":{...},"handoff":{...}}} — read-only, re-hash current .blend/PNG bytes and confirm path within the caller-selected output folder; prior approval/reopen are NOT re-authenticated and no import occurs
@@ -685,6 +686,8 @@ enum ToolAction {
     BlenderRunPlan { python_exe:String, blender_exe:String, blend_file:Option<String>, expected_blend_sha256:Option<String>, output_dir:String, allow_render:bool, plan:Value },
     BlenderSessionStart { python_exe:String, blender_exe:String, blend_file:Option<String>, expected_blend_sha256:Option<String>, output_dir:String, allow_render:bool },
     BlenderSessionInspect { session_id:String },
+    BlenderSessionObjects { session_id:String, expected_scene_revision:String,
+        offset:u64,limit:u64,name_prefix:String,object_type:Option<String> },
     BlenderSessionPlan { session_id:String, allow_render:bool, expected_scene_revision:String, plan:Value },
     BlenderSessionClose { session_id:String },
     BlenderVerifyArtifactManifest { approved_output_dir:String, manifest:Value },
@@ -1689,6 +1692,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "blender_run_plan"
         | "blender_session_start"
         | "blender_session_inspect"
+        | "blender_session_objects"
         | "blender_session_plan"
         | "blender_session_close"
         | "blender_verify_artifact_manifest"
@@ -3737,6 +3741,37 @@ fn stage_tool(
             (ToolAction::BlenderSessionInspect{session_id},
                 "Inspect owned Blender session health".into(),
                 "Probe existing authenticated session and report live scene revision without mutation.".into(),
+                RiskLevel::Medium)
+        }
+        "blender_session_objects" => {
+            let session_id=arg_string(&proposal.arguments,"session_id")?;
+            uuid::Uuid::parse_str(&session_id).map_err(|_|"Invalid Blender session UUID.")?;
+            let expected_scene_revision=arg_string(&proposal.arguments,"expected_scene_revision")?;
+            if expected_scene_revision.len()!=64 ||
+                !expected_scene_revision.bytes().all(|c|c.is_ascii_hexdigit() && !c.is_ascii_uppercase()){
+                return Err("Use an exact fresh inspected Blender scene revision.".into());
+            }
+            let offset=proposal.arguments.get("offset").and_then(Value::as_u64)
+                .ok_or("Blender object offset must be an integer.")?;
+            let limit=proposal.arguments.get("limit").and_then(Value::as_u64)
+                .ok_or("Blender object page limit must be an integer.")?;
+            if offset>1000 || !(1..=5).contains(&limit){
+                return Err("Blender object page exceeds approved pagination bounds.".into());
+            }
+            let name_prefix=proposal.arguments.get("name_prefix")
+                .and_then(Value::as_str).unwrap_or("").to_owned();
+            if name_prefix.len()>80 || name_prefix.contains('\0'){
+                return Err("Blender object prefix is invalid.".into());
+            }
+            let object_type=match proposal.arguments.get("object_type"){
+                None|Some(Value::Null)=>None,
+                Some(Value::String(t)) if !t.is_empty()&&t.len()<=32=>Some(t.clone()),
+                _=>return Err("Blender object type filter is invalid.".into()),
+            };
+            (ToolAction::BlenderSessionObjects{
+                session_id,expected_scene_revision,offset,limit,name_prefix,object_type},
+                "Read-only Blender object discovery".into(),
+                "List at most five named objects with exact ID, revision and truncated-details flag in the same audited authenticated Blender session. Never mutates the scene.".into(),
                 RiskLevel::Medium)
         }
         "blender_session_plan" => {
@@ -10712,6 +10747,11 @@ Write-Output 'SHUVI_WHATSAPP_DESKTOP_LAUNCH_REQUESTED'
         }
         ToolAction::BlenderSessionInspect {session_id} => {
             let response=blender_session_worker::status(&state.blender_session,state,&session_id)?;
+            Ok(ActionResult{success:true,tool,stdout:response.to_string(),stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::BlenderSessionObjects {session_id,expected_scene_revision,offset,limit,name_prefix,object_type} => {
+            let response=blender_session_worker::objects(&state.blender_session,state,
+                &session_id,&expected_scene_revision,offset,limit,&name_prefix,object_type.as_deref())?;
             Ok(ActionResult{success:true,tool,stdout:response.to_string(),stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::BlenderSessionPlan {session_id,allow_render,expected_scene_revision,plan} => {
