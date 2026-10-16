@@ -95,7 +95,7 @@ $shuviValue=$null
 if (-not $control.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern,[ref]$shuviValue)) {
  throw 'Prepared target lacks ValuePattern.'
 }
-if ([System.Windows.Automation.ValuePattern]$shuviValue).Current.IsReadOnly {
+if (([System.Windows.Automation.ValuePattern]$shuviValue).Current.IsReadOnly) {
  throw 'Prepared ValuePattern is read-only.'
 }
 "#),
@@ -109,7 +109,7 @@ $shuviScroll=$null
 if (-not $control.TryGetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern,[ref]$shuviScroll)) {
  throw 'Prepared target lacks ScrollPattern.'
 }
-if (-not [bool]([System.Windows.Automation.ScrollPattern]$shuviScroll).Current.VerticallyScrollable) {
+if (-not [bool](([System.Windows.Automation.ScrollPattern]$shuviScroll).Current.VerticallyScrollable)) {
  throw 'Prepared target has no vertical scroll capability.'
 }
 "#),
