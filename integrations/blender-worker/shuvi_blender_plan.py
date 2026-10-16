@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -23,6 +24,9 @@ def run(argv: list[str] | None = None) -> int:
     parser.add_argument("--blend-file", type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--allow-render", action="store_true")
+    # Only the internal scheduled Rust worker requests this private
+    # create-exclusive result. Existing stdout callers remain supported.
+    parser.add_argument("--result-file", type=Path)
     args = parser.parse_args(argv)
     if not args.python_plan.is_file() or not 0 < args.python_plan.stat().st_size <= MAX_PLAN_BYTES:
         parser.error("An existing bounded plan file is required")
@@ -93,7 +97,7 @@ def run(argv: list[str] | None = None) -> int:
             reread = read_output(actual, "BLEND" if extension == ".blend" else "PNG")
             if reread["sha256"] != digest:
                 raise ValueError("Final artifact changed after Blender verification")
-            print(json.dumps({
+            response = {
                 "protocol_version": 1,
                 "status": "verified",
                 "authenticated_blender_plan": True,
@@ -103,7 +107,21 @@ def run(argv: list[str] | None = None) -> int:
                 "artifact": reread,
                 "destructive_allowed": False,
                 "render_approved": args.allow_render,
-            }, ensure_ascii=False))
+            }
+            payload = json.dumps(response, ensure_ascii=False, separators=(",", ":"))
+            if args.result_file is not None:
+                target = args.result_file
+                if not target.is_absolute() or target.suffix.lower() != ".json" or not target.parent.is_dir():
+                    return 5
+                data = payload.encode("utf-8")
+                if not 0 < len(data) <= 1024 * 1024:
+                    return 5
+                with target.open("xb") as output:
+                    output.write(data)
+                    output.flush()
+                    os.fsync(output.fileno())
+            else:
+                print(payload)
             return 0
     except Exception:
         # A timed-out or partly-mutated Blender session must never be retried

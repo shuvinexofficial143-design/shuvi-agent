@@ -6,6 +6,7 @@ mod remote_agent;
 mod blender_worker;
 mod blender_plan_worker;
 mod native_blender_owned_adapter;
+mod native_blender_owned_plan;
 mod atomic_file;
 mod execution_lease;
 mod native_worker_status;
@@ -19146,6 +19147,18 @@ async fn execute_action(
             native_blender_owned_adapter::inspect(
                 &app,&mut native_slot,&action_id,
                 python_exe,blender_exe,blend_file.as_deref(),operation,
+            ).map(|evidence|ActionResult{
+                success:true,tool:tool.clone(),
+                stdout:serde_json::to_string_pretty(&evidence).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }else if let ToolAction::BlenderRunPlan {
+            python_exe,blender_exe,blend_file,output_dir,allow_render,plan
+        }=&action.action {
+            native_blender_owned_plan::execute(
+                &app,&mut native_slot,&action_id,
+                python_exe,blender_exe,blend_file.as_deref(),
+                output_dir,plan,*allow_render,
             ).map(|evidence|ActionResult{
                 success:true,tool:tool.clone(),
                 stdout:serde_json::to_string_pretty(&evidence).unwrap_or_default(),
