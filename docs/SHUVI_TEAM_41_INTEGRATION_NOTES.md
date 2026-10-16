@@ -472,8 +472,10 @@ from end to end. It proves the first model-created vertex moves,
 the second plan reuses a session and changes the same vertex again,
 both checkpoints carry different virtual mesh hashes, and the third
 new-session plan configures/render-attempts a 64×64 image. It also checks
-source parser validation, duplicate IDs, stale-scene refusal and no
-automatic continuation after a failed first step.
+source parser validation, duplicate IDs, stale-scene refusal, no
+automatic continuation after a failed first step, partial checkpoint failure
+after an edit, stale mesh geometry injected between read and mutation, and
+unknown-tool preflight rejection before any model operation.
 
 This suite improves on a fake implementation of PlanRunner but must **not**
 be described as real Blender runtime acceptance: there is still no bpy,
@@ -496,8 +498,11 @@ For successful native \`blender_session_plan\` and \`blender_run_plan\`,
 \`successful_execution_audit_detail\` records a compact
 \`blender_action_receipt_v1\` suffix. It contains *digests* of output and
 source paths, SHA-256 of verified output/source file bytes, exact sizes
-and Blender session identity. Raw filesystem paths are **not** inserted
-into the audit text. The reviewer reconstructs this suffix from each
+and Blender session identity. For .blend checkpoints, the **independently
+reopened real mesh topology SHA-256** and stable scene fingerprint are also
+bound to the original successful action's native audit suffix. This prevents
+later JSON edits from forging a mesh change while retaining an old valid file
+hash. Raw filesystem paths are **not** inserted into the audit text. The reviewer reconstructs this suffix from each
 verified receipt and requires an exact end-of-record match: a fake JSON
 receipt that simply claims \`status=verified\` cannot bypass the local
 audit lookup or change output/source hashes.
