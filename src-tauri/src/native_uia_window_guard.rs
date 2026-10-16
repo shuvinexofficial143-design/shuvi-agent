@@ -1,7 +1,7 @@
-// Native UIA action binding. The trusted OS identity is captured by Rust
-// during prepare_tool, stored ONLY in the Rust PendingAction and rechecked
-// inside the same PowerShell invocation that performs a native mutation.
-// Neither a model proposal nor the WebView is allowed to supply this binding.
+// Shuvi 39 — Native UIA owner-reviewed target binding.
+// The model supplies only an approved selector. The OS-derived HWND, PID,
+// title, control RuntimeId and exact UIA metadata remain in Rust PendingAction.
+// A different control with the same name may never inherit that approval.
 use serde_json::Value;
 
 #[derive(Debug, Clone)]
@@ -9,6 +9,10 @@ pub(super) struct NativeUiaTarget {
     pub(super) hwnd: i64,
     pub(super) pid: u32,
     pub(super) title: String,
+    pub(super) runtime_id: Vec<i32>,
+    pub(super) control_name: String,
+    pub(super) automation_id: String,
+    pub(super) control_type: String,
 }
 
 const WIN32_MUTATION_GUARD: &str = r#"
@@ -30,143 +34,244 @@ public static class ShuviUiaNativeIdentity {
 '@ -ErrorAction Stop
 "#;
 
-// Used only at native PREPARE. The caller supplies a normal ui_root_script()
-// which resolves exactly one real UIA top-level window. This probe performs
-// the Win32 cross-check before emitting the trusted identity.
-pub(super) fn prepared_window_probe(root_script: &str) -> String {
-    format!(r#"Add-Type -AssemblyName UIAutomationClient
-{root_script}
-{WIN32_MUTATION_GUARD}
+// Read the window and one exact selected control in ONE native prepare probe.
+// Ambiguous/hidden/disabled controls never become a Rust approval capability.
+// Window identity and RuntimeId are gathered together from one UIA snapshot.
+const PREPARED_CONTROL_PROBE: &str = r#"Add-Type -AssemblyName UIAutomationClient
+__SELECTOR_SCRIPT__
+__ROOT_SCRIPT__
+__WIN32_GUARD__
 $shuviBoundHwnd = [IntPtr]([int64]$root.Current.NativeWindowHandle)
 $shuviBoundPid = [int]$root.Current.ProcessId
 if ($shuviBoundHwnd -eq [IntPtr]::Zero -or $shuviBoundPid -le 0 -or
     -not [ShuviUiaNativeIdentity]::IsWindow($shuviBoundHwnd) -or
     -not [ShuviUiaNativeIdentity]::IsWindowVisible($shuviBoundHwnd) -or
-    [ShuviUiaNativeIdentity]::IsIconic($shuviBoundHwnd)) {{
- throw 'Cannot bind prepared UI action: top-level HWND absent, hidden or minimized.'
-}}
+    [ShuviUiaNativeIdentity]::IsIconic($shuviBoundHwnd)) {
+ throw 'Cannot bind UI action: target HWND absent, hidden or minimized.'
+}
 [uint32]$shuviBoundNativePid = 0
 [void][ShuviUiaNativeIdentity]::GetWindowThreadProcessId($shuviBoundHwnd,[ref]$shuviBoundNativePid)
-if ($shuviBoundNativePid -eq 0 -or $shuviBoundNativePid -ne [uint32]$shuviBoundPid) {{
- throw 'Cannot bind prepared UI action: Win32 and UIA process differ.'
-}}
+if ($shuviBoundNativePid -eq 0 -or $shuviBoundNativePid -ne [uint32]$shuviBoundPid) {
+ throw 'Cannot bind UI action: native and UIA window PID differ.'
+}
 $title = [string]$root.Current.Name
-if ([string]::IsNullOrWhiteSpace($title)) {{ throw 'Cannot bind unnamed native UI window.' }}
-@{{hwnd=[int64]$shuviBoundHwnd;pid=$shuviBoundPid;title=$title}} | ConvertTo-Json -Compress -Depth 2
-"#)
+if ([string]::IsNullOrWhiteSpace($title)) { throw 'Cannot bind unnamed target window.' }
+$matches = Resolve-ShuviUiMatches -root $root -condition $condition
+if ($matches.Count -ne 1) { throw 'Cannot bind UI action: selector did not resolve exactly one control.' }
+$control = $matches.Item(0)
+if ([int]$control.Current.ProcessId -ne $shuviBoundPid -or
+    -not [bool]$control.Current.IsEnabled -or
+    [bool]$control.Current.IsOffscreen) {
+ throw 'Cannot bind foreign, disabled or offscreen UIA control.'
+}
+[int[]]$runtimeId = $control.GetRuntimeId()
+if ($null -eq $runtimeId -or $runtimeId.Count -lt 1 -or $runtimeId.Count -gt 64) {
+ throw 'Cannot bind UIA control without a bounded native RuntimeId.'
+}
+[PSCustomObject]@{
+ hwnd = [int64]$shuviBoundHwnd
+ pid = $shuviBoundPid
+ title = $title
+ runtime_id = [int[]]$runtimeId
+ control_name = [string]$control.Current.Name
+ automation_id = [string]$control.Current.AutomationId
+ control_type = [string]$control.Current.ControlType.ProgrammaticName
+} | ConvertTo-Json -Compress -Depth 4
+"#;
+
+pub(super) fn prepared_control_probe(root_script: &str, selector_script: &str) -> String {
+    PREPARED_CONTROL_PROBE
+        .replace("__SELECTOR_SCRIPT__", selector_script)
+        .replace("__ROOT_SCRIPT__", root_script)
+        .replace("__WIN32_GUARD__", WIN32_MUTATION_GUARD)
 }
 
-pub(super) fn parse_prepared_window(output: &str) -> Result<NativeUiaTarget, String> {
-    if output.len()>8192 { return Err("Prepared native HWND evidence exceeds limit.".into()); }
-    let v: Value=serde_json::from_str(output.trim())
-        .map_err(|_| "Prepared native HWND identity was not valid JSON.".to_string())?;
-    let hwnd=v.get("hwnd").and_then(Value::as_i64).unwrap_or(0);
-    let pid=v.get("pid").and_then(Value::as_u64).unwrap_or(0);
-    let title=v.get("title").and_then(Value::as_str).unwrap_or("");
-    if hwnd<=0 || pid==0 || pid>u32::MAX as u64 ||
-       title.trim()!=title || title.is_empty() || title.chars().count()>180 ||
-       title.chars().any(char::is_control) {
-        return Err("Prepared native HWND/PID/title is missing or invalid.".into());
+fn valid_label(value: &str, max: usize, allow_empty: bool) -> bool {
+    (allow_empty || !value.is_empty())
+        && value.chars().count() <= max
+        && !value.chars().any(char::is_control)
+}
+pub(super) fn parse_prepared_control(output: &str) -> Result<NativeUiaTarget, String> {
+    if output.len() > 8192 {
+        return Err("Prepared native control evidence exceeds safety size limit.".into());
     }
-    Ok(NativeUiaTarget{hwnd,pid:pid as u32,title:title.to_string()})
+    let v: Value = serde_json::from_str(output.trim())
+        .map_err(|_| "Prepared native UIA identity was not valid JSON.".to_string())?;
+    let hwnd = v.get("hwnd").and_then(Value::as_i64).unwrap_or(0);
+    let pid = v.get("pid").and_then(Value::as_u64).unwrap_or(0);
+    let title = v.get("title").and_then(Value::as_str).unwrap_or("");
+    let name = v.get("control_name").and_then(Value::as_str).unwrap_or("");
+    let automation_id = v.get("automation_id").and_then(Value::as_str).unwrap_or("");
+    let control_type = v.get("control_type").and_then(Value::as_str).unwrap_or("");
+    let source = v.get("runtime_id").and_then(Value::as_array)
+        .ok_or_else(|| "No native UIA control RuntimeId in prepared evidence.".to_string())?;
+    if source.is_empty() || source.len() > 64 {
+        return Err("Native UIA RuntimeId is empty or exceeds the safe limit.".into());
+    }
+    let runtime_id = source.iter()
+        .map(|part| part.as_i64().and_then(|n| i32::try_from(n).ok()))
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| "UIA RuntimeId contains an invalid integer.".to_string())?;
+    if hwnd <= 0 || pid == 0 || pid > u32::MAX as u64 ||
+        title.trim() != title || !valid_label(title, 180, false) ||
+        !valid_label(name, 180, true) ||
+        !valid_label(automation_id, 180, true) ||
+        (name.is_empty() && automation_id.is_empty()) ||
+        !valid_label(control_type, 100, false) {
+        return Err("Prepared HWND/PID/control identity is missing or malformed.".into());
+    }
+    Ok(NativeUiaTarget {
+        hwnd, pid: pid as u32, title: title.to_string(), runtime_id,
+        control_name: name.to_string(),
+        automation_id: automation_id.to_string(),
+        control_type: control_type.to_string(),
+    })
 }
 
-// Always reject a missing prepared OS identity, including if a stale action
-// was restored without a binding. The executable PS invokes the Win32 check
-// immediately before the UIA pattern method; no title-only fallback remains.
-pub(super) fn guarded_mutation_root(
-    window: Option<&str>,
-    root_script: String,
-    target: Option<&NativeUiaTarget>,
-) -> Result<String, String> {
-    let name=window.map(str::trim)
-        .filter(|x| !x.is_empty() && x.chars().count()<=180)
-        .ok_or_else(|| "UI mutation requires an explicit observed application window; never use desktop root.".to_string())?;
-    if name.eq_ignore_ascii_case("desktop") || name.chars().any(char::is_control) {
-        return Err("UI mutation cannot target desktop or a control-formatted window.".into());
-    }
-    let target=target.ok_or_else(|| "Native UIA mutation has no Rust-prepared HWND/PID identity; no action sent.".to_string())?;
-    if target.hwnd<=0 || target.pid==0 || target.title.trim()!=target.title ||
-       target.title.is_empty() || target.title.chars().count()>180 ||
-       target.title.chars().any(char::is_control) {
-        return Err("Rust-prepared UIA identity is invalid; no action sent.".into());
-    }
-    let title=target.title.replace('\'',"''");
-    Ok(format!(r#"{root_script}
-{WIN32_MUTATION_GUARD}
-$shuviExpectedHwnd = [IntPtr]([int64]{})
-$shuviExpectedPid = [uint32]{}
-$shuviExpectedTitle = '{}'
-function Assert-ShuviNativeTarget {{
+const NATIVE_CONTROL_EXECUTION_GUARD: &str = r#"
+function Assert-ShuviNativeTarget {
  param($root, $element, [switch]$requireForeground)
  if ($shuviExpectedHwnd -eq [IntPtr]::Zero -or $shuviExpectedPid -eq 0 -or
      -not [ShuviUiaNativeIdentity]::IsWindow($shuviExpectedHwnd) -or
      -not [ShuviUiaNativeIdentity]::IsWindowVisible($shuviExpectedHwnd) -or
-     [ShuviUiaNativeIdentity]::IsIconic($shuviExpectedHwnd)) {{
-  throw 'Rust-prepared HWND is gone, hidden or minimized. No UI mutation sent.'
- }}
+     [ShuviUiaNativeIdentity]::IsIconic($shuviExpectedHwnd)) {
+  throw 'Prepared HWND is gone, hidden or minimized. No UI mutation sent.'
+ }
  [uint32]$nativePid = 0
  [void][ShuviUiaNativeIdentity]::GetWindowThreadProcessId($shuviExpectedHwnd, [ref]$nativePid)
  if ($nativePid -ne $shuviExpectedPid -or
      [int64]$root.Current.NativeWindowHandle -ne [int64]$shuviExpectedHwnd -or
      [int]$root.Current.ProcessId -ne [int]$shuviExpectedPid -or
-     [string]$root.Current.Name -cne $shuviExpectedTitle) {{
+     [string]$root.Current.Name -cne $shuviExpectedTitle) {
   throw 'Prepared HWND/PID/title changed before execution. No UI mutation sent.'
- }}
+ }
  if ($null -eq $element -or
      [int]$element.Current.ProcessId -ne [int]$shuviExpectedPid -or
      [bool]$element.Current.IsOffscreen -or
-     -not [bool]$element.Current.IsEnabled) {{
+     -not [bool]$element.Current.IsEnabled) {
   throw 'Selected UIA control is foreign, disabled or offscreen. No UI mutation sent.'
- }}
+ }
+ # A recycled AutomationId or same-label control must never inherit another
+ # approved action. GetRuntimeId is native UIA identity for this element.
+ [int[]]$actualRuntimeId = $element.GetRuntimeId()
+ if ($null -eq $actualRuntimeId -or
+     $actualRuntimeId.Count -ne $shuviExpectedRuntimeCount -or
+     ($actualRuntimeId -join ',') -cne $shuviExpectedRuntimeKey -or
+     [string]$element.Current.Name -cne $shuviExpectedControlName -or
+     [string]$element.Current.AutomationId -cne $shuviExpectedAutomationId -or
+     [string]$element.Current.ControlType.ProgrammaticName -cne $shuviExpectedControlType) {
+  throw 'UIA control identity changed after approval. No UI mutation sent.'
+ }
  if ($requireForeground -and
-     [ShuviUiaNativeIdentity]::GetForegroundWindow() -ne $shuviExpectedHwnd) {{
+     [ShuviUiaNativeIdentity]::GetForegroundWindow() -ne $shuviExpectedHwnd) {
   throw 'Keyboard target is not the foreground HWND. No keys sent.'
- }}
-}}
-"#,target.hwnd,target.pid,title))
+ }
+}
+"#;
+
+// Before each native UIA mutation the chosen element must still be the exact
+// OS-bound control observed during the Rust preparation/owner approval cycle.
+pub(super) fn guarded_mutation_root(
+    window: Option<&str>, root_script: String, target: Option<&NativeUiaTarget>
+) -> Result<String, String> {
+    let name = window.map(str::trim)
+        .filter(|s| !s.is_empty() && s.chars().count() <= 180)
+        .ok_or_else(|| "UI mutation requires an explicit observed application window; never use desktop root.".to_string())?;
+    if name.eq_ignore_ascii_case("desktop") || name.chars().any(char::is_control) {
+        return Err("UI mutation cannot target desktop or a control-formatted window.".into());
+    }
+    let t = target.ok_or_else(|| "UIA mutation has no Rust-prepared HWND/PID/control identity.".to_string())?;
+    if t.hwnd <= 0 || t.pid == 0 ||
+        t.title.trim() != t.title || !valid_label(&t.title, 180, false) ||
+        !valid_label(&t.control_name, 180, true) ||
+        !valid_label(&t.automation_id, 180, true) ||
+        (t.control_name.is_empty() && t.automation_id.is_empty()) ||
+        !valid_label(&t.control_type, 100, false) ||
+        t.runtime_id.is_empty() || t.runtime_id.len() > 64 {
+        return Err("Rust-prepared UIA control identity is invalid.".into());
+    }
+    let title = t.title.replace('\'', "''");
+    let control_name = t.control_name.replace('\'', "''");
+    let control_id = t.automation_id.replace('\'', "''");
+    let control_type = t.control_type.replace('\'', "''");
+    let runtime_key = t.runtime_id.iter().map(i32::to_string).collect::<Vec<_>>().join(",");
+    Ok(format!(
+        "{root_script}\n{WIN32_MUTATION_GUARD}\n\
+         $shuviExpectedHwnd = [IntPtr]([int64]{})\n\
+         $shuviExpectedPid = [uint32]{}\n\
+         $shuviExpectedTitle = '{}'\n\
+         $shuviExpectedControlName = '{}'\n\
+         $shuviExpectedAutomationId = '{}'\n\
+         $shuviExpectedControlType = '{}'\n\
+         $shuviExpectedRuntimeCount = {}\n\
+         $shuviExpectedRuntimeKey = '{}'\n\
+         {NATIVE_CONTROL_EXECUTION_GUARD}",
+        t.hwnd, t.pid, title, control_name, control_id, control_type,
+        t.runtime_id.len(), runtime_key
+    ))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{NativeUiaTarget,guarded_mutation_root,parse_prepared_window,prepared_window_probe};
-    fn approved()->NativeUiaTarget{ NativeUiaTarget{hwnd:901,pid:123,title:"Adobe Premiere Pro 2026".into()} }
-    #[test]
-    fn reject_missing_desktop_and_unbound_mutations() {
-        let target=approved();
-        for input in [None,Some(""),Some("desktop"),Some("DESKTOP"),Some("Adobe\nPremiere")] {
-            assert!(guarded_mutation_root(input,"$root=42".into(),Some(&target)).is_err());
+    use super::{NativeUiaTarget, guarded_mutation_root, parse_prepared_control, prepared_control_probe};
+    fn target() -> NativeUiaTarget {
+        NativeUiaTarget {
+            hwnd: 901, pid: 123, title: "Adobe Premiere Pro 2026".into(),
+            runtime_id: vec![42, -3, 91], control_name: "New Project".into(),
+            automation_id: "new_project".into(), control_type: "ControlType.Button".into(),
         }
-        assert!(guarded_mutation_root(Some("Premiere"),"$root=42".into(),None).is_err());
+    }
+    fn observed() -> &'static str {
+        r#"{"hwnd":901,"pid":123,"title":"Adobe Premiere Pro 2026","runtime_id":[42,-3,91],"control_name":"New Project","automation_id":"new_project","control_type":"ControlType.Button"}"#
     }
     #[test]
-    fn prepared_window_parser_rejects_forged_and_malformed_identity() {
-        for invalid in ["{}", "[]", "not-json", r#"{"hwnd":0,"pid":10,"title":"P"}"#,
-            r#"{"hwnd":1,"pid":0,"title":"P"}"#,
-            r#"{"hwnd":1,"pid":42,"title":"P\nQ"}"#,
-            r#"{"hwnd":1,"pid":42,"title":" P"}"#] {
-            assert!(parse_prepared_window(invalid).is_err());
+    fn parses_exact_os_runtime_and_control_identity() {
+        let result = parse_prepared_control(observed()).unwrap();
+        assert_eq!(result.hwnd, 901);
+        assert_eq!(result.pid, 123);
+        assert_eq!(result.runtime_id, vec![42, -3, 91]);
+        assert_eq!(result.automation_id, "new_project");
+    }
+    #[test]
+    fn rejects_missing_overlarge_ambiguous_or_invalid_control_identity() {
+        for output in ["{}", "[]", "not json",
+            r#"{"hwnd":901,"pid":123,"title":"Premiere","runtime_id":[],"control_name":"Save","control_type":"Button"}"#,
+            r#"{"hwnd":901,"pid":123,"title":"Premiere","runtime_id":["wrong"],"control_name":"Save","control_type":"Button"}"#,
+            r#"{"hwnd":901,"pid":123,"title":"Premiere","runtime_id":[1],"control_name":"","automation_id":"","control_type":"Button"}"#,
+            r#"{"hwnd":901,"pid":123,"title":"Premiere","runtime_id":[1],"control_name":"Save","control_type":""}"#] {
+            assert!(parse_prepared_control(output).is_err(), "accepted invalid control evidence: {output}");
         }
-        let valid=parse_prepared_window(r#"{"hwnd":901,"pid":123,"title":"Premiere"}"#).unwrap();
-        assert_eq!(valid.hwnd,901);
-        assert_eq!(valid.pid,123);
+        assert!(parse_prepared_control(&" ".repeat(8193)).is_err());
     }
     #[test]
-    fn prepare_probe_uses_real_native_win32_process_not_model_arguments() {
-        let script=prepared_window_probe("$root=$observedNativeUiWindow");
-        assert!(script.contains("GetWindowThreadProcessId"));
-        assert!(script.contains("IsWindowVisible"));
-        assert!(script.contains("ConvertTo-Json"));
-        assert!(script.contains("$observedNativeUiWindow"));
+    fn prepare_script_observes_win32_and_one_actual_control_in_one_process() {
+        let script = prepared_control_probe("$root=$nativeWindow", "$condition=$selector");
+        for token in ["$nativeWindow","$selector", "GetWindowThreadProcessId",
+            "IsWindowVisible", "Resolve-ShuviUiMatches", "$matches.Count -ne 1",
+            "GetRuntimeId()", "ConvertTo-Json"] {
+            assert!(script.contains(token), "missing {token}");
+        }
     }
     #[test]
-    fn execution_rechecks_same_prepared_identity_and_keyboard_foreground() {
-        let script=guarded_mutation_root(Some("Adobe Premiere Pro 2026"),"$root=42".into(),Some(&approved())).unwrap();
+    fn execution_checks_prepared_window_and_exact_runtime_control() {
+        let script = guarded_mutation_root(Some("Premiere"), "$root=42".into(), Some(&target())).unwrap();
         assert!(script.starts_with("$root=42\n"));
-        for expected in ["[int64]901","[uint32]123","$shuviExpectedTitle",
-            "GetWindowThreadProcessId","Assert-ShuviNativeTarget","GetForegroundWindow",
-            "IsOffscreen","No UI mutation sent"] {
-            assert!(script.contains(expected),"{expected} missing");
+        for token in ["[int64]901", "[uint32]123", "$shuviExpectedRuntimeKey",
+            "$actualRuntimeId -join ','", "$shuviExpectedControlName",
+            "$shuviExpectedAutomationId", "$shuviExpectedControlType",
+            "GetForegroundWindow", "IsOffscreen", "No UI mutation sent"] {
+            assert!(script.contains(token), "missing {token}");
         }
+    }
+    #[test]
+    fn denies_unbound_unsafe_and_invalid_control_actions() {
+        assert!(guarded_mutation_root(Some("Premiere"), "$root=42".into(), None).is_err());
+        let t = target();
+        for window in [None, Some(""), Some("desktop"), Some("DESKTOP"), Some("Adobe\nPremiere")] {
+            assert!(guarded_mutation_root(window, "$root=42".into(), Some(&t)).is_err());
+        }
+        let mut t = target();
+        t.runtime_id.clear();
+        assert!(guarded_mutation_root(Some("Premiere"), "$root=42".into(), Some(&t)).is_err());
     }
 }
