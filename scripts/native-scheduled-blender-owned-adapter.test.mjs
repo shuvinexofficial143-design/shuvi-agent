@@ -17,7 +17,8 @@ test("desktop lease is never released between contained process and Rust audit",
  assert.match(lib,/let mut native_slot=Some\(claim_monitored_native_execution/);
  assert.match(adapter,/native_slot\.take\(\)/);
  assert.match(adapter,/spawn_for_active_action\(/);
- assert.match(adapter,/child\.wait_bounded\(\)/);
+ assert.match(adapter,/child\.wait_bounded_with_host_budget\(state\)/);
+ assert.match(adapter,/RegisteredOwnedPid::start\(state,child\.pid\(\)\)/);
  assert.match(adapter,/child\.reclaim_terminal_lease\(\)\?/);
  assert.match(adapter,/\*native_slot=Some\(returned\)/);
  assert.match(owned,/fn reclaim_terminal_lease\(&mut self\)/);
