@@ -72,7 +72,14 @@ export function inspectPremiereProjectCreateCandidate(
 }
 
 export function projectCandidateStatus(candidate,activeTaskId){
- if(!obj(candidate)||candidate.taskId!==activeTaskId||!UUID.test(activeTaskId))
+ if(!obj(candidate)||candidate.taskId!==activeTaskId||!UUID.test(activeTaskId)||
+    !UUID.test(candidate.actionId)||!cleanPath(candidate.projectPath)||
+    !Number.isSafeInteger(candidate.sizeBytes)||candidate.sizeBytes<1||
+    candidate.sizeBytes>256*1024*1024||!HASH.test(candidate.fnv1a64)||
+    candidate.fingerprintAlgorithm!=="fnv1a64_noncryptographic_change_detector"||
+    candidate.hostIdentityObserved!==true||candidate.diskBytesObserved!==true||
+    candidate.sha256Attested!==false||candidate.reopenVerified!==false||
+    candidate.originalGoalVerified!==false)
   return "No task-bound Premiere project creation proof candidate.";
  return "Premiere project-create candidate: native host identity and disk bytes observed "+
   "(FNV-1a64 change fingerprint, "+candidate.sizeBytes+" bytes). "+
