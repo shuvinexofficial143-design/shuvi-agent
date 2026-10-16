@@ -14,7 +14,7 @@ function findWindow(windows,title){
  const matching=windows.filter(w=>w.title.toLocaleLowerCase("en-US")===title.trim().toLocaleLowerCase("en-US"));
  return matching.length===1?matching[0]:null;
 }
-function parseControls(result){
+function parseControls(result,expectedWindow){
  if(result?.success!==true||result.tool!=="ui_discover"||
   (result.exit_code!=null&&result.exit_code!==0)||
   typeof result.stdout!=="string"||result.stdout.length>250_000)return null;
@@ -24,6 +24,12 @@ function parseControls(result){
  const controls=[];
  for(const row of rows){
   if(!row||typeof row!=="object"||Array.isArray(row))return null;
+  // The audited discovery output itself must report the same live native
+  // root identity. A cached ui_windows snapshot is never enough.
+  if(!expectedWindow||!Number.isSafeInteger(row.ObservedWindowHwnd)||
+   !Number.isSafeInteger(row.ObservedWindowPid)||
+   row.ObservedWindowHwnd!==expectedWindow.hwnd||
+   row.ObservedWindowPid!==expectedWindow.pid)return null;
   const id=row.AutomationId==null||row.AutomationId===""?"":allowedString(row.AutomationId,180);
   const name=row.Name==null||row.Name===""?"":allowedString(row.Name,180);
   const role=allowedString(row.ControlType,100);
@@ -44,7 +50,7 @@ export function newAuditedControlObservation(result,actionId,requestedWindow,win
  if(typeof actionId!=="string"||!ACTION_ID.test(actionId)||
   !Number.isSafeInteger(nowMs)||nowMs<0||nowMs>Number.MAX_SAFE_INTEGER-MAX_CONTROL_AGE_MS)return null;
  const win=findWindow(currentObservedWindows(windowSession,nowMs),requestedWindow);
- const controls=parseControls(result);
+ const controls=win?parseControls(result,win):null;
  if(!win||!controls)return null;
  return Object.freeze({
   version:1,sourceTool:"ui_discover",sourceActionId:actionId,
