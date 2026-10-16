@@ -1182,7 +1182,7 @@ test("Shuvi39 audit-linked UIA inventory rejects unknown proposed native click a
   tool_proposal:{tool:"ui_click",arguments:{window:"Adobe Premiere Pro 2026",name:"Fake Save"}}};
  const s=setup({first,second,following:[third],stdoutFor:{
   ui_windows:JSON.stringify([{Name:"Adobe Premiere Pro 2026",ProcessId:500,ProcessName:"Premiere",NativeWindowHandle:1000}]),
-  ui_discover:JSON.stringify([{Name:"New Project",AutomationId:"new_project",ControlType:"Button",IsEnabled:true,IsOffscreen:false}])
+  ui_discover:JSON.stringify([{Name:"New Project",AutomationId:"new_project",ControlType:"Button",IsEnabled:true,IsOffscreen:false,ObservedWindowHwnd:1000,ObservedWindowPid:500}])
  }});
  await until(()=>s.transport.connected(),"native");
  await s.transport.send("Premiere project banao","shuvi39-unknown-control",0);
@@ -1204,8 +1204,8 @@ test("Shuvi39 chained native action requires fresh window and real UIA readback 
   stdoutFor:{
    ui_windows:JSON.stringify([{Name:"Adobe Premiere Pro 2026",ProcessId:500,ProcessName:"Premiere",NativeWindowHandle:1000}]),
    ui_discover:JSON.stringify([
-    {Name:"New Project",AutomationId:"new_project",ControlType:"Button",IsEnabled:true,IsOffscreen:false},
-    {Name:"Save",AutomationId:"save",ControlType:"Button",IsEnabled:true,IsOffscreen:false}
+    {Name:"New Project",AutomationId:"new_project",ControlType:"Button",IsEnabled:true,IsOffscreen:false,ObservedWindowHwnd:1000,ObservedWindowPid:500},
+    {Name:"Save",AutomationId:"save",ControlType:"Button",IsEnabled:true,IsOffscreen:false,ObservedWindowHwnd:1000,ObservedWindowPid:500}
    ])}});
  await until(()=>s.transport.connected(),"native ready");
  await s.transport.send("Premiere new project and save","shuvi39-readback-chain",0);
