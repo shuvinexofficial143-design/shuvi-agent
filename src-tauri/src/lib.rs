@@ -66,6 +66,7 @@ mod premiere_mogrt_handoff;
 mod after_effects_mogrt_provenance;
 mod premiere_final_delivery;
 mod premiere_full_decode;
+mod premiere_delivery_spec;
 mod premiere_review_binding;
 mod premiere_edit_session;
 mod premiere_edit_job;
@@ -423,6 +424,7 @@ Cross-track clone computes native vertical offsets from inspected source/destina
 Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) APIs. Native frame export uses Exporter.exportSequenceFrame (25.6+) and Adobe-supported bmp/dpx/gif/jpg/exr/png/tga/tif formats. Output collision blocks by default; host acceptance and observed file metadata are reported separately.
 - premiere_plan_export: {"output":"absolute output media path","preset":"optional absolute .epr preset","queue_to_ame":false,"overwrite":false}
 - premiere_inspect_final_delivery: {"job_id":"exact Premiere export job UUID","expected_project_guid":"observed Premiere project GUID","expected_sequence_guid":"observed Premiere sequence GUID"}
+- premiere_inspect_delivery_spec: {"job_id":"exact Premiere export job UUID","expected_project_guid":"original project GUID","expected_sequence_guid":"original sequence GUID","spec":{"schema_version":1,"expected_duration_seconds":30,"duration_tolerance_seconds":1,"width":1920,"height":1080,"require_audio":true}} — read-only format, dimensions, audio presence and duration QC; distinct from decode/encoder completion and visual approval.
 - premiere_verify_mp4_decode: {"job_id":"exact recorded Premiere export UUID","expected_project_guid":"exact project GUID","expected_sequence_guid":"exact sequence GUID","budget_secs":90} — optional read-only full video/audio stream decode using installed trusted ProgramFiles FFmpeg, bounded 15–180s; reports decoded frames/duration and separately refuses to claim encoder completion, visual quality or production delivery. — read-only SHA256, MP4 structure and trusted ffprobe stream metadata tied to this specific recorded job; never claims encoder completion, full decode or final playback.
 - premiere_acceptance_report: {}
 - premiere_acceptance_probe: {"group":1}
@@ -983,6 +985,7 @@ enum ToolAction {
     PremiereExportStatus { job_id: String },
     PremiereInspectFinalDelivery { job_id:String,expected_project_guid:String,expected_sequence_guid:String },
     PremiereVerifyMp4Decode {job_id:String,expected_project_guid:String,expected_sequence_guid:String,budget_secs:u64},
+    PremiereInspectDeliverySpec {job_id:String,expected_project_guid:String,expected_sequence_guid:String,spec:premiere_delivery_spec::Spec},
     PremiereReadinessReport,
     PremiereSaveProject,
     AfterEffectsCapabilityReport,
@@ -1916,6 +1919,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_export_status"
         | "premiere_inspect_final_delivery"
         | "premiere_verify_mp4_decode"
+        | "premiere_inspect_delivery_spec"
         | "premiere_readiness_report"
         | "premiere_acceptance_report"
         | "premiere_acceptance_probe"
@@ -7706,6 +7710,24 @@ fn stage_tool(
             (ToolAction::PremiereVerifyMp4Decode{job_id,expected_project_guid,expected_sequence_guid,budget_secs},
                 "Decode and validate existing Premiere export".into(),
                 format!("Read-only optional FFmpeg full decode of exact Premiere export job; budget={budget_secs}s. No Premiere/AME mutation or encoder-completion claim."),
+                RiskLevel::Low)
+        }
+        "premiere_inspect_delivery_spec" => {
+            let job_id=arg_string(&proposal.arguments,"job_id")?;
+            Uuid::parse_str(&job_id).map_err(|_|"Invalid Premiere delivery spec job UUID.")?;
+            let expected_project_guid=arg_string(&proposal.arguments,"expected_project_guid")?;
+            let expected_sequence_guid=arg_string(&proposal.arguments,"expected_sequence_guid")?;
+            if expected_project_guid.is_empty()||expected_project_guid.len()>240
+                ||expected_sequence_guid.is_empty()||expected_sequence_guid.len()>240{
+                return Err("Premiere delivery spec requires bounded exact project and sequence GUIDs.".into());
+            }
+            let spec:premiere_delivery_spec::Spec=serde_json::from_value(
+                proposal.arguments.get("spec").cloned().ok_or("Technical delivery specification is required.")?)
+                .map_err(|e|format!("Invalid delivery spec: {e}"))?;
+            spec.validate()?;
+            (ToolAction::PremiereInspectDeliverySpec{job_id,expected_project_guid,expected_sequence_guid,spec},
+                "Check Premiere export technical specifications".into(),
+                "Read-only, exact-job MP4 metadata+SHA256 inspection against user-declared duration, video dimensions and required audio. Does not attest Adobe encoder completion or creative quality.".into(),
                 RiskLevel::Low)
         }
         "premiere_inspect_final_delivery" => {
@@ -17604,6 +17626,28 @@ try {{
                     "export_job_attribution_verified":false,
                     "visual_quality_verified":false,
                     "final_delivery_ready":false}).to_string(),
+                stderr:String::new(),exit_code:Some(0)})
+        }
+        ToolAction::PremiereInspectDeliverySpec{job_id,expected_project_guid,expected_sequence_guid,spec} => {
+            let job={
+                let path=premiere_export_jobs_path(app)?;
+                let _io=state.premiere_export_jobs_io.lock()
+                    .map_err(|_|"Premiere export job store unavailable.")?;
+                let jobs=premiere_export_jobs::load(&path)?;
+                jobs.jobs.iter().find(|j|j.job_id==job_id)
+                    .cloned().ok_or("Exact Premiere technical QC job UUID not found.")?
+            };
+            // Release job-store mutex before output hashing and trusted ffprobe.
+            let qc=premiere_delivery_spec::inspect(
+                &job,&expected_project_guid,&expected_sequence_guid,&spec)?;
+            let matched=qc.get("technical_spec_conformance_verified")
+                .and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{success:true,tool,
+                stdout:json!({"inspection_completed":true,"read_only":true,
+                    "technical_spec_conformance_verified":matched,
+                    "technical_qc_evidence":qc,"encoder_completion_verified":false,
+                    "export_job_attribution_verified":false,"visual_quality_verified":false,
+                    "human_playback_verified":false,"final_delivery_ready":false}).to_string(),
                 stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::PremiereInspectFinalDelivery{job_id,expected_project_guid,expected_sequence_guid} => {
