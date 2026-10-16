@@ -141,7 +141,8 @@ test("Desktop does not auto-open and only calls read-only Rust SHA after exact a
  const shaCall=ui.indexOf('"verify_premiere_project_sha256"',check);
  const bind=ui.indexOf("bindPremiereReopenShaAfterReadback(",shaCall);
  assert.ok(begin>=0&&check>begin&&shaCall>check&&bind>shaCall);
- assert.match(ui,/projectReopenEvidence=null;\s*\}else if\(proposal.tool==="premiere_create_project"/);
+ assert.match(ui,/projectReopenEvidence=null;\s*if\(!projectCreationEvidence\|\|!projectShaFileProof\|\|/);
+ assert.match(ui,/proposal\.arguments\.path!==projectCreationEvidence\.projectPath\)\{\s*projectCreationEvidence=null;\s*projectShaFileProof=null;/);
  assert.match(ui,/projectCreationEvidence===candidate&&\s*projectShaFileProof===originalSha/);
  assert.match(ui,/Final native delivery remains UNVERIFIED/);
  assert.match(ui,/await stopAgentForSafety\(summarizeMasterMissingProof\(finalOutcome\)\)/);
