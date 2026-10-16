@@ -115,3 +115,23 @@ This milestone links After Effects' already implemented \`export_mogrt\` receipt
 **Security and limits:** Local receipt and proof records are unsigned and can be altered together by an actor with arbitrary write access to the workspace; they are not a cryptographic trust anchor. Exact AE export host receipt + native-verified bytes is useful recorded execution evidence, *not* proof of AE origin against a compromised local filesystem. MOGRT editor controls, source aesthetics, video preview, fresh-session reopen and completed export playback remain **Live Unverified** until an authorized Windows host acceptance. Late AE receipts may need separate reconciliation and are not silently promoted to successful producer attestations. No third-party Adobe data is uploaded.
 
 Files touched: one new AE provenance Rust module, AE export runtime hook, optional \`ae_provenance_file\` in existing MOGRT request contract, limited Adobe-specific tool/parser/runtime clauses of shared \`src-tauri/src/lib.rs\`, and the \`scripts/after-effects-mogrt-provenance.test.mjs\` source tests. No general scheduler, worker, permissions, branch merge or installer changes.
+
+## Milestone 8 — bounded full video/audio decode of existing Premiere MP4 delivery (read-only)
+
+Starting point: commit a18cead20b28b6530f20864e13d88f7c4472b794 had **all ten GitHub Actions workflows SUCCESS**. The previous source-bound AE export_mogrt provenance is already implemented and was not rebuilt. This milestone addresses the remaining difference between MP4 structure/ffprobe stream metadata and actually decoding the media data.
+
+New owner-visible read-only tool:
+`premiere_verify_mp4_decode: {"job_id":"existing Premiere export job UUID","expected_project_guid":"exact GUID","expected_sequence_guid":"exact GUID","budget_secs":90}`.
+
+- Selects exactly one recorded Premiere export job under the existing export-job store mutex, then releases the mutex before a potentially expensive read-only decode.
+- Requires a valid accepted/queued/uncertain recorded job with matching project/sequence GUID and an absolute .mp4 output. Does not start or retry an Adobe export.
+- Hashes the MP4 before validation, uses existing bounded MP4 structural parser and trusted ffprobe stream metadata to obtain its duration, executes the actual FFmpeg decode, then independently hashes the MP4 again; changed bytes invalidate decoded evidence.
+- Uses exclusively an administrator-installed trusted `%ProgramFiles%\ffmpeg\bin\ffmpeg.exe`, a pinned canonical path with symlink and Windows reparse-point checks, not PATH, arbitrary shell, model-controlled executable or automatic downloads. If unavailable, returns explicit unverified evidence.
+- FFmpeg decodes the selected MP4 video and optional audio streams into the `null` muxer, not a new media file. `-xerror`, `-err_detect explode`, protocol whitelist and `-progress pipe:1` are used. Validates clean process exit, one final `progress=end`, positive decoded video frame count, and decoded stream duration of at least 97% of trusted metadata duration. Excessive stdout/stderr, process errors, truncation, unbounded time or missing end progress fail closed.
+- Budget is explicit 15..180 seconds, process is killed and reaped on timeout, and stdout/stderr are drained by bounded readers. Structured read-only action report preserves separate `full_selected_stream_decode_verified` vs `human_playback_verified:false`, `audio_visual_quality_verified:false`, `adobe_encoder_completion_verified:false`, `export_job_output_attribution_verified:false`, and `final_delivery_ready:false`.
+- Zero user project edits, zero export job state writes, zero production releases. This is **not** proof of correct source editing, actual Adobe AME completion, clip/source attribution, synchronized artistic audio or visible playback.
+
+Source files:
+`src-tauri/src/premiere_full_decode.rs` (new standalone decoder, including pure progress acceptance Rust unit tests), `src-tauri/src/lib.rs` (one module, one typed action/catalog/parser/runtime arm), `scripts/premiere-full-decode.test.mjs` (nine regression tests). Prior Premiere and AE code unchanged.
+
+Host acceptance pending on an owner-approved Windows machine with FFmpeg installed in the trusted administrator layout: run an actual disposable Premiere 30-second and 5-minute export, obtain native encoder-completion evidence separately, run both metadata and bounded full-decode actions, then inspect playback and project reopening manually. Source-level CI cannot claim this test happened.
