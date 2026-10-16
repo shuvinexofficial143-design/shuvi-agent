@@ -17,7 +17,8 @@ function normalize(record,now){
   (!Number.isSafeInteger(record.revision)||record.revision<1))return null;
  if(!ACTIONS.has(record.maxActions)||!PHASES.has(record.phase))return null;
  if(record.phase==="native_denied"&&
-  (record.version!==2||!Number.isSafeInteger(record.stagedActions)||
+  (record.version!==2||!Number.isSafeInteger(record.revision)||
+   record.revision<1||!Number.isSafeInteger(record.stagedActions)||
    record.stagedActions<1||!record.actionId))return null;
  const {stagedActions,modelRequests,expiresAt,updatedAt,actionId}=record;
  if(!Number.isSafeInteger(stagedActions)||stagedActions<0||stagedActions>record.maxActions)return null;
