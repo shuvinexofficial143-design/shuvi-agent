@@ -16,5 +16,6 @@ test("owned worker polls cancellation and terminates only its retained Job Objec
  assert.match(worker,/if cancelled \{return self\.stop_owned_tree\("cancelled"\);\}/);
  assert.match(worker,/self\.child\.terminate_tree\(\)\?/);
  assert.match(worker,/owner\.cancel_requested=false/);
- assert.match(worker,/self\.record_terminal\(phase,result\)\?/);
+ assert.match(worker,/self\.complete_owned_terminal\(phase,result\)/);
+ assert.match(worker,/self\.record_terminal\(actual,code\)\?/);
 });

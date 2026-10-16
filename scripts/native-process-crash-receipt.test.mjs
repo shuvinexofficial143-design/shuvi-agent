@@ -9,8 +9,9 @@ test("native process launch persists intent before OS child creation and PID aft
   const reg=owned.indexOf("process_receipt::started_at(&receipt");
   assert.ok(at>=0&&spawn>at&&reg>spawn);
   assert.match(owned,/owned\.lease=Some\(lease\)/);
-  assert.match(owned,/self\.record_terminal\("exited",Some\(code\)\)\?/);
-  assert.match(owned,/self\.record_terminal\(phase,result\)\?/);
+  assert.match(owned,/self\.complete_owned_terminal\("exited",Some\(code\)\)/);
+  assert.match(owned,/self\.complete_owned_terminal\(phase,result\)/);
+  assert.match(owned,/self\.record_terminal\(actual,code\)\?/);
 });
 test("disk receipt is independent of application progress and quarantines unknown launches",()=>{
   assert.match(journal,/app_progress_verified:false/);
