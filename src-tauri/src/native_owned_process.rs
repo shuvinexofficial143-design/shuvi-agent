@@ -575,6 +575,32 @@ mod tests{
     }
     #[cfg(windows)]
     #[test]
+    fn owner_cancel_before_terminal_publication_cannot_be_lost_to_natural_exit(){
+        let _serial=TEST_PROCESS_MUTEX.lock().unwrap();
+        let (schedule,journal)=fresh_snapshots();
+        let action=journal.action_id.clone();
+        let mut child=spawn_checked(&schedule,&journal,&action,"blender_run_plan",
+            &fixture_exe(),&fixture_args("worker_fixture_exit_zero"),
+            &std::env::temp_dir(),Duration::from_secs(5)).unwrap();
+        // Observe actual OS termination WITHOUT publishing the Rust terminal
+        // receipt; reproduce the exact window when an owner clicks Stop.
+        let deadline=Instant::now()+Duration::from_secs(5);
+        loop{
+            if child.child.try_wait().unwrap().is_some()
+                &&child.child.active_processes().unwrap()==0{break;}
+            assert!(Instant::now()<deadline,"Rust child fixture did not exit");
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(request_cancel_exact(&action).unwrap());
+        let terminal=child.complete_owned_terminal("exited",Some(0)).unwrap();
+        assert_eq!(terminal.phase,"cancelled");
+        assert_eq!(terminal.exit_code,Some(0)); // OS zero is NOT app success
+        assert!(!terminal.app_progress_verified);
+        assert!(!request_cancel_exact(&action).unwrap());
+        drop(child);
+    }
+    #[cfg(windows)]
+    #[test]
     fn terminal_releases_pid_owner_before_artifact_audit_without_unlocking_desktop_lease(){
         let _serial=TEST_PROCESS_MUTEX.lock().unwrap();
         let (schedule,journal)=fresh_snapshots();
