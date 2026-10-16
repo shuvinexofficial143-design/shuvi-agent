@@ -6,6 +6,7 @@ const py=readFileSync(new URL("../integrations/blender-worker/shuvi_blender_plan
 const rust=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
 const exec=readFileSync(new URL("../src-tauri/src/blender_plan_worker.rs",import.meta.url),"utf8");
 const receipt=readFileSync(new URL("../src-tauri/src/blender_artifact_manifest.rs",import.meta.url),"utf8");
+const source=readFileSync(new URL("../src-tauri/src/blender_input_checkpoint.rs",import.meta.url),"utf8");
 const bundle=JSON.parse(readFileSync(new URL("../src-tauri/tauri.conf.json",import.meta.url),"utf8"));
 
 test("The fixed Blender PlanRunner is bundled, not a provider-supplied Python string",()=>{
@@ -33,6 +34,18 @@ test("The approved plan has bounded size, steps, deadline and no destructive per
   assert.match(py,/argparse\.ArgumentParser\(\)/);
   assert.doesNotMatch(py,/\bexec\(|\beval\(|subprocess\.run\(|shell=True/);
 });
+test("one-shot and persistent Blender paths require the same exact approved source SHA and authenticated loaded path",()=>{
+  assert.match(rust,/ToolAction::BlenderRunPlan \{python_exe,blender_exe,blend_file,expected_blend_sha256,output_dir,allow_render,plan\}/);
+  assert.match(rust,/blender_input_checkpoint::inspect\(blend_file\.as_deref\(\),expected_blend_sha256\.as_deref\(\)\)/);
+  assert.match(exec,/blender_input_checkpoint::inspect\(blend_file,expected_blend_sha256\)\?/);
+  assert.match(exec,/blender_input_checkpoint::still_current\(input\)\?/);
+  assert.match(exec,/"input_checkpoint":input_proof\.as_ref\(\)/);
+  assert.match(py,/inspect_input_source\(args\.blend_file, args\.expected_blend_sha256\)/);
+  assert.match(py,/Authenticated one-shot Blender did not open the exact source/);
+  assert.match(py,/"input_checkpoint": source_before/);
+  assert.match(source,/pub\(crate\) fn still_current\(/);
+});
+
 test("The plan must produce an actual verified output, not claim success after partial mutations",()=>{
   for(const expected of ["file.checkpoint","render.execute","Status.VERIFIED","report.completed",
     "read_output(actual", "reread[\"sha256\"] != digest","actual.parent != args.output_dir.resolve"]){
