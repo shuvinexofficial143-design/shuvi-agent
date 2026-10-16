@@ -10778,10 +10778,11 @@ Write-Output 'SHUVI_WHATSAPP_DESKTOP_LAUNCH_REQUESTED'
             // This upgrades only the LOCAL native audit corroboration claim.
             // App-data JSONL logs are not cryptographically signed, nor is this
             // a test that an actual Blender process ran in this environment.
-            result["historical_owner_approval_reauthenticated"]=json!(true);
-            result["render_source_stage2_binding_proven"]=json!(true);
+            result["historical_owner_approval_reauthenticated"]=json!(false);
+            result["render_source_stage2_binding_proven"]=json!(false);
             result["local_native_audit_correlated"]=json!(true);
             result["local_audit_cryptographically_tamper_proof"]=json!(false);
+            result["local_audit_verified_executed_action_records"]=json!(3);
             result["live_blender_runtime_verified_by_this_review"]=json!(false);
             Ok(ActionResult{success:true,tool,stdout:result.to_string(),stderr:String::new(),exit_code:Some(0)})
         }
