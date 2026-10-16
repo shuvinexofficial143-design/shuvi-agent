@@ -6,7 +6,7 @@ test("native execution and post-audit planning errors are distinct phases",()=>{
  assert.match(src,/executionVerified=verified/);
  assert.match(src,/if\(executionVerified\)\{/);
  assert.match(src,/Native action remained audit-verified/);
- assert.match(src,/else\{\s*const unknownBudget=taskBudgets\.get\(current\.threadId\)/);
+ assert.match(src,/if\(confirmedExpiry\)\{[\s\S]*?else\{[\s\S]*?const unknownBudget=taskBudgets\.get\(current\.threadId\)/);
  assert.match(src,/if\(unknownBudget\)await persistRecovery\(unknownBudget,"outcome_unknown",current\.action\.id\)/);
  assert.match(src,/const recoveryPrepared=await prepareAuditedUiReadRecovery\(current,message\)/);
 });
