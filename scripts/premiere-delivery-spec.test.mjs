@@ -39,7 +39,7 @@ test("no metadata, inconsistent hashes or unsupported structure can be technical
   assert.match(source,/stream_metadata_parse_verified/);
   assert.match(source,/if !integrity/);
   assert.match(source,/let spec_match=integrity&&duration_matches&&video_matches&&audio_matches/);
-  assert.match(media,/premiere_media_relink::same_file\(&before,&after\)/);
+  assert.match(media,/premiere_media_relink::same_file\(before,after\)/);
 });
 test("timed sequence output must be within tolerance and have one exact-size video stream",()=>{
   assert.match(source,/duration_seconds/);
