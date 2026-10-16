@@ -69,9 +69,9 @@ impl OwnedChild {
 const MIN_BUDGET_MS:u64=100;
 const MAX_BUDGET_MS:u64=600_000;
 const MAX_RECENT_LAUNCHES:usize=48;
-struct ProcessSlot {active:Option<String>,recent:Vec<String>}
+struct ProcessSlot {active:Option<String>,recent:Vec<String>,cancel_requested:bool}
 static PROCESS_OWNER:Mutex<ProcessSlot>=Mutex::new(ProcessSlot{
-    active:None,recent:Vec::new()
+    active:None,recent:Vec::new(),cancel_requested:false
 });
 
 #[derive(Debug,Clone,PartialEq,Eq)]
@@ -85,6 +85,19 @@ pub(crate) struct ProcessObservation {
     pub process_observed:bool,
     pub app_progress_verified:bool,
     pub descendants_contained:bool,
+}
+/// Request cancellation only for the exact in-process, PID-owned UUID.
+/// The supervisor must terminate its retained Job Object handle; no caller
+/// supplies a PID, OS shell command or foreign process identity.
+pub(crate) fn request_cancel_exact(id:&str)->Result<bool,String>{
+    if uuid::Uuid::parse_str(id).map(|x|x.to_string()!=id).unwrap_or(true){
+        return Err("Invalid action UUID for owned process cancellation.".into());
+    }
+    let mut slot=PROCESS_OWNER.lock()
+        .map_err(|_|"Native process cancellation state poisoned.")?;
+    if slot.active.as_deref()!=Some(id){return Ok(false);}
+    slot.cancel_requested=true;
+    Ok(true)
 }
 pub(crate) struct OwnedProcess<'lease> {
     action_id:String,
@@ -152,6 +165,7 @@ fn spawn_checked<'lease>(schedule:&Schedule,native:&crate::native_worker_job::Na
     // Windows: suspend, contain process tree, then resume.
     let child=OwnedChild::spawn(&executable,args,cwd)?;
     slot.active=Some(action_id.to_owned());
+    slot.cancel_requested=false;
     slot.recent.push(action_id.to_owned());
     if slot.recent.len()>MAX_RECENT_LAUNCHES{slot.recent.remove(0);}
     Ok(OwnedProcess{action_id:action_id.to_owned(),tool:tool.to_owned(),
@@ -209,6 +223,12 @@ impl<'lease> OwnedProcess<'lease> {
     /// turns supervisor liveness or exit=0 into Rust audit success.
     pub(crate) fn poll(&mut self)->Result<ProcessObservation,String>{
         if let Some(phase)=self.final_phase{return Ok(self.observation(phase));}
+        let cancelled={
+            let slot=PROCESS_OWNER.lock()
+                .map_err(|_|"Owned worker cancellation state poisoned.")?;
+            slot.active.as_deref()==Some(self.action_id.as_str())&&slot.cancel_requested
+        };
+        if cancelled {return self.stop_owned_tree("cancelled");}
         match self.child.try_wait()?{
             Some(code)=>{
                 self.final_code=Some(code);
@@ -263,6 +283,7 @@ impl Drop for OwnedProcess<'_>{
             if let Ok(mut owner)=PROCESS_OWNER.lock(){
                 if owner.active.as_deref()==Some(self.action_id.as_str()){
                     owner.active=None;
+                    owner.cancel_requested=false;
                 }
             }
         }else if let Some(lease)=self.lease.take(){

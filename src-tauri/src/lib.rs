@@ -18984,6 +18984,12 @@ fn cancel_running_action(
             .get(&action_id)
             .cloned();
         match active_tool.as_deref() {
+            Some("blender_inspect") | Some("blender_run_plan") => {
+                // Only a live, UUID-owned Job Object can accept this request.
+                // The worker itself performs kill-on-close tree termination
+                // and records the durable cancelled OS outcome.
+                return native_scheduler::owned_process::request_cancel_exact(&action_id);
+            }
             Some("run_project_task") | Some("powershell") | Some("motion_graphics_run_remotion") => {}
             Some(_) | None => return Ok(false),
         }
