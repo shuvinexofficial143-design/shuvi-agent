@@ -135,3 +135,17 @@ Source files:
 `src-tauri/src/premiere_full_decode.rs` (new standalone decoder, including pure progress acceptance Rust unit tests), `src-tauri/src/lib.rs` (one module, one typed action/catalog/parser/runtime arm), `scripts/premiere-full-decode.test.mjs` (nine regression tests). Prior Premiere and AE code unchanged.
 
 Host acceptance pending on an owner-approved Windows machine with FFmpeg installed in the trusted administrator layout: run an actual disposable Premiere 30-second and 5-minute export, obtain native encoder-completion evidence separately, run both metadata and bounded full-decode actions, then inspect playback and project reopening manually. Source-level CI cannot claim this test happened.
+
+## Milestone 9 — exact-job 30s/5min technical MP4 acceptance
+
+New read-only premiere_inspect_delivery_spec checks the technical deliverable against an exact native export-job UUID, original Premiere project GUID and sequence GUID. This is a format/duration/audio checklist, NOT a claim of completed encoder work or creative approval.
+
+Two supported reference requests:
+- 30s 1080p reel: {"schema_version":1,"expected_duration_seconds":30,"duration_tolerance_seconds":1,"width":1920,"height":1080,"require_audio":true}
+- 300s 1080p feature: {"schema_version":1,"expected_duration_seconds":300,"duration_tolerance_seconds":5,"width":1920,"height":1080,"require_audio":true}
+
+Limits: 1..3600 seconds, <=10 seconds/10% tolerance, 128..8192px dimensions. Each requested report independently checks exact stream duration, exactly one video stream at the given width/height, required audio channels/sample rate, and the existing MP4 structure/trusted ffprobe/SHA256 integrity gates. Missing or inconsistent metadata fails closed with explicit unmet checks. The native export ledger is released before file hashing.
+
+The declared spec may be retrospective: spec_was_known_before_export=false and file_generated_by_this_export_job_verified=false. Encoder completion, full media decode, human playback, subtitles, visual graphics quality, mixed audio and final_delivery_ready remain false even when technical_spec_conformance_verified=true. To perform separate bounded actual decode, use the previously implemented premiere_verify_mp4_decode.
+
+Only new src-tauri/src/premiere_delivery_spec.rs (3 Rust unit tests), scripts/premiere-delivery-spec.test.mjs (8 contract tests), and Adobe-specific src-tauri/src/lib.rs wiring were changed. Existing desktop approvals/permissions, export jobs and other teams' branches remain untouched. Real Premiere/After Effects Windows acceptance is still LIVE UNVERIFIED.
