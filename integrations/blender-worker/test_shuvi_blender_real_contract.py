@@ -60,7 +60,7 @@ class ContractController:
 
     def validate_operation(self, operation):
         if operation not in VALID_OPERATIONS:
-            raise AgentError.__mro__[0] if False else ValueError("Unexpected operation in contract test")
+            raise ValueError("Unexpected operation in contract test")
         self.checked_operations.append(operation)
 
     def validate_payload(self, request):
