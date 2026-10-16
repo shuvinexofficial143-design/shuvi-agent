@@ -93,3 +93,24 @@ test("native host completion, delivery and user approval remain explicitly unver
   assert.match(planner,/fn edited_srt_bytes_bad_hash_and_wrong_mapping_fail_closed/);
   assert.match(planner,/fn missing_caption_role_bad_static_field_and_too_many_cues_fail/);
 });
+
+
+test("separate HIGH risk typed action reuses native mapping, checkpoint, and per-item hash guard",()=>{
+  const staged=slice('"premiere_apply_caption_graphics" => {','"premiere_plan_caption_graphics" => {');
+  assert.match(staged,/PremiereApplyCaptionGraphics\{request\}/);
+  assert.match(staged,/RiskLevel::High/);
+  const executed=slice('ToolAction::PremiereApplyCaptionGraphics {request} => {',
+    'ToolAction::PremierePlanCaptionGraphics {request} => {');
+  assert.match(executed,/state\.graphics_running\.begin/);
+  assert.match(executed,/premiere_caption_graphics::plan\(&request,&saved\)/);
+  assert.match(executed,/stage_graphics_batch/);
+  assert.match(executed,/saved\.mapping\.validate_local_template\(\)/);
+  assert.match(executed,/premiere_bridge\.request\("inspect_timeline"/);
+  assert.match(executed,/premiere_graphics::run_batch\(&batch,&saved/);
+  assert.match(executed,/backup_premiere_project\(client\)/);
+  assert.match(executed,/let check=premiere_caption_graphics::plan\(source,mapping\)\?/);
+  assert.match(executed,/insert_mapped_graphic/);
+  assert.match(executed,/"premiere_project_save_verified":false/);
+  assert.match(executed,/"export_completion_verified":false/);
+  assert.match(executed,/"retry_automatically":false/);
+});
