@@ -140,7 +140,9 @@ def inspect_input_source(filename: Path, expected_sha256: str) -> dict:
             hasher.update(chunk)
     if hasher.hexdigest() != expected_sha256:
         raise ValueError("Blender source bytes differ from approved checkpoint")
-    return {"path": str(real_path), "sha256": expected_sha256,
+    # Retain the exact Rust canonical launch argument for the native
+    # source-identity comparison (Windows may use an extended-length prefix).
+    return {"path": str(filename), "sha256": expected_sha256,
             "bytes": size, "verified_loaded_file_path": True,
             "loaded_file_hash_checked": True}
 
