@@ -10,6 +10,7 @@ const lib=read("src-tauri/src/lib.rs");
 const native=read("src-tauri/src/blender_session_worker.rs");
 const broker=read("integrations/blender-worker/shuvi_blender_session.py");
 const bundle=JSON.parse(read("src-tauri/tauri.conf.json"));
+const input=read("src-tauri/src/blender_input_checkpoint.rs");
 
 test("four persistent-session actions are wired through ordinary audited ToolAction",()=>{
   for(const action of [
@@ -47,7 +48,10 @@ test("native registry checks real managed PID identity, resource limit and abort
     "recv_timeout(",
     "session_reconnect_allowed",
     "source_action_id",
-    "blender_artifact_manifest::build("
+    "blender_artifact_manifest::build(",
+    "blender_input_checkpoint::inspect(blend_file,expected_blend_sha256)?",
+    "blender_input_checkpoint::still_current(src)",
+    "input_checkpoint"
   ]) assert.ok(native.includes(text),text);
   assert.match(native,/SESSION_MAX_AGE:Duration=Duration::from_secs\(15\*60\)/);
   assert.match(native,/MAX_FRAME:usize=131072/);
@@ -69,9 +73,14 @@ test("session broker uses fixed authenticated Blender launch and no model Python
     "reopen_checkpoint(blender_exe, actual, before)",
     "if request_allow_render and not args.allow_render",
     'current.data.get("revision") != expected_scene_revision',
-    "Stale Blender scene revision: no plan steps dispatched"
+    "Stale Blender scene revision: no plan steps dispatched",
+    "inspect_input_source(args.blend_file, args.expected_blend_sha256)",
+    "Authenticated Blender did not load the exact approved checkpoint",
+    '"input_checkpoint": source_before'
   ]) assert.ok(broker.includes(text),text);
   assert.doesNotMatch(broker,/\beval\(|\bexec\(|subprocess\.run\(|shell=True/);
+  assert.match(input,/pub\(crate\) fn inspect\(/);
+  assert.match(input,/pub\(crate\) fn still_current\(/);
 });
 
 const candidates=[["python3"],["python"],["py","-3"]];
@@ -92,5 +101,5 @@ test("persistent broker parses and fixture session protocol passes",{
     "-s","integrations/blender-worker","-p","test_shuvi_blender_session.py"],
     {cwd:root,timeout:30000,encoding:"utf8"});
   assert.equal(run.status,0,run.stderr);
-  assert.match(run.stderr,/Ran 13 tests/);
+  assert.match(run.stderr,/Ran 16 tests/);
 });
