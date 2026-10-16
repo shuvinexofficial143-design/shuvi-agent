@@ -378,3 +378,44 @@ The review action does not import into Adobe, verify paid host state, create
 new checkpoints or exercise real Blender. It leaves the user's existing
 assets, other teams' branches and main untouched. Do not claim a real
 end-to-end Blender acceptance test has been run from these fixtures.
+
+
+## Source-checkpoint binding for separately approved render sessions
+
+\`blender_session_start\` now accepts \`expected_blend_sha256\` alongside
+an optional \`blend_file\`. Both fields must be either null or populated;
+an arbitrary filename alone is insufficient. Rust verifies a bounded
+regular, non-symlink .blend file, actual BLENDER header, canonical path,
+length (≤128 MiB) and the **exact SHA-256** before owner approval and
+again immediately before launching the owned broker. The broker only
+launches after the existing Rust Job Object/arm handshake. The Python
+broker re-hashes the source before launch; after the authenticated
+\`scene.inspect\`, it checks the actual loaded \`scene.file\` path against
+the approved source and re-hashes the source once more. A changed file,
+wrong loaded scene, bad hash or unavailable file prevents startup.
+
+The original Rust session records the canonical input checkpoint proof.
+Every separately approved \`blender_session_plan\` rechecks the input on
+disk before and after execution; it retires the owned session on uncertainty.
+A verified plan receipt contains a native-controlled \`input_checkpoint\`
+with path, SHA-256, byte count, \`verified_loaded_file_path=true\` and
+\`loaded_file_hash_checked=true\` when a source was loaded, or null for
+a new empty startup scene. These fields are *not* a replacement for
+rechecking the file on a future run.
+
+The read-only \`blender_review_acceptance_chain\` compares the third
+stage's input receipt with the exact canonical Stage-2 output path, SHA
+and byte count; missing or substituted input evidence is rejected even
+when the render PNG itself has a correct hash. The returned verdict now
+includes \`render_source_stage2_binding_consistent=true\`. The separate
+\`render_source_stage2_binding_proven=false\` remains intentionally
+false: a caller-provided receipt collection is not an authenticated
+historical audit log. Full audit binding must independently correlate
+persisted approved action IDs and runtime evidence. The validator
+does not itself run Blender, mutate scenes or certify visual quality.
+
+New regression tests include Rust SHA-readback/changed-source/header
+cases, Python broker exact-loaded-path/changed-bytes denial, and native
+three-stage reviewer rejecting missing source proof, swapped paths,
+incorrect source SHA or byte length. This is source/CI verification only;
+disposable real Windows Blender acceptance remains outstanding.
