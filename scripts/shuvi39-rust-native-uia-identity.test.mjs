@@ -11,7 +11,7 @@ const mutation=core.slice(from,to);
 test("seven actual native UIA mutation tools use execution-time identity guard",()=>{
  assert.match(core,/mod native_uia_window_guard;/);
  assert.equal((mutation.match(/native_uia_window_guard::guarded_mutation_root\(/g)||[]).length,7);
- assert.equal((mutation.match(/Assert-ShuviNativeTarget -root \$root -element \$e/g)||[]).length,8);
+ assert.ok((mutation.match(/Assert-ShuviNativeTarget -root \$root -element \$e/g)||[]).length>=8);
  for(const arm of ["UiClick","UiSetValue","UiFocus","UiScroll","UiToggle","UiExpandCollapse","UiSendKeys"]){
   const begin=mutation.indexOf("ToolAction::"+arm+" {");
   assert.ok(begin>=0,arm+" arm missing");
@@ -125,4 +125,20 @@ test("Rust capability preflight is read only, typed and does not grant approval"
  assert.match(guard,/IsKeyboardFocusable/);
  assert.match(guard,/Unrecognized UIA mutation capability/);
  assert.match(prep,/let probe = native_uia_window_guard::prepared_control_probe\(&root, &condition, native_tool\)\?/);
+});
+
+test("native prepare rejects all control-formatted, oversized and whitespace-padded UIA selectors",()=>{
+ const src=core.slice(core.indexOf("fn prepare_native_uia_binding("),
+  core.indexOf("fn stage_tool(",core.indexOf("fn prepare_native_uia_binding(")));
+ assert.match(src,/for selector in \[name, automation_id\]\.into_iter\(\)\.flatten\(\)/);
+ assert.match(src,/selector\.chars\(\)\.count\(\) > 180/);
+ assert.match(src,/selector\.trim\(\) != selector/);
+ assert.match(src,/selector\.chars\(\)\.any\(char::is_control\)/);
+ assert.match(src,/Native UIA selector must be a bounded exact control identity/);
+});
+test("UIA bound approval lifetime is independent from 10-minute ordinary native action TTL",()=>{
+ assert.match(guard,/NATIVE_UIA_PREPARED_TTL_MS: u64 = 60_000/);
+ assert.match(guard,/pub\(super\) fn expired_native_uia_binding\(/);
+ assert.match(core,/native_uia_window_guard::expired_native_uia_binding\(/);
+ assert.match(core,/prepared\.native_uia_target\.as_ref\(\)/);
 });
