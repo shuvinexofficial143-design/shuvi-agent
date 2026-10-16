@@ -450,3 +450,77 @@ overwritten. No user-controlled script execution is added.
 The Node source CI now checks one-off/persistent parity and exact
 pre-/post-launch/source evidence; Rust compilation and Python bridge
 fixture tests remain source/CI evidence, not a live Windows Blender run.
+
+
+## Milestone — pinned **real upstream PlanRunner** compatibility CI
+
+A dedicated PR workflow \`.github/workflows/blender-upstream-contract-ci.yml\`
+checks out the **public** standalone Blender Agent repository read-only at
+exact reviewed commit
+\`96b88c2513152f772399f247989ef602d5e0a7d7\`.
+The workflow runs on isolated GitHub-hosted Ubuntu CI with Python 3.12,
+\`PYTHONDONTWRITEBYTECODE=1\` and never launches Blender, touches Windows
+desktops or sends model/API requests.
+
+The new \`test_shuvi_blender_real_contract.py\` imports the *actual upstream*
+\`Plan.from_dict\`, \`PlanRunner\`, \`Request\`, \`Result\`, \`Status\`,
+\`CreateMesh\`, \`TranslateVertices\`, \`PageQuery\`, \`RenderConfig\`
+and \`FileAction\`. The isolated fake controller serves only as a
+deterministic in-memory object/mesh/scene executor so real production
+Step/Binding/Request/Result contracts can execute **all three recipes**
+from end to end. It proves the first model-created vertex moves,
+the second plan reuses a session and changes the same vertex again,
+both checkpoints carry different virtual mesh hashes, and the third
+new-session plan configures/render-attempts a 64×64 image. It also checks
+source parser validation, duplicate IDs, stale-scene refusal and no
+automatic continuation after a failed first step.
+
+This suite improves on a fake implementation of PlanRunner but must **not**
+be described as real Blender runtime acceptance: there is still no bpy,
+Blender executable, actual .blend save/reopen or rendered pixel verification.
+Upstream source is pinned to guarantee deterministic CI results; its version
+must be explicitly updated and the full contract suite rerun before
+integration with a newer external Blender Agent commit.
+
+## Milestone — local native audit-correlated three-stage receipt gate
+
+The native entrypoint \`blender_review_acceptance_chain\` now performs a
+**second verification layer after existing file/lineage checks**. Every
+source action UUID from the three supplied receipts must resolve through
+the existing \`read_action_audit_receipt\` into a persisted successful
+\`executed\` event with tool \`blender_session_plan\`, the same UUID,
+and an exact deterministic receipt suffix written when the original
+native action succeeded.
+
+For successful native \`blender_session_plan\` and \`blender_run_plan\`,
+\`successful_execution_audit_detail\` records a compact
+\`blender_action_receipt_v1\` suffix. It contains *digests* of output and
+source paths, SHA-256 of verified output/source file bytes, exact sizes
+and Blender session identity. Raw filesystem paths are **not** inserted
+into the audit text. The reviewer reconstructs this suffix from each
+verified receipt and requires an exact end-of-record match: a fake JSON
+receipt that simply claims \`status=verified\` cannot bypass the local
+audit lookup or change output/source hashes.
+
+When **all three** native records, files, session constraints and saved
+geometry checks agree, the outer reviewed result marks
+\`local_native_audit_correlated=true\`,
+\`historical_owner_approval_reauthenticated=true\` (against the local
+Shuvi native executed-event log), and
+\`render_source_stage2_binding_proven=true\` only **as a corroborated
+local-audit / verified worker-receipt association**. It STILL returns
+\`local_audit_cryptographically_tamper_proof=false\` and
+\`live_blender_runtime_verified_by_this_review=false\`.
+The pure read-only receipt-chain function without audit access remains
+non-authoritative; its default historical-approval booleans stay false.
+
+Audit log rotation, missing records, failure/denial events, different
+tools, mismatching input SHA/byte count, wrong session, changed outputs
+or legacy plan receipts from before the new audit suffix are **fail-closed**
+and require a fresh approved acceptance run. Existing audit files are
+not rewritten or backfilled. The action runs only after its *own* native
+owner-approval path and does not grant any new desktop operation or
+Adobe import permission. Local JSONL audit files are not externally
+signed or immutable, so an adversary with filesystem write permission
+may still tamper with them. Independent live host verification and
+cryptographic attestation remain separate possible future milestones.
