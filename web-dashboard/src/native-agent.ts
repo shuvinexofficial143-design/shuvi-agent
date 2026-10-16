@@ -7,7 +7,8 @@ import {mountNativeModelSetup, type ModelTeamHandle, type NativeInvoke} from "./
 import {admitDashboardMasterProposal,masterAutonomyGuidance,nextMasterReadbackProposal} from "../../src/master-autonomy-contract.mjs";
 import {chooseNativeRoute} from "./native-model-routing.mjs";
 import {masterGoalContext,resolveMasterObjective} from "./native-master-goal.mjs";
-import {createTask,stageTask,executeTask,verifyTask,pauseTask,taskSummary,taskContext} from "./native-task-progress.mjs";
+import {createTask,stageTask,executeTask,verifyTask,completeAuditedOpening,pauseTask,taskSummary,taskContext} from "./native-task-progress.mjs";
+import {verifiedSimplePremiereOpening} from "./native-opening-completion.mjs";
 import {isRecoverableUiReadFailure,isAuditedUiReadFailure,uiReplanGuidance} from "./native-read-recovery.mjs";
 import {actionFingerprint,seenAfterAuditedChange,actionLoopGuidance} from "./native-action-loop.mjs";
 import {taskGoalContext,taskGoalLabel} from "./native-goal-checks.mjs";
@@ -803,7 +804,34 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      appendReply(current.threadId,current.promptIndex,label+(output?"\n"+output:""));
      showActionFeedback(label+(output?" "+output:""));
      refreshState(label);
+     // An EXACT "Open Premiere" task can close after two separately approved
+     // native actions (launcher then OS-window inspection) with two exact
+     // Rust executed audits. Do not purchase an unnecessary third AI turn.
+     // No project, editing or export task may use window-only acceptance.
+     const simpleOpening=verified?verifiedSimplePremiereOpening(
+       current.objective,current.action.id,result,
+       taskEvidence.get(current.threadId)??null,true):null;
      clearPending();
+     if(simpleOpening){
+      const finalBudget=taskBudgets.get(current.threadId);
+      if(!finalBudget||!await persistRecovery(finalBudget,"paused",current.action.id)){
+       haltTask(current.threadId,"recovery_journal_failed");
+       appendReply(current.threadId,current.promptIndex,
+        "Premiere window was observed with a Rust audit, but terminal recovery could not be saved. No completion status or paid retry was issued.");
+       return;
+      }
+      updateTask(current.threadId,completeAuditedOpening(getTask(current.threadId)));
+      const completedMessage="Requested Premiere window OPENING VERIFIED at last audited OS inspection: "+
+       redactNativeMessage(simpleOpening.window.title)+" (PID "+simpleOpening.window.pid+
+       ", HWND "+simpleOpening.window.hwnd+"). The native launcher and window inspection "+
+       "had different approved action IDs. No extra AI model request. "+
+       "Project creation, file import, editing, save and export remain UNVERIFIED.";
+      appendReply(current.threadId,current.promptIndex,completedMessage);
+      showActionFeedback(completedMessage);
+      goalStatus.textContent=completedMessage;
+      refreshState("Premiere window opening verified; no additional paid model call.");
+      return;
+     }
      if(verified)await continueAfterVerifiedAction(current,result);
     }
    }
