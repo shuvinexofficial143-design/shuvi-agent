@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
+import {spawnSync} from "node:child_process";
+import {fileURLToPath} from "node:url";
 
 const py=readFileSync(new URL("../integrations/blender-worker/shuvi_blender_plan.py",import.meta.url),"utf8");
 const rust=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
@@ -77,4 +79,22 @@ test("The host never pretends a multi-step plan was completed just because it wa
   assert.match(exec,/inspect before retry/);
   assert.match(rust,/blender_plan_worker::execute\(/);
   assert.doesNotMatch(exec,/unwrap\(\)/);
+});
+
+
+const root=fileURLToPath(new URL("../",import.meta.url));
+const candidates=[["python3"],["python"],["py","-3"]];
+const python=candidates.find(parts=>{
+  const [exe,...args]=parts;
+  return spawnSync(exe,[...args,"-c","import ast"],{timeout:5000}).status===0;
+});
+test("one-off input source checked before launch, authenticated load and post-plan: six Python regressions",{
+  skip:python?false:"Python interpreter unavailable on runner"
+},()=>{
+  const [exe,...args]=python;
+  const run=spawnSync(exe,[...args,"-B","-m","unittest","discover",
+    "-s","integrations/blender-worker","-p","test_shuvi_blender_plan_input.py"],
+    {cwd:root,timeout:30000,encoding:"utf8"});
+  assert.equal(run.status,0,run.stderr);
+  assert.match(run.stderr,/Ran 6 tests/);
 });
