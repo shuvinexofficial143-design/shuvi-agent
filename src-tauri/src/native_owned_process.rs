@@ -284,17 +284,25 @@ impl<'lease> OwnedProcess<'lease> {
     pub(crate) fn wait_bounded_with_host_budget(
         &mut self,state:&ActionState
     )->Result<ProcessObservation,String>{
+        self.wait_bounded_with_probe(||current_runtime_status(state)
+            .map(|status|status.over_hard_limit))
+    }
+    // Keep OS termination testable without allocating actual gigabytes on a
+    // CI runner. Production passes the real registered-process RAM sampler.
+    fn wait_bounded_with_probe<F>(&mut self,mut over_budget:F)
+        ->Result<ProcessObservation,String>
+        where F:FnMut()->Result<bool,String>{
         loop{
             let observed=self.poll()?;
             if observed.phase!="running"&&observed.phase!="descendants_running"{
                 return Ok(observed);
             }
-            match current_runtime_status(state){
-                Ok(status) if status.over_hard_limit=>{
+            match over_budget(){
+                Ok(true)=>{
                     self.stop_owned_tree("cancelled")?;
                     return Err("Owned Blender worker exceeded Shuvi 4 GB combined host RAM ceiling; process tree stopped. Inspect effects before retry.".into());
                 },
-                Ok(_)=>{},
+                Ok(false)=>{},
                 Err(_)=>{
                     self.stop_owned_tree("cancelled")?;
                     return Err("Cannot independently verify owned Blender memory; stopped worker before further mutations.".into());
@@ -478,6 +486,43 @@ mod tests{
         assert_eq!(obs.phase,"timed_out");
         assert!(!obs.app_progress_verified);
         assert!(obs.descendants_contained);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn real_windows_job_stops_when_host_memory_probe_reports_over_limit(){
+        let _serial=TEST_PROCESS_MUTEX.lock().unwrap();
+        let (schedule,journal)=fresh_snapshots();
+        let action=journal.action_id.clone();
+        let mut child=spawn_checked(&schedule,&journal,&action,"blender_run_plan",
+            &fixture_exe(),&slow_args(),&std::env::temp_dir(),
+            Duration::from_secs(5)).unwrap();
+        let mut samples=0;
+        let failed=child.wait_bounded_with_probe(||{
+            samples+=1;
+            Ok(true)
+        });
+        assert!(failed.unwrap_err().contains("4 GB combined host RAM"));
+        assert!(samples>=1);
+        let state=child.poll().unwrap();
+        assert_eq!(state.phase,"cancelled");
+        assert!(state.descendants_contained);
+        assert!(!state.app_progress_verified);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn unavailable_host_memory_probe_also_stops_exact_owned_job(){
+        let _serial=TEST_PROCESS_MUTEX.lock().unwrap();
+        let (schedule,journal)=fresh_snapshots();
+        let action=journal.action_id.clone();
+        let mut child=spawn_checked(&schedule,&journal,&action,"blender_inspect",
+            &fixture_exe(),&slow_args(),&std::env::temp_dir(),
+            Duration::from_secs(5)).unwrap();
+        let result=child.wait_bounded_with_probe(||Err("memory telemetry unavailable".into()));
+        assert!(result.unwrap_err().contains("Cannot independently verify"));
+        let terminal=child.poll().unwrap();
+        assert_eq!(terminal.phase,"cancelled");
+        assert!(!terminal.app_progress_verified);
+        assert!(terminal.descendants_contained);
     }
     #[cfg(windows)]
     #[test]

@@ -17,8 +17,11 @@ test("scheduled Blender inspector and plan both register exact OS PID in host bu
 test("supervised process checks original combined RAM guard and fail-closes on unavailable observation",()=>{
  assert.match(owned,/register_managed_process\(state,pid\)\?/);
  assert.match(owned,/unregister_managed_process\(self\.state,self\.pid\)/);
- assert.match(owned,/match current_runtime_status\(state\)/);
+ assert.match(owned,/current_runtime_status\(state\)/);
  assert.match(owned,/status\.over_hard_limit/);
+ assert.match(owned,/wait_bounded_with_probe/);
+ assert.match(owned,/real_windows_job_stops_when_host_memory_probe_reports_over_limit/);
+ assert.match(owned,/unavailable_host_memory_probe_also_stops_exact_owned_job/);
  assert.match(owned,/self\.stop_owned_tree\("cancelled"\)\?/);
  assert.match(owned,/Cannot independently verify owned Blender memory/);
  assert.doesNotMatch(owned,/status\.over_hard_limit.*safe_to_auto_retry\s*=\s*true/);

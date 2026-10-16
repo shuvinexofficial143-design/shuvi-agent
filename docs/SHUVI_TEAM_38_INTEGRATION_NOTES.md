@@ -81,3 +81,8 @@ Review any adapter calls and potential cross-team shared-file overlap. Keep owne
 - Blender PID-owned inspection and plan register exact native child PID into existing managed-process identity registry (real process start time), with RAII cleanup after terminal process-tree observation. Old remote-cancel taskkill is NOT used: exact UUID Job Object stop remains authoritative.
 - Both supervised Blender adapters now execute `wait_bounded_with_host_budget` to sample existing `current_runtime_status(state)` every 250 ms. If measured combined Shuvi/managed worker tree exceeds 4 GB or cannot be verified, stop that exact owned Job Object, report failed/unknown external effects, do not silently retry. Independent Windows Job Object 4 GiB committed-memory guard remains in force.
 - Existing high-level owner permission, native durable audit and SHA256 artifact checks are unchanged. Regression contract requires both Blender paths to register PID, sample budget and unregister terminal PID before final audit.
+
+## Milestone 12 — Windows behavioral proof of 4 GB watchdog
+- Refactor existing real host RAM sampler behind a private injectable predicate (production path still calls `current_runtime_status(state)` every 250 ms). This makes exact tree-kill behavior independently testable without exhausting CI RAM.
+- Two Windows Rust tests spawn actual suspended, Job-contained Rust worker processes: over-hard-limit true and measurement unavailable. Both must stop **only** the currently owned process tree, return an error, and leave app progress explicitly unverified.
+- Preserve memory accounting registration RAII, original action UUID, audit and user review controls; no new frontend privilege.
