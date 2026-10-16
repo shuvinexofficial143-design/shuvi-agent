@@ -52,8 +52,9 @@ pub fn evaluate_progress(raw:&[u8],expected_duration:f64)->Result<Value,String>{
     let mut complete:Option<std::collections::HashMap<&str,&str>>=None;
     let mut endings=0usize;
     for line in source.lines(){
-        let (k,v)=line.split_once('=').ok_or("Malformed decoder progress row.")?;
-        if k.len()>48||v.len()>128||!k.bytes().all(|b|b.is_ascii_lowercase()||b==b'_')
+        let (k,raw_value)=line.split_once('=').ok_or("Malformed decoder progress row.")?;
+        let v=raw_value.trim();
+        if k.len()>48||v.len()>128||!k.bytes().all(|b|b.is_ascii_lowercase()||b.is_ascii_digit()||b==b'_')
             ||!v.bytes().all(|b|b.is_ascii_graphic()){
             return Err("Unbounded or invalid decoder progress key/value.".into());
         }
@@ -185,5 +186,7 @@ mod tests{
         assert!(evaluate_progress(b"garbled",30.0).is_err());
         assert!(evaluate_progress(b"frame=30\nout_time_us=30000000\nprogress=end\n",f64::NAN).is_err());
         assert!(evaluate_progress(b"frame=30\nout_time_us=30000000\nprogress=end\nunfinished=1\n",30.0).is_err());
+        assert_eq!(evaluate_progress(b"frame= 30\nstream_0_0_q=-1.0\nout_time_us= 30000000\nprogress=end\n",30.0)
+            .unwrap()["full_selected_stream_decode_verified"],true);
     }
 }
