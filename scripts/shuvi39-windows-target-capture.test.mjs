@@ -70,3 +70,28 @@ test("UI mutations invalidate a prior window snapshot; subsequent action require
   assert.equal(invalidatesObservedWindows("ui_windows"),false);
   assert.equal(checkObservedMutationTarget(action("Adobe Premiere Pro"),[]).allowed,false);
 });
+
+test("selected-screen capture binds original process birth time before focus",()=>{
+ const start=capture.indexOf("$shuviCaptureProcess = Get-Process -Id $uiPid");
+ const verify=capture.indexOf("Assert-ShuviCaptureProcessGeneration",start+5);
+ const focus=capture.indexOf("SetForegroundWindow($target)");
+ assert.ok(start>0&&verify>start&&focus>verify);
+ assert.match(capture,/StartTime\.ToUniversalTime\(\)\.Ticks/);
+ assert.match(capture,/Application process restarted during window capture/);
+});
+test("screenshot checks process-generation before PNG write and after focus",()=>{
+ const start=capture.indexOf("if (-not $focused)");
+ const afterFocus=capture.indexOf("Assert-ShuviCaptureProcessGeneration",start);
+ const copy=capture.indexOf("CopyFromScreen(");
+ const afterCopy=capture.indexOf("Assert-ShuviCaptureProcessGeneration",copy);
+ const save=capture.indexOf("$bitmap.Save(");
+ assert.ok(start>=0&&afterFocus>start&&copy>afterFocus&&afterCopy>copy&&save>afterCopy);
+ assert.match(capture,/GetWindowThreadProcessId\(\$target, \[ref\]\$pidAfterCopy\)/);
+ assert.match(capture,/GetForegroundWindow\(\) -ne \$target/);
+});
+test("unknown process birth time fails closed rather than sending another app screenshot",()=>{
+ assert.match(capture,/Cannot establish original app process start time; no screenshot sent/);
+ assert.match(capture,/Captured application process exited; no screenshot sent/);
+ assert.match(capture,/Invalid app process generation; no screenshot sent/);
+ assert.doesNotMatch(capture,/Start-Process -FilePath/);
+});
