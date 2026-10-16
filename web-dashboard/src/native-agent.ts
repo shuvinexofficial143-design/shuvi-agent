@@ -18,6 +18,7 @@ import {observedWindowInventory,checkObservedMutationTarget,checkAmbiguousReadWi
 import {newAuditedWindowObservation,currentObservedWindows} from "./native-window-observation-session.mjs";
 import {newAuditedControlObservation,checkObservedControlTarget} from "./native-ui-control-session.mjs";
 import {needsUiReadback,newPendingUiReadback,checkPendingUiReadback,auditUiReadback} from "./native-ui-readback-session.mjs";
+import {auditedNativeUiaExpiry} from "./native-uia-expiry-recovery.mjs";
 import {verifiedExecutionReceipt,contradictsFailureReceipt} from "./native-action-receipts.mjs";
 import {requiresNewWindowObservation} from "./native-ui-snapshot-lifetime.mjs";
 import {taskOutcomeSummary} from "./native-task-outcome.mjs";
@@ -855,6 +856,30 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     showActionFeedback("Native action verified. Follow-up planning failed; no automatic retry.");
     refreshState("Master continuation failed; prior native action remains verified.");
    }else{
+    // The native Rust TTL can DENY an action before ANY execution.
+    // The error text alone is untrusted: require exact action UUID/tool and
+    // a single native 'denied' receipt with no execution/conflicting audit.
+    // A confirmed expiry is not a success, and never triggers a retry.
+    let confirmedExpiry=false;
+    if(message.includes("Prepared action expired before execution")){
+     try{
+      const trail=await invoke<Array<{event:string;action_id:string|null;success:boolean;tool:string}>>(
+       "audit_log",{limit:200});
+      confirmedExpiry=auditedNativeUiaExpiry(current.action.id,current.action.kind,message,trail);
+     }catch{/* no audit = unknown side effect, not a confirmed denial */}
+    }
+    if(confirmedExpiry){
+     const expiryBudget=taskBudgets.get(current.threadId);
+     const journalOk=expiryBudget?await persistRecovery(expiryBudget,"paused",current.action.id):false;
+     haltTask(current.threadId,journalOk?"approval_expired":"recovery_journal_failed");
+     appendReply(current.threadId,current.promptIndex,
+      journalOk
+       ?"Rust audited this prepared UIA approval as expired and denied BEFORE execution. No Windows mutation was requested by the expired action. Refresh observations and request a new separately approved action."
+       :"Rust audit confirms the action was denied before execution, but the recovery journal could not be reconciled. Review Activity/Audit before any new task.");
+     showActionFeedback("Native UIA approval expired without execution. No automatic replay.");
+     refreshState("Rust denied expired UIA approval. Fresh observation and owner approval required.");
+     return;
+    }
     const unknownBudget=taskBudgets.get(current.threadId);
     if(unknownBudget)await persistRecovery(unknownBudget,"outcome_unknown",current.action.id);
     const recoveryPrepared=await prepareAuditedUiReadRecovery(current,message);
