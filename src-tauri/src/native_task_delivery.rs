@@ -164,6 +164,24 @@ fn write_at(path:&Path,receipt:&DeliveryReceipt)->Result<(),String>{
         .map_err(|_|"Could not encode native task delivery.".to_string())?;
     crate::premiere_store::replace(path,&raw,MAX_BYTES,check_bytes)
 }
+// The trusted Rust worker certificate is the default source of truth for
+// Blender artifact delivery, not an AI/UI-proposed file path or stale cache.
+// Caller still must pass exact ordered DAG step IDs and action UUIDs; the
+// scheduler + successful action audits are independently rechecked below.
+fn fill_missing_blender_artifacts<F>(steps:&mut [DeliveryStep],mut get:F)
+    ->Result<(),String>
+where F:FnMut(&str)->Result<DeliveryArtifact,String>{
+    for step in steps{
+        if step.tool=="blender_run_plan"&&step.artifact.is_none(){
+            let cert=get(&step.action_id)?;
+            if cert.kind!="blender_artifact"{
+                return Err("Blender worker certificate kind does not match native tool.".into());
+            }
+            step.artifact=Some(cert);
+        }
+    }
+    Ok(())
+}
 fn verify_blender_certificates(app:&AppHandle,steps:&[DeliveryStep])
     ->Result<(),String>{
     for step in steps {
@@ -181,6 +199,14 @@ pub(crate) fn finalize(app:&AppHandle,steps:Vec<DeliveryStep>)->Result<DeliveryR
     let schedule=crate::native_scheduler::read(app)?
         .ok_or("No durable Rust scheduler exists for the final task.")?;
     let mut steps=steps;
+    // Auto-fill only the approved Blender tool's missing delivery artifact
+    // from the worker's exact UUID-bound, rehashed on-disk certificate.
+    // Explicitly supplied artifact claims are checked against it later.
+    fill_missing_blender_artifacts(&mut steps,|id|{
+        let cert=crate::native_blender_action_artifact::read_verified(app,id)?;
+        Ok(DeliveryArtifact{kind:"blender_artifact".into(),
+            path:cert.path,sha256:cert.sha256,bytes:cert.bytes})
+    })?;
     // Remotion acceptance receipts carry the SHA-256 but not always file
     // length. Rust computes that length, rather than trusting UI guesses.
     for step in &mut steps {
@@ -281,6 +307,34 @@ mod tests{
         fs::write(&p,b"changed-artifact").unwrap();
         assert!(check_artifact(&claim,"blender_run_plan").is_err());
         let _=fs::remove_file(p);
+    }
+    #[test]
+    fn missing_blender_delivery_artifact_is_filled_from_exact_verified_uuid(){
+        let mut steps=vec![claim("model","blender_run_plan",A),
+            claim("inspect","read_file",B)];
+        let artifact=DeliveryArtifact{kind:"blender_artifact".into(),
+            path:"C:\\\\artifacts\\\\model.blend".into(),
+            sha256:"a".repeat(64),bytes:1234};
+        let mut looked_up=0usize;
+        fill_missing_blender_artifacts(&mut steps,|id|{
+            assert_eq!(id,A);
+            looked_up+=1;
+            Ok(artifact.clone())
+        }).unwrap();
+        assert_eq!(looked_up,1);
+        assert_eq!(steps[0].artifact,Some(artifact));
+        assert!(steps[1].artifact.is_none());
+    }
+    #[test]
+    fn missing_or_wrong_worker_certificate_never_autofills_delivery(){
+        let mut steps=vec![claim("model","blender_run_plan",A)];
+        assert!(fill_missing_blender_artifacts(&mut steps,|_|Err(
+            "Missing certificate".into())).is_err());
+        assert!(steps[0].artifact.is_none());
+        assert!(fill_missing_blender_artifacts(&mut steps,|_|Ok(
+            DeliveryArtifact{kind:"untrusted".into(),path:"x".into(),
+                sha256:"0".repeat(64),bytes:1})).is_err());
+        assert!(steps[0].artifact.is_none());
     }
     #[test]
     fn duplicate_identity_and_missing_artifact_are_rejected(){

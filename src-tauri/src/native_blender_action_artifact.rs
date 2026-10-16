@@ -168,6 +168,13 @@ fn require_exact_at(dir:&Path,id:&str,
     }
     verify_file_record(&record)
 }
+pub(crate) fn read_verified(app:&AppHandle,id:&str)->Result<VerifiedBlenderArtifact,String>{
+    let _io=IO.lock().map_err(|_|"Blender certificate journal lock poisoned.")?;
+    let cert=read_at(&root(app)?,id)?
+        .ok_or("No verified Blender artifact certificate for exact action UUID.")?;
+    verify_file_record(&cert)?;
+    Ok(cert)
+}
 pub(crate) fn require_exact(app:&AppHandle,id:&str,
     path:&str,sha256:&str,bytes:u64)->Result<(),String>{
     let _io=IO.lock().map_err(|_|"Blender certificate journal lock poisoned.")?;

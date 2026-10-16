@@ -107,3 +107,8 @@ Review any adapter calls and potential cross-team shared-file overlap. Keep owne
 ## Milestone 16 — historical completed-task provenance re-verification
 - `native_task_delivery::read` now rechecks the same exact Blender certificate, action UUID, file path, bytes and SHA256 as `finalize`. A replaced/deleted certificate or tampered file therefore invalidates subsequent *read-only* delivery inspection instead of leaving a stale green verification.
 - One shared private verification function is called from both finalize and read; no new mutation IPC, and old non-Blender deliveries retain their previous behavior. Historic scheduled Blender receipts without an authenticated certificate fail closed and need owner-assisted inspection.
+
+## Milestone 17 — automatic Blender artifact assembly for completed DAG delivery
+- `native_task_delivery::finalize` now hydrates a missing `blender_run_plan` artifact directly from the exact worker UUID's immutable certificate using `read_verified`, which independently rehashes the actual file. This removes the manual/AI-supplied path/hash step when preparing a final task delivery.
+- Existing complete ordered DAG + Rust successful action audits + UUID+artifact provenance rechecks remain mandatory. Explicitly supplied artifact metadata are **never silently replaced**; they must match the existing certificate. Other tool kinds (including Remotion/Adobe) are unchanged.
+- Two Rust and two Node tests cover auto-hydration, zero unrelated tool lookups, absent certificate fail-closed, and wrong artifact kind rejection.
