@@ -132,7 +132,8 @@ fn validate_advance(old:Option<&NativeRecoveryRecord>,next:&NativeRecoveryRecord
             // it never grants a fresh model reservation or action execution.
             if next.phase=="native_denied"&&
                (previous.phase!="executing"||previous.action_id!=next.action_id||
-                next.action_id.is_none()||previous.staged_actions!=next.staged_actions){
+                next.action_id.is_none()||previous.staged_actions!=next.staged_actions||
+                previous.model_requests!=next.model_requests){
                 return Err("Native denial must match the exact in-flight prepared action.".into());
             }
             if next.phase=="awaiting_approval"&&
@@ -229,6 +230,9 @@ mod tests{
         }),&denied).is_err());
         assert!(validate_advance(Some(&executing),&NativeRecoveryRecord{
             action_id:Some("foreign-action".into()),..denied.clone()
+        }).is_err());
+        assert!(validate_advance(Some(&executing),&NativeRecoveryRecord{
+            model_requests:2,..denied.clone()
         }).is_err());
         assert!(validate_advance(Some(&denied),&NativeRecoveryRecord{
             revision:Some(3),phase:"model_reserved".into(),
