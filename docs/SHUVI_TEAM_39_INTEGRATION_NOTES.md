@@ -217,6 +217,36 @@ cannot prove a click achieved a user-visible goal; readback and user task
 postcondition inspection are still separate. No Windows host mutation, GPU
 editor or multi-monitor acceptance test has been performed.
 
+## Milestone 6 — Rust build integration and synchronous UIA state readback
+
+- Fixed the Rust `PendingAction.native_uia_target` initializers used by the
+  two disposable Premiere acceptance/calibration actions. These explicitly
+  carry `None`, since they never target UIA and cannot inherit another
+  action's HWND/PID authority. The previous branch CI correctly reported
+  Rust E0063 for both missing fields; fixes preserve all other fields.
+- Updated the existing static Premiere acceptance assertion to verify
+  both construction sites use `native_uia_target:None`. This was a
+  required integration-test update, not an execution policy relaxation.
+- `UiSetValue` now re-reads `ValuePattern.Current.Value` after
+  `SetValue()` and compares the exact Unicode value (ordinal comparison).
+  It does not print the sensitive requested value.
+- `UiToggle` records `TogglePattern.Current.ToggleState` before the
+  call and requires an observed state transition afterwards.
+- `UiExpandCollapse` compares `ExpandCollapsePattern.Current.ExpandCollapseState`
+  with the approved Expanded or Collapsed state after the operation.
+  All three checks are within the original permitted PowerShell action,
+  after the Rust-owned HWND/PID and per-control gate. Errors are fail-closed,
+  and **an error after a mutation may be an uncertain side effect**; never
+  automatically retry. Do not assume immediate UIA state guarantees
+  a persisted project or the full owner objective.
+- `scripts/shuvi39-native-uia-state-readback.test.mjs` verifies actual
+  executor order, prepared native identity checks and failure conditions.
+  These checks are source-level until an owner-consented Windows host test.
+- Cross-team shared-file overlap this milestone: `src-tauri/src/lib.rs`
+  UIA arms and Premiere fixture constructor sites, and
+  `scripts/premiere-acceptance-execution.test.mjs` legacy source assertion.
+  Changes stay on team39's feature branch only.
+
 ## Windows acceptance — explicitly NOT YET run
 
 Run only with separate owner consent on a disposable desktop/test fixture.
