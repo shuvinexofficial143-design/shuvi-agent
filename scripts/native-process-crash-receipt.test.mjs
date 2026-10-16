@@ -15,7 +15,9 @@ test("native process launch persists intent before OS child creation and PID aft
 test("disk receipt is independent of application progress and quarantines unknown launches",()=>{
   assert.match(journal,/app_progress_verified:false/);
   assert.match(journal,/Previous subprocess launch or process outcome is unresolved/);
-  assert.match(journal,/Native subprocess UUID cannot be launched twice/);
+  assert.match(journal,/Native subprocess UUID cannot be relaunched from durable history/);
+  assert.match(journal,/prior\.previous_action_ids\.iter\(\)\.any/);
+  assert.match(journal,/prior_uuid_remains_blocked_after_successful_other_action_and_restart/);
   assert.match(journal,/owner_review_at\(/);
   assert.match(journal,/corrupt_primary_and_orphan_backup_are_not_unlocked/);
   assert.doesNotMatch(owned,/tauri::command|invoke_handler/);
