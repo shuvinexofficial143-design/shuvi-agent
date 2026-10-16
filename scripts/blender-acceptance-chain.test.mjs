@@ -28,6 +28,10 @@ test("reviewer compares exact separately approved stages, actual current bytes a
     "render_uses_different_session",
     "mesh_geometry_verified",
     "mesh_fingerprint",
+    "render_source_stage2_binding_consistent",
+    "input_checkpoint",
+    "verified_loaded_file_path",
+    "loaded_file_hash_checked",
     "topology_fingerprints",
     "scene_fingerprint",
     "current_file_sha256_rechecked",
@@ -56,6 +60,7 @@ test("four native unit scenarios cover valid files, swapped sessions, altered da
     "matching_three_receipts_review_current_bytes_without_overclaim",
     "rejects_replayed_action_ids_and_session_substitution",
     "rejects_unchanged_geometry_missing_proof_and_tampered_bytes",
-    "rejects_swapped_stages_or_out_of_root_receipts"
+    "rejects_swapped_stages_or_out_of_root_receipts",
+    "rejects_substituted_render_input_path_sha_size_or_missing_load_proof"
   ])assert.ok(chain.includes("fn "+name+"("),name);
 });
