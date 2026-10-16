@@ -136,7 +136,7 @@ test("desktop captures volatile proof only after executed Rust audit and never r
  assert.match(src,/openingWindowObservation=captureMasterOpeningObservation\(/);
  assert.match(src,/verifyMasterOpeningDelivery\(\s*orchestration.owner_request,orchestration.task_graph,schedule,nativeDelivery,/);
  assert.match(src,/if\(goalAcceptance.requiresIndependentAcceptance&&!openingAcceptance.verified\)/);
- assert.match(src,/await stopAgentForSafety\("All native worker steps have successful Rust receipts, but ORIGINAL TASK UNVERIFIED/);
+ assert.match(src,/await stopAgentForSafety\(summarizeMasterMissingProof\(finalOutcome\)\)/);
  assert.doesNotMatch(src.slice(src.indexOf("function currentCheckpoint(): SessionCheckpoint"),
   src.indexOf("function nativeWorkerDisplay(): string")),/openingWindowObservation/);
 });
