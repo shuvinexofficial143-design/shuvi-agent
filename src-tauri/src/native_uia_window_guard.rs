@@ -4,6 +4,19 @@
 // A different control with the same name may never inherit that approval.
 use serde_json::Value;
 
+// UIA RuntimeIds are short-lived identities, not a reusable permission.
+// General native actions retain their original 10-minute TTL unchanged.
+pub(super) const NATIVE_UIA_PREPARED_TTL_MS: u64 = 60_000;
+pub(super) fn expired_native_uia_binding(
+    prepared_at_ms: u64,
+    now_ms: u64,
+    target: Option<&NativeUiaTarget>,
+) -> bool {
+    target.is_some()
+        && (now_ms < prepared_at_ms
+            || now_ms.saturating_sub(prepared_at_ms) > NATIVE_UIA_PREPARED_TTL_MS)
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct NativeUiaTarget {
     pub(super) hwnd: i64,
@@ -330,6 +343,17 @@ mod tests {
         let mut t = target();
         t.runtime_id.clear();
         assert!(guarded_mutation_root(Some("Premiere"), "$root=42".into(), Some(&t)).is_err());
+    }
+    #[test]
+    fn native_uia_approval_expires_after_one_minute_without_affecting_non_uia_actions() {
+        use super::{expired_native_uia_binding,NATIVE_UIA_PREPARED_TTL_MS};
+        let native = target();
+        let start=2_000_000_u64;
+        assert_eq!(NATIVE_UIA_PREPARED_TTL_MS,60_000);
+        assert!(!expired_native_uia_binding(start,start+60_000,Some(&native)));
+        assert!(expired_native_uia_binding(start,start+60_001,Some(&native)));
+        assert!(expired_native_uia_binding(start,start-1,Some(&native)));
+        assert!(!expired_native_uia_binding(start,start+600_000,None));
     }
     #[test]
     fn disallows_unknown_mutations_before_native_probe() {
