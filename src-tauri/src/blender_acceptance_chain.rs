@@ -46,6 +46,14 @@ pub(crate) fn review(reports:&Value,approved_root:&Path)->Result<Value,String>{
             ||receipt.get("same_blender_session").and_then(Value::as_bool)!=Some(true){
             return Err("Blender acceptance stage lacks a complete persistent-session result.".into());
         }
+        let stage=["model1","model2","render"][index];
+        crate::blender_plan_lineage::receipt_matches(receipt,stage)?;
+        let declared_steps=receipt.get("plan_steps").and_then(Value::as_u64);
+        let lineage_steps=receipt.pointer("/approved_plan_lineage/typed_steps").and_then(Value::as_u64);
+        let reported_steps=receipt.pointer("/artifact_manifest/evidence/executed_typed_steps").and_then(Value::as_u64);
+        if declared_steps!=lineage_steps || declared_steps!=reported_steps {
+            return Err("Blender stage plan-step count does not match native artifact lineage.".into());
+        }
         let session=uuid_field(receipt,"session_id")?;
         let action=uuid_field(receipt,"source_action_id")?;
         let manifest=receipt.get("artifact_manifest")
@@ -199,8 +207,19 @@ mod tests {
                 "total_vertices":13,"total_faces":11}
         });
         let manifest=crate::blender_artifact_manifest::build(&evidence,&work.0,action,Some(session)).unwrap();
+        let stage=if which==0{"model1"}else{"model2"};
+        let operations=if which==0{
+            vec!["mesh.create","mesh.inspect","mesh.translate_vertices","scene.inspect","file.checkpoint"]
+        }else{
+            vec!["objects.list","mesh.inspect","mesh.translate_vertices","scene.inspect","file.checkpoint"]
+        };
         json!({"status":"verified","full_plan_completed":true,"same_blender_session":true,
-            "session_id":session,"source_action_id":action,"artifact_manifest":manifest})
+            "session_id":session,"source_action_id":action,"artifact_manifest":manifest,
+            "plan_steps":5,
+            "approved_plan_lineage":{"schema_version":1,"plan_sha256":"3".repeat(64),
+                "operations":operations,"typed_steps":5,"acceptance_stage":stage,
+                "owner_approval_reauthenticated":false,
+                "runtime_execution_proven_by_this_digest":false}})
     }
 
     fn valid_png()->Vec<u8>{
@@ -246,9 +265,15 @@ mod tests {
             "executed_steps":3,"artifact":artifact,"checkpoint_reopen":null});
         let manifest=crate::blender_artifact_manifest::build(&evidence,&work.0,action,Some(session)).unwrap();
         json!({"status":"verified","full_plan_completed":true,"same_blender_session":true,
-            "session_id":session,"source_action_id":action,"artifact_manifest":manifest})
+            "session_id":session,"source_action_id":action,"artifact_manifest":manifest,
+            "plan_steps":3,
+            "approved_plan_lineage":{"schema_version":1,"plan_sha256":"4".repeat(64),
+                "operations":["render.configure","scene.inspect","render.execute"],
+                "typed_steps":3,"acceptance_stage":"render",
+                "owner_approval_reauthenticated":false,
+                "runtime_execution_proven_by_this_digest":false}})
     }
-    fn fixtures(work:&Workspace)->Value{
+    fn fixtures()(work:&Workspace)->Value{
         let first=blend_receipt(work,0,A1,S1);
         let second=blend_receipt(work,1,A2,S1);
         let mut render=render_receipt(work,A3,S3);
@@ -296,6 +321,22 @@ mod tests {
         assert!(review(&no_proof,&workspace.0).is_err());
     }
 
+    #[test]
+    fn rejects_fake_stage_wrong_operations_and_missing_plan_hash(){
+        let workspace=Workspace::new();let good=fixtures(&workspace);
+        let mut fake=good.clone();
+        fake[1]["approved_plan_lineage"]["acceptance_stage"]=json!("render");
+        assert!(review(&fake,&workspace.0).is_err());
+        let mut op=good.clone();
+        op[1]["approved_plan_lineage"]["operations"][2]=json!("unsafe.python.run");
+        assert!(review(&op,&workspace.0).is_err());
+        let mut digest=good.clone();
+        digest[2]["approved_plan_lineage"]["plan_sha256"]=json!("not a hash");
+        assert!(review(&digest,&workspace.0).is_err());
+        let mut steps=good.clone();
+        steps[1]["plan_steps"]=json!(3);
+        assert!(review(&steps,&workspace.0).is_err());
+    }
     #[test]
     fn rejects_replayed_action_ids_and_session_substitution(){
         let workspace=Workspace::new();let receipt=fixtures(&workspace);
