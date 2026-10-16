@@ -93,3 +93,13 @@ test("full decoded MP4 never becomes claimed Adobe encoder completion, human pla
   assert.match(execution,/"final_delivery_ready":false/);
   assert.match(execution,/"encoder_completion_verified":false/);
 });
+
+test("a fully decodable preexisting MP4 is not credited as the current export job",()=>{
+  assert.match(source,/let new_output_observed=!job\.output_existed_before/);
+  assert.match(source,/job\.before\.exists==false/);
+  assert.match(source,/job\.observations\.iter\(\)\.any\(\|o\|o\.exists&&o\.size_bytes==Some\(after\.size_bytes\)\)/);
+  assert.match(source,/job\.bridge_state=="execution_status_unknown"/);
+  assert.match(source,/"job_output_attribution_blocked":attribution_blocked\|\|!new_output_observed/);
+  assert.match(source,/"export_job_output_attribution_verified":false/);
+  assert.match(source,/"final_delivery_ready":false/);
+});
