@@ -155,10 +155,20 @@ pub fn inspect(job:&Job,project_guid:&str,sequence_guid:&str,budget_secs:u64)->R
     let unchanged=premiere_media_relink::same_file(&before,&after);
     let decoded=unchanged&&decode.as_ref().is_ok_and(|v|
         v.get("full_selected_stream_decode_verified").and_then(Value::as_bool)==Some(true));
+    // A decodable file that existed before export dispatch is not evidence of
+    // this job's output. Preserve decode evidence, but do not promote delivery.
+    let new_output_observed=!job.output_existed_before
+        &&job.before.exists==false
+        &&job.observations.iter().any(|o|o.exists&&o.size_bytes==Some(after.size_bytes));
+    let attribution_blocked=job.output_existed_before
+        ||job.bridge_state=="execution_status_unknown";
     Ok(json!({"job_id":job.job_id,"project_guid":job.project_guid,
         "sequence_guid":job.sequence_guid,"output":job.output,
         "output_sha256":after.sha256,"output_unchanged_during_inspection":unchanged,
         "trusted_decoder_available":decoder.is_some(),"time_budget_seconds":budget_secs,
+        "new_output_observed_for_job":new_output_observed,
+        "preexisting_output_or_uncertain_dispatch":attribution_blocked,
+        "job_output_attribution_blocked":attribution_blocked||!new_output_observed,
         "mp4_stream_metadata_verified":valid,"decode_evidence":decode.as_ref().ok(),
         "decode_error":decode.as_ref().err(),
         "full_selected_stream_decode_verified":decoded,
