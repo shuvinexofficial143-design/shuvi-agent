@@ -166,7 +166,7 @@ pub fn plan(req:&Request,saved:&premiere_graphics::SavedMapping)->Result<Value,S
         assert_eq!(result["generated_batch"]["items"][0]["fields"]["caption_text"],"Hello there");
         assert_eq!(result["generated_batch"]["items"][1]["fields"]["caption_text"],"बढ़िया है");
         assert_eq!(result["generated_batch"]["items"][1]["seconds"],2.2);
-        assert_eq!(result["generated_batch"]["items"][1]["duration_seconds"],1.9);
+        assert!((result["generated_batch"]["items"][1]["duration_seconds"].as_f64().unwrap()-1.9).abs()<1e-9);
         assert_eq!(result["selected_original_cue_indexes"],json!([0,2]));
         assert_eq!(result["requires_new_high_risk_approval"],true);
         assert_eq!(result["native_graphics_inserted"],false);
