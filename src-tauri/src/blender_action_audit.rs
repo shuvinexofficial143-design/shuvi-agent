@@ -38,6 +38,24 @@ pub(crate) fn suffix(receipt:&Value)->Result<String,String>{
         ||manifest.get("source_session_id").and_then(Value::as_str)!=expected_session{
         return Err("Blender result action/session does not match its manifest.".into());
     }
+    let lineage=receipt.get("approved_plan_lineage")
+        .ok_or("Blender audit lacks native exact approved-plan lineage.")?;
+    if lineage.get("schema_version").and_then(Value::as_u64)!=Some(1)
+        ||lineage.get("owner_approval_reauthenticated").and_then(Value::as_bool)!=Some(false)
+        ||lineage.get("runtime_execution_proven_by_this_digest").and_then(Value::as_bool)!=Some(false){
+        return Err("Blender plan lineage verification boundaries are invalid.".into());
+    }
+    let plan_sha=valid_sha(field(lineage,"/plan_sha256")?)?;
+    let stage=field(lineage,"/acceptance_stage")?;
+    if !matches!(stage,"model1"|"model2"|"render"|"other"){
+        return Err("Blender approved-plan acceptance stage invalid.".into());
+    }
+    let count=lineage.get("typed_steps").and_then(Value::as_u64)
+        .filter(|n|(1..=6).contains(n))
+        .ok_or("Blender audited plan must have 1..6 typed steps.")?;
+    if lineage.get("operations").and_then(Value::as_array).is_none_or(|ops|ops.len() as u64!=count){
+        return Err("Blender audit typed step operation list differs from approved plan.".into());
+    }
     let output=field(manifest,"/artifact/absolute_path")?;
     if !std::path::Path::new(output).is_absolute(){
         return Err("Blender audit output path is not absolute.".into());
@@ -83,7 +101,8 @@ pub(crate) fn suffix(receipt:&Value)->Result<String,String>{
         | blender_session_id={session} | blender_input_sha256={input_sha} \
         | blender_input_path_sha256={input_path_hash} | blender_input_bytes={input_size} \
         | blender_mesh_fingerprint={mesh_fingerprint} \
-        | blender_scene_fingerprint={scene_fingerprint}",
+        | blender_scene_fingerprint={scene_fingerprint} \
+        | blender_plan_sha256={plan_sha} | blender_acceptance_stage={stage}",
         path_hash(output)
     ))
 }
@@ -118,7 +137,11 @@ mod tests{
                 "evidence":{"mesh_geometry_verified":true,
                     "mesh_fingerprint":"c".repeat(64),
                     "scene_fingerprint":"d".repeat(64)}},
-            "input_checkpoint":null})
+            "input_checkpoint":null,
+            "approved_plan_lineage":{"schema_version":1,"plan_sha256":"1".repeat(64),
+                "operations":["scene.inspect"],"typed_steps":1,"acceptance_stage":"other",
+                "owner_approval_reauthenticated":false,
+                "runtime_execution_proven_by_this_digest":false}})
     }
     #[test]
     fn exact_audit_suffix_binds_success_to_output_and_session(){
