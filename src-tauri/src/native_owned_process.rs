@@ -181,8 +181,18 @@ pub(crate) fn spawn_for_active_action<'lease>(
         owned.pid(),owned.child.tree_contained())?;
     Ok(owned)
 }
-impl OwnedProcess<'_> {
+impl<'lease> OwnedProcess<'lease> {
     pub(crate) fn pid(&self)->u32{self.child.id()}
+    /// Return the original OS-wide desktop lease to the authorized caller
+    /// ONLY after the entire owned child tree is verified terminated. This
+    /// keeps the same lock through higher-level audit and artifact inspection.
+    pub(crate) fn reclaim_terminal_lease(&mut self)
+        ->Result<NativeExecutionLease<'lease>,String>{
+        if self.final_phase.is_none()||self.child.active_processes()?!=0{
+            return Err("Cannot return native desktop lease while worker descendants may run.".into());
+        }
+        self.lease.take().ok_or("Owned worker lease already returned or missing.".into())
+    }
     fn record_terminal(&self,phase:&str,code:Option<i32>)->Result<(),String>{
         if let Some(path)=&self.receipt_path{
             process_receipt::finish_at(path,&self.action_id,&self.tool,phase,code)?;

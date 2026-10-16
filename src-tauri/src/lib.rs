@@ -5,6 +5,7 @@ mod target_window_capture;
 mod remote_agent;
 mod blender_worker;
 mod blender_plan_worker;
+mod native_blender_owned_adapter;
 mod atomic_file;
 mod execution_lease;
 mod native_worker_status;
@@ -19064,7 +19065,7 @@ async fn execute_action(
     ensure_memory_budget(state.inner())?;
     // Serialize native typed-tool execution. A plan's browser-only worker
     // count is not an execution lock; the Rust guard is the authority.
-    let _native_slot=claim_monitored_native_execution(state.inner(),&app)?;
+    let mut native_slot=Some(claim_monitored_native_execution(state.inner(),&app)?);
 
     let (action, expired_action) = {
         let mut pending = state
@@ -19131,12 +19132,29 @@ async fn execute_action(
     // Supervisor ticks are host-process liveness evidence only; they
     // cannot grant progress, unlock other workers, or auto-retry.
     let pulse=native_worker_job::SupervisorPulse::start(app.clone(),action_id.clone());
-    let execution = execute_tool_with_action_id(
-        action,
-        state.inner(),
-        &app,
-        Some(action_id.as_str()),
-    ).await;
+    // Only a previously approved DAG step may opt into the new PID-owned
+    // Blender read-only worker. Existing standalone/manual Blender inspection
+    // and every other tool retain their current adapter behavior.
+    let execution=if scheduled_step.is_some(){
+        if let ToolAction::BlenderInspect {python_exe,blender_exe,blend_file,operation}=&action.action {
+            native_blender_owned_adapter::inspect(
+                &app,&mut native_slot,&action_id,
+                python_exe,blender_exe,blend_file.as_deref(),operation,
+            ).map(|evidence|ActionResult{
+                success:true,tool:tool.clone(),
+                stdout:serde_json::to_string_pretty(&evidence).unwrap_or_default(),
+                stderr:String::new(),exit_code:Some(0)
+            })
+        }else{
+            execute_tool_with_action_id(
+                action,state.inner(),&app,Some(action_id.as_str())
+            ).await
+        }
+    }else{
+        execute_tool_with_action_id(
+            action,state.inner(),&app,Some(action_id.as_str())
+        ).await
+    };
     drop(pulse);
 
     if let Ok(mut running) = state.running_action_tools.lock() {

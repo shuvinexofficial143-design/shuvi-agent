@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -17,6 +18,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--blender-exe", required=True, type=Path)
     parser.add_argument("--blend-file", type=Path)
     parser.add_argument("--operation", required=True, choices=("scene.inspect", "system.capabilities"))
+    # Internal Shuvi adapter writes a bounded, private, create-exclusive
+    # response. Historical stdout mode remains unchanged for existing callers.
+    parser.add_argument("--result-file", type=Path)
     args = parser.parse_args(argv)
 
     if not args.blender_exe.is_absolute() or not args.blender_exe.is_file():
@@ -57,13 +61,29 @@ def main(argv: list[str] | None = None) -> int:
             if status != Status.SUCCEEDED.value:
                 print(json.dumps({"status": "failed", "error": "Authenticated Blender host inspection failed; no mutation attempted."}))
                 return 3
-            print(json.dumps({
+            evidence = {
                 "protocol_version": 1, "operation": args.operation,
                 "status": status, "data": data,
                 "authenticated_bridge_roundtrip": True,
                 "mutations_allowed": False,
                 "rendering_allowed": False,
-            }, ensure_ascii=False, separators=(",", ":")))
+            }
+            payload = json.dumps(evidence, ensure_ascii=False, separators=(",", ":"))
+            if args.result_file is not None:
+                target = args.result_file
+                if not target.is_absolute() or target.suffix.lower() != ".json" or not target.parent.is_dir():
+                    return 5
+                encoded = payload.encode("utf-8")
+                if len(encoded) > 1024 * 1024:
+                    return 5
+                # Exclusive output prevents replacing a staged or unrelated
+                # file; syncing gives Rust a completed private receipt to read.
+                with target.open("xb") as written:
+                    written.write(encoded)
+                    written.flush()
+                    os.fsync(written.fileno())
+            else:
+                print(payload)
             return 0
     except Exception:
         # Never print traceback/env containing bridge tokens or file identities.
