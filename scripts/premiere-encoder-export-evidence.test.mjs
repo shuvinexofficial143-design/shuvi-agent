@@ -95,3 +95,35 @@ test("Premiere UXP host dispatch and read-only event command wire to this exact 
   assert.match(source,/exportSequence\(command\.arguments \|\| \{\}, command\.id\)/);
   assert.match(source,/completionVerified: false/);
 });
+
+
+test("Rust exact Premiere export-job identity is persisted only on accepted matching output",()=>{
+  const desktop=readFileSync("src-tauri/src/lib.rs","utf8");
+  const jobs=readFileSync("src-tauri/src/premiere_export_jobs.rs","utf8");
+  const a=desktop.indexOf("ToolAction::PremiereExportSequence { output, preset, queue_to_ame, overwrite } => {");
+  const b=desktop.indexOf("ToolAction::PremiereSaveProject => {",a);
+  assert.ok(a>=0 && b>a);
+  const exportRoute=desktop.slice(a,b);
+  assert.match(exportRoute,/value\.get\("output"\)\.and_then\(Value::as_str\)==Some\(output\.as_str\(\)\)/);
+  assert.match(exportRoute,/record\.bridge_request_id=Some\(id\.to_owned\(\)\)/);
+  assert.match(exportRoute,/bridge_state="execution_status_unknown"/);
+  assert.match(jobs,/pub bridge_request_id:Option<String>/);
+  assert.match(jobs,/#\[serde\(default,skip_serializing_if="Option::is_none"\)\]/);
+  assert.match(jobs,/native_event_observation\(&self,host:Option<&Value>\)/);
+  assert.match(jobs,/"encoder_completion_verified":false/);
+  assert.match(jobs,/"export_job_output_attribution_verified":false/);
+});
+test("read-only exact export status re-observes native events before durable store lock",()=>{
+  const desktop=readFileSync("src-tauri/src/lib.rs","utf8");
+  const a=desktop.indexOf("ToolAction::PremiereExportStatus {job_id} => {");
+  const b=desktop.indexOf("ToolAction::PremiereReadinessReport => {",a);
+  assert.ok(a>=0 && b>a);
+  const route=desktop.slice(a,b);
+  const events=route.indexOf('request("media_encoder_events"');
+  const mutex=route.indexOf('state.premiere_export_jobs_io.lock()');
+  assert.ok(events>=0 && mutex>events);
+  assert.match(route,/job\.native_event_observation\(native_events\.as_ref\(\)\)/);
+  assert.match(route,/map\.insert\("native_encoder_event_observation"/);
+  assert.doesNotMatch(route,/request\("export_sequence"/);
+  assert.doesNotMatch(route,/record\.encoder_completion_verified\s*=\s*true/);
+});
