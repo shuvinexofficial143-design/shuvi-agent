@@ -247,6 +247,24 @@ editor or multi-monitor acceptance test has been performed.
   `scripts/premiere-acceptance-execution.test.mjs` legacy source assertion.
   Changes stay on team39's feature branch only.
 
+## Milestone 6.1 — Windows UIA singleton readback compatibility
+
+- Production Windows `ui_find` pipes UIA objects to
+  `ConvertTo-Json -Compress`, yielding a single JSON **object** for one
+  matched control, while `ui_discover` produces an **array** through
+  `ConvertTo-Json -InputObject @($items)`.
+- The audited readback parser now accepts a singleton object **only**
+  for `ui_find`, and requires its Name/AutomationId to match the actual
+  requested selector. It still requires the same fresh HWND/PID,
+  current verified native action receipt, valid shape and bounded output.
+- A malformed object, changed HWND/PID, mismatched control identity,
+  missing selector, or failed native result never clears pending readback.
+  `ui_discover` still requires its expected JSON array.
+- Four regression tests cover real singleton results, foreign selectors,
+  failed reads and malformed native output. A successful observation
+  permits considering a next separately approved action; it does **not**
+  assert the previous UI operation achieved its intended effect.
+
 ## Windows acceptance — explicitly NOT YET run
 
 Run only with separate owner consent on a disposable desktop/test fixture.
