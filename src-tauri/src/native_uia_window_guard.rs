@@ -64,6 +64,10 @@ if ([int]$control.Current.ProcessId -ne $shuviBoundPid -or
 if ($null -eq $runtimeId -or $runtimeId.Count -lt 1 -or $runtimeId.Count -gt 64) {
  throw 'Cannot bind UIA control without a bounded native RuntimeId.'
 }
+# Pattern availability is inspected before the user is asked to approve.
+# A pattern check is read-only, and a later native mutation independently
+# checks pattern availability again after the exact RuntimeId check.
+__CAPABILITY_PREFLIGHT__
 [PSCustomObject]@{
  hwnd = [int64]$shuviBoundHwnd
  pid = $shuviBoundPid
@@ -75,10 +79,68 @@ if ($null -eq $runtimeId -or $runtimeId.Count -lt 1 -or $runtimeId.Count -gt 64)
 } | ConvertTo-Json -Compress -Depth 4
 "#;
 
-pub(super) fn prepared_control_probe(root_script: &str, selector_script: &str) -> String {
-    // Concatenation is deliberately one-pass: selectors/titles may contain
-    // strings resembling template markers, but must never be re-expanded.
-    format!("Add-Type -AssemblyName UIAutomationClient\n{selector_script}\n{root_script}\n{WIN32_MUTATION_GUARD}\n{PREPARED_CONTROL_PROBE}")
+// Pattern is *not* passed in from the AI or WebView. The Rust ToolAction
+// discriminant chooses this allowlisted read-only test.
+fn capability_preflight(tool: &str) -> Result<&'static str, String> {
+    match tool {
+        "ui_click" => Ok(r#"
+$shuviInvoke=$null; $shuviSelection=$null
+if (-not $control.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern,[ref]$shuviInvoke) -and
+    -not $control.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern,[ref]$shuviSelection)) {
+ throw 'Prepared target lacks InvokePattern and SelectionItemPattern.'
+}
+"#),
+        "ui_set_value" => Ok(r#"
+$shuviValue=$null
+if (-not $control.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern,[ref]$shuviValue)) {
+ throw 'Prepared target lacks ValuePattern.'
+}
+if ([System.Windows.Automation.ValuePattern]$shuviValue).Current.IsReadOnly {
+ throw 'Prepared ValuePattern is read-only.'
+}
+"#),
+        "ui_focus" | "ui_send_keys" => Ok(r#"
+if (-not [bool]$control.Current.IsKeyboardFocusable) {
+ throw 'Prepared target cannot receive keyboard focus.'
+}
+"#),
+        "ui_scroll" => Ok(r#"
+$shuviScroll=$null
+if (-not $control.TryGetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern,[ref]$shuviScroll)) {
+ throw 'Prepared target lacks ScrollPattern.'
+}
+if (-not [bool]([System.Windows.Automation.ScrollPattern]$shuviScroll).Current.VerticallyScrollable) {
+ throw 'Prepared target has no vertical scroll capability.'
+}
+"#),
+        "ui_toggle" => Ok(r#"
+$shuviToggle=$null
+if (-not $control.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern,[ref]$shuviToggle)) {
+ throw 'Prepared target lacks TogglePattern.'
+}
+"#),
+        "ui_expand_collapse" => Ok(r#"
+$shuviExpand=$null
+if (-not $control.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern,[ref]$shuviExpand)) {
+ throw 'Prepared target lacks ExpandCollapsePattern.'
+}
+"#),
+        _ => Err("Unrecognized UIA mutation capability; native preparation rejected.".into()),
+    }
+}
+
+pub(super) fn prepared_control_probe(
+    root_script: &str,
+    selector_script: &str,
+    tool: &str,
+) -> Result<String, String> {
+    // Capability snippets are Rust-only constants; a proposal never injects
+    // an arbitrary PowerShell fragment into this permissioned native probe.
+    let check = capability_preflight(tool)?;
+    let native = PREPARED_CONTROL_PROBE.replace("__CAPABILITY_PREFLIGHT__", check);
+    // The observed selector/window scripts are appended by one-pass
+    // formatting and cannot recursively expand the replacement sentinel.
+    Ok(format!("Add-Type -AssemblyName UIAutomationClient\n{selector_script}\n{root_script}\n{WIN32_MUTATION_GUARD}\n{native}"))
 }
 
 fn valid_label(value: &str, max: usize, allow_empty: bool) -> bool {
@@ -240,7 +302,7 @@ mod tests {
     }
     #[test]
     fn prepare_script_observes_win32_and_one_actual_control_in_one_process() {
-        let script = prepared_control_probe("$root=$nativeWindow", "$condition=$selector");
+        let script = prepared_control_probe("$root=$nativeWindow", "$condition=$selector", "ui_click").unwrap();
         for token in ["$nativeWindow","$selector", "GetWindowThreadProcessId",
             "IsWindowVisible", "Resolve-ShuviUiMatches", "$matches.Count -ne 1",
             "GetRuntimeId()", "ConvertTo-Json"] {
@@ -269,4 +331,28 @@ mod tests {
         t.runtime_id.clear();
         assert!(guarded_mutation_root(Some("Premiere"), "$root=42".into(), Some(&t)).is_err());
     }
+    #[test]
+    fn disallows_unknown_mutations_before_native_probe() {
+        assert!(prepared_control_probe("$root=1", "$condition=1", "powershell").is_err());
+        assert!(prepared_control_probe("$root=1", "$condition=1", "ui_find").is_err());
+    }
+    #[test]
+    fn preflight_checks_exact_native_pattern_without_mutating_during_preparation() {
+        let examples = [
+            ("ui_click", "InvokePattern"),
+            ("ui_set_value", "IsReadOnly"),
+            ("ui_focus", "IsKeyboardFocusable"),
+            ("ui_scroll", "VerticallyScrollable"),
+            ("ui_toggle", "TogglePattern"),
+            ("ui_expand_collapse", "ExpandCollapsePattern"),
+            ("ui_send_keys", "IsKeyboardFocusable"),
+        ];
+        for (tool, check) in examples {
+            let script=prepared_control_probe("$root=1", "$condition=1", tool).unwrap();
+            assert!(script.contains(check), "{tool} missing {check}");
+            assert!(!script.contains("__CAPABILITY_PREFLIGHT__"));
+            assert!(!script.contains("SendWait("));
+        }
+    }
+
 }
