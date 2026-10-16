@@ -15,6 +15,7 @@ import type {NativePremiereShaReceipt,BoundPremiereProjectShaProof} from "./nati
 import {inspectPremiereProjectReopenCandidate,bindPremiereReopenShaAfterReadback} from "./premiere-project-reopen-evidence.mjs";
 import type {PremiereReopenEvidence} from "./premiere-project-reopen-evidence.mjs";
 import {assessPremiereProjectProofProgress} from "./master-project-proof-progress.mjs";
+import {assessPremiereProjectDeliveryContract} from "./master-project-delivery-contract.mjs";
 import {captureNativeProjectProofFence,isNativeProjectProofFenceCurrent} from "./master-project-proof-fence.mjs";
 import type {AuditedOpeningObservation} from "./master-goal-window-acceptance.mjs";
 import {nativeTaskDeliveryClaims} from "./native-delivery-claims.mjs";
@@ -1276,6 +1277,11 @@ async function continueAfterOutcome(): Promise<void> {
       return;
     }
     if(!continuationCurrent())return;
+    // This future .prproj Rust delivery contract is NONTERMINAL and can
+    // never promote an unverified creative goal to completed.
+    const projectDelivery=assessPremiereProjectDeliveryContract(
+      orchestration.owner_request,orchestration.task_graph,schedule,nativeDelivery,
+      activePermissionScope.taskId,projectCreationEvidence,projectShaFileProof,projectReopenEvidence);
     // Rust hashes native delivery files, but cannot certify the user's
     // original creative objective from generic step success alone.
     const goalAcceptance=assessMasterGoalDelivery(orchestration.owner_request,orchestration.task_graph);
@@ -1292,6 +1298,7 @@ async function continueAfterOutcome(): Promise<void> {
       if(projectCreationEvidence&&projectCreationEvidence.taskId===activePermissionScope.taskId){
         messages.push({role:"assistant",content:
           projectCandidateStatus(projectCreationEvidence,activePermissionScope.taskId)+
+          " Project delivery contract: "+projectDelivery.reason+
           (projectShaFileProof
             ? " "+nativePremiereShaProgress(projectShaFileProof,activePermissionScope.taskId)+
               (projectReopenEvidence?.sha256AfterReopenVerified===true
@@ -1817,6 +1824,9 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
         }
       }
     }
+    // Stop/rotation during either SHA await forbids stale progress messages
+    // or continuation of a different native owner task.
+    if(protectProjectProof&&!proofFenceCurrent(postAuditProofFence))return;
     renderPremiereProjectProofProgress();
     if(proposal.tool==="ui_windows"&&receiptMatches&&!cancelledByUser&&
        activePermissionScope.taskId===permissionTaskId&&!activePermissionScope.revoked&&!cancelRequested){
