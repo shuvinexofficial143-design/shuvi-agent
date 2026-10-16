@@ -3161,14 +3161,17 @@ fn managed_tree_pids(system: &System, roots: &HashSet<u32>) -> HashSet<Pid> {
 fn prepare_native_uia_binding(
     action: &ToolAction,
 ) -> Result<Option<native_uia_window_guard::NativeUiaTarget>, String> {
-    let window = match action {
-        ToolAction::UiClick { window, .. }
-        | ToolAction::UiSetValue { window, .. }
-        | ToolAction::UiFocus { window, .. }
-        | ToolAction::UiScroll { window, .. }
-        | ToolAction::UiToggle { window, .. }
-        | ToolAction::UiExpandCollapse { window, .. }
-        | ToolAction::UiSendKeys { window, .. } => window.as_deref(),
+    // Match only the seven mutating UIA variants. Caller-supplied HWND,
+    // PID or RuntimeId values are NEVER accepted as binding authority.
+    let (window, name, automation_id) = match action {
+        ToolAction::UiClick { window, name, automation_id }
+        | ToolAction::UiSetValue { window, name, automation_id, .. }
+        | ToolAction::UiFocus { window, name, automation_id }
+        | ToolAction::UiScroll { window, name, automation_id, .. }
+        | ToolAction::UiToggle { window, name, automation_id }
+        | ToolAction::UiExpandCollapse { window, name, automation_id, .. }
+        | ToolAction::UiSendKeys { window, name, automation_id, .. } =>
+            (window.as_deref(), name.as_deref(), automation_id.as_deref()),
         _ => return Ok(None),
     };
     let window = window
@@ -3180,21 +3183,24 @@ fn prepare_native_uia_binding(
     }
     #[cfg(target_os = "windows")]
     {
+        // One OS probe binds window HWND/PID AND the exact selected UIA
+        // control RuntimeId into a single non-persisted Rust PendingAction.
         let root = ui_root_script(Some(window));
-        let probe = native_uia_window_guard::prepared_window_probe(&root);
+        let condition = ui_condition_script(name, automation_id)?;
+        let probe = native_uia_window_guard::prepared_control_probe(&root, &condition);
         let output = run_hidden_powershell(&probe)?;
         if !output.status.success() {
-            return Err("Native target HWND/PID could not be bound at preparation; inspect ui_windows and try again.".into());
+            return Err("Native HWND/PID/UIA control identity could not be bound at preparation. Inspect ui_windows and ui_discover before retrying.".into());
         }
-        let text=std::str::from_utf8(&output.stdout)
-            .map_err(|_| "Prepared native HWND identity was not UTF-8.".to_string())?;
-        return native_uia_window_guard::parse_prepared_window(text).map(Some);
+        let text = std::str::from_utf8(&output.stdout)
+            .map_err(|_| "Prepared native UIA control evidence was not UTF-8.".to_string())?;
+        return native_uia_window_guard::parse_prepared_control(text).map(Some);
     }
     #[cfg(not(target_os = "windows"))]
     {
-        // Existing non-Windows source-level staging tests still build. A
-        // mutation without a verified native identity is blocked at execute.
-        let _ = window;
+        // Non-Windows source-level tests still compile, but no UIA mutation
+        // executes without a genuine native OS-derived binding.
+        let _ = (window, name, automation_id);
         Ok(None)
     }
 }
