@@ -28,7 +28,7 @@ test("Toggle checks a real before and after state transition",()=>{
  const after=source.indexOf("$toggleAfter = ");
  const mismatch=source.indexOf("state transition");
  assert.ok(before>=0&&mutation>before&&after>mutation&&mismatch>after);
- assert.match(source,/if \([^\n]*\$toggleAfter -eq \$toggleBefore/);
+ assert.match(source,/if \([^\n]*\$toggleAfter -ne \$toggleBefore/);
  assert.match(source,/outcome requires independent inspection/);
 });
 test("ExpandCollapse checks actual state against approved Expand or Collapse",()=>{
