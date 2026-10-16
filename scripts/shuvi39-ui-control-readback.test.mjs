@@ -193,3 +193,38 @@ test("native ui_find exposes bounded independent state without leaking field or 
  assert.doesNotMatch(read,/(?:ValuePattern\]\$p\)\.Current\.Value|Password\s*=|Value\s*=\s*\$e)/);
  assert.match(read,/ConvertTo-Json -Compress/);
 });
+
+test("independent Toggle readback needs an actual native ToggleState and exact same control",()=>{
+ const w=initial(),pending=newPendingUiReadback(C,action("New Project","new_project",WIN,"ui_toggle"),w,T+2000);
+ const proposal={tool:"ui_find",arguments:{window:WIN,name:"New Project",automation_id:"new_project"}};
+ const ui=(state)=>({tool:"ui_find",success:true,exit_code:0,stdout:JSON.stringify({...controls[0],ToggleState:state})});
+ assert.equal(auditUiReadback(pending,find(),found(),w,T+3000),pending);
+ assert.equal(auditUiReadback(pending,proposal,ui(null),w,T+3000),pending);
+ assert.equal(auditUiReadback(pending,proposal,ui("unexpected"),w,T+3000),pending);
+ assert.equal(auditUiReadback(pending,proposal,ui("On"),w,T+3000),null);
+});
+test("independent ExpandCollapse readback must match approved expand or collapse",()=>{
+ const w=initial(),proposal={tool:"ui_find",arguments:{window:WIN,name:"New Project",automation_id:"new_project"}};
+ for(const [actionValue,correct,wrong] of [["expand","Expanded","Collapsed"],["collapse","Collapsed","Expanded"]]){
+  const pending=newPendingUiReadback(C,{tool:"ui_expand_collapse",arguments:{window:WIN,name:"New Project",automation_id:"new_project",action:actionValue}},w,T+2000);
+  const result=(value)=>({tool:"ui_find",success:true,exit_code:0,stdout:JSON.stringify({...controls[0],ExpandCollapseState:value})});
+  assert.equal(auditUiReadback(pending,proposal,result(wrong),w,T+3000),pending);
+  assert.equal(auditUiReadback(pending,proposal,result(correct),w,T+3000),null);
+ }
+});
+test("Focus readback demands actual keyboard focus and Scroll requires measurable native vertical state",()=>{
+ const w=initial(),selector={tool:"ui_find",arguments:{window:WIN,name:"New Project",automation_id:"new_project"}};
+ const focus=newPendingUiReadback(C,action("New Project","new_project",WIN,"ui_focus"),w,T+2000);
+ const scroll=newPendingUiReadback(C,action("New Project","new_project",WIN,"ui_scroll"),w,T+2000);
+ const result=(patch)=>({tool:"ui_find",success:true,exit_code:0,stdout:JSON.stringify({...controls[0],...patch})});
+ assert.equal(auditUiReadback(focus,selector,result({HasKeyboardFocus:false}),w,T+3000),focus);
+ assert.equal(auditUiReadback(focus,selector,result({HasKeyboardFocus:true}),w,T+3000),null);
+ for(const bad of [undefined,null,-1,101,NaN,"50"])
+  assert.equal(auditUiReadback(scroll,selector,result({VerticalScrollPercent:bad}),w,T+3000),scroll);
+ assert.equal(auditUiReadback(scroll,selector,result({VerticalScrollPercent:35}),w,T+3000),null);
+});
+test("stateful UIA mutation cannot be unblocked by generic discovery even when matching control is listed",()=>{
+ const w=initial(),p=newPendingUiReadback(C,action("New Project","new_project",WIN,"ui_toggle"),w,T+2000);
+ const result=found([{...controls[0],ToggleState:"On"}]);
+ assert.equal(auditUiReadback(p,find(),result,w,T+3000),p);
+});
