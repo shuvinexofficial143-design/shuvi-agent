@@ -92,7 +92,7 @@ test("Desktop SHA proof is only requested after native result and audit, with ta
  const bound=src.indexOf("projectShaFileProof=bindNativePremiereShaProof(",guarded);
  assert.ok(start>=0&&inspect>start&&invoke>inspect&&guarded>invoke&&bound>guarded);
  assert.match(src,/projectShaFileProof:BoundPremiereProjectShaProof\|null=null/);
- assert.match(src,/projectShaFileProof=null;\s*projectReopenEvidence=null;\s*revokeTaskScope\(activePermissionScope\)/);
+ assert.match(src,/projectShaFileProof=null;\s*projectReopenEvidence=null;\s*renderPremiereProjectProofProgress\(\);\s*revokeTaskScope\(activePermissionScope\)/);
  assert.match(src,/catch\{\s*\/\/ A failed verification/);
  assert.match(src,/projectShaFileProof[\s\S]{0,150}nativePremiereShaProgress/);
  assert.match(src,/await stopAgentForSafety\(summarizeMasterMissingProof\(finalOutcome\)\)/);
