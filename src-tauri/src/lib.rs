@@ -10765,8 +10765,13 @@ for ($i=0; $i -lt [Math]::Min($all.Count, 1200); $i++) {{
         $id = [string]$e.Current.AutomationId
         if ([string]::IsNullOrWhiteSpace($n) -and [string]::IsNullOrWhiteSpace($id)) {{ continue }}
         $role = [string]$e.Current.ControlType.ProgrammaticName
+        # Native UIA RuntimeId disambiguates same-name controls after approval.
+        # An inaccessible/recycled identity is never a trustworthy observation.
+        [int[]]$shuviControlRid = $e.GetRuntimeId()
+        if ($null -eq $shuviControlRid -or $shuviControlRid.Count -lt 1 -or $shuviControlRid.Count -gt 64) {{ continue }}
         $item = [PSCustomObject]@{{
             Name=$n; AutomationId=$id; ControlType=$role
+            ControlRuntimeId=[int[]]$shuviControlRid
             ClassName=[string]$e.Current.ClassName
             IsEnabled=[bool]$e.Current.IsEnabled
             IsOffscreen=[bool]$e.Current.IsOffscreen
@@ -10806,6 +10811,10 @@ $matches = Resolve-ShuviUiMatches -root $root -condition $condition
 $items = @()
 for ($i = 0; $i -lt [Math]::Min($matches.Count, 25); $i++) {{
     $e = $matches.Item($i)
+    [int[]]$shuviControlRid = $e.GetRuntimeId()
+    if ($null -eq $shuviControlRid -or $shuviControlRid.Count -lt 1 -or $shuviControlRid.Count -gt 64) {{
+        throw 'UIA control has no valid RuntimeId for independent readback.'
+    }}
     # Independent, read-only native state observation. Never export the
     # ValuePattern string or password contents into the model audit.
     $shuviToggleState = $null
@@ -10842,6 +10851,7 @@ for ($i = 0; $i -lt [Math]::Min($matches.Count, 25); $i++) {{
     }} catch {{}}
     $items += [PSCustomObject]@{{
         Name = $e.Current.Name
+        ControlRuntimeId = [int[]]$shuviControlRid
         AutomationId = $e.Current.AutomationId
         ControlType = $e.Current.ControlType.ProgrammaticName
         ClassName = $e.Current.ClassName
