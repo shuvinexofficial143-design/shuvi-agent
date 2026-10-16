@@ -23,9 +23,13 @@ export function newPendingUiReadback(actionId,proposal,windowSession,nowMs=Date.
  const rows=currentObservedWindows(windowSession,nowMs);
  const matching=title?findUnique(rows,title):[];
  if(matching.length!==1)return Object.freeze({version:1,sourceActionId:actionId,
-  title:title||"",hwnd:null,pid:null,controlName,automationId,observedAtMs:nowMs,readbackRequired:true});
+  title:title||"",hwnd:null,pid:null,controlName,automationId,
+  mutationTool:proposal.tool,expectedExpansion:proposal?.arguments?.action??null,
+  observedAtMs:nowMs,readbackRequired:true});
  return Object.freeze({version:1,sourceActionId:actionId,title:matching[0].title,
-  hwnd:matching[0].hwnd,pid:matching[0].pid,controlName,automationId,observedAtMs:nowMs,readbackRequired:true});
+  hwnd:matching[0].hwnd,pid:matching[0].pid,controlName,automationId,
+  mutationTool:proposal.tool,expectedExpansion:proposal?.arguments?.action??null,
+  observedAtMs:nowMs,readbackRequired:true});
 }
 
 export function checkPendingUiReadback(proposal,pending){
@@ -72,6 +76,24 @@ export function auditUiReadback(pending,proposal,result,windowSession,nowMs=Date
   if(same[0].IsOffscreen!=null&&typeof same[0].IsOffscreen!=="boolean")return pending;
   if(same[0].ControlType!=null&&
      (typeof same[0].ControlType!=="string"||same[0].ControlType.length>100))return pending;
+  // For stateful actions, an independent read has to contain actual UIA
+  // pattern-state evidence; a generic inventory can never prove that state.
+  if(["ui_toggle","ui_expand_collapse","ui_focus","ui_scroll"].includes(pending.mutationTool)){
+   if(proposal.tool!=="ui_find")return pending;
+   const row=same[0];
+   if(pending.mutationTool==="ui_toggle" &&
+      !["On","Off","Indeterminate"].includes(row.ToggleState))return pending;
+   if(pending.mutationTool==="ui_expand_collapse"){
+    const expected=pending.expectedExpansion==="expand"?"Expanded":
+     pending.expectedExpansion==="collapse"?"Collapsed":null;
+    if(!expected||row.ExpandCollapseState!==expected)return pending;
+   }
+   if(pending.mutationTool==="ui_focus"&&row.HasKeyboardFocus!==true)return pending;
+   if(pending.mutationTool==="ui_scroll"&&
+      (typeof row.VerticalScrollPercent!=="number"||
+       !Number.isFinite(row.VerticalScrollPercent)||
+       row.VerticalScrollPercent<0||row.VerticalScrollPercent>100))return pending;
+  }
   if(proposal.tool==="ui_find"){
    // ui_find is an exact selector read and must return exactly one control.
    if(rows.length!==1)return pending;
