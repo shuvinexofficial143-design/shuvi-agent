@@ -419,3 +419,34 @@ cases, Python broker exact-loaded-path/changed-bytes denial, and native
 three-stage reviewer rejecting missing source proof, swapped paths,
 incorrect source SHA or byte length. This is source/CI verification only;
 disposable real Windows Blender acceptance remains outstanding.
+
+
+## Follow-up reliability fix — one-off plan input parity
+
+The original \`blender_run_plan\` single-use helper previously accepted an
+existing input \`.blend\` without a declared expected hash, while the owned
+persistent session required \`expected_blend_sha256\`. This asymmetry is
+now closed: both typed ToolActions require exact \`blend_file\` plus
+\`expected_blend_sha256\` together, or both omitted/null. Rust validates a
+bounded regular file, .blend header, canonical source path, actual bytes and
+SHA-256 before any mutation dispatch. The one-off Rust worker uses the
+same \`blender_input_checkpoint\` shared helper at action entry, passes a
+fixed \`--expected-blend-sha256\` argument to the already bundled Python
+helper, and rechecks current source bytes after the action completes.
+
+The one-off Python script imports the fixed sibling broker's **read-only
+\`inspect_input_source\` helper** (not arbitrary Python), checks the hash
+before launch, confirms the exact loaded filename from an authenticated
+\`scene.inspect\` response, and checks the original input digest after
+the plan's verified output. Every one-off native response includes the
+exact validated input proof (or \`null\` if no source was loaded).
+
+This is an intentional source-compatibility change: callers that formerly
+provided \`blend_file\` without the matching \`expected_blend_sha256\`
+will receive an explicit validation error, rather than silently loading an
+unknown version. No newly rendered output or existing project file is
+overwritten. No user-controlled script execution is added.
+
+The Node source CI now checks one-off/persistent parity and exact
+pre-/post-launch/source evidence; Rust compilation and Python bridge
+fixture tests remain source/CI evidence, not a live Windows Blender run.
