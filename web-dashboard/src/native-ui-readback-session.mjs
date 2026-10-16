@@ -13,13 +13,19 @@ export function newPendingUiReadback(actionId,proposal,windowSession,nowMs=Date.
  if(!needsUiReadback(proposal?.tool)||typeof actionId!=="string"||!actionId||
   !Number.isSafeInteger(nowMs)||nowMs<0)return null;
  const title=cleanTitle(proposal?.arguments?.window);
+ const controlName=typeof proposal?.arguments?.name==="string"?
+  proposal.arguments.name.trim():"";
+ const automationId=typeof proposal?.arguments?.automation_id==="string"?
+  proposal.arguments.automation_id.trim():"";
+ // Bind the readback to the exact control originally mutated, not merely
+ // any control in a later refreshed window inventory.
  // No truthful HWND/PID means do not invent readback evidence.
  const rows=currentObservedWindows(windowSession,nowMs);
  const matching=title?findUnique(rows,title):[];
  if(matching.length!==1)return Object.freeze({version:1,sourceActionId:actionId,
-  title:title||"",hwnd:null,pid:null,observedAtMs:nowMs,readbackRequired:true});
+  title:title||"",hwnd:null,pid:null,controlName,automationId,observedAtMs:nowMs,readbackRequired:true});
  return Object.freeze({version:1,sourceActionId:actionId,title:matching[0].title,
-  hwnd:matching[0].hwnd,pid:matching[0].pid,observedAtMs:nowMs,readbackRequired:true});
+  hwnd:matching[0].hwnd,pid:matching[0].pid,controlName,automationId,observedAtMs:nowMs,readbackRequired:true});
 }
 
 export function checkPendingUiReadback(proposal,pending){
@@ -52,7 +58,23 @@ export function auditUiReadback(pending,proposal,result,windowSession,nowMs=Date
   if(!rows.every(x=>x&&typeof x==="object"&&!Array.isArray(x)&&
    ((typeof x.Name==="string"&&x.Name.trim())||
     (typeof x.AutomationId==="string"&&x.AutomationId.trim()))))return pending;
+  // The verified new observation must contain the SAME unique control as
+  // the previous mutation. A generic ui_discover showing unrelated buttons
+  // cannot silently unlock a second mutation on a different UIA element.
+  if(!pending.controlName&&!pending.automationId)return pending;
+  const same=rows.filter(x=>
+   (!pending.controlName||(typeof x.Name==="string"&&
+    x.Name.toLocaleLowerCase("en-US")===pending.controlName.toLocaleLowerCase("en-US"))) &&
+   (!pending.automationId||(typeof x.AutomationId==="string"&&
+    x.AutomationId===pending.automationId)));
+  if(same.length!==1)return pending;
+  if(same[0].IsEnabled!=null&&typeof same[0].IsEnabled!=="boolean")return pending;
+  if(same[0].IsOffscreen!=null&&typeof same[0].IsOffscreen!=="boolean")return pending;
+  if(same[0].ControlType!=null&&
+     (typeof same[0].ControlType!=="string"||same[0].ControlType.length>100))return pending;
   if(proposal.tool==="ui_find"){
+   // ui_find is an exact selector read and must return exactly one control.
+   if(rows.length!==1)return pending;
    const requestedName=proposal.arguments?.name;
    const requestedId=proposal.arguments?.automation_id;
    if((typeof requestedName!=="string"||!requestedName.trim())&&
