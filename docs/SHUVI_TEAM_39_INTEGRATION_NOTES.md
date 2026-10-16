@@ -384,9 +384,14 @@ ask for separate approval; do not retry a potentially mutating action.
   with original action UUID, tool kind, event=denied and success=false.
   Any conflicting executed/started/failed event for the same UUID forces
   the original conservative unknown-outcome handling.
-- With a corroborated denial, a paused recovery journal is written and
-  owner feedback requests fresh ui_windows/ui_discover and a NEW approval.
-  If the recovery journal cannot be saved, the task is quarantined.
+- With a corroborated denial, WebView and Rust publish the strictly
+  action-bound revisioned v2 recovery phase native_denied. This can follow
+  only the identical in-flight executing action; a normal paused phase
+  cannot safely follow executing. The native_denied phase remains
+  **inspection-only** and cannot reserve a new AI request or Windows action.
+- Owner acknowledgement of the prior Rust audit is mandatory before a new
+  desktop task. Then ui_windows/ui_discover and a NEW approval are needed.
+  If either recovery store cannot be saved, the task is quarantined.
   No automatic mutation replay, provider retries or owner-approval bypass.
 - New pure guard + tests cover denials, contradictions, cross-tool spoofing,
   missing/malformed/truncated audits, exact UUID, seven allowed mutation
