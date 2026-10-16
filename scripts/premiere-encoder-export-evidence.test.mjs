@@ -1,10 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {createRequire} from "node:module";
+import {runInNewContext} from "node:vm";
 import {readFileSync} from "node:fs";
-const require=createRequire(import.meta.url);
-const {cleanOutput,newExportProbe,assessExportProbe,rememberProbe} =
-  require("../integrations/premiere-uxp/encoder-export-evidence.js");
+// This is Adobe's CommonJS UXP file under an ESM root package.
+const helperModule={exports:{}};
+runInNewContext(readFileSync(new URL("../integrations/premiere-uxp/encoder-export-evidence.js",import.meta.url),"utf8"),
+  {module:helperModule,exports:helperModule.exports});
+const {cleanOutput,newExportProbe,assessExportProbe,rememberProbe}=helperModule.exports;
 const path="C:/exports/first.mp4";
 const probe=(watermark=0,id="shuviaction-123")=>newExportProbe(id,path,watermark,1000);
 const row=(sequence,kind,jobID="native-1",outputFiles=[path])=>
