@@ -681,7 +681,7 @@ enum ToolAction {
     PointerClick { x: i32, y: i32, button: String, clicks: u32 },
     PointerDrag { x1:i32, y1:i32, x2:i32, y2:i32, duration_ms:u32 },
     BlenderInspect { python_exe:String, blender_exe:String, blend_file:Option<String>, operation:String },
-    BlenderRunPlan { python_exe:String, blender_exe:String, blend_file:Option<String>, output_dir:String, allow_render:bool, plan:Value },
+    BlenderRunPlan { python_exe:String, blender_exe:String, blend_file:Option<String>, expected_blend_sha256:Option<String>, output_dir:String, allow_render:bool, plan:Value },
     BlenderSessionStart { python_exe:String, blender_exe:String, blend_file:Option<String>, expected_blend_sha256:Option<String>, output_dir:String, allow_render:bool },
     BlenderSessionInspect { session_id:String },
     BlenderSessionPlan { session_id:String, allow_render:bool, expected_scene_revision:String, plan:Value },
@@ -3651,6 +3651,12 @@ fn stage_tool(
                 }
                 _=>return Err("blender_run_plan blend_file must be an absolute .blend file.".into())
             };
+            let expected_blend_sha256=match proposal.arguments.get("expected_blend_sha256"){
+                None|Some(Value::Null)=>None,
+                Some(Value::String(hash))=>Some(hash.clone()),
+                _=>return Err("One-off Blender expected_blend_sha256 must be lowercase SHA-256 or null.".into()),
+            };
+            blender_input_checkpoint::inspect(blend_file.as_deref(),expected_blend_sha256.as_deref())?;
             let output_dir=absolute_path(arg_string(&proposal.arguments,"output_dir")?)?;
             if !Path::new(&output_dir).is_dir(){
                 return Err("blender_run_plan requires an existing delivery directory.".into());
@@ -3676,9 +3682,9 @@ fn stage_tool(
             if !allow_render && steps.iter().any(|s|s.pointer("/request/operation").and_then(Value::as_str)==Some("render.execute")){
                 return Err("Blender render operation needs explicit render approval.".into());
             }
-            (ToolAction::BlenderRunPlan{python_exe,blender_exe,blend_file,output_dir,allow_render,plan},
+            (ToolAction::BlenderRunPlan{python_exe,blender_exe,blend_file,expected_blend_sha256,output_dir,allow_render,plan},
                 "Run approved verified Blender plan".into(),
-                format!("Execute up to 6 bounded Blender steps, save a new verified output in the selected directory; render_allowed={allow_render}. No destructive operations, shell or arbitrary Python."),
+                format!("Execute up to 6 bounded Blender steps; input .blend requires exact verified SHA-256 and loaded-file identity; render_allowed={allow_render}. No arbitrary Python."),
                 RiskLevel::High)
         }
         "blender_session_start" => {
@@ -10722,7 +10728,7 @@ Write-Output 'SHUVI_WHATSAPP_DESKTOP_LAUNCH_REQUESTED'
             let response=blender_session_worker::close(&state.blender_session,state,&session_id)?;
             Ok(ActionResult{success:true,tool,stdout:response.to_string(),stderr:String::new(),exit_code:Some(0)})
         }
-        ToolAction::BlenderRunPlan {python_exe,blender_exe,blend_file,output_dir,allow_render,plan} => {
+        ToolAction::BlenderRunPlan {python_exe,blender_exe,blend_file,expected_blend_sha256,output_dir,allow_render,plan} => {
             let resource=app.path().resource_dir()
                 .map_err(|e|format!("Could not find Blender plan resource directory: {e}"))?
                 .join("blender-worker").join("shuvi_blender_plan.py");
@@ -10730,7 +10736,8 @@ Write-Output 'SHUVI_WHATSAPP_DESKTOP_LAUNCH_REQUESTED'
                 .map_err(|e|format!("Cannot locate private Blender plan directory: {e}"))?
                 .join("blender-plan-inputs");
             let evidence=blender_plan_worker::execute(
-                &python_exe,&blender_exe,blend_file.as_deref(),&output_dir,
+                &python_exe,&blender_exe,blend_file.as_deref(),
+                expected_blend_sha256.as_deref(),&output_dir,
                 &plan,allow_render,&resource,&inputs,state,execution_action_id
             )?;
             Ok(ActionResult{
