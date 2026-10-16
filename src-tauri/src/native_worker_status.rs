@@ -227,7 +227,8 @@ mod tests{
             version:1,action_id:id.into(),tool:tool.into(),phase:phase.into(),
             pid:if phase=="launch_pending"{None}else{Some(4321)},
             exit_code:if phase=="exited"{Some(0)}else{None},
-            descendants_contained:phase!="launch_pending",app_progress_verified:false
+            descendants_contained:phase!="launch_pending",app_progress_verified:false,
+            previous_action_ids:vec![]
         }
     }
     #[test]

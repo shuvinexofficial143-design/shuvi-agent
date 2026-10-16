@@ -95,3 +95,7 @@ Review any adapter calls and potential cross-team shared-file overlap. Keep owne
 
 ## Milestone 13 regression extension
 - Added a pure final-delivery acceptance seam (`require_exact_at`) tested with real temporary .blend bytes and SHA-256, not just source-regex assertions. Tests positively accept only matching action/size/hash/path and reject swapped UUID, substituted path, forged hash/bytes, and file tampering after certification. Production uses the same seam via the app-private evidence directory.
+
+## Milestone 14 — restart-persistent native UUID replay history
+- Existing v1 `native-worker-process.json` now retains up to 48 most recent prior launched UUIDs. `begin_at` rejects the currently active UUID and recent prior UUIDs even after later actions and host restarts, without changing the main action journal authority or auto-retrying unknown outcomes.
+- Files serialized before this feature remain backwards compatible via serde(default). Bounded history is checked for duplicate/forged UUIDs and current action duplication, maximum receipt budget raised to 4096 bytes. Rust disk-based tests cover A→B→old-A replay and old-file migration.

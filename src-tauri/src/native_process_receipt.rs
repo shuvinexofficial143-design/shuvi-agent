@@ -3,10 +3,11 @@
 //! A crash between intent and PID registration remains launch-uncertain.
 //! The owner must reconcile an unknown record; NEVER delete or replay it.
 use serde::{Deserialize,Serialize};
-use std::{fs,path::{Path,PathBuf},sync::Mutex};
+use std::{collections::HashSet,fs,path::{Path,PathBuf},sync::Mutex};
 use tauri::{AppHandle,Manager};
 static JOURNAL_LOCK:Mutex<()> = Mutex::new(());
-const MAX_BYTES:usize=2048;
+const MAX_BYTES:usize=4096;
+const MAX_HISTORY:usize=48;
 
 #[derive(Clone,Debug,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
@@ -20,6 +21,9 @@ pub(crate) struct ProcessReceipt {
     pub descendants_contained:bool,
     // A separate Rust app/worker audit is required; this field is never true.
     pub app_progress_verified:bool,
+    // Backwards compatible with older v1 files, never trusted as an audit.
+    #[serde(default)]
+    pub previous_action_ids:Vec<String>,
 }
 fn check_record(r:&ProcessReceipt)->Result<(),String>{
     if r.version!=1
@@ -28,6 +32,17 @@ fn check_record(r:&ProcessReceipt)->Result<(),String>{
        ||!r.tool.bytes().all(|b|b.is_ascii_lowercase()||b.is_ascii_digit()||b==b'_')
        ||r.app_progress_verified||r.pid==Some(0){
         return Err("Native subprocess receipt identity or claimed progress is invalid.".into());
+    }
+    if r.previous_action_ids.len()>MAX_HISTORY{
+        return Err("Owned process history exceeds bounded replay budget.".into());
+    }
+    let mut distinct=HashSet::new();
+    for previous in &r.previous_action_ids {
+        if uuid::Uuid::parse_str(previous)
+            .map(|x|x.to_string()!=*previous).unwrap_or(true)
+            ||previous==&r.action_id||!distinct.insert(previous.as_str()){
+            return Err("Owned process replay history is invalid or duplicated.".into());
+        }
     }
     match (r.phase.as_str(),r.pid,r.exit_code,r.descendants_contained){
         ("launch_pending",None,None,false)=>Ok(()),
@@ -77,18 +92,23 @@ pub(crate) fn read(app:&AppHandle)->Result<Option<ProcessReceipt>,String>{
 }
 pub(super) fn begin_at(file:&Path,id:&str,tool:&str)->Result<(),String>{
     let _lock=JOURNAL_LOCK.lock().map_err(|_|"Native process receipt lock poisoned.")?;
-    let next=ProcessReceipt{version:1,action_id:id.to_string(),tool:tool.to_string(),
+    let mut next=ProcessReceipt{version:1,action_id:id.to_string(),tool:tool.to_string(),
         phase:"launch_pending".into(),pid:None,exit_code:None,
-        descendants_contained:false,app_progress_verified:false};
-    check_record(&next)?;
+        descendants_contained:false,app_progress_verified:false,previous_action_ids:Vec::new()};
     if let Some(prior)=read_at(file)? {
         if !matches!(prior.phase.as_str(),"exited"|"cancelled"|"timed_out"|"owner_reviewed_unknown"){
             return Err("Previous subprocess launch or process outcome is unresolved; owner review required.".into());
         }
-        if prior.action_id==id{
-            return Err("Native subprocess UUID cannot be launched twice.".into());
+        if prior.action_id==id || prior.previous_action_ids.iter().any(|old|old==id){
+            return Err("Native subprocess UUID cannot be relaunched from durable history.".into());
+        }
+        next.previous_action_ids=prior.previous_action_ids;
+        next.previous_action_ids.push(prior.action_id);
+        if next.previous_action_ids.len()>MAX_HISTORY{
+            next.previous_action_ids.remove(0);
         }
     }
+    check_record(&next)?;
     write_at(file,&next)
 }
 pub(super) fn started_at(file:&Path,id:&str,tool:&str,pid:u32,contained:bool)->Result<(),String>{
@@ -177,6 +197,35 @@ mod tests {
         assert_eq!(r.phase,"owner_reviewed_unknown");
         assert!(!r.app_progress_verified);
         begin_at(&f,B,"blender_run_plan").unwrap();
+        cleanup(&f);
+    }
+    #[test]
+    fn prior_uuid_remains_blocked_after_successful_other_action_and_restart(){
+        let f=file();
+        begin_at(&f,A,"blender_run_plan").unwrap();
+        started_at(&f,A,"blender_run_plan",111,true).unwrap();
+        finish_at(&f,A,"blender_run_plan","exited",Some(0)).unwrap();
+        begin_at(&f,B,"blender_run_plan").unwrap();
+        started_at(&f,B,"blender_run_plan",222,true).unwrap();
+        finish_at(&f,B,"blender_run_plan","exited",Some(0)).unwrap();
+        let recovered=read_at(&f).unwrap().unwrap();
+        assert_eq!(recovered.previous_action_ids,vec![A.to_string()]);
+        assert!(begin_at(&f,A,"blender_run_plan").is_err());
+        assert_eq!(read_at(&f).unwrap().unwrap().action_id,B);
+        cleanup(&f);
+    }
+    #[test]
+    fn older_v1_receipt_without_history_deserializes_and_rejects_invalid_replays(){
+        let f=file();
+        let legacy=serde_json::json!({"version":1,"actionId":A,
+            "tool":"blender_run_plan","phase":"exited","pid":211,
+            "exitCode":0,"descendantsContained":true,"appProgressVerified":false});
+        fs::write(&f,serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert_eq!(read_at(&f).unwrap().unwrap().previous_action_ids.len(),0);
+        begin_at(&f,B,"blender_run_plan").unwrap();
+        let mut corrupted=read_at(&f).unwrap().unwrap();
+        corrupted.previous_action_ids.push(A.into());
+        assert!(check_record(&corrupted).is_err());
         cleanup(&f);
     }
     #[test]
