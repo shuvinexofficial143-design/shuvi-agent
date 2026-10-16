@@ -18,6 +18,10 @@ pub(crate) struct DeliveryArtifact {
     pub path:String,
     pub sha256:String,
     pub bytes:u64,
+    // Additive v1 field; absent for older final deliveries and non-Blender
+    // tools. New supervised Blender plans bind these bytes to their input.
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub approved_plan_sha256:Option<String>,
 }
 #[derive(Debug,Clone,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
@@ -72,6 +76,13 @@ fn check_structure(v:&DeliveryReceipt)->Result<(),String>{
             };
             if artifact.kind!=expected_kind {
                 return Err("Delivery artifact kind does not match audited tool.".into());
+            }
+            if let Some(digest)=artifact.approved_plan_sha256.as_deref(){
+                if step.tool!="blender_run_plan"||digest.len()!=64
+                    ||!digest.bytes().all(|b|
+                        b.is_ascii_digit()||(b'a'..=b'f').contains(&b)){
+                    return Err("Delivery approved-plan fingerprint invalid or belongs to a non-Blender tool.".into());
+                }
             }
         } else if matches!(step.tool.as_str(),
             "blender_run_plan"|"motion_graphics_accept_final_remotion"|
@@ -182,6 +193,31 @@ where F:FnMut(&str)->Result<DeliveryArtifact,String>{
     }
     Ok(())
 }
+// Hydrate ONLY the new optional full-plan fingerprint, never overwrite a
+// claimed artifact path, bytes, or file hash. Exact trusted worker UUID and
+// artifact identity must agree before adding any provenance data.
+fn fill_blender_plan_provenance<F>(steps:&mut [DeliveryStep],mut get:F)
+    ->Result<(),String>
+where F:FnMut(&str)->Result<DeliveryArtifact,String>{
+    for step in steps{
+        if step.tool!="blender_run_plan"{continue;}
+        let claimed=step.artifact.as_mut()
+            .ok_or("Blender final delivery cannot omit its verified artifact.")?;
+        let cert=get(&step.action_id)?;
+        if cert.kind!="blender_artifact"||claimed.path!=cert.path
+            ||claimed.sha256!=cert.sha256||claimed.bytes!=cert.bytes{
+            return Err("Blender final delivery cannot inherit plan provenance from another output.".into());
+        }
+        if claimed.approved_plan_sha256.is_some()
+            &&claimed.approved_plan_sha256!=cert.approved_plan_sha256{
+            return Err("Delivered Blender plan fingerprint differs from exact worker certificate.".into());
+        }
+        if claimed.approved_plan_sha256.is_none(){
+            claimed.approved_plan_sha256=cert.approved_plan_sha256;
+        }
+    }
+    Ok(())
+}
 fn verify_blender_certificates(app:&AppHandle,steps:&[DeliveryStep])
     ->Result<(),String>{
     for step in steps {
@@ -190,6 +226,12 @@ fn verify_blender_certificates(app:&AppHandle,steps:&[DeliveryStep])
                 .ok_or("Blender delivery artifact is missing.")?;
             crate::native_blender_action_artifact::require_exact(
                 app,&step.action_id,&a.path,&a.sha256,a.bytes)?;
+            if let Some(digest)=a.approved_plan_sha256.as_deref(){
+                let cert=crate::native_blender_action_artifact::read_verified(app,&step.action_id)?;
+                if cert.plan_sha256.as_deref()!=Some(digest){
+                    return Err("Stored task delivery plan digest differs from exact worker certificate.".into());
+                }
+            }
         }
     }
     Ok(())
@@ -205,7 +247,16 @@ pub(crate) fn finalize(app:&AppHandle,steps:Vec<DeliveryStep>)->Result<DeliveryR
     fill_missing_blender_artifacts(&mut steps,|id|{
         let cert=crate::native_blender_action_artifact::read_verified(app,id)?;
         Ok(DeliveryArtifact{kind:"blender_artifact".into(),
-            path:cert.path,sha256:cert.sha256,bytes:cert.bytes})
+            path:cert.path,sha256:cert.sha256,bytes:cert.bytes,
+            approved_plan_sha256:cert.plan_sha256})
+    })?;
+    // Explicit paths/hashes are never replaced, but the approved-plan
+    // provenance is filled from exact UUID evidence when it is available.
+    fill_blender_plan_provenance(&mut steps,|id|{
+        let cert=crate::native_blender_action_artifact::read_verified(app,id)?;
+        Ok(DeliveryArtifact{kind:"blender_artifact".into(),
+            path:cert.path,sha256:cert.sha256,bytes:cert.bytes,
+            approved_plan_sha256:cert.plan_sha256})
     })?;
     // Remotion acceptance receipts carry the SHA-256 but not always file
     // length. Rust computes that length, rather than trusting UI guesses.
@@ -302,7 +353,7 @@ mod tests{
         fs::write(&p,b"native-artifact").unwrap();
         let (size,hash)=file_hash(&p,MAX_ARTIFACT_BYTES).unwrap();
         let claim=DeliveryArtifact{kind:"blender_artifact".into(),path:p.to_string_lossy().into_owned(),
-            sha256:hash,bytes:size};
+            sha256:hash,bytes:size,approved_plan_sha256:None};
         check_artifact(&claim,"blender_run_plan").unwrap();
         fs::write(&p,b"changed-artifact").unwrap();
         assert!(check_artifact(&claim,"blender_run_plan").is_err());
@@ -314,7 +365,8 @@ mod tests{
             claim("inspect","read_file",B)];
         let artifact=DeliveryArtifact{kind:"blender_artifact".into(),
             path:"C:\\\\artifacts\\\\model.blend".into(),
-            sha256:"a".repeat(64),bytes:1234};
+            sha256:"a".repeat(64),bytes:1234,
+             approved_plan_sha256:None};
         let mut looked_up=0usize;
         fill_missing_blender_artifacts(&mut steps,|id|{
             assert_eq!(id,A);
@@ -333,8 +385,48 @@ mod tests{
         assert!(steps[0].artifact.is_none());
         assert!(fill_missing_blender_artifacts(&mut steps,|_|Ok(
             DeliveryArtifact{kind:"untrusted".into(),path:"x".into(),
-                sha256:"0".repeat(64),bytes:1})).is_err());
+                sha256:"0".repeat(64),bytes:1,approved_plan_sha256:None})).is_err());
         assert!(steps[0].artifact.is_none());
+    }
+    #[test]
+    fn exact_provenance_autofills_without_replacing_user_supplied_artifact_fields(){
+        let mut steps=vec![claim("model","blender_run_plan",A)];
+        let artifact=DeliveryArtifact{kind:"blender_artifact".into(),
+            path:"C:\\approved\\scene.blend".into(),sha256:"a".repeat(64),
+            bytes:400,approved_plan_sha256:None};
+        let verified=DeliveryArtifact{approved_plan_sha256:Some("b".repeat(64)),
+            ..artifact.clone()};
+        steps[0].artifact=Some(artifact.clone());
+        fill_blender_plan_provenance(&mut steps,|id|{
+            assert_eq!(id,A);
+            Ok(verified.clone())
+        }).unwrap();
+        assert_eq!(steps[0].artifact.as_ref().unwrap().path,artifact.path);
+        assert_eq!(steps[0].artifact.as_ref().unwrap().sha256,artifact.sha256);
+        assert_eq!(steps[0].artifact.as_ref().unwrap().bytes,artifact.bytes);
+        assert_eq!(steps[0].artifact.as_ref().unwrap().approved_plan_sha256,
+            Some("b".repeat(64)));
+        check_structure(&DeliveryReceipt{version:1,objective:"model".into(),
+            revision:1,recorded_at_ms:1,steps}).unwrap();
+    }
+    #[test]
+    fn foreign_output_or_wrong_plan_digest_never_gains_verified_provenance(){
+        let expected=DeliveryArtifact{kind:"blender_artifact".into(),
+            path:"C:\\approved\\scene.blend".into(),sha256:"a".repeat(64),
+            bytes:400,approved_plan_sha256:Some("b".repeat(64))};
+        let mut steps=vec![claim("model","blender_run_plan",A)];
+        steps[0].artifact=Some(DeliveryArtifact{
+            approved_plan_sha256:Some("c".repeat(64)),..expected.clone()});
+        assert!(fill_blender_plan_provenance(&mut steps,|_|Ok(expected.clone())).is_err());
+        steps[0].artifact=Some(DeliveryArtifact{
+            approved_plan_sha256:None,path:"C:\\foreign\\scene.blend".into(),..expected.clone()});
+        assert!(fill_blender_plan_provenance(&mut steps,|_|Ok(expected.clone())).is_err());
+        let mut non_blender=claim("make","read_file",B);
+        non_blender.artifact=Some(DeliveryArtifact{kind:"blender_artifact".into(),
+            path:"C:\\approved\\scene.blend".into(),sha256:"a".repeat(64),
+            bytes:1,approved_plan_sha256:Some("b".repeat(64))});
+        assert!(check_structure(&DeliveryReceipt{version:1,objective:"test".into(),
+            revision:1,recorded_at_ms:1,steps:vec![non_blender]}).is_err());
     }
     #[test]
     fn duplicate_identity_and_missing_artifact_are_rejected(){
