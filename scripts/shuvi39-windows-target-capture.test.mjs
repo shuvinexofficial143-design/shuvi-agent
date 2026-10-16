@@ -95,3 +95,13 @@ test("unknown process birth time fails closed rather than sending another app sc
  assert.match(capture,/Invalid app process generation; no screenshot sent/);
  assert.doesNotMatch(capture,/Start-Process -FilePath/);
 });
+
+test("OS generation is included in native receipt but not exported in model-facing title",()=>{
+ const postSave=capture.indexOf("Assert-ShuviCaptureProcessGeneration",capture.indexOf("$bitmap.Save("));
+ const receipt=capture.indexOf("ProcessStartTicks = [int64]$shuviCaptureStartTicks");
+ assert.ok(postSave>=0&&receipt>postSave);
+ assert.match(capture,/receipt.get\("ProcessStartTicks"\).and_then\(Value::as_i64\)/);
+ assert.match(capture,/Target screenshot lacks verified OS process generation/);
+ assert.match(capture,/fs::remove_file\(&path\)/);
+ assert.match(capture,/let _ = birth_ticks/);
+});
