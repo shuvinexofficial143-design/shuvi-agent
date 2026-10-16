@@ -418,8 +418,12 @@ ask for separate approval; do not retry a potentially mutating action.
 - After ui_toggle, ui_expand_collapse, ui_focus or ui_scroll, the
   separately audited ui_find must also return native state evidence.
   Toggle requires a known UIA state, expansion must match the approved
-  Expanded/Collapsed target, focus requires HasKeyboardFocus=true,
-  and vertical scroll must expose a real position from 0 through 100.
+  Expanded/Collapsed target, and vertical scroll requires a real position
+  from 0 through 100. Focus is transient: a separately approved read may
+  report HasKeyboardFocus=false because owner interaction moved focus back
+  to Shuvi. This accepts only typed native true/false observation, never
+  claims the external application is still focused. Rust action execution
+  has its own immediate focus verification.
 - A successful independent read is evidence that a particular control
   was observed at that time. It is never automatic proof the whole
   editing objective succeeded. For SetValue, the original Rust action
