@@ -52,5 +52,5 @@ test("Dashboard expiry classification is immediately audit-gated and cannot auto
  assert.ok(catchStart>=0&&helper>catchStart&&stop>helper&&replay>stop);
  assert.match(src.slice(catchStart,replay),/"audit_log",\{limit:200\}/);
  assert.match(src.slice(stop,replay),/return;/);
- assert.match(src,/persistRecovery\(expiryBudget,"paused",current.action.id\)/);
+ assert.match(src,/persistRecovery\(expiryBudget,"native_denied",current.action.id\)/);
 });
