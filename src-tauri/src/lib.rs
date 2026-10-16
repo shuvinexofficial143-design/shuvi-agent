@@ -3163,15 +3163,21 @@ fn prepare_native_uia_binding(
 ) -> Result<Option<native_uia_window_guard::NativeUiaTarget>, String> {
     // Match only the seven mutating UIA variants. Caller-supplied HWND,
     // PID or RuntimeId values are NEVER accepted as binding authority.
-    let (window, name, automation_id) = match action {
-        ToolAction::UiClick { window, name, automation_id }
-        | ToolAction::UiSetValue { window, name, automation_id, .. }
-        | ToolAction::UiFocus { window, name, automation_id }
-        | ToolAction::UiScroll { window, name, automation_id, .. }
-        | ToolAction::UiToggle { window, name, automation_id }
-        | ToolAction::UiExpandCollapse { window, name, automation_id, .. }
-        | ToolAction::UiSendKeys { window, name, automation_id, .. } =>
-            (window.as_deref(), name.as_deref(), automation_id.as_deref()),
+    let (window, name, automation_id, native_tool) = match action {
+        ToolAction::UiClick { window, name, automation_id } =>
+            (window.as_deref(), name.as_deref(), automation_id.as_deref(), "ui_click"),
+        ToolAction::UiSetValue { window, name, automation_id, .. } =>
+            (window.as_deref(), name.as_deref(), automation_id.as_deref(), "ui_set_value"),
+        ToolAction::UiFocus { window, name, automation_id } =>
+            (window.as_deref(), name.as_deref(), automation_id.as_deref(), "ui_focus"),
+        ToolAction::UiScroll { window, name, automation_id, .. } =>
+            (window.as_deref(), name.as_deref(), automation_id.as_deref(), "ui_scroll"),
+        ToolAction::UiToggle { window, name, automation_id } =>
+            (window.as_deref(), name.as_deref(), automation_id.as_deref(), "ui_toggle"),
+        ToolAction::UiExpandCollapse { window, name, automation_id, .. } =>
+            (window.as_deref(), name.as_deref(), automation_id.as_deref(), "ui_expand_collapse"),
+        ToolAction::UiSendKeys { window, name, automation_id, .. } =>
+            (window.as_deref(), name.as_deref(), automation_id.as_deref(), "ui_send_keys"),
         _ => return Ok(None),
     };
     let window = window
@@ -3187,7 +3193,7 @@ fn prepare_native_uia_binding(
         // control RuntimeId into a single non-persisted Rust PendingAction.
         let root = ui_root_script(Some(window));
         let condition = ui_condition_script(name, automation_id)?;
-        let probe = native_uia_window_guard::prepared_control_probe(&root, &condition);
+        let probe = native_uia_window_guard::prepared_control_probe(&root, &condition, native_tool)?;
         let output = run_hidden_powershell(&probe)?;
         if !output.status.success() {
             return Err("Native HWND/PID/UIA control identity could not be bound at preparation. Inspect ui_windows and ui_discover before retrying.".into());
@@ -3200,7 +3206,7 @@ fn prepare_native_uia_binding(
     {
         // Non-Windows source-level tests still compile, but no UIA mutation
         // executes without a genuine native OS-derived binding.
-        let _ = (window, name, automation_id);
+        let _ = (window, name, automation_id, native_tool);
         Ok(None)
     }
 }
