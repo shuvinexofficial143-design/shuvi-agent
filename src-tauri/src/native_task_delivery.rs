@@ -186,6 +186,17 @@ pub(crate) fn finalize(app:&AppHandle,steps:Vec<DeliveryStep>)->Result<DeliveryR
     verify(&schedule,&receipt.steps,|id|
         crate::read_action_audit_receipt(app,id)?
             .ok_or("Delivery requires an exact Rust action audit.".to_string()))?;
+    // A model/UI-supplied hash of any existing .blend is insufficient.
+    // The exact supervised Blender action must have independently recorded
+    // its authenticated, rehashed output before this final task receipt.
+    for step in &receipt.steps {
+        if step.tool=="blender_run_plan" {
+            let artifact=step.artifact.as_ref()
+                .ok_or("Blender delivery artifact is missing.")?;
+            crate::native_blender_action_artifact::require_exact(
+                app,&step.action_id,&artifact.path,&artifact.sha256,artifact.bytes)?;
+        }
+    }
     write_at(&path(app)?,&receipt)?;
     Ok(receipt)
 }

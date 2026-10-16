@@ -132,7 +132,11 @@ pub(crate) fn execute<'a>(app:&AppHandle,state:&ActionState,
     if status.phase!="exited"||status.exit_code!=Some(0)||!status.descendants_contained{
         return Err("Owned Blender plan cancelled/failed/timed out; inspect Blender output before retry.".into());
     }
-    native_plan_response(&evidence.0,&root,Path::new(output_dir),render)
+    let verified=native_plan_response(&evidence.0,&root,Path::new(output_dir),render)?;
+    // Bind the verified worker artifact to the exact scheduled UUID before
+    // the outer native action audit. No file hash or PID alone is an audit.
+    crate::native_blender_action_artifact::record_verified(app,action_id,&verified)?;
+    Ok(verified)
 }
 #[cfg(test)]
 mod tests{

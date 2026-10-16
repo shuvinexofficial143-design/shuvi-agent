@@ -7,6 +7,7 @@ mod blender_worker;
 mod blender_plan_worker;
 mod native_blender_owned_adapter;
 mod native_blender_owned_plan;
+mod native_blender_action_artifact;
 mod atomic_file;
 mod execution_lease;
 mod native_worker_status;
