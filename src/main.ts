@@ -8,6 +8,8 @@ import {planVerifiedNativeReadback} from "./master-safe-continuation.mjs";
 import {attachNativePremiereOpeningBlueprint} from "./master-opening-blueprint.mjs";
 import {captureMasterOpeningObservation,verifyMasterOpeningDelivery} from "./master-goal-window-acceptance.mjs";
 import {assessMasterFinalOutcome,summarizeMasterMissingProof,masterGoalEvidenceContext} from "./master-final-outcome.mjs";
+import {inspectPremiereProjectCreateCandidate,projectCandidateStatus} from "./premiere-project-evidence-candidate.mjs";
+import type {PremiereProjectEvidenceCandidate} from "./premiere-project-evidence-candidate.mjs";
 import type {AuditedOpeningObservation} from "./master-goal-window-acceptance.mjs";
 import {nativeTaskDeliveryClaims} from "./native-delivery-claims.mjs";
 import type {
@@ -103,6 +105,9 @@ let activePermissionScope=createTaskPermissionScope(crypto.randomUUID());
 // a fresh independent observation is then required rather than trusting a
 // stale user/AI-authored checkpoint.
 let openingWindowObservation:AuditedOpeningObservation|null=null;
+// Only a volatile, task-bound Team 40 interoperability candidate. The
+// main Rust task-delivery allowlist does NOT attest Premiere .prproj bytes.
+let projectCreationEvidence:PremiereProjectEvidenceCandidate|null=null;
 // Mirrors owner-issued Rust grant IDs for exact read arguments. Local state
 // alone is NEVER authority to dispatch a consented follow-up action.
 const nativeReadGrantIds=new Map<string,string>();
@@ -113,6 +118,7 @@ async function revokeNativeTaskReads(taskId:string):Promise<boolean>{
 function rotatePermissionScope():void{
  const oldId=activePermissionScope.taskId;
  openingWindowObservation=null;
+ projectCreationEvidence=null;
  revokeTaskScope(activePermissionScope);
  nativeReadGrantIds.clear();
  const revokeButton=document.querySelector<HTMLButtonElement>("#revokeTaskReadGrants");
@@ -1240,6 +1246,10 @@ async function continueAfterOutcome(): Promise<void> {
       orchestration.owner_request,orchestration.task_graph,schedule,nativeDelivery,
       openingWindowObservation,activePermissionScope.taskId);
     if(goalAcceptance.requiresIndependentAcceptance&&!openingAcceptance.verified){
+      if(projectCreationEvidence&&projectCreationEvidence.taskId===activePermissionScope.taskId){
+        messages.push({role:"assistant",content:projectCandidateStatus(projectCreationEvidence,activePermissionScope.taskId)});
+        renderMessages();
+      }
       await stopAgentForSafety(summarizeMasterMissingProof(finalOutcome));
       return;
     }
@@ -1604,6 +1614,11 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
     return;
   }
   const permissionTaskId=activePermissionScope.taskId;
+  if(proposal.tool==="premiere_create_project"||
+    !["ui_windows","list_processes","ui_find","ui_discover",
+      "premiere_context","premiere_bridge_status"].includes(proposal.tool)){
+    projectCreationEvidence=null;
+  }
   // A new window read replaces older observed proof, even if it fails.
   // Non-read native actions may mutate the UI and invalidate the old window.
   if(proposal.tool==="ui_windows"||
@@ -1645,6 +1660,13 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
       receipt
     );
     await auditGraphOutcome(proposal);
+    if(proposal.tool==="premiere_create_project"&&result.success&&receiptMatches&&
+       !cancelledByUser&&!cancelRequested&&
+       activePermissionScope.taskId===permissionTaskId&&!activePermissionScope.revoked){
+      projectCreationEvidence=inspectPremiereProjectCreateCandidate(
+        orchestration.owner_request,orchestration.task_graph,proposal,result,
+        actionId,permissionTaskId,true);
+    }
     if(proposal.tool==="ui_windows"&&receiptMatches&&!cancelledByUser&&
        activePermissionScope.taskId===permissionTaskId&&!activePermissionScope.revoked&&!cancelRequested){
       openingWindowObservation=captureMasterOpeningObservation(
