@@ -4,7 +4,7 @@
 //! Installed native Project.createProject lives on Team 40's separate branch.
 use serde::Serialize;
 use sha2::{Digest,Sha256};
-use std::{fs::{self,File},io::Read,path::{Component,Path},time::SystemTime};
+use std::{fs::{self,File},io::Read,path::{Component,Path}};
 use tauri::AppHandle;
 
 const MAX_PROJECT_BYTES:u64=256*1024*1024;
@@ -71,7 +71,7 @@ fn check_file(meta:&fs::Metadata)->Result<(),String>{
 }
 fn matching_metadata(before:&fs::Metadata,after:&fs::Metadata)->bool{
     before.len()==after.len()&&
-    before.modified().ok()==after.modified().ok()
+    matches!((before.modified(),after.modified()),(Ok(a),Ok(b)) if a==b)
 }
 fn fingerprint(path:&Path)->Result<(u64,String,String),String>{
     let before=fs::symlink_metadata(path)
