@@ -13,7 +13,38 @@ const MAX_PLAN_BYTES:usize=64*1024;
 const MAX_RECEIPT_BYTES:usize=1024*1024;
 struct TemporaryFile(PathBuf);
 impl Drop for TemporaryFile{fn drop(&mut self){let _=fs::remove_file(&self.0);}}
-fn native_plan_response(file:&Path,dir:&Path,output_dir:&Path,render:bool)->Result<Value,String>{
+fn approved_plan_contract(plan:&Value,allow_render:bool)->Result<(usize,&str),String>{
+    let timeout=plan.get("timeout_ms").and_then(Value::as_u64)
+        .ok_or("Approved Blender plan needs a bounded timeout_ms.")?;
+    if timeout==0||timeout>90_000{
+        return Err("Approved Blender plan timeout must be within 1..90000 ms.".into());
+    }
+    let steps=plan.get("steps").and_then(Value::as_array)
+        .filter(|s|!s.is_empty()&&s.len()<=6)
+        .ok_or("Approved Blender plan must contain 1..6 typed steps.")?;
+    let mut names=std::collections::HashSet::new();
+    for step in steps{
+        let name=step.get("name").and_then(Value::as_str)
+            .ok_or("Approved Blender plan step has no name.")?;
+        if name.is_empty()||name.len()>96||!names.insert(name){
+            return Err("Approved Blender plan names must be unique and bounded.".into());
+        }
+        let operation=step.pointer("/request/operation").and_then(Value::as_str)
+            .ok_or("Approved Blender plan step has no typed operation.")?;
+        if operation=="render.execute"&&!allow_render{
+            return Err("Blender plan render needs explicit owner permission.".into());
+        }
+    }
+    let final_op=steps.last().and_then(|s|s.pointer("/request/operation"))
+        .and_then(Value::as_str)
+        .ok_or("Approved Blender plan final output operation is missing.")?;
+    if !matches!(final_op,"file.checkpoint"|"render.execute"){
+        return Err("Blender plan must end in an approved checkpoint/render.".into());
+    }
+    Ok((steps.len(),final_op))
+}
+fn native_plan_response(file:&Path,dir:&Path,output_dir:&Path,render:bool,
+    expected_operation:&str,expected_steps:usize)->Result<Value,String>{
     let meta=fs::symlink_metadata(file)
         .map_err(|_|"Owned Blender plan final evidence is missing.")?;
     if !meta.is_file()||meta.file_type().is_symlink()
@@ -43,9 +74,9 @@ fn native_plan_response(file:&Path,dir:&Path,output_dir:&Path,render:bool)->Resu
         ||value.get("executed_steps").and_then(Value::as_u64).is_none_or(|steps|steps==0||steps>6){
         return Err("Owned Blender plan lacks complete authenticated host readback.".into());
     }
-    if !matches!(value.get("final_operation").and_then(Value::as_str),
-        Some("file.checkpoint"|"render.execute")){
-        return Err("Owned Blender plan final operation was not approved.".into());
+    if value.get("final_operation").and_then(Value::as_str)!=Some(expected_operation)
+        ||value.get("executed_steps").and_then(Value::as_u64)!=Some(expected_steps as u64){
+        return Err("Blender completed operation/step count differs from exact approved plan.".into());
     }
     if value["final_operation"]=="render.execute"&&!render{
         return Err("Unapproved render operation in Blender response.".into());
@@ -95,6 +126,7 @@ pub(crate) fn execute<'a>(app:&AppHandle,state:&ActionState,
     slot:&mut Option<NativeExecutionLease<'a>>,
     action_id:&str,python_exe:&str,blender_exe:&str,blend_file:Option<&str>,
     output_dir:&str,plan:&Value,render:bool)->Result<Value,String>{
+    let (expected_steps,expected_operation)=approved_plan_contract(plan,render)?;
     let (python,blender)=checked_app_paths(python_exe,blender_exe,blend_file,output_dir)?;
     // Reject an already-certified action or full private ledger BEFORE any
     // Blender mutation; every subsequent publication rechecks atomically.
@@ -135,7 +167,8 @@ pub(crate) fn execute<'a>(app:&AppHandle,state:&ActionState,
     if status.phase!="exited"||status.exit_code!=Some(0)||!status.descendants_contained{
         return Err("Owned Blender plan cancelled/failed/timed out; inspect Blender output before retry.".into());
     }
-    let verified=native_plan_response(&evidence.0,&root,Path::new(output_dir),render)?;
+    let verified=native_plan_response(&evidence.0,&root,
+        Path::new(output_dir),render,expected_operation,expected_steps)?;
     // Bind the verified worker artifact to the exact scheduled UUID before
     // the outer native action audit. No file hash or PID alone is an audit.
     crate::native_blender_action_artifact::record_verified(app,action_id,&verified)?;
@@ -144,6 +177,39 @@ pub(crate) fn execute<'a>(app:&AppHandle,state:&ActionState,
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn exact_approved_plan_preflight_rejects_unknown_final_operation_and_unapproved_render(){
+        let valid=json!({"timeout_ms":90_000,"steps":[{"name":"save",
+            "request":{"operation":"file.checkpoint"}}]});
+        assert_eq!(approved_plan_contract(&valid,false).unwrap(),(1,"file.checkpoint"));
+        assert!(approved_plan_contract(&json!({"steps":[]}),false).is_err());
+        assert!(approved_plan_contract(&json!({"timeout_ms":90_001,"steps":[
+            {"name":"save","request":{"operation":"file.checkpoint"}}]}),false).is_err());
+        let render=json!({"timeout_ms":15_000,"steps":[
+            {"name":"frame","request":{"operation":"render.execute"}}]});
+        assert!(approved_plan_contract(&render,false).is_err());
+        assert_eq!(approved_plan_contract(&render,true).unwrap(),(1,"render.execute"));
+        let duplicates=json!({"timeout_ms":15_000,"steps":[
+            {"name":"save","request":{"operation":"scene.inspect"}},
+            {"name":"save","request":{"operation":"file.checkpoint"}}]});
+        assert!(approved_plan_contract(&duplicates,false).is_err());
+    }
+    #[test]
+    fn authenticated_response_cannot_substitute_other_final_operation_or_step_count(){
+        let dir=std::env::temp_dir().join(format!("shuvi-bind-operation-{}",Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let response=dir.join("receipt.json");
+        fs::write(&response,serde_json::to_vec(&json!({
+            "protocol_version":1,"status":"verified","complete":true,
+            "authenticated_blender_plan":true,"destructive_allowed":false,
+            "render_approved":true,"executed_steps":2,
+            "final_operation":"render.execute","artifact":{}
+        })).unwrap()).unwrap();
+        // Both fail before inspecting absent artifact bytes or trusting success.
+        assert!(native_plan_response(&response,&dir,&dir,true,"file.checkpoint",2).is_err());
+        assert!(native_plan_response(&response,&dir,&dir,true,"render.execute",1).is_err());
+        let _=fs::remove_dir_all(dir);
+    }
     #[test]
     fn approved_plan_bytes_are_durable_and_bounded(){
         let root=std::env::temp_dir().join(format!("shuvi-owned-plan-{}",Uuid::new_v4()));
@@ -170,7 +236,7 @@ mod tests{
             "artifact":{"path":output.to_str().unwrap(),"sha256":expected,
                 "bytes":fs::metadata(&output).unwrap().len()}
         })).unwrap()).unwrap();
-        assert!(native_plan_response(&response,&dir,&dir,false).is_err());
+        assert!(native_plan_response(&response,&dir,&dir,false,"file.checkpoint",1).is_err());
         let _=fs::remove_file(&response);
         let _=fs::remove_file(&output);
         let _=fs::remove_dir(&dir);
@@ -186,7 +252,7 @@ mod tests{
             "render_approved":false,"executed_steps":2,
             "final_operation":"file.checkpoint","artifact":{}
         })).unwrap()).unwrap();
-        assert!(native_plan_response(&file,&root,&root,false).is_err());
+        assert!(native_plan_response(&file,&root,&root,false,"file.checkpoint",2).is_err());
         let _=fs::remove_file(&file);let _=fs::remove_dir(&root);
     }
 }

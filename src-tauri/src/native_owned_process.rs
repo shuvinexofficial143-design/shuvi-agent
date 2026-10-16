@@ -227,6 +227,38 @@ impl<'lease> OwnedProcess<'lease> {
         }
         Ok(())
     }
+    /// Commit durable OS outcome and release the process-owner cancellation
+    /// slot as ONE transition. The Windows desktop lease is independently
+    /// retained until the higher-level action audit completes.
+    ///
+    /// Cancellation submitted before this boundary cannot be acknowledged
+    /// and then silently overwritten by an OS exit 0: it is terminally
+    /// classified as cancelled, never an application success.
+    fn complete_owned_terminal(&mut self,phase:&'static str,code:Option<i32>)
+        ->Result<ProcessObservation,String>{
+        if self.final_phase.is_some(){
+            return Err("Owned process terminal outcome was already published.".into());
+        }
+        if self.child.active_processes()?!=0{
+            return Err("Owned subprocess cannot finish with active descendants.".into());
+        }
+        let mut owner=PROCESS_OWNER.lock()
+            .map_err(|_|"Owned worker terminal owner lock poisoned.")?;
+        if owner.active.as_deref()!=Some(self.action_id.as_str()){
+            return Err("Owned subprocess terminal identity no longer matches native owner.".into());
+        }
+        let actual=if phase=="exited"&&owner.cancel_requested{
+            "cancelled"
+        }else{phase};
+        // Intentionally hold this short serialisation boundary across the
+        // durable write: Remote Stop cannot claim success after OS terminal.
+        self.record_terminal(actual,code)?;
+        self.final_phase=Some(actual);
+        self.final_code=code;
+        owner.active=None;
+        owner.cancel_requested=false;
+        Ok(self.observation(actual))
+    }
     fn observation(&self,phase:&'static str)->ProcessObservation{
         ProcessObservation{action_id:self.action_id.clone(),tool:self.tool.clone(),
             pid:self.pid(),phase,exit_code:self.final_code,
@@ -247,9 +279,7 @@ impl<'lease> OwnedProcess<'lease> {
             Some(code)=>{
                 self.final_code=Some(code);
                 if self.child.active_processes()?==0{
-                    self.record_terminal("exited",Some(code))?;
-                    self.final_phase=Some("exited");
-                    Ok(self.observation("exited"))
+                    self.complete_owned_terminal("exited",Some(code))
                 }else if self.start.elapsed()>=self.budget{
                     self.stop_owned_tree("timed_out")
                 }else{Ok(self.observation("descendants_running"))}
@@ -272,10 +302,7 @@ impl<'lease> OwnedProcess<'lease> {
         if self.child.active_processes()?!=0{
             return Err("Owned worker descendants remain active".into());
         }
-        self.record_terminal(phase,result)?;
-        self.final_phase=Some(phase);
-        self.final_code=result;
-        Ok(self.observation(phase))
+        self.complete_owned_terminal(phase,result)
     }
     /// Observe the same original native memory guard the legacy Blender
     /// adapter used, plus the OS-wide Job Object committed-memory ceiling.
@@ -545,6 +572,36 @@ mod tests{
         assert!(!observed.app_progress_verified);
         drop(child);
         assert_eq!(request_cancel_exact(&action).unwrap(),false);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn terminal_releases_pid_owner_before_artifact_audit_without_unlocking_desktop_lease(){
+        let _serial=TEST_PROCESS_MUTEX.lock().unwrap();
+        let (schedule,journal)=fresh_snapshots();
+        let id=journal.action_id.clone();
+        let mut child=spawn_checked(&schedule,&journal,&id,"blender_run_plan",
+            &fixture_exe(),&fixture_args("worker_fixture_exit_zero"),
+            &std::env::temp_dir(),Duration::from_secs(5)).unwrap();
+        assert_eq!(child.wait_bounded().unwrap().phase,"exited");
+        // The OwnedProcess object deliberately remains alive while higher
+        // level Rust verifies artifacts and saves the authenticated audit.
+        assert!(!request_cancel_exact(&id).unwrap());
+        assert!(child.cancel_exact(&id).is_err());
+        drop(child);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn cancelled_process_releases_only_its_exact_running_uuid(){
+        let _serial=TEST_PROCESS_MUTEX.lock().unwrap();
+        let (schedule,journal)=fresh_snapshots();
+        let id=journal.action_id.clone();
+        let mut child=spawn_checked(&schedule,&journal,&id,"blender_run_plan",
+            &fixture_exe(),&slow_args(),&std::env::temp_dir(),Duration::from_secs(5)).unwrap();
+        assert!(request_cancel_exact(&id).unwrap());
+        let observation=child.wait_bounded().unwrap();
+        assert_eq!(observation.phase,"cancelled");
+        assert!(!request_cancel_exact(&id).unwrap());
+        assert!(!observation.app_progress_verified);
     }
     #[cfg(windows)]
     #[test]
