@@ -10806,7 +10806,15 @@ ConvertTo-Json -InputObject @($items) -Compress -Depth 3"#);
         ToolAction::UiFind { name, automation_id, window } => {
             let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
             let root_script = ui_root_script(window.as_deref());
-            let attestation = native_uia_window_guard::readonly_window_attestation_script();
+            // Global read-only lookup keeps its existing desktop-root behavior,
+            // but it cannot claim app-bound HWND/PID attestation. Only
+            // explicit named-window reads may become same-window evidence.
+            let attestation = if window.is_some() {
+                native_uia_window_guard::readonly_window_attestation_script()
+            } else { String::new() };
+            let finish_attestation = if window.is_some() {
+                "Assert-ShuviObservedWindow"
+            } else { "" };
             let script = format!(
                 r#"Add-Type -AssemblyName UIAutomationClient
 {condition}
@@ -10873,7 +10881,7 @@ for ($i = 0; $i -lt [Math]::Min($matches.Count, 25); $i++) {{
     }}
 }}
 if ($items.Count -eq 0) {{ throw 'No matching UI element found. Use ui_discover to inspect the actual labels, automation IDs and control roles.' }}
-Assert-ShuviObservedWindow
+{finish_attestation}
 $items | ConvertTo-Json -Compress"#
             );
 
