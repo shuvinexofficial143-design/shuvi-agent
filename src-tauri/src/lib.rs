@@ -7,6 +7,7 @@ mod blender_worker;
 mod blender_plan_worker;
 mod blender_session_worker;
 mod blender_artifact_manifest;
+mod blender_input_checkpoint;
 mod blender_acceptance_chain;
 mod atomic_file;
 mod execution_lease;
@@ -206,7 +207,7 @@ Available tools:
 - pointer_drag: {"x1":200,"y1":300,"x2":550,"y2":330,"duration_ms":650} — high-risk approved visual left-drag fallback; inspect_screen first, re-inspect the visible result; input delivery does not prove editing success
 - blender_inspect: {"python_exe":"existing absolute Python.exe","blender_exe":"existing absolute Blender.exe","blend_file":"optional existing absolute .blend","operation":"scene.inspect|system.capabilities"} — starts an explicitly approved read-only owned background bridge, not a GUI mouse worker, and never edits/renders
 - blender_run_plan: {"python_exe":"absolute Python.exe","blender_exe":"absolute Blender.exe","blend_file":"optional existing absolute .blend","output_dir":"existing absolute delivery folder","allow_render":false,"plan":{"timeout_ms":90000,"steps":[{"name":"inspect","request":{"protocol_version":1,"request_id":"UUID","command_id":"UUID","operation":"scene.inspect","payload":{},"timeout_ms":10000},"bindings":[]}, ...]}} — HIGH RISK: execute 1..6 approved typed Blender operations in one authenticated owned session; final tool must be file.checkpoint or render.execute, with verified artifact SHA-256; never user-provided Python, auto-retry, or destructive ops
-- blender_session_start: {"python_exe":"absolute Python.exe","blender_exe":"absolute Blender.exe","blend_file":null,"output_dir":"existing output directory","allow_render":false} — HIGH RISK: start an authenticated 15-minute maximum Rust-owned Blender session. No mutation at start; each later plan requires a separately approved action with its exact live session_id.
+- blender_session_start: {"python_exe":"absolute Python.exe","blender_exe":"absolute Blender.exe","blend_file":null,"expected_blend_sha256":null,"output_dir":"existing output directory","allow_render":false} — HIGH RISK: start a Rust-owned Blender session. A non-null .blend requires exact SHA-256, verified before and after authenticated load; each later plan needs separate approval and its exact live session_id.
 - blender_session_inspect: {"session_id":"exact UUID returned by blender_session_start"} — read-only authenticated health and scene revision.
 - blender_session_plan: {"session_id":"exact UUID","expected_scene_revision":"exact scene_revision from blender_session_inspect","allow_render":false,"plan":{"timeout_ms":90000,"steps":[...]}} — HIGH RISK: up to six typed Blender operations ending in verified .blend checkpoint or PNG; render needs action-level approval and prior session policy ceiling; never automatically retry.
 - blender_review_acceptance_chain: {"approved_output_dir":"existing absolute output folder","receipts":[{...native Blender stage1 receipt...},{...native Blender stage2 receipt...},{...native Blender render receipt...}]} — read-only 3-stage on-disk SHA/mesh/session consistency review; does NOT prove historic action approval, that render loaded stage2, or live creative quality
@@ -681,7 +682,7 @@ enum ToolAction {
     PointerDrag { x1:i32, y1:i32, x2:i32, y2:i32, duration_ms:u32 },
     BlenderInspect { python_exe:String, blender_exe:String, blend_file:Option<String>, operation:String },
     BlenderRunPlan { python_exe:String, blender_exe:String, blend_file:Option<String>, output_dir:String, allow_render:bool, plan:Value },
-    BlenderSessionStart { python_exe:String, blender_exe:String, blend_file:Option<String>, output_dir:String, allow_render:bool },
+    BlenderSessionStart { python_exe:String, blender_exe:String, blend_file:Option<String>, expected_blend_sha256:Option<String>, output_dir:String, allow_render:bool },
     BlenderSessionInspect { session_id:String },
     BlenderSessionPlan { session_id:String, allow_render:bool, expected_scene_revision:String, plan:Value },
     BlenderSessionClose { session_id:String },
@@ -3702,15 +3703,25 @@ fn stage_tool(
                 }
                 _=>return Err("Persistent Blender blend_file must be a path or null.".into())
             };
+            let expected_blend_sha256=match proposal.arguments.get("expected_blend_sha256"){
+                None|Some(Value::Null)=>None,
+                Some(Value::String(hash))=>Some(hash.clone()),
+                _=>return Err("Expected .blend SHA-256 must be a lowercase hex string or null.".into()),
+            };
+            if (blend_file.is_some())!=(expected_blend_sha256.is_some()){
+                return Err("Blender input file and exact SHA-256 must be provided together.".into());
+            }
+            // Check the actual source file BEFORE requesting high-risk owner approval.
+            blender_input_checkpoint::inspect(blend_file.as_deref(),expected_blend_sha256.as_deref())?;
             let output_dir=absolute_path(arg_string(&proposal.arguments,"output_dir")?)?;
             if !Path::new(&output_dir).is_dir(){
                 return Err("Persistent Blender output must be an existing directory.".into());
             }
             let allow_render=proposal.arguments.get("allow_render").and_then(Value::as_bool)
                 .ok_or("Explicit session render policy ceiling required.")?;
-            (ToolAction::BlenderSessionStart {python_exe,blender_exe,blend_file,output_dir,allow_render},
+            (ToolAction::BlenderSessionStart {python_exe,blender_exe,blend_file,expected_blend_sha256,output_dir,allow_render},
                 "Start bounded authenticated Blender session".into(),
-                format!("One Rust-owned background Blender session; render_policy_ceiling={allow_render}; 15-minute max session age; every new plan needs distinct owner approval and an exact session ID."),
+                format!("One Rust-owned Blender session; render_policy_ceiling={allow_render}; input .blend requires an exact prechecked SHA-256 and postload file-path/hash proof; 15-minute max lifespan; every plan needs separate owner approval."),
                 RiskLevel::High)
         }
         "blender_session_inspect" => {
@@ -10681,12 +10692,13 @@ Write-Output 'SHUVI_WHATSAPP_DESKTOP_LAUNCH_REQUESTED'
                 exit_code: output.status.code(),
             })
         }
-        ToolAction::BlenderSessionStart {python_exe,blender_exe,blend_file,output_dir,allow_render} => {
+        ToolAction::BlenderSessionStart {python_exe,blender_exe,blend_file,expected_blend_sha256,output_dir,allow_render} => {
             let script=app.path().resource_dir()
                 .map_err(|e|format!("Blender session resource unavailable: {e}"))?
                 .join("blender-worker").join("shuvi_blender_session.py");
             let response=blender_session_worker::start(&state.blender_session,state,app,
-                &python_exe,&blender_exe,blend_file.as_deref(),&output_dir,allow_render,&script)?;
+                &python_exe,&blender_exe,blend_file.as_deref(),
+                expected_blend_sha256.as_deref(),&output_dir,allow_render,&script)?;
             Ok(ActionResult{success:true,tool,stdout:response.to_string(),stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::BlenderSessionInspect {session_id} => {
