@@ -98,3 +98,26 @@ test("native agent captures controls before invalidation and attaches to execute
  assert.ok(before>0&&timestamp>before&&invalidated>timestamp&&executed>invalidated&&readback>executed);
  assert.match(s.slice(executed,readback),/verifiedExecutionReceipt/);
 });
+
+test("both UIA read-only actions Win32-check the same root before and after collecting evidence",()=>{
+ const lib=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");
+ const guard=readFileSync(new URL("../src-tauri/src/native_uia_window_guard.rs",import.meta.url),"utf8");
+ const a=lib.indexOf("        ToolAction::UiDiscover { window } => {",570000);
+ const b=lib.indexOf("        ToolAction::UiFind { name, automation_id, window } => {",a);
+ const c=lib.indexOf("        ToolAction::UiClick { name, automation_id, window } => {",b);
+ assert.ok(a>=0&&b>a&&c>b);
+ for(const text of [lib.slice(a,b),lib.slice(b,c)]){
+  const before=text.indexOf("{attestation}");
+  const enumerate=Math.max(text.indexOf("$all = $root.FindAll("),text.indexOf("$matches = Resolve-ShuviUiMatches"));
+  const after=text.lastIndexOf("Assert-ShuviObservedWindow");
+  const output=text.lastIndexOf("ConvertTo-Json");
+  assert.ok(text.includes("readonly_window_attestation_script()"));
+  assert.ok(before>=0&&enumerate>before&&after>enumerate&&output>after);
+ }
+ for(const condition of ["GetWindowThreadProcessId","IsWindowVisible","IsIconic",
+   "$shuviNativeReadPid", "Assert-ShuviObservedWindow","Discard readback"]){
+  assert.ok(guard.includes(condition),"missing "+condition);
+ }
+ assert.doesNotMatch(guard.slice(guard.indexOf("pub(super) fn readonly_window_attestation_script()"),
+    guard.indexOf("fn valid_label(")),/SetForegroundWindow|SendWait\(/);
+});
