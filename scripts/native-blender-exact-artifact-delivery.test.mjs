@@ -15,6 +15,8 @@ test("Rust records verified Blender output certificate for the real scheduled ac
 });
 test("native task delivery rejects unrelated Blender file/hash receipts even if file exists",()=>{
  assert.match(delivery,/step\.tool=="blender_run_plan"/);
+ assert.match(delivery,/verify_blender_certificates\(app,&receipt\.steps\)\?/);
+ assert.match(delivery,/verify_blender_certificates\(app,&stored\.steps\)\?/);
  assert.match(delivery,/native_blender_action_artifact::require_exact\(/);
  assert.match(artifact,/record\.path!=path\|\|record\.sha256!=sha256\|\|record\.bytes!=bytes/);
  assert.match(artifact,/modified_file_or_claimed_sha256_cannot_be_delivered/);

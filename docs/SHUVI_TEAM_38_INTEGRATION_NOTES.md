@@ -103,3 +103,7 @@ Review any adapter calls and potential cross-team shared-file overlap. Keep owne
 ## Milestone 15 — proactive artifact store capacity and UUID preflight
 - Scheduled Blender plan now rejects an already-certified UUID or a full/corrupt private output certificate slot **before** launching any Python/Blender worker process. Publication rechecks under the same journal mutex, and authorized native GUI lock prevents a competing worker between preflight and publication.
 - If the private certificate store fills, owner archival is needed; no unverified creative work is started just to discover a delivery-capacity failure. Rust tests cover duplicate action and crash-interrupted `.tmp` receipts.
+
+## Milestone 16 — historical completed-task provenance re-verification
+- `native_task_delivery::read` now rechecks the same exact Blender certificate, action UUID, file path, bytes and SHA256 as `finalize`. A replaced/deleted certificate or tampered file therefore invalidates subsequent *read-only* delivery inspection instead of leaving a stale green verification.
+- One shared private verification function is called from both finalize and read; no new mutation IPC, and old non-Blender deliveries retain their previous behavior. Historic scheduled Blender receipts without an authenticated certificate fail closed and need owner-assisted inspection.

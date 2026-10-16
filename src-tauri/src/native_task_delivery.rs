@@ -164,6 +164,18 @@ fn write_at(path:&Path,receipt:&DeliveryReceipt)->Result<(),String>{
         .map_err(|_|"Could not encode native task delivery.".to_string())?;
     crate::premiere_store::replace(path,&raw,MAX_BYTES,check_bytes)
 }
+fn verify_blender_certificates(app:&AppHandle,steps:&[DeliveryStep])
+    ->Result<(),String>{
+    for step in steps {
+        if step.tool=="blender_run_plan"{
+            let a=step.artifact.as_ref()
+                .ok_or("Blender delivery artifact is missing.")?;
+            crate::native_blender_action_artifact::require_exact(
+                app,&step.action_id,&a.path,&a.sha256,a.bytes)?;
+        }
+    }
+    Ok(())
+}
 pub(crate) fn finalize(app:&AppHandle,steps:Vec<DeliveryStep>)->Result<DeliveryReceipt,String>{
     let _io=IO.lock().map_err(|_|"Native task delivery lock poisoned.")?;
     let schedule=crate::native_scheduler::read(app)?
@@ -186,17 +198,9 @@ pub(crate) fn finalize(app:&AppHandle,steps:Vec<DeliveryStep>)->Result<DeliveryR
     verify(&schedule,&receipt.steps,|id|
         crate::read_action_audit_receipt(app,id)?
             .ok_or("Delivery requires an exact Rust action audit.".to_string()))?;
-    // A model/UI-supplied hash of any existing .blend is insufficient.
-    // The exact supervised Blender action must have independently recorded
-    // its authenticated, rehashed output before this final task receipt.
-    for step in &receipt.steps {
-        if step.tool=="blender_run_plan" {
-            let artifact=step.artifact.as_ref()
-                .ok_or("Blender delivery artifact is missing.")?;
-            crate::native_blender_action_artifact::require_exact(
-                app,&step.action_id,&artifact.path,&artifact.sha256,artifact.bytes)?;
-        }
-    }
+    // An externally existing .blend plus an arbitrary matching hash is not
+    // evidence that the exact scheduled worker produced it.
+    verify_blender_certificates(app,&receipt.steps)?;
     write_at(&path(app)?,&receipt)?;
     Ok(receipt)
 }
@@ -225,6 +229,9 @@ pub(crate) fn read(app:&AppHandle)->Result<Option<DeliveryReceipt>,String>{
         }
         if let Some(a)=step.artifact.as_ref(){check_artifact(a,&step.tool)?;}
     }
+    // A historical task is not verified solely because its final JSON
+    // receipt is intact. Recheck exact worker provenance on every read.
+    verify_blender_certificates(app,&stored.steps)?;
     Ok(Some(stored))
 }
 #[cfg(test)]
