@@ -65,8 +65,8 @@ test("OS-derived target is stored only in native Rust pending action, not suppli
  assert.match(core,/native_uia_target: Option<native_uia_window_guard::NativeUiaTarget>/);
  assert.match(core,/let native_uia_target = prepare_native_uia_binding\(&action\)/);
  assert.match(core,/let native_uia_target = action.native_uia_target.clone\(\)/);
- assert.match(core,/let probe = native_uia_window_guard::prepared_window_probe\(&root\)/);
- assert.match(core,/native_uia_window_guard::parse_prepared_window\(text\)/);
+ assert.match(core,/let probe = native_uia_window_guard::prepared_control_probe\(&root, &condition\)/);
+ assert.match(core,/native_uia_window_guard::parse_prepared_control\(text\)/);
  assert.equal((mutation.match(/native_uia_target\.as_ref\(\)/g)||[]).length,7);
  assert.match(guard,/fn guarded_mutation_root\(/);
  assert.match(guard,/target\.ok_or_else/);
@@ -78,4 +78,32 @@ test("no Rust prepared HWND is exposed as caller-selectable tool argument",()=>{
  assert.doesNotMatch(stage,/arg_[a-z0-9_]+\([^\n]*"expected_(?:hwnd|pid)"/);
  assert.match(stage,/ToolAction::UiSendKeys/);
  assert.match(stage,/run_hidden_powershell\(&probe\)/);
+});
+
+test("the native prepared action binds one exact UIA RuntimeId before owner approval",()=>{
+ const prepare=core.slice(core.indexOf("fn prepare_native_uia_binding("),core.indexOf("fn stage_tool(",core.indexOf("fn prepare_native_uia_binding(")));
+ assert.match(prepare,/let condition = ui_condition_script\(name, automation_id\)\?/);
+ assert.match(prepare,/native_uia_window_guard::prepared_control_probe\(&root, &condition\)/);
+ assert.match(prepare,/native_uia_window_guard::parse_prepared_control\(text\)/);
+ assert.match(guard,/Resolve-ShuviUiMatches -root \$root -condition \$condition/);
+ assert.match(guard,/\$matches.Count -ne 1/);
+ assert.match(guard,/\$control.GetRuntimeId\(\)/);
+ assert.match(guard,/runtime_id = \[int\[\]\]\$runtimeId/);
+ assert.match(guard,/fn parse_prepared_control\(/);
+});
+test("executing a prepared action cannot rebind an identical-label UIA control",()=>{
+ assert.match(guard,/function Assert-ShuviNativeTarget/);
+ assert.match(guard,/\$element.GetRuntimeId\(\)/);
+ assert.match(guard,/\$actualRuntimeId.Count -ne \$shuviExpectedRuntimeCount/);
+ assert.match(guard,/\$shuviExpectedRuntimeKey/);
+ assert.match(guard,/UIA control identity changed after approval/);
+ assert.match(guard,/\$shuviExpectedAutomationId/);
+ assert.match(guard,/\$shuviExpectedControlType/);
+ assert.match(guard,/\$shuviExpectedControlName/);
+ for(const arm of ["UiClick","UiSetValue","UiFocus","UiScroll","UiToggle","UiExpandCollapse","UiSendKeys"]){
+  const start=mutation.indexOf("ToolAction::"+arm+" {");
+  const next=mutation.indexOf("        ToolAction::",start+4);
+  const body=mutation.slice(start,next<0?mutation.length:next);
+  assert.match(body,/native_uia_target.as_ref\(\)/);
+ }
 });
