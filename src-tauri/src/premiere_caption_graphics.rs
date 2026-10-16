@@ -130,6 +130,74 @@ pub fn plan(req:&Request,saved:&premiere_graphics::SavedMapping)->Result<Value,S
         "retry_automatically":false
     }))
 }
+/// Read-only, fail-closed occupancy check against an exact native Premiere
+/// timeline snapshot. It eliminates known collisions BEFORE starting a batch,
+/// but does not guarantee that a later Adobe write cannot race this snapshot.
+pub fn preflight_timeline(
+    batch:&premiere_graphics::Batch,
+    timeline:&Value,
+    project_guid:&str,
+    project_path:Option<&str>,
+    sequence_guid:&str
+)->Result<Value,String>{
+    batch.validate()?;
+    if timeline.get("truncated")!=Some(&json!(false))
+        ||timeline.get("sequenceGuid").and_then(Value::as_str)!=Some(sequence_guid)
+        ||timeline.pointer("/expected/project_guid").and_then(Value::as_str)!=Some(project_guid)
+        ||timeline.pointer("/expected/sequence_guid").and_then(Value::as_str)!=Some(sequence_guid)
+        ||project_path.is_some_and(|path|
+            timeline.pointer("/expected/project_path").and_then(Value::as_str)!=Some(path)) {
+        return Err("Native Premiere timeline snapshot is missing, truncated, or changed project/sequence identity.".into());
+    }
+    let mut checked=0usize;
+    let mut destination_rows=0usize;
+    for (category,track_index) in [
+        ("videoTracks",batch.video_track),("audioTracks",batch.audio_track)
+    ] {
+        let tracks=timeline.get(category).and_then(Value::as_array)
+            .ok_or("Native timeline is missing destination tracks.")?;
+        if tracks.len()>129 {return Err("Timeline track inventory is oversized.".into());}
+        let matches:Vec<&Value>=tracks.iter().filter(|t|
+            t.get("index").and_then(Value::as_u64)==Some(track_index as u64)).collect();
+        if matches.len()!=1 {return Err("Missing or ambiguous caption graphics destination track.".into());}
+        let clips=matches[0].get("items").and_then(Value::as_array)
+            .ok_or("Caption destination lacks a complete native item inventory.")?;
+        if clips.len()>240 {return Err("Caption destination track inventory is oversized.".into());}
+        for clip in clips {
+            let start=clip.get("startSeconds").and_then(Value::as_f64)
+                .ok_or("Destination clip missing start time.")?;
+            let end=clip.get("endSeconds").and_then(Value::as_f64)
+                .ok_or("Destination clip missing end time.")?;
+            if !start.is_finite()||!end.is_finite()||start<0.0||end<=start||end>86400.0 {
+                return Err("Destination clip has incomplete or invalid native timing.".into());
+            }
+            destination_rows+=1;
+            for item in &batch.items {
+                let end_caption=item.seconds+item.duration_seconds
+                    .ok_or("Caption graphics preflight requires exact per-cue duration.")?;
+                if item.seconds<end && start<end_caption {
+                    return Err(format!(
+                        "Caption graphics destination {category} track {track_index} is occupied at requested caption time; no native insert attempted."
+                    ));
+                }
+                checked+=1;
+            }
+        }
+    }
+    Ok(json!({
+        "destination_video_track":batch.video_track,
+        "destination_audio_track":batch.audio_track,
+        "caption_count":batch.items.len(),
+        "existing_destination_clips":destination_rows,
+        "interval_pairs_checked":checked,
+        "conflicts_found":0,
+        "native_snapshot_collision_preflight_passed":true,
+        "native_insertion_race_excluded":false,
+        "adobe_runtime_verified":false,
+        "retry_automatically":false
+    }))
+}
+
 #[cfg(test)]mod tests {
     use super::*;
     fn mapping()->premiere_graphics::SavedMapping {
@@ -201,6 +269,35 @@ pub fn plan(req:&Request,saved:&premiere_graphics::SavedMapping)->Result<Value,S
         request.static_fields.insert("position".into(),json!({"type":"point","x":0.5,"y":0.82}));
         request.static_fields.insert("accent_color".into(),json!({"type":"color","red":1,"green":1,"blue":1,"alpha":-0.5}));
         assert!(plan(&request,&mapping()).is_err());
+        fs::remove_file(path).unwrap();
+    }
+    #[test] fn caption_timeline_preflight_blocks_occupied_destination_before_edit(){
+        let (request,path)=fixture();
+        let batch:premiere_graphics::Batch=serde_json::from_value(
+            plan(&request,&mapping()).unwrap()["generated_batch"].clone()).unwrap();
+        let base=json!({"truncated":false,"sequenceGuid":"S",
+            "expected":{"project_guid":"P","project_path":"C:/edit.prproj","sequence_guid":"S","clips":[]},
+            "videoTracks":[{"index":2,"items":[]}],
+            "audioTracks":[{"index":0,"items":[]}]});
+        let good=preflight_timeline(&batch,&base,"P",Some("C:/edit.prproj"),"S").unwrap();
+        assert_eq!(good["native_snapshot_collision_preflight_passed"],true);
+        assert_eq!(good["native_insertion_race_excluded"],false);
+        let mut occupied=base.clone();
+        occupied["videoTracks"][0]["items"]=json!([{"startSeconds":2.5,"endSeconds":3.0}]);
+        assert!(preflight_timeline(&batch,&occupied,"P",Some("C:/edit.prproj"),"S")
+            .unwrap_err().contains("occupied"));
+        occupied["videoTracks"][0]["items"]=json!([]);
+        occupied["audioTracks"][0]["items"]=json!([{"startSeconds":0.2,"endSeconds":0.8}]);
+        assert!(preflight_timeline(&batch,&occupied,"P",Some("C:/edit.prproj"),"S").is_err());
+        let mut truncated=base.clone();
+        truncated["truncated"]=json!(true);
+        assert!(preflight_timeline(&batch,&truncated,"P",Some("C:/edit.prproj"),"S").is_err());
+        let mut changed=base.clone();
+        changed["sequenceGuid"]=json!("other");
+        assert!(preflight_timeline(&batch,&changed,"P",Some("C:/edit.prproj"),"S").is_err());
+        let mut no_times=base;
+        no_times["videoTracks"][0]["items"]=json!([{"startSeconds":1.0,"endSeconds":null}]);
+        assert!(preflight_timeline(&batch,&no_times,"P",Some("C:/edit.prproj"),"S").is_err());
         fs::remove_file(path).unwrap();
     }
     #[test] fn missing_caption_role_bad_static_field_and_too_many_cues_fail(){
