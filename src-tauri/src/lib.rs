@@ -10753,8 +10753,10 @@ ConvertTo-Json -InputObject @($items) -Compress -Depth 3"#;
         }
         ToolAction::UiDiscover { window } => {
             let root_script = ui_root_script(Some(&window));
+            let attestation = native_uia_window_guard::readonly_window_attestation_script();
             let script = format!(r#"Add-Type -AssemblyName UIAutomationClient
 {root_script}
+{attestation}
 $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
 $interactive = [System.Collections.Generic.List[object]]::new()
 $context = [System.Collections.Generic.List[object]]::new()
@@ -10791,6 +10793,7 @@ for ($i=0; $i -lt [Math]::Min($all.Count, 1200); $i++) {{
     }} catch {{}}
 }}
 $items = @($interactive | Select-Object -First 110) + @($context | Select-Object -First 40)
+Assert-ShuviObservedWindow
 ConvertTo-Json -InputObject @($items) -Compress -Depth 3"#);
             let output = run_hidden_powershell(&script)?;
             if !output.status.success() {
@@ -10803,10 +10806,12 @@ ConvertTo-Json -InputObject @($items) -Compress -Depth 3"#);
         ToolAction::UiFind { name, automation_id, window } => {
             let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
             let root_script = ui_root_script(window.as_deref());
+            let attestation = native_uia_window_guard::readonly_window_attestation_script();
             let script = format!(
                 r#"Add-Type -AssemblyName UIAutomationClient
 {condition}
 {root_script}
+{attestation}
 $matches = Resolve-ShuviUiMatches -root $root -condition $condition
 $items = @()
 for ($i = 0; $i -lt [Math]::Min($matches.Count, 25); $i++) {{
@@ -10868,6 +10873,7 @@ for ($i = 0; $i -lt [Math]::Min($matches.Count, 25); $i++) {{
     }}
 }}
 if ($items.Count -eq 0) {{ throw 'No matching UI element found. Use ui_discover to inspect the actual labels, automation IDs and control roles.' }}
+Assert-ShuviObservedWindow
 $items | ConvertTo-Json -Compress"#
             );
 
