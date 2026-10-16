@@ -48,6 +48,7 @@ const uniqueNames=[
   "save_api_key",
   "save_session_checkpoint",
   "set_workspace",
+  "verify_premiere_project_sha256",
   "web_bridge_start",
   "web_bridge_stop"
 ];
