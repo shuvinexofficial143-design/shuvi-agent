@@ -161,6 +161,37 @@ pub(super) fn prepared_control_probe(
     Ok(format!("Add-Type -AssemblyName UIAutomationClient\n{selector_script}\n{root_script}\n{WIN32_MUTATION_GUARD}\n{native}"))
 }
 
+// A read-only UIA query is observation evidence, not merely a successful
+// PowerShell process. Validate its selected top-level HWND/PID against Win32
+// both before enumeration and after gathering results. No focus or restore.
+pub(super) fn readonly_window_attestation_script() -> String {
+    format!(r#"{WIN32_MUTATION_GUARD}
+$shuviReadHwnd = [IntPtr]([int64]$root.Current.NativeWindowHandle)
+$shuviReadPid = [int]$root.Current.ProcessId
+$shuviReadTitle = [string]$root.Current.Name
+function Assert-ShuviObservedWindow {{
+ if ($shuviReadHwnd -eq [IntPtr]::Zero -or $shuviReadPid -le 0 -or
+     [string]::IsNullOrWhiteSpace($shuviReadTitle) -or
+     -not [ShuviUiaNativeIdentity]::IsWindow($shuviReadHwnd) -or
+     -not [ShuviUiaNativeIdentity]::IsWindowVisible($shuviReadHwnd) -or
+     [ShuviUiaNativeIdentity]::IsIconic($shuviReadHwnd)) {{
+  throw 'Observed UIA window missing, invisible or minimized. No trusted readback.'
+ }}
+ [uint32]$shuviNativeReadPid = 0
+ [void][ShuviUiaNativeIdentity]::GetWindowThreadProcessId($shuviReadHwnd, [ref]$shuviNativeReadPid)
+ if ($shuviNativeReadPid -ne [uint32]$shuviReadPid -or
+     [int64]$root.Current.NativeWindowHandle -ne [int64]$shuviReadHwnd -or
+     [int]$root.Current.ProcessId -ne $shuviReadPid -or
+     [string]$root.Current.Name -cne $shuviReadTitle -or
+     -not [bool]$root.Current.IsEnabled -or
+     [bool]$root.Current.IsOffscreen) {{
+  throw 'Observed UIA root HWND/PID/title changed or became inactive. Discard readback.'
+ }}
+}}
+Assert-ShuviObservedWindow
+"#)
+}
+
 fn valid_label(value: &str, max: usize, allow_empty: bool) -> bool {
     (allow_empty || !value.is_empty())
         && value.chars().count() <= max
@@ -301,6 +332,17 @@ mod tests {
     }
     fn observed() -> &'static str {
         r#"{"hwnd":901,"pid":123,"title":"Adobe Premiere Pro 2026","runtime_id":[42,-3,91],"control_name":"New Project","automation_id":"new_project","control_type":"ControlType.Button"}"#
+    }
+    #[test]
+    fn readonly_window_attestation_is_repeatable_win32_verified_and_nonmutating() {
+        let script=super::readonly_window_attestation_script();
+        for check in ["GetWindowThreadProcessId", "IsWindowVisible", "IsIconic",
+            "Assert-ShuviObservedWindow", "$shuviReadHwnd", "$shuviReadPid",
+            "IsOffscreen", "Discard readback"] {
+            assert!(script.contains(check), "Missing {check}");
+        }
+        assert!(!script.contains("SetForegroundWindow"));
+        assert!(!script.contains("SendWait("));
     }
     #[test]
     fn parses_exact_os_runtime_and_control_identity() {
