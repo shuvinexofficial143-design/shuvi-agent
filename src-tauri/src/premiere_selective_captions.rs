@@ -48,9 +48,10 @@ fn check_parent(path:&Path)->Result<(),String>{
     }
     let name=path.file_name().and_then(|x|x.to_str()).ok_or("Invalid caption filename.")?;
     let stem=path.file_stem().and_then(|x|x.to_str()).unwrap_or("");
-    let uppercase=stem.to_ascii_uppercase();
+    let uppercase=stem.split('.').next().unwrap_or("").to_ascii_uppercase();
     let forbidden=matches!(uppercase.as_str(),"CON"|"PRN"|"AUX"|"NUL"|"COM1"|"COM2"|"COM3"|"COM4"|"COM5"|"COM6"|"COM7"|"COM8"|"COM9"|"LPT1"|"LPT2"|"LPT3"|"LPT4"|"LPT5"|"LPT6"|"LPT7"|"LPT8"|"LPT9");
-    if name.starts_with('.')||name.ends_with('.')||name.ends_with(' ')||forbidden {
+    if name.starts_with('.')||name.ends_with('.')||name.ends_with(' ')
+        ||name.chars().any(|c| "<>:\\"|?*".contains(c))||forbidden {
         return Err("Caption output basename is unsupported.".into());
     }
     let mut ancestor=path.parent();
@@ -159,8 +160,8 @@ pub fn publish(req:&Request)->Result<Value,String>{
         .take(MAX_FILE as u64+1).read_to_end(&mut actual)
         .map_err(|e|format!("Caption persistence readback uncertain: {e}"))?;
     let after=fs::symlink_metadata(path).map_err(|e|e.to_string())?;
-    if actual!=expected||after.len()!=before.len()
-        ||after.modified().ok()!=before.modified().ok(){
+    if actual!=expected||!after.is_file()||after.file_type().is_symlink()
+        ||after.len()!=before.len()||after.modified().ok()!=before.modified().ok(){
         return Err("Caption persisted bytes changed during readback; inspect before retry.".into());
     }
     let sha256=format!("{:x}",Sha256::digest(&actual));
