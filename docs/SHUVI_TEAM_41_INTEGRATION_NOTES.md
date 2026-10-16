@@ -563,3 +563,47 @@ Session fixtures cover happy-path pagination, exact allowlist/bounds,
 rejection of unsupported extra command keys and stale-scene failure.
 Source tests check native Rust parsing, broker IPC and the fixture suite.
 No live Blender executable was launched during development.
+
+
+## Current milestone — pinned real upstream PlanRunner and approved plan lineage
+
+A dedicated GitHub Actions workflow, \`Blender Upstream Contract CI\`, checks
+out the actual upstream \`shuvi-blender-agent\` at the **exact reviewed commit**
+\`96b88c2513152f772399f247989ef602d5e0a7d7\` in an isolated subfolder.
+Tests import that real repository's typed \`Plan.from_dict\`, \`PlanRunner\`,
+\`CreateMesh\`, \`TranslateVertices\`, \`PageQuery\`, \`RenderConfig\`,
+\`FileAction\`, \`Request\`, \`Result\` and \`Status\` implementations.
+Only the bpy/Blender transport/controller is simulated. The test executes
+both modeling-stage plans on one controller, compares the actual saved mesh
+geometry after two vertex translations, then executes the render plan on
+a new controller. It also tests stale revisions, invalid bindings, duplicate
+command identities, and type/size limits. No Blender executable, renderer
+or real customer project is launched by these tests.
+
+New native \`src-tauri/src/blender_plan_lineage.rs\` now derives a canonical
+SHA-256 of the **exact serialized owner-approved typed plan**, preserves
+ordered operation names, bounded step count and classifies the known
+stage-1 create/save, stage-2 edit/save and stage-3 bounded render recipes.
+Unrecognized plans remain valid for ordinary authorized Blender use but are
+marked \`acceptance_stage="other"\` and cannot claim one of the three test
+stages. Stage classification requires the expected typed operations,
+checkpoint names, render dimensions, geometry edit vector, and critical
+live result bindings.
+
+Both Rust Blender paths now attach \`approved_plan_lineage\` to successful
+verified native results. The local executed-action audit appends a stable
+\`blender_plan_sha256\` and \`blender_acceptance_stage\` token alongside
+source/action/session/output identity and file SHA. The three-stage read-only
+reviewer checks the typed stage identity, exact operation sequence and
+agreement between native result step count and artifact-manifest verified
+step count. Existing local executed-action audit lookup correlates the
+supplied stage receipts with prior native successful actions. It remains
+**local app-data provenance, not cryptographically signed remote execution
+attestation**. No separate machine or actual Blender live application was
+started. Real Windows Blender acceptance and visually inspected render
+quality are still REQUIRED before calling this runtime-ready.
+
+New regression tests cover stage classification, fake stages, wrong
+operation sequences, stale metadata, absent plan hashes, and mismatched
+step counts. CI must be evaluated against the exact latest commit;
+previous pass states do not automatically carry forward.
