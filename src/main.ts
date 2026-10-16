@@ -5,6 +5,8 @@ import {validateMasterPlan,validateMasterAction,assessMasterGoalDelivery} from "
 import {pinNativeWorkerModels,restorePinnedWorkerModels,chooseSpecialistTurn,specialistProposalMatches,delegatedWorkerContext} from "./native-worker-model-routing.mjs";
 import {decideNativeContinuation} from "./native-continuation-driver.mjs";
 import {planVerifiedNativeReadback} from "./master-safe-continuation.mjs";
+import {captureMasterOpeningObservation,verifyMasterOpeningDelivery} from "./master-goal-window-acceptance.mjs";
+import type {AuditedOpeningObservation} from "./master-goal-window-acceptance.mjs";
 import {nativeTaskDeliveryClaims} from "./native-delivery-claims.mjs";
 import type {
   ActionResult,
@@ -95,6 +97,10 @@ let sessionInputTokens = 0;
 let sessionOutputTokens = 0;
 let sessionTotalTokens = 0;
 let activePermissionScope=createTaskPermissionScope(crypto.randomUUID());
+// Volatile read-only window proof. Crash/restart deliberately loses this;
+// a fresh independent observation is then required rather than trusting a
+// stale user/AI-authored checkpoint.
+let openingWindowObservation:AuditedOpeningObservation|null=null;
 // Mirrors owner-issued Rust grant IDs for exact read arguments. Local state
 // alone is NEVER authority to dispatch a consented follow-up action.
 const nativeReadGrantIds=new Map<string,string>();
@@ -104,6 +110,7 @@ async function revokeNativeTaskReads(taskId:string):Promise<boolean>{
 }
 function rotatePermissionScope():void{
  const oldId=activePermissionScope.taskId;
+ openingWindowObservation=null;
  revokeTaskScope(activePermissionScope);
  nativeReadGrantIds.clear();
  const revokeButton=document.querySelector<HTMLButtonElement>("#revokeTaskReadGrants");
@@ -1221,9 +1228,12 @@ async function continueAfterOutcome(): Promise<void> {
     // Rust hashes native delivery files, but cannot certify the user's
     // original creative objective from generic step success alone.
     const goalAcceptance=assessMasterGoalDelivery(orchestration.owner_request,orchestration.task_graph);
-    if(goalAcceptance.requiresIndependentAcceptance && !goalAcceptance.verified){
+    const openingAcceptance=verifyMasterOpeningDelivery(
+      orchestration.owner_request,orchestration.task_graph,schedule,nativeDelivery,
+      openingWindowObservation,activePermissionScope.taskId);
+    if(goalAcceptance.requiresIndependentAcceptance&&!openingAcceptance.verified){
       await stopAgentForSafety("All native worker steps have successful Rust receipts, but ORIGINAL TASK UNVERIFIED: "+
-        goalAcceptance.reason+" The confirmed task delivery is retained for owner inspection.");
+        (goalAcceptance.reason||openingAcceptance.reason)+" The confirmed task delivery is retained for owner inspection.");
       return;
     }
     const completed=taskGraphProgress(orchestration.task_graph);
@@ -1231,7 +1241,10 @@ async function continueAfterOutcome(): Promise<void> {
       "All "+completed.total+" audited native steps are now in a durable delivery receipt; "+
       nativeDelivery.steps.filter(s=>s.artifact).length+
       " output files were rehashed by Rust. No more AI calls were sent. "+
-      "Final video or 3D quality still requires real Windows application acceptance."});
+      (openingAcceptance.verified
+        ?"The requested Premiere window was independently observed (PID "+
+         openingAcceptance.window.pid+"). Project editing/export is NOT inferred."
+        :"Final video or 3D quality still requires real Windows application acceptance.")});
     el<HTMLElement>("#nativeDeliverySummary").textContent=
       "Last native delivery: "+nativeDelivery.steps.length+" audited steps, "+
       nativeDelivery.steps.filter(s=>s.artifact).length+" SHA-256 checked files.";
@@ -1574,6 +1587,11 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
     return;
   }
   const permissionTaskId=activePermissionScope.taskId;
+  // A new window read replaces older observed proof, even if it fails.
+  // Non-read native actions may mutate the UI and invalidate the old window.
+  if(proposal.tool==="ui_windows"||
+     !["list_processes","ui_find","ui_discover","premiere_context","premiere_bridge_status"].includes(proposal.tool))
+    openingWindowObservation=null;
   executingActionId = actionId;
   executingCancellation = null;
   clearChatPermission();
@@ -1610,6 +1628,12 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
       receipt
     );
     await auditGraphOutcome(proposal);
+    if(proposal.tool==="ui_windows"&&receiptMatches&&!cancelledByUser&&
+       activePermissionScope.taskId===permissionTaskId&&!activePermissionScope.revoked&&!cancelRequested){
+      openingWindowObservation=captureMasterOpeningObservation(
+        orchestration.owner_request,orchestration.task_graph,proposal,result,
+        actionId,permissionTaskId,true);
+    }
     if (cancelledByUser || !result.success || !receiptMatches) revokeTaskScope(activePermissionScope);
     // A returned tool result is not trusted until Rust corroborates the
     // exact action UUID, proposed tool, typed result and executed receipt.
