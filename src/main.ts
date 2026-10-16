@@ -12,6 +12,8 @@ import {inspectPremiereProjectCreateCandidate,projectCandidateStatus} from "./pr
 import type {PremiereProjectEvidenceCandidate} from "./premiere-project-evidence-candidate.mjs";
 import {bindNativePremiereShaProof,nativePremiereShaProgress} from "./native-project-sha-proof.mjs";
 import type {NativePremiereShaReceipt,BoundPremiereProjectShaProof} from "./native-project-sha-proof.mjs";
+import {inspectPremiereProjectReopenCandidate,bindPremiereReopenShaAfterReadback} from "./premiere-project-reopen-evidence.mjs";
+import type {PremiereReopenEvidence} from "./premiere-project-reopen-evidence.mjs";
 import type {AuditedOpeningObservation} from "./master-goal-window-acceptance.mjs";
 import {nativeTaskDeliveryClaims} from "./native-delivery-claims.mjs";
 import type {
@@ -111,6 +113,7 @@ let openingWindowObservation:AuditedOpeningObservation|null=null;
 // main Rust task-delivery allowlist does NOT attest Premiere .prproj bytes.
 let projectCreationEvidence:PremiereProjectEvidenceCandidate|null=null;
 let projectShaFileProof:BoundPremiereProjectShaProof|null=null;
+let projectReopenEvidence:PremiereReopenEvidence|null=null;
 // Mirrors owner-issued Rust grant IDs for exact read arguments. Local state
 // alone is NEVER authority to dispatch a consented follow-up action.
 const nativeReadGrantIds=new Map<string,string>();
@@ -123,6 +126,7 @@ function rotatePermissionScope():void{
  openingWindowObservation=null;
  projectCreationEvidence=null;
  projectShaFileProof=null;
+ projectReopenEvidence=null;
  revokeTaskScope(activePermissionScope);
  nativeReadGrantIds.clear();
  const revokeButton=document.querySelector<HTMLButtonElement>("#revokeTaskReadGrants");
@@ -1254,7 +1258,10 @@ async function continueAfterOutcome(): Promise<void> {
         messages.push({role:"assistant",content:
           projectCandidateStatus(projectCreationEvidence,activePermissionScope.taskId)+
           (projectShaFileProof
-            ? " "+nativePremiereShaProgress(projectShaFileProof,activePermissionScope.taskId)
+            ? " "+nativePremiereShaProgress(projectShaFileProof,activePermissionScope.taskId)+
+              (projectReopenEvidence?.sha256AfterReopenVerified===true
+               ? " Separately approved Premiere project OPEN was Rust-audited and the unchanged SHA-256 was independently re-read after it. Final native delivery remains UNVERIFIED."
+               : " Separately approved project-reopen acceptance is not yet verified.")
             : " Independent Rust SHA-256 file readback unavailable; project completion not claimed.")});
         renderMessages();
       }
@@ -1622,11 +1629,16 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
     return;
   }
   const permissionTaskId=activePermissionScope.taskId;
-  if(proposal.tool==="premiere_create_project"||
+  if(proposal.tool==="premiere_open_project"){
+    // Preserve the ORIGINAL create + prior SHA, but invalidate any previous
+    // reopen outcome while the NEW separately approved open is unresolved.
+    projectReopenEvidence=null;
+  }else if(proposal.tool==="premiere_create_project"||
     !["ui_windows","list_processes","ui_find","ui_discover",
       "premiere_context","premiere_bridge_status"].includes(proposal.tool)){
     projectCreationEvidence=null;
     projectShaFileProof=null;
+    projectReopenEvidence=null;
   }
   // A new window read replaces older observed proof, even if it fails.
   // Non-read native actions may mutate the UI and invalidate the old window.
@@ -1701,6 +1713,41 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
           // Team 40 integration. Never retry an uncertain mutation or
           // manufacture an SHA-256 from the weaker FNV-1a64 value.
           projectShaFileProof=null;
+        }
+      }
+    }
+    if(proposal.tool==="premiere_open_project"&&result.success&&receiptMatches&&
+       !cancelledByUser&&!cancelRequested&&
+       activePermissionScope.taskId===permissionTaskId&&!activePermissionScope.revoked&&
+       projectCreationEvidence&&projectShaFileProof){
+      const candidate=projectCreationEvidence;
+      const originalSha=projectShaFileProof;
+      const reopen=inspectPremiereProjectReopenCandidate(
+        permissionTaskId,candidate,originalSha,orchestration.task_graph,
+        proposal,result,actionId,true);
+      if(reopen){
+        try{
+          // No new Adobe call. Re-read the SAME previously approved path
+          // via the Rust SHA verifier after a separately audited project open.
+          const bytesAfter=await invoke<NativePremiereShaReceipt>(
+            "verify_premiere_project_sha256",{
+              actionId:candidate.actionId,projectPath:candidate.projectPath,
+              expectedFnv1a64:candidate.fnv1a64,
+              expectedSizeBytes:candidate.sizeBytes
+            });
+          const verifiedAfter=bindNativePremiereShaProof(
+            candidate,bytesAfter,permissionTaskId);
+          if(activePermissionScope.taskId===permissionTaskId&&
+             projectCreationEvidence===candidate&&
+             projectShaFileProof===originalSha&&
+             !cancelRequested&&!activePermissionScope.revoked&&!cancelledByUser){
+            projectReopenEvidence=bindPremiereReopenShaAfterReadback(
+              reopen,verifiedAfter,permissionTaskId);
+          }
+        }catch{
+          // A failed/changed file read never makes a past Adobe acceptance
+          // or FNV read look like a cryptographic post-reopen verification.
+          projectReopenEvidence=null;
         }
       }
     }
