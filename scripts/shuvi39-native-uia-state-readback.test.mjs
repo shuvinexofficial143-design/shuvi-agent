@@ -55,3 +55,51 @@ test("generic Invoke/Click, SendKeys and Scroll do not claim a proven visible us
  assert.doesNotMatch(arm("UiSendKeys"),/Toggle state changed and read back/);
  assert.doesNotMatch(arm("UiScroll"),/ExpandCollapsePattern readback/);
 });
+
+test("native UIA focus waits boundedly for readback on SAME approved control",()=>{
+ const source=arm("UiFocus");
+ const focus=source.indexOf("$e.SetFocus()");
+ const check=source.indexOf("$e.Current.HasKeyboardFocus");
+ const fail=source.indexOf("UIA focus not confirmed");
+ assert.ok(focus>=0&&check>focus&&fail>check);
+ assert.match(source,/for \(\$shuviAttempt=0; \$shuviAttempt -lt 5;/);
+ assert.match(source,/Assert-ShuviNativeTarget -root \$root -element \$e/);
+ assert.match(source,/Keyboard focus read back/);
+});
+test("vertical scrolling checks boundary and actual direction, not just a ScrollPattern invocation",()=>{
+ const source=arm("UiScroll");
+ const before=source.indexOf("$shuviBeforePercent");
+ const boundary=source.indexOf("UIA scroll is already at the requested boundary");
+ const mutate=source.indexOf("$shuviScrollPattern.Scroll(");
+ const after=source.indexOf("$shuviAfterPercent");
+ const reject=source.indexOf("Native UIA scroll did not show");
+ assert.ok(before>0&&boundary>before&&mutate>boundary&&after>mutate&&reject>after);
+ assert.match(source,/\$shuviWantIncrement/);
+ assert.match(source,/Native vertical scroll movement verified/);
+ assert.match(source,/Assert-ShuviNativeTarget -root \$root -element \$e/);
+ assert.match(source,/for \(\$shuviAttempt=0; \$shuviAttempt -lt 5;/);
+});
+test("SelectionItem clicks independently read back actual IsSelected state",()=>{
+ const source=arm("UiClick");
+ const mutate=source.indexOf("$shuviSelectedItem.Select()");
+ const inspect=source.indexOf("$shuviSelectedItem.Current.IsSelected");
+ assert.ok(mutate>=0&&inspect>mutate);
+ assert.match(source,/SelectionItem state verified/);
+ assert.match(source,/UIA SelectionItem action has no confirmed selected state/);
+});
+test("InvokePattern cannot falsely assert a visible postcondition",()=>{
+ const source=arm("UiClick");
+ const invoke=source.indexOf("Invoke()");
+ const selected=source.indexOf("SelectionItemPattern]$pattern");
+ assert.ok(invoke>=0&&selected>invoke);
+ const invokeSection=source.slice(invoke,selected);
+ assert.doesNotMatch(invokeSection,/state verified|project saved|goal complete/i);
+});
+test("Native UIA approval ages out before durable execution while unrelated tools preserve global TTL",()=>{
+ const fn=rust.slice(rust.indexOf("async fn execute_action("),rust.indexOf("async fn execute_action(")+2600);
+ assert.match(fn,/native_uia_window_guard::expired_native_uia_binding/);
+ assert.match(fn,/prepared.native_uia_target.as_ref\(\)/);
+ assert.match(fn,/PENDING_ACTION_TTL_MS/);
+ assert.match(fn,/event: "denied"\.into\(\)/);
+ assert.doesNotMatch(fn,/execute_tool_with_action_id\(/);
+});
