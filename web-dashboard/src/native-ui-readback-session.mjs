@@ -43,10 +43,25 @@ export function auditUiReadback(pending,proposal,result,windowSession,nowMs=Date
  if(typeof result.stdout!=="string"||!result.stdout.trim()||
   result.stdout.length>250_000)return pending;
  try{
-  const rows=JSON.parse(result.stdout);
+  const parsed=JSON.parse(result.stdout);
+  // Real Windows ui_find pipes one selected object to ConvertTo-Json,
+  // whereas ui_discover serializes @($items) as an array. Only ui_find
+  // may supply the single-object form; this must not weaken other reads.
+  const rows=proposal.tool==="ui_find"&&!Array.isArray(parsed)?[parsed]:parsed;
   if(!Array.isArray(rows)||rows.length<1||rows.length>160)return pending;
   if(!rows.every(x=>x&&typeof x==="object"&&!Array.isArray(x)&&
-   (typeof x.Name==="string"||typeof x.AutomationId==="string")))return pending;
+   ((typeof x.Name==="string"&&x.Name.trim())||
+    (typeof x.AutomationId==="string"&&x.AutomationId.trim()))))return pending;
+  if(proposal.tool==="ui_find"){
+   const requestedName=proposal.arguments?.name;
+   const requestedId=proposal.arguments?.automation_id;
+   if((typeof requestedName!=="string"||!requestedName.trim())&&
+      (typeof requestedId!=="string"||!requestedId.trim()))return pending;
+   if(!rows.every(x=>
+     (!requestedName||(typeof x.Name==="string"&&
+       x.Name.toLocaleLowerCase("en-US")===requestedName.toLocaleLowerCase("en-US"))) &&
+     (!requestedId||(typeof x.AutomationId==="string"&&x.AutomationId===requestedId))))return pending;
+  }
  }catch{return pending;}
  return null; // readback performed, not effect verified
 }
