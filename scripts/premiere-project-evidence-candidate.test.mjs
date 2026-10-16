@@ -80,8 +80,10 @@ test("native action must carry an exact, separately audited same-graph UUID",()=
   const g=structuredClone(base);mutate(g);
   assert.equal(evaluate(g),null);
  }
- assert.equal(evaluate(graph(),PROPOSAL,result(),ACTION,TASK,false),null);
- assert.equal(evaluate(graph(),PROPOSAL,result(),ACTION,TASK,false),null);
+ assert.equal(evaluate(graph(),PROPOSAL,result(),OWNER,ACTION,TASK,false),null);
+ assert.equal(evaluate(graph(),PROPOSAL,result(),OWNER,"not-a-uuid",TASK,true),null);
+ assert.equal(evaluate(graph(),PROPOSAL,result(),OWNER,
+   "0f2977ac-4f61-4d9c-bf74-ecf8a3ae2172",TASK,true),null);
  assert.equal(evaluate(graph(),PROPOSAL,result(),ACTION,"fake-task",true),null);
  assert.equal(evaluate(graph(),{...PROPOSAL,task_step_id:"other"},result()),null);
 });
@@ -153,4 +155,18 @@ test("only task-local volatile native result is captured; final gate stays fail-
  const checkpoint=src.slice(src.indexOf("function currentCheckpoint(): SessionCheckpoint"),
   src.indexOf("function nativeWorkerDisplay(): string"));
  assert.doesNotMatch(checkpoint,/projectCreationEvidence/);
+});
+
+test("a forged candidate object cannot be used to advertise successful project evidence",()=>{
+ const real=evaluate();assert.ok(real);
+ for(const changes of [
+  {sha256Attested:true},{originalGoalVerified:true},{reopenVerified:true},
+  {hostIdentityObserved:false},{diskBytesObserved:false},
+  {sizeBytes:0},{projectPath:"..\\other.prproj"},
+  {actionId:"not-native"},{fingerprintAlgorithm:"sha256"},
+  {fnv1a64:"a".repeat(64)}
+ ]){
+  assert.equal(projectCandidateStatus({...real,...changes},TASK),
+   "No task-bound Premiere project creation proof candidate.");
+ }
 });
