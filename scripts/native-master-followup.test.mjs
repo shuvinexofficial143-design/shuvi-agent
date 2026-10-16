@@ -1223,3 +1223,36 @@ test("Shuvi39 chained native action requires fresh window and real UIA readback 
  assert.equal(s.calls.filter(x=>x.name==="execute_action").length,5);
  assert.equal(s.approval.hidden,false,"second mutation remains separately approval gated");
 });
+
+test("Shuvi39 rejects forged new native root on second audited discovery; no additional click staged",async()=>{
+ const prop=(tool,args)=>({content:tool,provider:"xkiro",model:"model/master",tool_proposal:{tool,arguments:args}});
+ const w=()=>prop("ui_windows",{});
+ const d=()=>prop("ui_discover",{window:"Adobe Premiere Pro 2026"});
+ const click=name=>prop("ui_click",{window:"Adobe Premiere Pro 2026",
+  name,automation_id:name==="New Project"?"new_project":"save"});
+ let discoveries=0;
+ const rows=(pid)=>JSON.stringify([
+  {Name:"New Project",AutomationId:"new_project",ControlType:"Button",IsEnabled:true,
+   IsOffscreen:false,ObservedWindowHwnd:1000,ObservedWindowPid:pid},
+  {Name:"Save",AutomationId:"save",ControlType:"Button",IsEnabled:true,
+   IsOffscreen:false,ObservedWindowHwnd:1000,ObservedWindowPid:pid}
+ ]);
+ const stdoutFor={
+  ui_windows:JSON.stringify([{Name:"Adobe Premiere Pro 2026",ProcessId:500,ProcessName:"Premiere",NativeWindowHandle:1000}]),
+  get ui_discover(){discoveries++;return rows(discoveries===1?500:501)}
+ };
+ const s=setup({first:w(),second:d(),following:[click("New Project"),w(),d(),click("Save")],stdoutFor});
+ await until(()=>s.transport.connected(),"native ready");
+ await s.transport.send("Premiere project then save","shuvi39-foreign-readback",0);
+ for(let i=1;i<=5;i++){
+  await until(()=>!s.allow.disabled,"approval "+i);
+  s.allow.listeners.get("click")();
+  if(i<5)await until(()=>s.staged.length===i+1,"next action "+i);
+ }
+ await until(()=>s.transport.getReplies("shuvi39-foreign-readback").some(x=>
+  /UIA target or readback not grounded|stale or invalid|fresh audited/.test(x)),
+  "foreign native root rejected");
+ assert.equal(discoveries,2);
+ assert.equal(s.staged.length,5,"sixth native UI click must not be prepared");
+ assert.equal(s.calls.filter(x=>x.name==="execute_action").length,5);
+});
