@@ -63,7 +63,7 @@ test("a project save needs BOTH native application identity and independently ha
   assert.ok(result.missing.some(x=>x.id==="new_project_identity"),request);
   assert.ok(result.missing.some(x=>x.id==="saved_project_location"),request);
   const message=summarizeMasterMissingProof(result);
-  assert.match(message,/\\.prproj/);
+  assert.match(message,/\.prproj/);
   assert.match(message,/Rust-rehashed/);
   assert.doesNotMatch(message,/COMPLETED/);
  }
