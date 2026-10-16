@@ -115,9 +115,7 @@ test("Rust capability preflight is read only, typed and does not grant approval"
    ["UiClick","ui_click"],["UiSetValue","ui_set_value"],["UiFocus","ui_focus"],
    ["UiScroll","ui_scroll"],["UiToggle","ui_toggle"],
    ["UiExpandCollapse","ui_expand_collapse"],["UiSendKeys","ui_send_keys"]]){
-  assert.match(prep,new RegExp("ToolAction::"+name+" \\{[\\s\\S]{0,130}?\\("+name.toLowerCase().replace("u","")+"?","i").test(prep)
-    ? new RegExp("ToolAction::"+name+" \\{")
-    : new RegExp("ToolAction::"+name+" \\{"));
+  assert.match(prep,new RegExp("ToolAction::"+name+" \\{"));
   assert.ok(prep.includes('"' + tool + '"'),"missing Rust allowlisted "+tool);
  }
  assert.match(guard,/fn capability_preflight\(tool: &str\)/);
