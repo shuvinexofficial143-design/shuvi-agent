@@ -21,6 +21,11 @@ pub(crate) struct VerifiedBlenderArtifact{
     pub path:String,
     pub sha256:String,
     pub bytes:u64,
+    // New supervised work binds the full exact approved declarative plan.
+    // Legacy v1 certificates without the field remain readable but MUST
+    // never be represented as having known approved-plan provenance.
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub plan_sha256:Option<String>,
 }
 fn valid_uuid(id:&str)->bool{
     uuid::Uuid::parse_str(id).map(|x|x.to_string()==id).unwrap_or(false)
@@ -31,6 +36,9 @@ fn validate(r:&VerifiedBlenderArtifact)->Result<(),String>{
         ||r.bytes==0||r.bytes>MAX_ARTIFACT
         ||r.sha256.len()!=64||!r.sha256.bytes().all(|b|
             b.is_ascii_digit()||(b'a'..=b'f').contains(&b))
+        ||r.plan_sha256.as_ref().is_some_and(|digest|
+            digest.len()!=64||!digest.bytes().all(|b|
+                b.is_ascii_digit()||(b'a'..=b'f').contains(&b)))
         ||r.path.chars().any(char::is_control)
         ||!Path::new(&r.path).is_absolute()
         ||!matches!(Path::new(&r.path).extension().and_then(|x|x.to_str())
@@ -153,9 +161,12 @@ pub(crate) fn record_verified(app:&AppHandle,action_id:&str,evidence:&Value)->Re
         .ok_or("Blender artifact SHA256 absent.")?;
     let bytes=artifact.get("bytes").and_then(Value::as_u64)
         .ok_or("Blender artifact byte count absent.")?;
+    let plan_sha256=evidence.get("approved_plan_sha256").and_then(Value::as_str)
+        .ok_or("Verified Blender output lacks exact approved plan fingerprint.")?;
     let record=VerifiedBlenderArtifact{
         version:1,action_id:action_id.to_string(),tool:"blender_run_plan".into(),
-        path:path.to_string(),sha256:expected_hash.to_ascii_lowercase(),bytes
+        path:path.to_string(),sha256:expected_hash.to_ascii_lowercase(),bytes,
+        plan_sha256:Some(plan_sha256.to_string())
     };
     create_at(&root(app)?,&record)
 }
@@ -192,8 +203,36 @@ mod tests{
         fs::write(&output,b"BLENDER WORKER OUTPUT").unwrap();
         let (bytes,sha256)=file_hash(&output).unwrap();
         let record=VerifiedBlenderArtifact{version:1,action_id:A.into(),tool:"blender_run_plan".into(),
-            path:output.to_str().unwrap().into(),sha256,bytes};
+            path:output.to_str().unwrap().into(),sha256,bytes,
+            plan_sha256:Some("a".repeat(64))};
         (dir,output,record)
+    }
+    #[test]
+    fn new_certificate_retains_exact_approved_plan_sha256_across_disk_reload(){
+        let (dir,output,record)=prepare();
+        create_at(&dir,&record).unwrap();
+        let after_restart=read_at(&dir,A).unwrap().unwrap();
+        assert_eq!(after_restart.plan_sha256,Some("a".repeat(64)));
+        let bad=VerifiedBlenderArtifact{plan_sha256:Some("g".repeat(64)),..record.clone()};
+        assert!(validate(&bad).is_err());
+        let none=VerifiedBlenderArtifact{plan_sha256:None,..record};
+        // Old on-disk records are schema-compatible but cannot claim
+        // they prove the full approved plan bytes.
+        assert!(validate(&none).is_ok());
+        assert!(none.plan_sha256.is_none());
+        let _=fs::remove_dir_all(&dir);let _=fs::remove_file(&output);
+    }
+    #[test]
+    fn historical_v1_certificate_without_plan_hash_is_readable_but_not_upgraded(){
+        let (dir,output,record)=prepare();
+        let old=serde_json::json!({"version":1,"actionId":A,"tool":"blender_run_plan",
+            "path":record.path,"sha256":record.sha256,"bytes":record.bytes});
+        let path=record_path(&dir,A).unwrap();
+        fs::write(&path,serde_json::to_vec(&old).unwrap()).unwrap();
+        let loaded=read_at(&dir,A).unwrap().unwrap();
+        assert!(loaded.plan_sha256.is_none());
+        verify_file_record(&loaded).unwrap();
+        let _=fs::remove_dir_all(&dir);let _=fs::remove_file(&output);
     }
     #[test]
     fn action_bound_disk_receipt_survives_restart_and_rejects_foreign_uuid(){
