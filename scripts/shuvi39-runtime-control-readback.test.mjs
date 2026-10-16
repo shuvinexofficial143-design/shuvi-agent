@@ -93,7 +93,8 @@ test("native agent captures controls before invalidation and attaches to execute
  const before=s.indexOf("const beforeControlObservation=observedControls.get(current.threadId)");
  const invalidated=s.indexOf("observedControls.set(current.threadId,null)",before);
  const executed=s.indexOf('await invoke<ActionResult>("execute_action"',before);
- const readback=s.indexOf("beforeWindowObservation,Date.now(),beforeControlObservation",executed);
- assert.ok(before>0&&invalidated>before&&executed>invalidated&&readback>executed);
+ const readback=s.indexOf("beforeWindowObservation,beforeUiEvidenceAtMs,beforeControlObservation",executed);
+ const timestamp=s.indexOf("const beforeUiEvidenceAtMs=Date.now()",before);
+ assert.ok(before>0&&timestamp>before&&invalidated>timestamp&&executed>invalidated&&readback>executed);
  assert.match(s.slice(executed,readback),/verifiedExecutionReceipt/);
 });
