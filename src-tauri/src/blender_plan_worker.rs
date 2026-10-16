@@ -117,6 +117,7 @@ pub(crate) fn execute(
     }
     if !script.is_file(){return Err("Fixed Blender plan adapter missing.".into());}
     let input_proof=blender_input_checkpoint::inspect(blend_file,expected_blend_sha256)?;
+    let plan_lineage=crate::blender_plan_lineage::derive(plan)?;
     let plan_bytes=serde_json::to_vec(plan).map_err(|_|"Invalid Blender JSON plan.".to_string())?;
     if plan_bytes.is_empty() || plan_bytes.len()>64*1024{
         return Err("Blender plan exceeds the bounded 64 KiB budget.".into());
@@ -221,5 +222,6 @@ pub(crate) fn execute(
         "plan_steps":value["executed_steps"],"allow_render":allow_render,
         "checkpoint_reopen":value["checkpoint_reopen"],
         "source_action_id":action_id,"artifact_manifest":manifest,
+        "approved_plan_lineage":plan_lineage,
         "input_checkpoint":input_proof.as_ref().map(|p|p.json())}))
 }
