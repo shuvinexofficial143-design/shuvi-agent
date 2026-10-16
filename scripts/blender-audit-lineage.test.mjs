@@ -22,6 +22,8 @@ test("approved Blender action stores exact source/output lineage in a durable na
     "blender_input_bytes",
     "blender_mesh_fingerprint",
     "blender_scene_fingerprint",
+    "blender_plan_sha256",
+    "blender_acceptance_stage",
     "mesh_geometry_verified",
     "source_action_id",
     "source_session_id"
@@ -40,7 +42,10 @@ test("three-stage reviewer requires all three successful native audit UUIDs",()=
   assert.match(branch,/evidence\.tool!="blender_session_plan"/);
   assert.match(branch,/evidence\.action_id\.as_deref\(\)!=Some\(id\)/);
   assert.match(branch,/blender_action_audit::verify_detail\(&evidence\.detail,receipt\)/);
-  assert.match(branch,/historical_owner_approval_reauthenticated"\]=json!\(true\)/);
+  assert.match(branch,/historical_owner_approval_reauthenticated"\]=json!\(false\)/);
+  assert.match(branch,/render_source_stage2_binding_proven"\]=json!\(false\)/);
+  assert.match(branch,/local_native_audit_correlated"\]=json!\(true\)/);
+  assert.match(branch,/local_audit_verified_executed_action_records"\]=json!\(3\)/);
   assert.match(branch,/local_audit_cryptographically_tamper_proof"\]=json!\(false\)/);
   assert.match(branch,/live_blender_runtime_verified_by_this_review"\]=json!\(false\)/);
 });
