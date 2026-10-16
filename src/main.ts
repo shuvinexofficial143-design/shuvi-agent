@@ -10,6 +10,8 @@ import {captureMasterOpeningObservation,verifyMasterOpeningDelivery} from "./mas
 import {assessMasterFinalOutcome,summarizeMasterMissingProof,masterGoalEvidenceContext} from "./master-final-outcome.mjs";
 import {inspectPremiereProjectCreateCandidate,projectCandidateStatus} from "./premiere-project-evidence-candidate.mjs";
 import type {PremiereProjectEvidenceCandidate} from "./premiere-project-evidence-candidate.mjs";
+import {bindNativePremiereShaProof,nativePremiereShaProgress} from "./native-project-sha-proof.mjs";
+import type {NativePremiereShaReceipt,BoundPremiereProjectShaProof} from "./native-project-sha-proof.mjs";
 import type {AuditedOpeningObservation} from "./master-goal-window-acceptance.mjs";
 import {nativeTaskDeliveryClaims} from "./native-delivery-claims.mjs";
 import type {
@@ -108,6 +110,7 @@ let openingWindowObservation:AuditedOpeningObservation|null=null;
 // Only a volatile, task-bound Team 40 interoperability candidate. The
 // main Rust task-delivery allowlist does NOT attest Premiere .prproj bytes.
 let projectCreationEvidence:PremiereProjectEvidenceCandidate|null=null;
+let projectShaFileProof:BoundPremiereProjectShaProof|null=null;
 // Mirrors owner-issued Rust grant IDs for exact read arguments. Local state
 // alone is NEVER authority to dispatch a consented follow-up action.
 const nativeReadGrantIds=new Map<string,string>();
@@ -119,6 +122,7 @@ function rotatePermissionScope():void{
  const oldId=activePermissionScope.taskId;
  openingWindowObservation=null;
  projectCreationEvidence=null;
+ projectShaFileProof=null;
  revokeTaskScope(activePermissionScope);
  nativeReadGrantIds.clear();
  const revokeButton=document.querySelector<HTMLButtonElement>("#revokeTaskReadGrants");
@@ -1247,7 +1251,11 @@ async function continueAfterOutcome(): Promise<void> {
       openingWindowObservation,activePermissionScope.taskId);
     if(goalAcceptance.requiresIndependentAcceptance&&!openingAcceptance.verified){
       if(projectCreationEvidence&&projectCreationEvidence.taskId===activePermissionScope.taskId){
-        messages.push({role:"assistant",content:projectCandidateStatus(projectCreationEvidence,activePermissionScope.taskId)});
+        messages.push({role:"assistant",content:
+          projectCandidateStatus(projectCreationEvidence,activePermissionScope.taskId)+
+          (projectShaFileProof
+            ? " "+nativePremiereShaProgress(projectShaFileProof,activePermissionScope.taskId)
+            : " Independent Rust SHA-256 file readback unavailable; project completion not claimed.")});
         renderMessages();
       }
       await stopAgentForSafety(summarizeMasterMissingProof(finalOutcome));
@@ -1618,6 +1626,7 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
     !["ui_windows","list_processes","ui_find","ui_discover",
       "premiere_context","premiere_bridge_status"].includes(proposal.tool)){
     projectCreationEvidence=null;
+    projectShaFileProof=null;
   }
   // A new window read replaces older observed proof, even if it fails.
   // Non-read native actions may mutate the UI and invalidate the old window.
@@ -1666,6 +1675,34 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
       projectCreationEvidence=inspectPremiereProjectCreateCandidate(
         orchestration.owner_request,orchestration.task_graph,proposal,result,
         actionId,permissionTaskId,true);
+      const candidate=projectCreationEvidence;
+      if(candidate){
+        // Rust does a separate BOUNDED read-only SHA-256 over the actual
+        // approved .prproj. Only the exact previous owner-approved create
+        // audit, its path, and the native scheduler can authorize the read.
+        // The Team 40 executor is on another unmerged branch; this fails
+        // closed until the designated integrator combines those code paths.
+        try{
+          const fileProof=await invoke<NativePremiereShaReceipt>(
+            "verify_premiere_project_sha256",{
+              actionId:candidate.actionId,
+              projectPath:candidate.projectPath,
+              expectedFnv1a64:candidate.fnv1a64,
+              expectedSizeBytes:candidate.sizeBytes
+            });
+          if(activePermissionScope.taskId===permissionTaskId&&
+             projectCreationEvidence===candidate&&!cancelRequested&&
+             !activePermissionScope.revoked&&!cancelledByUser){
+            projectShaFileProof=bindNativePremiereShaProof(
+              candidate,fileProof,permissionTaskId);
+          }
+        }catch{
+          // A failed verification can mean a changed file or missing native
+          // Team 40 integration. Never retry an uncertain mutation or
+          // manufacture an SHA-256 from the weaker FNV-1a64 value.
+          projectShaFileProof=null;
+        }
+      }
     }
     if(proposal.tool==="ui_windows"&&receiptMatches&&!cancelledByUser&&
        activePermissionScope.taskId===permissionTaskId&&!activePermissionScope.revoked&&!cancelRequested){
