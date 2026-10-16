@@ -1969,7 +1969,7 @@ async function runAgentStep(): Promise<void> {
         model: selectedRoute.model,
         base_url: selectedRoute.base_url || null,
         messages: providerMessageWindow(messages),
-        orchestration_context: workerContext
+        orchestration_context: workerContext+"\n"+masterGoalEvidenceContext(orchestration.owner_request)
       }
     });
 
