@@ -1,5 +1,5 @@
 import type {NativeSchedule,NativeTaskDelivery} from "./types";
-import type {AuditedOpeningObservation} from "./master-goal-window-acceptance";
+import type {AuditedOpeningObservation} from "./master-goal-window-acceptance.mjs";
 export type MasterGoalProofRequirement={
  id:string; reason:string
 };
