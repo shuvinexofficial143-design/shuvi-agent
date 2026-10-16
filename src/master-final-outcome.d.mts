@@ -15,3 +15,4 @@ export function assessMasterFinalOutcome(
  taskId:string
 ):MasterFinalOutcome;
 export function summarizeMasterMissingProof(outcome:MasterFinalOutcome):string;
+export function masterGoalEvidenceContext(owner:string|null):string;
