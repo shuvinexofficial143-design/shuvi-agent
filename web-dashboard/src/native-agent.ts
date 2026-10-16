@@ -732,6 +732,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      }
     }
     const beforeWindowObservation=observedWindows.get(current.threadId)??null;
+    const beforeControlObservation=observedControls.get(current.threadId)??null;
     // Crash boundary: after this durable marker, the action MUST be treated
     // as possibly executed until a matching Rust audit proves otherwise.
     // If this write fails, no execute_action IPC is sent.
@@ -805,7 +806,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      }
      if(needsUiReadback(result.tool)&&current.proposal){
       pendingUiReadback.set(current.threadId,newPendingUiReadback(
-       current.action.id,current.proposal,beforeWindowObservation));
+       current.action.id,current.proposal,beforeWindowObservation,Date.now(),beforeControlObservation));
      }else if((result.tool==="ui_find"||result.tool==="ui_discover")&&current.proposal){
       const prior=pendingUiReadback.get(current.threadId)??null;
       if(prior)pendingUiReadback.set(current.threadId,auditUiReadback(
