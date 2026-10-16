@@ -5,7 +5,7 @@ use std::{fs::{self,OpenOptions,File},io::{Read,Write},path::{Path,PathBuf},proc
 use serde_json::{Value,json};
 use sha2::{Digest,Sha256};
 use uuid::Uuid;
-use crate::{ActionState,register_managed_process,unregister_managed_process,terminate_managed_process_tree,terminate_registered_process_tree,managed_process_identity_matches,current_runtime_status,bounded_child};
+use crate::{blender_input_checkpoint,ActionState,register_managed_process,unregister_managed_process,terminate_managed_process_tree,terminate_registered_process_tree,managed_process_identity_matches,current_runtime_status,bounded_child};
 
 struct PlanFile(PathBuf);
 impl Drop for PlanFile {fn drop(&mut self){let _=fs::remove_file(&self.0);}}
@@ -105,7 +105,7 @@ pub(crate) fn verify_output(output:&Value,root:&Path)->Result<(),String>{
 
 pub(crate) fn execute(
     python_exe:&str,blender_exe:&str,blend_file:Option<&str>,
-    output_dir:&str,plan:&Value,allow_render:bool,
+    expected_blend_sha256:Option<&str>,output_dir:&str,plan:&Value,allow_render:bool,
     script:&Path,work_dir:&Path,state:&ActionState,execution_action_id:Option<&str>
 )->Result<Value,String>{
     // Lineage must be checked BEFORE launching Blender, not after mutations.
@@ -116,6 +116,7 @@ pub(crate) fn execute(
         return Err("Blender native action UUID must be canonical.".into());
     }
     if !script.is_file(){return Err("Fixed Blender plan adapter missing.".into());}
+    let input_proof=blender_input_checkpoint::inspect(blend_file,expected_blend_sha256)?;
     let plan_bytes=serde_json::to_vec(plan).map_err(|_|"Invalid Blender JSON plan.".to_string())?;
     if plan_bytes.is_empty() || plan_bytes.len()>64*1024{
         return Err("Blender plan exceeds the bounded 64 KiB budget.".into());
@@ -133,7 +134,10 @@ pub(crate) fn execute(
     command.arg("-B").arg(script).arg("--python-plan").arg(&path)
         .arg("--blender-exe").arg(blender_exe).arg("--output-dir").arg(output_dir)
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    if let Some(input)=blend_file{command.arg("--blend-file").arg(input);}
+    if let Some(ref input)=input_proof{
+        command.arg("--blend-file").arg(&input.canonical_path)
+            .arg("--expected-blend-sha256").arg(&input.sha256);
+    }
     if allow_render{command.arg("--allow-render");}
     let mut child=command.spawn().map_err(|_|"Blender plan launcher could not be started.".to_string())?;
     let pid=child.id();
@@ -203,11 +207,19 @@ pub(crate) fn execute(
         ||value.get("destructive_allowed").and_then(Value::as_bool)!=Some(false)
         ||value.get("render_approved").and_then(Value::as_bool)!=Some(allow_render)
     {return Err("Blender plan lacks authenticated complete readback evidence.".into());}
+    if value.get("input_checkpoint")!=Some(&input_proof.as_ref()
+        .map(|source|source.json()).unwrap_or(Value::Null)){
+        return Err("One-off Blender source checkpoint receipt differs from verified input.".into());
+    }
+    if let Some(ref input)=input_proof{
+        blender_input_checkpoint::still_current(input)?;
+    }
     let manifest=crate::blender_artifact_manifest::build(&value,Path::new(output_dir),action_id,None)?;
     drop(guard);
     Ok(json!({"status":"verified","worker":"blender","full_plan_completed":true,
         "artifact":value["artifact"],"verified_by_native_sha256":true,
         "plan_steps":value["executed_steps"],"allow_render":allow_render,
         "checkpoint_reopen":value["checkpoint_reopen"],
-        "source_action_id":action_id,"artifact_manifest":manifest}))
+        "source_action_id":action_id,"artifact_manifest":manifest,
+        "input_checkpoint":input_proof.as_ref().map(|p|p.json())}))
 }
