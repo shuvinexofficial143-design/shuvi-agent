@@ -1,5 +1,6 @@
 import {currentObservedWindows} from "./native-window-observation-session.mjs";
 import {observedControlRuntimeId,parseRuntimeId} from "./native-ui-control-session.mjs";
+import {normalizedProcessStartTicks} from "./native-window-target-guard.mjs";
 
 // A native executed action is *not* proof of an intended UI effect.
 // After a mutation, require independently audited, read-only UIA inspection
@@ -27,11 +28,13 @@ export function newPendingUiReadback(actionId,proposal,windowSession,nowMs=Date.
  const rows=currentObservedWindows(windowSession,nowMs);
  const matching=title?findUnique(rows,title):[];
  if(matching.length!==1)return Object.freeze({version:1,sourceActionId:actionId,
-  title:title||"",hwnd:null,pid:null,controlName,automationId,controlRuntimeId,
+  title:title||"",hwnd:null,pid:null,processStartTicks:null,controlName,automationId,controlRuntimeId,
   mutationTool:proposal.tool,expectedExpansion:proposal?.arguments?.action??null,
   observedAtMs:nowMs,readbackRequired:true});
  return Object.freeze({version:1,sourceActionId:actionId,title:matching[0].title,
-  hwnd:matching[0].hwnd,pid:matching[0].pid,controlName,automationId,controlRuntimeId,
+  hwnd:matching[0].hwnd,pid:matching[0].pid,
+  processStartTicks:matching[0].processStartTicks??null,
+  controlName,automationId,controlRuntimeId,
   mutationTool:proposal.tool,expectedExpansion:proposal?.arguments?.action??null,
   observedAtMs:nowMs,readbackRequired:true});
 }
@@ -52,7 +55,9 @@ export function auditUiReadback(pending,proposal,result,windowSession,nowMs=Date
  if(!title||title.toLocaleLowerCase("en-US")!==pending.title.toLocaleLowerCase("en-US")||
   !Number.isSafeInteger(pending.hwnd)||!Number.isSafeInteger(pending.pid))return pending;
  const matches=findUnique(currentObservedWindows(windowSession,nowMs),title);
- if(matches.length!==1||matches[0].hwnd!==pending.hwnd||matches[0].pid!==pending.pid)return pending;
+ if(matches.length!==1||matches[0].hwnd!==pending.hwnd||matches[0].pid!==pending.pid||
+  (pending.processStartTicks!=null&&
+   matches[0].processStartTicks!==pending.processStartTicks))return pending;
  // No empty/unparseable read is evidence. Do not count a model assertion.
  if(typeof result.stdout!=="string"||!result.stdout.trim()||
   result.stdout.length>250_000)return pending;
@@ -72,7 +77,11 @@ export function auditUiReadback(pending,proposal,result,windowSession,nowMs=Date
   if(!rows.every(x=>Number.isSafeInteger(x.ObservedWindowHwnd)&&
    Number.isSafeInteger(x.ObservedWindowPid)&&
    x.ObservedWindowHwnd===pending.hwnd&&
-   x.ObservedWindowPid===pending.pid))return pending;
+   x.ObservedWindowPid===pending.pid&&
+   (pending.processStartTicks==null||
+    normalizedProcessStartTicks(x.ObservedWindowProcessStartTicks)===pending.processStartTicks)&&
+   (x.ObservedWindowProcessStartTicks==null||
+    normalizedProcessStartTicks(x.ObservedWindowProcessStartTicks)!==null)))return pending;
   // The verified new observation must contain the SAME unique control as
   // the previous mutation. A generic ui_discover showing unrelated buttons
   // cannot silently unlock a second mutation on a different UIA element.

@@ -1,4 +1,4 @@
-import {observedWindowInventory} from "./native-window-target-guard.mjs";
+import {observedWindowInventory,normalizedProcessStartTicks} from "./native-window-target-guard.mjs";
 
 // WindowObservation v1: read-only evidence correlated with one Rust-audited
 // ui_windows action. This is NOT an approval, capability or executable selector.
@@ -46,14 +46,17 @@ export function newAuditedWindowObservation(result,actionId,observedAtMs=Date.no
  const seen=new Set();
  const identities=[];
  for(const window of windows){
-  const {title,process,pid,hwnd}=window;
+  const {title,process,pid,hwnd,processStartTicks}=window;
   if(typeof title!=="string"||!title||typeof process!=="string"||
      !Number.isSafeInteger(pid)||pid<=0||
      !Number.isSafeInteger(hwnd)||hwnd<=0)return null;
   const key=String(hwnd);
   if(seen.has(key))return null; // inconsistent/duplicate HWND cannot ground any target
   seen.add(key);
-  identities.push(Object.freeze({title,process,pid,hwnd,app:observedApp(process,title)}));
+  if(processStartTicks!==undefined&&normalizedProcessStartTicks(processStartTicks)===null)return null;
+  identities.push(Object.freeze({title,process,pid,hwnd,
+   ...(processStartTicks===undefined?{}:{processStartTicks}),
+   app:observedApp(process,title)}));
  }
  return Object.freeze({
   version:1,sourceTool:"ui_windows",sourceActionId:actionId,
@@ -80,6 +83,7 @@ export function currentObservedWindows(session,nowMs=Date.now()){
  // Keep the validated immutable identity in place; do not rehydrate names
  // from the model or from an older chat/thread.
  if(!session.windows.every(x=>x&&typeof x.title==="string"&&x.title.length>0&&
-    Number.isSafeInteger(x.pid)&&x.pid>0&&Number.isSafeInteger(x.hwnd)&&x.hwnd>0))return [];
+    Number.isSafeInteger(x.pid)&&x.pid>0&&Number.isSafeInteger(x.hwnd)&&x.hwnd>0&&
+    (x.processStartTicks===undefined||normalizedProcessStartTicks(x.processStartTicks)!==null)))return [];
  return session.windows;
 }

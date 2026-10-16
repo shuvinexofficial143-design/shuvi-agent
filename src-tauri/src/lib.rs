@@ -10724,6 +10724,17 @@ Write-Output 'SHUVI_WHATSAPP_DESKTOP_LAUNCH_REQUESTED'
         }
         ToolAction::UiWindows => {
             let script = r#"Add-Type -AssemblyName UIAutomationClient
+# A read-only Win32 check ties each UIA row to a real, still-live process.
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class Shuvi39WindowListWin32 {
+ [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+ public static extern bool IsWindow(IntPtr hwnd);
+ [DllImport("user32.dll")]
+ public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+}
+'@ -ErrorAction Stop
 $desktop = [System.Windows.Automation.AutomationElement]::RootElement
 $windows = $desktop.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)
 $items = @()
@@ -10733,12 +10744,32 @@ for ($i = 0; $i -lt [Math]::Min($windows.Count, 100); $i++) {
         $title = [string]$e.Current.Name
         if ([string]::IsNullOrWhiteSpace($title)) { continue }
         $pidValue = [int]$e.Current.ProcessId
-        $processName = ''
-        try { $processName = [string](Get-Process -Id $pidValue -ErrorAction Stop).ProcessName } catch {}
+        $handle = [IntPtr]([int64]$e.Current.NativeWindowHandle)
+        if ($pidValue -le 0 -or $handle -eq [IntPtr]::Zero -or
+            -not [Shuvi39WindowListWin32]::IsWindow($handle)) { continue }
+        [uint32]$nativePid = 0
+        [void][Shuvi39WindowListWin32]::GetWindowThreadProcessId($handle, [ref]$nativePid)
+        if ($nativePid -ne [uint32]$pidValue) { continue }
+        # The OS birth tick is a DECIMAL STRING: JSON numbers lose i64 precision in JS.
+        $process = Get-Process -Id $pidValue -ErrorAction Stop
+        [int64]$birthTicks = $process.StartTime.ToUniversalTime().Ticks
+        if ($birthTicks -le 0) { continue }
+        $processName = [string]$process.ProcessName
+        $className = [string]$e.Current.ClassName
+        [uint32]$nativePidAfter = 0
+        [void][Shuvi39WindowListWin32]::GetWindowThreadProcessId($handle, [ref]$nativePidAfter)
+        $processAfter = Get-Process -Id $pidValue -ErrorAction Stop
+        [int64]$birthTicksAfter = $processAfter.StartTime.ToUniversalTime().Ticks
+        if ($nativePidAfter -ne [uint32]$pidValue -or
+            -not [Shuvi39WindowListWin32]::IsWindow($handle) -or
+            [int]$e.Current.ProcessId -ne $pidValue -or
+            [string]$e.Current.Name -cne $title -or
+            $birthTicksAfter -ne $birthTicks) { continue }
         $items += [PSCustomObject]@{
             Name = $title; ProcessId = $pidValue; ProcessName = $processName
-            NativeWindowHandle = [int]$e.Current.NativeWindowHandle
-            ClassName = [string]$e.Current.ClassName
+            NativeWindowHandle = [int64]$handle
+            ProcessStartTicks = $birthTicks.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+            ClassName = $className
         }
     } catch {}
 }
@@ -10781,6 +10812,7 @@ for ($i=0; $i -lt [Math]::Min($all.Count, 1200); $i++) {{
             # observation was made in the same HWND/PID as the prior action.
             ObservedWindowHwnd=[int64]$root.Current.NativeWindowHandle
             ObservedWindowPid=[int]$root.Current.ProcessId
+            ObservedWindowProcessStartTicks=$shuviReadStartTicks.ToString([System.Globalization.CultureInfo]::InvariantCulture)
             Bounds=[string]$e.Current.BoundingRectangle.ToString()
         }}
         # All applications share UIA roles. Prioritize actionable elements;
@@ -10820,6 +10852,11 @@ ConvertTo-Json -InputObject @($items) -Compress -Depth 3"#);
 {condition}
 {root_script}
 {attestation}
+# Global ui_find remains an unbound read, not an app-scoped generation proof.
+$shuviObservedStartTicks = $null
+if ($null -ne (Get-Variable -Name shuviReadStartTicks -ErrorAction SilentlyContinue)) {{
+    $shuviObservedStartTicks = $shuviReadStartTicks.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+}}
 $matches = Resolve-ShuviUiMatches -root $root -condition $condition
 $items = @()
 for ($i = 0; $i -lt [Math]::Min($matches.Count, 25); $i++) {{
@@ -10877,6 +10914,7 @@ for ($i = 0; $i -lt [Math]::Min($matches.Count, 25); $i++) {{
         VerticalScrollPercent = $shuviVerticalPercent
         ObservedWindowHwnd = [int64]$root.Current.NativeWindowHandle
         ObservedWindowPid = [int]$root.Current.ProcessId
+        ObservedWindowProcessStartTicks = $shuviObservedStartTicks
         Bounds = $e.Current.BoundingRectangle.ToString()
     }}
 }}

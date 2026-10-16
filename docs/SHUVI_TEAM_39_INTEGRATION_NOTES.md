@@ -596,3 +596,39 @@ Run only with separate owner consent on a disposable desktop/test fixture.
 - Source Tested: list the **exact commit SHA** and CI jobs only after they complete.
 - Live Verified: **NO**. Native desktop acceptance requires separate owner permission.
 - Blocked: live Windows test access and owner permission; source development unblocked.
+
+## Milestone 11 — End-to-end process-generation evidence across audited window/control reads
+
+- Native `ui_windows` now derives a trusted process creation time from Windows
+  `Get-Process.StartTime.ToUniversalTime().Ticks` for each window, bracketed by
+  Win32 HWND/PID and UIA identity checks. Inaccessible or restarted processes
+  are not exported as trusted observation rows. The tick is a decimal **string**
+  so JSON/JavaScript never round a 64-bit Windows time.
+- Explicit named-window `ui_discover` and `ui_find` now attach their own OS
+  process birth tick to each bounded control row. The existing named-window
+  native before/after Win32 and process-generation attestation remains
+  mandatory; desktop-global unbound `ui_find` has no app-generation claim.
+- Native Dashboard verified `ui_windows` observations preserve the bounded
+  generation string in immutable task-local identities. Malformed/unsafe
+  numeric/scientific, negative and out-of-range tick inputs reject the *whole*
+  window inventory rather than accepting an ambiguous subset.
+- Audited UI control discovery and post-action readback bind the same
+  window HWND, PID, process generation and previous control RuntimeId.
+  A restarted application that recycles both HWND and PID can no longer
+  clear pending readback on its new process generation merely by presenting
+  the same title, AutomationId and RuntimeId.
+- Existing historical fixture rows without process-generation fields retain
+  compatibility and MUST NOT be represented as process-generation attested.
+  Current native Windows production output supplies this evidence or fails
+  closed on non-readable process creation time.
+- `scripts/shuvi39-window-generation-end-to-end.test.mjs` covers opaque
+  signed 64-bit tokens, mismatched window/control/readback, process reuse,
+  invalid/native-unreadable evidence, and the native source handoff.
+- Shared-file integration overlap: only Team39 UI read-only action arms inside
+  `src-tauri/src/lib.rs`, plus Team39 dashboard observation/readback helpers.
+  No owner approval, action UUID, Rust scheduler/lease, journal, auto-retry
+  or other teams' branches were changed.
+- **Status:** source implementation; exact HEAD CI must pass before
+  claiming source-tested. Windows live OS/UIA acceptance is **not performed**.
+  Native API races remain nontransactional and require disposable Windows
+  host testing with separate owner permission.

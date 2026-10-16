@@ -1,5 +1,6 @@
 import {cleanObservedLabel} from "./native-observation-text.mjs";
 import {currentObservedWindows} from "./native-window-observation-session.mjs";
+import {normalizedProcessStartTicks} from "./native-window-target-guard.mjs";
 
 // The native audit is checked by native-agent.ts BEFORE constructing this.
 // An observed UI control is not a native capability or permission to act.
@@ -49,7 +50,11 @@ function parseControls(result,expectedWindow){
   if(!expectedWindow||!Number.isSafeInteger(row.ObservedWindowHwnd)||
    !Number.isSafeInteger(row.ObservedWindowPid)||
    row.ObservedWindowHwnd!==expectedWindow.hwnd||
-   row.ObservedWindowPid!==expectedWindow.pid)return null;
+   row.ObservedWindowPid!==expectedWindow.pid||
+   (expectedWindow.processStartTicks!==undefined&&
+    normalizedProcessStartTicks(row.ObservedWindowProcessStartTicks)!==expectedWindow.processStartTicks)||
+   (row.ObservedWindowProcessStartTicks!=null&&
+    normalizedProcessStartTicks(row.ObservedWindowProcessStartTicks)===null))return null;
   const id=row.AutomationId==null||row.AutomationId===""?"":allowedString(row.AutomationId,180);
   const name=row.Name==null||row.Name===""?"":allowedString(row.Name,180);
   const role=allowedString(row.ControlType,100);
@@ -79,6 +84,7 @@ export function newAuditedControlObservation(result,actionId,requestedWindow,win
   version:1,sourceTool:"ui_discover",sourceActionId:actionId,
   windowSourceActionId:windowSession.sourceActionId,
   title:win.title,pid:win.pid,hwnd:win.hwnd,
+  ...(win.processStartTicks===undefined?{}:{processStartTicks:win.processStartTicks}),
   observedAtMs:nowMs,expiresAtMs:nowMs+MAX_CONTROL_AGE_MS,controls
  });
 }
@@ -91,6 +97,7 @@ export function currentObservedControls(snapshot,windowSession,nowMs=Date.now())
   snapshot.windowSourceActionId!==windowSession?.sourceActionId)return [];
  const win=findWindow(currentObservedWindows(windowSession,nowMs),snapshot.title);
  if(!win||win.hwnd!==snapshot.hwnd||win.pid!==snapshot.pid||
+  (snapshot.processStartTicks??null)!==(win.processStartTicks??null)||
   !Array.isArray(snapshot.controls)||snapshot.controls.length===0)return [];
  return snapshot.controls;
 }

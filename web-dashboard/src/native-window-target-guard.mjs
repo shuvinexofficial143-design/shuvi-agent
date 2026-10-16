@@ -15,6 +15,11 @@ const processConflict=row=>{
  return titleApps.length>0&&processApps.length>0&&
   (titleApps.length!==1||processApps.length!==1||titleApps[0]!==processApps[0]);
 };
+// OS creation time is opaque i64 evidence: NEVER parse as a JS Number.
+export function normalizedProcessStartTicks(value){
+ if(typeof value!=="string"||! /^[1-9][0-9]{0,18}$/.test(value))return null;
+ try{return BigInt(value)<=9223372036854775807n?value:null;}catch{return null;}
+}
 const MUTATIONS=new Set(["ui_click","ui_set_value","ui_send_keys","ui_toggle","ui_focus","ui_scroll","ui_expand_collapse"]);
 export function observedWindowInventory(result,audited){
  if(audited!==true||result?.success!==true||result.tool!=="ui_windows")return null;
@@ -30,12 +35,16 @@ export function observedWindowInventory(result,audited){
   if(!rows.every(x=>x&&typeof x==="object"&&!Array.isArray(x)&&
    typeof x.Name==="string"&&cleanObservedLabel(x.Name,180)&&
    Number.isSafeInteger(x.ProcessId)&&x.ProcessId>0&&
-   Number.isSafeInteger(x.NativeWindowHandle)&&x.NativeWindowHandle>0))return [];
+   Number.isSafeInteger(x.NativeWindowHandle)&&x.NativeWindowHandle>0&&
+   (!Object.hasOwn(x,"ProcessStartTicks")||
+    normalizedProcessStartTicks(x.ProcessStartTicks)!==null)))return [];
   // A single native HWND must not appear twice, even with different titles.
   // Otherwise one apparent unique label might resolve to contradictory rows.
   if(new Set(rows.map(x=>x.NativeWindowHandle)).size!==rows.length)return [];
   return rows.map(x=>({title:cleanObservedLabel(x.Name,180),pid:x.ProcessId,hwnd:x.NativeWindowHandle,
-   process:typeof x.ProcessName==="string"?cleanObservedLabel(x.ProcessName,120):""}));
+   process:typeof x.ProcessName==="string"?cleanObservedLabel(x.ProcessName,120):"",
+   ...(Object.hasOwn(x,"ProcessStartTicks")?
+    {processStartTicks:normalizedProcessStartTicks(x.ProcessStartTicks)}:{})}));
  }catch{return [];}
 }
 export function checkObservedMutationTarget(proposal,observed){
