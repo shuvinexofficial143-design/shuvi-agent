@@ -217,7 +217,8 @@ test("Focus readback demands actual keyboard focus and Scroll requires measurabl
  const focus=newPendingUiReadback(C,action("New Project","new_project",WIN,"ui_focus"),w,T+2000);
  const scroll=newPendingUiReadback(C,action("New Project","new_project",WIN,"ui_scroll"),w,T+2000);
  const result=(patch)=>({tool:"ui_find",success:true,exit_code:0,stdout:JSON.stringify({...controls[0],...patch})});
- assert.equal(auditUiReadback(focus,selector,result({HasKeyboardFocus:false}),w,T+3000),focus);
+ assert.equal(auditUiReadback(focus,selector,result({HasKeyboardFocus:false}),w,T+3000),null);
+ assert.equal(auditUiReadback(focus,selector,result({HasKeyboardFocus:null}),w,T+3000),focus);
  assert.equal(auditUiReadback(focus,selector,result({HasKeyboardFocus:true}),w,T+3000),null);
  for(const bad of [undefined,null,-1,101,NaN,"50"])
   assert.equal(auditUiReadback(scroll,selector,result({VerticalScrollPercent:bad}),w,T+3000),scroll);
