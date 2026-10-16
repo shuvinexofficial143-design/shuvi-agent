@@ -357,7 +357,7 @@ Transcript rebuild handles explicit interior text removal by creating and insert
 - premiere_insert_mogrt_library: {"library_name":"library","element_name":"template","seconds":0,"video_track":0,"audio_track":0}
 - premiere_import_media: {"paths":["absolute media path 1","absolute media path 2"],"expected_sha256":["64-hex source1","64-hex source2"]} — optional for ordinary files; REQUIRED for approved cross-worker media; hashes strictly align with paths
 - premiere_create_selective_srt: {"request":{"schema_version":1,"output":"new absolute .srt","duration_seconds":30,"cues":[{"start_seconds":0,"end_seconds":1,"text":"selected words","selected":true}],"source_transcript_sha256":null}} — owner-approved create-new only, SHA256-verified local subtitle interchange; DOES NOT add Premiere caption-track text
-- premiere_import_caption_source: {"path":"absolute .srt or .vtt path"}
+- premiere_import_caption_source: {"path":"absolute .srt or .vtt path","expected_sha256":"optional exact 64-hex SHA256 from inspected/selective SRT"} — checkpoint + stable source-hash readback; native import does NOT automatically create a caption track or save .prproj
 - premiere_create_sequence_from_media: {"name":"sequence name","paths":["absolute media path 1","absolute media path 2"],"expected_sha256":["64-hex source1","64-hex source2"]} — optional for ordinary files, required for verified worker sources
 - premiere_create_subsequence: {"targets":[{"kind":"video|audio","track":0,"clip_index":0}]}
 - premiere_replace_with_subsequence: {"source":{"kind":"video","track":0,"clip_index":0,"signature":"exact inspected targetSignature"},"expected":"exact one-source expectation"}
@@ -937,7 +937,7 @@ enum ToolAction {
     PremiereInsertVerifiedMogrt { request:premiere_mogrt_handoff::InsertRequest },
     PremiereInsertMogrtLibrary { library_name: String, element_name: String, seconds: f64, video_track: u32, audio_track: u32 },
     PremiereImportMedia { paths: Vec<String>, expected_sha256: Option<Vec<String>> },
-    PremiereImportCaptionSource { path: String },
+    PremiereImportCaptionSource { path: String, expected_sha256:Option<String> },
     PremiereCreateSequenceFromMedia { name: String, paths: Vec<String>, expected_sha256: Option<Vec<String>> },
     PremiereCreateSubsequence { targets: Vec<Value> },
     PremiereReplaceWithSubsequence { source: premiere_layering::SourceTarget },
@@ -7190,10 +7190,15 @@ fn stage_tool(
             if !Path::new(&path).is_file() || !matches!(Path::new(&path).extension().and_then(|v|v.to_str()).map(|v|v.to_ascii_lowercase()).as_deref(),Some("srt")|Some("vtt")) {
                 return Err("Caption source must be an existing absolute .srt or .vtt file.".into());
             }
+            let expected_sha256=arg_optional_string(&proposal.arguments,"expected_sha256");
+            if expected_sha256.as_ref().is_some_and(|v|
+                v.len()!=64||!v.bytes().all(|b|b.is_ascii_hexdigit())) {
+                return Err("Caption source expected SHA256 must contain 64 hexadecimal digits.".into());
+            }
             (
-                ToolAction::PremiereImportCaptionSource{path:path.clone()},
+                ToolAction::PremiereImportCaptionSource{path:path.clone(),expected_sha256},
                 "Import Premiere caption source".into(),
-                format!("Import caption source as a native Premiere project item and verify its path: {path}"),
+                format!("Import exact caption source with independent before/after SHA256 and Premiere native item readback: {path}; creates no caption-track text or implicit project save."),
                 RiskLevel::High,
             )
         }
@@ -16769,14 +16774,31 @@ try {{
                     "retry_automatically":false}).to_string(),
                 stderr:String::new(),exit_code:Some(0)})
         }
-        ToolAction::PremiereImportCaptionSource {path} => {
+        ToolAction::PremiereImportCaptionSource {path,expected_sha256} => {
+            let before=premiere_media_relink::fingerprint(&path)?;
+            if before.size_bytes>1024*1024 {
+                return Err("Caption SRT/VTT must be at most 1 MiB for bounded import proof.".into());
+            }
+            if expected_sha256.as_ref().is_some_and(|sha|
+                !before.sha256.eq_ignore_ascii_case(sha)) {
+                return Err("Caption source SHA256 changed before Adobe import; no mutation attempted.".into());
+            }
             let checkpoint=backup_premiere_project(&premiere_bridge).await?;
             let value=premiere_bridge.request("import_caption_source",json!({"path":path}),Duration::from_secs(30)).await?;
+            let after=premiere_media_relink::fingerprint(&path);
+            let unchanged=after.as_ref().is_ok_and(|after|premiere_media_relink::same_file(&before,after));
             let status=value.get("verificationStatus").and_then(Value::as_str);
-            let verified=matches!(status,Some("verified_caption_source_import")|Some("verified_existing_source"))
+            let native_observed=matches!(status,Some("verified_caption_source_import")|Some("verified_existing_source"))
                 && value.get("projectItemObserved").and_then(Value::as_bool)==Some(true);
+            let verified=native_observed&&unchanged;
             Ok(ActionResult{success:verified,tool,stdout:json!({"checkpoint":checkpoint,"result":value,
-                "source_import_verified":verified,"caption_track_created":false,"caption_text_write_supported":false,
+                "source_import_verified":verified,"source_sha256":before.sha256,
+                "source_size_bytes":before.size_bytes,
+                "source_unchanged_during_host_import":unchanged,
+                "native_project_item_observed":native_observed,
+                "source_hash_readback_error":after.as_ref().err(),
+                "premiere_project_save_verified":false,
+                "caption_track_created":false,"caption_text_write_supported":false,
                 "retry_safe":false}).to_string(),stderr:String::new(),exit_code:Some(if verified{0}else{1})})
         }
         ToolAction::PremiereImportMedia { paths, expected_sha256 } => {
