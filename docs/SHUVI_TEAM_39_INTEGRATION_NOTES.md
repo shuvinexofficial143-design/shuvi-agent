@@ -397,6 +397,46 @@ ask for separate approval; do not retry a potentially mutating action.
   missing/malformed/truncated audits, exact UUID, seven allowed mutation
   tool kinds and wiring ahead of the ordinary unknown outcome path.
 
+## Milestone 9 — Independently audited state readback and native root provenance
+
+- Read-only native ui_find now returns actual ToggleState,
+  ExpandCollapseState, IsSelected, HasKeyboardFocus and
+  VerticalScrollPercent when their UIA patterns exist. These values are
+  gathered without clicks, focus changes or simulated keypresses. No
+  ValuePattern text/password contents are exported to the model.
+- ui_find and ui_discover attach ObservedWindowHwnd and ObservedWindowPid
+  sourced from the live UIA root of the *new* audited observation, not
+  from previously cached window titles or inferred model text.
+- WebView refuses to create a typed audited control inventory if even
+  one row's live native root differs from the current exact HWND/PID.
+  Missing, invalid or contradictory native root evidence fails closed.
+- Following a native UI mutation, independent ui_find or ui_discover
+  must locate exactly one element matching the original action's
+  Name/AutomationId, with the same native root HWND/PID. An arbitrary
+  unrelated discovery or ambiguous duplicate selector does not unlock
+  a second UI mutation. Every next action still needs owner approval.
+- After ui_toggle, ui_expand_collapse, ui_focus or ui_scroll, the
+  separately audited ui_find must also return native state evidence.
+  Toggle requires a known UIA state, expansion must match the approved
+  Expanded/Collapsed target, focus requires HasKeyboardFocus=true,
+  and vertical scroll must expose a real position from 0 through 100.
+- A successful independent read is evidence that a particular control
+  was observed at that time. It is never automatic proof the whole
+  editing objective succeeded. For SetValue, the original Rust action
+  retains its immediate exact-value verification; independent readback
+  deliberately does not export the raw value for privacy.
+- Regression tests cover substituted HWND/PID, duplicate/foreign
+  controls, missing native state, wrong expansion, no focus, invalid
+  scroll position and privacy. Native Agent approval-chain fixtures
+  reflect actual OS-derived root identity in UIA read-only JSON.
+
+### Shared-file integration
+
+Changed native Rust read-only UIA arms in src-tauri/src/lib.rs and
+team39-only JS observation/readback modules. These shared Rust lines
+must be explicitly reconciled with parallel branch work. No cross-team
+merge, Windows live action, payment, installer or autonomous retry.
+
 ## Windows acceptance — explicitly NOT YET run
 
 Run only with separate owner consent on a disposable desktop/test fixture.
