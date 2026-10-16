@@ -14,7 +14,7 @@ const controls=[
  {Name:"Save",AutomationId:"save",ControlType:"ControlType.Button",IsEnabled:true,IsOffscreen:false},
  {Name:"Opacity",AutomationId:"opacity",ControlType:"ControlType.Edit",IsEnabled:false,IsOffscreen:false},
  {Name:"Hidden",AutomationId:"hidden",ControlType:"ControlType.Button",IsEnabled:true,IsOffscreen:true}
-];
+].map(row=>({...row,ObservedWindowHwnd:900,ObservedWindowPid:50}));
 const found=(rows=controls,patch={})=>({tool:"ui_discover",success:true,exit_code:0,stdout:JSON.stringify(rows),...patch});
 const discover=(w=initial(),rows=controls)=>newAuditedControlObservation(found(rows),B,WIN,w,T+1000);
 const action=(name,automation_id,window=WIN,tool="ui_click")=>({tool,arguments:{name,automation_id,window}});
@@ -227,4 +227,20 @@ test("stateful UIA mutation cannot be unblocked by generic discovery even when m
  const w=initial(),p=newPendingUiReadback(C,action("New Project","new_project",WIN,"ui_toggle"),w,T+2000);
  const result=found([{...controls[0],ToggleState:"On"}]);
  assert.equal(auditUiReadback(p,find(),result,w,T+3000),p);
+});
+
+test("same-title but foreign native HWND/PID from ui_find never clears a previous action readback",()=>{
+ const w=initial(),pending=newPendingUiReadback(C,action("New Project","new_project"),w,T+2000);
+ const proposal={tool:"ui_find",arguments:{window:WIN,name:"New Project",automation_id:"new_project"}};
+ const result=(row)=>({tool:"ui_find",success:true,exit_code:0,stdout:JSON.stringify(row)});
+ for(const patch of [{ObservedWindowHwnd:901},{ObservedWindowPid:51},
+                     {ObservedWindowHwnd:undefined},{ObservedWindowPid:undefined}]){
+  assert.equal(auditUiReadback(pending,proposal,result({...controls[0],...patch}),w,T+3000),pending);
+ }
+ assert.equal(auditUiReadback(pending,proposal,result(controls[0]),w,T+3000),null);
+});
+test("fresh UIA discoveries must include native HWND/PID for every returned control row",()=>{
+ const w=initial(),pending=newPendingUiReadback(C,action("New Project","new_project"),w,T+2000);
+ assert.equal(auditUiReadback(pending,find(),
+  found([{...controls[0]},{...controls[1],ObservedWindowPid:800}]),w,T+3000),pending);
 });
