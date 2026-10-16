@@ -310,6 +310,7 @@ test("Rust-audited native denial records an action-bound terminal owner-review p
  // An executing checkpoint MUST NOT become a normal paused checkpoint.
  assert.equal(writeNativeRecovery(store,{...dispatched,revision:4,phase:"paused"},1003),false);
  const denied={...dispatched,revision:4,phase:"native_denied"};
+ assert.equal(writeNativeRecovery(store,{...denied,modelRequests:2},1003),false);
  assert.equal(writeNativeRecovery(store,denied,1003),true);
  assert.equal(readNativeRecovery(store,1004).phase,"native_denied");
  assert.equal(writeNativeRecovery(store,{...denied,revision:5,phase:"model_reserved",modelRequests:2},1004),false);
