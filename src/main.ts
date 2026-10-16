@@ -6,7 +6,7 @@ import {pinNativeWorkerModels,restorePinnedWorkerModels,chooseSpecialistTurn,spe
 import {decideNativeContinuation} from "./native-continuation-driver.mjs";
 import {planVerifiedNativeReadback} from "./master-safe-continuation.mjs";
 import {captureMasterOpeningObservation,verifyMasterOpeningDelivery} from "./master-goal-window-acceptance.mjs";
-import {assessMasterFinalOutcome,summarizeMasterMissingProof} from "./master-final-outcome.mjs";
+import {assessMasterFinalOutcome,summarizeMasterMissingProof,masterGoalEvidenceContext} from "./master-final-outcome.mjs";
 import type {AuditedOpeningObservation} from "./master-goal-window-acceptance.mjs";
 import {nativeTaskDeliveryClaims} from "./native-delivery-claims.mjs";
 import type {
