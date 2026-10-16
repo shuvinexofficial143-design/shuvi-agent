@@ -8,12 +8,14 @@ are accepted from the model. An uncertain plan permanently closes this session.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
 
 MAX_REQUEST_BYTES = 65536
 MAX_COMMANDS = 48
+MAX_INPUT_BYTES = 128 * 1024 * 1024
 OUTPUT_OPS = frozenset(("file.checkpoint", "render.execute"))
 
 
@@ -106,10 +108,48 @@ def checked_plan(controller, json_plan, output_dir: Path, blender_exe: Path,
     }
 
 
+def inspect_input_source(filename: Path, expected_sha256: str) -> dict:
+    """Read exact source bytes before/after authenticated Blender load."""
+    if (not isinstance(expected_sha256, str)
+            or len(expected_sha256) != 64
+            or any(ch not in "0123456789abcdef" for ch in expected_sha256)):
+        raise ValueError("Blender source requires an exact lowercase SHA-256")
+    if not filename.is_absolute() or filename.suffix.lower() != ".blend":
+        raise ValueError("Blender source is not an absolute .blend")
+    if filename.is_symlink() or not filename.is_file():
+        raise ValueError("Blender source must be a regular non-symlink file")
+    real_path = filename.resolve(strict=True)
+    hasher = hashlib.sha256()
+    size = 0
+    with real_path.open("rb") as source:
+        magic = source.read(12)
+        if (len(magic) != 12 or magic[:7] != b"BLENDER"
+                or magic[7:8] not in (b"-", b"_")
+                or magic[8:9] not in (b"v", b"V")
+                or not all(48 <= digit <= 57 for digit in magic[9:12])):
+            raise ValueError("Blender source does not have a valid .blend header")
+        hasher.update(magic)
+        size = 12
+        while True:
+            chunk = source.read(65536)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > MAX_INPUT_BYTES:
+                raise ValueError("Blender source exceeds byte budget")
+            hasher.update(chunk)
+    if hasher.hexdigest() != expected_sha256:
+        raise ValueError("Blender source bytes differ from approved checkpoint")
+    return {"path": str(real_path), "sha256": expected_sha256,
+            "bytes": size, "verified_loaded_file_path": True,
+            "loaded_file_hash_checked": True}
+
+
 def serve(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="shuvi-blender-owned-session")
     parser.add_argument("--blender-exe", type=Path, required=True)
     parser.add_argument("--blend-file", type=Path)
+    parser.add_argument("--expected-blend-sha256")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--allow-render", action="store_true")
     args = parser.parse_args(argv)
@@ -123,6 +163,8 @@ def serve(argv: list[str] | None = None) -> int:
         parser.error("Existing absolute .blend required")
     if not args.output_dir.is_absolute() or not args.output_dir.is_dir():
         parser.error("Existing absolute output directory required")
+    if (args.blend_file is None) != (args.expected_blend_sha256 is None):
+        parser.error("Explicit Blender input SHA-256 must accompany --blend-file")
 
     try:
         # Rust must register this exact PID and bind its Windows kill-on-close
@@ -130,6 +172,8 @@ def serve(argv: list[str] | None = None) -> int:
         arm = sys.stdin.buffer.readline(MAX_REQUEST_BYTES + 2)
         if arm != b'{"version":1,"op":"arm"}\n':
             raise ValueError("Blender session broker was not armed by its owner")
+        source_before = (inspect_input_source(args.blend_file, args.expected_blend_sha256)
+                         if args.blend_file is not None else None)
         from shuvi_blender_agent.client import BlenderController
         from shuvi_blender_agent.contracts import Request, Status
         from shuvi_blender_agent.process import LaunchConfig, launch
@@ -153,9 +197,19 @@ def serve(argv: list[str] | None = None) -> int:
             session_id = initial.data.get("session_id")
             if not isinstance(session_id, str) or not 0 < len(session_id) <= 128:
                 raise ValueError("Blender did not return a valid session identity")
+            if source_before is not None:
+                loaded_file = initial.data.get("file")
+                if (not isinstance(loaded_file, str) or not loaded_file
+                        or Path(loaded_file).resolve(strict=True)
+                        != Path(source_before["path"])):
+                    raise ValueError("Authenticated Blender did not load the exact approved checkpoint")
+                source_after = inspect_input_source(args.blend_file, args.expected_blend_sha256)
+                if source_after != source_before:
+                    raise ValueError("Source bytes/path changed while launching Blender")
             protocol({"version": 1, "status": "ready", "session_id": session_id,
                       "authenticated": True, "mutations_by_approval_only": True,
-                      "render_approved": args.allow_render})
+                      "render_approved": args.allow_render,
+                      "input_checkpoint": source_before})
             for _ in range(MAX_COMMANDS):
                 raw = sys.stdin.buffer.readline(MAX_REQUEST_BYTES + 2)
                 if not raw:  # parent gone: terminate Blender rather than orphan it
