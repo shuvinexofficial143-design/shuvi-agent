@@ -146,3 +146,14 @@ New:
 - Local isolated pure outcome evaluator was run for project, edit, export, generic task and unsupported app; all were rejected with bounded missing-proof reasons. This is **not** a substitute for exact-head full CI and live Windows validation.
 
 **Safety and ownership:** No change to the Rust scheduler/delivery, no automatic file edit, app operation, installer, live Windows test, deployment, merge or other team's branch. Master can enforce requirements but may not fabricate a native Premiere .prproj receipt until Team 40 has an actual typed, file-hashed project creation verifier.
+
+## Ninth milestone — CI regression repair and proof-aware Master planning (16 October 2026)
+
+On previous exact head \`b89eeb69576d7fea9f6fd01ab25a020ea402dbe1\`, Rust CI, Dashboard CI and other source workflows passed, but Full CI failed **only two Node regression assertions**: a test regex accidentally matched a literal backslash before \`.prproj\` instead of the extension, and an older Desktop test required an obsolete inline "ORIGINAL TASK UNVERIFIED" string after the new centralized \`summarizeMasterMissingProof\` gate. Both assertions are corrected on this feature branch; the underlying fail-closed product behavior is unchanged.
+
+Additional functional improvement:
+- \`src/master-final-outcome.mjs\` exports \`masterGoalEvidenceContext(owner)\`, a bounded deterministic proof-obligation checklist derived from the exact immutable original brief. A project request explicitly calls out independent native project identity and Rust-hashed \`.prproj\` receipt; editing must have timeline change evidence and export must have a video artifact tied to the requested project. It tells the model when independent acceptance is *not implemented* and prohibits invented tool capability, paths, action IDs, hashes, or successful output.
+- \`src/main.ts\` now appends this proof context to the existing \`delegatedWorkerContext\` at the actual \`chat\` provider dispatch site, *before* the model proposes a step. It does not add a model call, modify grants, bypass the typed worker/Rust scheduler, or trigger any operation.
+- \`src/master-final-outcome.d.mts\` and \`scripts/master-final-outcome.test.mjs\` add declarations/regression tests for the model-facing proof obligations and source wiring.
+
+**Important limitation:** Team 37 still does NOT create or verify a live Premiere \`.prproj\` itself; the native Premiere/Adobe team must provide an independently verified, Rust-owned project attestation before project-creation acceptance could be enabled. No Windows live verification, installer, merge or deployment; exact-current-head Full CI remains separately required.
