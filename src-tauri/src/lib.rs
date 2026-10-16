@@ -13,6 +13,7 @@ mod native_job_history;
 mod native_scheduler;
 mod native_task_grant;
 mod native_task_delivery;
+mod native_premiere_project_sha;
 mod bounded_child;
 mod provider_request_guard;
 mod native_recovery;
@@ -18811,6 +18812,27 @@ fn finalize_native_task_delivery(
 fn native_task_delivery_status(app:AppHandle)->Result<Option<native_task_delivery::DeliveryReceipt>,String>{
     native_task_delivery::read(&app)
 }
+// Read-only post-create cryptographic file inspection. Never dispatches a
+// Premiere command; requires exact successful owner-approved create audit
+// and existing scheduler UUID/path identity, then rehashes actual disk bytes.
+#[tauri::command]
+fn verify_premiere_project_sha256(
+    action_id:String,
+    project_path:String,
+    expected_fnv1a64:String,
+    expected_size_bytes:u64,
+    state:State<'_,ActionState>,
+    app:AppHandle
+)->Result<native_premiere_project_sha::ProjectShaReceipt,String>{
+    let _lease=claim_monitored_native_execution(state.inner(),&app)?;
+    if !state.pending.lock()
+        .map_err(|_|"Native approval state unavailable.")?.is_empty(){
+        return Err("Resolve pending owner approvals before project file proof.".into());
+    }
+    native_premiere_project_sha::verify(
+        &app,&action_id,&project_path,&expected_fnv1a64,expected_size_bytes
+    )
+}
 #[tauri::command]
 fn native_scheduler_status(app:AppHandle)->Result<Option<native_scheduler::Schedule>,String>{
     native_scheduler::verified_status(&app)
@@ -19597,6 +19619,7 @@ pub fn run() {
             native_worker_status,
             native_worker_history,
             native_task_delivery_status,
+            verify_premiere_project_sha256,
             finalize_native_task_delivery,
             native_scheduler_status,
             review_native_scheduler_failure,
