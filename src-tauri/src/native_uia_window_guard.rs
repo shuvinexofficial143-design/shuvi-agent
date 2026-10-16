@@ -37,11 +37,7 @@ public static class ShuviUiaNativeIdentity {
 // Read the window and one exact selected control in ONE native prepare probe.
 // Ambiguous/hidden/disabled controls never become a Rust approval capability.
 // Window identity and RuntimeId are gathered together from one UIA snapshot.
-const PREPARED_CONTROL_PROBE: &str = r#"Add-Type -AssemblyName UIAutomationClient
-__SELECTOR_SCRIPT__
-__ROOT_SCRIPT__
-__WIN32_GUARD__
-$shuviBoundHwnd = [IntPtr]([int64]$root.Current.NativeWindowHandle)
+const PREPARED_CONTROL_PROBE: &str = r#"$shuviBoundHwnd = [IntPtr]([int64]$root.Current.NativeWindowHandle)
 $shuviBoundPid = [int]$root.Current.ProcessId
 if ($shuviBoundHwnd -eq [IntPtr]::Zero -or $shuviBoundPid -le 0 -or
     -not [ShuviUiaNativeIdentity]::IsWindow($shuviBoundHwnd) -or
@@ -80,10 +76,9 @@ if ($null -eq $runtimeId -or $runtimeId.Count -lt 1 -or $runtimeId.Count -gt 64)
 "#;
 
 pub(super) fn prepared_control_probe(root_script: &str, selector_script: &str) -> String {
-    PREPARED_CONTROL_PROBE
-        .replace("__SELECTOR_SCRIPT__", selector_script)
-        .replace("__ROOT_SCRIPT__", root_script)
-        .replace("__WIN32_GUARD__", WIN32_MUTATION_GUARD)
+    // Concatenation is deliberately one-pass: selectors/titles may contain
+    // strings resembling template markers, but must never be re-expanded.
+    format!("Add-Type -AssemblyName UIAutomationClient\n{selector_script}\n{root_script}\n{WIN32_MUTATION_GUARD}\n{PREPARED_CONTROL_PROBE}")
 }
 
 fn valid_label(value: &str, max: usize, allow_empty: bool) -> bool {
