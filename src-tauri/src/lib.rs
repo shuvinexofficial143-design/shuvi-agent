@@ -10770,6 +10770,10 @@ for ($i=0; $i -lt [Math]::Min($all.Count, 1200); $i++) {{
             ClassName=[string]$e.Current.ClassName
             IsEnabled=[bool]$e.Current.IsEnabled
             IsOffscreen=[bool]$e.Current.IsOffscreen
+            # Native OS-linked root for independently verifying an
+            # observation was made in the same HWND/PID as the prior action.
+            ObservedWindowHwnd=[int64]$root.Current.NativeWindowHandle
+            ObservedWindowPid=[int]$root.Current.ProcessId
             Bounds=[string]$e.Current.BoundingRectangle.ToString()
         }}
         # All applications share UIA roles. Prioritize actionable elements;
@@ -10844,6 +10848,8 @@ for ($i = 0; $i -lt [Math]::Min($matches.Count, 25); $i++) {{
         ExpandCollapseState = $shuviExpansionState
         IsSelected = $shuviSelected
         VerticalScrollPercent = $shuviVerticalPercent
+        ObservedWindowHwnd = [int64]$root.Current.NativeWindowHandle
+        ObservedWindowPid = [int]$root.Current.ProcessId
         Bounds = $e.Current.BoundingRectangle.ToString()
     }}
 }}
