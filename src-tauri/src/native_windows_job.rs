@@ -12,6 +12,8 @@ const CREATE_UNICODE_ENVIRONMENT:u32=0x400;
 const JOB_EXTENDED_LIMIT:u32=9;
 const JOB_BASIC_ACCOUNTING:u32=1;
 const KILL_ON_CLOSE:u32=0x2000;
+const JOB_OBJECT_LIMIT_JOB_MEMORY:u32=0x200;
+const MAX_JOB_MEMORY_BYTES:u64=4*1024*1024*1024;
 const WAIT_OBJECT_0:u32=0;
 const WAIT_TIMEOUT:u32=258;
 #[repr(C)]#[derive(Default)]
@@ -109,7 +111,9 @@ impl OwnedChild{
         if job.is_null(){return Err(error("CreateJobObjectW failed"));}
         let job=OwnedHandle(job);
         let mut limit=ExtendedLimit::default();
-        limit.basic.flags=KILL_ON_CLOSE;
+        limit.basic.flags=KILL_ON_CLOSE|JOB_OBJECT_LIMIT_JOB_MEMORY;
+        limit.job_memory=usize::try_from(MAX_JOB_MEMORY_BYTES)
+            .map_err(|_|"4 GB native Job Object memory cap not representable on this host.".to_string())?;
         let ok=unsafe{SetInformationJobObject(job.0,JOB_EXTENDED_LIMIT,
             &limit as *const _ as *const c_void,mem::size_of::<ExtendedLimit>() as u32)};
         if ok==0{return Err(error("Worker kill-on-close protection unavailable"));}

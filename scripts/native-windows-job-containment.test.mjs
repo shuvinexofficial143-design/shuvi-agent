@@ -9,7 +9,8 @@ test("process created suspended, contained, then resumed",()=>{
   const c=code.indexOf("let resumed=unsafe{ResumeThread");
   assert.ok(a>=0&&b>a&&c>b);
   assert.match(code,/CREATE_SUSPENDED\|CREATE_NO_WINDOW/);
-  assert.match(code,/limit\.basic\.flags=KILL_ON_CLOSE/);
+  assert.match(code,/limit\.basic\.flags=KILL_ON_CLOSE\|JOB_OBJECT_LIMIT_JOB_MEMORY/);
+  assert.match(code,/MAX_JOB_MEMORY_BYTES:u64=4\*1024\*1024\*1024/);
   assert.match(code,/if assigned==0/);
   assert.match(code,/TerminateProcess\(process\.0,1\)/);
 });

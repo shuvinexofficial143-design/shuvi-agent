@@ -441,6 +441,23 @@ mod tests{
     }
     #[cfg(windows)]
     #[test]
+    fn exact_owner_remote_stop_interrupts_real_contained_worker(){
+        let _serial=TEST_PROCESS_MUTEX.lock().unwrap();
+        let (schedule,journal)=fresh_snapshots();
+        let action=journal.action_id.clone();
+        let mut child=spawn_checked(&schedule,&journal,&action,"blender_run_plan",
+            &fixture_exe(),&slow_args(),&std::env::temp_dir(),Duration::from_secs(5)).unwrap();
+        assert_eq!(request_cancel_exact(B).unwrap(),false);
+        assert_eq!(request_cancel_exact(&action).unwrap(),true);
+        let observed=child.wait_bounded().unwrap();
+        assert_eq!(observed.phase,"cancelled");
+        assert!(observed.descendants_contained);
+        assert!(!observed.app_progress_verified);
+        drop(child);
+        assert_eq!(request_cancel_exact(&action).unwrap(),false);
+    }
+    #[cfg(windows)]
+    #[test]
     fn active_worker_blocks_second_owned_child_until_reaped(){
         let _serial=TEST_PROCESS_MUTEX.lock().unwrap();
         let (schedule,journal)=fresh_snapshots();

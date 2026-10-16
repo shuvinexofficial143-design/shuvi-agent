@@ -143,6 +143,28 @@ mod tests{
         let _=fs::remove_dir(&root);
     }
     #[test]
+    fn evidence_with_wrong_sha256_is_never_reported_as_saved_blender_work(){
+        use sha2::{Digest,Sha256};
+        let dir=std::env::temp_dir().join(format!("shuvi-owned-hash-test-{}",Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let output=dir.join("scene.blend");
+        fs::write(&output,b"BLENDER test bytes").unwrap();
+        let expected=format!("{:x}",Sha256::digest(b"different bytes"));
+        let response=dir.join("receipt.json");
+        fs::write(&response,serde_json::to_vec(&json!({
+            "protocol_version":1,"status":"verified","complete":true,
+            "authenticated_blender_plan":true,"destructive_allowed":false,
+            "render_approved":false,"executed_steps":1,
+            "final_operation":"file.checkpoint",
+            "artifact":{"path":output.to_str().unwrap(),"sha256":expected,
+                "bytes":fs::metadata(&output).unwrap().len()}
+        })).unwrap()).unwrap();
+        assert!(native_plan_response(&response,&dir,&dir,false).is_err());
+        let _=fs::remove_file(&response);
+        let _=fs::remove_file(&output);
+        let _=fs::remove_dir(&dir);
+    }
+    #[test]
     fn false_authentication_and_wrong_render_flag_fail_closed(){
         let root=std::env::temp_dir().join(format!("shuvi-owned-receipt-{}",Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
