@@ -60,7 +60,7 @@ pub(crate) fn suffix(receipt:&Value)->Result<String,String>{
         _=>return Err("Blender audit output format unsupported.".into()),
     };
     let input=receipt.get("input_checkpoint").unwrap_or(&Value::Null);
-    let (input_sha,input_path_hash,input_size)=if input.is_null(){
+    let (input_sha,input_path_hash,input_size):(String,String,String)=if input.is_null(){
         ("none".into(),"none".into(),"none".into())
     }else{
         if input.get("verified_loaded_file_path").and_then(Value::as_bool)!=Some(true)
