@@ -294,6 +294,62 @@ class ActualUpstreamPlanRunnerTests(unittest.TestCase):
         with self.assertRaises(AgentError):
             RenderConfig.parse(config)
 
+    def test_real_plan_runner_stops_after_post_mutation_checkpoint_failure(self):
+        # The first mesh edit has already changed the virtual scene.
+        # A checkpoint failure must NEVER be reported as completed or cause
+        # a blind second attempt by the typed PlanRunner.
+        from shuvi_blender_agent.errors import ErrorCode
+        ctrl = ContractController()
+        original = ctrl.execute
+
+        def fail_checkpoint(request):
+            if request.operation == "file.checkpoint":
+                ctrl.calls.append("file.checkpoint")
+                return Result(
+                    request.request_id, request.command_id, Status.FAILED,
+                    data={"outcome": "unknown"},
+                    error=AgentError(ErrorCode.EXECUTION_ERROR, "Checkpoint outcome unknown"),
+                )
+            return original(request)
+
+        ctrl.execute = fail_checkpoint
+        result = PlanRunner(ctrl).run(Plan.from_dict(build("model1", START_REV)))
+        self.assertFalse(result.completed)
+        self.assertEqual(result.results["checkpoint"].status, Status.FAILED)
+        self.assertTrue(result.to_dict()["outcome_unknown"])
+        self.assertEqual(ctrl.calls.count("file.checkpoint"), 1)
+        self.assertEqual(ctrl.calls.count("mesh.translate_vertices"), 1)
+        self.assertEqual(ctrl.saved, {})
+
+    def test_real_runner_rejects_mid_plan_geometry_state_change(self):
+        # A different edit between mesh.inspect and vertex mutation makes
+        # a previously bound geometry revision stale. The final checkpoint
+        # must remain unexecuted.
+        ctrl = ContractController()
+        original = ctrl.execute
+
+        def disturb(request):
+            if request.operation == "mesh.translate_vertices":
+                obj = ctrl.objects["Shuvi41ProofMesh"]
+                obj["geometry"]["vertices"][4][2] += 0.75
+            return original(request)
+
+        ctrl.execute = disturb
+        report = PlanRunner(ctrl).run(Plan.from_dict(build("model1", START_REV)))
+        self.assertFalse(report.completed)
+        self.assertEqual(report.results["shape"].status, Status.FAILED)
+        self.assertEqual(report.unexecuted_steps, ("post_edit_scene", "checkpoint"))
+        self.assertEqual(ctrl.saved, {})
+
+    def test_upstream_preflight_rejects_unknown_operation_before_dispatch(self):
+        ctrl = ContractController()
+        malicious = build("model1", START_REV)
+        malicious["steps"][1]["request"]["operation"] = "python.exec"
+        with self.assertRaises(ValueError):
+            PlanRunner(ctrl).run(Plan.from_dict(malicious))
+        self.assertEqual(ctrl.calls, [])
+        self.assertEqual(ctrl.objects, {})
+
     def test_separate_stage_recipe_is_not_an_authorization_to_launch_or_replay(self):
         ctrl = ContractController()
         wrong_render = build("render", START_REV)
