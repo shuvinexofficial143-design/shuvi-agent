@@ -1,4 +1,5 @@
 import {currentObservedWindows} from "./native-window-observation-session.mjs";
+import {observedControlRuntimeId,parseRuntimeId} from "./native-ui-control-session.mjs";
 
 // A native executed action is *not* proof of an intended UI effect.
 // After a mutation, require independently audited, read-only UIA inspection
@@ -9,7 +10,7 @@ const cleanTitle=t=>typeof t==="string"&&t.length>0&&t.length<=180?t.trim():"";
 const findUnique=(rows,title)=>rows.filter(w=>w.title.toLocaleLowerCase("en-US")===title.toLocaleLowerCase("en-US"));
 
 export function needsUiReadback(tool){return MUTATIONS.has(tool);}
-export function newPendingUiReadback(actionId,proposal,windowSession,nowMs=Date.now()){
+export function newPendingUiReadback(actionId,proposal,windowSession,nowMs=Date.now(),controlSnapshot=null){
  if(!needsUiReadback(proposal?.tool)||typeof actionId!=="string"||!actionId||
   !Number.isSafeInteger(nowMs)||nowMs<0)return null;
  const title=cleanTitle(proposal?.arguments?.window);
@@ -17,17 +18,20 @@ export function newPendingUiReadback(actionId,proposal,windowSession,nowMs=Date.
   proposal.arguments.name.trim():"";
  const automationId=typeof proposal?.arguments?.automation_id==="string"?
   proposal.arguments.automation_id.trim():"";
+ // When a prior audited ui_discover established a native RuntimeId,
+ // a same-label replacement control must never clear post-action readback.
+ const controlRuntimeId=observedControlRuntimeId(proposal,controlSnapshot,windowSession,nowMs);
  // Bind the readback to the exact control originally mutated, not merely
  // any control in a later refreshed window inventory.
  // No truthful HWND/PID means do not invent readback evidence.
  const rows=currentObservedWindows(windowSession,nowMs);
  const matching=title?findUnique(rows,title):[];
  if(matching.length!==1)return Object.freeze({version:1,sourceActionId:actionId,
-  title:title||"",hwnd:null,pid:null,controlName,automationId,
+  title:title||"",hwnd:null,pid:null,controlName,automationId,controlRuntimeId,
   mutationTool:proposal.tool,expectedExpansion:proposal?.arguments?.action??null,
   observedAtMs:nowMs,readbackRequired:true});
  return Object.freeze({version:1,sourceActionId:actionId,title:matching[0].title,
-  hwnd:matching[0].hwnd,pid:matching[0].pid,controlName,automationId,
+  hwnd:matching[0].hwnd,pid:matching[0].pid,controlName,automationId,controlRuntimeId,
   mutationTool:proposal.tool,expectedExpansion:proposal?.arguments?.action??null,
   observedAtMs:nowMs,readbackRequired:true});
 }
@@ -79,6 +83,11 @@ export function auditUiReadback(pending,proposal,result,windowSession,nowMs=Date
    (!pending.automationId||(typeof x.AutomationId==="string"&&
     x.AutomationId===pending.automationId)));
   if(same.length!==1)return pending;
+  if(pending.controlRuntimeId){
+   const actual=parseRuntimeId(same[0].ControlRuntimeId);
+   if(!actual||actual.length!==pending.controlRuntimeId.length||
+    actual.some((n,i)=>n!==pending.controlRuntimeId[i]))return pending;
+  }
   if(same[0].IsEnabled!=null&&typeof same[0].IsEnabled!=="boolean")return pending;
   if(same[0].IsOffscreen!=null&&typeof same[0].IsOffscreen!=="boolean")return pending;
   if(same[0].ControlType!=null&&
