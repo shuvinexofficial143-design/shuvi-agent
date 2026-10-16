@@ -10874,7 +10874,12 @@ if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Patte
     throw 'Matching element does not expose ValuePattern.'
 }}
 ([System.Windows.Automation.ValuePattern]$pattern).SetValue('{escaped_value}')
-'Value set on element: ' + $e.Current.Name"#
+# Native state readback: do not certify SetValue merely because the pattern call returned.
+$readbackValue = [string]([System.Windows.Automation.ValuePattern]$pattern).Current.Value
+if (-not [string]::Equals($readbackValue, '{escaped_value}', [System.StringComparison]::Ordinal)) {{
+    throw 'UIA ValuePattern readback differs from requested value; outcome requires independent inspection.'
+}}
+'Value state verified on element: ' + $e.Current.Name"#
             );
 
             let output = run_hidden_powershell(&script)?;
@@ -10996,8 +11001,14 @@ $pattern = $null
 if (-not $e.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$pattern)) {{
     throw 'Matching element does not expose TogglePattern.'
 }}
-([System.Windows.Automation.TogglePattern]$pattern).Toggle()
-'Toggled element: ' + $e.Current.Name"#
+$togglePattern = [System.Windows.Automation.TogglePattern]$pattern
+$toggleBefore = $togglePattern.Current.ToggleState
+$togglePattern.Toggle()
+$toggleAfter = $togglePattern.Current.ToggleState
+if ($toggleAfter -eq $toggleBefore) {{
+    throw 'UIA TogglePattern did not show a state transition; outcome requires independent inspection.'
+}}
+'Toggle state changed and read back on element: ' + $e.Current.Name"#
             );
 
             let output = run_hidden_powershell(&script)?;
@@ -11039,7 +11050,14 @@ if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePatter
 }}
 $expand = [System.Windows.Automation.ExpandCollapsePattern]$pattern
 $expand.{method}()
-'{method} completed for element: ' + $e.Current.Name"#
+$expectedExpansionState = [System.Windows.Automation.ExpandCollapseState]::Expanded
+if ('{method}' -eq 'Collapse') {{
+    $expectedExpansionState = [System.Windows.Automation.ExpandCollapseState]::Collapsed
+}}
+if ($expand.Current.ExpandCollapseState -ne $expectedExpansionState) {{
+    throw 'UIA ExpandCollapsePattern readback does not match approved state; outcome requires independent inspection.'
+}}
+'{method} state verified on element: ' + $e.Current.Name"#
             );
 
             let output = run_hidden_powershell(&script)?;
