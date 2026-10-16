@@ -512,7 +512,12 @@ mod tests{
     #[test]
     fn unavailable_host_memory_probe_also_stops_exact_owned_job(){
         let _serial=TEST_PROCESS_MUTEX.lock().unwrap();
-        let (schedule,journal)=fresh_snapshots();
+        let (mut schedule,mut journal)=fresh_snapshots();
+        // This fixture exercises blender_inspect, so both durable Rust
+        // authorities must identify that tool before a real PID is created.
+        // Keep the exact-identity guard strict; do not bypass it for tests.
+        schedule.jobs[0].tool="blender_inspect".into();
+        journal.tool="blender_inspect".into();
         let action=journal.action_id.clone();
         let mut child=spawn_checked(&schedule,&journal,&action,"blender_inspect",
             &fixture_exe(),&slow_args(),&std::env::temp_dir(),
