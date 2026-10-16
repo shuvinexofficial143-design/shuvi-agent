@@ -46,6 +46,19 @@ pub(crate) fn suffix(receipt:&Value)->Result<String,String>{
     let output_size=manifest.pointer("/artifact/bytes").and_then(Value::as_u64)
         .filter(|n|*n>=12&&*n<=128*1024*1024)
         .ok_or("Blender audit output length missing or invalid.")?;
+    let format=field(manifest,"/artifact/format")?;
+    let (mesh_fingerprint,scene_fingerprint)=match format{
+        "BLEND"=>{
+            if manifest.pointer("/evidence/mesh_geometry_verified")
+                .and_then(Value::as_bool)!=Some(true){
+                return Err("Blender audit saved project lacks verified mesh evidence.".into());
+            }
+            (valid_sha(field(manifest,"/evidence/mesh_fingerprint")?)?.to_owned(),
+             valid_sha(field(manifest,"/evidence/scene_fingerprint")?)?.to_owned())
+        },
+        "PNG"=>("none".into(),"none".into()),
+        _=>return Err("Blender audit output format unsupported.".into()),
+    };
     let input=receipt.get("input_checkpoint").unwrap_or(&Value::Null);
     let (input_sha,input_path_hash,input_size)=if input.is_null(){
         ("none".into(),"none".into(),"none".into())
@@ -68,7 +81,9 @@ pub(crate) fn suffix(receipt:&Value)->Result<String,String>{
         "blender_action_receipt_v1 | blender_output_sha256={output_sha} \
         | blender_output_path_sha256={} | blender_output_bytes={output_size} \
         | blender_session_id={session} | blender_input_sha256={input_sha} \
-        | blender_input_path_sha256={input_path_hash} | blender_input_bytes={input_size}",
+        | blender_input_path_sha256={input_path_hash} | blender_input_bytes={input_size} \
+        | blender_mesh_fingerprint={mesh_fingerprint} \
+        | blender_scene_fingerprint={scene_fingerprint}",
         path_hash(output)
     ))
 }
@@ -99,7 +114,10 @@ mod tests{
         json!({"status":"verified","source_action_id":ACTION,"session_id":SESSION,
             "artifact_manifest":{"source_action_id":ACTION,"source_session_id":SESSION,
                 "artifact":{"absolute_path":temp_file("shuvi-proof-stage2.blend"),
-                    "sha256":"a".repeat(64),"bytes":123}},
+                    "sha256":"a".repeat(64),"bytes":123,"format":"BLEND"},
+                "evidence":{"mesh_geometry_verified":true,
+                    "mesh_fingerprint":"c".repeat(64),
+                    "scene_fingerprint":"d".repeat(64)}},
             "input_checkpoint":null})
     }
     #[test]
@@ -108,6 +126,12 @@ mod tests{
         assert!(verify_detail(&line,&r).is_ok());
         let mut changed=r.clone();
         changed["artifact_manifest"]["artifact"]["sha256"]=json!("b".repeat(64));
+        assert!(verify_detail(&line,&changed).is_err());
+        changed=r.clone();
+        changed["artifact_manifest"]["evidence"]["mesh_fingerprint"]=json!("e".repeat(64));
+        assert!(verify_detail(&line,&changed).is_err());
+        changed=r.clone();
+        changed["artifact_manifest"]["evidence"]["scene_fingerprint"]=json!("f".repeat(64));
         assert!(verify_detail(&line,&changed).is_err());
         changed=r.clone();
         changed["session_id"]=json!("7c8c34a5-4557-42cb-aaf7-84809bf62833");
