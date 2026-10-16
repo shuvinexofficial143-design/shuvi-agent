@@ -96,6 +96,9 @@ pub(crate) fn execute<'a>(app:&AppHandle,state:&ActionState,
     action_id:&str,python_exe:&str,blender_exe:&str,blend_file:Option<&str>,
     output_dir:&str,plan:&Value,render:bool)->Result<Value,String>{
     let (python,blender)=checked_app_paths(python_exe,blender_exe,blend_file,output_dir)?;
+    // Reject an already-certified action or full private ledger BEFORE any
+    // Blender mutation; every subsequent publication rechecks atomically.
+    crate::native_blender_action_artifact::preflight_unused(app,action_id)?;
     let script=app.path().resource_dir()
         .map_err(|_|"Cannot locate fixed Blender plan script.")?
         .join("blender-worker").join("shuvi_blender_plan.py");

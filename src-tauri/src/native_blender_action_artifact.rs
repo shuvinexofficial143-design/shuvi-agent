@@ -112,15 +112,28 @@ fn read_at(dir:&Path,id:&str)->Result<Option<VerifiedBlenderArtifact>,String>{
     if receipt.action_id!=id{return Err("Foreign native Blender artifact UUID.".into());}
     Ok(Some(receipt))
 }
+fn check_capacity_at(dir:&Path,action_id:&str)->Result<(),String>{
+    if read_at(dir,action_id)?.is_some(){
+        return Err("This Blender action UUID has already published a verified output.".into());
+    }
+    let mut count=0usize;
+    for item in fs::read_dir(dir)
+        .map_err(|_|"Blender evidence journal cannot be inspected.".to_string())?{
+        item.map_err(|_|"Blender evidence journal entry inaccessible.".to_string())?;
+        count+=1;
+        if count>=MAX_RECORDS{
+            return Err("Blender action receipt store full; owner archival required.".into());
+        }
+    }
+    Ok(())
+}
+pub(crate) fn preflight_unused(app:&AppHandle,action_id:&str)->Result<(),String>{
+    let _io=IO.lock().map_err(|_|"Blender certificate journal lock poisoned.")?;
+    check_capacity_at(&root(app)?,action_id)
+}
 fn create_at(dir:&Path,record:&VerifiedBlenderArtifact)->Result<(),String>{
     verify_file_record(record)?;
-    if read_at(dir,&record.action_id)?.is_some(){
-        return Err("Verified Blender artifact UUID cannot be published twice.".into());
-    }
-    let existing=fs::read_dir(dir)
-        .map_err(|_|"Blender evidence journal cannot be inspected.".to_string())?
-        .take(MAX_RECORDS+1).count();
-    if existing>=MAX_RECORDS{return Err("Blender action receipt store full; owner archival required.".into());}
+    check_capacity_at(dir,&record.action_id)?;
     let bytes=serde_json::to_vec(record)
         .map_err(|_|"Could not encode native Blender artifact certificate.".to_string())?;
     crate::atomic_file::create_new_verified(
@@ -186,6 +199,22 @@ mod tests{
         assert!(read_at(&dir,A).unwrap().is_some());
         assert_ne!(read_at(&dir,A).unwrap(),Some(altered));
         let _=fs::remove_dir_all(dir);let _=fs::remove_file(output);
+    }
+    #[test]
+    fn preflight_blocks_replayed_certificate_before_any_worker_launch(){
+        let (dir,_output,record)=prepare();
+        assert!(check_capacity_at(&dir,A).is_ok());
+        create_at(&dir,&record).unwrap();
+        assert!(check_capacity_at(&dir,A).is_err());
+        assert!(check_capacity_at(&dir,B).is_ok());
+        let _=fs::remove_dir_all(dir);
+    }
+    #[test]
+    fn unknown_partial_certificate_blocks_new_launch(){
+        let (dir,_output,_record)=prepare();
+        fs::write(record_path(&dir,A).unwrap().with_extension("json.tmp"),b"partial").unwrap();
+        assert!(check_capacity_at(&dir,A).is_err());
+        let _=fs::remove_dir_all(dir);
     }
     #[test]
     fn modified_file_or_claimed_sha256_cannot_be_delivered(){

@@ -99,3 +99,7 @@ Review any adapter calls and potential cross-team shared-file overlap. Keep owne
 ## Milestone 14 — restart-persistent native UUID replay history
 - Existing v1 `native-worker-process.json` now retains up to 48 most recent prior launched UUIDs. `begin_at` rejects the currently active UUID and recent prior UUIDs even after later actions and host restarts, without changing the main action journal authority or auto-retrying unknown outcomes.
 - Files serialized before this feature remain backwards compatible via serde(default). Bounded history is checked for duplicate/forged UUIDs and current action duplication, maximum receipt budget raised to 4096 bytes. Rust disk-based tests cover A→B→old-A replay and old-file migration.
+
+## Milestone 15 — proactive artifact store capacity and UUID preflight
+- Scheduled Blender plan now rejects an already-certified UUID or a full/corrupt private output certificate slot **before** launching any Python/Blender worker process. Publication rechecks under the same journal mutex, and authorized native GUI lock prevents a competing worker between preflight and publication.
+- If the private certificate store fills, owner archival is needed; no unverified creative work is started just to discover a delivery-capacity failure. Rust tests cover duplicate action and crash-interrupted `.tmp` receipts.
