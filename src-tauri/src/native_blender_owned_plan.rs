@@ -81,6 +81,13 @@ fn native_plan_response(file:&Path,dir:&Path,output_dir:&Path,render:bool,
     if value["final_operation"]=="render.execute"&&!render{
         return Err("Unapproved render operation in Blender response.".into());
     }
+    let saved_path=value.pointer("/artifact/path").and_then(Value::as_str)
+        .ok_or("Blender output evidence lacks saved artifact path.")?;
+    let expected_extension=if expected_operation=="render.execute"{"png"}else{"blend"};
+    if !Path::new(saved_path).extension().and_then(|ext|ext.to_str())
+        .is_some_and(|ext|ext.eq_ignore_ascii_case(expected_extension)){
+        return Err("Blender output file type does not match approved checkpoint/render operation.".into());
+    }
     // Share exact existing final-artifact attestation with the legacy
     // Blender plan path: canonical approved folder, bounded file and SHA256.
     crate::blender_plan_worker::verify_output(&value,output_dir)?;
@@ -207,6 +214,26 @@ mod tests{
         })).unwrap()).unwrap();
         // Both fail before inspecting absent artifact bytes or trusting success.
         assert!(native_plan_response(&response,&dir,&dir,true,"file.checkpoint",2).is_err());
+        assert!(native_plan_response(&response,&dir,&dir,true,"render.execute",1).is_err());
+        let _=fs::remove_dir_all(dir);
+    }
+    #[test]
+    fn correct_hash_of_wrong_output_type_never_satisfies_approved_render(){
+        use sha2::{Digest,Sha256};
+        let dir=std::env::temp_dir().join(format!("shuvi-plan-type-{}",Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let output=dir.join("wrong.blend");
+        fs::write(&output,b"BLENDER fake checkpoint content").unwrap();
+        let bytes=fs::metadata(&output).unwrap().len();
+        let hash=format!("{:x}",Sha256::digest(fs::read(&output).unwrap()));
+        let response=dir.join("response.json");
+        fs::write(&response,serde_json::to_vec(&json!({
+            "protocol_version":1,"status":"verified","complete":true,
+            "authenticated_blender_plan":true,"destructive_allowed":false,
+            "render_approved":true,"executed_steps":1,
+            "final_operation":"render.execute",
+            "artifact":{"path":output.to_str().unwrap(),"bytes":bytes,"sha256":hash}
+        })).unwrap()).unwrap();
         assert!(native_plan_response(&response,&dir,&dir,true,"render.execute",1).is_err());
         let _=fs::remove_dir_all(dir);
     }
