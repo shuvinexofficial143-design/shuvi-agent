@@ -24,6 +24,8 @@ test("four persistent-session actions are wired through ordinary audited ToolAct
   assert.match(lib,/blender_session_worker::close\(&state\.blender_session,state/);
   assert.match(lib,/blender_session: blender_session_worker::SessionRegistry/);
   assert.match(lib,/RiskLevel::High\)/);
+  assert.match(lib,/"blender_session_objects" => \{/);
+  assert.match(lib,/ToolAction::BlenderSessionObjects/);
   assert.match(lib,/expected_scene_revision=arg_string\(&proposal.arguments,"expected_scene_revision"\)/);
   assert.match(lib,/&plan,allow_render,&expected_scene_revision,execution_action_id/);
   assert.match(lib,/Persist(?:ent)? Blender plan requires 1\.\.6 typed steps/);
@@ -51,6 +53,9 @@ test("native registry checks real managed PID identity, resource limit and abort
     "blender_artifact_manifest::build(",
     "blender_input_checkpoint::inspect(blend_file,expected_blend_sha256)?",
     "blender_input_checkpoint::still_current(src)",
+    "pub(crate) fn objects(",
+    'request(session,state,"objects",Some(&query),false',
+    '"requires_new_action_approval_for_mutation":true',
     "input_checkpoint"
   ]) assert.ok(native.includes(text),text);
   assert.match(native,/SESSION_MAX_AGE:Duration=Duration::from_secs\(15\*60\)/);
@@ -74,6 +79,9 @@ test("session broker uses fixed authenticated Blender launch and no model Python
     "if request_allow_render and not args.allow_render",
     'current.data.get("revision") != expected_scene_revision',
     "Stale Blender scene revision: no plan steps dispatched",
+    '"objects.list"',
+    '"Read-only Blender object query exceeds allowlisted bounds"',
+    '"read_only": True',
     "inspect_input_source(args.blend_file, args.expected_blend_sha256)",
     "Authenticated Blender did not load the exact approved checkpoint",
     '"input_checkpoint": source_before'
@@ -101,5 +109,5 @@ test("persistent broker parses and fixture session protocol passes",{
     "-s","integrations/blender-worker","-p","test_shuvi_blender_session.py"],
     {cwd:root,timeout:30000,encoding:"utf8"});
   assert.equal(run.status,0,run.stderr);
-  assert.match(run.stderr,/Ran 16 tests/);
+  assert.match(run.stderr,/Ran 19 tests/);
 });
