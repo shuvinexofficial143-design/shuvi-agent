@@ -870,7 +870,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     }
     if(confirmedExpiry){
      const expiryBudget=taskBudgets.get(current.threadId);
-     const journalOk=expiryBudget?await persistRecovery(expiryBudget,"paused",current.action.id):false;
+     const journalOk=expiryBudget?await persistRecovery(expiryBudget,"native_denied",current.action.id):false;
      haltTask(current.threadId,journalOk?"approval_expired":"recovery_journal_failed");
      appendReply(current.threadId,current.promptIndex,
       journalOk
