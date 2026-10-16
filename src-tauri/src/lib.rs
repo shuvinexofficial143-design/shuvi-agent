@@ -10842,8 +10842,12 @@ if ($e.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, 
     ([System.Windows.Automation.InvokePattern]$pattern).Invoke()
     'Invoked element: ' + $e.Current.Name
 }} elseif ($e.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) {{
-    ([System.Windows.Automation.SelectionItemPattern]$pattern).Select()
-    'Selected element: ' + $e.Current.Name
+    $shuviSelectedItem = [System.Windows.Automation.SelectionItemPattern]$pattern
+    $shuviSelectedItem.Select()
+    if (-not [bool]$shuviSelectedItem.Current.IsSelected) {{
+        throw 'UIA SelectionItem action has no confirmed selected state; inspect before retry.'
+    }}
+    'SelectionItem state verified for element: ' + $e.Current.Name
 }} else {{
     throw 'Matching element does not expose InvokePattern or SelectionItemPattern.'
 }}"#
@@ -10926,7 +10930,19 @@ $e = $matches.Item(0)
 Assert-ShuviNativeTarget -root $root -element $e
 if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
 $e.SetFocus()
-'Focused element: ' + $e.Current.Name"#
+$shuviFocusVerified = $false
+for ($shuviAttempt=0; $shuviAttempt -lt 5; $shuviAttempt++) {{
+    Assert-ShuviNativeTarget -root $root -element $e
+    if ([bool]$e.Current.HasKeyboardFocus) {{
+        $shuviFocusVerified = $true
+        break
+    }}
+    Start-Sleep -Milliseconds 60
+}}
+if (-not $shuviFocusVerified) {{
+    throw 'UIA focus not confirmed on the original approved control; no success claim.'
+}}
+'Keyboard focus read back on element: ' + $e.Current.Name"#
             );
 
             let output = run_hidden_powershell(&script)?;
@@ -10971,11 +10987,35 @@ $pattern = $null
 if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern, [ref]$pattern)) {{
     throw 'Matching element does not expose ScrollPattern.'
 }}
-([System.Windows.Automation.ScrollPattern]$pattern).Scroll(
+$shuviScrollPattern = [System.Windows.Automation.ScrollPattern]$pattern
+$shuviBeforePercent = [double]$shuviScrollPattern.Current.VerticalScrollPercent
+if ($shuviBeforePercent -lt 0) {{
+    throw 'UIA vertical scroll state cannot be inspected; no scroll requested.'
+}}
+$shuviWantIncrement = '{amount}'.EndsWith('Increment')
+if (($shuviWantIncrement -and $shuviBeforePercent -ge 99.999) -or
+    (-not $shuviWantIncrement -and $shuviBeforePercent -le 0.001)) {{
+    throw 'UIA scroll is already at the requested boundary; no mutation requested.'
+}}
+$shuviScrollPattern.Scroll(
     [System.Windows.Automation.ScrollAmount]::NoAmount,
     [System.Windows.Automation.ScrollAmount]::{amount}
 )
-'Scrolled element: ' + $e.Current.Name"#
+$shuviMovementVerified = $false
+for ($shuviAttempt=0; $shuviAttempt -lt 5; $shuviAttempt++) {{
+    Assert-ShuviNativeTarget -root $root -element $e
+    $shuviAfterPercent = [double]$shuviScrollPattern.Current.VerticalScrollPercent
+    if (($shuviWantIncrement -and $shuviAfterPercent -gt $shuviBeforePercent+0.001) -or
+        (-not $shuviWantIncrement -and $shuviAfterPercent -lt $shuviBeforePercent-0.001)) {{
+        $shuviMovementVerified = $true
+        break
+    }}
+    Start-Sleep -Milliseconds 60
+}}
+if (-not $shuviMovementVerified) {{
+    throw 'Native UIA scroll did not show the requested progress; inspect before retry.'
+}}
+'Native vertical scroll movement verified on element: ' + $e.Current.Name"#
             );
 
             let output = run_hidden_powershell(&script)?;
@@ -19177,7 +19217,10 @@ async fn execute_action(
             .get(&action_id)
             .ok_or_else(|| "Action expired, was denied, or does not exist.".to_string())?;
 
-        if now_ms().saturating_sub(prepared.created_at_ms) > PENDING_ACTION_TTL_MS {
+        if now_ms().saturating_sub(prepared.created_at_ms) > PENDING_ACTION_TTL_MS
+            || native_uia_window_guard::expired_native_uia_binding(
+                prepared.created_at_ms, now_ms(), prepared.native_uia_target.as_ref())
+        {
             (None, pending.remove(&action_id))
         } else {
             let active_tool = prepared.tool.clone();
