@@ -502,6 +502,43 @@ Limit: Win32 and UIA are external non-transactional APIs; a separate
 Windows test session remains necessary for runtime claims. No native
 application mutation, merge or Windows acceptance was run here.
 
+## Milestone 10 — OS process-generation binding for native UIA and visible vision capture
+
+- A Windows process can eventually reuse the same numeric PID and a top-level
+  HWND can also be recycled. Matching only a title, PID and HWND is therefore
+  not enough for a long-lived owner-approved action or delayed screenshot.
+- Rust native UIA preparation now obtains the selected process's actual
+  `Get-Process.StartTime.ToUniversalTime().Ticks` directly from the OS,
+  alongside its HWND/PID and exact UIA control RuntimeId. The signed
+  64-bit process creation tick count remains inside Rust's original
+  `PendingAction.native_uia_target` and is never a model or WebView argument.
+- During every one of seven UIA mutation paths, the same trusted action
+  includes a read-only OS process start-time comparison immediately before
+  each UIA pattern dispatch. Even if Windows has reused PID and HWND,
+  a different process generation cannot inherit prior owner approval.
+- Any missing or invalid process creation evidence fails closed during
+  preparation. A changed, exited or inaccessible original OS process
+  fails closed at execution, with no automatic retry or permission bypass.
+- The explicit selected-window screenshot pipeline now samples OS process
+  creation time before activating an approved app. It checks the same
+  process generation before focus, after the foreground transition and
+  after the pixel copy but BEFORE emitting/saving the PNG. An app restart
+  during capture cannot send an image from a recycled HWND/PID.
+- New source-contract tests and Rust unit tests cover parsing, positive
+  64-bit ticks, absence/malformed birth time, action-specific native
+  execution checks, screenshot ordering and fail-closed behavior.
+
+### Integration / verification distinction
+
+Only Team 39 branch files `native_uia_window_guard.rs`,
+`target_window_capture.rs`, their tests and these integration notes
+were modified for this milestone. Existing owner permission, action UUID,
+native worker lease, journal, DPI/occlusion guards and screenshot receipt
+stay canonical. Processes whose OS creation time cannot be read may be
+blocked rather than guessed, by design. OS APIs remain nontransactional:
+live Windows Adobe/Blender and multi-monitor acceptance requires separate
+owner authorization. Source CI must be reported for the exact new SHA.
+
 ## Windows acceptance — explicitly NOT YET run
 
 Run only with separate owner consent on a disposable desktop/test fixture.
