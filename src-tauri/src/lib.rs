@@ -19145,7 +19145,7 @@ async fn execute_action(
     let execution=if scheduled_step.is_some(){
         if let ToolAction::BlenderInspect {python_exe,blender_exe,blend_file,operation}=&action.action {
             native_blender_owned_adapter::inspect(
-                &app,&mut native_slot,&action_id,
+                &app,state.inner(),&mut native_slot,&action_id,
                 python_exe,blender_exe,blend_file.as_deref(),operation,
             ).map(|evidence|ActionResult{
                 success:true,tool:tool.clone(),
@@ -19156,7 +19156,7 @@ async fn execute_action(
             python_exe,blender_exe,blend_file,output_dir,allow_render,plan
         }=&action.action {
             native_blender_owned_plan::execute(
-                &app,&mut native_slot,&action_id,
+                &app,state.inner(),&mut native_slot,&action_id,
                 python_exe,blender_exe,blend_file.as_deref(),
                 output_dir,plan,*allow_render,
             ).map(|evidence|ActionResult{

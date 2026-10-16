@@ -10,6 +10,7 @@ use std::{
 };
 use tauri::AppHandle;
 use crate::execution_lease::NativeExecutionLease;
+use crate::{ActionState,register_managed_process,unregister_managed_process,current_runtime_status};
 use super::{Schedule,validate};
 #[path = "native_process_receipt.rs"]
 pub(crate) mod process_receipt;
@@ -98,6 +99,19 @@ pub(crate) fn request_cancel_exact(id:&str)->Result<bool,String>{
     if slot.active.as_deref()!=Some(id){return Ok(false);}
     slot.cancel_requested=true;
     Ok(true)
+}
+/// Bind the real owned PID to the existing Shuvi RAM/tree accounting
+/// while the Rust-owned child is alive. Never permit raw-PID cancellation:
+/// that always flows through the separate retained Windows Job Object.
+pub(crate) struct RegisteredOwnedPid<'a>{state:&'a ActionState,pid:u32}
+impl<'a> RegisteredOwnedPid<'a>{
+    pub(crate) fn start(state:&'a ActionState,pid:u32)->Result<Self,String>{
+        register_managed_process(state,pid)?;
+        Ok(Self{state,pid})
+    }
+}
+impl Drop for RegisteredOwnedPid<'_>{
+    fn drop(&mut self){unregister_managed_process(self.state,self.pid);}
 }
 pub(crate) struct OwnedProcess<'lease> {
     action_id:String,
@@ -262,6 +276,32 @@ impl<'lease> OwnedProcess<'lease> {
         self.final_phase=Some(phase);
         self.final_code=result;
         Ok(self.observation(phase))
+    }
+    /// Observe the same original native memory guard the legacy Blender
+    /// adapter used, plus the OS-wide Job Object committed-memory ceiling.
+    /// Samples while the real worker is active. Any unavailable host RAM
+    /// observation is also fail-closed and terminates the owned tree.
+    pub(crate) fn wait_bounded_with_host_budget(
+        &mut self,state:&ActionState
+    )->Result<ProcessObservation,String>{
+        loop{
+            let observed=self.poll()?;
+            if observed.phase!="running"&&observed.phase!="descendants_running"{
+                return Ok(observed);
+            }
+            match current_runtime_status(state){
+                Ok(status) if status.over_hard_limit=>{
+                    self.stop_owned_tree("cancelled")?;
+                    return Err("Owned Blender worker exceeded Shuvi 4 GB combined host RAM ceiling; process tree stopped. Inspect effects before retry.".into());
+                },
+                Ok(_)=>{},
+                Err(_)=>{
+                    self.stop_owned_tree("cancelled")?;
+                    return Err("Cannot independently verify owned Blender memory; stopped worker before further mutations.".into());
+                }
+            }
+            thread::sleep(Duration::from_millis(250));
+        }
     }
     /// Bounded blocking wait with real process polling; it cannot claim a
     /// verified application heartbeat, durable audit or descendant shutdown.

@@ -6,6 +6,7 @@ use serde_json::Value;
 use tauri::{AppHandle,Manager};
 use uuid::Uuid;
 use crate::execution_lease::NativeExecutionLease;
+use crate::ActionState;
 
 const MAX_EVIDENCE:usize=1024*1024;
 struct PrivateEvidence(PathBuf);
@@ -48,7 +49,7 @@ fn verify_payload(file:&Path,dir:&Path,operation:&str)->Result<Value,String>{
 /// then return the exact same lease to the caller before artifact readback
 /// and higher-level action audit. Never release in between those boundaries.
 pub(crate) fn inspect<'a>(
-    app:&AppHandle,
+    app:&AppHandle,state:&ActionState,
     native_slot:&mut Option<NativeExecutionLease<'a>>,
     action_id:&str,
     python_exe:&str,blender_exe:&str,blend_file:Option<&str>,operation:&str,
@@ -96,11 +97,13 @@ pub(crate) fn inspect<'a>(
     // PID ownership and launch-intent are backed by durable native journals.
     let mut child=crate::native_scheduler::owned_process::spawn_for_active_action(
         app,lease,action_id,"blender_inspect",py,&args,cwd,Duration::from_secs(45))?;
-    let observed=child.wait_bounded();
+    let tracked=crate::native_scheduler::owned_process::RegisteredOwnedPid::start(state,child.pid())?;
+    let observed=child.wait_bounded_with_host_budget(state);
     // On a failed/unknown OS termination do not take/release this lease.
     // The existing owner recovery journal must resolve the uncertain effects.
     let returned=child.reclaim_terminal_lease()?;
     *native_slot=Some(returned);
+    drop(tracked);
     let observed=observed?;
     if observed.phase!="exited"||observed.exit_code!=Some(0)
         ||!observed.descendants_contained {

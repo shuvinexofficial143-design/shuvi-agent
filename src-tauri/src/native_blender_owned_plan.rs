@@ -7,6 +7,7 @@ use serde_json::{Value,json};
 use tauri::{AppHandle,Manager};
 use uuid::Uuid;
 use crate::execution_lease::NativeExecutionLease;
+use crate::ActionState;
 
 const MAX_PLAN_BYTES:usize=64*1024;
 const MAX_RECEIPT_BYTES:usize=1024*1024;
@@ -90,7 +91,8 @@ fn checked_app_paths(python_exe:&str,blender_exe:&str,blend_file:Option<&str>,
     }
     Ok((py.to_path_buf(),blender.to_path_buf()))
 }
-pub(crate) fn execute<'a>(app:&AppHandle,slot:&mut Option<NativeExecutionLease<'a>>,
+pub(crate) fn execute<'a>(app:&AppHandle,state:&ActionState,
+    slot:&mut Option<NativeExecutionLease<'a>>,
     action_id:&str,python_exe:&str,blender_exe:&str,blend_file:Option<&str>,
     output_dir:&str,plan:&Value,render:bool)->Result<Value,String>{
     let (python,blender)=checked_app_paths(python_exe,blender_exe,blend_file,output_dir)?;
@@ -120,10 +122,12 @@ pub(crate) fn execute<'a>(app:&AppHandle,slot:&mut Option<NativeExecutionLease<'
     let lease=slot.take().ok_or("Original native desktop lease not held by approved Blender plan.")?;
     let mut child=crate::native_scheduler::owned_process::spawn_for_active_action(
         app,lease,action_id,"blender_run_plan",&python,&args,cwd,Duration::from_secs(120))?;
-    let result=child.wait_bounded();
+    let tracked=crate::native_scheduler::owned_process::RegisteredOwnedPid::start(state,child.pid())?;
+    let result=child.wait_bounded_with_host_budget(state);
     // Do not restore native lease until all Job Object descendants are gone.
     let recovered=child.reclaim_terminal_lease()?;
     *slot=Some(recovered);
+    drop(tracked);
     let status=result?;
     if status.phase!="exited"||status.exit_code!=Some(0)||!status.descendants_contained{
         return Err("Owned Blender plan cancelled/failed/timed out; inspect Blender output before retry.".into());
