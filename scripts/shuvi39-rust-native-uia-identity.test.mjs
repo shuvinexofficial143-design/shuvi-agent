@@ -58,14 +58,14 @@ test("native guard remains inside original permissioned execute path",()=>{
  assert.match(core,/fn ui_root_script\(/);
  assert.match(core,/fn run_hidden_powershell\(/);
  assert.doesNotMatch(guard,/SetForegroundWindow\(/);
- assert.doesNotMatch(guard,/SendWait\(/);
+ assert.match(core,/\[System\.Windows\.Forms\.SendKeys\]::SendWait/);
 });
 
 test("OS-derived target is stored only in native Rust pending action, not supplied by model",()=>{
  assert.match(core,/native_uia_target: Option<native_uia_window_guard::NativeUiaTarget>/);
  assert.match(core,/let native_uia_target = prepare_native_uia_binding\(&action\)/);
  assert.match(core,/let native_uia_target = action.native_uia_target.clone\(\)/);
- assert.match(core,/let probe = native_uia_window_guard::prepared_control_probe\(&root, &condition\)/);
+ assert.match(core,/let probe = native_uia_window_guard::prepared_control_probe\(&root, &condition, native_tool\)\?/);
  assert.match(core,/native_uia_window_guard::parse_prepared_control\(text\)/);
  assert.equal((mutation.match(/native_uia_target\.as_ref\(\)/g)||[]).length,7);
  assert.match(guard,/fn guarded_mutation_root\(/);
