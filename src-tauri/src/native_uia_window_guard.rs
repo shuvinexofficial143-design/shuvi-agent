@@ -187,6 +187,17 @@ pub(super) fn readonly_window_attestation_script() -> String {
 $shuviReadHwnd = [IntPtr]([int64]$root.Current.NativeWindowHandle)
 $shuviReadPid = [int]$root.Current.ProcessId
 $shuviReadTitle = [string]$root.Current.Name
+# One process-generation snapshot is bound to BOTH the before and after
+# read-only UIA enumeration checks. Failure to read it is not proof.
+try {{
+ $shuviReadProcess = Get-Process -Id $shuviReadPid -ErrorAction Stop
+ [int64]$shuviReadStartTicks = $shuviReadProcess.StartTime.ToUniversalTime().Ticks
+}} catch {{
+ throw 'Observed UIA process creation time unavailable. Discard readback.'
+}}
+if ($shuviReadStartTicks -le 0) {{
+ throw 'Observed UIA process birth time is invalid. Discard readback.'
+}}
 function Assert-ShuviObservedWindow {{
  if ($shuviReadHwnd -eq [IntPtr]::Zero -or $shuviReadPid -le 0 -or
      [string]::IsNullOrWhiteSpace($shuviReadTitle) -or
@@ -197,6 +208,15 @@ function Assert-ShuviObservedWindow {{
  }}
  [uint32]$shuviNativeReadPid = 0
  [void][ShuviUiaNativeIdentity]::GetWindowThreadProcessId($shuviReadHwnd, [ref]$shuviNativeReadPid)
+ try {{
+  $shuviCurrentReadProcess = Get-Process -Id $shuviReadPid -ErrorAction Stop
+  [int64]$shuviReadLiveTicks = $shuviCurrentReadProcess.StartTime.ToUniversalTime().Ticks
+ }} catch {{
+  throw 'Observed UIA process exited during readback. Discard readback.'
+ }}
+ if ($shuviReadLiveTicks -ne $shuviReadStartTicks) {{
+  throw 'Observed UIA process restarted during readback. Discard readback.'
+ }}
  if ($shuviNativeReadPid -ne [uint32]$shuviReadPid -or
      [int64]$root.Current.NativeWindowHandle -ne [int64]$shuviReadHwnd -or
      [int]$root.Current.ProcessId -ne $shuviReadPid -or
@@ -367,6 +387,8 @@ mod tests {
     fn readonly_window_attestation_is_repeatable_win32_verified_and_nonmutating() {
         let script=super::readonly_window_attestation_script();
         for check in ["GetWindowThreadProcessId", "IsWindowVisible", "IsIconic",
+            "Get-Process -Id $shuviReadPid", "StartTime.ToUniversalTime().Ticks",
+            "Observed UIA process restarted during readback",
             "Assert-ShuviObservedWindow", "$shuviReadHwnd", "$shuviReadPid",
             "IsOffscreen", "Discard readback"] {
             assert!(script.contains(check), "Missing {check}");
