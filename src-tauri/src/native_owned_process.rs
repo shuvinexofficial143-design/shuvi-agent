@@ -12,7 +12,7 @@ use tauri::AppHandle;
 use crate::execution_lease::NativeExecutionLease;
 use super::{Schedule,validate};
 #[path = "native_process_receipt.rs"]
-mod process_receipt;
+pub(crate) mod process_receipt;
 
 /// OS-only subprocess record is NOT an action audit. Invalid, interrupted or
 /// incomplete launch evidence blocks a new tool even after a process restart.

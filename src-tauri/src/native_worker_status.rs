@@ -29,6 +29,16 @@ pub(crate) struct NativeWorkerStatus {
     pub supervisor_heartbeat_age_ms:Option<u64>,
     pub supervisor_heartbeat_seq:Option<u64>,
     pub supervisor_health:String,
+    // On-disk OS worker evidence, NOT a live process probe or application ack.
+    pub process_receipt_phase:Option<String>,
+    pub process_receipt_action_id:Option<String>,
+    pub process_receipt_tool:Option<String>,
+    pub process_pid:Option<u32>,
+    pub process_exit_code:Option<i32>,
+    pub process_tree_contained:bool,
+    pub process_os_liveness_verified:bool,
+    pub process_app_progress_verified:bool,
+    pub process_health:String,
 }
 
 /// Called only *after* acquiring Rust's exclusive native desktop lease.
@@ -108,6 +118,10 @@ pub(crate) fn snapshot(
         durable_job_phase:None,durable_job_action_id:None,durable_job_tool:None,
         supervisor_heartbeat_at_ms:None,supervisor_heartbeat_age_ms:None,
         supervisor_heartbeat_seq:None,supervisor_health:"not_observed".into(),
+        process_receipt_phase:None,process_receipt_action_id:None,
+        process_receipt_tool:None,process_pid:None,process_exit_code:None,
+        process_tree_contained:false,process_os_liveness_verified:false,
+        process_app_progress_verified:false,process_health:"not_observed".into(),
     }
 }
 
@@ -160,10 +174,112 @@ pub(crate) fn attach_durable_job(
     status
 }
 
+
+/// Attach ONLY persisted OS-process evidence to the existing read-only
+/// status response. A PID or successful OS exit is never a live process probe,
+/// an application heartbeat, a verified artifact, or task audit success.
+pub(crate) fn attach_owned_process_receipt(
+    mut status:NativeWorkerStatus,
+    receipt:Option<&crate::native_scheduler::owned_process::process_receipt::ProcessReceipt>
+)->NativeWorkerStatus{
+    let Some(receipt)=receipt else{return status};
+    status.process_receipt_phase=Some(receipt.phase.clone());
+    status.process_receipt_action_id=Some(receipt.action_id.clone());
+    status.process_receipt_tool=Some(receipt.tool.clone());
+    status.process_pid=receipt.pid;
+    status.process_exit_code=receipt.exit_code;
+    status.process_tree_contained=receipt.descendants_contained;
+    // A durable record cannot prove an OS process is still present. Only an
+    // owned process handle/protocol can do so, even if the PID matches.
+    status.process_os_liveness_verified=false;
+    status.process_app_progress_verified=false;
+    if matches!(receipt.phase.as_str(),"launch_pending"|"running"){
+        let identity_live=status.lease_owned_by_this_process
+            &&status.state=="native_action_in_flight"
+            &&status.action_id.as_deref()==Some(receipt.action_id.as_str())
+            &&status.tool.as_deref()==Some(receipt.tool.as_str())
+            &&status.durable_job_action_id.as_deref()==Some(receipt.action_id.as_str())
+            &&status.durable_job_tool.as_deref()==Some(receipt.tool.as_str())
+            &&status.durable_job_phase.as_deref()==Some("running");
+        if identity_live{
+            status.process_health="owned_launch_record_not_liveness_verified".into();
+        }else{
+            status.state="recovery_required".into();
+            status.requires_owner_review=true;
+            status.process_health="unresolved_or_foreign_os_process_record".into();
+        }
+    }else if receipt.phase=="owner_reviewed_unknown"{
+        status.process_health="owner_reviewed_os_outcome_unknown".into();
+    }else{
+        status.process_health="os_terminal_receipt_not_application_audit".into();
+    }
+    status.safe_to_auto_retry=false;
+    status
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
     fn uuid()->String{"123e4567-e89b-42d3-a456-426614174000".into()}
+
+    fn receipt(phase:&str,id:&str,tool:&str)->crate::native_scheduler::owned_process::process_receipt::ProcessReceipt{
+        crate::native_scheduler::owned_process::process_receipt::ProcessReceipt{
+            version:1,action_id:id.into(),tool:tool.into(),phase:phase.into(),
+            pid:if phase=="launch_pending"{None}else{Some(4321)},
+            exit_code:if phase=="exited"{Some(0)}else{None},
+            descendants_contained:phase!="launch_pending",app_progress_verified:false
+        }
+    }
+    #[test]
+    fn persisted_pid_without_host_lease_requires_owner_review_not_liveness(){
+        let base=snapshot(false,&HashMap::new(),&HashMap::new(),None,6_000);
+        let os=receipt("running",&uuid(),"premiere_insert_media");
+        let s=attach_owned_process_receipt(base,Some(&os));
+        assert_eq!(s.state,"recovery_required");
+        assert_eq!(s.process_pid,Some(4321));
+        assert_eq!(s.process_health,"unresolved_or_foreign_os_process_record");
+        assert!(s.requires_owner_review);
+        assert!(!s.process_os_liveness_verified);
+        assert!(!s.progress_heartbeat_verified);
+        assert!(!s.process_app_progress_verified);
+        assert!(!s.safe_to_auto_retry);
+    }
+    #[test]
+    fn matching_live_host_uuid_may_display_os_pid_but_never_app_progress(){
+        let (tools,started)=running();
+        let job=crate::native_worker_job::NativeJob{
+            version:1,action_id:uuid(),tool:"premiere_insert_media".into(),phase:"running".into(),
+            started_at_ms:1_000,updated_at_ms:2_000,heartbeat_seq:1,
+            audit_success:None,prior_action_ids:vec![]
+        };
+        let os=receipt("running",&uuid(),"premiere_insert_media");
+        let s=attach_owned_process_receipt(
+            attach_durable_job(snapshot(true,&tools,&started,None,3_000),Some(&job),3_000),
+            Some(&os));
+        assert_eq!(s.state,"native_action_in_flight");
+        assert_eq!(s.process_pid,Some(4321));
+        assert_eq!(s.process_health,"owned_launch_record_not_liveness_verified");
+        assert!(!s.process_os_liveness_verified);
+        assert!(!s.process_app_progress_verified);
+        assert!(!s.safe_to_auto_retry);
+        let foreign=receipt("running","123e4567-e89b-42d3-a456-426614174009","premiere_insert_media");
+        let denied=attach_owned_process_receipt(s,Some(&foreign));
+        assert_eq!(denied.state,"recovery_required");
+        assert!(denied.requires_owner_review);
+    }
+    #[test]
+    fn clean_os_exit_zero_is_not_accepted_as_application_task_completion(){
+        let base=snapshot(false,&HashMap::new(),&HashMap::new(),None,6_000);
+        let os=receipt("exited",&uuid(),"blender_run_plan");
+        let state=attach_owned_process_receipt(base,Some(&os));
+        assert_eq!(state.state,"idle");
+        assert_eq!(state.process_exit_code,Some(0));
+        assert_eq!(state.process_health,"os_terminal_receipt_not_application_audit");
+        assert!(!state.process_app_progress_verified);
+        assert!(!state.progress_heartbeat_verified);
+        assert!(!state.safe_to_auto_retry);
+    }
+
     fn running()->(HashMap<String,String>,HashMap<String,u64>){
         (HashMap::from([(uuid(),"premiere_insert_media".into())]),
          HashMap::from([(uuid(),1_000)]))

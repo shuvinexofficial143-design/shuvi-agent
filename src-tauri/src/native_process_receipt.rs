@@ -10,7 +10,7 @@ const MAX_BYTES:usize=2048;
 
 #[derive(Clone,Debug,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
-pub(super) struct ProcessReceipt {
+pub(crate) struct ProcessReceipt {
     pub version:u32,
     pub action_id:String,
     pub tool:String,
@@ -71,7 +71,7 @@ pub(super) fn path(app:&AppHandle)->Result<PathBuf,String>{
     fs::create_dir_all(&root).map_err(|_|"Native subprocess data directory inaccessible.".to_string())?;
     Ok(root.join("native-worker-process.json"))
 }
-pub(super) fn read(app:&AppHandle)->Result<Option<ProcessReceipt>,String>{
+pub(crate) fn read(app:&AppHandle)->Result<Option<ProcessReceipt>,String>{
     let _lock=JOURNAL_LOCK.lock().map_err(|_|"Native process receipt lock poisoned.")?;
     read_at(&path(app)?)
 }

@@ -46,3 +46,10 @@ Review any adapter calls and potential cross-team shared-file overlap. Keep owne
 
 ## Windows end-to-end journal integration test
 - Rust Windows CI starts the exact ignored worker test binary, reads persisted launch intent/PID, observes a real exit, reloads durable OS-only terminal receipt, and confirms app progress remains unverified.
+
+## Milestone 6 — real read-only PID/recovery visibility integrated into existing Tauri status
+- The existing `native_worker_status` read-only Tauri command now loads **real durable subprocess receipt**, attaches OS PID, phase, exit code, containment flag and explicit `processHealth` to `NativeWorkerStatus`. No new command or mutation/permission entrypoint.
+- On restart, an unresolved `launch_pending`/running OS receipt with no exact active owner UUID/tool + Rust journal forces existing `state=recovery_required`, `requiresOwnerReview=true`. Same-process matching journal is an identity attribution only, NOT a live Windows process signal.
+- `processOsLivenessVerified=false`, `processAppProgressVerified=false` and `safeToAutoRetry=false` always. Exit code 0 cannot become an app/task audit. Corrupt and orphaned receipts fail the status read explicitly and still fail closed on new dispatch.
+- **Shared-file overlap:** single read-only edit to `src-tauri/src/lib.rs` at `native_worker_status` command, adding receipt read + status attachment only; no other shared command, Tauri registration, UI, permission, or execution path was changed. Team 37 frontend may choose to render these new additive status keys after integration review; existing state-based RECOVERY REQUIRED UI already observes the modified state.
+- Rust regression tests cover crash PID with no lease, matching live UUID, mismatched UUID, successful OS exit vs application audit. Node drift test covers connection. Still no Adobe/Blender adapter process replacement or live host acceptance.
