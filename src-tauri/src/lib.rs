@@ -10815,25 +10815,29 @@ for ($i = 0; $i -lt [Math]::Min($matches.Count, 25); $i++) {{
     try {{
         $p = $null
         if ($e.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern,[ref]$p)) {{
-            $shuviToggleState = [string]([System.Windows.Automation.TogglePattern]$p).Current.ToggleState
+            $shuviToggle = [System.Windows.Automation.TogglePattern]$p
+            $shuviToggleState = [string]$shuviToggle.Current.ToggleState
         }}
     }} catch {{}}
     try {{
         $p = $null
         if ($e.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern,[ref]$p)) {{
-            $shuviExpansionState = [string]([System.Windows.Automation.ExpandCollapsePattern]$p).Current.ExpandCollapseState
+            $shuviExpand = [System.Windows.Automation.ExpandCollapsePattern]$p
+            $shuviExpansionState = [string]$shuviExpand.Current.ExpandCollapseState
         }}
     }} catch {{}}
     try {{
         $p = $null
         if ($e.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern,[ref]$p)) {{
-            $shuviSelected = [bool]([System.Windows.Automation.SelectionItemPattern]$p).Current.IsSelected
+            $shuviSelection = [System.Windows.Automation.SelectionItemPattern]$p
+            $shuviSelected = [bool]$shuviSelection.Current.IsSelected
         }}
     }} catch {{}}
     try {{
         $p = $null
         if ($e.TryGetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern,[ref]$p)) {{
-            $shuviVerticalPercent = [double]([System.Windows.Automation.ScrollPattern]$p).Current.VerticalScrollPercent
+            $shuviScroll = [System.Windows.Automation.ScrollPattern]$p
+            $shuviVerticalPercent = [double]$shuviScroll.Current.VerticalScrollPercent
         }}
     }} catch {{}}
     $items += [PSCustomObject]@{{
