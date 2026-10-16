@@ -123,3 +123,38 @@ test("native keyboard fallback also requires exact observed control and rejects 
  assert.equal(checkObservedControlTarget(action("New Project","wrong_id",WIN,"ui_send_keys"),s,w,T+2000).allowed,false);
  assert.equal(checkObservedControlTarget(action("New Project","new_project","Another Window","ui_send_keys"),s,w,T+2000).allowed,false);
 });
+
+test("native ui_find singleton JSON closes only matching same-HWND independent readback",()=>{
+ const w=initial();
+ const pending=newPendingUiReadback(C,action("New Project","new_project"),w,T+2000);
+ const proposal={tool:"ui_find",arguments:{window:WIN,name:"New Project",automation_id:"new_project"}};
+ const result={tool:"ui_find",success:true,exit_code:0,
+  stdout:JSON.stringify(controls[0])};
+ assert.equal(auditUiReadback(pending,proposal,result,w,T+3000),null);
+});
+test("native singleton ui_find cannot clear readback with mismatched selector or window",()=>{
+ const w=initial();
+ const pending=newPendingUiReadback(C,action("New Project","new_project"),w,T+2000);
+ const proposal={tool:"ui_find",arguments:{window:WIN,name:"New Project",automation_id:"new_project"}};
+ const result={tool:"ui_find",success:true,exit_code:0,stdout:JSON.stringify(controls[1])};
+ assert.equal(auditUiReadback(pending,proposal,result,w,T+3000),pending);
+ assert.equal(auditUiReadback(pending,{...proposal,arguments:{...proposal.arguments,window:"Blender"}},
+  {...result,stdout:JSON.stringify(controls[0])},w,T+3000),pending);
+ assert.equal(auditUiReadback(pending,proposal,{...result,success:false,stdout:JSON.stringify(controls[0])},w,T+3000),pending);
+});
+test("ui_discover singleton object cannot masquerade as correctly serialized UI inventory",()=>{
+ const w=initial();
+ const pending=newPendingUiReadback(C,action("New Project","new_project"),w,T+2000);
+ assert.equal(auditUiReadback(pending,find(),{
+  tool:"ui_discover",success:true,exit_code:0,stdout:JSON.stringify(controls[0])
+ },w,T+3000),pending);
+});
+test("ui_find readback requires a requested selector and a nonempty actual control identity",()=>{
+ const w=initial();
+ const pending=newPendingUiReadback(C,action("New Project","new_project"),w,T+2000);
+ const proposal={tool:"ui_find",arguments:{window:WIN}};
+ const result={tool:"ui_find",success:true,exit_code:0,stdout:JSON.stringify(controls[0])};
+ assert.equal(auditUiReadback(pending,proposal,result,w,T+3000),pending);
+ assert.equal(auditUiReadback(pending,{...proposal,arguments:{window:WIN,name:"New Project"}},
+  {...result,stdout:JSON.stringify({Name:"",AutomationId:""})},w,T+3000),pending);
+});
