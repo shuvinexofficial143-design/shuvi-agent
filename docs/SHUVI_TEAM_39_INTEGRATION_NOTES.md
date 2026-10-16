@@ -539,6 +539,25 @@ blocked rather than guessed, by design. OS APIs remain nontransactional:
 live Windows Adobe/Blender and multi-monitor acceptance requires separate
 owner authorization. Source CI must be reported for the exact new SHA.
 
+### Milestone 10.1 — Receipt and independently attested UIA readback
+
+- Native selected-window capture rechecks original process generation
+  after writing PNG and BEFORE publishing the screenshot receipt.
+  The receipt now carries an OS-produced signed 64-bit ProcessStartTicks
+  which the Rust PNG receipt verifier requires to be positive. It validates
+  this proof but does not forward the raw timestamp into the model-facing
+  identity label. On failure, the untrusted PNG is deleted, not sent.
+- Named-window read-only UIA find and discover now snapshot the OS process
+  creation time before enumerating controls and check the same generation
+  again within their existing pre- and post-enumeration Win32 attestation.
+  If the target app exits/restarts, no UIA readback is accepted.
+- Screenshot and native UIA readback source-contract tests cover ordered
+  process lifetime checks, restart rejection, bounded attested receipts
+  and unchanged owner approval / no-automatic-retry boundaries.
+- Process creation time may be unreadable for protected processes.
+  These controls fail closed rather than inferring process identity.
+  Native source CI and Windows live acceptance remain distinct.
+
 ## Windows acceptance — explicitly NOT YET run
 
 Run only with separate owner consent on a disposable desktop/test fixture.
