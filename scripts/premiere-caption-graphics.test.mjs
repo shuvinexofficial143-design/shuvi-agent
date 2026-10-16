@@ -56,7 +56,7 @@ test("mapping revision, role, primitive and every explicit static field are chec
   assert.match(planner,/req\.mapping!=saved\.mapping\.name\|\|req\.revision!=saved\.revision/);
   assert.match(planner,/f\.role=="caption_text"&&f\.primitive_type=="string"/);
   assert.match(planner,/req\.static_fields\.len\(\)!=others/);
-  assert.match(planner,/req\.static_fields\.contains_key\("caption_text"\)/);
+  assert.match(planner,/self\.static_fields\.contains_key\("caption_text"\)/);
   assert.match(planner,/batch\.resolve\(saved\)\?/);
   assert.match(graphics,/Every mapped role needs an explicit value/);
 });
