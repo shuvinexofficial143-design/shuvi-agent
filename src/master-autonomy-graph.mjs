@@ -97,7 +97,7 @@ export function assessMasterGoalDelivery(ownerRequest,graph) {
     return {verified:false,requiresIndependentAcceptance:true,
       reason:'Project creation, edit and export require independent app-state/artifact acceptance; audited tool steps alone are insufficient.'};
   if(goal.apps.length===1&&goal.opening)
-    return {verified:false,requiresIndependentAcceptance:false,
+    return {verified:false,requiresIndependentAcceptance:true,
       reason:'An audited UI inspection needs independently matched target-window evidence before the opening goal is verified.'};
   return {verified:false,requiresIndependentAcceptance:false,
     reason:'No model-neutral final goal verifier exists for this task type.'};
