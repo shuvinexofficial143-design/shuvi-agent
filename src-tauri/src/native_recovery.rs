@@ -51,6 +51,10 @@ fn valid(value:&NativeRecoveryRecord)->Result<(),String>{
         "audit_verified"|"native_denied"|"paused"|"outcome_unknown"){
         return Err("Unsupported native recovery transition.".into());
     }
+    if value.phase=="native_denied"&&
+       (value.version!=2||value.revision.is_none()){
+        return Err("Native denial requires revisioned v2 inspection evidence.".into());
+    }
     if value.updated_at==0||value.expires_at==0||
        value.expires_at>value.updated_at.saturating_add(TWO_HOURS)||
        value.expires_at.saturating_add(TWO_HOURS)<value.updated_at{
@@ -232,6 +236,9 @@ mod tests{
         }).is_err());
         assert!(validate_advance(Some(&denied),&NativeRecoveryRecord{
             revision:Some(3),phase:"executing".into(),..denied.clone()
+        }).is_err());
+        assert!(valid(&NativeRecoveryRecord{
+            revision:None,..denied.clone()
         }).is_err());
         assert!(valid(&NativeRecoveryRecord{
             action_id:None,..denied
