@@ -296,3 +296,37 @@ test("a possibly executed action must become unknown or audited before a new app
  assert.equal(writeNativeRecovery(store,observed,1004),true,
   "separately verified UI recovery can stage a fresh inspection after an unknown outcome");
 });
+
+test("Rust-audited native denial records an action-bound terminal owner-review phase",()=>{
+ const store=makeStore();
+ const taskId="14a40d18-4df8-4cb8-ab90-0137027f3a8b",actionId="action-1";
+ const base={maxActions:8,stagedActions:0,modelRequests:1,expiresAt:7201000,
+  version:2,taskId,actionId:null,phase:"model_reserved",revision:1};
+ assert.equal(writeNativeRecovery(store,base,1000),true);
+ const approved={...base,revision:2,phase:"awaiting_approval",stagedActions:1,actionId};
+ assert.equal(writeNativeRecovery(store,approved,1001),true);
+ const dispatched={...approved,revision:3,phase:"executing"};
+ assert.equal(writeNativeRecovery(store,dispatched,1002),true);
+ // An executing checkpoint MUST NOT become a normal paused checkpoint.
+ assert.equal(writeNativeRecovery(store,{...dispatched,revision:4,phase:"paused"},1003),false);
+ const denied={...dispatched,revision:4,phase:"native_denied"};
+ assert.equal(writeNativeRecovery(store,denied,1003),true);
+ assert.equal(readNativeRecovery(store,1004).phase,"native_denied");
+ assert.equal(writeNativeRecovery(store,{...denied,revision:5,phase:"model_reserved",modelRequests:2},1004),false);
+ assert.equal(writeNativeRecovery(store,{...denied,revision:5,phase:"executing"},1004),false);
+ assert.equal(writeNativeRecovery(store,{...denied,revision:5,phase:"awaiting_approval",stagedActions:2,actionId:"new"},1004),false);
+ assert.equal(assessNativeRecoveryPair(inspectNativeRecoveryStore(store,1004),
+   {...denied,updatedAt:1005},1006).requiresReview,true);
+});
+test("native_denied cannot be forged without an action-bound revisioned v2 checkpoint",()=>{
+ const store=makeStore();
+ const taskId="14a40d18-4df8-4cb8-ab90-0137027f3a8b";
+ const invalid={...value,phase:"native_denied"};
+ assert.equal(writeNativeRecovery(store,invalid,1000),false);
+ assert.equal(writeNativeRecovery(store,{...invalid,version:2,taskId,revision:1},1000),false);
+ const rust=readFileSync(new URL("../src-tauri/src/native_recovery.rs",import.meta.url),"utf8");
+ assert.match(rust,/next\.phase=="native_denied"/);
+ assert.match(rust,/previous\.phase!="executing"/);
+ assert.match(rust,/previous\.action_id!=next\.action_id/);
+ assert.match(rust,/next\.action_id\.is_none\(\)/);
+});
