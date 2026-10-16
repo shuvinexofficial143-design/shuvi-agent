@@ -441,6 +441,39 @@ team39-only JS observation/readback modules. These shared Rust lines
 must be explicitly reconciled with parallel branch work. No cross-team
 merge, Windows live action, payment, installer or autonomous retry.
 
+## Milestone 9 — same native UIA control in independently audited readback
+
+- The Windows read-only ui_find and ui_discover paths now include the
+  original element's bounded signed 32-bit GetRuntimeId() array as
+  ControlRuntimeId. Invalid, empty, missing, or over-64-entry native IDs
+  are not emitted as fresh read-only control evidence.
+- WebView audited control observations preserve a defensive frozen copy
+  of ControlRuntimeId. Malformed/oversized arrays are rejected, never
+  coerced from strings or arbitrary model text.
+- Native Agent captures the immediately preceding *audited* UIA control
+  observation before invalidating it for an attempted mutation, and
+  associates that identity with the exact audited action's pending readback.
+- When this prior snapshot contained a native RuntimeId, a later
+  owner-approved ui_find/ui_discover read must match the exact original
+  RuntimeId AND same window HWND/PID, selector, native receipt and
+  unique observed control. A recycled same-name/same-AutomationId element
+  cannot clear the pending readback requirement.
+- Older sessions without a verified RuntimeId continue through the
+  pre-existing strict HWND/PID and unique-selector checks; they are
+  NOT presented as RuntimeId-proven. Rust separately binds exact UIA
+  RuntimeId at native prepare/execute for all seven mutations.
+- Nine new tests cover valid/invalid signed IDs, stale/replaced controls,
+  same-label replacements, duplicate observations, cross-PID/HWND
+  readbacks and the ordering of capture-before-invalidation.
+- One legacy Web Control Center source assertion was updated to enforce
+  the now-canonical audited pre-execution denial early-return branch
+  rather than requiring its obsolete textual else nesting.
+
+Limit: OS UIA RuntimeId can change during genuine application redraw.
+Such a readback must fail closed instead of accepting a new element
+without explicit re-observation and independent owner consent.
+Source CI is not an authorized Live Windows application test.
+
 ## Windows acceptance — explicitly NOT YET run
 
 Run only with separate owner consent on a disposable desktop/test fixture.
