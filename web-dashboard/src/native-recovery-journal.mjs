@@ -65,7 +65,8 @@ export function writeNativeRecovery(store,record,now=Date.now()){
      safe.stagedActions!==old.stagedActions))return false;
    if(safe.phase==="native_denied"&&
     (old.phase!=="executing"||safe.actionId!==old.actionId||
-     safe.actionId===null||safe.stagedActions!==old.stagedActions))return false;
+     safe.actionId===null||safe.stagedActions!==old.stagedActions||
+     safe.modelRequests!==old.modelRequests))return false;
    if(safe.phase==="awaiting_approval"&&
     (!["model_reserved","outcome_unknown"].includes(old.phase)||
      safe.stagedActions!==old.stagedActions+1||safe.actionId===old.actionId))return false;
