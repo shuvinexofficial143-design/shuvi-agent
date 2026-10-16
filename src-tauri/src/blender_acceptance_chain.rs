@@ -35,8 +35,8 @@ pub(crate) fn review(reports:&Value,approved_root:&Path)->Result<Value,String>{
         .ok_or("Blender acceptance expects EXACTLY three stage receipts.")?;
     let mut sessions=Vec::with_capacity(3);
     let mut actions=Vec::with_capacity(3);
-    let mut paths=Vec::with_capacity(3);
-    let mut hashes=Vec::with_capacity(3);
+    let mut paths:Vec<String>=Vec::with_capacity(3);
+    let mut hashes:Vec<String>=Vec::with_capacity(3);
     let mut fingerprints=Vec::with_capacity(2);
     let mut topology_fingerprints=Vec::with_capacity(2);
     let mut mesh_counts=Vec::with_capacity(2);
