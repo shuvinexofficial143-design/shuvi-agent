@@ -92,3 +92,30 @@ test("Rust mapping uses the same strict point/color envelope and caption binding
   assert.match(binder,/\("accent_color"\.into\(\),json!\(\{"type":"color"/);
   assert.match(binder,/structured_caption_style_coordinates_and_rgba_must_match_saved_types/);
 });
+
+// Guard source/runtime compatibility: the native host uses a second fresh
+// occupancy check at insertion, after Rust's read-only snapshot preflight.
+test("caption graphics fail closed on occupied native tracks before checkpoint",()=>{
+  const binder=readFileSync("src-tauri/src/premiere_caption_graphics.rs","utf8");
+  const desktop=readFileSync("src-tauri/src/lib.rs","utf8");
+  const host=readFileSync("integrations/premiere-uxp/main.js","utf8");
+  const source=binder.slice(binder.indexOf("pub fn preflight_timeline"),binder.indexOf("#[cfg(test)]"));
+  assert.match(source,/timeline\.get\("truncated"\)/);
+  assert.match(source,/\/expected\/project_guid/);
+  assert.match(source,/\/expected\/sequence_guid/);
+  assert.match(source,/videoTracks/);
+  assert.match(source,/audioTracks/);
+  assert.match(source,/startSeconds/);
+  assert.match(source,/endSeconds/);
+  assert.match(source,/item\.seconds<end && start<end_caption/);
+  assert.match(source,/"native_insertion_race_excluded":false/);
+  const begin=desktop.indexOf("ToolAction::PremiereApplyCaptionGraphics {request} => {");
+  const finish=desktop.indexOf("ToolAction::PremierePlanCaptionGraphics {request} => {",begin);
+  const action=desktop.slice(begin,finish);
+  const preflight=action.indexOf("premiere_caption_graphics::preflight_timeline(");
+  const run=action.indexOf("premiere_graphics::run_batch");
+  assert.ok(begin>=0&&preflight>=0&&run>preflight);
+  assert.match(action,/"preflight_occupancy":occupancy/);
+  assert.match(host,/Graphics destination is occupied; choose clear tracks\/time/);
+  assert.match(binder,/fn caption_timeline_preflight_blocks_occupied_destination_before_edit/);
+});
