@@ -65,6 +65,7 @@ mod premiere_batch_relink;
 mod premiere_mogrt_handoff;
 mod after_effects_mogrt_provenance;
 mod premiere_final_delivery;
+mod premiere_full_decode;
 mod premiere_review_binding;
 mod premiere_edit_session;
 mod premiere_edit_job;
@@ -421,7 +422,8 @@ Cross-track clone computes native vertical offsets from inspected source/destina
 - premiere_cancel_review_frame_export: {}
 Interchange uses stable ProjectConverter FCPXML/OTIO (26.2+) and AAF (26.3+) APIs. Native frame export uses Exporter.exportSequenceFrame (25.6+) and Adobe-supported bmp/dpx/gif/jpg/exr/png/tga/tif formats. Output collision blocks by default; host acceptance and observed file metadata are reported separately.
 - premiere_plan_export: {"output":"absolute output media path","preset":"optional absolute .epr preset","queue_to_ame":false,"overwrite":false}
-- premiere_inspect_final_delivery: {"job_id":"exact Premiere export job UUID","expected_project_guid":"observed Premiere project GUID","expected_sequence_guid":"observed Premiere sequence GUID"} — read-only SHA256, MP4 structure and trusted ffprobe stream metadata tied to this specific recorded job; never claims encoder completion, full decode or final playback.
+- premiere_inspect_final_delivery: {"job_id":"exact Premiere export job UUID","expected_project_guid":"observed Premiere project GUID","expected_sequence_guid":"observed Premiere sequence GUID"}
+- premiere_verify_mp4_decode: {"job_id":"exact recorded Premiere export UUID","expected_project_guid":"exact project GUID","expected_sequence_guid":"exact sequence GUID","budget_secs":90} — optional read-only full video/audio stream decode using installed trusted ProgramFiles FFmpeg, bounded 15–180s; reports decoded frames/duration and separately refuses to claim encoder completion, visual quality or production delivery. — read-only SHA256, MP4 structure and trusted ffprobe stream metadata tied to this specific recorded job; never claims encoder completion, full decode or final playback.
 - premiere_acceptance_report: {}
 - premiere_acceptance_probe: {"group":1}
 - premiere_acceptance_register_disposable: {"project_guid":"exact current project GUID","project_path":"existing absolute disposable .prproj","sequence_guid":"optional exact current sequence GUID","explicitly_disposable":true}
@@ -980,6 +982,7 @@ enum ToolAction {
     PremiereCancelReviewFrameExport { generation: u64 },
     PremiereExportStatus { job_id: String },
     PremiereInspectFinalDelivery { job_id:String,expected_project_guid:String,expected_sequence_guid:String },
+    PremiereVerifyMp4Decode {job_id:String,expected_project_guid:String,expected_sequence_guid:String,budget_secs:u64},
     PremiereReadinessReport,
     PremiereSaveProject,
     AfterEffectsCapabilityReport,
@@ -1912,6 +1915,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_plan_export"
         | "premiere_export_status"
         | "premiere_inspect_final_delivery"
+        | "premiere_verify_mp4_decode"
         | "premiere_readiness_report"
         | "premiere_acceptance_report"
         | "premiere_acceptance_probe"
@@ -7684,6 +7688,24 @@ fn stage_tool(
             premiere_export::inspect(&output,preset.as_deref(),overwrite,None)?;
             (ToolAction::PremierePlanExport {output:output.clone(),preset:preset.clone(),queue_to_ame,overwrite},
                 "Preflight Premiere export".to_string(),format!("Inspect output={output}; preset={preset:?}; queue_to_ame={queue_to_ame}; overwrite={overwrite}"),
+                RiskLevel::Low)
+        }
+        "premiere_verify_mp4_decode" => {
+            let job_id=arg_string(&proposal.arguments,"job_id")?;
+            Uuid::parse_str(&job_id).map_err(|_|"Invalid Premiere MP4 decode job UUID.")?;
+            let expected_project_guid=arg_string(&proposal.arguments,"expected_project_guid")?;
+            let expected_sequence_guid=arg_string(&proposal.arguments,"expected_sequence_guid")?;
+            if expected_project_guid.is_empty()||expected_project_guid.len()>240
+                ||expected_sequence_guid.is_empty()||expected_sequence_guid.len()>240{
+                return Err("Full MP4 decode requires exact bounded Premiere project/sequence IDs.".into());
+            }
+            let budget_secs=proposal.arguments.get("budget_secs").and_then(Value::as_u64).unwrap_or(90);
+            if !(15..=180).contains(&budget_secs) {
+                return Err("Full MP4 decode needs an explicit 15..180 second bounded compute budget.".into());
+            }
+            (ToolAction::PremiereVerifyMp4Decode{job_id,expected_project_guid,expected_sequence_guid,budget_secs},
+                "Decode and validate existing Premiere export".into(),
+                format!("Read-only optional FFmpeg full decode of exact Premiere export job; budget={budget_secs}s. No Premiere/AME mutation or encoder-completion claim."),
                 RiskLevel::Low)
         }
         "premiere_inspect_final_delivery" => {
@@ -17559,6 +17581,30 @@ try {{
                         "premiere_runtime_verified_count":report.verified_count()}).to_string(),stderr:String::new(),exit_code:Some(0)})
                 }
             }
+        }
+        ToolAction::PremiereVerifyMp4Decode{job_id,expected_project_guid,expected_sequence_guid,budget_secs} => {
+            // Hold the native export ledger only for identity selection. Release
+            // it BEFORE full MP4 hashing / optional bounded decoder process.
+            let job={
+                let path=premiere_export_jobs_path(app)?;
+                let _io=state.premiere_export_jobs_io.lock()
+                    .map_err(|_|"Premiere export job store unavailable.")?;
+                let jobs=premiere_export_jobs::load(&path)?;
+                jobs.jobs.iter().find(|entry|entry.job_id==job_id)
+                    .cloned().ok_or("Exact Premiere MP4 decode job is absent.")?
+            };
+            let report=premiere_full_decode::inspect(&job,&expected_project_guid,
+                &expected_sequence_guid,budget_secs)?;
+            let decoded=report.get("full_selected_stream_decode_verified")
+                .and_then(Value::as_bool)==Some(true);
+            Ok(ActionResult{success:true,tool,
+                stdout:json!({"inspection_completed":true,"full_decode_verified":decoded,
+                    "read_only":true,"evidence":report,
+                    "encoder_completion_verified":false,
+                    "export_job_attribution_verified":false,
+                    "visual_quality_verified":false,
+                    "final_delivery_ready":false}).to_string(),
+                stderr:String::new(),exit_code:Some(0)})
         }
         ToolAction::PremiereInspectFinalDelivery{job_id,expected_project_guid,expected_sequence_guid} => {
             // Drop the export-store mutex before expensive read-only hashing/probe.
