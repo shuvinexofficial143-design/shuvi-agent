@@ -14,6 +14,26 @@ function findWindow(windows,title){
  const matching=windows.filter(w=>w.title.toLocaleLowerCase("en-US")===title.trim().toLocaleLowerCase("en-US"));
  return matching.length===1?matching[0]:null;
 }
+export function parseRuntimeId(value){
+ if(!Array.isArray(value)||value.length===0||value.length>64||
+  !value.every(n=>Number.isSafeInteger(n)&&n>=-2147483648&&n<=2147483647))return null;
+ return Object.freeze([...value]);
+}
+// Transient UIA identity never authorizes native mutations; it only binds
+// an independently audited readback to the original selected control.
+export function observedControlRuntimeId(proposal,snapshot,windowSession,nowMs=Date.now()){
+ const rows=currentObservedControls(snapshot,windowSession,nowMs);
+ if(!rows.length||typeof proposal?.arguments?.window!=="string"||!snapshot||
+  snapshot.title.toLowerCase()!==proposal.arguments.window.trim().toLowerCase())return null;
+ const id=proposal.arguments.automation_id,name=proposal.arguments.name;
+ if(!id&&!name)return null;
+ if(id!=null&&!allowedString(id,180))return null;
+ if(name!=null&&!allowedString(name,180))return null;
+ const matches=rows.filter(c=>
+  (id?c.id===id.trim():true)&&
+  (name?c.name.toLowerCase()===name.trim().toLowerCase():true));
+ return matches.length===1?matches[0].runtimeId??null:null;
+}
 function parseControls(result,expectedWindow){
  if(result?.success!==true||result.tool!=="ui_discover"||
   (result.exit_code!=null&&result.exit_code!==0)||
@@ -36,9 +56,12 @@ function parseControls(result,expectedWindow){
   if(!role||(!id&&!name))return null;
   if(row.IsEnabled!=null&&typeof row.IsEnabled!=="boolean")return null;
   if(row.IsOffscreen!=null&&typeof row.IsOffscreen!=="boolean")return null;
+  const runtimeId=row.ControlRuntimeId==null?null:parseRuntimeId(row.ControlRuntimeId);
+  if(row.ControlRuntimeId!=null&&!runtimeId)return null;
   controls.push(Object.freeze({
    name,id,role,enabled:row.IsEnabled===true?true:row.IsEnabled===false?false:null,
-   offscreen:row.IsOffscreen===true?true:row.IsOffscreen===false?false:null
+   offscreen:row.IsOffscreen===true?true:row.IsOffscreen===false?false:null,
+   runtimeId
   }));
  }
  return Object.freeze(controls);
