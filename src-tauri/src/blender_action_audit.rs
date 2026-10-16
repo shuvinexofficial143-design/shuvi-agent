@@ -33,9 +33,9 @@ pub(crate) fn suffix(receipt:&Value)->Result<String,String>{
         None=>"none".into(),
     };
     let manifest=receipt.get("artifact_manifest").ok_or("Blender artifact manifest missing.")?;
+    let expected_session=if session=="none"{None}else{Some(session.as_str())};
     if manifest.get("source_action_id").and_then(Value::as_str)!=Some(action)
-        ||manifest.get("source_session_id").and_then(Value::as_str)
-            !=if session=="none"{None}else{Some(session.as_str())}{
+        ||manifest.get("source_session_id").and_then(Value::as_str)!=expected_session{
         return Err("Blender result action/session does not match its manifest.".into());
     }
     let output=field(manifest,"/artifact/absolute_path")?;
