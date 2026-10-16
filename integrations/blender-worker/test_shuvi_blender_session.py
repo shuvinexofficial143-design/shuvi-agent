@@ -1,4 +1,5 @@
 """Persistent broker fixture tests. No actual Blender/Windows process is launched."""
+import hashlib
 import io
 import json
 import sys
@@ -27,13 +28,15 @@ class FakeResult:
 
 class FakeController:
     clients = []
+    loaded_file = None
     def __init__(self, client):
         self.clients.append(client)
 
     def execute(self, request):
         if request.operation == "scene.inspect":
             return FakeResult("succeeded", {"session_id": SESSION_ID,
-                                            "revision": "f" * 64, "object_count": 2})
+                                            "revision": "f" * 64, "object_count": 2,
+                                            "file": FakeController.loaded_file or ""})
         if request.operation == "system.ping":
             return FakeResult("succeeded", {"ready": True})
         raise AssertionError("Unapproved fake operation")
@@ -93,11 +96,16 @@ class PersistentSessionTests(unittest.TestCase):
         self.stub.start()
         self.addCleanup(self.stub.stop)
         FakeController.clients.clear()
+        FakeController.loaded_file = None
+        self.source_input = None
 
     def args(self, allow_render=False):
         out = ["--blender-exe", str(self.blender), "--output-dir", str(self.output)]
         if allow_render:
             out.append("--allow-render")
+        if self.source_input is not None:
+            path, digest = self.source_input
+            out.extend(["--blend-file", str(path), "--expected-blend-sha256", digest])
         return out
 
     def frame(self, op, **kwargs):
@@ -243,6 +251,47 @@ class PersistentSessionTests(unittest.TestCase):
                 worker.checked_plan(FakeController(object()), {"steps": [1]},
                                     self.output, self.blender, False, "e" * 64)
         self.assertEqual(executed, [])
+
+    def test_approved_source_is_hash_checked_and_loaded_in_authenticated_blender(self):
+        path = self.root / "source.blend"
+        data = b"BLENDER-v430" + b"safe-checkpoint" * 5
+        path.write_bytes(data)
+        digest = hashlib.sha256(data).hexdigest()
+        self.source_input = (path, digest)
+        FakeController.loaded_file = str(path)
+        code, replies = self.serve(self.frame("inspect") + self.frame("close"))
+        self.assertEqual(code, 0)
+        self.assertEqual([r["status"] for r in replies],
+                         ["ready", "alive", "closing"])
+        source = replies[0]["input_checkpoint"]
+        self.assertEqual(source["sha256"], digest)
+        self.assertEqual(source["path"], str(path))
+        self.assertEqual(source["bytes"], len(data))
+        self.assertTrue(source["verified_loaded_file_path"])
+        self.assertTrue(source["loaded_file_hash_checked"])
+        self.assertTrue(self.sessions[0].closed)
+
+    def test_wrong_loaded_file_fails_closed_after_bridge_launch(self):
+        path = self.root / "source.blend"
+        data = b"BLENDER-v430" + b"safe-checkpoint"
+        path.write_bytes(data)
+        self.source_input = (path, hashlib.sha256(data).hexdigest())
+        different = self.root / "other.blend"
+        different.write_bytes(data)
+        FakeController.loaded_file = str(different)
+        code, replies = self.serve("")
+        self.assertEqual(code, 4)
+        self.assertEqual(replies[-1]["status"], "outcome_unknown")
+        self.assertTrue(self.sessions[0].closed)
+
+    def test_wrong_source_sha_fails_before_any_blender_launch(self):
+        path = self.root / "source.blend"
+        path.write_bytes(b"BLENDER-v430" + b"safe-checkpoint")
+        self.source_input = (path, "0" * 64)
+        code, replies = self.serve("")
+        self.assertEqual(code, 4)
+        self.assertEqual(replies[-1]["status"], "outcome_unknown")
+        self.assertEqual(len(self.sessions), 0)
 
     def test_oversized_command_denied(self):
         code, replies = self.serve("x" * 65538 + "\n")
