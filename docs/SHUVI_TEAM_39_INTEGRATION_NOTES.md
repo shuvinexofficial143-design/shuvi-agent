@@ -474,6 +474,34 @@ Such a readback must fail closed instead of accepting a new element
 without explicit re-observation and independent owner consent.
 Source CI is not an authorized Live Windows application test.
 
+## Milestone 9.1 — Win32-attested, double-checked read-only UIA root
+
+- Named-window ui_discover and ui_find now run a native Win32/UIA root
+  identity check BEFORE enumerating controls and AGAIN immediately
+  before emitting observation JSON. This rechecks selected HWND, PID,
+  exact caption, OS process PID, visibility, enabled/offscreen status,
+  and minimized state, without restoring or focusing any window.
+- If a modal disables the root, or the window is replaced during a
+  read, its output is not trusted as a post-mutation UIA readback.
+- Desktop-wide read-only ui_find (without a named window) retains its
+  old non-mutating discovery behavior. It intentionally cannot assert
+  named-app HWND/PID provenance or clear app-bound readback.
+- The new native ControlRuntimeId field in both find/discover is
+  independently checked against the earlier audited control identity
+  when the prior observation included a native UIA RuntimeId.
+- Per-action pre-mutation observation and timestamp are captured
+  BEFORE potentially slow Rust execution, preventing the 45-second
+  UIA inventory TTL from dropping valid identity while a tool runs.
+- The Web Control Center's legacy source test now verifies the native
+  audited denial early-return behavior instead of a removed else block.
+- Additional readback and native-attestation regression tests verify
+  identity rejection, malformed array shape, foreign PID/HWND,
+  replacement RuntimeIds, name collisions and source ordering.
+
+Limit: Win32 and UIA are external non-transactional APIs; a separate
+Windows test session remains necessary for runtime claims. No native
+application mutation, merge or Windows acceptance was run here.
+
 ## Windows acceptance — explicitly NOT YET run
 
 Run only with separate owner consent on a disposable desktop/test fixture.
