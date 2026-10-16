@@ -330,3 +330,20 @@ test("native_denied cannot be forged without an action-bound revisioned v2 check
  assert.match(rust,/previous\.action_id!=next\.action_id/);
  assert.match(rust,/next\.action_id\.is_none\(\)/);
 });
+
+test("native-denied recovery never silently opens admission for a new Windows task",()=>{
+ const src=readFileSync(new URL("../web-dashboard/src/native-agent.ts",import.meta.url),"utf8");
+ assert.match(src,/phase==="outcome_unknown"\|\|phase==="native_denied"/);
+ assert.match(src,/recoveryAcknowledged=false/);
+ assert.match(src,/Review Activity\/Audit and acknowledge this prior task/);
+ assert.match(src,/if\(route\.role!=="chat"&&!recoveryAcknowledged\)/);
+});
+test("Rust and WebView agree native_denied must be revisioned v2 evidence",()=>{
+ const source=readFileSync(new URL("../src-tauri/src/native_recovery.rs",import.meta.url),"utf8");
+ assert.match(source,/value\.phase=="native_denied"/);
+ assert.match(source,/value\.revision\.is_none\(\)/);
+ assert.match(source,/value\.version!=2/);
+ const journal=readFileSync(new URL("../web-dashboard/src/native-recovery-journal.mjs",import.meta.url),"utf8");
+ assert.match(journal,/record\.phase==="native_denied"/);
+ assert.match(journal,/!Number\.isSafeInteger\(record\.revision\)/);
+});
