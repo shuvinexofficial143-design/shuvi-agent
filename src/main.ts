@@ -24,6 +24,7 @@ import {assessNativeCheckpointReadback} from "./master-task-checkpoint-readback.
 import {isNativeCheckpointAbsent} from "./master-checkpoint-absent.mjs";
 import {classifyNativeResumeReplay} from "./master-native-resume-replay.mjs";
 import {classifyMasterCommentaryCompletion} from "./master-commentary-completion.mjs";
+import {createMasterFinalizationSingleFlight} from "./master-finalization-single-flight.mjs";
 import {captureMasterProviderTurnFence,isMasterProviderTurnFenceCurrent} from "./master-provider-turn-fence.mjs";
 import {createMasterProviderSingleFlight} from "./master-provider-single-flight.mjs";
 import {captureMasterPermissionUiFence,isMasterPermissionUiFenceCurrent} from "./master-permission-ui-fence.mjs";
@@ -1322,6 +1323,7 @@ async function persistRequiredContinuationCheckpoint(
   }
 }
 
+const masterFinalizationSingleFlight=createMasterFinalizationSingleFlight();
 async function continueAfterOutcome(): Promise<void> {
   // Scheduler and native delivery await: never continue or clear another task.
   const continuationScope=activePermissionScope;
@@ -1360,6 +1362,10 @@ async function continueAfterOutcome(): Promise<void> {
     return;
   }
   if (continuation.mode==="complete") {
+    const finalizationFlight=masterFinalizationSingleFlight.acquire(
+      continuationScope,continuationGraph,continuationOwner);
+    if(!finalizationFlight)return;
+    try {
     let schedule: NativeSchedule | null;
     try {
       schedule=await invoke<NativeSchedule|null>("native_scheduler_status");
@@ -1496,6 +1502,11 @@ async function continueAfterOutcome(): Promise<void> {
        remoteTask!==null)return;
     setBusy(false);
     return;
+    } finally {
+      // Protect the entire Rust finalizer, mobile terminal receipt AND native
+      // checkpoint erasure. Repeated callbacks cannot finalize a DAG twice.
+      finalizationFlight.release();
+    }
   }
   // A dependency-ready native INSPECTION can be staged without buying
   // another AI model request. Only original-brief-bound graph steps backed by
