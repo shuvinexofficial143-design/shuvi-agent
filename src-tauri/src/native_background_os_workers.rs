@@ -170,7 +170,7 @@ pub(super) fn spawn_internal_readonly(
     let _slot=Slot::take(root)?;
     let path=receipt_path(root,id);
     create_intent(&path,id)?;
-    let child=OwnedChild::spawn_capped(exe,args,cwd,READ_ONLY_JOB_CAP)?;
+    let child=OwnedChild::spawn_readonly_capped(exe,args,cwd,READ_ONLY_JOB_CAP)?;
     let receipt=Receipt{
         version:1,action_id:id.into(),class:"read_only_native_verifier".into(),
         phase:"os_running".into(),pid:Some(child.id()),exit_code:None,
@@ -264,6 +264,52 @@ where F:FnMut()->Result<bool,String>{
     admission::verified_sha_at(root,id,pid)?;
     Ok(VerifiedReadOnlyHash{
         action_id:id.into(),sha256:expected_sha256.into(),bytes,os_pid:pid,
+    })
+}
+/// A fixed task descriptor supplied ONLY by an internal Rust adapter after
+/// owner authorization. These fields do not constitute approval themselves;
+/// this module does not mint user approval or expose an IPC command.
+pub(super) struct PreparedReadOnlySha<'a>{
+    pub action_id:&'a str,
+    pub input:&'a Path,
+    pub expected_sha256:&'a str,
+}
+/// Runs exactly two genuinely independent Windows SHA subprocesses. Each
+/// retains its own Job Object, exact PID, admission record and OS slot.
+/// Never allows these non-GUI workers into the exclusive desktop lane.
+///
+/// The caller MUST have separately verified owner approval for *both*
+/// exact UUID+path+digest claims, and MUST provide Shuvi's combined host-RAM
+/// observation. Deny missing/unavailable host observation, never assume safe.
+/// Results stay separate: one successful hash cannot bless a failed worker.
+#[allow(dead_code)]
+pub(super) fn run_internal_readonly_pair<F>(
+    root:&Path,
+    jobs:[PreparedReadOnlySha<'_>;2],
+    host_over_limit:&F
+)->[Result<VerifiedReadOnlyHash,String>;2]
+where F:Fn()->Result<bool,String>+Sync{
+    let [first,second]=jobs;
+    // Prevent false independence, duplicated evidence names, or two claims
+    // for the same path before either worker can launch.
+    if !valid_uuid(first.action_id)||!valid_uuid(second.action_id)
+        ||first.action_id==second.action_id
+        ||first.input==second.input{
+        return [
+            Err("Duplicate/malformed read-only pair identity or source.".into()),
+            Err("Duplicate/malformed read-only pair identity or source.".into())
+        ];
+    }
+    std::thread::scope(|scope|{
+        let a=scope.spawn(||run_trusted_sha256_with_guard(
+            root,first.action_id,first.input,first.expected_sha256,||host_over_limit()));
+        let b=scope.spawn(||run_trusted_sha256_with_guard(
+            root,second.action_id,second.input,second.expected_sha256,||host_over_limit()));
+        let left=a.join().unwrap_or_else(|_|Err(
+            "First background SHA supervisor panicked; retained disk claims need owner review.".into()));
+        let right=b.join().unwrap_or_else(|_|Err(
+            "Second background SHA supervisor panicked; retained disk claims need owner review.".into()));
+        [left,right]
     })
 }
 #[allow(dead_code)]
@@ -465,6 +511,36 @@ mod tests{
         assert!(run_trusted_sha256_with_guard(&d,"bad-id",&file,&"a".repeat(64),||Ok(false)).is_err());
         assert!(read_admissions(&d).unwrap().is_empty());
         fs::remove_dir_all(d).unwrap();
+    }
+    #[test]
+    fn batch_pair_rejects_duplicate_uuid_without_starting_or_reusing_a_worker(){
+        let dir=root();let file=dir.join("input.bin");
+        fs::write(&file,b"fixture").unwrap();
+        let pair=run_internal_readonly_pair(&dir,[
+            PreparedReadOnlySha{action_id:A,input:&file,expected_sha256:&"a".repeat(64)},
+            PreparedReadOnlySha{action_id:A,input:&file,expected_sha256:&"a".repeat(64)},
+        ],&||Err("unavailable".into()));
+        assert!(pair[0].is_err()&&pair[1].is_err());
+        assert!(read_admissions(&dir).unwrap().is_empty());
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn two_background_workers_cannot_bypass_fail_closed_shared_memory_guard(){
+        let dir=root();
+        let f=dir.join("one.bin");let g=dir.join("two.bin");
+        fs::write(&f,b"fixture").unwrap();fs::write(&g,b"fixture").unwrap();
+        let pair=run_internal_readonly_pair(&dir,[
+            PreparedReadOnlySha{action_id:A,input:&f,expected_sha256:&"a".repeat(64)},
+            PreparedReadOnlySha{action_id:B,input:&g,expected_sha256:&"a".repeat(64)},
+        ],&||Err("independent host sampler unavailable".into()));
+        assert!(pair[0].is_err()&&pair[1].is_err());
+        // Where the release sidecar is absent, launch refuses the work
+        // BEFORE it reserves a UUID. If present, host guard kills each tree
+        // without claiming a verified digest. Neither path can be declared
+        // successful without independent rehash and a durable terminal.
+        assert!(read_admissions(&dir).unwrap().iter()
+            .all(|(_,phase)|phase!="sha256_verified"));
+        fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn unknown_launch_intent_survives_restart_and_never_reuses_uuid(){
