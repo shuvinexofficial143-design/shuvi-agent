@@ -11,7 +11,8 @@ test("inspect_screen binds OS-derived HWND/PID/process generation before staged 
  const insert=stage.indexOf("capture_target,",approval);
  assert.ok(native>0&&probe>native&&approval>probe&&insert>approval);
  assert.match(core,/capture_target: Option<target_window_capture::PreparedCaptureTarget>/);
- assert.match(core,/native_uia_target:None,capture_target:None/g);
+ assert.equal((core.match(/capture_target:None/g)||[]).length,3,
+  "three non-screenshot inner PendingActions must have no screenshot authority");
 });
 test("Rust executes screenshot only for its original approved prepared native target",()=>{
  const exec=core.slice(core.indexOf("async fn execute_tool_with_action_id("),
