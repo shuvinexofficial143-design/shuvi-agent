@@ -87,3 +87,17 @@ test("saved professional Edit Job revalidates canonical phase and receipt state 
   assert.match(job,/fn persisted_edit_job_ledger_rejects_fabricated_progress/);
   assert.match(job,/fn persisted_edit_job_fail_and_cancel_have_single_consistent_frontier/);
 });
+
+test("edit-job phase receipt cannot be replayed from another saved job or a damaged sibling",()=>{
+  assert.match(job,/pub fn require_unclaimed_action_in_store\(/);
+  assert.match(job,/uuid::Uuid::parse_str\(id\)/);
+  assert.match(job,/other\.phases\.iter\(\)\.any\(/);
+  assert.match(job,/let other=load\(&path\)\?;/);
+  assert.match(job,/name\.ends_with\("\.json\.tmp"\) \|\| name\.ends_with\("\.json\.bak"\)/);
+  assert.match(job,/fn edit_job_store_rejects_cross_job_action_receipt_replay/);
+  assert.match(job,/fn edit_job_store_rejects_interrupted_sibling_updates/);
+  const record=route('ToolAction::PremiereEditJobRecordAction {job_id,phase_id,action_id} => {',
+    'ToolAction::PremierePlanReviewCorrection {');
+  assert.match(record,/premiere_edit_job::require_unclaimed_action_in_store\(&path,&job_id,&action_id\)\?;/);
+  assert.ok(record.indexOf('require_unclaimed_action_in_store')<record.indexOf('job.record('));
+});
