@@ -165,7 +165,7 @@ fn require_single_link(path:&Path)->Result<(),String>{
     Ok(())
 }
 
-fn checked_input(file:&Path)->Result<String,String>{
+pub(super) fn checked_input(file:&Path)->Result<String,String>{
     if !file.is_absolute(){return Err("Background input path must be absolute.".into());}
     let meta=fs::symlink_metadata(file).map_err(|_|"Background input inaccessible.")?;
     if !meta.is_file()||meta.file_type().is_symlink()||meta.file_attributes()&0x400!=0{
