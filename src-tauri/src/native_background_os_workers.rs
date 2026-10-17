@@ -627,6 +627,42 @@ mod tests{
         ],&std::env::temp_dir()).unwrap()
     }
     #[test]
+    fn m58_fixed_sidecar_hash_pin_accepts_exact_bytes_and_denies_changes(){
+        use sha2::{Digest,Sha256};
+        let d=root();let exe=d.join("shuvi-readonly-hash-worker.exe");
+        let content=vec![0x73u8;2048];
+        fs::write(&exe,&content).unwrap();
+        let expected=format!("{:x}",Sha256::digest(&content));
+        let trusted=verify_pinned_sidecar_at(&exe,&expected).unwrap();
+        assert_eq!(trusted.path,exe);
+        // Trusted handle excludes writer or delete/rename while held.
+        assert!(OpenOptions::new().write(true).open(&exe).is_err());
+        drop(trusted);
+        fs::write(&exe,vec![0x74u8;2048]).unwrap();
+        assert!(verify_pinned_sidecar_at(&exe,&expected).is_err());
+        assert!(verify_pinned_sidecar_at(&exe,&"A".repeat(64)).is_err());
+        assert!(verify_pinned_sidecar_at(&exe,&"a".repeat(63)).is_err());
+        fs::remove_dir_all(d).unwrap();
+    }
+    #[test]
+    fn m58_sidecar_rejects_short_inputs_hardlinks_and_wrong_executable_names(){
+        use sha2::{Digest,Sha256};
+        let d=root();let exe=d.join("shuvi-readonly-hash-worker.exe");
+        fs::write(&exe,vec![12u8;24]).unwrap();
+        let small=format!("{:x}",Sha256::digest(fs::read(&exe).unwrap()));
+        assert!(verify_pinned_sidecar_at(&exe,&small).is_err());
+        let content=vec![15u8;2048];fs::write(&exe,&content).unwrap();
+        let digest=format!("{:x}",Sha256::digest(&content));
+        let alias=d.join("sidecar-hardlink-alias.exe");
+        fs::hard_link(&exe,&alias).unwrap();
+        assert!(verify_pinned_sidecar_at(&exe,&digest).is_err());
+        fs::remove_file(&alias).unwrap();
+        assert!(verify_pinned_sidecar_at(&alias,&digest).is_err());
+        assert!(verify_pinned_sidecar_at(&d.join("foreign.exe"),&digest).is_err());
+        assert!(verify_pinned_sidecar_at(&exe,&digest).is_ok());
+        fs::remove_dir_all(d).unwrap();
+    }
+    #[test]
     #[ignore="internal Windows read-only OS worker fixture"]
     fn fixture_sleep(){thread::sleep(Duration::from_secs(4));}
     #[test]
