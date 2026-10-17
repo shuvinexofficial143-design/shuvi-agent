@@ -10785,9 +10785,11 @@ ConvertTo-Json -InputObject @($items) -Compress -Depth 3"#;
         ToolAction::UiDiscover { window } => {
             let root_script = ui_root_script(Some(&window));
             let attestation = native_uia_window_guard::readonly_window_attestation_script();
+            let control_attestation = native_uia_window_guard::readonly_control_reattestation_script();
             let script = format!(r#"Add-Type -AssemblyName UIAutomationClient
 {root_script}
 {attestation}
+{control_attestation}
 $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
 $interactive = [System.Collections.Generic.List[object]]::new()
 $context = [System.Collections.Generic.List[object]]::new()
@@ -10805,6 +10807,7 @@ for ($i=0; $i -lt [Math]::Min($all.Count, 1200); $i++) {{
         $item = [PSCustomObject]@{{
             Name=$n; AutomationId=$id; ControlType=$role
             ControlRuntimeId=[int[]]$shuviControlRid
+            __ShuviOriginalElement=$e
             ClassName=[string]$e.Current.ClassName
             IsEnabled=[bool]$e.Current.IsEnabled
             IsOffscreen=[bool]$e.Current.IsOffscreen
@@ -10826,6 +10829,11 @@ for ($i=0; $i -lt [Math]::Min($all.Count, 1200); $i++) {{
 }}
 $items = @($interactive | Select-Object -First 110) + @($context | Select-Object -First 40)
 Assert-ShuviObservedWindow
+foreach ($item in $items) {{
+    Assert-ShuviObservedControl -element $item.__ShuviOriginalElement -observed $item -rootPid $shuviReadPid
+    [void]$item.PSObject.Properties.Remove('__ShuviOriginalElement')
+}}
+Assert-ShuviObservedWindow
 ConvertTo-Json -InputObject @($items) -Compress -Depth 3"#);
             let output = run_hidden_powershell(&script)?;
             if !output.status.success() {
@@ -10844,6 +10852,7 @@ ConvertTo-Json -InputObject @($items) -Compress -Depth 3"#);
             let attestation = if window.is_some() {
                 native_uia_window_guard::readonly_window_attestation_script()
             } else { String::new() };
+            let control_attestation = native_uia_window_guard::readonly_control_reattestation_script();
             let finish_attestation = if window.is_some() {
                 "Assert-ShuviObservedWindow"
             } else { "" };
@@ -10852,6 +10861,7 @@ ConvertTo-Json -InputObject @($items) -Compress -Depth 3"#);
 {condition}
 {root_script}
 {attestation}
+{control_attestation}
 # Global ui_find remains an unbound read, not an app-scoped generation proof.
 $shuviObservedStartTicks = $null
 if ($null -ne (Get-Variable -Name shuviReadStartTicks -ErrorAction SilentlyContinue)) {{
@@ -10859,6 +10869,7 @@ if ($null -ne (Get-Variable -Name shuviReadStartTicks -ErrorAction SilentlyConti
 }}
 $matches = Resolve-ShuviUiMatches -root $root -condition $condition
 $items = @()
+$shuviReadElements = [System.Collections.Generic.List[object]]::new()
 for ($i = 0; $i -lt [Math]::Min($matches.Count, 25); $i++) {{
     $e = $matches.Item($i)
     [int[]]$shuviControlRid = $e.GetRuntimeId()
@@ -10899,6 +10910,7 @@ for ($i = 0; $i -lt [Math]::Min($matches.Count, 25); $i++) {{
             $shuviVerticalPercent = [double]$shuviScroll.Current.VerticalScrollPercent
         }}
     }} catch {{}}
+    $shuviReadElements.Add($e)
     $items += [PSCustomObject]@{{
         Name = $e.Current.Name
         ControlRuntimeId = [int[]]$shuviControlRid
@@ -10919,6 +10931,10 @@ for ($i = 0; $i -lt [Math]::Min($matches.Count, 25); $i++) {{
     }}
 }}
 if ($items.Count -eq 0) {{ throw 'No matching UI element found. Use ui_discover to inspect the actual labels, automation IDs and control roles.' }}
+{finish_attestation}
+for ($i = 0; $i -lt $items.Count; $i++) {{
+    Assert-ShuviObservedControl -element $shuviReadElements[$i] -observed $items[$i] -rootPid ([int]$root.Current.ProcessId)
+}}
 {finish_attestation}
 $items | ConvertTo-Json -Compress"#
             );

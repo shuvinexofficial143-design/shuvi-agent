@@ -632,3 +632,29 @@ Run only with separate owner consent on a disposable desktop/test fixture.
   claiming source-tested. Windows live OS/UIA acceptance is **not performed**.
   Native API races remain nontransactional and require disposable Windows
   host testing with separate owner permission.
+
+## Milestone 12 — Exact UIA control reattestation before readback output
+
+- Prior 21/21 successful CI at SHA 75e87b3 is the baseline. A still-live
+  named-window root could outlast controls replaced/disabled by an editor
+  during ui_discover or ui_find. Root attestation alone did not recheck
+  each selected control after enumeration.
+- New native read-only helper re-reads each *original* AutomationElement's
+  signed RuntimeId, Name, AutomationId, role, enabled/offscreen state and
+  app PID (for bound named reads). ui_find also rechecks focus, toggle,
+  expansion, selection and scroll values when provider evidence exists.
+  Any drift or missing provider refuses the whole observation.
+- ui_discover rechecks only its max 150 selected results, removes the
+  original temporary UIA element references before JSON output, and
+  performs another root attestation. ui_find rechecks max 25 elements
+  and app root again before emitting output. Desktop-wide unbound
+  ui_find remains read-only and does not claim process-bound evidence.
+- Regression in scripts/shuvi39-control-lifetime-reattestation.test.mjs
+  covers actual native arm ordering, bounds, safe ephemeral references,
+  identity/state checks, and fail-closed readback for changed controls.
+- Shared src-tauri/src/lib.rs overlap only Team39 read-only find/discover
+  arms. Owner approval, Rust UUID, mutation path, leases and journaling
+  unchanged; no silent action retries, merge or live desktop actions.
+- Source tested status must be established only from exact new SHA CI;
+  dynamic Windows UIA provider redraw and Adobe/Blender live acceptance
+  still need separately owner-authorized disposable-host verification.

@@ -182,6 +182,61 @@ pub(super) fn prepared_control_probe(
 // A read-only UIA query is observation evidence, not merely a successful
 // PowerShell process. Validate its selected top-level HWND/PID against Win32
 // both before enumeration and after gathering results. No focus or restore.
+
+// Recheck each originally observed UIA element before publishing a read receipt.
+pub(super) fn readonly_control_reattestation_script() -> &'static str {
+    r#"
+function Assert-ShuviObservedControl {
+ param([Parameter(Mandatory=$true)]$element,[Parameter(Mandatory=$true)]$observed,[int]$rootPid=0)
+ try {
+  if ($null -eq $element -or $null -eq $observed) { throw 'Missing UIA control.' }
+  $current=$element.Current
+  if ($rootPid -gt 0 -and [int]$current.ProcessId -ne $rootPid) { throw 'Wrong process.' }
+  if ([string]$current.Name -cne [string]$observed.Name -or
+      [string]$current.AutomationId -cne [string]$observed.AutomationId -or
+      [string]$current.ControlType.ProgrammaticName -cne [string]$observed.ControlType -or
+      [bool]$current.IsEnabled -ne [bool]$observed.IsEnabled -or
+      [bool]$current.IsOffscreen -ne [bool]$observed.IsOffscreen) {
+    throw 'Control identity or visibility changed.'
+  }
+  [int[]]$currentRid=$element.GetRuntimeId()
+  [int[]]$boundRid=$observed.ControlRuntimeId
+  if ($null -eq $currentRid -or $null -eq $boundRid -or
+      $currentRid.Count -lt 1 -or $currentRid.Count -gt 64 -or
+      $currentRid.Count -ne $boundRid.Count) { throw 'Control RuntimeId changed.' }
+  for ($i=0;$i -lt $currentRid.Count;$i++) {
+    if ($currentRid[$i] -ne $boundRid[$i]) { throw 'Control RuntimeId changed.' }
+  }
+  if ($observed.PSObject.Properties.Name -contains 'HasKeyboardFocus') {
+    if ([bool]$current.HasKeyboardFocus -ne [bool]$observed.HasKeyboardFocus) { throw 'Focus changed.' }
+  }
+  if ($null -ne $observed.ToggleState) {
+    $p=$null
+    if (-not $element.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern,[ref]$p)) { throw 'Missing toggle.' }
+    if ([string]([System.Windows.Automation.TogglePattern]$p).Current.ToggleState -cne [string]$observed.ToggleState) { throw 'Toggle changed.' }
+  }
+  if ($null -ne $observed.ExpandCollapseState) {
+    $p=$null
+    if (-not $element.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern,[ref]$p)) { throw 'Missing expansion.' }
+    if ([string]([System.Windows.Automation.ExpandCollapsePattern]$p).Current.ExpandCollapseState -cne [string]$observed.ExpandCollapseState) { throw 'Expansion changed.' }
+  }
+  if ($null -ne $observed.IsSelected) {
+    $p=$null
+    if (-not $element.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern,[ref]$p)) { throw 'Missing selection.' }
+    if ([bool]([System.Windows.Automation.SelectionItemPattern]$p).Current.IsSelected -ne [bool]$observed.IsSelected) { throw 'Selection changed.' }
+  }
+  if ($null -ne $observed.VerticalScrollPercent) {
+    $p=$null
+    if (-not $element.TryGetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern,[ref]$p)) { throw 'Missing scroll.' }
+    if ([double]([System.Windows.Automation.ScrollPattern]$p).Current.VerticalScrollPercent -ne [double]$observed.VerticalScrollPercent) { throw 'Scroll changed.' }
+  }
+ } catch {
+   throw 'Selected UIA control changed or became inaccessible during read-only inspection. Discard readback.'
+ }
+}
+"#
+}
+
 pub(super) fn readonly_window_attestation_script() -> String {
     format!(r#"{WIN32_MUTATION_GUARD}
 $shuviReadHwnd = [IntPtr]([int64]$root.Current.NativeWindowHandle)
