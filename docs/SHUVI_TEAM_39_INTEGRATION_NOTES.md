@@ -871,3 +871,18 @@ Run only with separate owner consent on a disposable desktop/test fixture.
 - Representative point sampling is NOT a proof against transparent,
   mid-copy or 100% pixel-level overlays. Full live acceptance still
   requires owner permission and manual visual verification.
+
+## Milestone 20 — Bound raw screenshot bitmap memory before allocation
+
+- A small PNG file can still represent a huge uncompressed Windows bitmap,
+  exhausting memory before Rust ever checks its compressed file size.
+  The native PowerShell capture now rejects dimensions above 36,864,000
+  pixels *before* allocating a System.Drawing.Bitmap or CopyFromScreen.
+- Rust independently checks Width*Height using overflow-safe checked_mul
+  on the attested receipt after the PNG header check, before releasing the
+  file path. This is separate from the existing 96 MiB compressed PNG cap.
+  Captures up to 7680 x 4320 (8K UHD) remain below the pixel ceiling,
+  while oversized window rectangles fail closed.
+- New native Rust unit tests distinguish allowed 8K from an above-budget
+  bitmap with matching PNG header. These limits are resource ceilings,
+  not an Adobe/Blender live performance benchmark.

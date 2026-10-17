@@ -11,6 +11,8 @@ use std::{fs, io::Read, path::PathBuf};
 // Bounding the PNG on disk also bounds screenshot integrity verification
 // without allocating a second full-resolution bitmap in Shuvi's process.
 const MAX_CAPTURE_PNG_BYTES: u64 = 96 * 1024 * 1024;
+// ~148 MiB raw BGRA bitmap at most. Stops giant 16k x 16k GDI allocations.
+const MAX_CAPTURE_PIXELS: u64 = 36_864_000;
 use uuid::Uuid;
 
 #[cfg(target_os = "windows")]
@@ -134,6 +136,11 @@ try {
     $height = $rect.Bottom - $rect.Top
     if ($width -lt 160 -or $height -lt 100 -or $width -gt 16384 -or $height -gt 16384) {
         throw 'Target window bounds are invalid or too large to capture.'
+    }
+    # Check bitmap RAM allocation size BEFORE New-Object Bitmap or any
+    # potentially expensive screen-copy operation.
+    if (([int64]$width * [int64]$height) -gt 36864000) {
+        throw 'Target screenshot exceeds the bounded 36.9 megapixel capture budget. No image sent.'
     }
     $bounds = [System.Drawing.Rectangle]::new($rect.Left, $rect.Top, $width, $height)
     $desktop = [System.Windows.Forms.SystemInformation]::VirtualScreen
@@ -389,6 +396,9 @@ fn verify_capture_receipt(receipt: &Value, png: &[u8], bytes: u64) -> Result<Str
     if bytes < 33 || width != u64::from(png_width) || height != u64::from(png_height) {
         return Err("Screenshot dimensions disagree with observed HWND; no image sent.".into());
     }
+    if width.checked_mul(height).is_none_or(|pixels| pixels > MAX_CAPTURE_PIXELS) {
+        return Err("Screenshot pixel budget exceeded; no image sent.".into());
+    }
     // Avoid exporting the raw birth tick value to the model; validation is
     // performed here in Rust before publishing the target identity label.
     let _ = birth_ticks;
@@ -483,6 +493,18 @@ mod tests {
         let mut invalid = png_header(1920, 1080);
         invalid[0] = 0;
         assert!(verify_capture_receipt(&receipt(), &invalid, 300000).is_err());
+    }
+    #[test]
+    fn rejects_large_png_dimensions_to_bound_raw_bitmap_memory() {
+        let mut big = receipt();
+        big["Width"] = serde_json::json!(7680);
+        big["Height"] = serde_json::json!(4800);
+        // This would request more than 36,864,000 pixels.
+        assert!(verify_capture_receipt(&big, &png_header(7680, 4800), 500_000).is_err());
+        let mut within = receipt();
+        within["Width"] = serde_json::json!(7680);
+        within["Height"] = serde_json::json!(4320);
+        assert!(verify_capture_receipt(&within, &png_header(7680, 4320), 500_000).is_ok());
     }
     #[test]
     fn fails_closed_for_invalid_or_missing_window_identity_and_geometry() {
