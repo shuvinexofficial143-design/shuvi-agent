@@ -270,11 +270,15 @@ mod tests{
         assert!(two.cancel_exact(A).is_err());
         one.cancel_exact(A).unwrap();
         two.cancel_exact(B).unwrap();
-        assert!(launch_again_denied(&dir,A));
         let first:Receipt=serde_json::from_slice(&fs::read(receipt_path(&dir,A)).unwrap()).unwrap();
         assert_eq!(first.phase,"os_cancelled_unverified");
         assert!(!first.app_verified);
-        drop(one);drop(two);
+        drop(one);drop(two); // release BOTH kernel slots before the replay check
+        assert!(launch_again_denied(&dir,A));
+        // A different UUID may still acquire a freed slot after terminal Stop.
+        let mut fresh=launch(&dir,C);
+        fresh.cancel_exact(C).unwrap();
+        drop(fresh);
         fs::remove_dir_all(dir).unwrap();
     }
     fn launch_again_denied(root:&Path,id:&str)->bool{
