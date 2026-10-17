@@ -199,8 +199,11 @@ mod tests{
     }
     #[test]
     fn invalid_or_stale_shaped_revision_and_unrecognized_stages_denied(){
-        for revision in ["","a","g".repeat(64).as_str(),"A".repeat(64).as_str()]{
-            assert!(build("model1",revision).is_err());
+        let bad_revisions=vec![
+            String::new(),"a".to_string(),"g".repeat(64),"A".repeat(64),
+        ];
+        for revision in bad_revisions{
+            assert!(build("model1",&revision).is_err());
         }
         assert!(build("arbitrary.python.run",&"f".repeat(64)).is_err());
     }
