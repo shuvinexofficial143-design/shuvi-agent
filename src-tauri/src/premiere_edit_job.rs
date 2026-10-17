@@ -66,6 +66,7 @@ pub struct Phase {
     #[serde(default)] pub action_id:Option<String>,
     #[serde(default)] pub review_session_id:Option<String>,
     #[serde(default)] pub error:Option<String>,
+    #[serde(default)] pub proposal_issued_at_ms:Option<u64>,
 }
 
 #[derive(Debug,Clone,Deserialize,Serialize)]
@@ -195,7 +196,7 @@ impl Job {
         }
         let mut phases=Vec::new();
         let mut push=|id:&str,tool:&str|phases.push(Phase{
-            id:id.into(),tool:tool.into(),state:"pending".into(),action_id:None,review_session_id:None,error:None
+            id:id.into(),tool:tool.into(),state:"pending".into(),action_id:None,review_session_id:None,error:None,proposal_issued_at_ms:None
         });
         if request.media_prep.is_some(){push("media_prep","premiere_prepare_media_batch");}
         if request.scene_detection.is_some(){
@@ -261,12 +262,52 @@ impl Job {
     }
     pub fn phase(&self,id:&str)->Option<&Phase>{self.phases.iter().find(|phase|phase.id==id)}
 
+    /// Persist the first proposal time for the current phase. A repeated read-only
+    /// proposal must not reset the receipt boundary and invalidate a legitimate
+    /// separately approved action that is awaiting recording.
+    pub fn issue_proposal(&mut self,phase_id:&str,now_ms:u64)->Result<(),String>{
+        if self.status!="running"||now_ms<self.created_at_ms {
+            return Err("Edit-job proposal requires a running job and valid timestamp.".into());
+        }
+        let phase=self.pending_mut().ok_or("Edit job has no pending phase.")?;
+        if phase.id!=phase_id {return Err("Cannot issue a proposal for a later phase.".into());}
+        if phase.proposal_issued_at_ms.is_none() {
+            phase.proposal_issued_at_ms=Some(now_ms);
+        }
+        self.updated_at_ms=now_ms;
+        bounded(self)?;
+        Ok(())
+    }
+
+    /// Audit receipt gate: tool identity and live project/sequence are verified
+    /// by the caller; this also forbids pre-proposal receipts and same-job replay.
+    /// This does not cryptographically attest full action arguments or cross-job use.
+    pub fn require_issued_action_receipt(
+        &self,phase_id:&str,action_id:&str,receipt_timestamp_ms:u64
+    )->Result<(),String>{
+        if self.status!="running" {return Err("Edit job is not running.".into());}
+        let phase=self.pending().ok_or("Edit job has no pending phase.")?;
+        if phase.id!=phase_id {return Err("Audit receipt belongs to another edit-job phase.".into());}
+        let issued=phase.proposal_issued_at_ms
+            .ok_or("Run premiere_edit_job_next and inspect the proposal before recording its approved action.")?;
+        if receipt_timestamp_ms<issued || receipt_timestamp_ms<self.created_at_ms {
+            return Err("Action receipt predates this edit-job phase proposal.".into());
+        }
+        if action_id.is_empty() || self.phases.iter().any(|p|p.action_id.as_deref()==Some(action_id)) {
+            return Err("Action ID is absent or already consumed by another phase of this edit job.".into());
+        }
+        Ok(())
+    }
+
     pub fn record(&mut self,phase_id:&str,tool:&str,action_id:&str,success:bool,now_ms:u64)->Result<(),String>{
         if self.status!="running"{return Err("Edit job is not running.".into());}
         let expected=self.pending().ok_or("Edit job has no pending phase.")?;
         if expected.id!=phase_id||expected.tool!=tool{return Err("Audit receipt does not match the next edit-job phase.".into());}
         if expected.id=="review" && expected.tool=="premiere_review_session_start" {
             return Err("Iterative review phase completes only from bounded completed review-session evidence.".into());
+        }
+        if action_id.is_empty() || self.phases.iter().any(|p|p.action_id.as_deref()==Some(action_id)) {
+            return Err("An action ID must not be absent or reused in this edit job.".into());
         }
         let phase=self.pending_mut().ok_or("Edit job phase disappeared.")?;
         phase.action_id=Some(action_id.into());
@@ -551,6 +592,36 @@ mod tests{
                 "video_track":2,"audio_track":0,"static_fields":{}}
         })).unwrap();
         assert!(request.validate().is_err());
+    }
+    #[test]fn edit_job_phase_proposal_and_receipt_are_temporally_bound(){
+        let mut job=Job::new("job".into(),request(),"P",Some("C:/job.prproj"),"S",100).unwrap();
+        assert!(job.require_issued_action_receipt("review","first",101).is_err());
+        assert!(job.issue_proposal("export_preflight",101).is_err());
+        job.issue_proposal("review",110).unwrap();
+        assert!(job.require_issued_action_receipt("review","first",109).is_err());
+        assert!(job.require_issued_action_receipt("review","first",110).is_ok());
+        job.issue_proposal("review",120).unwrap();
+        assert_eq!(job.pending().unwrap().proposal_issued_at_ms,Some(110));
+        job.record("review","premiere_review_frames","first",true,121).unwrap();
+        job.issue_proposal("export_preflight",130).unwrap();
+        assert!(job.require_issued_action_receipt("export_preflight","first",131).is_err());
+        assert!(job.require_issued_action_receipt("export_preflight","second",129).is_err());
+        assert!(job.require_issued_action_receipt("export_preflight","second",131).is_ok());
+        assert!(job.record("export_preflight","premiere_plan_export","first",true,132).is_err());
+        job.record("export_preflight","premiere_plan_export","second",true,132).unwrap();
+        assert_eq!(job.pending().unwrap().id,"export_dispatch");
+    }
+    #[test]fn legacy_edit_job_phase_is_compatible_but_requires_new_proposal(){
+        let job=Job::new("old".into(),request(),"P",None,"S",100).unwrap();
+        let mut old=serde_json::to_value(&job).unwrap();
+        for phase in old["phases"].as_array_mut().unwrap() {
+            phase.as_object_mut().unwrap().remove("proposal_issued_at_ms");
+        }
+        let mut restored:Job=serde_json::from_value(old).unwrap();
+        assert_eq!(restored.pending().unwrap().proposal_issued_at_ms,None);
+        assert!(restored.require_issued_action_receipt("review","older",101).is_err());
+        restored.issue_proposal("review",105).unwrap();
+        assert!(restored.require_issued_action_receipt("review","new",105).is_ok());
     }
     #[test]fn one_primary_delivery_only(){
         let value=json!({
