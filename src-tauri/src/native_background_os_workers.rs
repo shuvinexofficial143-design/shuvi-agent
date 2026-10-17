@@ -19,6 +19,10 @@ mod contained;
 mod admission;
 #[path = "native_background_hash_readback.rs"]
 mod hash_readback;
+// M52 bounded durable admission for separate approved parent SHA jobs.
+// Internal only; the exclusive desktop DAG and public IPC remain unchanged.
+#[path = "native_background_parent_queue.rs"]
+pub(crate) mod parent_queue;
 use contained::OwnedChild;
 
 const MAX_BACKGROUND_WORKERS:usize=2;
