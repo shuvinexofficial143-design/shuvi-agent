@@ -10,6 +10,10 @@ use tauri::{AppHandle,Manager};
 // existing native lease + on-disk UUID journal before launching a child.
 #[path = "native_owned_process.rs"]
 pub(crate) mod owned_process;
+// Independent read-only Windows OS subprocess foundation; no public launch IPC.
+#[cfg(windows)]
+#[path = "native_background_os_workers.rs"]
+pub(crate) mod background_os_workers;
 #[path = "native_worker_progress.rs"]
 pub(crate) mod worker_progress;
 #[path = "native_attested_worker_stage.rs"]
