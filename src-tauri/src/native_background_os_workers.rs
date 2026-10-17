@@ -405,7 +405,7 @@ fn trusted_sidecar()->Result<PinnedSidecar,String>{
     }
     // A second hardlink can mutate the inode without renaming this pathname.
     // M46's Win32 BY_HANDLE_FILE_INFORMATION check rejects link-count !=1.
-    super::background_os_workers::admission::require_single_link(&sidecar)?;
+    admission::require_single_link(&sidecar)?;
     let mut digest=Sha256::new();let mut buf=[0u8;65536];let mut count=0u64;
     loop{
         let n=std::io::Read::read(&mut handle,&mut buf)
