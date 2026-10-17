@@ -350,10 +350,11 @@ mod tests{
         // Terminal OS result frees admission capacity, NOT the UUID or input.
         assert!(spawn_admitted_readonly(&dir,C,&input_a,&"c".repeat(64),
             &exe,&args,&std::env::temp_dir()).is_err());
+        drop(a); // the original process slot is freed only after OS tree termination
         let mut c=spawn_admitted_readonly(&dir,C,&input_c,&"c".repeat(64),
             &exe,&args,&std::env::temp_dir()).unwrap();
         b.cancel_exact(B).unwrap();c.cancel_exact(C).unwrap();
-        drop(a);drop(b);drop(c);
+        drop(b);drop(c);
         let snap=read_admissions(&dir).unwrap();
         assert_eq!(snap.len(),3);
         assert!(snap.iter().all(|e|e.1=="os_cancelled_unverified"));
