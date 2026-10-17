@@ -1,4 +1,4 @@
-import {cleanObservedLabel} from "./native-observation-text.mjs";
+import {cleanObservedLabel,exactUiSelector} from "./native-observation-text.mjs";
 // A verified native window read restricts subsequent desktop mutations.
 // Without prior read, trusted Rust window matching still applies.
 const KNOWN_APPS=[
@@ -15,6 +15,11 @@ const processConflict=row=>{
  return titleApps.length>0&&processApps.length>0&&
   (titleApps.length!==1||processApps.length!==1||titleApps[0]!==processApps[0]);
 };
+// OS creation time is opaque i64 evidence: NEVER parse as a JS Number.
+export function normalizedProcessStartTicks(value){
+ if(typeof value!=="string"||! /^[1-9][0-9]{0,18}$/.test(value))return null;
+ try{return BigInt(value)<=9223372036854775807n?value:null;}catch{return null;}
+}
 const MUTATIONS=new Set(["ui_click","ui_set_value","ui_send_keys","ui_toggle","ui_focus","ui_scroll","ui_expand_collapse"]);
 export function observedWindowInventory(result,audited){
  if(audited!==true||result?.success!==true||result.tool!=="ui_windows")return null;
@@ -30,9 +35,16 @@ export function observedWindowInventory(result,audited){
   if(!rows.every(x=>x&&typeof x==="object"&&!Array.isArray(x)&&
    typeof x.Name==="string"&&cleanObservedLabel(x.Name,180)&&
    Number.isSafeInteger(x.ProcessId)&&x.ProcessId>0&&
-   Number.isSafeInteger(x.NativeWindowHandle)&&x.NativeWindowHandle>0))return [];
+   Number.isSafeInteger(x.NativeWindowHandle)&&x.NativeWindowHandle>0&&
+   (!Object.hasOwn(x,"ProcessStartTicks")||
+    normalizedProcessStartTicks(x.ProcessStartTicks)!==null)))return [];
+  // A single native HWND must not appear twice, even with different titles.
+  // Otherwise one apparent unique label might resolve to contradictory rows.
+  if(new Set(rows.map(x=>x.NativeWindowHandle)).size!==rows.length)return [];
   return rows.map(x=>({title:cleanObservedLabel(x.Name,180),pid:x.ProcessId,hwnd:x.NativeWindowHandle,
-   process:typeof x.ProcessName==="string"?cleanObservedLabel(x.ProcessName,120):""}));
+   process:typeof x.ProcessName==="string"?cleanObservedLabel(x.ProcessName,120):"",
+   ...(Object.hasOwn(x,"ProcessStartTicks")?
+    {processStartTicks:normalizedProcessStartTicks(x.ProcessStartTicks)}:{})}));
  }catch{return [];}
 }
 export function checkObservedMutationTarget(proposal,observed){
@@ -41,10 +53,8 @@ export function checkObservedMutationTarget(proposal,observed){
  if(!Array.isArray(observed)||!observed.length)
   return {allowed:false,reason:"Window observation missing or invalid; request ui_windows."};
  const title=proposal?.arguments?.window;
- if(typeof title==="string"&&cleanObservedLabel(title,180)!==title.trim())
-  return {allowed:false,reason:"Proposed window title contains hidden or control formatting."};
- if(typeof title!=="string"||!title.trim()||title.length>180)
-  return {allowed:false,reason:"Explicit verified target window required."};
+ if(!exactUiSelector(title))
+  return {allowed:false,reason:"Explicit exact window title required; no trimmed/hidden/control formatting."};
  const exact=observed.filter(x=>x.title.toLocaleLowerCase("en-US")===title.trim().toLocaleLowerCase("en-US"));
  if(exact.some(processConflict))return {allowed:false,reason:"Observed window title conflicts with the reported process application."};
  // Conflicting rows assigning the same handle to different names/processes
@@ -63,13 +73,21 @@ export function checkObservedMutationTarget(proposal,observed){
 // Repeated read-only UI lookup on two windows sharing a verified exact title
 // cannot identify a unique target. Avoid paid loops: ask for specificity.
 export function checkAmbiguousReadWindow(proposal,observed){
- if(!["ui_find","ui_discover"].includes(proposal?.tool)||!Array.isArray(observed))
+ // Image requests also need the same unique HWND/PID grounding as UIA reads:
+ // a stale or duplicated window must not trigger a paid capture of another app.
+ if(!["ui_find","ui_discover","inspect_screen"].includes(proposal?.tool)||!Array.isArray(observed))
   return {allowed:true,reason:"native_lookup_required"};
- if(observed.length===0)return {allowed:false,reason:"Window snapshot is stale or invalid; inspect ui_windows first."};
  const target=proposal?.arguments?.window;
- if(typeof target!=="string"||!target.trim())return {allowed:true,reason:"native_lookup_required"};
- if(cleanObservedLabel(target,180)!==target.trim())
-  return {allowed:false,reason:"Read-only window name contains hidden or control formatting."};
+ // An explicitly approved full-desktop inspection has separate native consent
+ // and must not be mistaken for an observed application capture.
+ if(proposal.tool==="inspect_screen"&&exactUiSelector(target)&&target.toLowerCase()==="desktop")
+  return {allowed:true,reason:"explicit_desktop_capture_requires_native_approval"};
+ if(observed.length===0)return {allowed:false,reason:"Window snapshot is stale or invalid; inspect ui_windows first."};
+ if(proposal.tool==="inspect_screen"&&(typeof target!=="string"||!target.trim()))
+  return {allowed:false,reason:"Screen inspection requires an explicit observed window title."};
+ if(target==null||target==="")return {allowed:true,reason:"native_lookup_required"};
+ if(!exactUiSelector(target))
+  return {allowed:false,reason:"Read-only window name contains hidden/trimmed/control formatting."};
  const matches=observed.filter(x=>typeof x.title==="string"&&
   x.title.toLocaleLowerCase("en-US")===target.trim().toLocaleLowerCase("en-US"));
  if(matches.some(processConflict))return {allowed:false,reason:"Observed window title conflicts with process identity."};

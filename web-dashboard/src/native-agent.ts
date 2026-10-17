@@ -15,6 +15,10 @@ import {newEvidence,recordAuditedEvidence,evidenceSummary} from "./native-task-e
 import {summarizeWindowObservation} from "./native-window-observation.mjs";
 import {windowGoalEvidence,goalEvidenceLabel} from "./native-goal-evidence.mjs";
 import {observedWindowInventory,checkObservedMutationTarget,checkAmbiguousReadWindow} from "./native-window-target-guard.mjs";
+import {newAuditedWindowObservation,currentObservedWindows} from "./native-window-observation-session.mjs";
+import {newAuditedControlObservation,checkObservedControlTarget} from "./native-ui-control-session.mjs";
+import {needsUiReadback,newPendingUiReadback,checkPendingUiReadback,auditUiReadback} from "./native-ui-readback-session.mjs";
+import {auditedNativeUiaExpiry} from "./native-uia-expiry-recovery.mjs";
 import {verifiedExecutionReceipt,contradictsFailureReceipt} from "./native-action-receipts.mjs";
 import {requiresNewWindowObservation} from "./native-ui-snapshot-lifetime.mjs";
 import {taskOutcomeSummary} from "./native-task-outcome.mjs";
@@ -35,12 +39,14 @@ type Runtime = {shuvi_memory_mb:number;managed_children_count:number};
 type NativeRoute = {role:string;provider:string;model:string;base_url:string};
 type PendingTask = {action:Pending;threadId:string;promptIndex:number;
  route:NativeRoute;objective:string;step:number;seen:Set<string>;usedIds:Set<string>;
- recoveryFrom?:"ui_find"|"ui_discover"|null};
+ recoveryFrom?:"ui_find"|"ui_discover"|null;proposal?:Record<string,unknown>};
 // UI discovery output must reach the Master as observed data, not be silently
 // cut after the first dozen controls. Keep a bounded, compact, field allowlisted
 // inventory to avoid forwarding arbitrary control content as instructions.
 function compactObservedUi(result:ActionResult):string|null {
  if(!["ui_windows","ui_discover","ui_find"].includes(result.tool))return null;
+ // No plausible-but-invalid windows in Master context.
+ if(result.tool==="ui_windows"&&!observedWindowInventory(result,true)?.length)return null;
  if(typeof result.stdout!=="string"||result.stdout.length>250000)return null;
  try{
   const raw=JSON.parse(result.stdout) as unknown;
@@ -57,7 +63,7 @@ function compactObservedUi(result:ActionResult):string|null {
    const item:Record<string,string|number|boolean>={};
    const pairs=result.tool==="ui_windows"
     ?[["Name","title"],["ProcessId","pid"],["ProcessName","process"],["NativeWindowHandle","hwnd"],["ClassName","class"]]
-    :[["Name","name"],["AutomationId","id"],["ControlType","role"],["IsEnabled","enabled"],
+    :[["Name","name"],["AutomationId","id"],["ControlType","role"],["IsEnabled","enabled"],["IsOffscreen","offscreen"],
        ...(result.tool==="ui_find"?[["Bounds","bounds"]]:[])];
    for(const [field,label] of pairs){
     const value=source[field];
@@ -292,7 +298,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    taskStates.clear();
    taskEvidence.clear();
    verifiedWindows.clear();
-   observedWindows.clear();
+   observedWindows.clear();observedControls.clear();pendingUiReadback.clear();
    taskStatus.textContent="Previous task acknowledged; start a fresh Windows task.";
    goalStatus.textContent="Old task objective not independently verified.";
    recoveryAcknowledged=true;
@@ -325,10 +331,13 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    modelRequests:b.modelRequests,expiresAt:b.expiresAt,phase,actionId
   });
   if(saved)taskRecoveryRevisions.set(b,revision);
-  if(saved&&phase==="outcome_unknown"){
-   // Protect an uncertain action/provider request even without a restart.
+  if(saved&&(phase==="outcome_unknown"||phase==="native_denied")){
+   // An audited denial is nonexecution evidence, but still requires owner
+   // review before creating a new Windows task. It cannot grant new approval.
    recoveryAcknowledged=false;
-   recoveryNotice.textContent="Current Windows task outcome is UNKNOWN. Review Rust Activity/Audit before acknowledging and starting another desktop task. No automatic retry.";
+   recoveryNotice.textContent=phase==="native_denied"
+    ?"Rust Audit recorded an expired, denied native UIA approval. No execution was requested by that action. Review Activity/Audit and acknowledge this prior task before starting another desktop task."
+    :"Current Windows task outcome is UNKNOWN. Review Rust Activity/Audit before acknowledging and starting another desktop task. No automatic retry.";
    recoveryNotice.hidden=false;
    recoveryCheck.hidden=!actionId;
    recoveryDismiss.hidden=false;
@@ -356,7 +365,18 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
  };
  const taskEvidence=new Map<string,ReturnType<typeof newEvidence>>();
  const verifiedWindows=new Map<string,NonNullable<ReturnType<typeof windowGoalEvidence>>>();
- const observedWindows=new Map<string,NonNullable<ReturnType<typeof observedWindowInventory>>>();
+ const observedWindows=new Map<string,ReturnType<typeof newAuditedWindowObservation>>();
+ const observedControls=new Map<string,ReturnType<typeof newAuditedControlObservation>>();
+ const pendingUiReadback=new Map<string,ReturnType<typeof newPendingUiReadback>>();
+ const nativeControlGate=(id:string,proposal:Record<string,unknown>)=>
+  checkObservedControlTarget(proposal,observedControls.has(id)?observedControls.get(id):undefined,
+   observedWindows.get(id)??null);
+ const nativeReadbackGate=(id:string,proposal:Record<string,unknown>)=>
+  checkPendingUiReadback(proposal,pendingUiReadback.get(id)??null);
+  // Keep a recorded-but-expired/invalidated observation distinct from no
+  // observation; never silently downgrade a stale snapshot to native fallback.
+  const activeObservedWindows=(id:string)=>observedWindows.has(id)
+   ? currentObservedWindows(observedWindows.get(id)):null;
  const getTask=(id:string)=>taskStates.get(id)??null;
  function updateTask(id:string,state:ReturnType<typeof createTask>|null){if(!state)return;taskStates.set(id,state);taskStatus.textContent=taskSummary(state);onChange();}
  function haltTask(id:string,why:string){const s=getTask(id);if(s)updateTask(id,pauseTask(s,why));}
@@ -479,6 +499,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    redactNativeMessage(goalEvidenceLabel(task.objective,verifiedWindows.get(task.threadId)??null))+" "+
    redactNativeMessage(summarizeWindowObservation(result,true))+" "+
    uiReplanGuidance(task.recoveryFrom,result.tool)+" "+
+   (pendingUiReadback.get(task.threadId)?.readbackRequired?
+    "Prior UI mutation has an audited execution receipt but its visible effect is NOT verified. Observe same HWND/PID via separately approved ui_windows then ui_find or ui_discover before further UI mutation. ":"")+
    actionLoopGuidance()+" "+taskGoalContext(task.objective)+" "+
    "After premiere_detect, propose the dedicated premiere_launch tool with empty arguments {} when the user wants Premiere opened; detection alone is not launch. "+
    "For other trusted discovered executable paths, propose launch_app with the exact observed path. "+
@@ -538,17 +560,25 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
    appendReply(task.threadId,task.promptIndex,"Unsafe app selection: "+appGate.reason+" Nothing staged.");
    return;
   }
-  const readGate=checkAmbiguousReadWindow(response.tool_proposal,observedWindows.get(task.threadId)??null);
+  const readGate=checkAmbiguousReadWindow(response.tool_proposal,activeObservedWindows(task.threadId));
   if(!readGate.allowed){
    haltTask(task.threadId,"prepare_failed");
    appendReply(task.threadId,task.promptIndex,"Ambiguous window lookup: "+readGate.reason+" Nothing staged.");
    return;
   }
-  const gate=checkObservedMutationTarget(response.tool_proposal,observedWindows.get(task.threadId)??null);
+  const gate=checkObservedMutationTarget(response.tool_proposal,activeObservedWindows(task.threadId));
   if(!gate.allowed){
    haltTask(task.threadId,"prepare_failed");
    appendReply(task.threadId,task.promptIndex,"Unsafe or ambiguous UI target: "+gate.reason+" No Windows action prepared.");
    showActionFeedback("UI target requires fresh observation or clarification. Nothing executed.");
+   return;
+  }
+  const controlGate=nativeControlGate(task.threadId,response.tool_proposal);
+  const readbackGate=nativeReadbackGate(task.threadId,response.tool_proposal);
+  if(!controlGate.allowed||!readbackGate.allowed){
+   haltTask(task.threadId,"prepare_failed");
+   appendReply(task.threadId,task.promptIndex,"UIA target or readback not grounded: "+
+    (controlGate.allowed?readbackGate.reason:controlGate.reason)+". No action staged.");
    return;
   }
   const seen=seenAfterAuditedChange(task.seen,result.tool,true);
@@ -583,7 +613,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     try{await invoke<void>("deny_action",{actionId:next.id});}catch{/* fail closed */}
     throw Error("Native recovery journal failed; no action authorized.");
    }
-   pending={...task,action:next,step:task.step+1,seen:new Set([...seen,fp]),
+   pending={...task,action:next,proposal:response.tool_proposal,step:task.step+1,seen:new Set([...seen,fp]),
     usedIds:new Set([...task.usedIds,next.id]),recoveryFrom:null};
    updateTask(task.threadId,stageTask(getTask(task.threadId),next.id,next.kind,task.step+1));
    pendingText.textContent="Step "+(task.step+1)+
@@ -631,7 +661,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     return false;
    }
    haltTask(current.threadId,"confirmed_read_failure");
-   pending={...current,action:next,step:current.step+1,seen:new Set([...current.seen,fp]),
+   pending={...current,action:next,proposal,step:current.step+1,seen:new Set([...current.seen,fp]),
     usedIds:new Set([...current.usedIds,next.id]),
     recoveryFrom:current.action.kind as "ui_find"|"ui_discover"};
    updateTask(current.threadId,stageTask(getTask(current.threadId),next.id,next.kind,current.step+1));
@@ -683,6 +713,27 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      clearPending();
      return;
     }
+    // Approvals may sit for hours. Revalidate window and UIA evidence TTL
+    // after Allow once and BEFORE the durable execution intent.
+    if(current.proposal){
+     const gates=[checkAmbiguousReadWindow(current.proposal,activeObservedWindows(current.threadId)),
+      checkObservedMutationTarget(current.proposal,activeObservedWindows(current.threadId)),
+      nativeControlGate(current.threadId,current.proposal),
+      nativeReadbackGate(current.threadId,current.proposal)];
+     const rejected=gates.find(x=>!x.allowed);
+     if(rejected){
+      try{await invoke<void>("deny_action",{actionId:current.action.id});}catch{/* fail closed */}
+      await persistRecovery(currentBudget,"paused",current.action.id);
+      haltTask(current.threadId,"target_stale_before_execution");
+      appendReply(current.threadId,current.promptIndex,
+       "Native approval target expired or changed: "+rejected.reason+". Nothing executed.");
+      clearPending();
+      return;
+     }
+    }
+    const beforeWindowObservation=observedWindows.get(current.threadId)??null;
+    const beforeControlObservation=observedControls.get(current.threadId)??null;
+    const beforeUiEvidenceAtMs=Date.now();
     // Crash boundary: after this durable marker, the action MUST be treated
     // as possibly executed until a matching Rust audit proves otherwise.
     // If this write fails, no execute_action IPC is sent.
@@ -696,16 +747,22 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      clearPending();
      return;
     }
+    // Attempting a mutation/new observation invalidates old UIA controls,
+    // even if Rust throws and the native outcome becomes unknown.
+    if(needsUiReadback(current.action.kind)||current.action.kind==="ui_discover"||
+       current.action.kind==="ui_windows"){
+     if(observedControls.has(current.threadId))observedControls.set(current.threadId,null);
+    }
     // Once a mutation is attempted, even a thrown native result may have changed the UI.
     if(requiresNewWindowObservation(observedWindows.has(current.threadId),current.action.kind)){
-     observedWindows.set(current.threadId,[]);
+     observedWindows.set(current.threadId,null);
      verifiedWindows.delete(current.threadId);
      goalStatus.textContent=taskGoalLabel(current.objective);
     }
     // A newly attempted window inspection supersedes earlier window proof,
     // even if native execution fails or its audit cannot be confirmed.
     if(current.action.kind==="ui_windows"){
-     observedWindows.set(current.threadId,[]);
+     observedWindows.set(current.threadId,null);
      verifiedWindows.delete(current.threadId);
      goalStatus.textContent=taskGoalLabel(current.objective);
     }
@@ -731,16 +788,30 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      taskEvidence.set(current.threadId,recordAuditedEvidence(
       taskEvidence.get(current.threadId)??newEvidence(),current.action.id,result,true));
      if(requiresNewWindowObservation(observedWindows.has(current.threadId),result.tool)){
-      observedWindows.set(current.threadId,[]); // Stale: UI mutations need a NEW audited read.
+      observedWindows.set(current.threadId,null); // Stale: UI mutations need a NEW audited read.
       verifiedWindows.delete(current.threadId);
       goalStatus.textContent=taskGoalLabel(current.objective);
      }
      if(result.tool==="ui_windows"){
-      observedWindows.set(current.threadId,observedWindowInventory(result,true)??[]);
-      const proof=windowGoalEvidence(current.objective,result,true);
+      const snapshot=newAuditedWindowObservation(result,current.action.id);
+      observedWindows.set(current.threadId,snapshot);
+      const proof=snapshot?windowGoalEvidence(current.objective,result,true):null;
       if(proof)verifiedWindows.set(current.threadId,proof);
       else verifiedWindows.delete(current.threadId);
       goalStatus.textContent=proof?redactNativeMessage(goalEvidenceLabel(current.objective,proof)):taskGoalLabel(current.objective);
+     }
+     if(result.tool==="ui_discover"&&current.proposal){
+      const title=(current.proposal.arguments as Record<string,unknown>|undefined)?.window;
+      observedControls.set(current.threadId,newAuditedControlObservation(
+       result,current.action.id,title,observedWindows.get(current.threadId)??null));
+     }
+     if(needsUiReadback(result.tool)&&current.proposal){
+      pendingUiReadback.set(current.threadId,newPendingUiReadback(
+       current.action.id,current.proposal,beforeWindowObservation,beforeUiEvidenceAtMs,beforeControlObservation));
+     }else if((result.tool==="ui_find"||result.tool==="ui_discover")&&current.proposal){
+      const prior=pendingUiReadback.get(current.threadId)??null;
+      if(prior)pendingUiReadback.set(current.threadId,auditUiReadback(
+       prior,current.proposal,result,observedWindows.get(current.threadId)??null,Date.now(),current.action.id));
      }
     }
     else {
@@ -790,6 +861,30 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
     showActionFeedback("Native action verified. Follow-up planning failed; no automatic retry.");
     refreshState("Master continuation failed; prior native action remains verified.");
    }else{
+    // The native Rust TTL can DENY an action before ANY execution.
+    // The error text alone is untrusted: require exact action UUID/tool and
+    // a single native 'denied' receipt with no execution/conflicting audit.
+    // A confirmed expiry is not a success, and never triggers a retry.
+    let confirmedExpiry=false;
+    if(message.includes("Prepared action expired before execution")){
+     try{
+      const trail=await invoke<Array<{event:string;action_id:string|null;success:boolean;tool:string}>>(
+       "audit_log",{limit:200});
+      confirmedExpiry=auditedNativeUiaExpiry(current.action.id,current.action.kind,message,trail);
+     }catch{/* no audit = unknown side effect, not a confirmed denial */}
+    }
+    if(confirmedExpiry){
+     const expiryBudget=taskBudgets.get(current.threadId);
+     const journalOk=expiryBudget?await persistRecovery(expiryBudget,"native_denied",current.action.id):false;
+     haltTask(current.threadId,journalOk?"approval_expired":"recovery_journal_failed");
+     appendReply(current.threadId,current.promptIndex,
+      journalOk
+       ?"Rust audited this prepared UIA approval as expired and denied BEFORE execution. No Windows mutation was requested by the expired action. Refresh observations and request a new separately approved action."
+       :"Rust audit confirms the action was denied before execution, but the recovery journal could not be reconciled. Review Activity/Audit before any new task.");
+     showActionFeedback("Native UIA approval expired without execution. No automatic replay.");
+     refreshState("Rust denied expired UIA approval. Fresh observation and owner approval required.");
+     return;
+    }
     const unknownBudget=taskBudgets.get(current.threadId);
     if(unknownBudget)await persistRecovery(unknownBudget,"outcome_unknown",current.action.id);
     const recoveryPrepared=await prepareAuditedUiReadRecovery(current,message);
@@ -850,8 +945,8 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
   connected:()=>ready,
   getReplies:(threadId:string)=>replies.get(threadId)||[],
   canClearChats:()=>!pending&&!sending,
-  clearChat:(threadId:string)=>{if(sending||pending)return;histories.delete(threadId);replies.delete(threadId);taskStates.delete(threadId);taskGoalRoots.delete(threadId);taskBudgets.delete(threadId);taskEvidence.delete(threadId);verifiedWindows.delete(threadId);observedWindows.delete(threadId);taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
-  clearAllChats:()=>{if(pending||sending)return;histories.clear();replies.clear();taskStates.clear();taskGoalRoots.clear();taskBudgets.clear();taskEvidence.clear();verifiedWindows.clear();observedWindows.clear();taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
+  clearChat:(threadId:string)=>{if(sending||pending)return;histories.delete(threadId);replies.delete(threadId);taskStates.delete(threadId);taskGoalRoots.delete(threadId);taskBudgets.delete(threadId);taskEvidence.delete(threadId);verifiedWindows.delete(threadId);observedWindows.delete(threadId);observedControls.delete(threadId);pendingUiReadback.delete(threadId);taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
+  clearAllChats:()=>{if(pending||sending)return;histories.clear();replies.clear();taskStates.clear();taskGoalRoots.clear();taskBudgets.clear();taskEvidence.clear();verifiedWindows.clear();observedWindows.clear();observedControls.clear();pendingUiReadback.clear();taskStatus.textContent="No active Windows task.";goalStatus.textContent="Task outcome not independently verified.";},
   async send(text,threadId,promptIndex=0){
    if(!ready)return {ok:false,error:"Windows Shuvi is not connected yet."};
    // A short answer to a Master clarification is still part of the SAME
@@ -966,10 +1061,14 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
       // Validate provider output before contacting the native staging queue.
       const appGate=checkRequestedAppTarget(effectiveObjective,response.tool_proposal);
       if(!appGate.allowed)throw Error("Unsafe app selection: "+appGate.reason);
-      const readGate=checkAmbiguousReadWindow(response.tool_proposal,observedWindows.get(threadId)??null);
+      const readGate=checkAmbiguousReadWindow(response.tool_proposal,activeObservedWindows(threadId));
       if(!readGate.allowed)throw Error("Ambiguous window lookup: "+readGate.reason);
-      const gate=checkObservedMutationTarget(response.tool_proposal,observedWindows.get(threadId)??null);
+      const gate=checkObservedMutationTarget(response.tool_proposal,activeObservedWindows(threadId));
       if(!gate.allowed)throw Error("Unsafe or ambiguous UI target: "+gate.reason);
+      const controlGate=nativeControlGate(threadId,response.tool_proposal);
+      if(!controlGate.allowed)throw Error("Unsafe UIA control: "+controlGate.reason);
+      const readbackGate=nativeReadbackGate(threadId,response.tool_proposal);
+      if(!readbackGate.allowed)throw Error("UIA readback required: "+readbackGate.reason);
       const first=fingerprint(response.tool_proposal);
       if(!first)throw Error("Invalid or oversized native tool proposal.");
       if(!canStageNativeAction(taskBudget))throw Error("Owner-selected Windows action budget exhausted; no tool staged.");
@@ -987,7 +1086,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
        try{await invoke<void>("deny_action",{actionId:proposed.id});}catch{/* fail closed */}
        throw Error("Native approval journal could not be saved. No Windows action authorized.");
       }
-      pending={action:proposed,threadId,promptIndex,objective:effectiveObjective,
+      pending={action:proposed,proposal:response.tool_proposal,threadId,promptIndex,objective:effectiveObjective,
        route:{role:route.role,provider:route.provider,model:route.model,base_url:route.base_url||""},
        step:1,seen:new Set([first]),usedIds:new Set([proposed.id])};
       updateTask(threadId,stageTask(createTask(),proposed.id,proposed.kind,1));

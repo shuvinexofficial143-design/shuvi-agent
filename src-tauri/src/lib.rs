@@ -2,6 +2,8 @@
 
 mod web_bridge;
 mod target_window_capture;
+mod vision_screenshot_guard;
+mod native_uia_window_guard;
 mod remote_agent;
 mod blender_worker;
 mod blender_plan_worker;
@@ -1002,6 +1004,8 @@ enum ToolAction {
 #[derive(Debug, Clone)]
 struct PendingAction {
     created_at_ms: u64,
+    native_uia_target: Option<native_uia_window_guard::NativeUiaTarget>,
+    capture_target: Option<target_window_capture::PreparedCaptureTarget>,
     premiere_expectation: Option<PremiereExpectation>,
     task_graph: Option<Value>,
     task_step_id: Option<String>,
@@ -3152,6 +3156,72 @@ fn managed_tree_pids(system: &System, roots: &HashSet<u32>) -> HashSet<Pid> {
     included
 }
 
+
+// Native-only binding for the seven UIA tools that can mutate Windows state.
+// This performs a fresh OS probe during staging, before any owner approval.
+// No WebView-provided "expected_hwnd" or "expected_pid" is accepted.
+fn prepare_native_uia_binding(
+    action: &ToolAction,
+) -> Result<Option<native_uia_window_guard::NativeUiaTarget>, String> {
+    // Match only the seven mutating UIA variants. Caller-supplied HWND,
+    // PID or RuntimeId values are NEVER accepted as binding authority.
+    let (window, name, automation_id, native_tool) = match action {
+        ToolAction::UiClick { window, name, automation_id } =>
+            (window.as_deref(), name.as_deref(), automation_id.as_deref(), "ui_click"),
+        ToolAction::UiSetValue { window, name, automation_id, .. } =>
+            (window.as_deref(), name.as_deref(), automation_id.as_deref(), "ui_set_value"),
+        ToolAction::UiFocus { window, name, automation_id } =>
+            (window.as_deref(), name.as_deref(), automation_id.as_deref(), "ui_focus"),
+        ToolAction::UiScroll { window, name, automation_id, .. } =>
+            (window.as_deref(), name.as_deref(), automation_id.as_deref(), "ui_scroll"),
+        ToolAction::UiToggle { window, name, automation_id } =>
+            (window.as_deref(), name.as_deref(), automation_id.as_deref(), "ui_toggle"),
+        ToolAction::UiExpandCollapse { window, name, automation_id, .. } =>
+            (window.as_deref(), name.as_deref(), automation_id.as_deref(), "ui_expand_collapse"),
+        ToolAction::UiSendKeys { window, name, automation_id, .. } =>
+            (window.as_deref(), name.as_deref(), automation_id.as_deref(), "ui_send_keys"),
+        _ => return Ok(None),
+    };
+    let window = window
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && value.chars().count() <= 180)
+        .ok_or_else(|| "UIA mutation requires a named native target window.".to_string())?;
+    if window.eq_ignore_ascii_case("desktop") || window.chars().any(char::is_control) {
+        return Err("UIA mutation cannot use a desktop or control-formatted target.".into());
+    }
+    // Bound all native selectors before creating or approving the action.
+    // Exact UIA control identity can legitimately contain punctuation, but
+    // never accept whitespace-only, control characters or oversized labels.
+    for selector in [name, automation_id].into_iter().flatten() {
+        if selector.is_empty() || selector.trim() != selector ||
+            selector.chars().count() > 180 || selector.chars().any(char::is_control) {
+            return Err("Native UIA selector must be a bounded exact control identity.".into());
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // One OS probe binds window HWND/PID AND the exact selected UIA
+        // control RuntimeId into a single non-persisted Rust PendingAction.
+        let root = ui_root_script(Some(window));
+        let condition = ui_condition_script(name, automation_id)?;
+        let probe = native_uia_window_guard::prepared_control_probe(&root, &condition, native_tool)?;
+        let output = run_hidden_powershell(&probe)?;
+        if !output.status.success() {
+            return Err("Native HWND/PID/UIA control identity could not be bound at preparation. Inspect ui_windows and ui_discover before retrying.".into());
+        }
+        let text = std::str::from_utf8(&output.stdout)
+            .map_err(|_| "Prepared native UIA control evidence was not UTF-8.".to_string())?;
+        return native_uia_window_guard::parse_prepared_control(text).map(Some);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Non-Windows source-level tests still compile, but no UIA mutation
+        // executes without a genuine native OS-derived binding.
+        let _ = (window, name, automation_id, native_tool);
+        Ok(None)
+    }
+}
+
 fn stage_tool(
     proposal: ToolProposal,
     provider_context: Option<ProviderContext>,
@@ -3352,7 +3422,10 @@ fn stage_tool(
         "inspect_screen" => {
             let prompt = arg_string(&proposal.arguments, "prompt")?;
             let window = arg_string(&proposal.arguments, "window")?;
-            if window.chars().count() > 180 { return Err("Window selector is too long.".into()); }
+            if window.chars().count() > 180 || window.trim() != window ||
+               window.chars().any(char::is_control) {
+                return Err("Screen inspection requires one bounded, exact window selector.".into());
+            }
             let provider = provider_context
                 .ok_or_else(|| "Screen inspection requires the active provider context.".to_string())?;
             // Fail BEFORE staging a useless approval. xKiro's text endpoint
@@ -8116,6 +8189,17 @@ fn stage_tool(
         _ => return Err("Unsupported tool.".into()),
     };
 
+    // Native binding is fetched from the actual OS at PREPARE; untrusted model
+    // arguments cannot supply or modify the HWND/PID in a PendingAction.
+    let native_uia_target = prepare_native_uia_binding(&action)?;
+    // Screenshot consent also binds the exact OS window before displaying
+    // Allow once. The expensive capture + vision request occur only later.
+    let capture_target = match &action {
+        ToolAction::InspectScreen { window, .. } if !window.eq_ignore_ascii_case("desktop") =>
+            target_window_capture::prepare_window_capture(window)?,
+        _ => None,
+    };
+
     let id = Uuid::new_v4().to_string();
 
     let prepared_at_ms = now_ms();
@@ -8135,6 +8219,8 @@ fn stage_tool(
         id.clone(),
         PendingAction {
             created_at_ms: prepared_at_ms,
+            native_uia_target,
+            capture_target,
             premiere_expectation,
             task_graph: proposal.task_graph.clone(),
             task_step_id: proposal.task_step_id.as_ref()
@@ -8516,42 +8602,81 @@ fn prune_screenshot_dir(dir: &Path, keep_existing: usize) -> Result<(), String> 
 }
 
 fn capture_screen_png() -> Result<std::path::PathBuf, String> {
+    capture_screen_png_with_mode(false)
+}
+
+// Explicit desktop vision has one-time consent but no desire to persist
+// a screenshot. Use vision-*.png from the beginning, not a screen-* rename
+// after capturing sensitive pixels.
+fn capture_vision_desktop_png() -> Result<std::path::PathBuf, String> {
+    // A crashed earlier vision request may have left an ephemeral PNG.
+    // Never remove deliberately saved screen-* screenshots.
+    let _ = target_window_capture::scavenge_old_vision_capture_files();
+    capture_screen_png_with_mode(true)
+}
+
+fn capture_screen_png_with_mode(ephemeral: bool) -> Result<std::path::PathBuf, String> {
     #[cfg(target_os = "windows")]
     {
         let dir = std::env::temp_dir().join("Shuvi").join("screenshots");
         fs::create_dir_all(&dir)
             .map_err(|error| format!("Could not create screenshot folder: {error}"))?;
+        if ephemeral {
+            target_window_capture::validate_vision_capture_directory(&dir)?;
+        }
 
         // Keep room for the screenshot being created. Cleanup is deliberately
         // scoped to Shuvi-owned screen-*.png files in this one temp directory.
-        let _ = prune_screenshot_dir(&dir, MAX_SCREENSHOT_FILES.saturating_sub(1));
-        let path = dir.join(format!("screen-{}-{}.png", now_ms(), Uuid::new_v4()));
+        if !ephemeral {
+            let _ = prune_screenshot_dir(&dir, MAX_SCREENSHOT_FILES.saturating_sub(1));
+        }
+        let path = dir.join(if ephemeral {
+            format!("vision-{}-{}.png", now_ms(), Uuid::new_v4())
+        } else {
+            format!("screen-{}-{}.png", now_ms(), Uuid::new_v4())
+        });
         let ps_path = path.to_string_lossy().replace("'", "''");
 
         let script = format!(
             r#"Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 $bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
+# Reject enormous virtual desktops before allocating unmanaged bitmap RAM.
+if ($bounds.Width -le 0 -or $bounds.Height -le 0 -or
+    ([int64]$bounds.Width * [int64]$bounds.Height) -gt 36864000) {{
+    throw 'Desktop screenshot exceeds bounded 36.9-megapixel bitmap budget.'
+}}
 $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
 $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-$graphics.CopyFromScreen($bounds.Left, $bounds.Top, 0, 0, $bounds.Size)
-$bitmap.Save('{ps_path}', [System.Drawing.Imaging.ImageFormat]::Png)
-$graphics.Dispose()
-$bitmap.Dispose()"#
+try {{
+    $graphics.CopyFromScreen($bounds.Left, $bounds.Top, 0, 0, $bounds.Size)
+    $bitmap.Save('{ps_path}', [System.Drawing.Imaging.ImageFormat]::Png)
+}} finally {{
+    $graphics.Dispose()
+    $bitmap.Dispose()
+}}"#
         );
 
         // Screen capture is UIA-like host work: reuse the bounded 30-second
         // child helper instead of an unbounded blocking PowerShell output wait.
-        let output = run_hidden_powershell(&script)
-            .map_err(|error| format!("Could not capture screen: {error}"))?;
-
+        let output = match run_hidden_powershell(&script) {
+            Ok(output) => output,
+            Err(error) => {
+                let _ = fs::remove_file(&path);
+                return Err(format!("Could not capture screen: {error}"));
+            }
+        };
         if !output.status.success() || !path.exists() {
+            let _ = fs::remove_file(&path);
             return Err(format!(
                 "Screen capture failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             ));
         }
-
+        if let Err(error)=target_window_capture::verify_unbound_desktop_png(&path) {
+            let _ = fs::remove_file(&path);
+            return Err(format!("Desktop screenshot discarded: {error}"));
+        }
         return Ok(path);
     }
 
@@ -8559,6 +8684,32 @@ $bitmap.Dispose()"#
     {
         Err("Screen capture is currently implemented for Windows only.".into())
     }
+}
+
+// InspectScreen is explicitly consented, but neither an invalid prompt nor a
+// known text-only vision model should activate/focus an application, capture
+// its pixels, or write a temporary PNG to disk. Public catalog lookup is
+// read-only; its result never replaces the selected paid model.
+async fn preflight_inspect_screen_vision(
+    context: &ProviderContext, prompt: &str
+) -> Result<(), String> {
+    if prompt.is_empty() || prompt.len() > MAX_CHAT_MESSAGE_BYTES {
+        return Err("Vision prompt is empty or exceeds Shuvi's native request limit. No screenshot captured.".into());
+    }
+    if context.provider == "xkiro" {
+        let models = list_xkiro_models().await?;
+        let chosen = models.iter().find(|item| item.id == context.model)
+            .ok_or_else(|| "Selected xKiro model is absent from public catalog; no screenshot captured.".to_string())?;
+        if chosen.vision != Some(true) {
+            return Err(format!(
+                "xKiro model '{}' is not marked vision-capable. No screenshot was captured or paid vision request sent. Explicitly choose a Vision model.",
+                context.model
+            ));
+        }
+    }
+    // analyze_png_bytes_with_provider still checks the current model
+    // capability at send time; provider capability could change in between.
+    Ok(())
 }
 
 async fn analyze_png_with_provider(
@@ -10039,6 +10190,8 @@ async fn execute_tool_with_action_id(
     execution_action_id: Option<&str>,
 ) -> Result<ActionResult, String> {
     let tool = action.tool.clone();
+    let native_uia_target = action.native_uia_target.clone();
+    let capture_target = action.capture_target.clone();
     let premiere_bridge = PremiereClient { bridge: &state.premiere_bridge, expected: action.premiere_expectation.as_ref() };
 
     match action.action {
@@ -10596,25 +10749,37 @@ Write-Output 'SHUVI_WHATSAPP_DESKTOP_LAUNCH_REQUESTED'
             })
         }
         ToolAction::InspectScreen { prompt, provider, window } => {
+            // Fail before touching the desktop for invalid prompts/text-only models.
+            preflight_inspect_screen_vision(&provider, &prompt).await?;
             // The consent UI (Shuvi) may be foreground while the owner presses Allow once.
             // For app tasks capture the explicit observed target, NEVER the arbitrary foreground.
             let (path, observed_target) = if window.eq_ignore_ascii_case("desktop") {
-                (capture_screen_png()?, "Entire desktop (explicit selection)".to_string())
+                (capture_vision_desktop_png()?, "Entire desktop (explicit selection)".to_string())
             } else {
-                target_window_capture::capture_window_png(&window)?
+                target_window_capture::capture_window_png(&window,capture_target.as_ref())?
             };
-            let analysis = analyze_png_with_provider(&provider, &prompt, &path).await?;
+            // Read exactly the captured image into bounded memory. Validate
+            // the bytes that will be sent (not an earlier on-disk snapshot),
+            // then prove unlink BEFORE the first cost-bearing provider call.
+            // On read/validation errors, Drop still attempts disk cleanup.
+            let mut captured = vision_screenshot_guard::EphemeralVisionCapture::new(path);
+            let image_bytes = read_file_bytes_bounded(
+                captured.path(),12 * 1024 * 1024,"captured screenshot")?;
+            target_window_capture::verify_vision_png_bytes(&image_bytes)?;
+            // A Windows sharing violation blocks upload; no false claim
+            // that sensitive pixels were removed from disk.
+            captured.discard()?;
+            let analysis = analyze_png_bytes_with_provider(&provider, &prompt, &image_bytes).await?;
 
             Ok(ActionResult {
                 success: true,
                 tool,
                 stdout: format!(
-                    "Window-targeted analysis from {}/{}:\nTarget: {}\n{}\nScreenshot: {}",
+                    "Window-targeted analysis from {}/{}:\nTarget: {}\n{}\nScreenshot: temporary capture deleted after analysis",
                     provider.provider,
                     provider.model,
                     observed_target,
                     analysis,
-                    path.display()
                 ),
                 stderr: String::new(),
                 exit_code: Some(0),
@@ -10650,6 +10815,17 @@ Write-Output 'SHUVI_WHATSAPP_DESKTOP_LAUNCH_REQUESTED'
         }
         ToolAction::UiWindows => {
             let script = r#"Add-Type -AssemblyName UIAutomationClient
+# A read-only Win32 check ties each UIA row to a real, still-live process.
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class Shuvi39WindowListWin32 {
+ [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+ public static extern bool IsWindow(IntPtr hwnd);
+ [DllImport("user32.dll")]
+ public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+}
+'@ -ErrorAction Stop
 $desktop = [System.Windows.Automation.AutomationElement]::RootElement
 $windows = $desktop.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)
 $items = @()
@@ -10659,12 +10835,32 @@ for ($i = 0; $i -lt [Math]::Min($windows.Count, 100); $i++) {
         $title = [string]$e.Current.Name
         if ([string]::IsNullOrWhiteSpace($title)) { continue }
         $pidValue = [int]$e.Current.ProcessId
-        $processName = ''
-        try { $processName = [string](Get-Process -Id $pidValue -ErrorAction Stop).ProcessName } catch {}
+        $handle = [IntPtr]([int64]$e.Current.NativeWindowHandle)
+        if ($pidValue -le 0 -or $handle -eq [IntPtr]::Zero -or
+            -not [Shuvi39WindowListWin32]::IsWindow($handle)) { continue }
+        [uint32]$nativePid = 0
+        [void][Shuvi39WindowListWin32]::GetWindowThreadProcessId($handle, [ref]$nativePid)
+        if ($nativePid -ne [uint32]$pidValue) { continue }
+        # The OS birth tick is a DECIMAL STRING: JSON numbers lose i64 precision in JS.
+        $process = Get-Process -Id $pidValue -ErrorAction Stop
+        [int64]$birthTicks = $process.StartTime.ToUniversalTime().Ticks
+        if ($birthTicks -le 0) { continue }
+        $processName = [string]$process.ProcessName
+        $className = [string]$e.Current.ClassName
+        [uint32]$nativePidAfter = 0
+        [void][Shuvi39WindowListWin32]::GetWindowThreadProcessId($handle, [ref]$nativePidAfter)
+        $processAfter = Get-Process -Id $pidValue -ErrorAction Stop
+        [int64]$birthTicksAfter = $processAfter.StartTime.ToUniversalTime().Ticks
+        if ($nativePidAfter -ne [uint32]$pidValue -or
+            -not [Shuvi39WindowListWin32]::IsWindow($handle) -or
+            [int]$e.Current.ProcessId -ne $pidValue -or
+            [string]$e.Current.Name -cne $title -or
+            $birthTicksAfter -ne $birthTicks) { continue }
         $items += [PSCustomObject]@{
             Name = $title; ProcessId = $pidValue; ProcessName = $processName
-            NativeWindowHandle = [int]$e.Current.NativeWindowHandle
-            ClassName = [string]$e.Current.ClassName
+            NativeWindowHandle = [int64]$handle
+            ProcessStartTicks = $birthTicks.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+            ClassName = $className
         }
     } catch {}
 }
@@ -10679,8 +10875,12 @@ ConvertTo-Json -InputObject @($items) -Compress -Depth 3"#;
         }
         ToolAction::UiDiscover { window } => {
             let root_script = ui_root_script(Some(&window));
+            let attestation = native_uia_window_guard::readonly_window_attestation_script();
+            let control_attestation = native_uia_window_guard::readonly_control_reattestation_script();
             let script = format!(r#"Add-Type -AssemblyName UIAutomationClient
 {root_script}
+{attestation}
+{control_attestation}
 $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
 $interactive = [System.Collections.Generic.List[object]]::new()
 $context = [System.Collections.Generic.List[object]]::new()
@@ -10691,10 +10891,22 @@ for ($i=0; $i -lt [Math]::Min($all.Count, 1200); $i++) {{
         $id = [string]$e.Current.AutomationId
         if ([string]::IsNullOrWhiteSpace($n) -and [string]::IsNullOrWhiteSpace($id)) {{ continue }}
         $role = [string]$e.Current.ControlType.ProgrammaticName
+        # Native UIA RuntimeId disambiguates same-name controls after approval.
+        # An inaccessible/recycled identity is never a trustworthy observation.
+        [int[]]$shuviControlRid = $e.GetRuntimeId()
+        if ($null -eq $shuviControlRid -or $shuviControlRid.Count -lt 1 -or $shuviControlRid.Count -gt 64) {{ continue }}
         $item = [PSCustomObject]@{{
             Name=$n; AutomationId=$id; ControlType=$role
+            ControlRuntimeId=[int[]]$shuviControlRid
+            __ShuviOriginalElement=$e
             ClassName=[string]$e.Current.ClassName
             IsEnabled=[bool]$e.Current.IsEnabled
+            IsOffscreen=[bool]$e.Current.IsOffscreen
+            # Native OS-linked root for independently verifying an
+            # observation was made in the same HWND/PID as the prior action.
+            ObservedWindowHwnd=[int64]$root.Current.NativeWindowHandle
+            ObservedWindowPid=[int]$root.Current.ProcessId
+            ObservedWindowProcessStartTicks=$shuviReadStartTicks.ToString([System.Globalization.CultureInfo]::InvariantCulture)
             Bounds=[string]$e.Current.BoundingRectangle.ToString()
         }}
         # All applications share UIA roles. Prioritize actionable elements;
@@ -10707,6 +10919,12 @@ for ($i=0; $i -lt [Math]::Min($all.Count, 1200); $i++) {{
     }} catch {{}}
 }}
 $items = @($interactive | Select-Object -First 110) + @($context | Select-Object -First 40)
+Assert-ShuviObservedWindow
+foreach ($item in $items) {{
+    Assert-ShuviObservedControl -element $item.__ShuviOriginalElement -observed $item -rootPid $shuviReadPid
+    [void]$item.PSObject.Properties.Remove('__ShuviOriginalElement')
+}}
+Assert-ShuviObservedWindow
 ConvertTo-Json -InputObject @($items) -Compress -Depth 3"#);
             let output = run_hidden_powershell(&script)?;
             if !output.status.success() {
@@ -10719,24 +10937,96 @@ ConvertTo-Json -InputObject @($items) -Compress -Depth 3"#);
         ToolAction::UiFind { name, automation_id, window } => {
             let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
             let root_script = ui_root_script(window.as_deref());
+            // Global read-only lookup keeps its existing desktop-root behavior,
+            // but it cannot claim app-bound HWND/PID attestation. Only
+            // explicit named-window reads may become same-window evidence.
+            let attestation = if window.is_some() {
+                native_uia_window_guard::readonly_window_attestation_script()
+            } else { String::new() };
+            let control_attestation = native_uia_window_guard::readonly_control_reattestation_script();
+            let finish_attestation = if window.is_some() {
+                "Assert-ShuviObservedWindow"
+            } else { "" };
             let script = format!(
                 r#"Add-Type -AssemblyName UIAutomationClient
 {condition}
 {root_script}
+{attestation}
+{control_attestation}
+# Global ui_find remains an unbound read, not an app-scoped generation proof.
+$shuviObservedStartTicks = $null
+if ($null -ne (Get-Variable -Name shuviReadStartTicks -ErrorAction SilentlyContinue)) {{
+    $shuviObservedStartTicks = $shuviReadStartTicks.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+}}
 $matches = Resolve-ShuviUiMatches -root $root -condition $condition
 $items = @()
+$shuviReadElements = [System.Collections.Generic.List[object]]::new()
 for ($i = 0; $i -lt [Math]::Min($matches.Count, 25); $i++) {{
     $e = $matches.Item($i)
+    [int[]]$shuviControlRid = $e.GetRuntimeId()
+    if ($null -eq $shuviControlRid -or $shuviControlRid.Count -lt 1 -or $shuviControlRid.Count -gt 64) {{
+        throw 'UIA control has no valid RuntimeId for independent readback.'
+    }}
+    # Independent, read-only native state observation. Never export the
+    # ValuePattern string or password contents into the model audit.
+    $shuviToggleState = $null
+    $shuviExpansionState = $null
+    $shuviSelected = $null
+    $shuviVerticalPercent = $null
+    try {{
+        $p = $null
+        if ($e.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern,[ref]$p)) {{
+            $shuviToggle = [System.Windows.Automation.TogglePattern]$p
+            $shuviToggleState = [string]$shuviToggle.Current.ToggleState
+        }}
+    }} catch {{}}
+    try {{
+        $p = $null
+        if ($e.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern,[ref]$p)) {{
+            $shuviExpand = [System.Windows.Automation.ExpandCollapsePattern]$p
+            $shuviExpansionState = [string]$shuviExpand.Current.ExpandCollapseState
+        }}
+    }} catch {{}}
+    try {{
+        $p = $null
+        if ($e.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern,[ref]$p)) {{
+            $shuviSelection = [System.Windows.Automation.SelectionItemPattern]$p
+            $shuviSelected = [bool]$shuviSelection.Current.IsSelected
+        }}
+    }} catch {{}}
+    try {{
+        $p = $null
+        if ($e.TryGetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern,[ref]$p)) {{
+            $shuviScroll = [System.Windows.Automation.ScrollPattern]$p
+            $shuviVerticalPercent = [double]$shuviScroll.Current.VerticalScrollPercent
+        }}
+    }} catch {{}}
+    $shuviReadElements.Add($e)
     $items += [PSCustomObject]@{{
         Name = $e.Current.Name
+        ControlRuntimeId = [int[]]$shuviControlRid
         AutomationId = $e.Current.AutomationId
         ControlType = $e.Current.ControlType.ProgrammaticName
         ClassName = $e.Current.ClassName
         IsEnabled = $e.Current.IsEnabled
+        IsOffscreen = $e.Current.IsOffscreen
+        HasKeyboardFocus = $e.Current.HasKeyboardFocus
+        ToggleState = $shuviToggleState
+        ExpandCollapseState = $shuviExpansionState
+        IsSelected = $shuviSelected
+        VerticalScrollPercent = $shuviVerticalPercent
+        ObservedWindowHwnd = [int64]$root.Current.NativeWindowHandle
+        ObservedWindowPid = [int]$root.Current.ProcessId
+        ObservedWindowProcessStartTicks = $shuviObservedStartTicks
         Bounds = $e.Current.BoundingRectangle.ToString()
     }}
 }}
 if ($items.Count -eq 0) {{ throw 'No matching UI element found. Use ui_discover to inspect the actual labels, automation IDs and control roles.' }}
+{finish_attestation}
+for ($i = 0; $i -lt $items.Count; $i++) {{
+    Assert-ShuviObservedControl -element $shuviReadElements[$i] -observed $items[$i] -rootPid ([int]$root.Current.ProcessId)
+}}
+{finish_attestation}
 $items | ConvertTo-Json -Compress"#
             );
 
@@ -10758,7 +11048,9 @@ $items | ConvertTo-Json -Compress"#
         }
         ToolAction::UiClick { name, automation_id, window } => {
             let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
-            let root_script = ui_root_script(window.as_deref());
+            let root_script = native_uia_window_guard::guarded_mutation_root(
+                window.as_deref(), ui_root_script(window.as_deref()),
+                native_uia_target.as_ref())?;
             let script = format!(
                 r#"Add-Type -AssemblyName UIAutomationClient
 {condition}
@@ -10767,14 +11059,28 @@ $matches = Resolve-ShuviUiMatches -root $root -condition $condition
 if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Use automation_id or a more specific selector.') }}
 $e = $matches.Item(0)
+Assert-ShuviNativeTarget -root $root -element $e
 if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
 $pattern = $null
 if ($e.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {{
     ([System.Windows.Automation.InvokePattern]$pattern).Invoke()
     'Invoked element: ' + $e.Current.Name
 }} elseif ($e.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) {{
-    ([System.Windows.Automation.SelectionItemPattern]$pattern).Select()
-    'Selected element: ' + $e.Current.Name
+    $shuviSelectedItem = [System.Windows.Automation.SelectionItemPattern]$pattern
+    $shuviSelectedItem.Select()
+    $shuviSelectionVerified = $false
+    for ($shuviAttempt=0; $shuviAttempt -lt 5; $shuviAttempt++) {{
+        Assert-ShuviNativeTarget -root $root -element $e
+        if ([bool]$shuviSelectedItem.Current.IsSelected) {{
+            $shuviSelectionVerified = $true
+            break
+        }}
+        Start-Sleep -Milliseconds 60
+    }}
+    if (-not $shuviSelectionVerified) {{
+        throw 'UIA SelectionItem action has no confirmed selected state; inspect before retry.'
+    }}
+    'SelectionItem state verified for element: ' + $e.Current.Name
 }} else {{
     throw 'Matching element does not expose InvokePattern or SelectionItemPattern.'
 }}"#
@@ -10798,7 +11104,9 @@ if ($e.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, 
         }
         ToolAction::UiSetValue { name, automation_id, window, value } => {
             let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
-            let root_script = ui_root_script(window.as_deref());
+            let root_script = native_uia_window_guard::guarded_mutation_root(
+                window.as_deref(), ui_root_script(window.as_deref()),
+                native_uia_target.as_ref())?;
             let escaped_value = ps_single_quote(&value);
             let script = format!(
                 r#"Add-Type -AssemblyName UIAutomationClient
@@ -10808,13 +11116,29 @@ $matches = Resolve-ShuviUiMatches -root $root -condition $condition
 if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Use automation_id or a more specific selector.') }}
 $e = $matches.Item(0)
+Assert-ShuviNativeTarget -root $root -element $e
 if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
 $pattern = $null
 if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) {{
     throw 'Matching element does not expose ValuePattern.'
 }}
-([System.Windows.Automation.ValuePattern]$pattern).SetValue('{escaped_value}')
-'Value set on element: ' + $e.Current.Name"#
+$shuviValuePattern = [System.Windows.Automation.ValuePattern]$pattern
+$shuviValuePattern.SetValue('{escaped_value}')
+# Poll state ONLY, never repeat SetValue after an uncertain side effect.
+$shuviValueVerified = $false
+for ($shuviAttempt=0; $shuviAttempt -lt 5; $shuviAttempt++) {{
+    Assert-ShuviNativeTarget -root $root -element $e
+    $readbackValue = [string]$shuviValuePattern.Current.Value
+    if ([string]::Equals($readbackValue, '{escaped_value}', [System.StringComparison]::Ordinal)) {{
+        $shuviValueVerified = $true
+        break
+    }}
+    Start-Sleep -Milliseconds 60
+}}
+if (-not $shuviValueVerified) {{
+    throw 'UIA ValuePattern readback differs from requested value; outcome requires independent inspection.'
+}}
+'Value state verified on element: ' + $e.Current.Name"#
             );
 
             let output = run_hidden_powershell(&script)?;
@@ -10835,7 +11159,9 @@ if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Patte
         }
         ToolAction::UiFocus { name, automation_id, window } => {
             let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
-            let root_script = ui_root_script(window.as_deref());
+            let root_script = native_uia_window_guard::guarded_mutation_root(
+                window.as_deref(), ui_root_script(window.as_deref()),
+                native_uia_target.as_ref())?;
             let script = format!(
                 r#"Add-Type -AssemblyName UIAutomationClient
 {condition}
@@ -10844,9 +11170,22 @@ $matches = Resolve-ShuviUiMatches -root $root -condition $condition
 if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Use automation_id, window, or a more specific selector.') }}
 $e = $matches.Item(0)
+Assert-ShuviNativeTarget -root $root -element $e
 if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
 $e.SetFocus()
-'Focused element: ' + $e.Current.Name"#
+$shuviFocusVerified = $false
+for ($shuviAttempt=0; $shuviAttempt -lt 5; $shuviAttempt++) {{
+    Assert-ShuviNativeTarget -root $root -element $e
+    if ([bool]$e.Current.HasKeyboardFocus) {{
+        $shuviFocusVerified = $true
+        break
+    }}
+    Start-Sleep -Milliseconds 60
+}}
+if (-not $shuviFocusVerified) {{
+    throw 'UIA focus not confirmed on the original approved control; no success claim.'
+}}
+'Keyboard focus read back on element: ' + $e.Current.Name"#
             );
 
             let output = run_hidden_powershell(&script)?;
@@ -10867,7 +11206,9 @@ $e.SetFocus()
         }
         ToolAction::UiScroll { name, automation_id, window, vertical } => {
             let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
-            let root_script = ui_root_script(window.as_deref());
+            let root_script = native_uia_window_guard::guarded_mutation_root(
+                window.as_deref(), ui_root_script(window.as_deref()),
+                native_uia_target.as_ref())?;
             let amount = match vertical.as_str() {
                 "small_increment" => "SmallIncrement",
                 "small_decrement" => "SmallDecrement",
@@ -10884,15 +11225,40 @@ $matches = Resolve-ShuviUiMatches -root $root -condition $condition
 if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Use automation_id, window, or a more specific selector.') }}
 $e = $matches.Item(0)
+Assert-ShuviNativeTarget -root $root -element $e
 $pattern = $null
 if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern, [ref]$pattern)) {{
     throw 'Matching element does not expose ScrollPattern.'
 }}
-([System.Windows.Automation.ScrollPattern]$pattern).Scroll(
+$shuviScrollPattern = [System.Windows.Automation.ScrollPattern]$pattern
+$shuviBeforePercent = [double]$shuviScrollPattern.Current.VerticalScrollPercent
+if ($shuviBeforePercent -lt 0) {{
+    throw 'UIA vertical scroll state cannot be inspected; no scroll requested.'
+}}
+$shuviWantIncrement = '{amount}'.EndsWith('Increment')
+if (($shuviWantIncrement -and $shuviBeforePercent -ge 99.999) -or
+    (-not $shuviWantIncrement -and $shuviBeforePercent -le 0.001)) {{
+    throw 'UIA scroll is already at the requested boundary; no mutation requested.'
+}}
+$shuviScrollPattern.Scroll(
     [System.Windows.Automation.ScrollAmount]::NoAmount,
     [System.Windows.Automation.ScrollAmount]::{amount}
 )
-'Scrolled element: ' + $e.Current.Name"#
+$shuviMovementVerified = $false
+for ($shuviAttempt=0; $shuviAttempt -lt 5; $shuviAttempt++) {{
+    Assert-ShuviNativeTarget -root $root -element $e
+    $shuviAfterPercent = [double]$shuviScrollPattern.Current.VerticalScrollPercent
+    if (($shuviWantIncrement -and $shuviAfterPercent -gt $shuviBeforePercent+0.001) -or
+        (-not $shuviWantIncrement -and $shuviAfterPercent -lt $shuviBeforePercent-0.001)) {{
+        $shuviMovementVerified = $true
+        break
+    }}
+    Start-Sleep -Milliseconds 60
+}}
+if (-not $shuviMovementVerified) {{
+    throw 'Native UIA scroll did not show the requested progress; inspect before retry.'
+}}
+'Native vertical scroll movement verified on element: ' + $e.Current.Name"#
             );
 
             let output = run_hidden_powershell(&script)?;
@@ -10913,7 +11279,9 @@ if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ScrollPattern]::Patt
         }
         ToolAction::UiToggle { name, automation_id, window } => {
             let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
-            let root_script = ui_root_script(window.as_deref());
+            let root_script = native_uia_window_guard::guarded_mutation_root(
+                window.as_deref(), ui_root_script(window.as_deref()),
+                native_uia_target.as_ref())?;
             let script = format!(
                 r#"Add-Type -AssemblyName UIAutomationClient
 {condition}
@@ -10922,13 +11290,29 @@ $matches = Resolve-ShuviUiMatches -root $root -condition $condition
 if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Refine the selector.') }}
 $e = $matches.Item(0)
+Assert-ShuviNativeTarget -root $root -element $e
 if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
 $pattern = $null
 if (-not $e.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$pattern)) {{
     throw 'Matching element does not expose TogglePattern.'
 }}
-([System.Windows.Automation.TogglePattern]$pattern).Toggle()
-'Toggled element: ' + $e.Current.Name"#
+$togglePattern = [System.Windows.Automation.TogglePattern]$pattern
+$toggleBefore = $togglePattern.Current.ToggleState
+$togglePattern.Toggle()
+$shuviToggleVerified = $false
+for ($shuviAttempt=0; $shuviAttempt -lt 5; $shuviAttempt++) {{
+    Assert-ShuviNativeTarget -root $root -element $e
+    $toggleAfter = $togglePattern.Current.ToggleState
+    if ($toggleAfter -ne $toggleBefore) {{
+        $shuviToggleVerified = $true
+        break
+    }}
+    Start-Sleep -Milliseconds 60
+}}
+if (-not $shuviToggleVerified) {{
+    throw 'UIA TogglePattern did not show a state transition; outcome requires independent inspection.'
+}}
+'Toggle state changed and read back on element: ' + $e.Current.Name"#
             );
 
             let output = run_hidden_powershell(&script)?;
@@ -10949,7 +11333,9 @@ if (-not $e.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Patt
         }
         ToolAction::UiExpandCollapse { name, automation_id, window, action } => {
             let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
-            let root_script = ui_root_script(window.as_deref());
+            let root_script = native_uia_window_guard::guarded_mutation_root(
+                window.as_deref(), ui_root_script(window.as_deref()),
+                native_uia_target.as_ref())?;
             let method = if action == "expand" { "Expand" } else { "Collapse" };
 
             let script = format!(
@@ -10960,6 +11346,7 @@ $matches = Resolve-ShuviUiMatches -root $root -condition $condition
 if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Refine the selector.') }}
 $e = $matches.Item(0)
+Assert-ShuviNativeTarget -root $root -element $e
 if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
 $pattern = $null
 if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$pattern)) {{
@@ -10967,7 +11354,23 @@ if (-not $e.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePatter
 }}
 $expand = [System.Windows.Automation.ExpandCollapsePattern]$pattern
 $expand.{method}()
-'{method} completed for element: ' + $e.Current.Name"#
+$expectedExpansionState = [System.Windows.Automation.ExpandCollapseState]::Expanded
+if ('{method}' -eq 'Collapse') {{
+    $expectedExpansionState = [System.Windows.Automation.ExpandCollapseState]::Collapsed
+}}
+$shuviExpansionVerified = $false
+for ($shuviAttempt=0; $shuviAttempt -lt 5; $shuviAttempt++) {{
+    Assert-ShuviNativeTarget -root $root -element $e
+    if ($expand.Current.ExpandCollapseState -eq $expectedExpansionState) {{
+        $shuviExpansionVerified = $true
+        break
+    }}
+    Start-Sleep -Milliseconds 60
+}}
+if (-not $shuviExpansionVerified) {{
+    throw 'UIA ExpandCollapsePattern readback does not match approved state; outcome requires independent inspection.'
+}}
+'{method} state verified on element: ' + $e.Current.Name"#
             );
 
             let output = run_hidden_powershell(&script)?;
@@ -10988,7 +11391,9 @@ $expand.{method}()
         }
         ToolAction::UiSendKeys { name, automation_id, window, keys } => {
             let condition = ui_condition_script(name.as_deref(), automation_id.as_deref())?;
-            let root_script = ui_root_script(window.as_deref());
+            let root_script = native_uia_window_guard::guarded_mutation_root(
+                window.as_deref(), ui_root_script(window.as_deref()),
+                native_uia_target.as_ref())?;
             let escaped_keys = ps_single_quote(&keys);
 
             let script = format!(
@@ -11000,9 +11405,11 @@ $matches = Resolve-ShuviUiMatches -root $root -condition $condition
 if ($matches.Count -eq 0) {{ throw 'No matching UI element found.' }}
 if ($matches.Count -gt 1) {{ throw ('Selector matched ' + $matches.Count + ' elements. Refine the selector.') }}
 $e = $matches.Item(0)
+Assert-ShuviNativeTarget -root $root -element $e
 if (-not $e.Current.IsEnabled) {{ throw 'Matching UI element is disabled.' }}
 $e.SetFocus()
 Start-Sleep -Milliseconds 80
+Assert-ShuviNativeTarget -root $root -element $e -requireForeground
 [System.Windows.Forms.SendKeys]::SendWait('{escaped_keys}')
 'Keyboard fallback sent to element: ' + $e.Current.Name"#
             );
@@ -16910,8 +17317,8 @@ try {{
                     component_match_name:Some(target.component_match_name.clone()),component_display_name:None,
                     param_display_name:target.param_display_name.clone(),value:v}}
             };
-            let inner=PendingAction{created_at_ms:now_ms(),task_graph:None,task_step_id:None,premiere_expectation:Some(target.expected.clone()),tool:if target.kind=="video"{"premiere_set_video_param_named"}else{"premiere_set_audio_param_named"}.into(),
-                detail:"Disposable native parameter delta calibration".into(),action:make_action(value.clone())};
+            let inner=PendingAction{created_at_ms:now_ms(),native_uia_target:None,task_graph:None,task_step_id:None,premiere_expectation:Some(target.expected.clone()),tool:if target.kind=="video"{"premiere_set_video_param_named"}else{"premiere_set_audio_param_named"}.into(),
+                detail:"Disposable native parameter delta calibration".into(),capture_target:None,action:make_action(value.clone())};
             let changed=Box::pin(execute_tool(inner,state,app)).await;
             let changed=match changed {Ok(result) if result.success=>result,Err(error)=>{
                 let entry=registry.find_mut(version,&target)?;entry.probe_status="uncertain".into();
@@ -16937,8 +17344,8 @@ try {{
                         "reason":"After-delta native inspection missing; restoration not attempted blindly."}).to_string(),stderr:String::new(),exit_code:None});
                 }
             };
-            let restore=PendingAction{created_at_ms:now_ms(),task_graph:None,task_step_id:None,premiere_expectation:Some(target.expected.clone()),tool:if target.kind=="video"{"premiere_set_video_param_named"}else{"premiere_set_audio_param_named"}.into(),
-                detail:"Restore original disposable native value".into(),action:make_action(baseline.clone())};
+            let restore=PendingAction{created_at_ms:now_ms(),native_uia_target:None,task_graph:None,task_step_id:None,premiere_expectation:Some(target.expected.clone()),tool:if target.kind=="video"{"premiere_set_video_param_named"}else{"premiere_set_audio_param_named"}.into(),
+                detail:"Restore original disposable native value".into(),capture_target:None,action:make_action(baseline.clone())};
             let restored=Box::pin(execute_tool(restore,state,app)).await;
             if !restored.is_ok_and(|r|r.success) {
                 registry.find_mut(version,&target)?.probe_status="needs_recovery".into();
@@ -17063,8 +17470,8 @@ try {{
                 "trim"=>"premiere_trim_clip","move"=>"premiere_move_clip","clone"=>"premiere_clone_clip",
                 "delete_ripple"=>"premiere_delete_clip","scene_markers"=>"premiere_detect_scene_markers",_=>return Err("Acceptance tool not allowlisted.".into())
             };
-            let inner=PendingAction {created_at_ms:now_ms(),task_graph:None,task_step_id:None,premiere_expectation:Some(fixture.expected.clone()),tool:native_tool.into(),
-                detail:format!("Disposable acceptance {} action {}",record.step,action_id),action:native_action};
+            let inner=PendingAction {created_at_ms:now_ms(),native_uia_target:None,task_graph:None,task_step_id:None,premiere_expectation:Some(fixture.expected.clone()),tool:native_tool.into(),
+                detail:format!("Disposable acceptance {} action {}",record.step,action_id),capture_target:None,action:native_action};
             let native=Box::pin(execute_tool(inner,state,app)).await;
             let native_result=match native {
                 Ok(result)=>result,
@@ -19071,7 +19478,12 @@ async fn execute_action(
             .get(&action_id)
             .ok_or_else(|| "Action expired, was denied, or does not exist.".to_string())?;
 
-        if now_ms().saturating_sub(prepared.created_at_ms) > PENDING_ACTION_TTL_MS {
+        if now_ms().saturating_sub(prepared.created_at_ms) > PENDING_ACTION_TTL_MS
+            || native_uia_window_guard::expired_native_uia_binding(
+                prepared.created_at_ms, now_ms(), prepared.native_uia_target.as_ref())
+            || target_window_capture::expired_capture_binding(
+                prepared.created_at_ms, now_ms(), prepared.capture_target.as_ref())
+        {
             (None, pending.remove(&action_id))
         } else {
             let active_tool = prepared.tool.clone();

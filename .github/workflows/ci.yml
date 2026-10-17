@@ -51,6 +51,9 @@ jobs:
           if (-not $report.windows_host -or -not $report.toolchain.git) {
             throw "Windows runner discovery failed."
           }
+      - name: Shuvi39 synthetic Windows PowerShell UIA smoke
+        shell: powershell
+        run: .\scripts\shuvi39-synthetic-windows-uia-smoke.ps1
       - name: Rust verification with attestation
         run: npm run verify:rust
       - name: Upload Rust attestation
