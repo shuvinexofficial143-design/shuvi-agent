@@ -2390,7 +2390,8 @@ async function runAgentStep(): Promise<void> {
   // mobile task. Identity (not consent) must still be rechecked after awaits.
   const responseCleanupOwnerCurrent=()=>requestScope===activePermissionScope&&
     orchestration.task_graph===requestGraph&&
-    orchestration.owner_request===requestOwner&&!cancelRequested;
+    orchestration.owner_request===requestOwner&&!cancelRequested&&
+    (remoteTask===requestRemote||(requestRemote!==null&&remoteTask===null));
   let providerTurnFence:ReturnType<typeof captureMasterProviderTurnFence>=null;
   const staleModelRequest = () => requestScope !== activePermissionScope ||
     remoteTask!==requestRemote ||
@@ -2604,7 +2605,10 @@ async function runAgentStep(): Promise<void> {
     // A native action receipt is not original user-goal acceptance. Only the
     // strict final Rust/goal verifier in continueAfterOutcome may mark the
     // remote task succeeded; this generic provider turn cannot.
-    if(remoteTask&&!staleModelRequest()){
+    // Ordinary no-graph chat cleanup intentionally revokes consent. The
+    // exact old remote task still needs its terminal server acknowledgement;
+    // staleModelRequest() would falsely reject it due expected revocation.
+    if(remoteTask&&responseCleanupOwnerCurrent()){
       if(!(await closeRemoteTask("outcome_unknown")))return;
     }
     if(!responseCleanupOwnerCurrent()||remoteTask!==null)return;
