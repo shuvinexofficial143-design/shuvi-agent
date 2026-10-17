@@ -49,7 +49,7 @@ test("one-shot and persistent Blender paths require the same exact approved sour
 });
 
 test("The plan must produce an actual verified output, not claim success after partial mutations",()=>{
-  for(const expected of ["file.checkpoint","render.execute","Status.VERIFIED","report.completed",
+  for(const expected of ["file.checkpoint","render.execute","Status.VERIFIED","require_complete_step_report(plan, report)",
     "read_output(actual", "reread[\"sha256\"] != digest","actual.parent != args.output_dir.resolve"]){
     assert.ok(py.includes(expected),expected);
   }
