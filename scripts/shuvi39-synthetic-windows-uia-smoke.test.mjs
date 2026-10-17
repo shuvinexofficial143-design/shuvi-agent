@@ -65,3 +65,19 @@ test("native screenshot rejects same-process foreign top-level modal and popup o
  const save=rust.indexOf("$bitmap.Save(",after);
  assert.ok(before>=0&&before<copy&&copy<after&&after<save);
 });
+
+test("native screenshot reattests HWND, PID, root, geometry, foreground and pixels AFTER Bitmap.Save",()=>{
+ const rust=readFileSync(new URL("../src-tauri/src/target_window_capture.rs",import.meta.url),"utf8");
+ const saved=rust.indexOf("$bitmap.Save(");
+ const pid=rust.indexOf("$pidAfterSave = 0",saved);
+ const identity=rust.indexOf("$root.Current.NativeWindowHandle",pid);
+ const geo=rust.indexOf("$finalRect.Right -ne $rect.Right",identity);
+ const birth=rust.indexOf("Assert-ShuviCaptureProcessGeneration",geo);
+ const surface=rust.indexOf("Assert-ShuviCaptureSurface",birth);
+ const receipt=rust.indexOf("Title = $title",surface);
+ assert.ok(saved>0&&pid>saved&&identity>pid&&geo>identity&&birth>geo&&surface>birth&&receipt>surface);
+ assert.match(rust.slice(pid,surface),/GetForegroundWindow\(\) -ne \$target/);
+ assert.match(rust.slice(pid,surface),/Approved target changed after screenshot encoding/);
+ const returnImage=rust.indexOf("result.map(|identity| (path, identity))",receipt);
+ assert.ok(returnImage>receipt);
+});

@@ -911,3 +911,23 @@ Run only with separate owner consent on a disposable desktop/test fixture.
   remains bounded representative-point sampling, not full pixel-level
   occlusion proof; real editor/dialog acceptance on a user-authorized
   Windows host is still required.
+
+## Milestone 22 — Final HWND and surface attestation after screenshot encoding
+
+- In addition to the existing before/after CopyFromScreen target checks,
+  the screenshot can spend time inside System.Drawing.Bitmap.Save before
+  native PowerShell emits an auditable capture receipt. An application
+  window may move, close, become minimized, switch foreground, get covered
+  by a same-process popup, or change its UIA root in that interval.
+- Target capture now independently checks the original Win32 HWND, visible
+  and non-minimized status, native PID, UIA HWND/PID/title, foreground HWND
+  and **exact recorded physical rectangle** after PNG encoding. It then
+  reattests OS process creation time AND five sampled surface ancestor
+  HWNDs before returning the receipt. A failure forces Rust to remove
+  the saved file rather than sending stale/misidentified pixels.
+- This is conservative: focus changes or modal popups that arise during
+  PNG encoding can cause a refused capture. The agent must not silently
+  substitute another image, automatically retry or claim an edit succeeded.
+- Regression test asserts the final attestation occurs strictly after
+  Bitmap.Save and before any receipt or screenshot path can be published.
+  Real Windows desktop/modal behavior remains untested until authorized.

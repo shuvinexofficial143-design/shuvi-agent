@@ -211,9 +211,29 @@ try {
         $graphics.Dispose()
         $bitmap.Dispose()
     }
-    # Reject a restart between PNG write and capture receipt publication.
-    # Rust deletes the unsigned PNG if the bounded PowerShell run fails.
+    # The screenshot can take time to encode. An app may move, close, get
+    # covered or change UIA root AFTER CopyFromScreen and Bitmap.Save.
+    # Treat that saved image as untrusted until the original window/rect
+    # and visible sampled surface are independently rechecked.
+    [uint32]$pidAfterSave = 0
+    [void][ShuviTargetCaptureWin32]::GetWindowThreadProcessId($target, [ref]$pidAfterSave)
+    $finalRect = New-Object ShuviTargetCaptureWin32+RECT
+    if (-not [ShuviTargetCaptureWin32]::IsWindow($target) -or
+        -not [ShuviTargetCaptureWin32]::IsWindowVisible($target) -or
+        [ShuviTargetCaptureWin32]::IsIconic($target) -or
+        $pidAfterSave -ne $nativePid -or
+        [int64]$root.Current.NativeWindowHandle -ne [int64]$target -or
+        [int]$root.Current.ProcessId -ne $uiPid -or
+        [string]$root.Current.Name -cne $title -or
+        [ShuviTargetCaptureWin32]::GetForegroundWindow() -ne $target -or
+        -not [ShuviTargetCaptureWin32]::GetWindowRect($target, [ref]$finalRect) -or
+        $finalRect.Left -ne $rect.Left -or $finalRect.Top -ne $rect.Top -or
+        $finalRect.Right -ne $rect.Right -or $finalRect.Bottom -ne $rect.Bottom) {
+        throw 'Approved target changed after screenshot encoding. No image sent.'
+    }
     Assert-ShuviCaptureProcessGeneration
+    Assert-ShuviCaptureSurface
+    # Rust deletes any saved PNG if this final attestation fails.
     [PSCustomObject]@{
         Title = $title
         ProcessId = $uiPid
