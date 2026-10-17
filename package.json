@@ -15,7 +15,7 @@
     "verify:frontend": "node scripts/run-attested.mjs --scope frontend",
     "verify:rust": "node scripts/run-attested.mjs --scope rust",
     "prepare:sha-sidecar": "node scripts/prepare-native-sha-sidecar.mjs",
-    "build:windows-installer": "npm run prepare:sha-sidecar && tauri build --config src-tauri/tauri.sha-sidecar.conf.json",
+    "build:windows-installer": "npm run prepare:sha-sidecar && node scripts/build-pinned-sha-installer.mjs",
     "verify:full": "node scripts/run-attested.mjs --scope full"
   },
   "dependencies": {
