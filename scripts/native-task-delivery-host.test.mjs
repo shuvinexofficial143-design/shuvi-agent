@@ -19,10 +19,12 @@ test("final native delivery cannot bypass audit, exclusive lease, or pending app
 });
 test("last receipt survives clearing chat progress and supports read-only reinspection",()=>{
  const terminal=main.slice(main.indexOf('if (continuation.mode==="complete")'),
-   main.indexOf("await clearActiveCheckpoint()",main.indexOf('if (continuation.mode==="complete")')));
+   main.indexOf("await clearActiveCheckpoint(true)",main.indexOf('if (continuation.mode==="complete")')));
  assert.match(terminal,/nativeTaskDeliveryClaims\(orchestration.task_graph,schedule\)/);
  assert.match(terminal,/invoke<NativeTaskDelivery>\("finalize_native_task_delivery"/);
  assert.match(main,/invoke<NativeTaskDelivery\|null>\("native_task_delivery_status"\)/);
  assert.match(main,/id="checkNativeTaskDelivery"/);
+ assert.ok(terminal.length>0,"verified native finalization block must be nonempty");
+ assert.match(terminal,/const checkpointErased=await clearActiveCheckpoint\(true\)/);
  assert.doesNotMatch(terminal,/execute_action/);
 });
