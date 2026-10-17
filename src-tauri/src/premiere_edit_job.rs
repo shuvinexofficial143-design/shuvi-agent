@@ -372,6 +372,85 @@ impl Job {
         Ok(())
     }
 
+    /// Cross-check the persisted phase ledger against a plan freshly derived
+    /// from the immutable, validated request. This is corruption/recovery
+    /// detection, not authentication of who authored the JSON on disk.
+    pub fn validate_state(&self)->Result<(),String>{
+        if self.created_at_ms>self.updated_at_ms || self.job_id.is_empty()
+            ||self.job_id.len()>80 {
+            return Err("Edit-job state has invalid identity or timestamps.".into());
+        }
+        let fresh=Self::new(self.job_id.clone(),self.request.clone(),&self.project_guid,
+            self.project_path.as_deref(),&self.sequence_guid,self.created_at_ms)?;
+        if self.phases.len()!=fresh.phases.len() {
+            return Err("Edit-job persisted phase count differs from the typed request.".into());
+        }
+        let mut seen_incomplete=false;
+        let mut pending_count=0usize;
+        let mut failed_count=0usize;
+        let mut cancelled_count=0usize;
+        let mut action_ids=std::collections::HashSet::new();
+        for (phase,canonical) in self.phases.iter().zip(fresh.phases.iter()) {
+            if phase.id!=canonical.id || phase.tool!=canonical.tool {
+                return Err("Edit-job phase order or tool differs from the typed request.".into());
+            }
+            let completed=phase.state=="completed";
+            if completed && seen_incomplete {
+                return Err("Edit-job has an approved phase after an incomplete phase.".into());
+            }
+            if !completed {seen_incomplete=true;}
+            match phase.state.as_str(){
+                "completed"=>{},
+                "pending"=>pending_count+=1,
+                "failed"=>failed_count+=1,
+                "cancelled"=>cancelled_count+=1,
+                _=>return Err("Edit-job phase has an unknown persisted state.".into()),
+            }
+            if let Some(at)=phase.proposal_issued_at_ms {
+                if at<self.created_at_ms || at>self.updated_at_ms {
+                    return Err("Edit-job proposal timestamp falls outside its recorded lifetime.".into());
+                }
+                if phase.state=="pending" && pending_count>1 {
+                    return Err("A later pending edit-job phase cannot have a proposal.".into());
+                }
+            }
+            if let Some(id)=phase.action_id.as_deref() {
+                if id.is_empty() || !action_ids.insert(id) ||
+                    !matches!(phase.state.as_str(),"completed"|"failed") {
+                    return Err("Edit-job action receipt is duplicated or placed on an unexecuted phase.".into());
+                }
+            }
+            if phase.tool=="premiere_review_session_start" {
+                if phase.action_id.is_some() || (completed && phase.review_session_id.as_deref().is_none_or(str::is_empty)) {
+                    return Err("Iterative review requires a completed session instead of a single action receipt.".into());
+                }
+            } else if phase.review_session_id.is_some() ||
+                (matches!(phase.state.as_str(),"completed"|"failed") && phase.action_id.is_none()) {
+                return Err("Edit-job completed/failed phase lacks its typed action receipt.".into());
+            }
+            if (phase.state=="failed") != phase.error.is_some() {
+                return Err("Edit-job failure reason does not match the recorded phase state.".into());
+            }
+        }
+        if failed_count>1 || (failed_count>0 && cancelled_count>0) ||
+            (cancelled_count>0 && pending_count>0) {
+            return Err("Edit-job has inconsistent failed/cancelled/pending phase markers.".into());
+        }
+        let complete=!seen_incomplete;
+        let expected_terminal=if self.request.export.is_some(){"export_dispatched"}
+            else if self.request.interchange_export.is_some(){"interchange_delivered"}
+            else if self.request.frame_delivery.is_some(){"frames_delivered"}
+            else{"complete"};
+        let status_matches=if failed_count==1 {self.status=="failed"}
+            else if cancelled_count>0 {self.status=="cancelled"}
+            else if complete {self.status==expected_terminal}
+            else {matches!(self.status.as_str(),"running"|"paused") && pending_count>0};
+        if !status_matches {
+            return Err("Edit-job status does not match the ordered phase ledger.".into());
+        }
+        Ok(())
+    }
+
     pub fn project_expectation(&self)->PremiereExpectation{
         PremiereExpectation{
             project_guid:self.project_guid.clone(),
@@ -451,6 +530,7 @@ pub fn expectation_for_scene(job:&Job,timeline:&Value,request:&SceneDetectionReq
 }
 
 pub fn save(path:&Path,job:&Job)->Result<(),String>{
+    job.validate_state()?;
     let bytes=bounded(job)?;
     if let Some(parent)=path.parent(){fs::create_dir_all(parent).map_err(|e|e.to_string())?;}
     let temp=path.with_extension("json.tmp");
@@ -477,7 +557,7 @@ pub fn load(path:&Path)->Result<Job,String>{
         .read_to_end(&mut bytes).map_err(|e|e.to_string())?;
     if bytes.len()>MAX_STATE_BYTES{return Err("Edit-job state exceeds 128 KiB.".into());}
     let job:Job=serde_json::from_slice(&bytes).map_err(|e|e.to_string())?;
-    job.request.validate()?;
+    job.validate_state()?;
     bounded(&job)?;
     Ok(job)
 }
@@ -622,6 +702,62 @@ mod tests{
         assert!(restored.require_issued_action_receipt("review","older",101).is_err());
         restored.issue_proposal("review",105).unwrap();
         assert!(restored.require_issued_action_receipt("review","new",105).is_ok());
+    }
+    #[test]fn persisted_edit_job_ledger_rejects_skipped_or_reordered_phases(){
+        let good=Job::new("ledger".into(),request(),"P",None,"S",100).unwrap();
+        assert!(good.validate_state().is_ok());
+        let mut missing=good.clone();missing.phases.remove(0);
+        assert!(missing.validate_state().is_err());
+        let mut swapped=good.clone();swapped.phases.swap(0,1);
+        assert!(swapped.validate_state().is_err());
+        let mut forged=good.clone();forged.phases[0].tool="premiere_save_project".into();
+        assert!(forged.validate_state().is_err());
+    }
+    #[test]fn persisted_edit_job_ledger_rejects_fabricated_progress(){
+        let good=Job::new("ledger".into(),request(),"P",None,"S",100).unwrap();
+        let mut fabricated=good.clone();
+        fabricated.phases[0].state="completed".into();
+        assert!(fabricated.validate_state().is_err());
+        let mut premature=good.clone();premature.status="export_dispatched".into();
+        assert!(premature.validate_state().is_err());
+        let mut shifted=good.clone();
+        shifted.phases[1].state="completed".into();
+        shifted.phases[1].action_id=Some("invalid".into());
+        assert!(shifted.validate_state().is_err());
+        let mut invalid_time=good.clone();
+        invalid_time.phases[1].proposal_issued_at_ms=Some(9999);
+        assert!(invalid_time.validate_state().is_err());
+    }
+    #[test]fn persisted_edit_job_receipts_do_not_alias_or_replay(){
+        let mut good=Job::new("ledger".into(),request(),"P",None,"S",100).unwrap();
+        good.issue_proposal("review",101).unwrap();
+        good.record("review","premiere_review_frames","same-id",true,102).unwrap();
+        good.issue_proposal("export_preflight",103).unwrap();
+        good.record("export_preflight","premiere_plan_export","new-id",true,104).unwrap();
+        assert!(good.validate_state().is_ok());
+        let mut repeat=good.clone();
+        repeat.phases[1].action_id=Some("same-id".into());
+        assert!(repeat.validate_state().is_err());
+        let mut following=good.clone();
+        following.phases[2].proposal_issued_at_ms=Some(105);
+        following.updated_at_ms=105;
+        assert!(following.validate_state().is_err());
+        good.issue_proposal("export_dispatch",106).unwrap();
+        good.record("export_dispatch","premiere_export_sequence","final-id",true,107).unwrap();
+        assert_eq!(good.status,"export_dispatched");
+        assert!(good.validate_state().is_ok());
+    }
+    #[test]fn persisted_edit_job_fail_and_cancel_have_single_consistent_frontier(){
+        let mut failed=Job::new("failed".into(),request(),"P",None,"S",100).unwrap();
+        failed.record("review","premiere_review_frames","failed-action",false,101).unwrap();
+        assert!(failed.validate_state().is_ok());
+        let mut cancelled=Job::new("cancelled".into(),request(),"P",None,"S",100).unwrap();
+        cancelled.issue_proposal("review",101).unwrap();
+        cancelled.cancel(102);
+        assert!(cancelled.validate_state().is_ok());
+        failed.phases[2].state="completed".into();
+        failed.phases[2].action_id=Some("bypass".into());
+        assert!(failed.validate_state().is_err());
     }
     #[test]fn one_primary_delivery_only(){
         let value=json!({
