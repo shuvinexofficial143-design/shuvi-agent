@@ -47,3 +47,25 @@ test("running cancellation still uses original Rust UUID and awaits cancellation
  assert.match(block,/await promise;/);
  assert.doesNotMatch(block,/closeRemoteTask\("succeeded"\)/);
 });
+
+test("owner Stop during provider wait creates durable stopped checkpoint instead of only cosmetic label",()=>{
+ const running=block.indexOf("if (executingActionId) {");
+ const awaitCancel=block.indexOf("await promise;",running);
+ const owner=block.indexOf("if(!stillStopping())return;",awaitCancel);
+ const durable=block.indexOf("await stopAgentForSafety(",owner);
+ assert.ok(running>=0&&awaitCancel>running&&owner>awaitCancel&&durable>owner);
+ assert.match(block,/previously dispatched AI provider request may already be billed/);
+ assert.match(block,/not accepted or retried automatically/);
+ const stop=ui.slice(ui.indexOf("async function stopAgentForSafety("),
+  ui.indexOf("async function persistRequiredContinuationCheckpoint"));
+ assert.match(stop,/recovery_mode: "stopped"/);
+ assert.match(stop,/await saveActiveCheckpoint\(\)/);
+});
+test("delayed billed provider result is rejected by the revoked owner lease after Stop",()=>{
+ const start=ui.indexOf("async function runAgentStep(): Promise<void> {");
+ const end=ui.indexOf('el<HTMLButtonElement>("#resumeTask")',start);
+ const part=ui.slice(start,end);
+ assert.match(part,/requestScope.revoked \|\| cancelRequested/);
+ assert.match(part,/if \(staleModelRequest\(\)\) return;/);
+ assert.match(part,/paidFlight.release\(\)/);
+});

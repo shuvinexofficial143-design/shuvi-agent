@@ -3327,7 +3327,15 @@ el<HTMLButtonElement>("#stopButton").addEventListener("click", async () => {
     // cannot race ahead of cancellation confirmation.
     return;
   }
+  // An AI request may still be pending even though no Windows action is.
+  // Merely showing "Stopping…" would not audit or durably stop that turn.
+  if(!stillStopping())return;
   el<HTMLButtonElement>("#stopButton").textContent = "Stopping…";
+  await stopAgentForSafety(
+    "Owner stopped the task while no Windows action was executing. "+
+    "A previously dispatched AI provider request may already be billed; "+
+    "its delayed result is not accepted or retried automatically."
+  );
 });
 
 document.querySelectorAll<HTMLButtonElement>(".nav").forEach((button) => {
