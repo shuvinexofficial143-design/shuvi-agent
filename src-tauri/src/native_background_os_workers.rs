@@ -201,8 +201,9 @@ pub(super) fn read_admissions(root:&Path)->Result<Vec<(String,String)>,String>{
 }
 /// Non-mutating snapshot: a recorded OS exit or stored sha256_verified
 /// is not durable proof that a file has remained unchanged since that audit.
-#[derive(Clone,Debug,PartialEq,Eq)]
-pub(super) struct ReadOnlyWorkerHealth{
+#[derive(Clone,Debug,PartialEq,Eq,serde::Serialize)]
+#[serde(rename_all="camelCase")]
+pub(crate) struct ReadOnlyWorkerHealth{
     pub action_id:String,
     pub recorded_phase:String,
     pub evidence_health:String,
@@ -240,7 +241,7 @@ fn inspect_receipt(root:&Path,id:&str)->Result<Option<Receipt>,String>{
 /// independently re-reading CURRENT file bytes; caller must NOT cache this
 /// status as permanent acceptance of the source.
 #[allow(dead_code)]
-pub(super) fn inspect_readonly_health(root:&Path)->Result<Vec<ReadOnlyWorkerHealth>,String>{
+pub(crate) fn inspect_readonly_health(root:&Path)->Result<Vec<ReadOnlyWorkerHealth>,String>{
     regular_root(root)?;
     let claims=admission::snapshot_detailed_at(root)?;
     let mut observed=Vec::with_capacity(claims.len());
