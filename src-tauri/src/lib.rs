@@ -14929,6 +14929,7 @@ try {{
                 )
                 .ok_or("No matching typed action audit receipt for this edit-job phase.")?;
             job.require_issued_action_receipt(&phase_id,&action_id,receipt.timestamp_ms)?;
+            premiere_edit_job::require_unclaimed_action_in_store(&path,&job_id,&action_id)?;
             let success=receipt.event=="executed"&&receipt.success;
             job.record(&phase_id,&receipt.tool,&action_id,success,now_ms())?;
             premiere_edit_job::save(&path,&job)?;
