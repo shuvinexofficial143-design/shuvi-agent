@@ -14,6 +14,7 @@ const aliases=declared.map(x=>x.split("::").at(-1));
 const uniqueNames=[
   "action_audit_receipt",
   "audit_log",
+  "cancel_native_approved_parent",
   "cancel_running_action",
   "chat",
   "clear_session_checkpoint",
