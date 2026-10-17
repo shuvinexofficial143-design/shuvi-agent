@@ -498,9 +498,9 @@ mod tests {
     fn rejects_large_png_dimensions_to_bound_raw_bitmap_memory() {
         let mut big = receipt();
         big["Width"] = serde_json::json!(7680);
-        big["Height"] = serde_json::json!(4800);
-        // This would request more than 36,864,000 pixels.
-        assert!(verify_capture_receipt(&big, &png_header(7680, 4800), 500_000).is_err());
+        big["Height"] = serde_json::json!(4801);
+        // Just above the 36,864,000-pixel ceiling must fail closed.
+        assert!(verify_capture_receipt(&big, &png_header(7680, 4801), 500_000).is_err());
         let mut within = receipt();
         within["Width"] = serde_json::json!(7680);
         within["Height"] = serde_json::json!(4320);
