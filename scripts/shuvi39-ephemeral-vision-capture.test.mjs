@@ -20,17 +20,20 @@ test("vision model and prompt preflight happen before ANY screenshot capture",()
 test("one-time PNG stays owned across awaited AI provider call and is unlinked before response",()=>{
  const acquire=stage.indexOf("EphemeralVisionCapture::new(path)");
  const analyze=stage.indexOf("analyze_png_with_provider(&provider, &prompt, captured.path()).await?");
- const cleanup=stage.indexOf("drop(captured)");
+ const cleanup=stage.indexOf("captured.discard()?");
  const response=stage.indexOf("Ok(ActionResult {",cleanup);
  assert.ok(acquire>0&&analyze>acquire&&cleanup>analyze&&response>cleanup);
  assert.doesNotMatch(stage,/path\.display\(\)/);
  assert.match(stage,/Screenshot: temporary capture deleted after analysis/);
+ assert.match(guard,/pub\(super\) fn discard\(&mut self\) -> Result<\(\), String>/);
+ assert.match(guard,/cleanup failed:/);
  assert.match(guard,/impl Drop for EphemeralVisionCapture/);
  assert.match(guard,/fs::remove_file\(&self\.path\)/);
  for(const t of ["disposable_screenshot_is_unlinked_after_success",
    "disposable_screenshot_is_unlinked_on_error",
    "disposable_screenshot_is_unlinked_on_task_unwind",
-   "missing_capture_unlink_is_idempotent"])
+   "missing_capture_unlink_is_idempotent",
+   "discarding_deleted_capture_is_idempotent"])
    assert.ok(guard.includes(t),t);
 });
 test("ephemeral image is not substituted for manual capture_screen user output",()=>{

@@ -1055,3 +1055,24 @@ Run only with separate owner consent on a disposable desktop/test fixture.
   overwritten disk blocks, backups or pixels already transmitted to
   the explicitly selected vision provider. No real Windows application
   live acceptance was run here.
+
+## Milestone 26 — Verified screenshot disposal before reporting vision success
+
+- The first ephemeral screenshot lifecycle used Rust `Drop` to unlink
+  temporary PNGs even on failure and cancellation, but `Drop` cannot
+  return errors: a Windows file sharing lock or filesystem failure could
+  leave the sensitive file while a successful `inspect_screen` response
+  claimed the screenshot was deleted.
+- On successful AI analysis, the action now explicitly calls
+  `EphemeralVisionCapture::discard() -> Result<(),String>`, accepting a
+  verified removal or an already-absent path. Any genuine unlink error
+  blocks a success response, records the cleanup failure and preserves
+  the ordinary action-error audit path. Its Drop fallback attempts unlink
+  again if cleanup was unsuccessful.
+- Early API error, timeout, async cancellation and panic still rely on
+  the best-effort Drop cleanup. This does **not** promise secure disk
+  erasure or a successful unlink after a forced process kill, but it
+  prevents misleading confirmed-delete claims.
+- Unit tests exercise successful verified removal, repeated discard,
+  failure unwinding and missing-path behavior. Frontend source contract
+  verifies cleanup is awaited/completed before emitting action success.

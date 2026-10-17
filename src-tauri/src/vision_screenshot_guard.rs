@@ -8,14 +8,31 @@ use std::{fs, path::{Path, PathBuf}};
 #[derive(Debug)]
 pub(super) struct EphemeralVisionCapture {
     path: PathBuf,
+    deleted: bool,
 }
 impl EphemeralVisionCapture {
-    pub(super) fn new(path: PathBuf) -> Self { Self { path } }
+    pub(super) fn new(path: PathBuf) -> Self { Self { path, deleted: false } }
     pub(super) fn path(&self) -> &Path { &self.path }
+
+    // Unlike Drop's best-effort cleanup, a successful analysis must prove
+    // that its sensitive PNG was actually removed before reporting success.
+    pub(super) fn discard(&mut self) -> Result<(), String> {
+        match fs::remove_file(&self.path) {
+            Ok(()) => { self.deleted = true; Ok(()) },
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                self.deleted = true; Ok(())
+            },
+            Err(err) => Err(format!(
+                "Vision analysis completed but temporary screenshot cleanup failed: {err}. Inspect Shuvi's private screenshot folder."
+            )),
+        }
+    }
 }
 impl Drop for EphemeralVisionCapture {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        if !self.deleted {
+            let _ = fs::remove_file(&self.path);
+        }
     }
 }
 #[cfg(test)]
@@ -37,7 +54,17 @@ mod tests {
             let owned = EphemeralVisionCapture::new(path.clone());
             assert_eq!(owned.path(),path.as_path());
             assert!(path.exists());
+            owned.discard().unwrap();
+            assert!(!path.exists());
         }
+        assert!(!path.exists());
+    }
+    #[test]
+    fn discarding_deleted_capture_is_idempotent() {
+        let path=capture_fixture_path();
+        let mut capture=EphemeralVisionCapture::new(path.clone());
+        capture.discard().unwrap();
+        capture.discard().unwrap();
         assert!(!path.exists());
     }
     #[test]

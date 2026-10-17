@@ -10723,9 +10723,10 @@ Write-Output 'SHUVI_WHATSAPP_DESKTOP_LAUNCH_REQUESTED'
             // path makes cleanup unconditional on success, provider failure,
             // timeout and cancellation (future drop). Never expose a stale
             // filesystem path in a model-facing action response.
-            let captured = vision_screenshot_guard::EphemeralVisionCapture::new(path);
+            let mut captured = vision_screenshot_guard::EphemeralVisionCapture::new(path);
             let analysis = analyze_png_with_provider(&provider, &prompt, captured.path()).await?;
-            drop(captured);
+            // Cleanup error must NOT masquerade as a verified clean run.
+            captured.discard()?;
 
             Ok(ActionResult {
                 success: true,
