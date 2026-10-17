@@ -1314,22 +1314,28 @@ async function continueAfterOutcome(): Promise<void> {
   const continuationGraph=orchestration.task_graph;
   const continuationOwner=orchestration.owner_request;
   const continuationRemote=remoteTask;
-  const continuationCurrent=()=>continuationScope===activePermissionScope&&
-    !continuationScope.revoked&&!cancelRequested&&
-    orchestration.recovery_mode!=="stopped"&&
+  const continuationOwnerCurrent=()=>continuationScope===activePermissionScope&&
     orchestration.task_graph===continuationGraph&&
     orchestration.owner_request===continuationOwner&&
     remoteTask===continuationRemote;
-  renderOrchestrationStatus();
-  if (!await persistRequiredContinuationCheckpoint(continuationCurrent)) return;
-  if(!continuationCurrent())return;
-  if (orchestration.recovery_mode === "stopped") {
+  const continuationCurrent=()=>continuationOwnerCurrent()&&
+    !continuationScope.revoked&&!cancelRequested&&
+    orchestration.recovery_mode!=="stopped";
+  // A STOPPED state is terminal, not a replan. Handle it BEFORE the
+  // live-permission continuation fence deliberately rejects stopped work.
+  // An already revoked same-task scope can still publish its safety stop;
+  // it cannot acquire a new native approval or paid provider call.
+  if(orchestration.recovery_mode==="stopped"){
+    if(!continuationOwnerCurrent())return;
     await stopAgentForSafety(
       orchestration.stop_reason ??
         "Shuvi stopped this task because the local safety orchestrator requires a new user instruction."
     );
     return;
   }
+  renderOrchestrationStatus();
+  if (!await persistRequiredContinuationCheckpoint(continuationCurrent)) return;
+  if(!continuationCurrent())return;
 
   // Never buy another AI turn just because a Rust action returned.
   // Only dependency-ready work proceeds. An all-audited DAG ends here.
