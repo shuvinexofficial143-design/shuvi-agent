@@ -35,3 +35,14 @@ test("Rust tests cover real directories, ordinary files and symlink redirects",(
   "vision_directory_rejects_managed_folder_symlink_on_unix"])
   assert.ok(target.includes(token),token);
 });
+
+test("Windows directory validator rejects reparse/junction attributes in addition to symlinks",()=>{
+ const i=target.indexOf("pub(super) fn validate_vision_capture_directory(");
+ const j=target.indexOf("fn is_owned_vision_capture_name(",i);
+ const section=target.slice(i,j);
+ assert.match(section,/MetadataExt/);
+ assert.match(section,/file_attributes\(\) & FILE_ATTRIBUTE_REPARSE_POINT != 0/);
+ assert.match(section,/FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400/);
+ assert.match(section,/cfg\(target_os = "windows"\)/);
+ assert.match(section,/meta\.file_type\(\)\.is_symlink\(\)/);
+});

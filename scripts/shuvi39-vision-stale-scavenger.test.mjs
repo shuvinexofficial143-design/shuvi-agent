@@ -31,3 +31,17 @@ test("stale cleanup is conservative, limited by age, file prefix and directory t
                       "vision_scavenger_wont_remove_nonexistent_directory"])
  assert.ok(target.includes(name));
 });
+
+test("orphan deletion only targets Shuvi-generated millisecond timestamp and UUID v4 files",()=>{
+ const start=target.indexOf("fn is_owned_vision_capture_name(");
+ const end=target.indexOf("fn prune_stale_vision_captures(",start);
+ const guard=target.slice(start,end);
+ assert.ok(start>0&&end>start);
+ assert.match(guard,/strip_prefix\("vision-"\)/);
+ assert.match(guard,/strip_suffix\("\.png"\)/);
+ assert.match(guard,/uuid::Uuid::parse_str\(unique_id\)/);
+ assert.match(guard,/get_version_num\(\) == 4/);
+ assert.match(target,/!is_owned_vision_capture_name\(name\)/);
+ assert.match(target,/vision_capture_file_name_requires_uuid_v4_and_epoch/);
+ assert.match(target,/assert!\(spoofed\.exists\(\)\)/);
+});

@@ -43,8 +43,30 @@ pub(super) fn validate_vision_capture_directory(dir: &Path) -> Result<(), String
         if meta.file_type().is_symlink() || !meta.is_dir() {
             return Err("Vision screenshot directory is a redirect or not a real directory. No screenshot written.".into());
         }
+        // Windows junctions may be reparse points without ordinary symlink types.
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::fs::MetadataExt;
+            const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+            if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                return Err("Vision screenshot directory is a Windows junction/reparse redirect. No screenshot written.".into());
+            }
+        }
     }
     Ok(())
+}
+
+// Only automatically created vision-<epoch millis>-<canonical UUIDv4>.png
+// artifacts are eligible for deletion. Similar owner filenames are preserved.
+fn is_owned_vision_capture_name(name: &str) -> bool {
+    let Some(body) = name.strip_prefix("vision-").and_then(|v| v.strip_suffix(".png")) else {
+        return false;
+    };
+    let Some((timestamp, unique_id)) = body.split_once('-') else { return false; };
+    if !(10..=20).contains(&timestamp.len()) ||
+        !timestamp.bytes().all(|ch| ch.is_ascii_digit()) { return false; }
+    uuid::Uuid::parse_str(unique_id).is_ok_and(|id|
+        id.get_version_num() == 4 && id.to_string() == unique_id)
 }
 
 fn prune_stale_vision_captures(dir: &Path) -> Result<usize, String> {
@@ -56,7 +78,8 @@ fn prune_stale_vision_captures(dir: &Path) -> Result<usize, String> {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue; };
-        if !name.starts_with("vision-") || !name.ends_with(".png") { continue; }
+        if !name.starts_with("vision-") || !name.ends_with(".png") ||
+           !is_owned_vision_capture_name(name) { continue; }
         if !entry.file_type().is_ok_and(|kind| kind.is_file()) { continue; }
         let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else {
             continue;
@@ -742,16 +765,17 @@ mod tests {
         let dir=std::env::temp_dir().join(format!(
             "shuvi39-vision-prune-{}-{}",std::process::id(),uuid::Uuid::new_v4()));
         std::fs::create_dir(&dir).unwrap();
-        let old_vision=dir.join("vision-expired.png");
+        let old_vision=dir.join(format!("vision-1700000000000-{}.png",uuid::Uuid::new_v4()));
         let old_manual=dir.join("screen-user-saved.png");
-        let recent_vision=dir.join("vision-active.png");
+        let recent_vision=dir.join(format!("vision-1700000000001-{}.png",uuid::Uuid::new_v4()));
         let wrong_extension=dir.join("vision-not-image.txt");
-        for path in [&old_vision,&old_manual,&recent_vision,&wrong_extension] {
+        let spoofed=dir.join("vision-user-private.png");
+        for path in [&old_vision,&old_manual,&recent_vision,&wrong_extension,&spoofed] {
             std::fs::write(path,b"test").unwrap();
         }
         let stale=SystemTime::now()-Duration::from_secs(3600);
         let times=std::fs::FileTimes::new().set_modified(stale);
-        for path in [&old_vision,&old_manual,&wrong_extension] {
+        for path in [&old_vision,&old_manual,&wrong_extension,&spoofed] {
             std::fs::OpenOptions::new().write(true).open(path)
                 .unwrap().set_times(times).unwrap();
         }
@@ -760,10 +784,23 @@ mod tests {
         assert!(old_manual.exists());
         assert!(recent_vision.exists());
         assert!(wrong_extension.exists());
-        for path in [&old_manual,&recent_vision,&wrong_extension] {
+        assert!(spoofed.exists());
+        for path in [&old_manual,&recent_vision,&wrong_extension,&spoofed] {
             std::fs::remove_file(path).unwrap();
         }
         std::fs::remove_dir(dir).unwrap();
+    }
+    #[test]
+    fn vision_capture_file_name_requires_uuid_v4_and_epoch() {
+        let valid=format!("vision-1700000000000-{}.png",uuid::Uuid::new_v4());
+        assert!(super::is_owned_vision_capture_name(&valid));
+        for bogus in ["vision-report.png","vision-1700000000000-help.png",
+            "vision-1700000000000-00000000-0000-0000-0000-000000000000.png",
+            "vision-0-12345678-1234-4234-8234-123456789012.png",
+            "screen-1700000000000-12345678-1234-4234-8234-123456789012.png",
+            "vision-1700000000000-12345678-1234-4234-8234-123456789012.PNG"] {
+            assert!(!super::is_owned_vision_capture_name(bogus),"{bogus}");
+        }
     }
     #[test]
     fn vision_scavenger_wont_remove_nonexistent_directory() {
