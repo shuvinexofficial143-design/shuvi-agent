@@ -592,8 +592,8 @@ pub(crate) fn reconcile_owned_terminal_at(root:&Path,id:&str)->Result<bool,Strin
     let p=q.parents.iter_mut().find(|p|p.parent_id==id)
         .ok_or("Parent was never independently approved for reconciliation.")?;
     if p.phase=="owner_reconciled_unverified"{return Ok(false);}
-    if !matches!(p.phase.as_str(),"admitted"|"outcome_unknown"){
-        return Err("Only quarantined/uncertain parent may reconcile OS terminal.".into());
+    if p.phase!="outcome_unknown"{
+        return Err("First complete separately approved M56 UNKNOWN owner review; never reconcile an unreviewed running parent.".into());
     }
     let os=super::admission::snapshot_detailed_at(root)?
         .into_iter().find(|claim|claim.action_id==id)
@@ -891,6 +891,7 @@ mod tests{
         let d=dir();let a=input(&d,"term-a");let b=input(&d,"term-b");
         add(&d,A,&a,2,&[]).unwrap();add(&d,B,&b,1,&[]).unwrap();
         claim_next_at(&d).unwrap();
+        mark_owner_reviewed_uncertain_at(&d,A).unwrap();
         assert!(reconcile_owned_terminal_at(&d,A).is_err()); // no M46 evidence
         super::super::admission::reserve_at(&d,A,&a,&"a".repeat(64)).unwrap();
         assert!(reconcile_owned_terminal_at(&d,A).is_err()); // reserved
@@ -933,6 +934,7 @@ mod tests{
     fn m57_terminal_reconciliation_rejects_os_success_without_application_proof(){
         let d=dir();let a=input(&d,"sha-failed");
         add(&d,A,&a,0,&[]).unwrap();claim_next_at(&d).unwrap();
+        mark_owner_reviewed_uncertain_at(&d,A).unwrap();
         super::super::admission::reserve_at(&d,A,&a,&"a".repeat(64)).unwrap();
         super::super::admission::started_at(&d,A,4321).unwrap();
         super::super::admission::terminal_at(&d,A,4321,"os_exited_unverified",0).unwrap();
