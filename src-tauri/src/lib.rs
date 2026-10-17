@@ -503,6 +503,7 @@ Rules:
 - Use tools only when a computer action is required.
 - Never claim an action succeeded before Shuvi returns a tool result.
 - Prefer typed file/app/browser/screen tools over PowerShell.
+- For multiple independent read-only SHA jobs: FIRST use queue_readonly_sha_parent with exactly {input_path,expected_sha256,priority,depends_on} and require owner Allow EACH time; enqueue does NOT launch or verify. Priorities are 0..2; depends_on is an array of earlier parent UUIDs. Later run_approved_sha_parent_queue with empty {} requires a SEPARATE owner Allow to dispatch at most two already-approved ready parents. Never guess SHA or path, use arbitrary executable, or call queued/running a completed task. ApplicationVerified remains false.
 - For two read-only binary files that the owner specifically wants SHA-256 verified, you may propose verify_readonly_sha_pair with EXACTLY four arguments: first_path, first_sha256, second_path, second_sha256. All paths must be distinct absolute existing files, each expected digest must be lowercase 64-character hex, and each file must be at most 128 MiB. It launches two contained read-only OS workers only AFTER explicit owner Allow and it verifies only present file bytes; it never confirms an Adobe/Blender creative task. Never guess a SHA-256 digest or silently use a path not shown to the owner.
 - capture_screen only captures an image and returns its local path; do not infer visual contents from that path.
 - inspect_screen captures ONLY the approved window (briefly activates it, verifies its identity, captures its visible bounds, then restores previous focus). It fails closed if the specified app window is missing/ambiguous or cannot be brought forward; do not silently send Shuvi's chat screenshot. Use window:"desktop" only for user-requested whole-desktop inspection.
@@ -653,6 +654,13 @@ enum ToolAction {
         first_path: String, first_sha256: String,
         second_path: String, second_sha256: String,
     },
+    // M54: each background parent is enrolled by its OWN immutable owner-approved UUID.
+    QueueReadOnlyShaParent {
+        input_path: String, expected_sha256: String, priority: u8,
+        depends_on: Vec<String>,
+    },
+    // Requires a distinct explicit owner approval to execute already approved parents.
+    RunApprovedShaParentQueue,
     WriteFile { path: String, content: String },
     CreateDirectory { path: String },
     LaunchApp { program: String, args: Vec<String> },
@@ -3223,6 +3231,49 @@ fn stage_tool(
                 first_path,first_sha256,second_path,second_sha256
             },"Verify two files in isolated read-only SHA workers".into(),
                 info,RiskLevel::Medium)
+        }
+        "queue_readonly_sha_parent" => {
+            let exact=proposal.arguments.as_object()
+                .ok_or("SHA parent enrollment must be a named object.")?;
+            if exact.len()!=4||!["input_path","expected_sha256","priority","depends_on"]
+                .iter().all(|key|exact.contains_key(*key)){
+                return Err("Background parent requires exactly path, digest, priority and dependencies.".into());
+            }
+            let input_path=absolute_path(arg_string(&proposal.arguments,"input_path")?)?;
+            let expected_sha256=arg_string(&proposal.arguments,"expected_sha256")?;
+            if expected_sha256.len()!=64||!expected_sha256.bytes().all(|c|
+                c.is_ascii_digit()||(b'a'..=b'f').contains(&c)){
+                return Err("Background parent SHA must be exactly 64 lowercase hex characters.".into());
+            }
+            let priority=proposal.arguments.get("priority").and_then(Value::as_u64)
+                .filter(|n|*n<=2).ok_or("Background parent priority must be 0, 1 or 2.")? as u8;
+            let deps=proposal.arguments.get("depends_on").and_then(Value::as_array)
+                .ok_or("Background parent dependencies must be an array.")?;
+            if deps.len()>7{return Err("Background parent dependencies exceed seven.".into());}
+            let mut depends_on=Vec::new();
+            for item in deps{
+                let id=item.as_str().ok_or("Background dependency UUID must be a string.")?;
+                if uuid::Uuid::parse_str(id).map(|u|u.to_string()!=id).unwrap_or(true){
+                    return Err("Background dependency must be canonical UUID.".into());
+                }
+                depends_on.push(id.to_string());
+            }
+            depends_on.sort();
+            if depends_on.windows(2).any(|w|w[0]==w[1]){
+                return Err("Background parent dependency UUIDs must be distinct.".into());
+            }
+            let detail=format!("ENQUEUE ONLY (no launch): {} | expected SHA-256 {} | priority {} | prerequisite parents {:?}; requires separate explicit owner dispatch authorization.",
+                input_path,expected_sha256,priority,depends_on);
+            (ToolAction::QueueReadOnlyShaParent{input_path,expected_sha256,priority,depends_on},
+                "Approve ONE independent read-only SHA parent for durable queue".into(),detail,RiskLevel::Medium)
+        }
+        "run_approved_sha_parent_queue" => {
+            let obj=proposal.arguments.as_object().ok_or("Background run accepts an empty object only.")?;
+            if !obj.is_empty(){return Err("Background run takes no caller-supplied program, PID or arguments.".into());}
+            (ToolAction::RunApprovedShaParentQueue,
+                "Run up to two independently approved queued SHA parents".into(),
+                "Explicit owner-authorized SHA parent queue dispatch; bounded two OS children; no GUI mutation or application success assertion".into(),
+                RiskLevel::Medium)
         }
         "write_file" => {
             let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
@@ -10133,6 +10184,8 @@ async fn execute_tool_with_action_id(
         // function (which may be used outside a prepared owner's action).
         ToolAction::VerifyReadOnlyShaPair {..} =>
             Err("SHA pair requires the existing exact approved native execute_action path.".into()),
+        ToolAction::QueueReadOnlyShaParent {..}|ToolAction::RunApprovedShaParentQueue =>
+            Err("Background parent queue operations require exact owner-approved native execute_action.".into()),
         ToolAction::WriteFile { path, content } => {
             let target = Path::new(&path);
             let mut recovery_backup: Option<std::path::PathBuf> = None;
@@ -19352,6 +19405,61 @@ async fn execute_action(
         {
             Err("Independent read-only SHA OS workers require Windows.".into())
         }
+    } else if let ToolAction::QueueReadOnlyShaParent{
+        input_path,expected_sha256,priority,depends_on
+    }=&action.action {
+        #[cfg(windows)]
+        {
+            (||->Result<ActionResult,String>{
+                let root=app.path().app_data_dir()
+                    .map_err(|_|"Native parent queue data directory unavailable.")?;
+                fs::create_dir_all(&root).map_err(|_|"Cannot open native parent queue directory.")?;
+                let deps:Vec<&str>=depends_on.iter().map(String::as_str).collect();
+                native_scheduler::background_os_workers::parent_queue::enqueue_approved_at(
+                    &root,native_scheduler::background_os_workers::parent_queue::ApprovedParent{
+                        id:&action_id,input:Path::new(input_path),
+                        sha256:expected_sha256,depends_on:&deps,priority:*priority,
+                    })?;
+                let stdout=serde_json::to_string(&json!({
+                    "ownerApprovedParentId":action_id,"queued":true,
+                    "sha256Verified":false,"applicationVerified":false,"workerLaunched":false
+                })).map_err(|_|"Cannot serialize approved parent queue receipt.")?;
+                Ok(ActionResult{success:true,tool:tool.clone(),stdout,
+                    stderr:String::new(),exit_code:Some(0)})
+            })()
+        }
+        #[cfg(not(windows))]{Err("Owner-approved background parents require Windows.".into())}
+    } else if let ToolAction::RunApprovedShaParentQueue=&action.action {
+        #[cfg(windows)]
+        {
+            (||->Result<ActionResult,String>{
+                let root=app.path().app_data_dir()
+                    .map_err(|_|"Native parent queue directory unavailable.")?;
+                fs::create_dir_all(&root).map_err(|_|"Cannot open native parent queue directory.")?;
+                // Both independent child Job Objects reserve 512 MiB each.
+                // Preserve the original 4 GiB host ceiling even on sparse load.
+                let owner_ram=||->Result<bool,String>{
+                    let status=current_runtime_status(state.inner())?;
+                    Ok(status.shuvi_memory_mb+1024.0>=HARD_LIMIT_MB)
+                };
+                if owner_ram()?{return Err("Two reserved SHA parents exceed 4 GiB Shuvi budget.".into());}
+                let [left,right]=native_scheduler::background_os_workers::parent_queue::run_two_ready_approved(
+                    &root,&owner_ram);
+                let a=left?;let b=right?;
+                let verified:Vec<_>=[a,b].into_iter().flatten().map(|e|json!({
+                    "parentId":e.action_id,"sha256":e.sha256,
+                    "bytes":e.bytes,"osPid":e.os_pid,
+                })).collect();
+                if verified.is_empty(){return Err("No independently approved ready parent available; no process launched.".into());}
+                let stdout=serde_json::to_string(&json!({
+                    "verifiedParents":verified,"currentFileSha256Verified":true,
+                    "applicationVerified":false,"desktopMutated":false
+                })).map_err(|_|"Cannot encode background parent results.")?;
+                Ok(ActionResult{success:true,tool:tool.clone(),stdout,
+                    stderr:String::new(),exit_code:Some(0)})
+            })()
+        }
+        #[cfg(not(windows))]{Err("Background parent execution requires Windows.".into())}
     } else if scheduled_step.is_some(){
         if let ToolAction::BlenderInspect {python_exe,blender_exe,blend_file,operation}=&action.action {
             native_blender_owned_adapter::inspect(
