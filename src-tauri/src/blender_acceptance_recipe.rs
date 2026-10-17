@@ -33,9 +33,6 @@ fn model1(rev:&str)->Vec<Value>{
             ],"faces":[[3,2,1,0],[0,1,4],[1,2,4],[2,3,4],[3,0,4]]},
             "transform":transform(),"expected_scene_revision":rev,
         }),vec![]),
-        step("mesh_read","mesh.inspect",json!({"object_id":"BOUND_FROM_CREATE"}),vec![
-            binding("create",json!(["data","after","object","object_id"]),json!(["object_id"]))
-        ]),
         step("shape","mesh.translate_vertices",json!({
             "target":{"object_id":"BOUND_FROM_CREATE","expected_name":MESH,
                 "expected_revision":"BOUND_FROM_CREATE"},
@@ -44,18 +41,31 @@ fn model1(rev:&str)->Vec<Value>{
         }),vec![
             binding("create",json!(["data","after","object","object_id"]),json!(["target","object_id"])),
             binding("create",json!(["data","after","object","revision"]),json!(["target","expected_revision"])),
-            binding("mesh_read",json!(["data","geometry_revision"]),json!(["expected_geometry_revision"])),
+            binding("create",json!(["data","after","geometry","geometry_revision"]),json!(["expected_geometry_revision"])),
         ]),
         step("post_edit_scene","scene.inspect",json!({}),vec![]),
+        step("camera","device.create",json!({
+            "name":"Shuvi41ProofCamera","kind":"CAMERA",
+            "transform":{"location":[4.0,-6.0,4.0],"rotation_euler":[1.15,0.0,0.58],"scale":[1.0,1.0,1.0]},
+            "settings":{"lens":50.0,"clip_start":0.1,"clip_end":100.0,"make_active":true},
+            "expected_scene_revision":"BOUND_FROM_SCENE",
+        }),vec![binding("post_edit_scene",json!(["data","revision"]),json!(["expected_scene_revision"]))]),
+        step("post_camera_scene","scene.inspect",json!({}),vec![]),
         step("checkpoint","file.checkpoint",json!({
             "name":STAGE1,"expected_scene_revision":"BOUND_FROM_SCENE",
         }),vec![
-            binding("post_edit_scene",json!(["data","revision"]),json!(["expected_scene_revision"]))
+            binding("post_camera_scene",json!(["data","revision"]),json!(["expected_scene_revision"]))
         ]),
     ]
 }
-fn model2()->Vec<Value>{
+fn model2(rev:&str)->Vec<Value>{
     vec![
+        step("light","device.create",json!({
+            "name":"Shuvi41ProofKey","kind":"POINT",
+            "transform":{"location":[2.0,-3.0,5.0],"rotation_euler":[0.0,0.0,0.0],"scale":[1.0,1.0,1.0]},
+            "settings":{"energy":950.0,"color":[1.0,0.94,0.85]},
+            "expected_scene_revision":rev,
+        }),vec![]),
         step("locate","objects.list",json!({
             "name_prefix":MESH,"object_type":"MESH","offset":0,"limit":25,
         }),vec![]),
@@ -102,7 +112,7 @@ pub(crate) fn build(stage:&str,revision:&str)->Result<Value,String>{
     }
     let (steps,output,requires_render)=match stage{
         "model1"=>(model1(revision),STAGE1,false),
-        "model2"=>(model2(),STAGE2,false),
+        "model2"=>(model2(revision),STAGE2,false),
         "render"=>(render(revision),RENDER,true),
         _=>return Err("Native Blender recipe only accepts model1, model2 or render.".into()),
     };
@@ -143,8 +153,8 @@ mod tests{
     #[test]
     fn three_native_recipes_match_approved_stage_lineage_without_execution(){
         for (stage,count,last,render) in [
-            ("model1",5,"file.checkpoint",false),
-            ("model2",5,"file.checkpoint",false),
+            ("model1",6,"file.checkpoint",false),
+            ("model2",6,"file.checkpoint",false),
             ("render",3,"render.execute",true),
         ]{
             let r=build(stage,&"a".repeat(64)).unwrap();
@@ -211,10 +221,15 @@ mod tests{
     fn acceptance_modeling_plan_contains_expected_mesh_edit_and_stage_files(){
         let first=build("model1",&"d".repeat(64)).unwrap();
         assert_eq!(first["plan"]["steps"][0]["request"]["payload"]["geometry"]["vertices"].as_array().unwrap().len(),5);
-        assert_eq!(first["plan"]["steps"][2]["request"]["payload"]["delta"],json!([0.0,0.0,0.25]));
+        assert_eq!(first["plan"]["steps"][1]["request"]["payload"]["delta"],json!([0.0,0.0,0.25]));
         let second=build("model2",&"d".repeat(64)).unwrap();
-        assert_eq!(second["plan"]["steps"][2]["request"]["payload"]["delta"],json!([0.0,0.0,0.5]));
+        assert_eq!(second["plan"]["steps"][3]["request"]["payload"]["delta"],json!([0.0,0.0,0.5]));
         assert_eq!(second["output_file"],STAGE2);
+        assert_eq!(first["plan"]["steps"][3]["request"]["operation"],"device.create");
+        assert_eq!(first["plan"]["steps"][3]["request"]["payload"]["settings"]["make_active"],true);
+        assert_eq!(second["plan"]["steps"][0]["request"]["payload"]["kind"],"POINT");
+        assert_eq!(second["plan"]["steps"][0]["request"]["payload"]["settings"]["energy"],950.0);
+        assert_eq!(first["plan"]["steps"][5]["bindings"][0]["source_step"],"post_camera_scene");
         let png=build("render",&"d".repeat(64)).unwrap();
         assert_eq!(png["plan"]["steps"][0]["request"]["payload"]["width"],64);
         assert_eq!(png["output_file"],RENDER);
