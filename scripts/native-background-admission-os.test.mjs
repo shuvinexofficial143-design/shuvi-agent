@@ -1,0 +1,44 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
+const read=p=>readFileSync(new URL("../"+p,import.meta.url),"utf8");
+const lane=read("src-tauri/src/native_background_os_workers.rs");
+const journal=read("src-tauri/src/native_background_admission.rs");
+const scheduler=read("src-tauri/src/native_scheduler.rs");
+const lib=read("src-tauri/src/lib.rs");
+test("background OS workers bind a separate durable two-job admission ledger",()=>{
+  assert.match(lane,/#\[path = "native_background_admission.rs"\][\s\S]*mod admission;/);
+  assert.match(lane,/admission::reserve_at\(root,id,input,expected_sha256\)\?;/);
+  assert.match(lane,/spawn_internal_readonly\(root,id,exe,args,cwd\)\?/);
+  assert.match(lane,/admission::started_at\(root,id,owned\.child\.id\(\)\)\?;/);
+  assert.match(lane,/admission::terminal_at\(root,&self\.id,self\.child\.id\(\),phase,code\)\?;/);
+  assert.match(lane,/two_owned_pids_follow_separate_durable_admission_and_exact_terminal_receipts/);
+  assert.match(lane,/reserved_input_survives_failed_spawn_without_unsafe_auto_retry/);
+  assert.match(scheduler,/pub\(crate\) mod background_os_workers;/);
+});
+test("admission rejects forged UUID, unsupported class, overlap, third worker and stale crash claims",()=>{
+  assert.match(journal,/const MAX_ACTIVE:usize=2/);
+  assert.match(journal,/const MAX_ENTRIES:usize=48/);
+  assert.match(journal,/sha256/);
+  assert.match(journal,/class!="read_only_sha256"/);
+  assert.match(journal,/let _os=Exclusive::take\(&path\)\?/);
+  assert.match(journal,/share_mode\(0\)/);
+  assert.match(journal,/create\(true\)/);
+  assert.match(journal,/let canonical=checked_input\(input\)\?/);
+  assert.match(journal,/l\.entries\.iter\(\)\.any\(\|e\|e\.action_id==id\)/);
+  assert.match(journal,/Background input already reserved or retained for review/);
+  assert.match(journal,/Background admission history full/);
+  assert.match(journal,/if !valid \{return Err\("Background UUID, PID or lifecycle transition rejected/);
+  assert.match(journal,/crash_pending_claim_is_not_auto_unlocked_or_reused/);
+  assert.match(journal,/corrupt_or_orphaned_ledger_cannot_invent_idle_queue/);
+  assert.doesNotMatch(journal,/tauri::command|Command::new|taskkill|safe_to_auto_retry\s*=\s*true/);
+});
+test("release kernel background slot only when owned process tree is positively stopped",()=>{
+  assert.match(lane,/self\.child\.terminate_tree\(\)/);
+  assert.match(lane,/self\.child\.active_processes\(\)\.ok\(\)==Some\(0\)/);
+  assert.match(lane,/std::mem::forget\(slot\)/);
+  assert.match(lane,/app_verified:false/);
+  assert.match(lane,/os_cancelled_unverified/);
+  assert.doesNotMatch(lib,/native_background_os_workers::spawn_admitted_readonly/);
+  assert.doesNotMatch(lane,/tauri::command/);
+});
