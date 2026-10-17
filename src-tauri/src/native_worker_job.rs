@@ -170,7 +170,14 @@ pub(crate) fn reconcile(
         return Err("Owner review cannot acknowledge a different active action.".into());
     }
     crate::native_scheduler::owned_process::review_process_receipt_for_owner(app,id,tool)?;
-    reconcile_at(&journal_path(app)?,id,tool,verified_audit,now)
+    let reviewed=reconcile_at(&journal_path(app)?,id,tool,verified_audit,now)?;
+    // An owner-confirmed success after restart is not enough to free output:
+    // re-check the exact UUID's persisted certificate and actual file hash.
+    // Unknown/failed reconciliations remain quarantined indefinitely.
+    if reviewed.audit_success==Some(true){
+        crate::native_scheduler::resource_lanes::release_after_verified_audit(app,id)?;
+    }
+    Ok(reviewed)
 }
 pub(crate) fn begin(app:&AppHandle,id:&str,tool:&str,now:u64)->Result<(),String>{
     // Recover a prior fully audited+artifact-verified output reservation if

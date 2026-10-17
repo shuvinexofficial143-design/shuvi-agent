@@ -183,6 +183,10 @@ pub(crate) fn execute<'a>(app:&AppHandle,state:&ActionState,
         args.push(OsString::from(file));
     }
     if render{args.push(OsString::from("--allow-render"));}
+    // A missing native desktop lease must fail BEFORE reserving an output.
+    if slot.is_none(){
+        return Err("Original native desktop lease missing before resource reservation.".into());
+    }
     // Persist exact project/output ownership before any Blender OS launch.
     // Crash/interrupted audit never automatically frees the output resource.
     crate::native_scheduler::resource_lanes::reserve_blender_plan(
