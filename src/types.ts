@@ -142,6 +142,7 @@ export type NativeBackgroundOwnerStatus = {
       "unverified_os_outcome_requires_owner_review";
     currentFileRehashed: boolean;
     safeToAutoRetry: false;
+    stopRequested: boolean;
   }>;
 };
 
