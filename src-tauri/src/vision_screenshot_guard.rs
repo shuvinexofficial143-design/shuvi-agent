@@ -51,7 +51,7 @@ mod tests {
         let path = capture_fixture_path();
         fs::write(&path,b"PNG fake test bytes").unwrap();
         {
-            let owned = EphemeralVisionCapture::new(path.clone());
+            let mut owned = EphemeralVisionCapture::new(path.clone());
             assert_eq!(owned.path(),path.as_path());
             assert!(path.exists());
             owned.discard().unwrap();
