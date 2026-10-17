@@ -771,3 +771,26 @@ Run only with separate owner consent on a disposable desktop/test fixture.
 - No new source itself represents actual Windows application execution;
   no native action approval, lease, journaling, retries, saved user files,
   application state or cross-team branches changed.
+
+## Milestone 16 — Windows PowerShell runtime contract smoke in native CI
+
+- Existing source-only tests could confirm that UIA element attestation
+  code exists but could not validate PowerShell parser/runtime behavior.
+  The Windows `CI/rust` job now runs an isolated, synthetic PowerShell
+  smoke before compiling/testing Rust: it extracts the **actual source**
+  PowerShell fragments from `native_uia_window_guard.rs`, parses all
+  four original fragments with the Windows PowerShell language parser,
+  loads the real UIAutomationClient .NET assembly and executes the
+  unchanged read-only `Assert-ShuviObservedControl` helper against a
+  disposable in-memory fake control provider.
+- It positively accepts one matching element and intentionally rejects
+  changed RuntimeId, AutomationId, UIA role, disabled/offscreen state,
+  focus, foreign process ID and a missing UIA TogglePattern provider.
+- The smoke does NOT enumerate/click/focus/launch any actual app or
+  inspect the runner desktop; emits schema with `provider_ui_automation_tested=false`,
+  `adobe_app_tested=false`, `mutations_sent=0`. It cannot substitute
+  for a separately owner-approved real Windows/Adobe acceptance test.
+- `scripts/shuvi39-synthetic-windows-uia-smoke.test.mjs` checks
+  GitHub workflow integration, PowerShell parsing, negative cases,
+  and prohibition on live mutation APIs. The existing Windows CI job
+  remains the only job changed; no cross-team merge.
