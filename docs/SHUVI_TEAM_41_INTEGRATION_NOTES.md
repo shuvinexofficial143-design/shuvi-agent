@@ -685,3 +685,54 @@ PlanRunner contract workflow remains active.
 **This is source implementation, not live Blender acceptance.** The
 cross-worker audit corroboration layer and independent on-disk artifact
 checks already built into Team 41 remain unchanged.
+
+
+## Team-41 milestone — render-ready synthetic camera and key light (source / CI only)
+
+Previously the three-stage proof implicitly depended on a pre-existing camera in
+the startup scene, making an empty .blend checkpoint a known render blocker.
+The source-owned fixed recipes now use real upstream `device.create` typed
+operations to construct their own explicitly active camera and bounded point
+light before Stage-3. **No Blender process was run** for this source milestone.
+
+- **model1 (six steps):** create + verify the exact bounded five-vertex proof
+  mesh, use the verified `mesh.create` readback's geometry revision to move
+  the apex +0.25, inspect the fresh scene, create named active
+  `Shuvi41ProofCamera` at fixed transform/lens/clip settings with a revision
+  binding, inspect again, then save `shuvi41-proof-stage1.blend` using the
+  *post-camera* scene revision. The separate mesh.inspect step was replaced
+  with verified `mesh.create` geometry readback to stay within the existing
+  six-step ceiling; Stage-2 still independently inspects the mesh and
+  the checkpoint reopen worker still performs independent mesh topology proof.
+- **model2 (six steps):** in the **same** separately approved persistent session
+  create named `Shuvi41ProofKey` POINT lamp at fixed location, energy
+  and color, using the just-inspected scene revision; page for the exact
+  named MESH, inspect its session-local geometry, translate the apex +0.5,
+  inspect the resulting scene, and save Stage-2 with that fresh revision.
+- **render (three steps unchanged):** separately approved NEW session loads
+  the *SHA-checked Stage-2 checkpoint*, configures 64×64 / one-sample CPU,
+  inspects and renders to the bounded PNG. Stage-2 should now carry a camera,
+  lamp and edited mesh. This is **source expectation**, not live proof that
+  the resulting shot is visible or professionally lit.
+
+The native read-only `blender_build_acceptance_recipe` still does not approve
+or execute plans, and both modeling stages are recognized by
+`blender_plan_lineage` only with their fixed typed operation sequences,
+critical device settings and explicit revision/result bindings. Stage receipts
+now require 6/6/3 executed steps. Existing permissions, action UUIDs, local
+audit lookup, process watchdog, independent save/reopen mesh fingerprint,
+on-disk SHA, PNG CRC, and three-stage evidence review are preserved.
+
+Regression tests cover upstream actual PlanRunner and real
+`CreateDevice.parse` typed contracts with a fake controller; camera/lamp
+objects persist in a copied Stage-2 source, and deliberately missing camera,
+failed device creation, substituted settings, or stale geometry cannot be
+mistaken for verified end-to-end output. These tests have **no bpy / real
+Blender launch**. They do not establish camera composition, realistic
+lighting, decoded PNG pixel validity, GUI behavior, production readiness or
+live Windows/AntCloud acceptance.
+
+Changed modules remain team-41-owned. No new shared lib.rs ToolAction fields
+were needed; the existing independently owner-approved
+`blender_session_plan` is still the only executor. This change does NOT
+authorize changing team 38/40 implementations, Adobe import, merge or deploy.
