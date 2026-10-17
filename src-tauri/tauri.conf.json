@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run dev:desktop",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run build && npm run prepare:sha-sidecar",
     "frontendDist": "../dist"
   },
   "app": {
@@ -38,6 +38,7 @@
   },
   "bundle": {
     "active": true,
+    "externalBin": ["binaries/shuvi-readonly-hash-worker"],
     "targets": [
       "nsis"
     ],
