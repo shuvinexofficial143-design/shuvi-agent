@@ -10,13 +10,16 @@ export function captureNativeActionOwnership(scope,graph,ownerRequest,actionId,a
     !UUID.test(actionId))return null;
  return Object.freeze({scope,taskId:scope.taskId,graph,ownerRequest,actionId});
 }
-export function isNativeActionOwnershipCurrent(lease,current,allowRevoked=false){
+export function isNativeActionOwnershipCurrent(lease,current,allowRevoked=false,allowAuditedTerminal=false){
  if(!obj(lease)||!obj(current)||!obj(current.scope)||
     current.scope!==lease.scope||current.scope.taskId!==lease.taskId||
     (!allowRevoked&&current.scope.revoked===true)||
     current.graph!==lease.graph||current.ownerRequest!==lease.ownerRequest||
     current.actionId!==lease.actionId||
-    current.cancelRequested!==false||current.recoveryMode!=="normal"||
+    current.cancelRequested!==false||
+    (allowAuditedTerminal
+      ? !["normal","replan_required","stopped"].includes(current.recoveryMode)
+      : current.recoveryMode!=="normal")||
     !UUID.test(lease.taskId)||!UUID.test(lease.actionId))return false;
  return true;
 }

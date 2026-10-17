@@ -13,5 +13,5 @@ export declare function isNativeActionOwnershipCurrent(
   scope:NativeActionOwnerScope|null|undefined;graph:object|null;
   ownerRequest:string|null;actionId:string;
   cancelRequested:boolean;recoveryMode:string
- },allowRevoked?:boolean
+ },allowRevoked?:boolean,allowAuditedTerminal?:boolean
 ):boolean;

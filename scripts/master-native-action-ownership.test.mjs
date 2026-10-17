@@ -65,9 +65,10 @@ test("Desktop execution, error receipt and Rust audit await have universal task 
  assert.match(ui,/const actionOwnership=captureNativeActionOwnership\(/);
  assert.match(ui,/if\(!nativeActionCurrent\(actionOwnership\)\)return;/);
  assert.match(ui,/const postOutcomeOwnership=captureNativeActionOwnership\(/);
- assert.match(ui,/if\(!nativeActionCurrent\(postOutcomeOwnership\)\)return;/);
+ assert.match(ui,/if\(!isNativeActionOwnershipCurrent\(postOutcomeOwnership,/);
  assert.match(ui,/const failedOutcomeOwnership=captureNativeActionOwnership\(/);
  assert.match(ui,/if\(!isNativeActionOwnershipCurrent\(failedOutcomeOwnership,/);
+ assert.match(ui,/orchestration\.recovery_mode!=="stopped"&&/);
  assert.match(ui,/if\(!stillStopping\(\)\)return;/);
  assert.match(ui,/const stoppingScope=activePermissionScope;/);
  assert.match(ui,/if\(protectProjectProof&&!proofFenceCurrent\(postAuditProofFence\)\)return;/);
@@ -77,4 +78,15 @@ test("there is no owner-approved high-risk tool bypass in generic lease logic",(
  assert.doesNotMatch(source,/invoke\(|grantTaskRead|execute_action\(|prepare_action\(/);
  const rust=readFileSync(new URL("../src-tauri/src/native_task_delivery.rs",import.meta.url),"utf8");
  assert.doesNotMatch(rust,/"premiere_create_project"\s*=>\s*"premiere_project"/);
+});
+
+test("legitimate same-task audited failure can transition to safe replan without discarding its receipt",()=>{
+ const {lease,now}=fixture();
+ const replanned={...now,recoveryMode:"replan_required"};
+ assert.equal(isNativeActionOwnershipCurrent(lease,replanned),false);
+ assert.equal(isNativeActionOwnershipCurrent(lease,replanned,false,true),true);
+ const halted={...now,recoveryMode:"stopped"};
+ assert.equal(isNativeActionOwnershipCurrent(lease,halted,false,true),true);
+ assert.equal(isNativeActionOwnershipCurrent(lease,{...replanned,cancelRequested:true},false,true),false);
+ assert.equal(isNativeActionOwnershipCurrent(lease,{...replanned,scope:{...now.scope}},false,true),false);
 });

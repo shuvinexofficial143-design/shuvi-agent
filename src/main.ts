@@ -1242,7 +1242,7 @@ async function continueAfterOutcome(): Promise<void> {
   const continuationOwner=orchestration.owner_request;
   const continuationCurrent=()=>continuationScope===activePermissionScope&&
     !continuationScope.revoked&&!cancelRequested&&
-    orchestration.recovery_mode==="normal"&&
+    orchestration.recovery_mode!=="stopped"&&
     orchestration.task_graph===continuationGraph&&
     orchestration.owner_request===continuationOwner;
   renderOrchestrationStatus();
@@ -1803,7 +1803,13 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
     const postOutcomeOwnership=captureNativeActionOwnership(activePermissionScope,
       orchestration.task_graph,orchestration.owner_request,actionId);
     await auditGraphOutcome(proposal);
-    if(!nativeActionCurrent(postOutcomeOwnership))return;
+    // Rust-audited failures legitimately set replan_required or stopped.
+    // They may be classified ONLY for the exact same owner/scope/DAG.
+    if(!isNativeActionOwnershipCurrent(postOutcomeOwnership,{
+      scope:activePermissionScope,graph:orchestration.task_graph,
+      ownerRequest:orchestration.owner_request,actionId,
+      cancelRequested,recoveryMode:orchestration.recovery_mode
+    },false,true))return;
     // A successful audit legitimately replaces the DAG; pin its new identity
     // for separately awaited SHA create/reopen success AND failure responses.
     const postAuditProofFence=protectProjectProof
@@ -1957,7 +1963,7 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
       scope:activePermissionScope,graph:orchestration.task_graph,
       ownerRequest:orchestration.owner_request,actionId,
       cancelRequested,recoveryMode:orchestration.recovery_mode
-    },true))return;
+    },true,true))return;
     // Native IPC can throw AFTER a Windows action has executed. Without a
     // matching failed receipt, neither success nor failure is established.
     messages.push(hiddenToolFailure(proposal, {
