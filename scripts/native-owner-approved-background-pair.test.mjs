@@ -8,6 +8,11 @@ const schedule=read("src-tauri/src/native_scheduler.rs");
 test("native read-only SHA pair must be staged through Shuvi's existing owner Allow-once gate",()=>{
  assert.match(lib,/VerifyReadOnlyShaPair \{[\s\S]*first_path: String, first_sha256: String,[\s\S]*second_path: String, second_sha256: String/);
  assert.match(lib,/"verify_readonly_sha_pair" => \{/);
+ // Parser allowlist must also recognize the exact tool; otherwise the model
+ // could propose a valid action but its typed approval would never be staged.
+ assert.match(lib,/\| "verify_readonly_sha_pair"/);
+ assert.match(lib,/For two read-only binary files that the owner specifically wants SHA-256 verified/);
+
  assert.match(lib,/RiskLevel::Medium\)\s*\}\s*"write_file" =>/);
  assert.match(lib,/exact\.len\(\)!=4/);
  assert.match(lib,/!sha_ok\(&first_sha256\)\|\|!sha_ok\(&second_sha256\)/);
