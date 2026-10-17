@@ -12,6 +12,8 @@ const MAX_ARTIFACT_BYTES:u64=512*1024*1024;
 static IO:Mutex<()>=Mutex::new(());
 #[path = "native_global_hash_slots.rs"]
 mod global_hash_slots;
+#[path = "native_delivery_receipt_lock.rs"]
+mod receipt_lock;
 
 #[derive(Debug,Clone,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
@@ -312,6 +314,34 @@ where F:FnMut(&str)->Result<crate::AuditEntry,String>{
     })?;
     Ok(())
 }
+// Caller holds the verified kernel receipt lock. A same-action receipt is
+// immutable: repeated verified publishing must not overwrite its timestamp
+// or replace audited artifact bytes. A NEW task with disjoint prepared action
+// UUIDs can still replace the "last delivery" view after independent audit.
+fn publish_at(path:&Path,receipt:&DeliveryReceipt)->Result<DeliveryReceipt,String>{
+    check_structure(receipt)?;
+    if path.exists(){
+        let bytes=crate::read_file_bytes_bounded(path,MAX_BYTES,"native task delivery")?;
+        check_bytes(&bytes)?;
+        let old:DeliveryReceipt=serde_json::from_slice(&bytes)
+            .map_err(|_|"Previous native delivery receipt unreadable.".to_string())?;
+        let prior_ids:HashSet<&str>=old.steps.iter()
+            .map(|step|step.action_id.as_str()).collect();
+        let overlaps=receipt.steps.iter().any(|s|prior_ids.contains(s.action_id.as_str()));
+        if overlaps{
+            if old.objective==receipt.objective &&old.revision==receipt.revision
+                &&old.steps==receipt.steps {
+                return Ok(old); // Full same-UUID proof, original timestamp kept.
+            }
+            return Err("A prior delivered native action UUID cannot be republished with changed task or artifact evidence.".into());
+        }
+    }else if path.with_extension("json.bak").exists()
+        ||path.with_extension("json.tmp").exists(){
+        return Err("Interrupted delivery receipt requires owner inspection.".into());
+    }
+    write_at(path,receipt)?;
+    Ok(receipt.clone())
+}
 fn write_at(path:&Path,receipt:&DeliveryReceipt)->Result<(),String>{
     check_structure(receipt)?;
     let raw=serde_json::to_vec(receipt)
@@ -381,6 +411,8 @@ fn verify_blender_certificates(app:&AppHandle,steps:&[DeliveryStep])
 }
 pub(crate) fn finalize(app:&AppHandle,steps:Vec<DeliveryStep>)->Result<DeliveryReceipt,String>{
     let _io=IO.lock().map_err(|_|"Native task delivery lock poisoned.")?;
+    let receipt_path=path(app)?;
+    let _receipt_os=receipt_lock::DeliveryReceiptOsLock::take(&receipt_path)?;
     // Reserve the same two cross-instance read-only SHA slots for EVERY
     // artifact-hash path in this finalization, not just the parallel batch.
     let global_pool=app.path().app_data_dir()
@@ -434,16 +466,25 @@ pub(crate) fn finalize(app:&AppHandle,steps:Vec<DeliveryStep>)->Result<DeliveryR
         let _hash_slot=global_hash_slots::HashSlot::take(&global_pool)?;
         verify_blender_certificates(app,&receipt.steps)?;
     }
-    write_at(&path(app)?,&receipt)?;
-    Ok(receipt)
+    // A verified delivery must not publish a stale task graph changed while
+    // long SHA256 reads were in progress in another instance.
+    let latest=crate::native_scheduler::read(app)?
+        .ok_or("Native scheduler vanished during final delivery verification.")?;
+    if latest.objective!=schedule.objective ||latest.revision!=schedule.revision
+        ||latest.jobs!=schedule.jobs{
+        return Err("Native scheduler changed during delivery verification; no stale receipt published.".into());
+    }
+    publish_at(&receipt_path,&receipt)
 }
 pub(crate) fn read(app:&AppHandle)->Result<Option<DeliveryReceipt>,String>{
     let _io=IO.lock().map_err(|_|"Native task delivery lock poisoned.")?;
+    let receipt_path=path(app)?;
+    let _receipt_os=receipt_lock::DeliveryReceiptOsLock::take(&receipt_path)?;
     let global_pool=app.path().app_data_dir()
         .map_err(|_|"Read-only delivery verification pool unavailable.")?;
     fs::create_dir_all(&global_pool)
         .map_err(|_|"Cannot prepare read-only delivery verification pool.")?;
-    let path=path(app)?;
+    let path=receipt_path;
     if !path.exists(){
         if path.with_extension("json.bak").exists()||path.with_extension("json.tmp").exists(){
             return Err("Interrupted delivery receipt publication needs owner inspection.".into());
@@ -495,6 +536,52 @@ mod tests{
     fn audit(step:&str,tool:&str)->crate::AuditEntry{
         crate::AuditEntry{timestamp_ms:1,event:"executed".into(),tool:tool.into(),
             detail:step.into(),success:true,action_id:Some(step.into())}
+    }
+    #[test]
+    fn duplicate_delivery_exact_action_proof_is_idempotent_and_preserves_time(){
+        let dir=std::env::temp_dir().join(format!("shuvi-delivery-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let file=dir.join("last-delivery.json");
+        let first=DeliveryReceipt{
+            version:1,objective:"Build".into(),revision:1,
+            recorded_at_ms:1000,steps:vec![DeliveryStep{
+                step_id:"inspect".into(),tool:"read_file".into(),
+                action_id:A.into(),artifact:None
+            }]
+        };
+        publish_at(&file,&first).unwrap();
+        let mut repeat=first.clone();
+        repeat.recorded_at_ms=2000;
+        let existing=publish_at(&file,&repeat).unwrap();
+        assert_eq!(existing.recorded_at_ms,1000);
+        assert_eq!(fs::read(&file).unwrap(),serde_json::to_vec(&first).unwrap());
+        let mut forged=repeat.clone();
+        forged.objective="Different".into();
+        assert!(publish_at(&file,&forged).is_err());
+        let mut wrong=repeat.clone();
+        wrong.steps[0].tool="git_status".into();
+        assert!(publish_at(&file,&wrong).is_err());
+        let fresh=DeliveryReceipt{
+            version:1,objective:"Next task".into(),revision:1,
+            recorded_at_ms:3000,steps:vec![DeliveryStep{
+                step_id:"new".into(),tool:"read_file".into(),
+                action_id:B.into(),artifact:None
+            }]
+        };
+        assert_eq!(publish_at(&file,&fresh).unwrap().objective,"Next task");
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn cross_process_receipt_lock_blocks_both_publish_and_inspection(){
+        let dir=std::env::temp_dir().join(format!("shuvi-delivery-lock-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let file=dir.join("last-delivery.json");
+        let owner=receipt_lock::DeliveryReceiptOsLock::take(&file).unwrap();
+        assert!(receipt_lock::DeliveryReceiptOsLock::take(&file).is_err());
+        drop(owner);
+        let after=receipt_lock::DeliveryReceiptOsLock::take(&file).unwrap();
+        drop(after);
+        fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn queue_skips_aliased_head_and_runs_next_disjoint_output_in_parallel(){
