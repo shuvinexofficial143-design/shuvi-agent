@@ -42,7 +42,8 @@ test("independent native host hash is required before durable terminal upgrade",
 });
 test("NSIS packaging builds exact Windows sidecar per target without untrusted downloads",()=>{
  assert.deepEqual(config.bundle.externalBin,["binaries/shuvi-readonly-hash-worker"]);
- assert.match(config.build.beforeBuildCommand,/prepare:sha-sidecar/);
+ assert.equal(config.build.beforeBuildCommand,"npm run build");
+ assert.equal(pkg.scripts["build:windows-installer"],"npm run prepare:sha-sidecar && tauri build");
  assert.equal(pkg.scripts["prepare:sha-sidecar"],"node scripts/prepare-native-sha-sidecar.mjs");
  assert.match(builder,/cargo/);
  assert.match(builder,/--locked/);
