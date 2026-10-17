@@ -222,3 +222,7 @@ Review any adapter calls and potential cross-team shared-file overlap. Keep owne
 - The evidence journal is restart-readable but cannot be interpreted as live Blender application progress, a real OS process heartbeat, completion/audit success, or permission for automatic replay. Corrupt journal, regressed sequence or changed same-action plan digest fails closed. The existing exclusive GUI/owned process path and 4 GB memory protection are unchanged.
 - Existing native_worker_status can expose the last matching attested stage to the desktop, which shows it explicitly labeled as signed Python worker evidence only. User application live validation remains separate.
 - Rust unit and Node source regression tests cover progression, replay, corruption, wrong UUID/plan, and no fabricated success; CI results must be checked on the exact new HEAD.
+
+### Milestone 34 source-check compatibility correction
+- Updated the existing Blender host-memory watchdog source regression to recognize the bounded FnMut monitor body that first verifies the signed worker pulse and only then persists a stage. Original PID registration, 4 GiB guard, OS-owned Stop semantics remain checked.
+- Narrowed optional worker sequence with a runtime typeof guard before integer/range comparisons in TypeScript; reject malformed signed-worker telemetry rather than silently allowing unverified values.

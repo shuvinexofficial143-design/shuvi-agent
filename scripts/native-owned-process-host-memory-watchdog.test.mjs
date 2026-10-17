@@ -14,7 +14,10 @@ test("scheduled Blender inspector and plan both register exact OS PID in host bu
  }
  assert.match(adapter,/child\.wait_bounded_with_host_budget\(state\)/);
  assert.match(plan,/child\.wait_bounded_with_host_budget_and_progress\(/);
- assert.match(plan,/state,\|\|progress\.observe\(\)/);
+ assert.match(plan,/state,\|\|\{/);
+ assert.match(plan,/progress\.observe\(\)\?/);
+ assert.match(plan,/worker_attestation::record\(/);
+ assert.ok(plan.indexOf("progress.observe()?")<plan.indexOf("worker_attestation::record("));
  assert.match(owned,/wait_bounded_with_probe_and_progress/);
  assert.match(owned,/current_runtime_status\(state\)/);
 });

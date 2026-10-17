@@ -722,8 +722,10 @@ async function refreshNativeWorkerStatus(): Promise<void> {
           "python_active","blender_session_attached","plan_verified","artifact_rehashed"
         ].includes(status.attestedWorkerStage))
       ||(status.attestedWorkerStage!==null&&(
-          !Number.isInteger(status.attestedWorkerSequence)
-          ||status.attestedWorkerSequence===null||status.attestedWorkerSequence<1||status.attestedWorkerSequence>1000000
+          typeof status.attestedWorkerSequence!=="number"
+          ||!Number.isInteger(status.attestedWorkerSequence)
+          ||status.attestedWorkerSequence<1
+          ||status.attestedWorkerSequence>1000000
         ))
       ||!["not_observed","unattributed_or_interrupted","supervisor_tick_stale",
         "rust_supervisor_observed","supervisor_start_record_only","last_action_audited",
