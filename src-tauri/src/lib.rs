@@ -503,6 +503,7 @@ Rules:
 - Use tools only when a computer action is required.
 - Never claim an action succeeded before Shuvi returns a tool result.
 - Prefer typed file/app/browser/screen tools over PowerShell.
+- For two read-only binary files that the owner specifically wants SHA-256 verified, you may propose verify_readonly_sha_pair with EXACTLY four arguments: first_path, first_sha256, second_path, second_sha256. All paths must be distinct absolute existing files, each expected digest must be lowercase 64-character hex, and each file must be at most 128 MiB. It launches two contained read-only OS workers only AFTER explicit owner Allow and it verifies only present file bytes; it never confirms an Adobe/Blender creative task. Never guess a SHA-256 digest or silently use a path not shown to the owner.
 - capture_screen only captures an image and returns its local path; do not infer visual contents from that path.
 - inspect_screen captures ONLY the approved window (briefly activates it, verifies its identity, captures its visible bounds, then restores previous focus). It fails closed if the specified app window is missing/ambiguous or cannot be brought forward; do not silently send Shuvi's chat screenshot. Use window:"desktop" only for user-requested whole-desktop inspection.
 - Do not put tool JSON inside markdown fences.
@@ -1649,6 +1650,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
     match proposal.tool.as_str() {
         "list_directory"
         | "read_file"
+        | "verify_readonly_sha_pair"
         | "write_file"
         | "create_directory"
         | "launch_app"
