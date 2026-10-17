@@ -174,6 +174,8 @@ root.innerHTML = `
       <details id="nativeBackgroundHealth" class="ram-children">
         <summary id="nativeBackgroundHealthSummary">Background SHA workers: not checked</summary>
         <button id="refreshNativeBackgroundHealth" type="button">Recheck SHA evidence</button>
+        <button id="requestNativeBackgroundStop" class="hidden" type="button">Request Stop for approved SHA pair</button>
+        <small id="nativeBackgroundStopMessage">Stop is available only while an owner-approved SHA pair is active.</small>
         <div id="nativeBackgroundHealthList">Waiting for exact Rust journal readback.</div>
       </details>
       <details id="nativeActionHistory" class="ram-children">
@@ -754,6 +756,11 @@ async function refreshNativeWorkerStatus(): Promise<void> {
     nativeHostReadPending=false;
     renderOrchestrationStatus();
     renderResourceClaims();
+    const canStop=nativeHostStatus&&!nativeHostStatusUnavailable
+      &&nativeHostStatus.state==="native_action_in_flight"
+      &&nativeHostStatus.tool==="verify_readonly_sha_pair"
+      &&typeof nativeHostStatus.actionId==="string";
+    el<HTMLButtonElement>("#requestNativeBackgroundStop").classList.toggle("hidden",!canStop);
   }
 }
 
@@ -789,6 +796,7 @@ async function refreshNativeBackgroundHealth(): Promise<void> {
          ||!allowedPhases.has(x.recordedPhase)
          ||!allowedHealth.has(x.evidenceHealth)
          ||typeof x.currentFileRehashed!=="boolean"
+         ||typeof x.stopRequested!=="boolean"
          ||x.safeToAutoRetry!==false
          ||(x.currentFileRehashed && (
            x.recordedPhase!=="sha256_verified"
@@ -807,9 +815,11 @@ async function refreshNativeBackgroundHealth(): Promise<void> {
       const label=document.createElement("strong");
       label.textContent="SHA worker "+worker.actionId.slice(0,8)+" · "+worker.recordedPhase.replaceAll("_"," ");
       const detail=document.createElement("small");
-      detail.textContent=worker.currentFileRehashed
+      detail.textContent=(worker.stopRequested
+        ?"OWNER STOP REQUEST RECORDED — actual OS termination not yet proven by this request. · "
+        :"")+(worker.currentFileRehashed
         ?"Current file SHA-256 independently reverified; not an application completion."
-        :worker.evidenceHealth.replaceAll("_"," ")+"; owner review may be required.";
+        :worker.evidenceHealth.replaceAll("_"," ")+"; owner review may be required.");
       row.append(label,detail);
       list.append(row);
     }
@@ -1130,6 +1140,31 @@ async function boot(): Promise<void> {
 
 el<HTMLButtonElement>("#refreshNativeBackgroundHealth").addEventListener("click",
   () => void refreshNativeBackgroundHealth());
+
+// A STOP request is only routed through the existing exact native action
+// command. No PID, arbitrary process killer, automatic retry or claim of
+// successful cancellation is ever accepted from this UI.
+el<HTMLButtonElement>("#requestNativeBackgroundStop").addEventListener("click",async()=>{
+  const button=el<HTMLButtonElement>("#requestNativeBackgroundStop");
+  const message=el<HTMLElement>("#nativeBackgroundStopMessage");
+  const host=nativeHostStatusUnavailable?null:nativeHostStatus;
+  if(!host||host.state!=="native_action_in_flight"
+    ||host.tool!=="verify_readonly_sha_pair"||!host.actionId)return;
+  if(!window.confirm("Request Stop for this exact approved SHA pair? This records a stop request; it does NOT prove the OS children have terminated."))return;
+  button.disabled=true;
+  try{
+    const requested=await invoke<boolean>("cancel_running_action",{actionId:host.actionId});
+    message.textContent=requested
+      ?"Stop request recorded for owned background workers. Check each OS receipt; termination is NOT yet verified."
+      :"No active owned SHA worker accepted Stop. Review the current native journal.";
+  }catch{
+    message.textContent="Stop request failed or may be partial. Do NOT assume a worker stopped or automatically retry.";
+  }finally{
+    button.disabled=false;
+    await refreshNativeBackgroundHealth();
+    await refreshNativeWorkerStatus();
+  }
+});
 
 function isHiddenToolMessage(message: ChatMessage): boolean {
   return message.content.startsWith("[SHUVI_TOOL_RESULT]");
