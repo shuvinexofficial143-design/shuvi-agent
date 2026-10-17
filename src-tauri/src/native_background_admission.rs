@@ -134,7 +134,7 @@ impl Exclusive {
 }
 /// Stable Windows BY_HANDLE_FILE_INFORMATION, as used by Shuvi's existing
 /// native delivery verifier. No unstable MetadataExt nightly APIs.
-fn require_single_link(path:&Path)->Result<(),String>{
+pub(super) fn require_single_link(path:&Path)->Result<(),String>{
     use std::{ffi::c_void,mem::MaybeUninit,os::windows::io::AsRawHandle};
     #[repr(C)] struct FileTime{low:u32,high:u32}
     #[repr(C)] struct ByHandleFileInformation{
