@@ -103,14 +103,82 @@ fn path(app:&AppHandle)->Result<PathBuf,String>{
     fs::create_dir_all(&root).map_err(|_|"Native delivery directory inaccessible.".to_string())?;
     Ok(root.join("native-task-delivery.json"))
 }
+/// Actual file identity from an open handle, not pathname/string equality.
+/// Used to prevent hard-linked outputs from masquerading as disjoint workers
+/// and to detect a path replaced between open and finished readback.
+#[cfg(unix)]
+fn physical_file_id(file:&fs::File)->Result<(u64,u64),String>{
+    use std::os::unix::fs::MetadataExt;
+    let meta=file.metadata().map_err(|_|"Cannot inspect open artifact identity.")?;
+    Ok((meta.dev(),meta.ino()))
+}
+#[cfg(windows)]
+fn physical_file_id(file:&fs::File)->Result<(u64,u64),String>{
+    use std::{ffi::c_void,os::windows::io::AsRawHandle,mem::MaybeUninit};
+    #[repr(C)] struct FileTime{low:u32,high:u32}
+    #[repr(C)] struct ByHandleFileInformation{
+        attributes:u32,created:FileTime,accessed:FileTime,written:FileTime,
+        volume_serial:u32,size_high:u32,size_low:u32,links:u32,
+        index_high:u32,index_low:u32
+    }
+    #[link(name="kernel32")]
+    unsafe extern "system"{
+        fn GetFileInformationByHandle(
+            handle:*mut c_void,info:*mut ByHandleFileInformation
+        )->i32;
+    }
+    let mut data=MaybeUninit::<ByHandleFileInformation>::zeroed();
+    let valid=unsafe{GetFileInformationByHandle(
+        file.as_raw_handle(),data.as_mut_ptr())};
+    if valid==0 {
+        return Err("Windows could not verify native artifact file identity.".into());
+    }
+    let info=unsafe{data.assume_init()};
+    Ok((info.volume_serial as u64,
+        (info.index_high as u64)<<32|info.index_low as u64))
+}
+#[cfg(not(any(windows,unix)))]
+fn physical_file_id(_file:&fs::File)->Result<(u64,u64),String>{
+    Err("Artifact identity verification unsupported on this platform.".into())
+}
+fn read_exclusive_identity(path:&Path)->Result<fs::File,String>{
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // Allow fellow READERS but deny writers, deletes and renames for
+        // the entire verified SHA-256 readback on Windows.
+        return fs::OpenOptions::new().read(true).share_mode(0x00000001)
+            .open(path).map_err(|_|"Artifact could not be opened with a read-only identity lease.".into());
+    }
+    #[cfg(not(windows))]
+    {
+        fs::File::open(path).map_err(|_|"Artifact file cannot be opened.".into())
+    }
+}
+fn same_physical_output(a:&Path,b:&Path)->Result<bool,String>{
+    let first=read_exclusive_identity(a)?;
+    let second=read_exclusive_identity(b)?;
+    Ok(physical_file_id(&first)?==physical_file_id(&second)?)
+}
 fn file_hash(path:&Path,limit:u64)->Result<(u64,String),String>{
     let meta=fs::symlink_metadata(path)
         .map_err(|_|"The declared output file does not exist.".to_string())?;
     if !meta.is_file()||meta.file_type().is_symlink()||meta.len()==0||meta.len()>limit{
         return Err("The output is not a supported regular file within size limits.".into());
     }
-    let mut f=fs::File::open(path)
-        .map_err(|_|"The declared output is not readable.".to_string())?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if meta.file_attributes()&0x400!=0{
+            return Err("Delivery artifact may not be a Windows reparse point.".into());
+        }
+    }
+    let mut f=read_exclusive_identity(path)?;
+    let original_id=physical_file_id(&f)?;
+    let opened=f.metadata().map_err(|_|"Artifact handle metadata unavailable.")?;
+    if opened.len()!=meta.len()||opened.modified().ok()!=meta.modified().ok(){
+        return Err("Artifact changed before its read-only identity lease.".into());
+    }
     let mut buf=[0u8;64*1024];let mut bytes=0u64;let mut hash=Sha256::new();
     loop {
         let n=f.read(&mut buf).map_err(|_|"Output file hash read failed.".to_string())?;
@@ -119,7 +187,21 @@ fn file_hash(path:&Path,limit:u64)->Result<(u64,String),String>{
         if bytes>limit{return Err("Output exceeds hash size limit.".into());}
         hash.update(&buf[..n]);
     }
-    if bytes!=meta.len(){return Err("Output changed while reading; delivery aborted.".into());}
+    let current_handle=f.metadata()
+        .map_err(|_|"Artifact identity unavailable after streaming.")?;
+    let current_path=fs::symlink_metadata(path)
+        .map_err(|_|"Artifact disappeared during verification.")?;
+    if bytes!=meta.len()||current_handle.len()!=bytes||current_path.len()!=bytes
+        ||current_handle.modified().ok()!=opened.modified().ok()
+        ||current_path.modified().ok()!=opened.modified().ok()
+        ||physical_file_id(&f)?!=original_id
+        ||current_path.file_type().is_symlink(){
+        return Err("Output changed or was replaced during SHA-256 verification.".into());
+    }
+    let final_path=read_exclusive_identity(path)?;
+    if physical_file_id(&final_path)?!=original_id{
+        return Err("Output identity was replaced while hashing.".into());
+    }
     Ok((bytes,format!("{:x}",hash.finalize())))
 }
 fn check_artifact(a:&DeliveryArtifact,tool:&str)->Result<(),String>{
@@ -168,7 +250,7 @@ where F:Fn(&DeliveryArtifact,&str)->Result<(),String>+Sync{
             .map_err(|_|"First independent output path unavailable.".to_string())?;
         let second_path=fs::canonicalize(&second.0.path)
             .map_err(|_|"Second independent output path unavailable.".to_string())?;
-        if first_path==second_path{
+        if first_path==second_path || same_physical_output(&first_path,&second_path)?{
             verifier(first.0,first.1)?;
             verifier(second.0,second.1)?;
         }else{
@@ -376,6 +458,53 @@ mod tests{
     fn audit(step:&str,tool:&str)->crate::AuditEntry{
         crate::AuditEntry{timestamp_ms:1,event:"executed".into(),tool:tool.into(),
             detail:step.into(),success:true,action_id:Some(step.into())}
+    }
+    #[test]
+    fn real_hard_links_share_one_physical_identity_and_never_enter_two_workers(){
+        let root=std::env::temp_dir().join(format!("shuvi-hardlink-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let primary=root.join("first.blend");
+        let alias=root.join("second.blend");
+        fs::write(&primary,b"BLENDER SAME INODE CONTENT").unwrap();
+        fs::hard_link(&primary,&alias).unwrap();
+        assert_ne!(fs::canonicalize(&primary).unwrap(),fs::canonicalize(&alias).unwrap());
+        assert!(same_physical_output(&primary,&alias).unwrap());
+        let (bytes,hash)=file_hash(&primary,MAX_ARTIFACT_BYTES).unwrap();
+        let step=|name:&str,path:&Path|DeliveryStep{
+            step_id:name.into(),tool:"blender_run_plan".into(),
+            action_id:if name=="one"{
+                "e8b36b21-1c6a-459e-9b6f-75dd5692ab81"
+            }else{"0f2977ac-4f61-4d9c-bf74-ecf8a3ae2172"}.into(),
+            artifact:Some(DeliveryArtifact{kind:"blender_artifact".into(),
+                path:path.to_str().unwrap().into(),bytes,sha256:hash.clone(),
+                approved_plan_sha256:None})
+        };
+        let inside=std::sync::atomic::AtomicBool::new(false);
+        verify_artifacts_bounded(&[step("one",&primary),step("two",&alias)],|artifact,tool|{
+            use std::sync::atomic::Ordering;
+            assert!(!inside.swap(true,Ordering::SeqCst),
+                "one physical output must not be verified concurrently");
+            let result=check_artifact(artifact,tool);
+            inside.store(false,Ordering::SeqCst);
+            result
+        }).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn replaced_file_identity_is_rejected_even_with_equal_size(){
+        let root=std::env::temp_dir().join(format!("shuvi-fileid-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let file=root.join("output.blend");
+        fs::write(&file,b"TEST-SAME-LEN").unwrap();
+        let original=read_exclusive_identity(&file).unwrap();
+        let before=physical_file_id(&original).unwrap();
+        let changed=root.join("changed.blend");
+        fs::write(&changed,b"TEST-SAME-LEN").unwrap();
+        let new_id=physical_file_id(&read_exclusive_identity(&changed).unwrap()).unwrap();
+        assert_ne!(before,new_id);
+        assert!(!same_physical_output(&file,&changed).unwrap());
+        drop(original);
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn independent_artifacts_use_two_bounded_read_only_verification_threads(){

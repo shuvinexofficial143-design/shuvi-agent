@@ -60,8 +60,18 @@ fn file_hash(path:&Path)->Result<(u64,String),String>{
             return Err("Verified Blender delivery path is a Windows reparse point.".into());
         }
     }
+    #[cfg(windows)]
+    use std::os::windows::fs::OpenOptionsExt;
+    #[cfg(windows)]
+    let mut f=fs::OpenOptions::new().read(true).share_mode(0x00000001)
+        .open(path).map_err(|_|"Blender output cannot obtain a read-only identity lease.".to_string())?;
+    #[cfg(not(windows))]
     let mut f=fs::File::open(path)
         .map_err(|_|"Verified Blender delivery file cannot be opened.".to_string())?;
+    let opened=f.metadata().map_err(|_|"Blender output handle is unavailable.")?;
+    if opened.len()!=m.len()||opened.modified().ok()!=m.modified().ok(){
+        return Err("Blender output changed before hash readback.".into());
+    }
     let mut hasher=Sha256::new();let mut bytes=0u64;
     let mut buf=[0u8;65536];
     loop {
@@ -71,7 +81,14 @@ fn file_hash(path:&Path)->Result<(u64,String),String>{
         if bytes>MAX_ARTIFACT{return Err("Blender output exceeded 128 MiB.".into());}
         hasher.update(&buf[..n]);
     }
-    if bytes!=m.len(){return Err("Blender output changed while rehashing.".into());}
+    let after=f.metadata().map_err(|_|"Blender output metadata changed.")?;
+    let now=fs::symlink_metadata(path).map_err(|_|"Blender output path vanished.")?;
+    if bytes!=m.len()||after.len()!=bytes||now.len()!=bytes
+        ||after.modified().ok()!=opened.modified().ok()
+        ||now.modified().ok()!=opened.modified().ok()
+        ||now.file_type().is_symlink(){
+        return Err("Blender output changed or was replaced while rehashing.".into());
+    }
     Ok((bytes,format!("{:x}",hasher.finalize())))
 }
 fn check_bytes(data:&[u8])->Result<(),String>{
