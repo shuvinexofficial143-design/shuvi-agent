@@ -3,7 +3,7 @@
 //! background workers. Existing Windows desktop lease and single OS process
 //! lane stay exclusive; this module does NOT enable concurrent GUI execution.
 use serde::{Deserialize,Serialize};
-use std::{collections::HashSet,fs,path::{Path,PathBuf},sync::Mutex};
+use std::{collections::HashSet,fs,fs::OpenOptions,path::{Path,PathBuf},sync::Mutex};
 use tauri::{AppHandle,Manager};
 use uuid::Uuid;
 
@@ -11,6 +11,58 @@ const MAX_BYTES:usize=131_072;
 const MAX_HELD:usize=12;
 const MAX_RETIRED:usize=48;
 static IO:Mutex<()> = Mutex::new(());
+
+/// The in-process mutex is not enough if two Shuvi desktop processes start.
+/// Serialize every resource ledger mutation with a fixed sidecar OS lock.
+/// A crash releases the OS lock while the durable held UUID remains on disk.
+/// No stale timeout and no manual deletion of retained resource claims.
+struct CrossProcessLedgerLock(fs::File);
+impl CrossProcessLedgerLock {
+    fn take(file:&Path)->Result<Self,String>{
+        let lock=file.with_extension("json.oslock");
+        if let Ok(metadata)=fs::symlink_metadata(&lock){
+            if !metadata.is_file()||metadata.file_type().is_symlink(){
+                return Err("Resource OS lock path is not a regular file.".into());
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::MetadataExt;
+                if metadata.file_attributes()&0x400!=0{
+                    return Err("Resource OS lock reparse point rejected.".into());
+                }
+            }
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            // Windows share mode zero is an actual kernel-backed exclusive
+            // open even across separate processes. No force-unlock/TTL.
+            let handle=OpenOptions::new().read(true).write(true)
+                .create(true).share_mode(0).open(&lock)
+                .map_err(|_|"Another Shuvi process owns the native resource ledger.".to_string())?;
+            return Ok(Self(handle));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            unsafe extern "C" {fn flock(fd:i32,operation:i32)->i32;}
+            let handle=OpenOptions::new().read(true).write(true)
+                .create(true).open(&lock)
+                .map_err(|_|"Cannot open native resource OS lock.".to_string())?;
+            // Unix advisory locks are sufficient because every resource
+            // writer shares this authenticated path and flock() contract.
+            if unsafe{flock(handle.as_raw_fd(),2|4)}!=0{
+                return Err("Another Shuvi process owns the native resource ledger.".into());
+            }
+            return Ok(Self(handle));
+        }
+        #[cfg(not(any(windows,unix)))]
+        {
+            Err("Cross-process exclusive resource locking unavailable on this host.".into())
+        }
+    }
+}
+
 
 #[derive(Clone,Debug,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
@@ -142,6 +194,7 @@ fn conflicts(a:&[Resource],b:&[Resource])->bool{
 }
 fn reserve_at(file:&Path,action:&str,resources:Vec<Resource>)->Result<(),String>{
     let _guard=IO.lock().map_err(|_|"Resource lock poisoned.")?;
+    let _cross_process=CrossProcessLedgerLock::take(file)?;
     let mut l=read_at(file)?;
     if !valid_uuid(action)||resources.len()==0||resources.len()>2{
         return Err("Only exact prepared UUID with bounded resources is admitted.".into());
@@ -177,6 +230,7 @@ pub(crate) fn reserve_blender_plan(
 }
 fn release_at(file:&Path,action:&str,artifact_path:&str)->Result<(),String>{
     let _guard=IO.lock().map_err(|_|"Resource lock poisoned.")?;
+    let _cross_process=CrossProcessLedgerLock::take(file)?;
     let mut l=read_at(file)?;
     let index=l.held.iter().position(|h|h.action_id==action);
     let Some(index)=index else{
@@ -238,6 +292,46 @@ mod tests{
     }
     fn resource(p:&Path,mode:&str)->Resource{
         Resource{path:canonical(p).unwrap(),mode:mode.into()}
+    }
+    #[test]
+    fn another_native_process_lock_cannot_commit_resource_claims(){
+        let (root,file)=temp();
+        let _host=CrossProcessLedgerLock::take(&file).unwrap();
+        let denied=reserve_at(&file,A,vec![resource(&root.join("one"),"write")]);
+        assert!(denied.is_err());
+        assert!(!file.exists());
+        drop(_host);
+        reserve_at(&file,A,vec![resource(&root.join("one"),"write")]).unwrap();
+        assert_eq!(read_at(&file).unwrap().held[0].action_id,A);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn competing_writer_threads_cannot_both_claim_the_same_output(){
+        use std::sync::{Arc,Barrier};
+        let (root,file)=temp();
+        let folder=root.join("one");
+        let gate=Arc::new(Barrier::new(3));
+        let file_a=file.clone();
+        let file_b=file.clone();
+        let res_a=resource(&folder,"write");
+        let res_b=res_a.clone();
+        std::thread::scope(|s|{
+            let first_gate=Arc::clone(&gate);
+            let second_gate=Arc::clone(&gate);
+            let first=s.spawn(move||{
+                first_gate.wait();
+                reserve_at(&file_a,A,vec![res_a]).is_ok()
+            });
+            let second=s.spawn(move||{
+                second_gate.wait();
+                reserve_at(&file_b,B,vec![res_b]).is_ok()
+            });
+            gate.wait();
+            let count=(first.join().unwrap() as usize)+(second.join().unwrap() as usize);
+            assert_eq!(count,1);
+        });
+        assert_eq!(read_at(&file).unwrap().held.len(),1);
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn disjoint_background_resources_admit_independently_but_outputs_cannot_collide(){

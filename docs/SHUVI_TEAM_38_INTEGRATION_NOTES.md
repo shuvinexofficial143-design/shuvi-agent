@@ -160,3 +160,8 @@ Review any adapter calls and potential cross-team shared-file overlap. Keep owne
 - Two receipts for the same canonical file are rechecked serially; missing/inaccessible paths or tampered length/hash fail closed. Final delivery still independently rechecks Blender certificates and never upgrades failed/audited-unknown tasks.
 - Rust tests create real disposable files for parallel admission, alias fallback and post-verification tampering. Node regression covers audited-before-hash ordering and bounded concurrent read-only scope.
 - IMPORTANT: This is actual concurrent BACKGROUND FILE VERIFICATION, NOT parallel Windows GUI execution or true independently owned Blender/Adobe processes. GUI OS lease/PID path stays exclusive.
+
+## Milestone 26 — kernel-backed cross-process exclusive resource ledger transactions
+- Keep Rust's existing intra-process mutex and additionally acquire a fixed-file kernel-backed exclusive lock on each ledger mutation: Win32 file open with \`share_mode(0)\`; Unix advisory \`flock(LOCK_EX|LOCK_NB)\` for developer/test portability. Lock is held across complete read/verify/update/durable persist and dropped automatically by OS on process death, while **held resource UUIDs remain on disk** and cannot be cleared by crash or TTL.
+- Another Shuvi instance holding this lock yields a fail-closed resource conflict rather than a second simultaneous writer; corrupted file/reparse-point lock path is denied. No new permissions/IPC/GUI lanes; existing single desktop lease remains unchanged.
+- Real Rust multi-thread writer-collision and locked-ledger regression, with Node source contract for the Windows OS lock and both write seams. This protects against cross-instance ledger lost updates but does not yet make native GUI workers concurrent.
