@@ -53,6 +53,9 @@ fn validate(l:&Ledger)->Result<(),String>{
             ("reserved",None,None)=>active+=1,
             ("os_running",Some(1..),None)=>active+=1,
             ("os_exited_unverified"|"os_cancelled_unverified"|"os_timed_out_unverified",Some(1..),Some(_))=>{},
+            // This is an independently rehashed FILE result, not proof of
+            // any Adobe/Blender/UI action or general application success.
+            ("sha256_verified",Some(1..),Some(0))=>{},
             ("owner_reviewed_unknown",_,None)=>{},
             _=>return Err("Background OS job state is malformed or success forged.".into()),
         }
@@ -61,9 +64,10 @@ fn validate(l:&Ledger)->Result<(),String>{
     // Pending/unknown workers retain the input claim. A final OS exit alone
     // is never evidence that input file provenance has been accepted.
     for (i,a) in l.entries.iter().enumerate(){
-        if a.phase=="owner_reviewed_unknown"{continue;}
+        if matches!(a.phase.as_str(),"owner_reviewed_unknown"|"sha256_verified"){continue;}
         if l.entries[..i].iter().any(|b|
-            b.phase!="owner_reviewed_unknown" && b.input_path==a.input_path){
+            !matches!(b.phase.as_str(),"owner_reviewed_unknown"|"sha256_verified")
+                && b.input_path==a.input_path){
             return Err("Concurrent or retained background input identity conflicts.".into());
         }
     }
@@ -196,7 +200,8 @@ pub(super) fn reserve_at(root:&Path,id:&str,input:&Path,sha:&str)->Result<(),Str
     if l.entries.iter().filter(|e|matches!(e.phase.as_str(),"reserved"|"os_running")).count()>=MAX_ACTIVE{
         return Err("Two background jobs already admitted.".into());
     }
-    if l.entries.iter().any(|e|e.input_path==canonical && e.phase!="owner_reviewed_unknown"){
+    if l.entries.iter().any(|e|e.input_path==canonical
+        && !matches!(e.phase.as_str(),"owner_reviewed_unknown"|"sha256_verified")){
         return Err("Background input already reserved or retained for review.".into());
     }
     if l.entries.len()==MAX_ENTRIES {
@@ -218,6 +223,8 @@ fn change_at(path:&Path,id:&str,phase:&str,pid:Option<u32>,code:Option<i32>)->Re
         .ok_or("Unknown background action.")?;
     let valid=match (item.phase.as_str(),phase,pid,code) {
         ("reserved","os_running",Some(1..),None)=>true,
+        ("os_exited_unverified","sha256_verified",Some(p),Some(0))
+            if item.pid==Some(p)&&item.exit_code==Some(0)=>true,
         ("os_running","os_exited_unverified"|"os_cancelled_unverified"|"os_timed_out_unverified",Some(p),Some(_))
             if item.pid==Some(p)=>true,
         _=>false,
@@ -231,6 +238,11 @@ pub(super) fn started_at(root:&Path,id:&str,pid:u32)->Result<(),String>{
 }
 pub(super) fn terminal_at(root:&Path,id:&str,pid:u32,phase:&str,code:i32)->Result<(),String>{
     change_at(&ledger_file(root)?,id,phase,Some(pid),Some(code))
+}
+/// Call only AFTER independent file-handle-locked host SHA readback and exact
+/// UUID/digest/bytes agreement. No OS process exit alone can call this.
+pub(super) fn verified_sha_at(root:&Path,id:&str,pid:u32)->Result<(),String>{
+    change_at(&ledger_file(root)?,id,"sha256_verified",Some(pid),Some(0))
 }
 /// Observation is metadata only. Unknown process effects remain quarantined.
 pub(super) fn snapshot_at(root:&Path)->Result<Vec<(String,String)>,String>{
@@ -266,6 +278,24 @@ mod tests {
         terminal_at(&p,A,1234,"os_exited_unverified",0).unwrap();
         reserve_at(&p,C,&c,&hash()).unwrap();
         assert_eq!(snapshot_at(&p).unwrap().len(),3);
+        assert!(reserve_at(&p,A,&a,&hash()).is_err());
+        fs::remove_dir_all(p).unwrap();
+    }
+    #[test]
+    fn only_matching_os_exit_zero_may_become_independently_verified_sha(){
+        let p=temp();let (a,_,_)=inputs(&p);
+        reserve_at(&p,A,&a,&hash()).unwrap();
+        assert!(verified_sha_at(&p,A,123).is_err());
+        started_at(&p,A,123).unwrap();
+        assert!(verified_sha_at(&p,A,123).is_err());
+        terminal_at(&p,A,123,"os_exited_unverified",0).unwrap();
+        assert!(verified_sha_at(&p,A,124).is_err());
+        verified_sha_at(&p,A,123).unwrap();
+        assert!(verified_sha_at(&p,A,123).is_err());
+        assert_eq!(snapshot_at(&p).unwrap(),vec![(A.into(),"sha256_verified".into())]);
+        // The verified input is now a terminal read-only result and may be
+        // inspected again under a NEW UUID, but action UUID replay is barred.
+        reserve_at(&p,B,&a,&hash()).unwrap();
         assert!(reserve_at(&p,A,&a,&hash()).is_err());
         fs::remove_dir_all(p).unwrap();
     }
