@@ -697,3 +697,21 @@ Run only with separate owner consent on a disposable desktop/test fixture.
 - No changes to Rust authority, owner approval, app focus/keyboard,
   native GUI lease, action UUIDs, journal or recovery. No Windows live
   tests and no cross-team merge. Keep Draft PR #17 open.
+
+### Milestone 13 security fix — no trimmed model controls
+
+- GitHub frontend check on 0da51465 exposed an actual permissive
+  `save\\n` selector normalization: the old `allowedString` function
+  trusted `cleanObservedLabel(s) === s.trim()`, so trailing newlines
+  were accepted when a separate selector correctly matched a control.
+- Introduced `strictRequestedSelector` for **model-authored window names,
+  control names and automation IDs**, requiring the exact unmodified
+  bounded text to equal its safe normalization. The native observations
+  continue using their existing bounded sanitation for display.
+- The same fail-closed validation now applies when obtaining pre-action
+  RuntimeId/Role evidence and when checking any observed-target action.
+  Hidden control/bidi/newline/zero-width formatting and malformed types
+  can no longer turn into a different selector via trim.
+- New adversarial tests include window-title injection, leading/trailing
+  space, newline, NUL, bidirectional and zero-width marks. No scripting,
+  native mutation, owner permission or cross-team branch changes.

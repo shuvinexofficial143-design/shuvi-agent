@@ -9,9 +9,13 @@ const ACTION_ID=/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const TARGETED=new Set(["ui_click","ui_set_value","ui_toggle","ui_focus","ui_expand_collapse","ui_scroll","ui_send_keys"]);
 const allowedString=(s,max=180)=>typeof s==="string"&&s.length<=max&&s.length>0&&
  cleanObservedLabel(s,max)===s.trim() ? s.trim() : "";
+// Model-supplied selectors must be exactly what will be matched.
+// String.trim() can hide newlines, bidi marks and other control formatting.
+const strictRequestedSelector=(s,max=180)=>typeof s==="string"&&s.length>0&&
+ s.length<=max&&s===s.trim()&&cleanObservedLabel(s,max)===s;
 
 function findWindow(windows,title){
- if(typeof title!=="string"||!allowedString(title))return null;
+ if(!strictRequestedSelector(title))return null;
  const matching=windows.filter(w=>w.title.toLocaleLowerCase("en-US")===title.trim().toLocaleLowerCase("en-US"));
  return matching.length===1?matching[0]:null;
 }
@@ -24,12 +28,12 @@ export function parseRuntimeId(value){
 // an independently audited readback to the original selected control.
 export function observedControlIdentity(proposal,snapshot,windowSession,nowMs=Date.now()){
  const rows=currentObservedControls(snapshot,windowSession,nowMs);
- if(!rows.length||typeof proposal?.arguments?.window!=="string"||!snapshot||
-  snapshot.title.toLowerCase()!==proposal.arguments.window.trim().toLowerCase())return null;
+ if(!rows.length||!strictRequestedSelector(proposal?.arguments?.window)||!snapshot||
+  snapshot.title.toLowerCase()!==proposal.arguments.window.toLowerCase())return null;
  const id=proposal.arguments.automation_id,name=proposal.arguments.name;
  if(!id&&!name)return null;
- if(id!=null&&!allowedString(id,180))return null;
- if(name!=null&&!allowedString(name,180))return null;
+ if(id!=null&&id!==""&&!strictRequestedSelector(id,180))return null;
+ if(name!=null&&name!==""&&!strictRequestedSelector(name,180))return null;
  const matches=rows.filter(c=>
   (id?c.id===id.trim():true)&&
   (name?c.name.toLowerCase()===name.trim().toLowerCase():true));
@@ -134,8 +138,8 @@ export function checkObservedControlTarget(proposal,snapshot,windowSession,nowMs
  // Never try to trim a model-provided nonstring selector; reject the
  // complete proposal when either supplied selector is malformed, even if
  // the other would match a genuine observed control.
- if((id!=null&&id!==""&&!allowedString(id,180))||
-    (name!=null&&name!==""&&!allowedString(name,180)))
+ if((id!=null&&id!==""&&!strictRequestedSelector(id,180))||
+    (name!=null&&name!==""&&!strictRequestedSelector(name,180)))
   return {allowed:false,reason:"UI action selector malformed or unsafe."};
  // Keyboard-only window focus and scroll may not carry a target selector;
  // preserve the trusted native matching path after exact window binding.

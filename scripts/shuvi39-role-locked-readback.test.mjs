@@ -60,7 +60,8 @@ test("two different native IDs remain addressable by exact valid selectors",()=>
 });
 test("model nonstring or hidden selector cannot crash or bypass observed control gate",()=>{
  const w=win(),s=snapshot(w);
- for(const bad of [12,{},[],false,["save"],"  ","save\n","s\u0000ave","s".repeat(181)]){
+ for(const bad of [12,{},[],false,["save"],"  ","save\n","s\u0000ave",
+  "sa\u202eve","\u200bsave"," save","save ","s".repeat(181)]){
   for(const args of [{window:TITLE,name:"Save",automation_id:bad},
    {window:TITLE,name:bad,automation_id:"save"}]){
    assert.equal(checkObservedControlTarget(propose("ui_click",args),s,w,NOW+2000).allowed,false,
@@ -69,6 +70,16 @@ test("model nonstring or hidden selector cannot crash or bypass observed control
  }
  assert.equal(checkObservedControlTarget(propose("ui_click",{window:TITLE,name:"Save",automation_id:""}),
   s,w,NOW+2000).allowed,true);
+ // The window selector is also exact: a newline must never be trimmed away
+ // into a different accepted audited HWND.
+ for(const window of [TITLE+"\n"," "+TITLE,TITLE+"\u202e"]){
+  assert.equal(checkObservedControlTarget(propose("ui_click",{window,name:"Save",automation_id:"save"}),
+   s,w,NOW+2000).allowed,false);
+  assert.equal(observedControlIdentity(propose("ui_click",{window,name:"Save",automation_id:"save"}),
+   s,w,NOW+2000),null);
+ }
+ assert.equal(observedControlIdentity(propose("ui_click",
+  {window:TITLE,name:"Save",automation_id:"save\n"}),s,w,NOW+2000),null);
 });
 test("no invented UIA role when no prior audited control discovery exists",()=>{
  const w=win(),pending=newPendingUiReadback("action-3",propose(),w,NOW+1500);
