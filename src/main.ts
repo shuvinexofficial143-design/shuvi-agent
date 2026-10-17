@@ -14,6 +14,7 @@ import type {
   NativeWorkerStatus,
   NativeBackgroundOwnerStatus,
   NativeApprovedParentQueueStatus,
+  NativeApprovedParentRecoveryView,
   NativeJobHistory,
   NativeSchedule,
   NativeTaskDelivery,
@@ -864,6 +865,35 @@ async function refreshNativeApprovedParentQueue():Promise<void>{
           ||p.currentFileSha256Verified!==false||p.safeToAutoRetry!==false)){
       throw Error("Invalid approved parent queue receipt");
     }
+    // M56 reports historical OS admission + current SHA readback ONLY.
+    // It NEVER grants an owner action, PID liveness, app completion or retry.
+    const recovery=await invoke<NativeApprovedParentRecoveryView[]>(
+      "native_approved_parent_recovery_status");
+    const recoveryMap=new Map<string,NativeApprovedParentRecoveryView>();
+    if(!Array.isArray(recovery)||recovery.length!==result.parents.length){
+      throw Error("Incomplete parent restart recovery projection");
+    }
+    for(const item of recovery){
+      if(!uuid.test(item.parentId)||recoveryMap.has(item.parentId)
+        ||!phases.has(item.recordedPhase)
+        ||typeof item.osAdmissionPhase!=="string"
+        ||item.osAdmissionPhase.length>96
+        ||typeof item.stopIntentRecorded!=="boolean"
+        ||typeof item.currentSha256Reverified!=="boolean"
+        ||typeof item.ownerReviewRequired!=="boolean"
+        ||typeof item.holdsResource!=="boolean"
+        ||item.safeToAutoRetry!==false
+        ||item.applicationVerified!==false
+        ||item.processLivenessVerified!==false){
+        throw Error("Malformed recovery evidence");
+      }
+      recoveryMap.set(item.parentId,item);
+    }
+    for(const parent of result.parents){
+      if(recoveryMap.get(parent.parentId)?.recordedPhase!==parent.recordedPhase){
+        throw Error("Parent/recovery journals changed during read; recheck");
+      }
+    }
     summary.textContent="Independently approved parents: "+result.parents.length+" recorded";
     list.replaceChildren();
     if(!result.parents.length){
@@ -876,9 +906,44 @@ async function refreshNativeApprovedParentQueue():Promise<void>{
       const label=document.createElement("strong");
       label.textContent="Parent "+parent.parentId.slice(0,8)+" · "+parent.recordedPhase.replaceAll("_"," ");
       const small=document.createElement("small");
+      const evidence=recoveryMap.get(parent.parentId);
       small.textContent="Priority "+parent.priority+" · prerequisites "+parent.dependsOn.length
-        +" · recorded journal ONLY. No live PID/current SHA/app success proof.";
+        +" · OS journal "+(evidence?.osAdmissionPhase??"unavailable")
+        +(evidence?.ownerReviewRequired?" · OWNER REVIEW REQUIRED":"")
+        +(evidence?.holdsResource?" · RESOURCE HELD":"")
+        +(evidence?.stopIntentRecorded?" · STOP INTENT RECORDED (not termination)":"")
+        +" · current file SHA "+(evidence?.currentSha256Reverified?"reverified":"NOT established")
+        +" · no verified live PID or app completion.";
       row.append(label,small);
+      // A recovery Review marks uncertain work UNKNOWN but NEVER frees the
+      // parent queue slot or retries. Requires a separately audited actual
+      // read-only inspection, and exact owner confirmation in the dialog.
+      if(evidence?.ownerReviewRequired&&parent.recordedPhase==="admitted"){
+        const review=document.createElement("button");
+        review.type="button";
+        review.textContent="Review uncertain parent";
+        review.addEventListener("click",async()=>{
+          const inspected=window.prompt(
+            "Enter UUID of your separately approved, successful READ-ONLY inspection action. Reviewing keeps this parent resource HELD and DOES NOT stop or retry the OS worker.");
+          if(!inspected)return;
+          if(!window.confirm("Record exact parent "+parent.parentId
+            +" as UNKNOWN? Its resource stays HELD. This does NOT verify process termination or allow retry."))return;
+          review.disabled=true;
+          try{
+            const changed=await invoke<boolean>("review_native_approved_parent_uncertain",{
+              parentId:parent.parentId,inspectionActionId:inspected.trim(),
+              confirmation:"REVIEW PARENT UNKNOWN"
+            });
+            small.textContent=changed
+              ?"Parent marked UNKNOWN; OS/resource claim remains held. No retry, unlock or app verification."
+              :"Parent already UNKNOWN; resource remains held and no auto-retry is authorized.";
+            await refreshNativeBackgroundHealth();
+          }catch{
+            small.textContent="Owner review refused: inspection/UUID/state unavailable. Resource remains held.";
+          }finally{review.disabled=false;}
+        });
+        row.append(review);
+      }
       // M55: UI merely asks to persist Stop for one exact approved parent.
       // Rust authenticates dispatch action + immutable parent pair + OS claim.
       const host=nativeHostStatusUnavailable?null:nativeHostStatus;
