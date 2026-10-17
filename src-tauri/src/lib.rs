@@ -503,7 +503,7 @@ Rules:
 - Use tools only when a computer action is required.
 - Never claim an action succeeded before Shuvi returns a tool result.
 - Prefer typed file/app/browser/screen tools over PowerShell.
-- For multiple independent read-only SHA jobs: FIRST use queue_readonly_sha_parent with exactly {input_path,expected_sha256,priority,depends_on} and require owner Allow EACH time; enqueue does NOT launch or verify. Priorities are 0..2; depends_on is an array of earlier parent UUIDs. Later run_approved_sha_parent_queue with empty {} requires a SEPARATE owner Allow to dispatch at most two already-approved ready parents. Never guess SHA or path, use arbitrary executable, or call queued/running a completed task. ApplicationVerified remains false.
+- For multiple independent read-only SHA jobs: FIRST use queue_readonly_sha_parent with exactly {input_path,expected_sha256,priority,depends_on} and require owner Allow EACH time; enqueue does NOT launch or verify. Priorities are 0..2; depends_on is an array of earlier parent UUIDs. Later run_approved_sha_parent_queue with exactly {first_parent_id,second_parent_id} requires a SEPARATE owner Allow to dispatch ONLY those two pinned, previously approved, dependency-ready parent UUIDs in current priority order. Queue changes invalidate that exact dispatch rather than substituting another job. Never guess SHA or path, use arbitrary executable, or call queued/running a completed task. ApplicationVerified remains false.
 - For two read-only binary files that the owner specifically wants SHA-256 verified, you may propose verify_readonly_sha_pair with EXACTLY four arguments: first_path, first_sha256, second_path, second_sha256. All paths must be distinct absolute existing files, each expected digest must be lowercase 64-character hex, and each file must be at most 128 MiB. It launches two contained read-only OS workers only AFTER explicit owner Allow and it verifies only present file bytes; it never confirms an Adobe/Blender creative task. Never guess a SHA-256 digest or silently use a path not shown to the owner.
 - capture_screen only captures an image and returns its local path; do not infer visual contents from that path.
 - inspect_screen captures ONLY the approved window (briefly activates it, verifies its identity, captures its visible bounds, then restores previous focus). It fails closed if the specified app window is missing/ambiguous or cannot be brought forward; do not silently send Shuvi's chat screenshot. Use window:"desktop" only for user-requested whole-desktop inspection.
@@ -660,7 +660,7 @@ enum ToolAction {
         depends_on: Vec<String>,
     },
     // Requires a distinct explicit owner approval to execute already approved parents.
-    RunApprovedShaParentQueue,
+    RunApprovedShaParentQueue { first_parent_id:String,second_parent_id:String },
     WriteFile { path: String, content: String },
     CreateDirectory { path: String },
     LaunchApp { program: String, args: Vec<String> },
@@ -3268,12 +3268,23 @@ fn stage_tool(
                 "Approve ONE independent read-only SHA parent for durable queue".into(),detail,RiskLevel::Medium)
         }
         "run_approved_sha_parent_queue" => {
-            let obj=proposal.arguments.as_object().ok_or("Background run accepts an empty object only.")?;
-            if !obj.is_empty(){return Err("Background run takes no caller-supplied program, PID or arguments.".into());}
-            (ToolAction::RunApprovedShaParentQueue,
-                "Run up to two independently approved queued SHA parents".into(),
-                "Explicit owner-authorized SHA parent queue dispatch; bounded two OS children; no GUI mutation or application success assertion".into(),
-                RiskLevel::Medium)
+            let obj=proposal.arguments.as_object()
+                .ok_or("Pinned background dispatch requires two named approved parent UUIDs.")?;
+            if obj.len()!=2||!["first_parent_id","second_parent_id"]
+                .iter().all(|key|obj.contains_key(*key)){
+                return Err("Pinned SHA dispatch requires EXACT first_parent_id and second_parent_id.".into());
+            }
+            let first_parent_id=arg_string(&proposal.arguments,"first_parent_id")?;
+            let second_parent_id=arg_string(&proposal.arguments,"second_parent_id")?;
+            if first_parent_id==second_parent_id||[&first_parent_id,&second_parent_id]
+                .iter().any(|id|uuid::Uuid::parse_str(id)
+                    .map(|u|u.to_string()!=**id).unwrap_or(true)){
+                return Err("Dispatch requires two distinct canonical approved parent UUIDs.".into());
+            }
+            let detail=format!("Explicit owner dispatch of EXACT parent UUIDs in priority order: {} then {}; both previously approved for SHA verification. No other queued IDs may run.",first_parent_id,second_parent_id);
+            (ToolAction::RunApprovedShaParentQueue{first_parent_id,second_parent_id},
+                "Run exactly two previously owner-approved SHA parent UUIDs".into(),
+                detail,RiskLevel::Medium)
         }
         "write_file" => {
             let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
@@ -10184,7 +10195,7 @@ async fn execute_tool_with_action_id(
         // function (which may be used outside a prepared owner's action).
         ToolAction::VerifyReadOnlyShaPair {..} =>
             Err("SHA pair requires the existing exact approved native execute_action path.".into()),
-        ToolAction::QueueReadOnlyShaParent {..}|ToolAction::RunApprovedShaParentQueue =>
+        ToolAction::QueueReadOnlyShaParent {..}|ToolAction::RunApprovedShaParentQueue {..} =>
             Err("Background parent queue operations require exact owner-approved native execute_action.".into()),
         ToolAction::WriteFile { path, content } => {
             let target = Path::new(&path);
@@ -19482,7 +19493,7 @@ async fn execute_action(
             })()
         }
         #[cfg(not(windows))]{Err("Owner-approved background parents require Windows.".into())}
-    } else if let ToolAction::RunApprovedShaParentQueue=&action.action {
+     } else if let ToolAction::RunApprovedShaParentQueue{first_parent_id,second_parent_id}=&action.action {
         #[cfg(windows)]
         {
             (||->Result<ActionResult,String>{
@@ -19496,14 +19507,14 @@ async fn execute_action(
                     Ok(status.shuvi_memory_mb+1024.0>=HARD_LIMIT_MB)
                 };
                 if owner_ram()?{return Err("Two reserved SHA parents exceed 4 GiB Shuvi budget.".into());}
-                let [left,right]=native_scheduler::background_os_workers::parent_queue::run_two_ready_approved(
-                    &root,&owner_ram);
+                let [left,right]=native_scheduler::background_os_workers::parent_queue::run_exact_approved_pair(
+                    &root,[first_parent_id.as_str(),second_parent_id.as_str()],&owner_ram);
                 let a=left?;let b=right?;
-                let verified:Vec<_>=[a,b].into_iter().flatten().map(|e|json!({
+                let verified:Vec<_>=[a,b].into_iter().map(|e|json!({
                     "parentId":e.action_id,"sha256":e.sha256,
                     "bytes":e.bytes,"osPid":e.os_pid,
                 })).collect();
-                if verified.is_empty(){return Err("No independently approved ready parent available; no process launched.".into());}
+                if verified.len()!=2 {return Err("Pinned owner-approved parent pair result incomplete.".into());}
                 let stdout=serde_json::to_string(&json!({
                     "verifiedParents":verified,"currentFileSha256Verified":true,
                     "applicationVerified":false,"desktopMutated":false
@@ -20128,13 +20139,23 @@ mod task_graph_transport_tests {
             reason:Some("Explicit owner dispatch permission".into()),
             plan:None,task_graph:None,task_step_id:None,task_recovery:None,
         };
-        let prepared=stage_tool(make(json!({})),None,&state).unwrap();
+        let prepared=stage_tool(make(json!({
+            "first_parent_id":"e8b36b21-1c6a-459e-9b6f-75dd5692ab81",
+            "second_parent_id":"0f2977ac-4f61-4d9c-bf74-ecf8a3ae2172"
+        })),None,&state).unwrap();
         assert!(matches!(prepared.risk,RiskLevel::Medium));
         let ledger=state.pending.lock().unwrap();
         assert!(matches!(&ledger.get(&prepared.id).unwrap().action,
-            ToolAction::RunApprovedShaParentQueue));
+            ToolAction::RunApprovedShaParentQueue{first_parent_id,second_parent_id}
+                if first_parent_id=="e8b36b21-1c6a-459e-9b6f-75dd5692ab81"
+                &&second_parent_id=="0f2977ac-4f61-4d9c-bf74-ecf8a3ae2172"));
         drop(ledger);
         assert!(stage_tool(make(json!({"pid":42})),None,&state).is_err());
+        assert!(stage_tool(make(json!({})),None,&state).is_err());
+        assert!(stage_tool(make(json!({
+            "first_parent_id":"e8b36b21-1c6a-459e-9b6f-75dd5692ab81",
+            "second_parent_id":"e8b36b21-1c6a-459e-9b6f-75dd5692ab81"
+        })),None,&state).is_err());
         assert!(stage_tool(make(json!({"command":"calc.exe"})),None,&state).is_err());
         assert_eq!(state.pending.lock().unwrap().len(),1);
     }
