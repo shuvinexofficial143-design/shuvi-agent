@@ -1,6 +1,8 @@
 // Build the fixed Windows SHA binary before Tauri NSIS bundling.
 // Never downloads executables or uses a shell. Fail on unsupported targets.
 import {spawnSync,execFileSync} from "node:child_process";
+import {createHash} from "node:crypto";
+import {readFileSync} from "node:fs";
 import {copyFileSync,statSync,mkdirSync} from "node:fs";
 import {resolve,join} from "node:path";
 if(process.platform!=="win32"){
@@ -29,4 +31,8 @@ copyFileSync(source,dest);
 if(statSync(dest).size!==statSync(source).size){
   throw Error("Bundled SHA sidecar copy differs in length from compiled executable.");
 }
-console.log("Compiled owned read-only SHA sidecar for NSIS target "+target);
+const digest=p=>createHash("sha256").update(readFileSync(p)).digest("hex");
+if(digest(source)!==digest(dest)){
+  throw Error("Prepared SHA sidecar copy disagrees with compiled executable.");
+}
+console.log("Compiled owned read-only SHA sidecar and matched SHA-256 bytes for NSIS target "+target);
