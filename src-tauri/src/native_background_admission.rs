@@ -244,6 +244,28 @@ pub(super) fn terminal_at(root:&Path,id:&str,pid:u32,phase:&str,code:i32)->Resul
 pub(super) fn verified_sha_at(root:&Path,id:&str,pid:u32)->Result<(),String>{
     change_at(&ledger_file(root)?,id,"sha256_verified",Some(pid),Some(0))
 }
+/// Copy only bounded, structurally validated persisted background claims.
+/// The read holds both the in-process mutex and cross-process kernel lock.
+#[derive(Clone,Debug)]
+pub(super) struct ClaimSnapshot {
+    pub action_id:String,
+    pub input_path:String,
+    pub expected_sha256:String,
+    pub phase:String,
+    pub pid:Option<u32>,
+    pub exit_code:Option<i32>,
+}
+pub(super) fn snapshot_detailed_at(root:&Path)->Result<Vec<ClaimSnapshot>,String>{
+    let file=ledger_file(root)?;
+    let _local=TX.lock().map_err(|_|"Background journal mutex poisoned.")?;
+    let _os=Exclusive::take(&file)?;
+    let l=read_at(&file)?;
+    Ok(l.entries.into_iter().map(|e|ClaimSnapshot{
+        action_id:e.action_id,input_path:e.input_path,
+        expected_sha256:e.expected_sha256,phase:e.phase,
+        pid:e.pid,exit_code:e.exit_code,
+    }).collect())
+}
 /// Observation is metadata only. Unknown process effects remain quarantined.
 pub(super) fn snapshot_at(root:&Path)->Result<Vec<(String,String)>,String>{
     let file=ledger_file(root)?;
@@ -297,6 +319,20 @@ mod tests {
         // inspected again under a NEW UUID, but action UUID replay is barred.
         reserve_at(&p,B,&a,&hash()).unwrap();
         assert!(reserve_at(&p,A,&a,&hash()).is_err());
+        fs::remove_dir_all(p).unwrap();
+    }
+    #[test]
+    fn detailed_status_snapshot_preserves_exact_input_provenance_and_never_mutates(){
+        let p=temp();let (a,_,_)=inputs(&p);
+        reserve_at(&p,A,&a,&hash()).unwrap();
+        started_at(&p,A,551).unwrap();
+        let first=snapshot_detailed_at(&p).unwrap();
+        assert_eq!(first.len(),1);
+        assert_eq!(first[0].action_id,A);
+        assert_eq!(first[0].pid,Some(551));
+        assert_eq!(first[0].phase,"os_running");
+        assert_eq!(first[0].expected_sha256,hash());
+        assert_eq!(snapshot_detailed_at(&p).unwrap()[0].phase,"os_running");
         fs::remove_dir_all(p).unwrap();
     }
     #[test]
