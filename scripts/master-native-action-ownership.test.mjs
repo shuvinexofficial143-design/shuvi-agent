@@ -65,9 +65,9 @@ test("Desktop execution, error receipt and Rust audit await have universal task 
  assert.match(ui,/const actionOwnership=captureNativeActionOwnership\(/);
  assert.match(ui,/if\(!nativeActionCurrent\(actionOwnership\)\)return;/);
  assert.match(ui,/const postOutcomeOwnership=captureNativeActionOwnership\(/);
- assert.match(ui,/if\(!isNativeActionOwnershipCurrent\(postOutcomeOwnership,/);
+ assert.match(ui,/if\(remoteTask!==actionRemoteTask\|\|!isNativeActionOwnershipCurrent\(postOutcomeOwnership,/);
  assert.match(ui,/const failedOutcomeOwnership=captureNativeActionOwnership\(/);
- assert.match(ui,/if\(!isNativeActionOwnershipCurrent\(failedOutcomeOwnership,/);
+ assert.match(ui,/if\(remoteTask!==actionRemoteTask\|\|!isNativeActionOwnershipCurrent\(failedOutcomeOwnership,/);
  assert.match(ui,/orchestration\.recovery_mode!=="stopped"&&/);
  assert.match(ui,/if\(!stillStopping\(\)\)return;/);
  assert.match(ui,/const stoppingScope=activePermissionScope;/);

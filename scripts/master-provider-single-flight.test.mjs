@@ -52,7 +52,7 @@ test("Desktop acquires before billing reservation, releases on provider reply AN
  const nested=src.indexOf("await runAgentStep();",chat);
  assert.ok(admission>=0&&admission<reserve&&reserve<chat&&chat<release&&release<nested);
  assert.match(src,/finally \{[\s\S]*?paidFlight\.release\(\);[\s\S]*?\}/);
- assert.match(src,/if\(staleModelRequest\(\)\) return;/);
+ assert.match(src,/if\s*\(staleModelRequest\(\)\)\s*return;/);
 });
 test("provider gate cannot grant high-risk approval or execute native Windows actions",()=>{
  const text=readFileSync(new URL("../src/master-provider-single-flight.mjs",import.meta.url),"utf8");
