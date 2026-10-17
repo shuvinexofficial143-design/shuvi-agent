@@ -163,3 +163,18 @@ test("project delivery injection, malformed independent SHA, missing Reopen and 
  assert.equal(check(f,OWNER,altered).allowed,false);
  assert.equal(check(f,"Premiere me video export karo",good).allowed,false);
 });
+
+test("native Rust scheduler dependency must agree before project delivery preflight",()=>{
+ const f=fixture(),claims=nativeTaskDeliveryClaims(f.graph,f.schedule,{
+  taskId:TASK,created:f.created,sha:f.sha,reopened:f.reopen
+ });
+ assert.ok(claims);
+ f.schedule.jobs[1].dependsOn=[];
+ assert.equal(check(f,OWNER,claims).stage,"premiere_project_native_dependency_invalid");
+ assert.equal(check(f,OWNER,claims).allowed,false);
+ f.schedule.jobs[1].dependsOn=["foreign-step"];
+ assert.equal(check(f,OWNER,claims).allowed,false);
+ f.schedule.jobs[1].dependsOn=["create"];
+ f.schedule.jobs.reverse();
+ assert.equal(check(f,OWNER,claims).allowed,false);
+});

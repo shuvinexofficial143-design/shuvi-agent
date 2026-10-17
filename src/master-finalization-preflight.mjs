@@ -33,6 +33,15 @@ export function assessNativeFinalizationPreflight(
   if(creates.length!==1||opens.length!==1||creates[0].step_id!==created.stepId||
      opens[0].depends_on?.includes(creates[0].step_id)!==true)
    return deny("premiere_project_graph_invalid","Require exactly one audited CREATE and one dependent separately approved OPEN.");
+  // JS preflight and the independent Rust finalizer must agree on the
+  // NATIVE scheduler edge. A WebView-only DAG dependency is not sufficient.
+  const createIndex=schedule.jobs?.findIndex(j=>j?.stepId===creates[0].step_id);
+  const openIndex=schedule.jobs?.findIndex(j=>j?.stepId===opens[0].step_id);
+  if(!Number.isInteger(createIndex)||createIndex<0||
+     !Number.isInteger(openIndex)||openIndex<=createIndex||
+     !schedule.jobs[openIndex]?.dependsOn?.includes(creates[0].step_id))
+   return deny("premiere_project_native_dependency_invalid",
+    "Rust scheduler must independently require a later, dependent project REOPEN.");
   const make=evidenceForStep(creates[0]),open=evidenceForStep(opens[0]);
   if(!make||!open||make.action_id!==created.actionId||
      open.action_id!==reopened.reopenActionId||

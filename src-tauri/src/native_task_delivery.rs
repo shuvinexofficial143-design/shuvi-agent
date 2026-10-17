@@ -81,6 +81,18 @@ fn check_structure(v:&DeliveryReceipt)->Result<(),String>{
             return Err("A native render/model action cannot be delivered without its file receipt.".into());
         }
     }
+    // A Premiere CREATE artifact is a native file claim, not independent
+    // evidence that Adobe reopened that saved project. Refuse a create-only
+    // delivery even when its bytes hash and initial action audit match.
+    let creates:Vec<_>=v.steps.iter().enumerate()
+        .filter(|(_,step)|step.tool=="premiere_create_project").collect();
+    if !creates.is_empty(){
+        let opens:Vec<_>=v.steps.iter().enumerate()
+            .filter(|(_,step)|step.tool=="premiere_open_project").collect();
+        if creates.len()!=1||opens.len()!=1||opens[0].0<=creates[0].0{
+            return Err("Premiere project delivery requires one audited create followed by one distinct reopen.".into());
+        }
+    }
     Ok(())
 }
 fn check_bytes(raw:&[u8])->Result<(),String>{
@@ -143,6 +155,20 @@ where F:FnMut(&str)->Result<crate::AuditEntry,String>{
     }
     // Index/order binding: never accept a subset, a different graph,
     // another task's action ID, or an unrelated successful native audit.
+    // This independent Rust gate also protects callers that bypass the
+    // WebView's JS Create/SHA/Reopen finalization preflight.
+    let project_pair=if let Some((create_index,created))=steps.iter().enumerate()
+        .find(|(_,step)|step.tool=="premiere_create_project"){
+        let creates=steps.iter().filter(|s|s.tool=="premiere_create_project").count();
+        let opens:Vec<_>=steps.iter().enumerate()
+            .filter(|(_,s)|s.tool=="premiere_open_project").collect();
+        if creates!=1||opens.len()!=1||opens[0].0<=create_index
+            ||opens[0].1.action_id==created.action_id
+            ||!schedule.jobs[opens[0].0].depends_on.contains(&created.step_id){
+            return Err("Premiere project native scheduler requires one later, dependent, separately audited reopen.".into());
+        }
+        Some((create_index,opens[0].0))
+    }else{None};
     let mut receipts=Vec::with_capacity(steps.len());
     for (expected,step) in schedule.jobs.iter().zip(steps){
         if expected.step_id!=step.step_id||expected.tool!=step.tool
@@ -155,6 +181,11 @@ where F:FnMut(&str)->Result<crate::AuditEntry,String>{
             return Err("Native action has no matching successful executed audit receipt.".into());
         }
         receipts.push(entry);
+    }
+    if let Some((create_index,open_index))=project_pair{
+        if receipts[open_index].timestamp_ms<receipts[create_index].timestamp_ms{
+            return Err("Premiere project reopen audit predates creation; delivery withheld.".into());
+        }
     }
     // Only after all action receipts match, re-read every external artifact.
     for step in steps{
@@ -277,26 +308,69 @@ mod tests{
             kind:"premiere_project".into(),
             path:path.to_string_lossy().into_owned(),bytes,sha256
         };
-        let step=DeliveryStep{step_id:"create".into(),tool:"premiere_create_project".into(),
+        let created=DeliveryStep{step_id:"create".into(),tool:"premiere_create_project".into(),
             action_id:A.into(),artifact:Some(project.clone())};
+        let reopened=claim("reopen","premiere_open_project",B);
         let valid=DeliveryReceipt{version:1,objective:"Build".into(),
-            revision:1,recorded_at_ms:1,steps:vec![step.clone()]};
+            revision:1,recorded_at_ms:1,steps:vec![created.clone(),reopened.clone()]};
         check_structure(&valid).unwrap();
-        let schedule=mock(vec![("create","premiere_create_project",A)]);
-        verify(&schedule,&valid.steps,|id|Ok(audit(id,"premiere_create_project"))).unwrap();
-        // Do not allow a .prproj claim under an unrelated tool or a foreign audit.
+        let mut schedule=mock(vec![
+            ("create","premiere_create_project",A),
+            ("reopen","premiere_open_project",B)
+        ]);
+        schedule.jobs[1].depends_on=vec!["create".into()];
+        verify(&schedule,&valid.steps,|id|Ok(audit(id,
+            if id==A{"premiere_create_project"}else{"premiere_open_project"}))).unwrap();
+
+        // The old single-CREATE proof was hash-valid but lacked any independent
+        // Adobe REOPEN. It must no longer be accepted by native IPC or disk read.
+        let create_only=DeliveryReceipt{steps:vec![created.clone()],..valid.clone()};
+        assert!(check_structure(&create_only).is_err());
+        assert!(verify(&mock(vec![("create","premiere_create_project",A)]),
+            &create_only.steps,|id|Ok(audit(id,"premiere_create_project"))).is_err());
+        let reversed=DeliveryReceipt{steps:vec![reopened.clone(),created.clone()],..valid.clone()};
+        assert!(check_structure(&reversed).is_err());
+        let duplicate_open=DeliveryReceipt{steps:vec![
+            created.clone(),reopened.clone(),claim("other","premiere_open_project",
+                "f92c367e-c042-4da4-9ac7-7c44bf1de932")],..valid.clone()};
+        assert!(check_structure(&duplicate_open).is_err());
+        let duplicate_create=DeliveryReceipt{steps:vec![
+            created.clone(),DeliveryStep{step_id:"other".into(),
+                action_id:"f92c367e-c042-4da4-9ac7-7c44bf1de932".into(),
+                ..created.clone()},reopened.clone()],..valid.clone()};
+        assert!(check_structure(&duplicate_create).is_err());
+
+        let mut without_dependency=schedule.clone();
+        without_dependency.jobs[1].depends_on.clear();
+        assert!(verify(&without_dependency,&valid.steps,|id|Ok(audit(id,
+            if id==A{"premiere_create_project"}else{"premiere_open_project"}))).is_err());
+        let mut wrong_dependency=schedule.clone();
+        wrong_dependency.jobs[1].depends_on=vec!["other".into()];
+        assert!(verify(&wrong_dependency,&valid.steps,|id|Ok(audit(id,
+            if id==A{"premiere_create_project"}else{"premiere_open_project"}))).is_err());
+        assert!(verify(&schedule,&valid.steps,|id|{
+            let mut entry=audit(id,if id==A{"premiere_create_project"}else{"premiere_open_project"});
+            entry.timestamp_ms=if id==A{5}else{4};
+            Ok(entry)
+        }).is_err());
+        assert!(verify(&schedule,&valid.steps,|id|Ok(audit(B,
+            if id==A{"premiere_create_project"}else{"premiere_open_project"}))).is_err());
+        let mut incomplete=schedule.clone();
+        incomplete.jobs[1].phase="outcome_unknown".into();
+        assert!(verify(&incomplete,&valid.steps,|id|Ok(audit(id,
+            if id==A{"premiere_create_project"}else{"premiere_open_project"}))).is_err());
+
         let wrong_tool=DeliveryReceipt{steps:vec![DeliveryStep{
-            tool:"ui_windows".into(),..step.clone()}],..valid.clone()};
+            tool:"ui_windows".into(),..created.clone()},reopened.clone()],..valid.clone()};
         assert!(check_structure(&wrong_tool).is_err());
         let wrong_kind=DeliveryReceipt{steps:vec![DeliveryStep{
             artifact:Some(DeliveryArtifact{kind:"blender_artifact".into(),..project.clone()}),
-            ..step.clone()}],..valid.clone()};
+            ..created.clone()},reopened.clone()],..valid.clone()};
         assert!(check_structure(&wrong_kind).is_err());
         let no_file=DeliveryReceipt{steps:vec![DeliveryStep{
-            artifact:None,..step.clone()}],..valid.clone()};
+            artifact:None,..created.clone()},reopened],..valid.clone()};
         assert!(check_structure(&no_file).is_err());
-        assert!(verify(&schedule,&valid.steps,|_|Ok(audit(B,"premiere_create_project"))).is_err());
-        // File mutation after the first read makes the trusted SHA mismatch.
+        // Rehash the same disk bytes on actual native final delivery.
         fs::write(&path,b"post-proof-tampering").unwrap();
         assert!(check_artifact(&project,"premiere_create_project").is_err());
         let _=fs::remove_file(path);
