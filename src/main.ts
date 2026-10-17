@@ -23,6 +23,7 @@ import {createTaskCheckpointLane} from "./master-task-checkpoint-lane.mjs";
 import {assessNativeCheckpointReadback} from "./master-task-checkpoint-readback.mjs";
 import {isNativeCheckpointAbsent} from "./master-checkpoint-absent.mjs";
 import {classifyNativeResumeReplay} from "./master-native-resume-replay.mjs";
+import {classifyMasterCommentaryCompletion} from "./master-commentary-completion.mjs";
 import {captureMasterProviderTurnFence,isMasterProviderTurnFenceCurrent} from "./master-provider-turn-fence.mjs";
 import {createMasterProviderSingleFlight} from "./master-provider-single-flight.mjs";
 import {captureMasterPermissionUiFence,isMasterPermissionUiFenceCurrent} from "./master-permission-ui-fence.mjs";
@@ -2354,6 +2355,14 @@ async function runAgentStep(): Promise<void> {
     return;
   }
 
+  // A native DAG whose every step already has independently correlated
+  // receipts must go straight to the strict Rust/goal finalizer. Never buy
+  // another AI call or clear the checkpoint on a model commentary.
+  if(classifyMasterCommentaryCompletion(orchestration.task_graph).mode==="native_finalizer"){
+    await continueAfterOutcome();
+    return;
+  }
+
   // Prevent two simultaneous paid model requests from reserving or dispatching
   // through concurrent Resume/remote/manual continuations in this WebView.
   const paidFlight=masterProviderSingleFlight.acquire(activePermissionScope);
@@ -2560,6 +2569,17 @@ async function runAgentStep(): Promise<void> {
       await loadRecoveryCheckpoint();
       if(staleModelRequest())return;
     } else {
+      const completionRoute=classifyMasterCommentaryCompletion(orchestration.task_graph);
+      if(completionRoute.mode==="native_finalizer"){
+        if(staleModelRequest())return;
+        await continueAfterOutcome();
+        return;
+      }
+      if(completionRoute.mode==="preserve_checkpoint"){
+        if(staleModelRequest())return;
+        await stopAgentForSafety("A native task DAG is not safely finalizable from AI commentary. Original Rust action receipts and owner-goal proof require inspection; checkpoint retained.");
+        return;
+      }
       await clearActiveCheckpoint();
     }
     // A native action receipt proves that action, not an entire creative edit.
