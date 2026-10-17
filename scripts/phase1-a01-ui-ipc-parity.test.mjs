@@ -40,6 +40,7 @@ const uniqueNames=[
   "premiere_bridge_stop",
   "prepare_powershell",
   "prepare_tool",
+  "reconcile_native_approved_parent_terminal",
   "reconcile_native_worker_job",
   "record_agent_event",
   "remote_agent_disconnect",
