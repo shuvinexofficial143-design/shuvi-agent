@@ -23,9 +23,10 @@ const failure=(reason,requirements=[],completedNativeSteps=0)=>({
 });
 
 // No tool-only or arbitrary Rust delivery artifact can manufacture a
-// Premiere project proof: native_task_delivery currently only accepts
-// blender_artifact, accepted_remotion and premiere_insertion_plan. Those are
-// NOT native Premiere .prproj creation, timeline-effect or export attestations.
+// Premiere creative-goal proof. Rust can now rehash an audited .prproj
+// only after an independently audited, dependency-bound CREATE and REOPEN.
+// Neither that file receipt nor another worker's result proves timeline
+// editing, export, or that the original creative goal was actually achieved.
 export function assessMasterFinalOutcome(owner,graph,schedule,delivery,opening,taskId){
  const goal=deriveMasterGoalContract(owner);
  if(!goal||!obj(graph)||!Array.isArray(graph.steps))

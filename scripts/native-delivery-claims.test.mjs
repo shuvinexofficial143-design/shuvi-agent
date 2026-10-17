@@ -57,3 +57,19 @@ test("real frontend wires delivery after terminal schedule validation, before cl
  assert.match(rust,/fn finalize_native_task_delivery\(/);
  assert.match(rust,/native_task_delivery::finalize\(&app,steps\)/);
 });
+
+test("audited UUIDs cannot launder graph dependency drift into Rust final delivery",()=>{
+ const g=dag([
+  node("inspect","read_file",evidence(A,"read_file","inspect",1)),
+  node("check","git_status",evidence(B,"git_status","check",2),["inspect"])
+ ]);
+ const s=schedule([job("inspect","read_file",A),job("check","git_status",B,["inspect"])]);
+ assert.ok(claims(g,s));
+ assert.equal(claims(g,{...s,jobs:[s.jobs[0],{...s.jobs[1],dependsOn:[]}]}),null);
+ assert.equal(claims(g,{...s,jobs:[s.jobs[0],{...s.jobs[1],dependsOn:["foreign"]}]}),null);
+ assert.equal(claims(g,{...s,jobs:[s.jobs[0],{...s.jobs[1],dependsOn:["inspect","inspect"]}]}),null);
+ const forged=structuredClone(g);forged.steps[1].depends_on=[];
+ assert.equal(claims(forged,s),null);
+ const valid=structuredClone(s);valid.jobs[1].dependsOn=["inspect"];
+ assert.ok(claims(g,valid));
+});

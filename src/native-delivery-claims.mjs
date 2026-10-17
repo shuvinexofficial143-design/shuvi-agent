@@ -18,6 +18,18 @@ export function nativeTaskDeliveryClaims(graph,schedule,projectProof=null){
    if(!receipt||!job||job.stepId!==node.step_id||
        job.tool!==node.expected_tool||job.actionId!==receipt.action_id
        ||ids.has(receipt.action_id))return null;
+   // A successful Rust action under a DIFFERENT dependency DAG must never
+   // become this WebView graph's final delivery. These sorted identities
+   // are checked independently of native action receipts.
+   const graphDeps=node.depends_on,nativeDeps=job.dependsOn;
+   if(!Array.isArray(graphDeps)||!Array.isArray(nativeDeps)||
+      graphDeps.length!==nativeDeps.length||
+      new Set(graphDeps).size!==graphDeps.length||
+      new Set(nativeDeps).size!==nativeDeps.length||
+      graphDeps.some((id,j)=>id!==undefined&&id!==null&&typeof id!=="string")||
+      nativeDeps.some(id=>typeof id!=="string")||
+      [...graphDeps].sort().some((id,j)=>id!==[...nativeDeps].sort()[j]))
+     return null;
    ids.add(receipt.action_id);
    // evidenceForStep is intentionally a minimal identity projection.
    // Recover the one matching source evidence only AFTER verification;

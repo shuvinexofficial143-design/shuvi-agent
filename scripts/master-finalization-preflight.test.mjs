@@ -178,3 +178,35 @@ test("native Rust scheduler dependency must agree before project delivery prefli
  f.schedule.jobs.reverse();
  assert.equal(check(f,OWNER,claims).allowed,false);
 });
+
+test("native delivery never crosses owner brief or scheduler revision, even for same Premiere project intent",()=>{
+ const f=fixture(),claims=nativeTaskDeliveryClaims(f.graph,f.schedule,{
+  taskId:TASK,created:f.created,sha:f.sha,reopened:f.reopen
+ });
+ assert.ok(claims);
+ const changedOwner="Premiere me dusra naya project banao";
+ assert.equal(check(f,changedOwner,claims).allowed,false);
+ assert.equal(check(f,changedOwner,claims).stage,"owner_task_identity_mismatch");
+ const changedSchedule=structuredClone(f);
+ changedSchedule.schedule.objective="Premiere me dusra naya project banao";
+ assert.equal(check(changedSchedule,OWNER,claims).allowed,false);
+ const changedRevision=structuredClone(f);
+ changedRevision.schedule.revision=2;
+ assert.equal(check(changedRevision,OWNER,claims).stage,"owner_task_identity_mismatch");
+ // The same bound chain remains admissible as a native hash candidate, not
+ // as original creative-goal completion.
+ assert.equal(check(f,OWNER,claims).allowed,true);
+ assert.equal(check(f,OWNER,claims).originalGoalVerified,false);
+});
+test("unrelated native read delivery cannot be relabeled under a different owner",()=>{
+ const graph={objective:"Inspect workspace",revision:1,steps:[
+  task("git_status","status",CREATE,1)]};
+ const schedule={version:1,objective:"Inspect workspace",revision:1,jobs:[
+  {stepId:"status",tool:"git_status",phase:"audited",actionId:CREATE,dependsOn:[]}]};
+ const native=nativeTaskDeliveryClaims(graph,schedule);
+ assert.ok(native);
+ assert.equal(preflight("Inspect workspace",graph,schedule,native,TASK,null,null,null).allowed,true);
+ const drift=preflight("Inspect different workspace",graph,schedule,native,TASK,null,null,null);
+ assert.equal(drift.stage,"owner_task_identity_mismatch");
+ assert.equal(drift.allowed,false);
+});

@@ -2,6 +2,7 @@
 // A project path or user/model-written SHA is never adequate: Rust must
 // independently check the native audited create action and real file bytes.
 import {deriveMasterGoalContract} from "./master-autonomy-contract.mjs";
+import {pinnedMasterObjective} from "./master-autonomy-graph.mjs";
 import {assessPremiereProjectProofProgress} from "./master-project-proof-progress.mjs";
 import {nativeTaskDeliveryClaims} from "./native-delivery-claims.mjs";
 import {evidenceForStep} from "./master-worker-queue.mjs";
@@ -17,6 +18,15 @@ export function assessNativeFinalizationPreflight(
  if(!obj(graph)||!Array.isArray(graph.steps)||!Array.isArray(claims)||
     !obj(schedule)||typeof owner!=="string")
   return gate(false,"invalid_native_graph","Original owner, typed graph, native scheduler or delivery claims are missing.");
+ // Check ORIGINAL owner identity on every delivery lane, not just Premiere.
+ // A legitimate Rust receipt for another task must not be relabeled when
+ // owner text rotates but its tool family/classification stays the same.
+ const objective=pinnedMasterObjective(owner);
+ if(!objective||graph.objective!==objective||schedule.objective!==objective||
+    schedule.version!==1||schedule.revision!==graph.revision||
+    !Array.isArray(schedule.jobs)||schedule.jobs.length!==graph.steps.length)
+  return gate(false,"owner_task_identity_mismatch",
+   "Native final delivery belongs to another original owner brief, task graph or scheduler revision.");
  const goal=deriveMasterGoalContract(owner);
  const hasProjectTool=graph.steps.some(s=>isProjectTool(s?.expected_tool));
  if(hasProjectTool||(goal?.apps?.includes("premiere")&&goal.project)){

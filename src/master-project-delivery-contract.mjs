@@ -1,6 +1,6 @@
 // Shuvi 37: evidence-only, NONTERMINAL Premiere .prproj final-delivery contract.
-// Native Team38 delivery presently does NOT support this artifact. Source
-// alignment must NEVER become original creative goal acceptance or permission.
+// Rust now supports cryptographic .prproj bytes under a separately audited
+// CREATE and REOPEN. A source-aligned receipt is NEVER creative-goal acceptance.
 import {deriveMasterGoalContract} from "./master-autonomy-contract.mjs";
 import {pinnedMasterObjective} from "./master-autonomy-graph.mjs";
 import {assessMasterSchedulerAdmission} from "./native-scheduler-admission.mjs";
@@ -73,8 +73,8 @@ export function assessPremiereProjectDeliveryContract(
     artifact.sha256!==reopened.sha256BeforeReopen)
   return deny("rust_project_delivery_missing",
    "Rust must independently rehash and deliver the exact .prproj path, SHA-256, length and create UUID.");
- // Even this hypothetical positive native contract is never acceptance.
+ // Even this positive native receipt alignment is never Adobe-host acceptance.
  return Object.freeze({stage:"native_delivery_contract_aligned",
-  reason:"Hypothetical Rust project delivery aligns. Windows Adobe live acceptance and ORIGINAL GOAL remain UNVERIFIED.",
+  reason:"The audited Rust project receipt aligns at source level. Windows Adobe live acceptance and ORIGINAL GOAL remain UNVERIFIED.",
   deliveryContractAligned:true,originalGoalVerified:false,windowsLiveVerified:false});
 }
