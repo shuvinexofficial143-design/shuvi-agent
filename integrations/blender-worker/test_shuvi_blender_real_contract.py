@@ -144,7 +144,7 @@ class ContractController:
             ident = self.session + ":" + str(uuid4())
             geometry = copy.deepcopy(payload["geometry"])
             obj = {
-                "object_id": ident, "name": payload["name"],
+                "object_id": ident, "name": payload["name"], "type": "MESH",
                 "revision": digest({"identity": ident, "name": payload["name"]}),
                 "geometry": geometry,
             }
