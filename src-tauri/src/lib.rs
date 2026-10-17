@@ -13,6 +13,7 @@ mod native_job_history;
 mod native_scheduler;
 mod native_task_grant;
 mod native_task_delivery;
+mod session_checkpoint_guard;
 mod native_premiere_project_sha;
 mod bounded_child;
 mod provider_request_guard;
@@ -563,6 +564,8 @@ struct SessionCheckpoint {
     // from the original user-selected Master route, never model-supplied.
     #[serde(default)]
     worker_models:Option<HashMap<String,String>>,
+    #[serde(default)]
+    checkpoint_nonce:Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -9726,6 +9729,10 @@ fn session_checkpoint_path(app: &AppHandle) -> Result<std::path::PathBuf, String
 }
 
 fn validate_session_checkpoint_payload(checkpoint: &SessionCheckpoint) -> Result<(), String> {
+    if checkpoint.checkpoint_nonce.as_ref().is_some_and(|id|
+        Uuid::parse_str(id).map(|x|x.to_string()!=*id).unwrap_or(true)){
+        return Err("Saved checkpoint revision nonce is invalid.".into());
+    }
     validate_provider_fields(
         checkpoint.provider.as_str(),
         checkpoint.model.as_str(),
@@ -9769,6 +9776,14 @@ fn validate_session_checkpoint_payload(checkpoint: &SessionCheckpoint) -> Result
 
 fn write_session_checkpoint(
     app: &AppHandle,
+    checkpoint: SessionCheckpoint,
+) -> Result<(), String> {
+    session_checkpoint_guard::exclusive(&session_checkpoint_path(app)?,||{
+        write_session_checkpoint_unlocked(app,checkpoint)
+    })
+}
+fn write_session_checkpoint_unlocked(
+    app: &AppHandle,
     mut checkpoint: SessionCheckpoint,
 ) -> Result<(), String> {
     if checkpoint.messages.len() > 120 {
@@ -9778,6 +9793,7 @@ fn write_session_checkpoint(
 
     checkpoint.version = 2;
     checkpoint.updated_at_ms = now_ms();
+    checkpoint.checkpoint_nonce=Some(Uuid::new_v4().to_string());
     validate_session_checkpoint_payload(&checkpoint)?;
 
     let content = serde_json::to_vec_pretty(&checkpoint)
@@ -9813,6 +9829,7 @@ mod session_checkpoint_durability_tests {
             version, updated_at_ms: 1,
             provider: provider.into(), model: "local-test".into(),
             base_url: None, messages: vec![], orchestration: None, worker_models:None,
+            checkpoint_nonce:None,
         }).unwrap()
     }
 
@@ -9851,6 +9868,11 @@ mod session_checkpoint_durability_tests {
 }
 
 fn read_session_checkpoint(app: &AppHandle) -> Result<Option<SessionCheckpoint>, String> {
+    session_checkpoint_guard::exclusive(&session_checkpoint_path(app)?,||{
+        read_session_checkpoint_unlocked(app)
+    })
+}
+fn read_session_checkpoint_unlocked(app: &AppHandle) -> Result<Option<SessionCheckpoint>, String> {
     let path = session_checkpoint_path(app)?;
     let backup = path.with_extension("json.bak");
 
@@ -9891,6 +9913,11 @@ fn read_session_checkpoint(app: &AppHandle) -> Result<Option<SessionCheckpoint>,
     Ok(Some(checkpoint))
 }
 fn remove_session_checkpoint(app: &AppHandle) -> Result<(), String> {
+    session_checkpoint_guard::exclusive(&session_checkpoint_path(app)?,||{
+        remove_session_checkpoint_unlocked(app)
+    })
+}
+fn remove_session_checkpoint_unlocked(app: &AppHandle) -> Result<(), String> {
     let path = session_checkpoint_path(app)?;
     // A10: serialize checkpoint clear with its snapshot writer.
     // Delete only regular files, never reparse entries or directories.
@@ -19333,6 +19360,75 @@ fn get_workspace(app: AppHandle) -> Result<Option<String>, String> {
     read_workspace(&app)
 }
 
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all="camelCase")]
+struct NativeCheckpointSnapshot{
+    revision:Option<String>,
+    checkpoint:Option<SessionCheckpoint>,
+}
+fn native_checkpoint_revision(checkpoint:&SessionCheckpoint)->Result<String,String>{
+    // Hash sorted serde_json::Value rather than potentially unordered
+    // HashMap serialization; every write also has a cryptographic nonce.
+    let value=serde_json::to_value(checkpoint)
+        .map_err(|_|"Cannot canonicalize checkpoint revision.".to_string())?;
+    let bytes=serde_json::to_vec(&value)
+        .map_err(|_|"Cannot encode native checkpoint revision.".to_string())?;
+    Ok(format!("{:x}",Sha256::digest(&bytes)))
+}
+fn native_checkpoint_snapshot_unlocked(app:&AppHandle)->Result<NativeCheckpointSnapshot,String>{
+    let checkpoint=read_session_checkpoint_unlocked(app)?;
+    let revision=checkpoint.as_ref().map(native_checkpoint_revision).transpose()?;
+    Ok(NativeCheckpointSnapshot{revision,checkpoint})
+}
+#[tauri::command]
+fn session_checkpoint_snapshot(app:AppHandle)->Result<NativeCheckpointSnapshot,String>{
+    session_checkpoint_guard::exclusive(&session_checkpoint_path(&app)?,||{
+        native_checkpoint_snapshot_unlocked(&app)
+    })
+}
+#[tauri::command]
+fn save_session_checkpoint_if_revision(
+    checkpoint:SessionCheckpoint,expected_revision:Option<String>,app:AppHandle
+)->Result<NativeCheckpointSnapshot,String>{
+    session_checkpoint_guard::exclusive(&session_checkpoint_path(&app)?,||{
+        let current=native_checkpoint_snapshot_unlocked(&app)?;
+        if current.revision!=expected_revision{
+            return Err("Checkpoint changed in another Shuvi process: stale save refused.".into());
+        }
+        write_session_checkpoint_unlocked(&app,checkpoint)?;
+        native_checkpoint_snapshot_unlocked(&app)
+    })
+}
+#[tauri::command]
+fn clear_session_checkpoint_if_revision(
+    expected_revision:Option<String>,app:AppHandle
+)->Result<NativeCheckpointSnapshot,String>{
+    session_checkpoint_guard::exclusive(&session_checkpoint_path(&app)?,||{
+        let current=native_checkpoint_snapshot_unlocked(&app)?;
+        if expected_revision.is_none()||current.revision!=expected_revision{
+            return Err("Checkpoint changed in another Shuvi process: stale clear refused.".into());
+        }
+        remove_session_checkpoint_unlocked(&app)?;
+        native_checkpoint_snapshot_unlocked(&app)
+    })
+}
+#[cfg(test)]
+mod native_checkpoint_cas_tests{
+    use super::*;
+    #[test]
+    fn canonical_digest_changes_with_nonce_and_rejects_aba(){
+        let mut a=SessionCheckpoint{
+            version:2,updated_at_ms:1,provider:"ollama".into(),
+            model:"test".into(),base_url:None,messages:vec![],
+            orchestration:None,worker_models:None,checkpoint_nonce:Some(Uuid::new_v4().to_string()),
+        };
+        let first=native_checkpoint_revision(&a).unwrap();
+        a.checkpoint_nonce=Some(Uuid::new_v4().to_string());
+        assert_ne!(first,native_checkpoint_revision(&a).unwrap());
+    }
+}
+
 #[tauri::command]
 fn save_session_checkpoint(
     checkpoint: SessionCheckpoint,
@@ -19640,6 +19736,9 @@ pub fn run() {
             save_session_checkpoint,
             load_session_checkpoint,
             clear_session_checkpoint,
+            session_checkpoint_snapshot,
+            save_session_checkpoint_if_revision,
+            clear_session_checkpoint_if_revision,
             native_recovery::save_native_recovery,
             native_recovery::load_native_recovery,
             native_recovery::clear_native_recovery,
