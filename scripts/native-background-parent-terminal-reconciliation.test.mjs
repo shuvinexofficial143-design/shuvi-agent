@@ -43,7 +43,7 @@ test('M57 separate owner confirmation and later independently audited process in
 test('M57 shows historical-only double terminal proof, and keeps parent UUID spent',()=>{
  assert.match(types,/owner_reconciled_unverified/);
  assert.match(types,/recordedTerminalEvidence: boolean/);
- assert.match(queue,/if p.phase=="owner_reconciled_unverified"\{return Ok\(false\)\}/);
+ assert.match(queue,/if p.phase=="owner_reconciled_unverified"\{return Ok\(false\);?\}/);
  assert.match(queue,/recorded_terminal_evidence/);
  assert.match(queue,/safe_to_auto_retry:false/);
  assert.match(queue,/application_verified:false/);
