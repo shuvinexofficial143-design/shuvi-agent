@@ -1,5 +1,6 @@
 use serde::{Deserialize,Serialize};
 use serde_json::Value;
+use sha2::{Digest,Sha256};
 use std::{fs,io::{Read,Write},path::Path};
 
 use crate::premiere_assembly::Assembly;
@@ -67,6 +68,7 @@ pub struct Phase {
     #[serde(default)] pub review_session_id:Option<String>,
     #[serde(default)] pub error:Option<String>,
     #[serde(default)] pub proposal_issued_at_ms:Option<u64>,
+    #[serde(default)] pub proposal_arguments_sha256:Option<String>,
 }
 
 #[derive(Debug,Clone,Deserialize,Serialize)]
@@ -94,6 +96,13 @@ fn bounded<T:Serialize>(value:&T)->Result<Vec<u8>,String>{
     let bytes=serde_json::to_vec(value).map_err(|e|e.to_string())?;
     if bytes.len()>MAX_STATE_BYTES{return Err("Premiere edit job exceeds the 128 KiB state limit.".into());}
     Ok(bytes)
+}
+
+/// Digest the exact JSON arguments displayed for separate owner approval.
+/// The same serde_json encoding is used when the typed action is staged.
+pub fn proposal_arguments_sha256(args:&Value)->Result<String,String>{
+    let bytes=serde_json::to_vec(args).map_err(|e|e.to_string())?;
+    Ok(format!("{:x}",Sha256::digest(bytes)))
 }
 
 impl ReviewSpec {
@@ -196,7 +205,7 @@ impl Job {
         }
         let mut phases=Vec::new();
         let mut push=|id:&str,tool:&str|phases.push(Phase{
-            id:id.into(),tool:tool.into(),state:"pending".into(),action_id:None,review_session_id:None,error:None,proposal_issued_at_ms:None
+            id:id.into(),tool:tool.into(),state:"pending".into(),action_id:None,review_session_id:None,error:None,proposal_issued_at_ms:None,proposal_arguments_sha256:None
         });
         if request.media_prep.is_some(){push("media_prep","premiere_prepare_media_batch");}
         if request.scene_detection.is_some(){
@@ -276,6 +285,40 @@ impl Job {
         }
         self.updated_at_ms=now_ms;
         bounded(self)?;
+        Ok(())
+    }
+
+    /// Bind the exact phase arguments before issuing a separate approved tool.
+    /// Repeated Next calls may recheck the plan but may not replace a staged
+    /// first proposal with different arguments or silently reapprove it.
+    pub fn bind_proposal_arguments(&mut self,phase_id:&str,args:&Value)->Result<(),String>{
+        let hash=proposal_arguments_sha256(args)?;
+        let phase=self.pending_mut().ok_or("Edit job has no pending phase.")?;
+        if phase.id!=phase_id || phase.proposal_issued_at_ms.is_none(){
+            return Err("Edit-job arguments require the current issued phase.".into());
+        }
+        match phase.proposal_arguments_sha256.as_deref(){
+            Some(previous) if previous!=hash=>return Err(
+                "Edit-job proposed arguments changed after approval boundary; start a fresh bounded job.".into()),
+            Some(_)=>{},
+            None=>phase.proposal_arguments_sha256=Some(hash),
+        }
+        bounded(self)?;
+        Ok(())
+    }
+
+    /// Compare the exact approved argument digest with the durable executed
+    /// audit receipt. A missing/legacy token never grants completion.
+    pub fn require_bound_action_arguments(&self,phase_id:&str,audit_detail:&str)->Result<(),String>{
+        let phase=self.pending().ok_or("Edit job has no pending phase.")?;
+        if phase.id!=phase_id{return Err("Edit-job receipt phase changed.".into());}
+        let expected=phase.proposal_arguments_sha256.as_deref()
+            .ok_or("Edit-job phase has no bound approval arguments; rerun premiere_edit_job_next.")?;
+        let candidate=audit_detail.split(" | ").find_map(|part|
+            part.strip_prefix("premiere_args_sha256="));
+        if candidate!=Some(expected) || !expected.bytes().all(|b|b.is_ascii_hexdigit()) || expected.len()!=64 {
+            return Err("Executed Premiere action arguments do not match the exact issued edit-job phase.".into());
+        }
         Ok(())
     }
 
@@ -405,6 +448,12 @@ impl Job {
                 "failed"=>failed_count+=1,
                 "cancelled"=>cancelled_count+=1,
                 _=>return Err("Edit-job phase has an unknown persisted state.".into()),
+            }
+            if let Some(hash)=phase.proposal_arguments_sha256.as_deref(){
+                if hash.len()!=64 || !hash.bytes().all(|b|b.is_ascii_hexdigit())
+                    ||phase.proposal_issued_at_ms.is_none(){
+                    return Err("Edit-job stored proposed argument hash is malformed or not issued.".into());
+                }
             }
             if let Some(at)=phase.proposal_issued_at_ms {
                 if at<self.created_at_ms || at>self.updated_at_ms {
@@ -835,6 +884,36 @@ mod tests{
         fs::write(folder.join("sibling.json.bak"),b"interrupted").unwrap();
         assert!(require_unclaimed_action_in_store(&path,&id,"fresh-action").is_err());
         fs::remove_dir_all(folder).unwrap();
+    }
+    #[test]fn exact_phase_arguments_digest_rejects_altered_action_receipt(){
+        let mut job=Job::new("phase-hash".into(),request(),"P",None,"S",100).unwrap();
+        let args=serde_json::json!({"seconds":[1,5],"prompt":"Inspect"});
+        let changed=serde_json::json!({"seconds":[1,5],"prompt":"Inspect changed"});
+        job.issue_proposal("review",101).unwrap();
+        job.bind_proposal_arguments("review",&args).unwrap();
+        let hash=proposal_arguments_sha256(&args).unwrap();
+        let altered=proposal_arguments_sha256(&changed).unwrap();
+        assert_ne!(hash,altered);
+        assert!(job.require_bound_action_arguments("review",&format!("premiere_args_sha256={hash} | vision omitted")).is_ok());
+        assert!(job.require_bound_action_arguments("review",&format!("premiere_args_sha256={altered}")).is_err());
+        assert!(job.require_bound_action_arguments("review","Vision prompt omitted").is_err());
+        assert!(job.bind_proposal_arguments("review",&changed).is_err());
+        // Idempotent read-only replan preserves first digest.
+        job.issue_proposal("review",102).unwrap();
+        job.bind_proposal_arguments("review",&args).unwrap();
+        assert_eq!(job.pending().unwrap().proposal_arguments_sha256.as_deref(),Some(hash.as_str()));
+        assert!(job.validate_state().is_ok());
+    }
+    #[test]fn legacy_phase_without_arguments_hash_requires_new_exact_proposal(){
+        let mut job=Job::new("old-args".into(),request(),"P",None,"S",100).unwrap();
+        job.issue_proposal("review",101).unwrap();
+        assert!(job.require_bound_action_arguments("review","premiere_args_sha256=missing").is_err());
+        job.bind_proposal_arguments("review",&serde_json::json!({})).unwrap();
+        let mut bad=job.clone();
+        bad.phases[0].proposal_issued_at_ms=None;
+        assert!(bad.validate_state().is_err());
+        bad=job.clone();bad.phases[0].proposal_arguments_sha256=Some("not-a-sha".into());
+        assert!(bad.validate_state().is_err());
     }
     #[test]fn one_primary_delivery_only(){
         let value=json!({
