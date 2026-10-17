@@ -11,14 +11,14 @@ test("two actual independent OS process slots are separate from the GUI desktop 
   assert.match(pool,/const MAX_BACKGROUND_WORKERS:usize=2/);
   assert.match(pool,/share_mode\(0\)/);
   assert.match(pool,/native-bg-os-slot-/);
-  assert.match(pool,/OwnedChild::spawn_capped/);
+  assert.match(pool,/OwnedChild::spawn_readonly_capped/);
   assert.match(pool,/const READ_ONLY_JOB_CAP:u64=512\*1024\*1024/);
   assert.match(win,/fn spawn_capped\(/);
   assert.match(win,/limit\.job_memory=usize::try_from\(cap\)/);
   assert.match(pool,/two_real_independent_background_pids_and_third_denied/);
 });
 test("persistent exact UUID launch evidence precedes OS process and cannot be silently replayed",()=>{
-  assert.match(pool,/create_intent\(&path,id\)\?;[\s\S]*OwnedChild::spawn_capped/);
+  assert.match(pool,/create_intent\(&path,id\)\?;[\s\S]*OwnedChild::spawn_readonly_capped/);
   assert.match(pool,/create_new\(true\)/);
   assert.match(pool,/unknown_launch_intent_survives_restart_and_never_reuses_uuid/);
   assert.match(pool,/os_exited_unverified/);
