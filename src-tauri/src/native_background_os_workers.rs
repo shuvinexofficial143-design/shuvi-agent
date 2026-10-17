@@ -293,7 +293,7 @@ fn result_path_for_inspection(root:&Path,id:&str)->PathBuf{
 /// read-only action is permitted to call this. This is intentionally NOT a
 /// Tauri command, and no AI-provided program/argument is accepted.
 #[derive(Clone,Debug,PartialEq,Eq)]
-pub(super) struct VerifiedReadOnlyHash{
+pub(crate) struct VerifiedReadOnlyHash{
     pub action_id:String,
     pub sha256:String,
     pub bytes:u64,
@@ -359,7 +359,7 @@ where F:FnMut()->Result<bool,String>{
 /// A fixed task descriptor supplied ONLY by an internal Rust adapter after
 /// owner authorization. These fields do not constitute approval themselves;
 /// this module does not mint user approval or expose an IPC command.
-pub(super) struct PreparedReadOnlySha<'a>{
+pub(crate) struct PreparedReadOnlySha<'a>{
     pub action_id:&'a str,
     pub input:&'a Path,
     pub expected_sha256:&'a str,
@@ -373,7 +373,7 @@ pub(super) struct PreparedReadOnlySha<'a>{
 /// observation. Deny missing/unavailable host observation, never assume safe.
 /// Results stay separate: one successful hash cannot bless a failed worker.
 #[allow(dead_code)]
-pub(super) fn run_internal_readonly_pair<F>(
+pub(crate) fn run_internal_readonly_pair<F>(
     root:&Path,
     jobs:[PreparedReadOnlySha<'_>;2],
     host_over_limit:&F
