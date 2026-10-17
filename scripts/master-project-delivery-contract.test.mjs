@@ -52,9 +52,11 @@ test("source/mock create > native SHA > separately audited reopen > proposed del
  assert.equal(p.windowsLiveVerified,false);
  assert.equal(assessMasterFinalOutcome(OWNER,x.graph,x.schedule,x.delivery,null,TASK).verified,false);
 });
-test("current Rust delivery cannot yet attest .prproj and stays unverified",()=>{
+test("native Rust SHA project delivery is cryptographic only; creative goal still unverified",()=>{
  const rust=readFileSync(new URL("../src-tauri/src/native_task_delivery.rs",import.meta.url),"utf8");
- assert.doesNotMatch(rust,/"premiere_create_project"\s*=>\s*"premiere_project"/);
+ assert.match(rust,/"premiere_create_project"\s*=>\s*"premiere_project"/);
+ assert.match(rust,/SHA-256 changed/);
+ assert.match(rust,/premiere_project_proof_requires_create_action_and_correct_artifact_kind/);
  const x=fixture();x.delivery.steps[0].artifact=null;
  assert.equal(run(x).stage,"rust_project_delivery_missing");
 });

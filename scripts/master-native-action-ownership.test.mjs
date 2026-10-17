@@ -78,7 +78,9 @@ test("there is no owner-approved high-risk tool bypass in generic lease logic",(
  const source=readFileSync(new URL("../src/master-native-action-ownership.mjs",import.meta.url),"utf8");
  assert.doesNotMatch(source,/invoke\(|grantTaskRead|execute_action\(|prepare_action\(/);
  const rust=readFileSync(new URL("../src-tauri/src/native_task_delivery.rs",import.meta.url),"utf8");
- assert.doesNotMatch(rust,/"premiere_create_project"\s*=>\s*"premiere_project"/);
+ assert.match(rust,/"premiere_create_project"\s*=>\s*"premiere_project"/);
+ assert.match(rust,/check_artifact\(a,&step.tool\)/);
+ assert.match(rust,/entry.tool!=step.tool\|\|entry.event!="executed"\|\|!entry.success/);
 });
 
 test("legitimate same-task audited failure can transition to safe replan without discarding its receipt",()=>{

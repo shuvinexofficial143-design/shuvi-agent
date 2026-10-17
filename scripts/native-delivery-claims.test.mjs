@@ -49,7 +49,8 @@ test("real frontend wires delivery after terminal schedule validation, before cl
  const ui=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
  const block=ui.slice(ui.indexOf('if (continuation.mode==="complete")'),
    ui.indexOf("setBusy(false);",ui.indexOf('if (continuation.mode==="complete")')));
- assert.match(block,/nativeTaskDeliveryClaims\(orchestration.task_graph,schedule\)/);
+ assert.match(block,/nativeTaskDeliveryClaims\(orchestration.task_graph,schedule,\{/);
+ assert.match(block,/taskId:activePermissionScope.taskId,created:projectCreationEvidence/);
  assert.match(block,/invoke<NativeTaskDelivery>\("finalize_native_task_delivery"/);
  assert.match(block,/nativeDelivery/);
  const rust=readFileSync(new URL("../src-tauri/src/lib.rs",import.meta.url),"utf8");

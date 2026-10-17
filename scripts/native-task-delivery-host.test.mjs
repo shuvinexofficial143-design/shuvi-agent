@@ -20,7 +20,8 @@ test("final native delivery cannot bypass audit, exclusive lease, or pending app
 test("last receipt survives clearing chat progress and supports read-only reinspection",()=>{
  const terminal=main.slice(main.indexOf('if (continuation.mode==="complete")'),
    main.indexOf("setBusy(false);",main.indexOf('if (continuation.mode==="complete")')));
- assert.match(terminal,/nativeTaskDeliveryClaims\(orchestration.task_graph,schedule\)/);
+ assert.match(terminal,/nativeTaskDeliveryClaims\(orchestration.task_graph,schedule,\{/);
+ assert.match(terminal,/taskId:activePermissionScope.taskId,created:projectCreationEvidence/);
  assert.match(terminal,/invoke<NativeTaskDelivery>\("finalize_native_task_delivery"/);
  assert.match(main,/invoke<NativeTaskDelivery\|null>\("native_task_delivery_status"\)/);
  assert.match(main,/id="checkNativeTaskDelivery"/);

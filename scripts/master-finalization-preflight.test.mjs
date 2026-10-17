@@ -45,10 +45,10 @@ test("even a fully Rust-audited Premiere Create/Reopen DAG MUST NOT publish a fa
  assert.equal(claims[0].artifact,null);
  const result=check(f);
  assert.equal(result.allowed,false);
- assert.equal(result.stage,"premiere_project_delivery_unavailable");
+ assert.equal(result.stage,"unreconciled_native_claims");
  assert.equal(result.projectProofStage,"reopen_audited");
  assert.equal(result.originalGoalVerified,false);
- assert.match(result.reason,/independent Rust SHA-256 and separately approved\/audited Reopen/);
+ assert.match(result.reason,/exact original owner-bound create\+SHA\+reopen graph/);
  assert.equal(assessMasterFinalOutcome(OWNER,f.graph,f.schedule,
   {version:1,objective:OWNER,revision:1,recordedAtMs:1,steps:claims},null,TASK).verified,false);
 });
