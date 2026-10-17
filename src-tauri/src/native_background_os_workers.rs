@@ -332,11 +332,11 @@ pub(crate) fn inspect_readonly_health(root:&Path)->Result<Vec<ReadOnlyWorkerHeal
         }else{
             ("unverified_os_outcome_requires_owner_review",false)
         };
+        let stop_requested=inspect_stop_intent(root,&claim.action_id)?;
         observed.push(ReadOnlyWorkerHealth{
             action_id:claim.action_id,recorded_phase:claim.phase,
             evidence_health:health.into(),current_file_rehashed:reverified,
-            safe_to_auto_retry:false,
-            stop_requested:inspect_stop_intent(root,&claim.action_id)?,
+            safe_to_auto_retry:false,stop_requested,
         });
     }
     Ok(observed)
