@@ -671,3 +671,29 @@ Run only with separate owner consent on a disposable desktop/test fixture.
   value before comparing enum/bool/scroll state, avoiding ambiguous
   PowerShell casting syntax. No mutation or permission semantics changed.
 - Do not inherit the earlier 21/21 baseline; verify the exact new SHA.
+
+## Milestone 13 — Role-bound UIA readback and contradiction-safe discovery
+
+- Previous baseline SHA 6f97713 still has Windows/Rust CI pending at the
+  time of this work; do not conflate those check results with this new SHA.
+- The previously audited control role (exact ControlType.ProgrammaticName)
+  is now captured alongside its RuntimeId at the action's original readback
+  binding. A later ui_find or ui_discover with the same name,
+  AutomationId, HWND/PID/process generation and even RuntimeId **cannot**
+  clear pending readback if ControlType changed.
+- A ui_discover inventory reporting two controls with the same non-null
+  native RuntimeId is rejected as a whole, rather than picking the first
+  apparent selector match. Missing legacy RuntimeIds retain backward
+  compatibility, and the native mutation guard still independently requires
+  its exact prepared RuntimeId.
+- The Dashboard observed-control gate refuses malformed, whitespace-only,
+  nonstring or hidden-format supplied selectors even when a different
+  selector also matches. No unsafe .trim() exception or false permission
+  can escape through the observation gate. Native Rust remains authoritative.
+- Regression tests in scripts/shuvi39-role-locked-readback.test.mjs
+  validate same-identity role substitution, duplicate RuntimeIds,
+  malformed name/id input, correct untouched exact-selector behavior,
+  legacy no-discovery control readback and mutation blocking.
+- No changes to Rust authority, owner approval, app focus/keyboard,
+  native GUI lease, action UUIDs, journal or recovery. No Windows live
+  tests and no cross-team merge. Keep Draft PR #17 open.

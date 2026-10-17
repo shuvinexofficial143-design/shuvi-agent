@@ -22,7 +22,7 @@ export function parseRuntimeId(value){
 }
 // Transient UIA identity never authorizes native mutations; it only binds
 // an independently audited readback to the original selected control.
-export function observedControlRuntimeId(proposal,snapshot,windowSession,nowMs=Date.now()){
+export function observedControlIdentity(proposal,snapshot,windowSession,nowMs=Date.now()){
  const rows=currentObservedControls(snapshot,windowSession,nowMs);
  if(!rows.length||typeof proposal?.arguments?.window!=="string"||!snapshot||
   snapshot.title.toLowerCase()!==proposal.arguments.window.trim().toLowerCase())return null;
@@ -33,7 +33,14 @@ export function observedControlRuntimeId(proposal,snapshot,windowSession,nowMs=D
  const matches=rows.filter(c=>
   (id?c.id===id.trim():true)&&
   (name?c.name.toLowerCase()===name.trim().toLowerCase():true));
- return matches.length===1?matches[0].runtimeId??null:null;
+ if(matches.length!==1)return null;
+ const item=matches[0];
+ return Object.freeze({runtimeId:item.runtimeId??null,controlType:item.role});
+}
+// Native RuntimeId identity is transient inspection evidence, not approval.
+// Preserve the existing public accessor for callers that only need RuntimeId.
+export function observedControlRuntimeId(proposal,snapshot,windowSession,nowMs=Date.now()){
+ return observedControlIdentity(proposal,snapshot,windowSession,nowMs)?.runtimeId??null;
 }
 function parseControls(result,expectedWindow){
  if(result?.success!==true||result.tool!=="ui_discover"||
@@ -43,6 +50,9 @@ function parseControls(result,expectedWindow){
  try{rows=JSON.parse(result.stdout);}catch{return null;}
  if(!Array.isArray(rows)||rows.length===0||rows.length>160)return null;
  const controls=[];
+ // Different element labels must not silently share a single native UIA
+ // RuntimeId. That is contradictory identity evidence, not a unique target.
+ const seenRuntimeIds=new Set();
  for(const row of rows){
   if(!row||typeof row!=="object"||Array.isArray(row))return null;
   // The audited discovery output itself must report the same live native
@@ -63,6 +73,11 @@ function parseControls(result,expectedWindow){
   if(row.IsOffscreen!=null&&typeof row.IsOffscreen!=="boolean")return null;
   const runtimeId=row.ControlRuntimeId==null?null:parseRuntimeId(row.ControlRuntimeId);
   if(row.ControlRuntimeId!=null&&!runtimeId)return null;
+  if(runtimeId){
+   const key=runtimeId.join(",");
+   if(seenRuntimeIds.has(key))return null;
+   seenRuntimeIds.add(key);
+  }
   controls.push(Object.freeze({
    name,id,role,enabled:row.IsEnabled===true?true:row.IsEnabled===false?false:null,
    offscreen:row.IsOffscreen===true?true:row.IsOffscreen===false?false:null,
@@ -116,6 +131,12 @@ export function checkObservedControlTarget(proposal,snapshot,windowSession,nowMs
   return {allowed:false,reason:"UI action window differs from inspected HWND/PID."};
  const id=proposal?.arguments?.automation_id;
  const name=proposal?.arguments?.name;
+ // Never try to trim a model-provided nonstring selector; reject the
+ // complete proposal when either supplied selector is malformed, even if
+ // the other would match a genuine observed control.
+ if((id!=null&&id!==""&&!allowedString(id,180))||
+    (name!=null&&name!==""&&!allowedString(name,180)))
+  return {allowed:false,reason:"UI action selector malformed or unsafe."};
  // Keyboard-only window focus and scroll may not carry a target selector;
  // preserve the trusted native matching path after exact window binding.
  if(!id&&!name&&["ui_scroll"].includes(proposal.tool))
