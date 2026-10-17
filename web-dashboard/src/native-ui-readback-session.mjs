@@ -24,6 +24,7 @@ export function newPendingUiReadback(actionId,proposal,windowSession,nowMs=Date.
  // When a prior audited ui_discover established a native RuntimeId,
  // a same-label replacement control must never clear post-action readback.
  const observedIdentity=observedControlIdentity(proposal,controlSnapshot,windowSession,nowMs);
+ const controlSourceActionId=controlSnapshot?.sourceActionId??null;
  const controlRuntimeId=observedIdentity?.runtimeId??null;
  const controlType=observedIdentity?.controlType??null;
  // Bind the readback to the exact control originally mutated, not merely
@@ -33,11 +34,11 @@ export function newPendingUiReadback(actionId,proposal,windowSession,nowMs=Date.
  const matching=title&&!malformedSelector?findUnique(rows,title):[];
  const windowSourceActionId=windowSession?.sourceActionId??null;
  if(matching.length!==1)return Object.freeze({version:1,sourceActionId:actionId,
-  windowSourceActionId,
+  windowSourceActionId,controlSourceActionId,
   title:title||"",hwnd:null,pid:null,processStartTicks:null,controlName,automationId,controlRuntimeId,controlType,
   mutationTool:proposal.tool,expectedExpansion:proposal?.arguments?.action??null,
   observedAtMs:nowMs,readbackRequired:true});
- return Object.freeze({version:1,sourceActionId:actionId,windowSourceActionId,title:matching[0].title,
+ return Object.freeze({version:1,sourceActionId:actionId,windowSourceActionId,controlSourceActionId,title:matching[0].title,
   hwnd:matching[0].hwnd,pid:matching[0].pid,
   processStartTicks:matching[0].processStartTicks??null,
   controlName,automationId,controlRuntimeId,controlType,
@@ -61,9 +62,12 @@ export function auditUiReadback(pending,proposal,result,windowSession,nowMs=Date
  // This is an extra provenance barrier beyond the dashboard invalidation.
  if(readActionId!==null){
   if(typeof readActionId!=="string"||!readActionId||readActionId===pending.sourceActionId||
+     readActionId===pending.controlSourceActionId||
      typeof pending.windowSourceActionId!=="string"||!pending.windowSourceActionId||
      !windowSession||windowSession.sourceTool!=="ui_windows"||
      windowSession.sourceActionId===pending.windowSourceActionId||
+     windowSession.sourceActionId===pending.sourceActionId||
+     windowSession.sourceActionId===readActionId||
      !Number.isSafeInteger(windowSession.observedAtMs)||
      windowSession.observedAtMs<pending.observedAtMs||
      !Number.isSafeInteger(nowMs)||nowMs<windowSession.observedAtMs)
@@ -102,6 +106,25 @@ export function auditUiReadback(pending,proposal,result,windowSession,nowMs=Date
     normalizedProcessStartTicks(x.ObservedWindowProcessStartTicks)===pending.processStartTicks)&&
    (x.ObservedWindowProcessStartTicks==null||
     normalizedProcessStartTicks(x.ObservedWindowProcessStartTicks)!==null)))return pending;
+  // The read-only native UIA inventory must be internally coherent as a
+  // whole. One unrelated malformed or duplicated native RuntimeId means
+  // the provider observation is contradictory; never pick a convenient row
+  // and unblock a subsequent mutation from partial evidence.
+  const runtimeKeys=new Set();
+  for(const row of rows){
+   if(row.ControlType!=null&&
+      (typeof row.ControlType!=="string"||!row.ControlType||
+       row.ControlType.length>100))return pending;
+   if(row.IsEnabled!=null&&typeof row.IsEnabled!=="boolean")return pending;
+   if(row.IsOffscreen!=null&&typeof row.IsOffscreen!=="boolean")return pending;
+   if(row.ControlRuntimeId!=null){
+    const rid=parseRuntimeId(row.ControlRuntimeId);
+    if(!rid)return pending;
+    const key=rid.join(",");
+    if(runtimeKeys.has(key))return pending;
+    runtimeKeys.add(key);
+   }
+  }
   // The verified new observation must contain the SAME unique control as
   // the previous mutation. A generic ui_discover showing unrelated buttons
   // cannot silently unlock a second mutation on a different UIA element.
@@ -150,8 +173,9 @@ export function auditUiReadback(pending,proposal,result,windowSession,nowMs=Date
    if(rows.length!==1)return pending;
    const requestedName=proposal.arguments?.name;
    const requestedId=proposal.arguments?.automation_id;
-   if((typeof requestedName!=="string"||!requestedName.trim())&&
-      (typeof requestedId!=="string"||!requestedId.trim()))return pending;
+   if((requestedName!=null&&requestedName!==""&&!exactUiSelector(requestedName))||
+      (requestedId!=null&&requestedId!==""&&!exactUiSelector(requestedId))||
+      (!requestedName&&!requestedId))return pending;
    if(!rows.every(x=>
      (!requestedName||(typeof x.Name==="string"&&
        x.Name.toLocaleLowerCase("en-US")===requestedName.toLocaleLowerCase("en-US"))) &&

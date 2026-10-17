@@ -794,3 +794,24 @@ Run only with separate owner consent on a disposable desktop/test fixture.
   GitHub workflow integration, PowerShell parsing, negative cases,
   and prohibition on live mutation APIs. The existing Windows CI job
   remains the only job changed; no cross-team merge.
+
+## Milestone 17 — Contradiction-safe full readback inventory and source separation
+
+- Production's post-mutation `ui_find`/`ui_discover` readback is now
+  bound to three DISTINCT audited action stages: the original control
+  discovery (if available), the mutation, the newer window listing, plus
+  the new read action's own different id. Matching UIA control labels are
+  not an alternative to action provenance.
+- For ui_discover, the *entire* bounded inventory must contain no duplicate
+  native RuntimeId, malformed bounded signed RuntimeId, contradictory
+  ControlType, invalid enabled/offscreen evidence, or wrong process/window
+  generation. One unrelated malformed row rejects the whole receipt, so
+  an apparently unique Save button cannot unfreeze a future mutation when
+  nearby provider evidence is inconsistent.
+- Model-provided ui_find name and AutomationId are strictly exact strings
+  without newline, padding or invisible character normalization, even when
+  a valid read result otherwise matches. Legacy no-RuntimeId fixtures
+  continue to work, but invalid present native IDs are never ignored.
+- `scripts/shuvi39-contradictory-readback-inventory.test.mjs` proves
+  valid 4-action ancestry and fail-closed invalid cases; this is source
+  regression, not a production Windows GUI-provider acceptance claim.
