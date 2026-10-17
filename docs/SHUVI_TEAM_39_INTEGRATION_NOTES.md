@@ -715,3 +715,31 @@ Run only with separate owner consent on a disposable desktop/test fixture.
 - New adversarial tests include window-title injection, leading/trailing
   space, newline, NUL, bidirectional and zero-width marks. No scripting,
   native mutation, owner permission or cross-team branch changes.
+
+## Milestone 14 — Two-phase native UIA preparation reattestation
+
+- Previously, the Rust-owned UIA preparation probe bound Win32 HWND/PID and
+  OS process creation time, then selected exactly one Control RuntimeId and
+  checked its pattern capability before owner approval. It did not recheck
+  that original target after pattern preflight and before publishing the
+  pending approval. Execution had its own guard, but a stale or swapped
+  control could still reach an unnecessary owner-approval prompt.
+- The same preparation PowerShell invocation now binds the original
+  element name, AutomationId and control role BEFORE capability preflight.
+  After that read-only preflight, it rechecks Win32 window existence,
+  visibility, minimized state, real process PID/creation time, UIA root
+  title/HWND/PID/enabled/offscreen and the **original** control's PID,
+  enabled/offscreen, name, AutomationId, ControlType and signed RuntimeId.
+  A final OS PID/start-time check brackets the control reinspection before
+  producing the JSON prepared-action receipt.
+- No re-selection of a different same-label control, no action retry,
+  focus/typing/click, API calls or changes to Rust PendingAction/owner
+  approval/GUI lease/journal. Seven existing native UIA mutation kinds
+  continue to share one typed, OS-derived, permission-first path.
+- New source regression `scripts/shuvi39-preapproval-identity-barrier.test.mjs`
+  checks exact-order native scripts, process-restart races, control identity
+  and capability read-only invariants. Existing Rust source tests and
+  exact-HEAD GitHub CI must pass before calling this source tested.
+- Source-level identity checks are not actual Windows UI Automation
+  provider acceptance. Dynamic modal/redraw, DPI and Adobe/Blender
+  compatibility remain separately owner-authorized live acceptance work.

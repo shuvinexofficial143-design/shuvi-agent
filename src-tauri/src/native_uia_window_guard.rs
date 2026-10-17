@@ -99,19 +99,81 @@ if ([int]$control.Current.ProcessId -ne $shuviBoundPid -or
 if ($null -eq $runtimeId -or $runtimeId.Count -lt 1 -or $runtimeId.Count -gt 64) {
  throw 'Cannot bind UIA control without a bounded native RuntimeId.'
 }
+# Bind immutable identity BEFORE capability preflight, which itself queries
+# a UIA provider and may trigger its own asynchronous control-tree redraw.
+$shuviBoundControlName = [string]$control.Current.Name
+$shuviBoundAutomationId = [string]$control.Current.AutomationId
+$shuviBoundControlType = [string]$control.Current.ControlType.ProgrammaticName
 # Pattern availability is inspected before the user is asked to approve.
 # A pattern check is read-only, and a later native mutation independently
 # checks pattern availability again after the exact RuntimeId check.
 __CAPABILITY_PREFLIGHT__
+# Native PREPARE is still strictly read only. Capability discovery may race
+# modal dialogs, provider redraws or app restart. Reattest the original
+# HWND/PID/process generation and ORIGINAL control, not a fresh label match,
+# before putting any PendingAction up for owner approval.
+if (-not [ShuviUiaNativeIdentity]::IsWindow($shuviBoundHwnd) -or
+    -not [ShuviUiaNativeIdentity]::IsWindowVisible($shuviBoundHwnd) -or
+    [ShuviUiaNativeIdentity]::IsIconic($shuviBoundHwnd)) {
+ throw 'UIA application window changed during native preparation. No action prepared.'
+}
+[uint32]$shuviPostPreflightPid = 0
+[void][ShuviUiaNativeIdentity]::GetWindowThreadProcessId($shuviBoundHwnd,[ref]$shuviPostPreflightPid)
+try {
+ $shuviPostPreflightProcess = Get-Process -Id $shuviBoundPid -ErrorAction Stop
+ [int64]$shuviPostPreflightStartTicks = $shuviPostPreflightProcess.StartTime.ToUniversalTime().Ticks
+} catch {
+ throw 'UIA application process unavailable after capability preflight. No action prepared.'
+}
+if ($shuviPostPreflightPid -ne [uint32]$shuviBoundPid -or
+    $shuviPostPreflightStartTicks -ne $shuviBoundProcessStartTicks -or
+    [int64]$root.Current.NativeWindowHandle -ne [int64]$shuviBoundHwnd -or
+    [int]$root.Current.ProcessId -ne $shuviBoundPid -or
+    [string]$root.Current.Name -cne $title -or
+    -not [bool]$root.Current.IsEnabled -or
+    [bool]$root.Current.IsOffscreen) {
+ throw 'UIA window identity or process generation changed during native preparation. No action prepared.'
+}
+if ([int]$control.Current.ProcessId -ne $shuviBoundPid -or
+    -not [bool]$control.Current.IsEnabled -or
+    [bool]$control.Current.IsOffscreen -or
+    [string]$control.Current.Name -cne $shuviBoundControlName -or
+    [string]$control.Current.AutomationId -cne $shuviBoundAutomationId -or
+    [string]$control.Current.ControlType.ProgrammaticName -cne $shuviBoundControlType) {
+ throw 'UIA selected control changed after capability preflight. No action prepared.'
+}
+[int[]]$shuviPostPreflightRuntimeId = $control.GetRuntimeId()
+if ($null -eq $shuviPostPreflightRuntimeId -or
+    $shuviPostPreflightRuntimeId.Count -lt 1 -or
+    $shuviPostPreflightRuntimeId.Count -gt 64 -or
+    $shuviPostPreflightRuntimeId.Count -ne $runtimeId.Count -or
+    ($shuviPostPreflightRuntimeId -join ',') -cne ($runtimeId -join ',')) {
+ throw 'UIA selected control RuntimeId changed after capability preflight. No action prepared.'
+}
+# Bracket the final original-control check with another independent OS
+# generation and Win32 HWND/PID check before publishing the approval token.
+[uint32]$shuviFinalNativePid = 0
+[void][ShuviUiaNativeIdentity]::GetWindowThreadProcessId($shuviBoundHwnd,[ref]$shuviFinalNativePid)
+try {
+ $shuviFinalProcess = Get-Process -Id $shuviBoundPid -ErrorAction Stop
+ [int64]$shuviFinalStartTicks = $shuviFinalProcess.StartTime.ToUniversalTime().Ticks
+} catch {
+ throw 'UIA process disappeared after control reattestation. No action prepared.'
+}
+if (-not [ShuviUiaNativeIdentity]::IsWindow($shuviBoundHwnd) -or
+    $shuviFinalNativePid -ne [uint32]$shuviBoundPid -or
+    $shuviFinalStartTicks -ne $shuviBoundProcessStartTicks) {
+ throw 'UIA HWND/PID/process generation drifted before owner approval. No action prepared.'
+}
 [PSCustomObject]@{
  hwnd = [int64]$shuviBoundHwnd
  pid = $shuviBoundPid
  process_start_ticks = [int64]$shuviBoundProcessStartTicks
  title = $title
  runtime_id = [int[]]$runtimeId
- control_name = [string]$control.Current.Name
- automation_id = [string]$control.Current.AutomationId
- control_type = [string]$control.Current.ControlType.ProgrammaticName
+ control_name = $shuviBoundControlName
+ automation_id = $shuviBoundAutomationId
+ control_type = $shuviBoundControlType
 } | ConvertTo-Json -Compress -Depth 4
 "#;
 
