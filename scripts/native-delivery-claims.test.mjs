@@ -48,7 +48,7 @@ test("unverified completed task is never promoted to final deliverable",()=>{
 test("real frontend wires delivery after terminal schedule validation, before clearing checkpoint",()=>{
  const ui=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
  const block=ui.slice(ui.indexOf('if (continuation.mode==="complete")'),
-   ui.indexOf("await clearActiveCheckpoint()",ui.indexOf('if (continuation.mode==="complete")')));
+   ui.indexOf("setBusy(false);",ui.indexOf('if (continuation.mode==="complete")')));
  assert.match(block,/nativeTaskDeliveryClaims\(orchestration.task_graph,schedule\)/);
  assert.match(block,/invoke<NativeTaskDelivery>\("finalize_native_task_delivery"/);
  assert.match(block,/nativeDelivery/);

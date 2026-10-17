@@ -22,6 +22,7 @@ import {captureNativeActionOwnership,isNativeActionOwnershipCurrent} from "./mas
 import {createTaskCheckpointLane} from "./master-task-checkpoint-lane.mjs";
 import {assessNativeCheckpointReadback} from "./master-task-checkpoint-readback.mjs";
 import {isNativeCheckpointAbsent} from "./master-checkpoint-absent.mjs";
+import {classifyNativeResumeReplay} from "./master-native-resume-replay.mjs";
 import {captureMasterProviderTurnFence,isMasterProviderTurnFenceCurrent} from "./master-provider-turn-fence.mjs";
 import {createMasterProviderSingleFlight} from "./master-provider-single-flight.mjs";
 import {captureMasterPermissionUiFence,isMasterPermissionUiFenceCurrent} from "./master-permission-ui-fence.mjs";
@@ -2611,10 +2612,23 @@ el<HTMLButtonElement>("#resumeTask").addEventListener("click", async () => {
         const native=await invoke<NativeSchedule|null>("native_scheduler_status");
         const admission=assessMasterSchedulerAdmission(native,restored.task_graph);
         if(!admission.ok){
+          if(savedCheckpoint!==checkpoint||busy)return;
           resumeSummary.textContent="Resume blocked: "+
             (admission.reason??"Rust task state is unresolved.")+
             " Saved checkpoint retained; inspect the original audit before replanning.";
           return;
+        }
+        // A stale, already all-audited native DAG must never launch another
+        // paid provider turn even if crash interrupted checkpoint erasure.
+        // Rust keeps the last independently audited delivery after cleanup.
+        if(decideNativeContinuation(restored.task_graph).mode==="complete"){
+          const lastDelivery=await invoke<NativeTaskDelivery|null>("native_task_delivery_status");
+          if(savedCheckpoint!==checkpoint||busy)return;
+          const replay=classifyNativeResumeReplay(restored.task_graph,lastDelivery);
+          if(replay.blocked){
+            resumeSummary.textContent="Resume blocked: "+replay.reason;
+            return;
+          }
         }
       }
     } catch {
