@@ -879,6 +879,38 @@ async function refreshNativeApprovedParentQueue():Promise<void>{
       small.textContent="Priority "+parent.priority+" · prerequisites "+parent.dependsOn.length
         +" · recorded journal ONLY. No live PID/current SHA/app success proof.";
       row.append(label,small);
+      // M55: UI merely asks to persist Stop for one exact approved parent.
+      // Rust authenticates dispatch action + immutable parent pair + OS claim.
+      const host=nativeHostStatusUnavailable?null:nativeHostStatus;
+      if(parent.recordedPhase==="admitted"&&host
+         &&host.state==="native_action_in_flight"
+         &&host.tool==="run_approved_sha_parent_queue"
+         &&typeof host.actionId==="string"){
+        const stop=document.createElement("button");
+        stop.type="button";
+        stop.textContent="Request Stop for this parent";
+        stop.setAttribute("aria-label","Request Stop for approved parent "+parent.parentId);
+        const dispatchId=host.actionId;
+        stop.addEventListener("click",async()=>{
+          if(!window.confirm("Request Stop for EXACT SHA parent "+parent.parentId
+            +" under approved dispatch "+dispatchId
+            +"? This is only a durable Stop request, NOT proof of termination."))return;
+          stop.disabled=true;
+          try{
+            const requested=await invoke<boolean>("cancel_native_approved_parent",{
+              dispatchActionId:dispatchId,parentId:parent.parentId
+            });
+            small.textContent=requested
+              ?"Durable Stop intent requested for exact parent. OS termination NOT verified. Recheck receipts."
+              :"No owned live OS child accepted this Stop; inspect native receipts. No termination verified.";
+          }catch{
+            small.textContent="Exact parent Stop unavailable or not authorized. Inspect native status; no termination verified.";
+          }finally{
+            stop.disabled=false;
+          }
+        });
+        row.append(stop);
+      }
       list.append(row);
     }
   }catch{
