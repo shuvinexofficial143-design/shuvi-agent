@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {analyzeSources, inspectRustLib, inspectIdentifiers, renderMarkdown} from "./integration-compatibility-analyzer.mjs";
+import {analyzeSources, analyzeVirtualIntegration, buildVirtualTree, classifyThreeWay, inspectRustLib, inspectIdentifiers, renderMarkdown, renderVirtualMarkdown} from "./integration-compatibility-analyzer.mjs";
 
 const fakeFiles = [
   {status: "M", path: "src/main.ts"},
@@ -40,6 +40,45 @@ test("source analysis reports missing IPC names and permission guard failures", 
     "missing_native_permission_guard",
   ]);
   assert.equal(result.permission_guards.filter(check => !check.passed).length, 1);
+});
+
+test("three-way preview separates compatible overlap from genuine content conflict", () => {
+  const blobs = new Map([
+    ["base|shared.txt", "base"], ["one|shared.txt", "same"], ["two|shared.txt", "same"],
+    ["base|conflict.txt", "base"], ["one|conflict.txt", "one"], ["two|conflict.txt", "two"],
+    ["base|delete.txt", "base"], ["one|delete.txt", null], ["two|delete.txt", "edited"],
+    ["base|add.txt", null], ["one|add.txt", "one"], ["two|add.txt", "two"],
+  ]);
+  const readVirtual = (ref, file) => blobs.get(`${ref}|${file}`) ?? null;
+  assert.equal(classifyThreeWay({path: "shared.txt", baseline: "base", branches: ["one", "two"], readFile: readVirtual}).status, "compatible_overlap");
+  assert.equal(classifyThreeWay({path: "conflict.txt", baseline: "base", branches: ["one", "two"], readFile: readVirtual}).status, "genuine_content_conflict");
+  assert.equal(classifyThreeWay({path: "delete.txt", baseline: "base", branches: ["one", "two"], readFile: readVirtual}).status, "genuine_content_conflict");
+  assert.equal(classifyThreeWay({path: "add.txt", baseline: "base", branches: ["one", "two"], readFile: readVirtual}).status, "genuine_content_conflict");
+  const tree = buildVirtualTree({baseline: "base", branches: ["one", "two"], paths: ["shared.txt", "conflict.txt"], readFile: readVirtual});
+  assert.equal(tree.writes_performed, 0);
+  assert.deepEqual(tree.conflicts.map(file => file.path), ["conflict.txt"]);
+});
+
+test("virtual contract preview checks Rust, TypeScript, Blender, recovery and permissions", () => {
+  const branchSources = new Map();
+  const lib = `mod one;\n#[tauri::command]\nfn allowed() {}\nfn execute_action() { claim_monitored_native_execution(); }\nfn execute_powershell() { execute_action(); }\nfn approval() { pending; }\nfn run() { tauri::generate_handler![allowed]; }`;
+  for (const branch of ["one", "two"]) {
+    branchSources.set(`${branch}|src-tauri/src/lib.rs`, lib);
+    branchSources.set(`${branch}|src/types.ts`, branch === "one" ? "export type Shared = string;" : "export type Shared = number;");
+    branchSources.set(`${branch}|integrations/blender-worker/shuvi_blender_plan.py`, "def run(argv): pass");
+    branchSources.set(`${branch}|integrations/blender-worker/shuvi_blender_bridge.py`, "def main(argv): pass");
+    branchSources.set(`${branch}|src-tauri/src/blender_plan_worker.rs`, "fn run(input: Value) {}");
+    branchSources.set(`${branch}|src-tauri/src/native_recovery.rs`, "fn valid(value: Record) {}");
+    branchSources.set(`${branch}|web-dashboard/src/native-recovery-journal.mjs`, "export function save(record) {}");
+  }
+  const readVirtual = (ref, file) => branchSources.get(`${ref}|${file}`) ?? (ref === "base" ? "base" : null);
+  const report = analyzeVirtualIntegration({baseline: "base", branches: ["one", "two"], paths: ["src/types.ts"], now: "fixed", readFile: readVirtual});
+  assert.equal(report.safety.checked_out, false);
+  assert.equal(report.safety.merged, false);
+  assert.equal(report.summary.contract_conflicts, 1);
+  assert.equal(report.contracts.permissions.all_passed, true);
+  assert.equal(report.contracts.rust.command_union[0].name, "allowed");
+  assert.match(renderVirtualMarkdown(report), /Genuine content conflicts/);
 });
 
 test("Markdown report states read-only and non-execution boundaries", () => {
