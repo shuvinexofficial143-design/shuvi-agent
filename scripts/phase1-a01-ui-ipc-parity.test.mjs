@@ -25,6 +25,7 @@ const uniqueNames=[
   "get_workspace",
   "list_providers",
   "load_session_checkpoint",
+  "native_background_readonly_status",
   "native_scheduler_status",
   "native_task_delivery_history",
   "native_task_delivery_status",
