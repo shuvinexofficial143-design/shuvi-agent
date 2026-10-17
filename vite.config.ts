@@ -7,7 +7,7 @@ import { defineConfig } from "vite";
 export default defineConfig({
   build: {
     rollupOptions: {
-      input: ["index.html", "agent-runtime/index.html", "web-dashboard/index.html"]
+      input: ["index.html", "agent-runtime/index.html", "web-dashboard/index.html", "voice-companion/index.html"]
     }
   },
   plugins: [{

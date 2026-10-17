@@ -4,7 +4,8 @@
   "description": "Default Shuvi desktop capability",
   "windows": [
     "main",
-    "agent-runtime"
+    "agent-runtime",
+    "voice-companion"
   ],
   "permissions": [
     "core:default"

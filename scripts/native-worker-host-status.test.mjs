@@ -68,7 +68,7 @@ test("supervisor pulse cannot fabricate progress, cancel a desktop task or clear
 });
 test("all native bridge lifecycle mutators check the durable job without bypassing OS lease",()=>{
  assert.equal((lib.match(/claim_monitored_native_execution\(state.inner\(\),&app\)\?/g)??[]).length,14);
- assert.equal((lib.match(/fn (?:premiere|photoshop|illustrator|animate|audition)_bridge_(?:start|stop)\(\n    state: State<'_, ActionState>,\n    app: AppHandle,/g)??[]).length,10);
+ assert.equal((lib.match(/fn\s+(?:premiere|photoshop|illustrator|animate|audition)_bridge_(?:start|stop)\(\s*state:\s*State<'_,\s*ActionState>,\s*app:\s*AppHandle,/g)??[]).length,10);
 });
 
 test("durable native job replay history is bounded and survives restart without fabricated execution proof",()=>{

@@ -30,6 +30,17 @@
         "width": 640,
         "height": 480,
         "resizable": false
+      },
+      {
+        "label": "voice-companion",
+        "title": "Shuvi Voice Companion",
+        "url": "voice-companion/index.html",
+        "visible": true,
+        "width": 500,
+        "height": 700,
+        "minWidth": 400,
+        "minHeight": 600,
+        "resizable": true
       }
     ],
     "security": {

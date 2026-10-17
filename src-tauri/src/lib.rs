@@ -1,5 +1,6 @@
 #![recursion_limit = "512"]
 
+mod voice;
 mod web_bridge;
 mod target_window_capture;
 mod remote_agent;
@@ -19581,6 +19582,9 @@ pub fn run() {
             web_bridge::web_bridge_start,
             web_bridge::web_bridge_stop,
             web_bridge::web_bridge_state,
+            voice::voice_engine_status,
+            voice::voice_transcribe,
+            voice::voice_speak,
             remote_agent::remote_agent_status,
             remote_agent::remote_agent_pair,
             remote_agent::remote_agent_disconnect,
