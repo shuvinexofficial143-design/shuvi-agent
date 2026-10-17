@@ -1004,6 +1004,7 @@ enum ToolAction {
 struct PendingAction {
     created_at_ms: u64,
     native_uia_target: Option<native_uia_window_guard::NativeUiaTarget>,
+    capture_target: Option<target_window_capture::PreparedCaptureTarget>,
     premiere_expectation: Option<PremiereExpectation>,
     task_graph: Option<Value>,
     task_step_id: Option<String>,
@@ -3420,7 +3421,10 @@ fn stage_tool(
         "inspect_screen" => {
             let prompt = arg_string(&proposal.arguments, "prompt")?;
             let window = arg_string(&proposal.arguments, "window")?;
-            if window.chars().count() > 180 { return Err("Window selector is too long.".into()); }
+            if window.chars().count() > 180 || window.trim() != window ||
+               window.chars().any(char::is_control) {
+                return Err("Screen inspection requires one bounded, exact window selector.".into());
+            }
             let provider = provider_context
                 .ok_or_else(|| "Screen inspection requires the active provider context.".to_string())?;
             // Fail BEFORE staging a useless approval. xKiro's text endpoint
@@ -8187,6 +8191,13 @@ fn stage_tool(
     // Native binding is fetched from the actual OS at PREPARE; untrusted model
     // arguments cannot supply or modify the HWND/PID in a PendingAction.
     let native_uia_target = prepare_native_uia_binding(&action)?;
+    // Screenshot consent also binds the exact OS window before displaying
+    // Allow once. The expensive capture + vision request occur only later.
+    let capture_target = match &action {
+        ToolAction::InspectScreen { window, .. } if !window.eq_ignore_ascii_case("desktop") =>
+            target_window_capture::prepare_window_capture(window)?,
+        _ => None,
+    };
 
     let id = Uuid::new_v4().to_string();
 
@@ -8208,6 +8219,7 @@ fn stage_tool(
         PendingAction {
             created_at_ms: prepared_at_ms,
             native_uia_target,
+            capture_target,
             premiere_expectation,
             task_graph: proposal.task_graph.clone(),
             task_step_id: proposal.task_step_id.as_ref()
@@ -10113,6 +10125,7 @@ async fn execute_tool_with_action_id(
 ) -> Result<ActionResult, String> {
     let tool = action.tool.clone();
     let native_uia_target = action.native_uia_target.clone();
+    let capture_target = action.capture_target.clone();
     let premiere_bridge = PremiereClient { bridge: &state.premiere_bridge, expected: action.premiere_expectation.as_ref() };
 
     match action.action {
@@ -10675,7 +10688,7 @@ Write-Output 'SHUVI_WHATSAPP_DESKTOP_LAUNCH_REQUESTED'
             let (path, observed_target) = if window.eq_ignore_ascii_case("desktop") {
                 (capture_screen_png()?, "Entire desktop (explicit selection)".to_string())
             } else {
-                target_window_capture::capture_window_png(&window)?
+                target_window_capture::capture_window_png(&window,capture_target.as_ref())?
             };
             let analysis = analyze_png_with_provider(&provider, &prompt, &path).await?;
 
@@ -17226,7 +17239,7 @@ try {{
                     component_match_name:Some(target.component_match_name.clone()),component_display_name:None,
                     param_display_name:target.param_display_name.clone(),value:v}}
             };
-            let inner=PendingAction{created_at_ms:now_ms(),native_uia_target:None,task_graph:None,task_step_id:None,premiere_expectation:Some(target.expected.clone()),tool:if target.kind=="video"{"premiere_set_video_param_named"}else{"premiere_set_audio_param_named"}.into(),
+            let inner=PendingAction{created_at_ms:now_ms(),native_uia_target:None,capture_target:None,task_graph:None,task_step_id:None,premiere_expectation:Some(target.expected.clone()),tool:if target.kind=="video"{"premiere_set_video_param_named"}else{"premiere_set_audio_param_named"}.into(),
                 detail:"Disposable native parameter delta calibration".into(),action:make_action(value.clone())};
             let changed=Box::pin(execute_tool(inner,state,app)).await;
             let changed=match changed {Ok(result) if result.success=>result,Err(error)=>{
@@ -17253,7 +17266,7 @@ try {{
                         "reason":"After-delta native inspection missing; restoration not attempted blindly."}).to_string(),stderr:String::new(),exit_code:None});
                 }
             };
-            let restore=PendingAction{created_at_ms:now_ms(),native_uia_target:None,task_graph:None,task_step_id:None,premiere_expectation:Some(target.expected.clone()),tool:if target.kind=="video"{"premiere_set_video_param_named"}else{"premiere_set_audio_param_named"}.into(),
+            let restore=PendingAction{created_at_ms:now_ms(),native_uia_target:None,capture_target:None,task_graph:None,task_step_id:None,premiere_expectation:Some(target.expected.clone()),tool:if target.kind=="video"{"premiere_set_video_param_named"}else{"premiere_set_audio_param_named"}.into(),
                 detail:"Restore original disposable native value".into(),action:make_action(baseline.clone())};
             let restored=Box::pin(execute_tool(restore,state,app)).await;
             if !restored.is_ok_and(|r|r.success) {
@@ -17379,7 +17392,7 @@ try {{
                 "trim"=>"premiere_trim_clip","move"=>"premiere_move_clip","clone"=>"premiere_clone_clip",
                 "delete_ripple"=>"premiere_delete_clip","scene_markers"=>"premiere_detect_scene_markers",_=>return Err("Acceptance tool not allowlisted.".into())
             };
-            let inner=PendingAction {created_at_ms:now_ms(),native_uia_target:None,task_graph:None,task_step_id:None,premiere_expectation:Some(fixture.expected.clone()),tool:native_tool.into(),
+            let inner=PendingAction {created_at_ms:now_ms(),native_uia_target:None,capture_target:None,task_graph:None,task_step_id:None,premiere_expectation:Some(fixture.expected.clone()),tool:native_tool.into(),
                 detail:format!("Disposable acceptance {} action {}",record.step,action_id),action:native_action};
             let native=Box::pin(execute_tool(inner,state,app)).await;
             let native_result=match native {
@@ -19390,6 +19403,8 @@ async fn execute_action(
         if now_ms().saturating_sub(prepared.created_at_ms) > PENDING_ACTION_TTL_MS
             || native_uia_window_guard::expired_native_uia_binding(
                 prepared.created_at_ms, now_ms(), prepared.native_uia_target.as_ref())
+            || target_window_capture::expired_capture_binding(
+                prepared.created_at_ms, now_ms(), prepared.capture_target.as_ref())
         {
             (None, pending.remove(&action_id))
         } else {

@@ -15,8 +15,100 @@ const MAX_CAPTURE_PNG_BYTES: u64 = 96 * 1024 * 1024;
 const MAX_CAPTURE_PIXELS: u64 = 36_864_000;
 use uuid::Uuid;
 
+// OS-derived, action-local window identity captured BEFORE owner approval.
+// Neither AI nor WebView may choose HWND, PID or process birth generation.
+#[derive(Debug, Clone)]
+pub(super) struct PreparedCaptureTarget {
+    hwnd: i64,
+    pid: u32,
+    process_start_ticks: i64,
+    title: String,
+}
+const PREPARED_CAPTURE_TTL_MS: u64 = 60_000;
+
+pub(super) fn expired_capture_binding(
+    prepared_at_ms: u64, now_ms: u64, target: Option<&PreparedCaptureTarget>
+) -> bool {
+    target.is_some() && (now_ms < prepared_at_ms
+        || now_ms - prepared_at_ms > PREPARED_CAPTURE_TTL_MS)
+}
+
+fn parse_prepared_capture(output: &str, expected_title: &str)
+    -> Result<PreparedCaptureTarget, String>
+{
+    if output.len() > 2048 {
+        return Err("Prepared screenshot window evidence too large.".into());
+    }
+    let value: Value = serde_json::from_str(output.trim())
+        .map_err(|_| "Prepared screenshot window identity not valid JSON.".to_string())?;
+    let hwnd = value.get("hwnd").and_then(Value::as_i64).unwrap_or(0);
+    let pid = value.get("pid").and_then(Value::as_u64).unwrap_or(0);
+    let process_start_ticks = value.get("process_start_ticks")
+        .and_then(Value::as_i64).unwrap_or(0);
+    let title = value.get("title").and_then(Value::as_str).unwrap_or("");
+    if hwnd <= 0 || pid == 0 || pid > u32::MAX as u64
+        || process_start_ticks <= 0 || title != expected_title
+        || title.is_empty() || title.chars().count() > 180
+        || title.trim() != title || title.chars().any(char::is_control)
+    {
+        return Err("Prepared screenshot HWND/PID/process generation is invalid.".into());
+    }
+    Ok(PreparedCaptureTarget {
+        hwnd, pid: pid as u32, process_start_ticks, title: title.into()
+    })
+}
+
 #[cfg(target_os = "windows")]
-pub(super) fn capture_window_png(window: &str) -> Result<(PathBuf, String), String> {
+pub(super) fn prepare_window_capture(window: &str)
+    -> Result<Option<PreparedCaptureTarget>, String>
+{
+    if window.is_empty() || window.chars().count() > 180 ||
+       window.trim() != window || window.chars().any(char::is_control) ||
+       window.eq_ignore_ascii_case("desktop") {
+        return Err("Target screenshot requires one exact named application window.".into());
+    }
+    let root = ui_root_script(Some(window));
+    let attestation = super::native_uia_window_guard::readonly_window_attestation_script();
+    // The native read-only root must be the *same* window before/after the
+    // probe; do not accept a model supplied HWND or a title-only approval.
+    let script = format!(
+        "Add-Type -AssemblyName UIAutomationClient -ErrorAction Stop\n\
+         {root}\n{attestation}\n\
+         Assert-ShuviObservedWindow\n\
+         [PSCustomObject]@{{\
+         hwnd=[int64]$shuviReadHwnd;\
+         pid=[uint32]$shuviReadPid;\
+         process_start_ticks=[int64]$shuviReadStartTicks;\
+         title=[string]$shuviReadTitle\
+         }} | ConvertTo-Json -Compress -Depth 2"
+    );
+    let output = run_hidden_powershell(&script)?;
+    if !output.status.success() {
+        return Err("Approved screenshot window could not be uniquely bound at preparation.".into());
+    }
+    let text = std::str::from_utf8(&output.stdout)
+        .map_err(|_| "Screenshot target OS evidence is not UTF-8.".to_string())?;
+    Ok(Some(parse_prepared_capture(text,window)?))
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(super) fn prepare_window_capture(_window: &str)
+    -> Result<Option<PreparedCaptureTarget>, String>
+{
+    // Source tests on Linux do not invent Windows OS evidence.
+    Ok(None)
+}
+
+#[cfg(target_os = "windows")]
+pub(super) fn capture_window_png(
+    window: &str, expected: Option<&PreparedCaptureTarget>
+) -> Result<(PathBuf, String), String> {
+    let target = expected.ok_or_else(||
+        "Screenshot action was not bound to a Windows HWND/PID before approval.".to_string())?;
+    if target.hwnd <= 0 || target.pid == 0 || target.process_start_ticks <= 0 ||
+       target.title != window || window.trim() != window {
+        return Err("Approved screenshot target identity is malformed or replaced.".into());
+    }
     let dir = std::env::temp_dir().join("Shuvi").join("screenshots");
     fs::create_dir_all(&dir)
         .map_err(|error| format!("Could not create screenshot directory: {error}"))?;
@@ -59,9 +151,19 @@ public static class ShuviTargetCaptureWin32 {
 }
 '@ -ErrorAction Stop
 __SHUVI_ROOT_SCRIPT__
+$shuviExpectedCaptureHwnd = [int64]__SHUVI_APPROVED_HWND__
+$shuviExpectedCapturePid = [uint32]__SHUVI_APPROVED_PID__
+$shuviExpectedCaptureStartTicks = [int64]__SHUVI_APPROVED_BIRTH__
+$shuviExpectedCaptureTitle = '__SHUVI_APPROVED_TITLE__'
 $target = [IntPtr]([int64]$root.Current.NativeWindowHandle)
 $title = [string]$root.Current.Name
 $uiPid = [int]$root.Current.ProcessId
+# A new app with the SAME window title cannot inherit a prior approval.
+if ([int64]$target -ne $shuviExpectedCaptureHwnd -or
+    $uiPid -ne [int]$shuviExpectedCapturePid -or
+    $title -cne $shuviExpectedCaptureTitle) {
+    throw 'Window target changed after owner approval. No screenshot sent.'
+}
 if ($target -eq [IntPtr]::Zero -or -not [ShuviTargetCaptureWin32]::IsWindow($target)) {
     throw 'The observed target window no longer exists. Re-run ui_windows.'
 }
@@ -78,8 +180,9 @@ try {
 } catch {
     throw 'Cannot establish original app process start time; no screenshot sent.'
 }
-if ($shuviCaptureStartTicks -le 0) {
-    throw 'Invalid app process generation; no screenshot sent.'
+if ($shuviCaptureStartTicks -le 0 -or
+    $shuviCaptureStartTicks -ne $shuviExpectedCaptureStartTicks) {
+    throw 'Approved app process generation changed before screenshot. No image sent.'
 }
 function Assert-ShuviCaptureProcessGeneration {
     try {
@@ -88,7 +191,8 @@ function Assert-ShuviCaptureProcessGeneration {
     } catch {
         throw 'Captured application process exited; no screenshot sent.'
     }
-    if ($liveStartTicks -ne $shuviCaptureStartTicks) {
+    if ($liveStartTicks -ne $shuviCaptureStartTicks -or
+        $liveStartTicks -ne $shuviExpectedCaptureStartTicks) {
         throw 'Application process restarted during window capture. No screenshot sent.'
     }
 }
@@ -252,7 +356,11 @@ try {
 }
 "#
         .replace("__SHUVI_ROOT_SCRIPT__", &root_script)
-        .replace("__SHUVI_SCREENSHOT_PATH__", &escaped_path);
+        .replace("__SHUVI_SCREENSHOT_PATH__", &escaped_path)
+        .replace("__SHUVI_APPROVED_HWND__", &target.hwnd.to_string())
+        .replace("__SHUVI_APPROVED_PID__", &target.pid.to_string())
+        .replace("__SHUVI_APPROVED_BIRTH__", &target.process_start_ticks.to_string())
+        .replace("__SHUVI_APPROVED_TITLE__", &ps_single_quote(&target.title));
     let output = match run_hidden_powershell(&script) {
         Ok(output) => output,
         Err(error) => {
@@ -293,7 +401,9 @@ try {
 }
 
 #[cfg(not(target_os = "windows"))]
-pub(super) fn capture_window_png(_window: &str) -> Result<(PathBuf, String), String> {
+pub(super) fn capture_window_png(
+    _window: &str, _expected: Option<&PreparedCaptureTarget>
+) -> Result<(PathBuf, String), String> {
     Err("Target-window screenshot capture is available on Windows only.".into())
 }
 
@@ -438,7 +548,8 @@ fn verify_capture_receipt(receipt: &Value, png: &[u8], bytes: u64) -> Result<Str
 
 #[cfg(test)]
 mod tests {
-    use super::{png_crc_update, png_dimensions, verify_capture_receipt, verify_png_structure};
+    use super::{png_crc_update, png_dimensions, verify_capture_receipt, verify_png_structure,
+                parse_prepared_capture, expired_capture_binding};
     use std::io::Cursor;
     use serde_json::json;
 
@@ -497,6 +608,32 @@ mod tests {
         assert!(verify_png_structure(Cursor::new(&unknown), unknown.len() as u64).is_err());
         assert!(verify_png_structure(Cursor::new(&valid), 96*1024*1024+1).is_err());
     }
+    #[test]
+    fn prepared_screenshot_identity_parses_signed_os_evidence_only() {
+        let proof = r#"{"hwnd":7711,"pid":123,"process_start_ticks":638962980000000000,"title":"Adobe Premiere Pro"}"#;
+        let parsed = parse_prepared_capture(proof,"Adobe Premiere Pro").unwrap();
+        assert_eq!((parsed.hwnd,parsed.pid,parsed.process_start_ticks),
+            (7711,123,638962980000000000));
+        assert!(parse_prepared_capture(proof,"Blender").is_err());
+        for bad in ["{}", "[]", "not json",
+            r#"{"hwnd":7711,"pid":123,"process_start_ticks":0,"title":"Adobe Premiere Pro"}"#,
+            r#"{"hwnd":7711,"pid":0,"process_start_ticks":123,"title":"Adobe Premiere Pro"}"#,
+            r#"{"hwnd":-1,"pid":123,"process_start_ticks":123,"title":"Adobe Premiere Pro"}"#,
+            r#"{"hwnd":7711,"pid":123,"process_start_ticks":123,"title":"Adobe Premiere Pro\n"}"#
+        ] {
+            assert!(parse_prepared_capture(bad,"Adobe Premiere Pro").is_err(),"{bad}");
+        }
+    }
+    #[test]
+    fn capture_identity_expires_after_one_minute_without_affecting_other_tools() {
+        let proof = r#"{"hwnd":7711,"pid":123,"process_start_ticks":638962980000000000,"title":"Adobe Premiere Pro"}"#;
+        let binding = parse_prepared_capture(proof,"Adobe Premiere Pro").unwrap();
+        assert!(!expired_capture_binding(1000,61000,Some(&binding)));
+        assert!(expired_capture_binding(1000,61001,Some(&binding)));
+        assert!(expired_capture_binding(1000,999,Some(&binding)));
+        assert!(!expired_capture_binding(1000,900000,None));
+    }
+
     fn png_header(width: u32, height: u32) -> [u8; 24] {
         let mut bytes = [0_u8; 24];
         bytes[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");

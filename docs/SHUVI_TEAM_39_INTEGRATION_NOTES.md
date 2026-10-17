@@ -947,3 +947,33 @@ Run only with separate owner consent on a disposable desktop/test fixture.
   reaching owners as a runtime capture crash.
 - Dedicated Node regression tests lock the extraction/compile/signature
   ordering and prohibition on real desktop invocation.
+
+## Milestone 24 — OS-bound screenshot identity survives owner approval
+
+- Previously `inspect_screen` consent held only a model-supplied application
+  title. Native `capture_window_png` resolved this title again **after**
+  user approval, which could silently switch to a different exact-title
+  window if the original app exited, restarted or its HWND was replaced.
+- Targeted `inspect_screen` now invokes a strictly read-only UIA/Win32
+  **preparation** probe before displaying owner approval. That probe uses
+  the existing root HWND/PID/process-start-ticks attestation, rejects
+  hidden/minimized/disabled/offscreen/ambiguous roots, and returns a
+  bounded, parsed `PreparedCaptureTarget` held only inside Rust's
+  private `PendingAction`—not user/model-editable UI arguments.
+- The approved action now carries original HWND, PID, OS process
+  creation time and exact app title. Actual screenshot invocation
+  fails closed if any of those changed, even if the same title now
+  belongs to a different process. Every later process-generation
+  recheck compares against the ORIGINAL approved OS birth evidence.
+- Such approval bindings expire after 60 seconds independently of the
+  usual action TTL. Desktop-global `inspect_screen(window=desktop)`
+  keeps its separate, explicitly approved legacy path. No silent
+  alternative app, focus or cost-bearing provider fallback.
+- Existing three internally constructed, unrelated PendingActions
+  explicitly declare `capture_target:None`. No scheduler, browser,
+  Adobe/Blender bridge, journal or other team's branch is changed.
+- Rust parse/TTL tests plus
+  `scripts/shuvi39-preapproved-window-capture.test.mjs` verify
+  preapproval binding, postapproval checks, model separation and
+  no premature capture. Windows live desktop testing still requires
+  separate owner-authorized acceptance.
