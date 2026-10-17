@@ -107,13 +107,21 @@ fn error(context:&str)->String{format!("{context}: {}",io::Error::last_os_error(
 pub(super) struct OwnedChild { job:OwnedHandle,process:OwnedHandle,pid:u32 }
 impl OwnedChild{
     pub(super) fn spawn(exe:&Path,args:&[OsString],cwd:&Path)->Result<Self,String>{
+        Self::spawn_capped(exe,args,cwd,MAX_JOB_MEMORY_BYTES)
+    }
+    // Dedicated read-only background workers can use a lower per-process-tree
+    // cap without relaxing the existing 4 GiB GUI-worker ceiling.
+    pub(super) fn spawn_capped(exe:&Path,args:&[OsString],cwd:&Path,cap:u64)->Result<Self,String>{
+        if cap==0||cap>MAX_JOB_MEMORY_BYTES{
+            return Err("Background Job Object memory cap outside hard safety bounds.".into());
+        }
         let job=unsafe{CreateJobObjectW(null(),null())};
         if job.is_null(){return Err(error("CreateJobObjectW failed"));}
         let job=OwnedHandle(job);
         let mut limit=ExtendedLimit::default();
         limit.basic.flags=KILL_ON_CLOSE|JOB_OBJECT_LIMIT_JOB_MEMORY;
-        limit.job_memory=usize::try_from(MAX_JOB_MEMORY_BYTES)
-            .map_err(|_|"4 GB native Job Object memory cap not representable on this host.".to_string())?;
+        limit.job_memory=usize::try_from(cap)
+            .map_err(|_|"Native Job Object memory cap not representable on this host.".to_string())?;
         let ok=unsafe{SetInformationJobObject(job.0,JOB_EXTENDED_LIMIT,
             &limit as *const _ as *const c_void,mem::size_of::<ExtendedLimit>() as u32)};
         if ok==0{return Err(error("Worker kill-on-close protection unavailable"));}
