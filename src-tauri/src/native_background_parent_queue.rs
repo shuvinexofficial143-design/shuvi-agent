@@ -339,6 +339,60 @@ where F:FnMut()->Result<bool,String>{
         }
     }
 }
+/// M53: dispatch TWO separately owner-approved PARENT UUIDs concurrently.
+/// Enqueue permissions happen per parent before this call; dispatch never
+/// invents approval or accepts executable paths. The caller MUST reserve
+/// BOTH 512 MiB ceilings against the original 4 GiB host guard in its
+/// supplied callback (and fail closed if observation is unavailable).
+///
+/// Each thread independently claims its exact parent under the durable OS
+/// journal lock BEFORE touching the existing M45–M52 Windows OS child slot.
+/// No globally exclusive GUI/Adobe/Blender action is dispatched here.
+/// Results remain separate; one failed parent cannot certify its sibling.
+/// An unwinding thread preserves its admitted/OS claims for owner review.
+#[allow(dead_code)]
+pub(crate) fn run_two_ready_approved<F>(
+    root:&Path, host_ram_over_limit:&F
+)->[Result<Option<super::VerifiedReadOnlyHash>,String>;2]
+where F:Fn()->Result<bool,String>+Sync{
+    std::thread::scope(|scope|{
+        let left=scope.spawn(||run_next_approved(root,||host_ram_over_limit()));
+        let right=scope.spawn(||run_next_approved(root,||host_ram_over_limit()));
+        let a=left.join().unwrap_or_else(|_|Err(
+            "First approved parent dispatcher panicked; durable claim needs owner review.".into()));
+        let b=right.join().unwrap_or_else(|_|Err(
+            "Second approved parent dispatcher panicked; durable claim needs owner review.".into()));
+        [a,b]
+    })
+}
+/// Owner-facing controller can use this only AFTER authenticating exact owner
+/// authorization for this parent UUID. It does not kill a foreign PID.
+/// True = exact STOP INTENT durably requested, never verified termination.
+/// If parent was claimed but OS launch has not yet been recorded, return
+/// false (no fabricated stop) while its parent claim remains held.
+#[allow(dead_code)]
+pub(crate) fn request_exact_parent_stop_at(root:&Path,id:&str)->Result<bool,String>{
+    if !super::valid_uuid(id){return Err("Stop requires exact approved parent UUID.".into());}
+    let file=root_file(root)?;
+    let _local=TX.lock().map_err(|_|"Parent queue lock poisoned.")?;
+    let _os=OsLock::take(&file)?;
+    let q=load(&file)?;
+    let parent=q.parents.iter().find(|p|p.parent_id==id)
+        .ok_or("Owner Stop parent UUID was never queued.")?;
+    if parent.phase!="admitted"{return Ok(false);}
+    let claim=super::admission::snapshot_detailed_at(root)?.into_iter()
+        .find(|x|x.action_id==id);
+    match claim{
+        Some(c) if c.phase=="os_running"&&c.input_path==parent.input_path
+            &&c.expected_sha256==parent.expected_sha256=>{
+                super::request_stop_for_child(root,id)
+            },
+        Some(c) if c.phase=="reserved"&&c.input_path==parent.input_path
+            &&c.expected_sha256==parent.expected_sha256=>Ok(false),
+        None=>Ok(false), // Parent durable claim exists, OS spawn not proven.
+        _=>Err("Parent Stop OS identity is mismatched or terminal; owner review required.".into()),
+    }
+}
 /// Read-only durable projection. No query implies current PID liveness.
 #[allow(dead_code)]
 pub(crate) fn snapshot_at(root:&Path)->Result<Vec<Parent>,String>{
@@ -459,6 +513,60 @@ mod tests{
         // Restoring exact bytes is independently reverified before dispatch.
         fs::write(&a,&bytes).unwrap();
         assert_eq!(claim_next_at(&d).unwrap().unwrap().parent_id,B);
+        fs::remove_dir_all(d).unwrap();
+    }
+    #[test]
+    fn two_independent_parent_claims_race_safely_under_os_journal_lock(){
+        use std::sync::{Arc,Barrier};
+        let d=dir();let a=input(&d,"independent-a");let b=input(&d,"independent-b");
+        let c=input(&d,"independent-c");
+        add(&d,A,&a,2,&[]).unwrap();add(&d,B,&b,1,&[]).unwrap();
+        add(&d,C,&c,0,&[]).unwrap();
+        let gate=Arc::new(Barrier::new(3));
+        let first=Arc::clone(&gate);let second=Arc::clone(&gate);
+        let left=d.clone();let right=d.clone();
+        let (one,two)=std::thread::scope(|scope|{
+            let a=scope.spawn(||{first.wait();claim_next_at(&left).unwrap().unwrap()});
+            let b=scope.spawn(||{second.wait();claim_next_at(&right).unwrap().unwrap()});
+            gate.wait();(a.join().unwrap(),b.join().unwrap())
+        });
+        assert_ne!(one.parent_id,two.parent_id);
+        let ids=HashSet::from([one.parent_id.as_str(),two.parent_id.as_str()]);
+        assert_eq!(ids,HashSet::from([A,B]));
+        assert!(claim_next_at(&d).unwrap().is_none());
+        transition_at(&d,&one.parent_id,None).unwrap();
+        // Unknown cannot free capacity merely because a host thread exited.
+        assert!(claim_next_at(&d).unwrap().is_none());
+        assert_eq!(snapshot_at(&d).unwrap().iter()
+            .filter(|p|active(p)).count(),2);
+        fs::remove_dir_all(d).unwrap();
+    }
+    #[test]
+    fn bounded_priority_aging_prevents_old_low_priority_parent_starvation(){
+        let mut q=Queue::default();q.dispatch_round=15;q.next_ordinal=4;
+        for (id,priority,ordinal,round) in [
+            (A,0,1,0),(B,2,2,14),(C,1,3,15)
+        ]{
+            q.parents.push(Parent{
+                parent_id:id.into(),task_class:"read_only_sha256".into(),
+                input_path:format!("C:\\\\queue\\\\{ordinal}.bin").to_lowercase(),
+                expected_sha256:"a".repeat(64),depends_on:vec![],
+                priority,ordinal,enqueued_round:round,phase:"queued".into(),
+            });
+        }
+        validate(&q).unwrap();
+        assert_eq!(q.parents[ready_index(&q).unwrap()].parent_id,A);
+        // Without aging, the new high-priority B would win instead.
+    }
+    #[test]
+    fn parent_stop_cannot_claim_process_termination_without_owned_os_pid(){
+        let d=dir();let a=input(&d,"owner-stop");
+        add(&d,A,&a,0,&[]).unwrap();
+        assert!(!request_exact_parent_stop_at(&d,A).unwrap());
+        claim_next_at(&d).unwrap();
+        assert!(!request_exact_parent_stop_at(&d,A).unwrap());
+        assert!(request_exact_parent_stop_at(&d,B).is_err());
+        assert_eq!(snapshot_at(&d).unwrap()[0].phase,"admitted");
         fs::remove_dir_all(d).unwrap();
     }
     #[test]
