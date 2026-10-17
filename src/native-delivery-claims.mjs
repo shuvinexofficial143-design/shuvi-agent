@@ -26,7 +26,7 @@ export function nativeTaskDeliveryClaims(graph,schedule,projectProof=null){
       graphDeps.length!==nativeDeps.length||
       new Set(graphDeps).size!==graphDeps.length||
       new Set(nativeDeps).size!==nativeDeps.length||
-      graphDeps.some((id,j)=>id!==undefined&&id!==null&&typeof id!=="string")||
+      graphDeps.some(id=>typeof id!=="string")||
       nativeDeps.some(id=>typeof id!=="string")||
       [...graphDeps].sort().some((id,j)=>id!==[...nativeDeps].sort()[j]))
      return null;

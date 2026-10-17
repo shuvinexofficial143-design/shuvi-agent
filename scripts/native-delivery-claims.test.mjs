@@ -70,6 +70,13 @@ test("audited UUIDs cannot launder graph dependency drift into Rust final delive
  assert.equal(claims(g,{...s,jobs:[s.jobs[0],{...s.jobs[1],dependsOn:["inspect","inspect"]}]}),null);
  const forged=structuredClone(g);forged.steps[1].depends_on=[];
  assert.equal(claims(forged,s),null);
+ for(const bad of [null,undefined,7,{},false]){
+  const wrong=structuredClone(g);
+  wrong.steps[1].depends_on=[bad];
+  const native=structuredClone(s);
+  native.jobs[1].dependsOn=[bad];
+  assert.equal(claims(wrong,native),null,"invalid dependency "+String(bad));
+ }
  const valid=structuredClone(s);valid.jobs[1].dependsOn=["inspect"];
  assert.ok(claims(g,valid));
 });
