@@ -362,17 +362,65 @@ pub(crate) struct VerifiedReadOnlyHash{
 /// Never resolve a model-chosen executable, PATH search or shell command.
 /// Build/package configuration must ship it explicitly; if not installed,
 /// this entrypoint fails BEFORE reservation and no work is performed.
-fn trusted_sidecar()->Result<PathBuf,String>{
+const MAX_TRUSTED_SIDECAR_BYTES:u64=32*1024*1024;
+/// File handle is held through CreateProcess admission: deny WRITE/DELETE
+/// shares so a normal user process cannot replace the executable after
+/// verifying its digest but before the OS starts its fixed worker.
+struct PinnedSidecar{
+    path:PathBuf,
+    _verified_handle:File,
+}
+/// Installer SHA is compiled INTO the main Rust binary from the separately
+/// prepared build input. A bare developer/CI build has no pin and MUST refuse
+/// running even a well-named same-folder executable.
+fn trusted_sidecar()->Result<PinnedSidecar,String>{
+    use sha2::{Digest,Sha256};
+    let expected=option_env!("SHUVI_PINNED_SHA_SIDECAR")
+        .ok_or("This Shuvi build has no trusted SHA sidecar pin; installer build required.")?;
+    if expected.len()!=64||!expected.bytes().all(|b|
+        b.is_ascii_digit()||(b'a'..=b'f').contains(&b)){
+        return Err("The embedded SHA sidecar build pin is malformed.".into());
+    }
     let exe=std::env::current_exe()
         .map_err(|_|"Cannot identify installed Shuvi process.")?;
     let dir=exe.parent().ok_or("Installed Shuvi executable has no directory.")?;
-    let exe=dir.join("shuvi-readonly-hash-worker.exe");
-    let m=fs::symlink_metadata(&exe)
-        .map_err(|_|"Signed/pinned internal SHA sidecar not installed.")?;
-    if !m.is_file()||m.file_type().is_symlink()||m.file_attributes()&0x400!=0 {
-        return Err("Read-only SHA worker executable path redirected.".into());
+    let m=fs::symlink_metadata(dir).map_err(|_|"Shuvi installation directory inaccessible.")?;
+    if !m.is_dir()||m.file_type().is_symlink()||m.file_attributes()&0x400!=0{
+        return Err("Shuvi installed executable directory redirected.".into());
     }
-    Ok(exe)
+    let sidecar=dir.join("shuvi-readonly-hash-worker.exe");
+    let m=fs::symlink_metadata(&sidecar)
+        .map_err(|_|"Pinned fixed-purpose internal SHA sidecar not installed.")?;
+    if !m.is_file()||m.file_type().is_symlink()||m.file_attributes()&0x400!=0
+        ||m.len()<1024||m.len()>MAX_TRUSTED_SIDECAR_BYTES{
+        return Err("Installed SHA sidecar is redirected, missing or outside trusted size limit.".into());
+    }
+    let mut handle=OpenOptions::new().read(true).share_mode(1)
+        .custom_flags(OPEN_REPARSE_POINT).open(&sidecar)
+        .map_err(|_|"Cannot hold trusted SHA sidecar handle against replacement.")?;
+    let observed=handle.metadata().map_err(|_|"SHA sidecar handle metadata unavailable.")?;
+    if !observed.is_file()||observed.file_attributes()&0x400!=0
+        ||observed.len()!=m.len()||observed.len()>MAX_TRUSTED_SIDECAR_BYTES{
+        return Err("SHA sidecar changed identity during trusted open.".into());
+    }
+    // A second hardlink can mutate the inode without renaming this pathname.
+    // M46's Win32 BY_HANDLE_FILE_INFORMATION check rejects link-count !=1.
+    super::background_os_workers::admission::require_single_link(&sidecar)?;
+    let mut digest=Sha256::new();let mut buf=[0u8;65536];let mut count=0u64;
+    loop{
+        let n=std::io::Read::read(&mut handle,&mut buf)
+            .map_err(|_|"Cannot hash installed SHA sidecar.")?;
+        if n==0{break;}
+        count=count.checked_add(n as u64).ok_or("Sidecar hash accounting overflow.")?;
+        if count>MAX_TRUSTED_SIDECAR_BYTES{
+            return Err("SHA sidecar changed beyond pinned file budget.".into());
+        }
+        digest.update(&buf[..n]);
+    }
+    if count!=observed.len()||format!("{:x}",digest.finalize())!=expected{
+        return Err("Installed SHA worker digest differs from main binary's embedded installer pin.".into());
+    }
+    Ok(PinnedSidecar{path:sidecar,_verified_handle:handle})
 }
 fn result_path(root:&Path,id:&str)->Result<PathBuf,String>{
     if !valid_uuid(id){return Err("Read-only SHA result UUID is malformed.".into());}
@@ -399,7 +447,7 @@ where F:FnMut()->Result<bool,String>{
     // Persist durable admission BEFORE launch. Any failure after this point
     // retains the UUID/input and requires explicit owner reconciliation.
     let mut worker=spawn_admitted_readonly(
-        root,id,input,expected_sha256,&executable,&args,root)?;
+        root,id,input,expected_sha256,&executable.path,&args,root)?;
     let pid=worker.child.id();
     let exit_code=worker.wait_with_host_guard(||host_ram_over_limit())?;
     if exit_code!=0{
