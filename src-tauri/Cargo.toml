@@ -23,3 +23,7 @@ uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 sha2 = "0.10"
 tokio = { version = "1", features = ["time"] }
+
+[target.'cfg(windows)'.dependencies]
+# Reuse the version already locked by the Tauri dependency graph.
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
