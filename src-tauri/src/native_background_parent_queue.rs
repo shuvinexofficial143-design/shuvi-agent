@@ -427,6 +427,41 @@ mod tests{
         fs::remove_dir_all(d).unwrap();
     }
     #[test]
+    fn authentic_sha_parent_enables_dependency_but_tampering_revokes_readiness(){
+        use sha2::{Digest,Sha256};
+        let d=dir();
+        let a=input(&d,"root.bin");let b=input(&d,"child.bin");
+        let bytes=fs::read(&a).unwrap();
+        let digest=format!("{:x}",Sha256::digest(&bytes));
+        enqueue_approved_at(&d,ApprovedParent{
+            id:A,input:&a,sha256:&digest,depends_on:&[],priority:1,
+        }).unwrap();
+        add(&d,B,&b,0,&[A]).unwrap();
+        assert_eq!(claim_next_at(&d).unwrap().unwrap().parent_id,A);
+        // OS admission + independently readback-protected result fixtures.
+        super::super::admission::reserve_at(&d,A,&a,&digest).unwrap();
+        super::super::admission::started_at(&d,A,8234).unwrap();
+        super::super::admission::terminal_at(&d,A,8234,"os_exited_unverified",0).unwrap();
+        super::super::admission::verified_sha_at(&d,A,8234).unwrap();
+        fs::write(d.join(format!("native-bg-hash-{A}.json")),serde_json::json!({
+            "version":1,"actionId":A,"inputSha256":digest,
+            "inputBytes":bytes.len(),"source":"owned_windows_sha256_sidecar"
+        }).to_string()).unwrap();
+        let verified=super::super::VerifiedReadOnlyHash{
+            action_id:A.into(),sha256:digest.clone(),bytes:bytes.len() as u64,os_pid:8234
+        };
+        transition_at(&d,A,Some(&verified)).unwrap();
+        assert_eq!(snapshot_at(&d).unwrap()[0].phase,"sha256_verified");
+        // A stored success cannot authorize a fresh parent after source mutation.
+        fs::write(&a,b"tampered bytes").unwrap();
+        assert!(claim_next_at(&d).is_err());
+        assert_eq!(snapshot_at(&d).unwrap()[1].phase,"queued");
+        // Restoring exact bytes is independently reverified before dispatch.
+        fs::write(&a,&bytes).unwrap();
+        assert_eq!(claim_next_at(&d).unwrap().unwrap().parent_id,B);
+        fs::remove_dir_all(d).unwrap();
+    }
+    #[test]
     fn malformed_queue_cannot_resurrect_or_reorder_verified_parents(){
         let d=dir();let a=input(&d,"a");add(&d,A,&a,0,&[]).unwrap();
         let file=root_file(&d).unwrap();
