@@ -25,6 +25,7 @@ test("actual two-thread delivery verification and source audits retain bounded h
  assert.match(verified,/global_hash_slots::HashSlot::take\(dir\)\?/);
  assert.match(verified,/check_artifact\(artifact,tool\)/);
  const publish=functionBody("pub(crate) fn finalize(");
- assert.ok(publish.indexOf("verify_with_pool(")<publish.lastIndexOf("write_at("));
+ assert.ok(publish.indexOf("verify_with_pool(")<publish.lastIndexOf("publish_at("));
+ assert.ok(publish.indexOf("verify_blender_certificates(")<publish.lastIndexOf("publish_at("));
  assert.match(publish,/verify_blender_certificates\(app,&receipt\.steps\)\?/);
 });
