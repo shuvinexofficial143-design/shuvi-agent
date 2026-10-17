@@ -8,8 +8,10 @@ test("authorized DAG audits precede bounded two-way read-only SHA-256 workers",(
  assert.match(source,/let left=scope\.spawn/);
  assert.match(source,/let right=scope\.spawn/);
  assert.match(source,/a\?\?;b\?\?/);
- assert.match(source,/verify_artifacts_bounded\(steps,check_artifact\)\?/);
- assert.ok(source.indexOf("let entry=audit(")<source.indexOf("verify_artifacts_bounded(steps,check_artifact)"));
+ assert.match(source,/verify_artifacts_bounded\(steps,\|artifact,tool\|/);
+ assert.match(source,/global_hash_slots::HashSlot::take\(dir\)\?/);
+ assert.match(source,/check_artifact\(artifact,tool\)/);
+ assert.ok(source.indexOf("let entry=audit(")<source.indexOf("verify_artifacts_bounded(steps,|artifact,tool|"));
 });
 test("duplicate file alias and mutation still fail safely; no unpermissioned GUI execution",()=>{
  assert.match(source,/if first_path==second_path/);
