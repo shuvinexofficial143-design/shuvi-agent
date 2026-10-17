@@ -1,0 +1,30 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
+const rust=readFileSync(new URL("../src-tauri/src/native_worker_progress.rs",import.meta.url),"utf8");
+const owner=readFileSync(new URL("../src-tauri/src/native_owned_process.rs",import.meta.url),"utf8");
+const plan=readFileSync(new URL("../src-tauri/src/native_blender_owned_plan.rs",import.meta.url),"utf8");
+const worker=readFileSync(new URL("../integrations/blender-worker/shuvi_blender_plan.py",import.meta.url),"utf8");
+const scheduler=readFileSync(new URL("../src-tauri/src/native_scheduler.rs",import.meta.url),"utf8");
+test("only the approved scheduled Blender plan activates private authenticated progress",()=>{
+  assert.match(scheduler,/mod worker_progress/);
+  assert.match(plan,/ProgressChannel::create/);
+  assert.match(plan,/--worker-progress-key-file/);
+  assert.match(plan,/--worker-action-id/);
+  assert.match(plan,/wait_bounded_with_host_budget_and_progress/);
+  assert.match(plan,/require_verified_artifact_ack\(\)\?/);
+  assert.match(plan,/native_plan_response/);
+  assert.match(worker,/PrivateWorkerPulse/);
+  assert.match(worker,/hmac\.new\(/);
+});
+test("worker pulse and app acknowledgement remain separate from supervisor and OS exit",()=>{
+  assert.match(rust,/hmac_sha256/);
+  assert.match(rust,/last_tick\.elapsed\(\)>STALE/);
+  assert.match(rust,/if self\.last_stage!=4/);
+  assert.match(worker,/pulse\.mark\("blender_session_attached"\)/);
+  assert.match(worker,/pulse\.mark\("plan_verified"\)/);
+  assert.match(worker,/pulse\.mark\("artifact_rehashed"\)/);
+  assert.match(owner,/self\.stop_owned_tree\("cancelled"\)\?/);
+  assert.match(owner,/inspect application effects/);
+  assert.match(rust,/tamper_foreign_action_and_replay_cannot_invent_progress/);
+});

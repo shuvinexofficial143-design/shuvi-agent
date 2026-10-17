@@ -1,0 +1,46 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
+const read=p=>readFileSync(new URL("../"+p,import.meta.url),"utf8");
+const lib=read("src-tauri/src/lib.rs");
+const workers=read("src-tauri/src/native_background_os_workers.rs");
+const frontend=read("src/main.ts");
+const types=read("src/types.ts");
+test("only an exact currently running approved SHA parent may request two child stops",()=>{
+  assert.match(lib,/Some\("verify_readonly_sha_pair"\) => \{/);
+  assert.match(lib,/native_sha_child_uuid\(&action_id,0\)/);
+  assert.match(lib,/native_sha_child_uuid\(&action_id,1\)/);
+  assert.match(lib,/request_stop_for_child\(&root,&first\)/);
+  assert.match(lib,/request_stop_for_child\(&root,&second\)/);
+  assert.match(lib,/Background Stop request could be partial or unavailable/);
+  assert.match(lib,/format!\("shuvi-readonly-pair-v1:\{\}:\{\}",owner_action_id,index\)/);
+  assert.match(lib,/running_action_tools/);
+  const stopBranch=lib.slice(lib.indexOf('Some("verify_readonly_sha_pair") => {'),lib.indexOf('Some("blender_inspect") | Some("blender_run_plan")'));
+  assert.doesNotMatch(stopBranch,/taskkill|TerminateProcess|KillProcess|std::process::Command/);
+});
+test("Stop intent is durable, exact-UUID, fail-closed and never interprets request as OS completion",()=>{
+  assert.match(workers,/struct StopIntent/);
+  assert.match(workers,/create_new\(true\)/);
+  assert.match(workers,/file\.write_all\(&payload\)\.and_then\(\|_\|file\.sync_all\(\)\)/);
+  assert.match(workers,/record\.action_id!=id\|\|record\.request!="owner_stop"/);
+  assert.match(workers,/matched\.phase!="os_running"/);
+  assert.match(workers,/inspect_stop_intent\(root,&self\.id\)/);
+  assert.match(workers,/self\.cancel_exact\(&self\.id\.clone\(\)\)\?/);
+  assert.match(workers,/stop_marker_exact_uuid_idempotent_and_never_stops_foreign_or_terminal/);
+  assert.match(workers,/owner_stop_intent_terminates_the_exact_owned_job_tree_and_records_unverified_os_exit/);
+  assert.match(workers,/os_cancelled_unverified/);
+  assert.match(workers,/safe_to_auto_retry:false/);
+});
+test("visible stop button only allows confirmed owner action and discloses outcome unknown",()=>{
+  assert.match(frontend,/id="requestNativeBackgroundStop" class="hidden"/);
+  assert.match(frontend,/nativeHostStatus\.tool==="verify_readonly_sha_pair"/);
+  assert.match(frontend,/window\.confirm\("Request Stop for this exact approved SHA pair/);
+  assert.match(frontend,/invoke<boolean>\("cancel_running_action",\{actionId:host\.actionId\}\)/);
+  assert.match(frontend,/termination is NOT yet verified/);
+  assert.match(frontend,/Stop request failed or may be partial/);
+  assert.match(frontend,/x\.stopRequested/);
+  assert.match(frontend,/worker\.stopRequested/);
+  assert.match(types,/stopRequested: boolean/);
+  assert.match(lib,/stop_requested:item\.stop_requested/);
+  assert.doesNotMatch(frontend.slice(frontend.indexOf('#requestNativeBackgroundStop").addEventListener("click"'),frontend.indexOf('function isHiddenToolMessage')),/taskkill|Process\.kill|worker\.pid|permission\.grant/);
+});

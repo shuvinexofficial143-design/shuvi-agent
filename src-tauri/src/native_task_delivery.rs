@@ -10,6 +10,12 @@ const MAX_BYTES:usize=32_768;
 const MAX_STEPS:usize=48;
 const MAX_ARTIFACT_BYTES:u64=512*1024*1024;
 static IO:Mutex<()>=Mutex::new(());
+#[path = "native_global_hash_slots.rs"]
+mod global_hash_slots;
+#[path = "native_delivery_receipt_lock.rs"]
+mod receipt_lock;
+#[path = "native_delivery_history.rs"]
+pub(crate) mod history;
 
 #[derive(Debug,Clone,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
@@ -18,6 +24,10 @@ pub(crate) struct DeliveryArtifact {
     pub path:String,
     pub sha256:String,
     pub bytes:u64,
+    // Additive v1 field; absent for older final deliveries and non-Blender
+    // tools. New supervised Blender plans bind these bytes to their input.
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub approved_plan_sha256:Option<String>,
 }
 #[derive(Debug,Clone,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
@@ -73,6 +83,13 @@ fn check_structure(v:&DeliveryReceipt)->Result<(),String>{
             if artifact.kind!=expected_kind {
                 return Err("Delivery artifact kind does not match audited tool.".into());
             }
+            if let Some(digest)=artifact.approved_plan_sha256.as_deref(){
+                if step.tool!="blender_run_plan"||digest.len()!=64
+                    ||!digest.bytes().all(|b|
+                        b.is_ascii_digit()||(b'a'..=b'f').contains(&b)){
+                    return Err("Delivery approved-plan fingerprint invalid or belongs to a non-Blender tool.".into());
+                }
+            }
         } else if matches!(step.tool.as_str(),
             "blender_run_plan"|"motion_graphics_accept_final_remotion"|
             "motion_graphics_plan_premiere_insertion") {
@@ -92,14 +109,82 @@ fn path(app:&AppHandle)->Result<PathBuf,String>{
     fs::create_dir_all(&root).map_err(|_|"Native delivery directory inaccessible.".to_string())?;
     Ok(root.join("native-task-delivery.json"))
 }
+/// Actual file identity from an open handle, not pathname/string equality.
+/// Used to prevent hard-linked outputs from masquerading as disjoint workers
+/// and to detect a path replaced between open and finished readback.
+#[cfg(unix)]
+fn physical_file_id(file:&fs::File)->Result<(u64,u64),String>{
+    use std::os::unix::fs::MetadataExt;
+    let meta=file.metadata().map_err(|_|"Cannot inspect open artifact identity.")?;
+    Ok((meta.dev(),meta.ino()))
+}
+#[cfg(windows)]
+fn physical_file_id(file:&fs::File)->Result<(u64,u64),String>{
+    use std::{ffi::c_void,os::windows::io::AsRawHandle,mem::MaybeUninit};
+    #[repr(C)] struct FileTime{low:u32,high:u32}
+    #[repr(C)] struct ByHandleFileInformation{
+        attributes:u32,created:FileTime,accessed:FileTime,written:FileTime,
+        volume_serial:u32,size_high:u32,size_low:u32,links:u32,
+        index_high:u32,index_low:u32
+    }
+    #[link(name="kernel32")]
+    unsafe extern "system"{
+        fn GetFileInformationByHandle(
+            handle:*mut c_void,info:*mut ByHandleFileInformation
+        )->i32;
+    }
+    let mut data=MaybeUninit::<ByHandleFileInformation>::zeroed();
+    let valid=unsafe{GetFileInformationByHandle(
+        file.as_raw_handle(),data.as_mut_ptr())};
+    if valid==0 {
+        return Err("Windows could not verify native artifact file identity.".into());
+    }
+    let info=unsafe{data.assume_init()};
+    Ok((info.volume_serial as u64,
+        (info.index_high as u64)<<32|info.index_low as u64))
+}
+#[cfg(not(any(windows,unix)))]
+fn physical_file_id(_file:&fs::File)->Result<(u64,u64),String>{
+    Err("Artifact identity verification unsupported on this platform.".into())
+}
+fn read_exclusive_identity(path:&Path)->Result<fs::File,String>{
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // Allow fellow READERS but deny writers, deletes and renames for
+        // the entire verified SHA-256 readback on Windows.
+        return fs::OpenOptions::new().read(true).share_mode(0x00000001)
+            .open(path).map_err(|_|"Artifact could not be opened with a read-only identity lease.".into());
+    }
+    #[cfg(not(windows))]
+    {
+        fs::File::open(path).map_err(|_|"Artifact file cannot be opened.".into())
+    }
+}
+fn same_physical_output(a:&Path,b:&Path)->Result<bool,String>{
+    let first=read_exclusive_identity(a)?;
+    let second=read_exclusive_identity(b)?;
+    Ok(physical_file_id(&first)?==physical_file_id(&second)?)
+}
 fn file_hash(path:&Path,limit:u64)->Result<(u64,String),String>{
     let meta=fs::symlink_metadata(path)
         .map_err(|_|"The declared output file does not exist.".to_string())?;
     if !meta.is_file()||meta.file_type().is_symlink()||meta.len()==0||meta.len()>limit{
         return Err("The output is not a supported regular file within size limits.".into());
     }
-    let mut f=fs::File::open(path)
-        .map_err(|_|"The declared output is not readable.".to_string())?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if meta.file_attributes()&0x400!=0{
+            return Err("Delivery artifact may not be a Windows reparse point.".into());
+        }
+    }
+    let mut f=read_exclusive_identity(path)?;
+    let original_id=physical_file_id(&f)?;
+    let opened=f.metadata().map_err(|_|"Artifact handle metadata unavailable.")?;
+    if opened.len()!=meta.len()||opened.modified().ok()!=meta.modified().ok(){
+        return Err("Artifact changed before its read-only identity lease.".into());
+    }
     let mut buf=[0u8;64*1024];let mut bytes=0u64;let mut hash=Sha256::new();
     loop {
         let n=f.read(&mut buf).map_err(|_|"Output file hash read failed.".to_string())?;
@@ -108,7 +193,21 @@ fn file_hash(path:&Path,limit:u64)->Result<(u64,String),String>{
         if bytes>limit{return Err("Output exceeds hash size limit.".into());}
         hash.update(&buf[..n]);
     }
-    if bytes!=meta.len(){return Err("Output changed while reading; delivery aborted.".into());}
+    let current_handle=f.metadata()
+        .map_err(|_|"Artifact identity unavailable after streaming.")?;
+    let current_path=fs::symlink_metadata(path)
+        .map_err(|_|"Artifact disappeared during verification.")?;
+    if bytes!=meta.len()||current_handle.len()!=bytes||current_path.len()!=bytes
+        ||current_handle.modified().ok()!=opened.modified().ok()
+        ||current_path.modified().ok()!=opened.modified().ok()
+        ||physical_file_id(&f)?!=original_id
+        ||current_path.file_type().is_symlink(){
+        return Err("Output changed or was replaced during SHA-256 verification.".into());
+    }
+    let final_path=read_exclusive_identity(path)?;
+    if physical_file_id(&final_path)?!=original_id{
+        return Err("Output identity was replaced while hashing.".into());
+    }
     Ok((bytes,format!("{:x}",hash.finalize())))
 }
 fn check_artifact(a:&DeliveryArtifact,tool:&str)->Result<(),String>{
@@ -130,8 +229,65 @@ fn check_artifact(a:&DeliveryArtifact,tool:&str)->Result<(),String>{
     }
     Ok(())
 }
+/// Bounded background workers for independently readable, already-audited
+/// output files. These do NOT execute a model tool, start a process, mutate
+/// the desktop, or claim task success. At most TWO Rust threads read file
+/// hashes in one batch, each capped by MAX_ARTIFACT_BYTES and 64 KiB RAM buffer.
+/// Multiple receipts referring to one physical file are checked serially.
+fn verify_artifacts_bounded<F>(steps:&[DeliveryStep],verifier:F)->Result<(),String>
+where F:Fn(&DeliveryArtifact,&str)->Result<(),String>+Sync{
+    let mut artifacts=Vec::new();
+    for step in steps{
+        if let Some(artifact)=step.artifact.as_ref(){
+            artifacts.push((artifact,step.tool.as_str()));
+        }
+    }
+    // Earliest-first, disjoint-first admission across the bounded remaining
+    // queue. Two different paths do not prove different files: compare the
+    // underlying OS identity (hard links, aliases) before spawning a pair.
+    // The verification is read-only and every worker is scoped and joined.
+    let mut remaining=artifacts;
+    while !remaining.is_empty(){
+        let first=remaining.remove(0);
+        let first_path=fs::canonicalize(&first.0.path)
+            .map_err(|_|"Primary output path cannot be canonicalized.".to_string())?;
+        let mut candidate=None;
+        for (i,second) in remaining.iter().enumerate(){
+            let second_path=fs::canonicalize(&second.0.path)
+                .map_err(|_|"Queued output path cannot be canonicalized.".to_string())?;
+            if first_path==second_path || same_physical_output(&first_path,&second_path)?{
+                continue;
+            }
+            candidate=Some(i);
+            break;
+        }
+        if let Some(index)=candidate{
+            let second=remaining.remove(index);
+            std::thread::scope(|scope|{
+                let left=scope.spawn(||verifier(first.0,first.1));
+                let right=scope.spawn(||verifier(second.0,second.1));
+                // Always join both independent threads even on one failure,
+                // without returning a partially verified final DAG receipt.
+                let a=left.join()
+                    .map_err(|_|"First bounded verification worker panicked.".to_string());
+                let b=right.join()
+                    .map_err(|_|"Second bounded verification worker panicked.".to_string());
+                a??;b??;
+                Ok::<(),String>(())
+            })?;
+        }else{
+            verifier(first.0,first.1)?;
+        }
+    }
+    Ok(())
+}
 fn verify<F>(schedule:&crate::native_scheduler::Schedule,steps:&[DeliveryStep],
-    mut audit:F)->Result<(),String>
+    audit:F)->Result<(),String>
+where F:FnMut(&str)->Result<crate::AuditEntry,String>{
+    verify_with_pool(schedule,steps,audit,None)
+}
+fn verify_with_pool<F>(schedule:&crate::native_scheduler::Schedule,steps:&[DeliveryStep],
+    mut audit:F,pool:Option<&Path>)->Result<(),String>
 where F:FnMut(&str)->Result<crate::AuditEntry,String>{
     if schedule.jobs.is_empty()||schedule.jobs.len()!=steps.len()||steps.len()>MAX_STEPS
         ||schedule.jobs.iter().any(|j|j.phase!="audited"){
@@ -152,11 +308,41 @@ where F:FnMut(&str)->Result<crate::AuditEntry,String>{
         }
         receipts.push(entry);
     }
-    // Only after all action receipts match, re-read every external artifact.
-    for step in steps{
-        if let Some(a)=&step.artifact{check_artifact(a,&step.tool)?;}
-    }
+    // Only after all exact UUID/tool audit receipts match, verify independently
+    // readable artifacts with a strictly bounded read-only Rust worker pool.
+    verify_artifacts_bounded(steps,|artifact,tool|{
+        let _slot=match pool{Some(dir)=>Some(global_hash_slots::HashSlot::take(dir)?),None=>None};
+        check_artifact(artifact,tool)
+    })?;
     Ok(())
+}
+// Caller holds the verified kernel receipt lock. A same-action receipt is
+// immutable: repeated verified publishing must not overwrite its timestamp
+// or replace audited artifact bytes. A NEW task with disjoint prepared action
+// UUIDs can still replace the "last delivery" view after independent audit.
+fn publish_at(path:&Path,receipt:&DeliveryReceipt)->Result<DeliveryReceipt,String>{
+    check_structure(receipt)?;
+    if path.exists(){
+        let bytes=crate::read_file_bytes_bounded(path,MAX_BYTES,"native task delivery")?;
+        check_bytes(&bytes)?;
+        let old:DeliveryReceipt=serde_json::from_slice(&bytes)
+            .map_err(|_|"Previous native delivery receipt unreadable.".to_string())?;
+        let prior_ids:HashSet<&str>=old.steps.iter()
+            .map(|step|step.action_id.as_str()).collect();
+        let overlaps=receipt.steps.iter().any(|s|prior_ids.contains(s.action_id.as_str()));
+        if overlaps{
+            if old.objective==receipt.objective &&old.revision==receipt.revision
+                &&old.steps==receipt.steps {
+                return Ok(old); // Full same-UUID proof, original timestamp kept.
+            }
+            return Err("A prior delivered native action UUID cannot be republished with changed task or artifact evidence.".into());
+        }
+    }else if path.with_extension("json.bak").exists()
+        ||path.with_extension("json.tmp").exists(){
+        return Err("Interrupted delivery receipt requires owner inspection.".into());
+    }
+    write_at(path,receipt)?;
+    Ok(receipt.clone())
 }
 fn write_at(path:&Path,receipt:&DeliveryReceipt)->Result<(),String>{
     check_structure(receipt)?;
@@ -164,16 +350,105 @@ fn write_at(path:&Path,receipt:&DeliveryReceipt)->Result<(),String>{
         .map_err(|_|"Could not encode native task delivery.".to_string())?;
     crate::premiere_store::replace(path,&raw,MAX_BYTES,check_bytes)
 }
+// The trusted Rust worker certificate is the default source of truth for
+// Blender artifact delivery, not an AI/UI-proposed file path or stale cache.
+// Caller still must pass exact ordered DAG step IDs and action UUIDs; the
+// scheduler + successful action audits are independently rechecked below.
+fn fill_missing_blender_artifacts<F>(steps:&mut [DeliveryStep],mut get:F)
+    ->Result<(),String>
+where F:FnMut(&str)->Result<DeliveryArtifact,String>{
+    for step in steps{
+        if step.tool=="blender_run_plan"&&step.artifact.is_none(){
+            let cert=get(&step.action_id)?;
+            if cert.kind!="blender_artifact"{
+                return Err("Blender worker certificate kind does not match native tool.".into());
+            }
+            step.artifact=Some(cert);
+        }
+    }
+    Ok(())
+}
+// Hydrate ONLY the new optional full-plan fingerprint, never overwrite a
+// claimed artifact path, bytes, or file hash. Exact trusted worker UUID and
+// artifact identity must agree before adding any provenance data.
+fn fill_blender_plan_provenance<F>(steps:&mut [DeliveryStep],mut get:F)
+    ->Result<(),String>
+where F:FnMut(&str)->Result<DeliveryArtifact,String>{
+    for step in steps{
+        if step.tool!="blender_run_plan"{continue;}
+        let claimed=step.artifact.as_mut()
+            .ok_or("Blender final delivery cannot omit its verified artifact.")?;
+        let cert=get(&step.action_id)?;
+        if cert.kind!="blender_artifact"||claimed.path!=cert.path
+            ||claimed.sha256!=cert.sha256||claimed.bytes!=cert.bytes{
+            return Err("Blender final delivery cannot inherit plan provenance from another output.".into());
+        }
+        if claimed.approved_plan_sha256.is_some()
+            &&claimed.approved_plan_sha256!=cert.approved_plan_sha256{
+            return Err("Delivered Blender plan fingerprint differs from exact worker certificate.".into());
+        }
+        if claimed.approved_plan_sha256.is_none(){
+            claimed.approved_plan_sha256=cert.approved_plan_sha256;
+        }
+    }
+    Ok(())
+}
+fn verify_blender_certificates(app:&AppHandle,steps:&[DeliveryStep])
+    ->Result<(),String>{
+    for step in steps {
+        if step.tool=="blender_run_plan"{
+            let a=step.artifact.as_ref()
+                .ok_or("Blender delivery artifact is missing.")?;
+            crate::native_blender_action_artifact::require_exact(
+                app,&step.action_id,&a.path,&a.sha256,a.bytes)?;
+            if let Some(digest)=a.approved_plan_sha256.as_deref(){
+                let cert=crate::native_blender_action_artifact::read_verified(app,&step.action_id)?;
+                if cert.plan_sha256.as_deref()!=Some(digest){
+                    return Err("Stored task delivery plan digest differs from exact worker certificate.".into());
+                }
+            }
+        }
+    }
+    Ok(())
+}
 pub(crate) fn finalize(app:&AppHandle,steps:Vec<DeliveryStep>)->Result<DeliveryReceipt,String>{
     let _io=IO.lock().map_err(|_|"Native task delivery lock poisoned.")?;
+    let receipt_path=path(app)?;
+    let _receipt_os=receipt_lock::DeliveryReceiptOsLock::take(&receipt_path)?;
+    // Reserve the same two cross-instance read-only SHA slots for EVERY
+    // artifact-hash path in this finalization, not just the parallel batch.
+    let global_pool=app.path().app_data_dir()
+        .map_err(|_|"Native hash worker pool directory unavailable.")?;
+    fs::create_dir_all(&global_pool)
+        .map_err(|_|"Cannot create native hash worker pool directory.")?;
     let schedule=crate::native_scheduler::read(app)?
         .ok_or("No durable Rust scheduler exists for the final task.")?;
     let mut steps=steps;
+    // Auto-fill only the approved Blender tool's missing delivery artifact
+    // from the worker's exact UUID-bound, rehashed on-disk certificate.
+    // Explicitly supplied artifact claims are checked against it later.
+    fill_missing_blender_artifacts(&mut steps,|id|{
+        let _hash_slot=global_hash_slots::HashSlot::take(&global_pool)?;
+        let cert=crate::native_blender_action_artifact::read_verified(app,id)?;
+        Ok(DeliveryArtifact{kind:"blender_artifact".into(),
+            path:cert.path,sha256:cert.sha256,bytes:cert.bytes,
+            approved_plan_sha256:cert.plan_sha256})
+    })?;
+    // Explicit paths/hashes are never replaced, but the approved-plan
+    // provenance is filled from exact UUID evidence when it is available.
+    fill_blender_plan_provenance(&mut steps,|id|{
+        let _hash_slot=global_hash_slots::HashSlot::take(&global_pool)?;
+        let cert=crate::native_blender_action_artifact::read_verified(app,id)?;
+        Ok(DeliveryArtifact{kind:"blender_artifact".into(),
+            path:cert.path,sha256:cert.sha256,bytes:cert.bytes,
+            approved_plan_sha256:cert.plan_sha256})
+    })?;
     // Remotion acceptance receipts carry the SHA-256 but not always file
     // length. Rust computes that length, rather than trusting UI guesses.
     for step in &mut steps {
         if let Some(a)=step.artifact.as_mut(){
             if a.bytes==0 {
+                let _hash_slot=global_hash_slots::HashSlot::take(&global_pool)?;
                 a.bytes=file_hash(Path::new(&a.path),MAX_ARTIFACT_BYTES)?.0;
             }
         }
@@ -183,15 +458,92 @@ pub(crate) fn finalize(app:&AppHandle,steps:Vec<DeliveryStep>)->Result<DeliveryR
         recorded_at_ms:crate::now_ms(),steps
     };
     check_structure(&receipt)?;
-    verify(&schedule,&receipt.steps,|id|
+    verify_with_pool(&schedule,&receipt.steps,|id|
         crate::read_action_audit_receipt(app,id)?
-            .ok_or("Delivery requires an exact Rust action audit.".to_string()))?;
-    write_at(&path(app)?,&receipt)?;
-    Ok(receipt)
+            .ok_or("Delivery requires an exact Rust action audit.".to_string()),
+        Some(&global_pool))?;
+    // An externally existing .blend plus an arbitrary matching hash is not
+    // evidence that the exact scheduled worker produced it.
+    {
+        let _hash_slot=global_hash_slots::HashSlot::take(&global_pool)?;
+        verify_blender_certificates(app,&receipt.steps)?;
+    }
+    // A verified delivery must not publish a stale task graph changed while
+    // long SHA256 reads were in progress in another instance.
+    let latest=crate::native_scheduler::read(app)?
+        .ok_or("Native scheduler vanished during final delivery verification.")?;
+    if latest.objective!=schedule.objective ||latest.revision!=schedule.revision
+        ||latest.jobs!=schedule.jobs{
+        return Err("Native scheduler changed during delivery verification; no stale receipt published.".into());
+    }
+    // Persist the previous completed task before replacing the last receipt.
+    // The same OS-exclusive receipt lock surrounds archive+publication.
+    history::archive_predecessor(&receipt_path)?;
+    publish_at(&receipt_path,&receipt)
+}
+pub(crate) fn recent(app:&AppHandle)->Result<history::DeliveryHistoryView,String>{
+    let _io=IO.lock().map_err(|_|"Native task delivery lock poisoned.")?;
+    let receipt_path=path(app)?;
+    let _os=receipt_lock::DeliveryReceiptOsLock::take(&receipt_path)?;
+    history::read_recent(&receipt_path)
+}
+#[derive(Debug,Clone,serde::Serialize)]
+#[serde(rename_all="camelCase")]
+pub(crate) struct VerifiedHistoricalDelivery{
+    pub first_action_id:String,
+    pub objective:String,
+    pub step_count:usize,
+    pub output_count:usize,
+    // Exact Rust receipts + CURRENT on-disk SHA256 passed this readback.
+    // No Blender visual acceptance, process liveness or retry permission.
+    pub files_verified_now:bool,
+}
+pub(crate) fn verify_historical(app:&AppHandle,first_action_id:&str)
+    ->Result<VerifiedHistoricalDelivery,String>{
+    let _io=IO.lock().map_err(|_|"Native task delivery lock poisoned.")?;
+    let receipt_path=path(app)?;
+    let _os=receipt_lock::DeliveryReceiptOsLock::take(&receipt_path)?;
+    let completed=history::exact_receipt(&receipt_path,first_action_id)?;
+    let root=app.path().app_data_dir()
+        .map_err(|_|"Historical readback pool directory unavailable.")?;
+    fs::create_dir_all(&root)
+        .map_err(|_|"Cannot prepare historical readback pool.")?;
+    // Every action in the ARCHIVED complete task, not merely the first one,
+    // must still have exact successful, executed Rust audit evidence.
+    for step in &completed.steps{
+        let entry=crate::read_action_audit_receipt(app,&step.action_id)?
+            .ok_or("Historical job's exact Rust audit receipt is missing.".to_string())?;
+        if entry.action_id.as_deref()!=Some(step.action_id.as_str())
+            ||entry.tool!=step.tool||entry.event!="executed"||!entry.success{
+            return Err("Historical task cannot be reverified from current exact Rust audits.".into());
+        }
+        if let Some(artifact)=step.artifact.as_ref(){
+            let _slot=global_hash_slots::HashSlot::take(&root)?;
+            check_artifact(artifact,&step.tool)?;
+        }
+    }
+    // Blender artifacts also require the exact UUID-bound worker certificate
+    // and approved-plan provenance, not an arbitrary external file hash.
+    {
+        let _slot=global_hash_slots::HashSlot::take(&root)?;
+        verify_blender_certificates(app,&completed.steps)?;
+    }
+    Ok(VerifiedHistoricalDelivery{
+        first_action_id:first_action_id.into(),objective:completed.objective,
+        step_count:completed.steps.len(),
+        output_count:completed.steps.iter().filter(|s|s.artifact.is_some()).count(),
+        files_verified_now:true,
+    })
 }
 pub(crate) fn read(app:&AppHandle)->Result<Option<DeliveryReceipt>,String>{
     let _io=IO.lock().map_err(|_|"Native task delivery lock poisoned.")?;
-    let path=path(app)?;
+    let receipt_path=path(app)?;
+    let _receipt_os=receipt_lock::DeliveryReceiptOsLock::take(&receipt_path)?;
+    let global_pool=app.path().app_data_dir()
+        .map_err(|_|"Read-only delivery verification pool unavailable.")?;
+    fs::create_dir_all(&global_pool)
+        .map_err(|_|"Cannot prepare read-only delivery verification pool.")?;
+    let path=receipt_path;
     if !path.exists(){
         if path.with_extension("json.bak").exists()||path.with_extension("json.tmp").exists(){
             return Err("Interrupted delivery receipt publication needs owner inspection.".into());
@@ -212,7 +564,16 @@ pub(crate) fn read(app:&AppHandle)->Result<Option<DeliveryReceipt>,String>{
             ||entry.tool!=step.tool||entry.event!="executed"||!entry.success{
             return Err("Last delivery no longer has the matching Rust audit.".into());
         }
-        if let Some(a)=step.artifact.as_ref(){check_artifact(a,&step.tool)?;}
+        if let Some(a)=step.artifact.as_ref(){
+            let _hash_slot=global_hash_slots::HashSlot::take(&global_pool)?;
+            check_artifact(a,&step.tool)?;
+        }
+    }
+    // A historical task is not verified solely because its final JSON
+    // receipt is intact. Recheck exact worker provenance on every read.
+    {
+        let _hash_slot=global_hash_slots::HashSlot::take(&global_pool)?;
+        verify_blender_certificates(app,&stored.steps)?;
     }
     Ok(Some(stored))
 }
@@ -234,6 +595,206 @@ mod tests{
     fn audit(step:&str,tool:&str)->crate::AuditEntry{
         crate::AuditEntry{timestamp_ms:1,event:"executed".into(),tool:tool.into(),
             detail:step.into(),success:true,action_id:Some(step.into())}
+    }
+    #[test]
+    fn duplicate_delivery_exact_action_proof_is_idempotent_and_preserves_time(){
+        let dir=std::env::temp_dir().join(format!("shuvi-delivery-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let file=dir.join("last-delivery.json");
+        let first=DeliveryReceipt{
+            version:1,objective:"Build".into(),revision:1,
+            recorded_at_ms:1000,steps:vec![DeliveryStep{
+                step_id:"inspect".into(),tool:"read_file".into(),
+                action_id:A.into(),artifact:None
+            }]
+        };
+        publish_at(&file,&first).unwrap();
+        let mut repeat=first.clone();
+        repeat.recorded_at_ms=2000;
+        let existing=publish_at(&file,&repeat).unwrap();
+        assert_eq!(existing.recorded_at_ms,1000);
+        assert_eq!(fs::read(&file).unwrap(),serde_json::to_vec(&first).unwrap());
+        let mut forged=repeat.clone();
+        forged.objective="Different".into();
+        assert!(publish_at(&file,&forged).is_err());
+        let mut wrong=repeat.clone();
+        wrong.steps[0].tool="git_status".into();
+        assert!(publish_at(&file,&wrong).is_err());
+        let fresh=DeliveryReceipt{
+            version:1,objective:"Next task".into(),revision:1,
+            recorded_at_ms:3000,steps:vec![DeliveryStep{
+                step_id:"new".into(),tool:"read_file".into(),
+                action_id:B.into(),artifact:None
+            }]
+        };
+        assert_eq!(publish_at(&file,&fresh).unwrap().objective,"Next task");
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn cross_process_receipt_lock_blocks_both_publish_and_inspection(){
+        let dir=std::env::temp_dir().join(format!("shuvi-delivery-lock-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let file=dir.join("last-delivery.json");
+        let owner=receipt_lock::DeliveryReceiptOsLock::take(&file).unwrap();
+        assert!(receipt_lock::DeliveryReceiptOsLock::take(&file).is_err());
+        drop(owner);
+        let after=receipt_lock::DeliveryReceiptOsLock::take(&file).unwrap();
+        drop(after);
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn queue_skips_aliased_head_and_runs_next_disjoint_output_in_parallel(){
+        use std::sync::atomic::{AtomicUsize,Ordering};
+        use std::time::Duration;
+        let root=std::env::temp_dir().join(format!("shuvi-alias-queue-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let a=root.join("a.blend");
+        let alias=root.join("alias.blend");
+        let b=root.join("b.blend");
+        fs::write(&a,b"BLENDER same source").unwrap();
+        fs::hard_link(&a,&alias).unwrap();
+        fs::write(&b,b"BLENDER unrelated output").unwrap();
+        let build=|step:&str,path:&Path|DeliveryStep{
+            step_id:step.into(),tool:"blender_run_plan".into(),
+            action_id:match step{
+                "a"=>"e8b36b21-1c6a-459e-9b6f-75dd5692ab81",
+                "alias"=>"0f2977ac-4f61-4d9c-bf74-ecf8a3ae2172",
+                _=>"3ac5c21a-8407-4ed7-b4b7-f51ba437a491",
+            }.into(),
+            artifact:Some({
+                let (bytes,sha256)=file_hash(path,MAX_ARTIFACT_BYTES).unwrap();
+                DeliveryArtifact{kind:"blender_artifact".into(),
+                    path:path.to_str().unwrap().into(),bytes,sha256,
+                    approved_plan_sha256:None}
+            })
+        };
+        let jobs=vec![build("a",&a),build("alias",&alias),build("b",&b)];
+        let active=AtomicUsize::new(0);
+        let peak=AtomicUsize::new(0);
+        let started=AtomicUsize::new(0);
+        verify_artifacts_bounded(&jobs,|artifact,tool|{
+            let count=active.fetch_add(1,Ordering::SeqCst)+1;
+            peak.fetch_max(count,Ordering::SeqCst);
+            started.fetch_add(1,Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(40));
+            let done=check_artifact(artifact,tool);
+            active.fetch_sub(1,Ordering::SeqCst);
+            done
+        }).unwrap();
+        assert_eq!(started.load(Ordering::SeqCst),3);
+        assert_eq!(peak.load(Ordering::SeqCst),2);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn real_hard_links_share_one_physical_identity_and_never_enter_two_workers(){
+        let root=std::env::temp_dir().join(format!("shuvi-hardlink-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let primary=root.join("first.blend");
+        let alias=root.join("second.blend");
+        fs::write(&primary,b"BLENDER SAME INODE CONTENT").unwrap();
+        fs::hard_link(&primary,&alias).unwrap();
+        assert_ne!(fs::canonicalize(&primary).unwrap(),fs::canonicalize(&alias).unwrap());
+        assert!(same_physical_output(&primary,&alias).unwrap());
+        let (bytes,hash)=file_hash(&primary,MAX_ARTIFACT_BYTES).unwrap();
+        let step=|name:&str,path:&Path|DeliveryStep{
+            step_id:name.into(),tool:"blender_run_plan".into(),
+            action_id:if name=="one"{
+                "e8b36b21-1c6a-459e-9b6f-75dd5692ab81"
+            }else{"0f2977ac-4f61-4d9c-bf74-ecf8a3ae2172"}.into(),
+            artifact:Some(DeliveryArtifact{kind:"blender_artifact".into(),
+                path:path.to_str().unwrap().into(),bytes,sha256:hash.clone(),
+                approved_plan_sha256:None})
+        };
+        let inside=std::sync::atomic::AtomicBool::new(false);
+        verify_artifacts_bounded(&[step("one",&primary),step("two",&alias)],|artifact,tool|{
+            use std::sync::atomic::Ordering;
+            assert!(!inside.swap(true,Ordering::SeqCst),
+                "one physical output must not be verified concurrently");
+            let result=check_artifact(artifact,tool);
+            inside.store(false,Ordering::SeqCst);
+            result
+        }).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn replaced_file_identity_is_rejected_even_with_equal_size(){
+        let root=std::env::temp_dir().join(format!("shuvi-fileid-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let file=root.join("output.blend");
+        fs::write(&file,b"TEST-SAME-LEN").unwrap();
+        let original=read_exclusive_identity(&file).unwrap();
+        let before=physical_file_id(&original).unwrap();
+        let changed=root.join("changed.blend");
+        fs::write(&changed,b"TEST-SAME-LEN").unwrap();
+        let new_id=physical_file_id(&read_exclusive_identity(&changed).unwrap()).unwrap();
+        assert_ne!(before,new_id);
+        assert!(!same_physical_output(&file,&changed).unwrap());
+        drop(original);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn independent_artifacts_use_two_bounded_read_only_verification_threads(){
+        use std::sync::atomic::{AtomicUsize,Ordering};
+        let root=std::env::temp_dir().join(format!("shuvi-parallel-hash-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let a=root.join("one.blend");let b=root.join("two.blend");
+        fs::write(&a,b"BLENDER first certificate").unwrap();
+        fs::write(&b,b"BLENDER second certificate").unwrap();
+        let a_hash=file_hash(&a,MAX_ARTIFACT_BYTES).unwrap();
+        let b_hash=file_hash(&b,MAX_ARTIFACT_BYTES).unwrap();
+        let make=|path:&Path,record:(u64,String)|DeliveryArtifact{
+            kind:"blender_artifact".into(),path:path.to_str().unwrap().into(),
+            bytes:record.0,sha256:record.1,approved_plan_sha256:None
+        };
+        let steps=vec![
+            DeliveryStep{step_id:"one".into(),tool:"blender_run_plan".into(),
+                action_id:"e8b36b21-1c6a-459e-9b6f-75dd5692ab81".into(),
+                artifact:Some(make(&a,a_hash))},
+            DeliveryStep{step_id:"two".into(),tool:"blender_run_plan".into(),
+                action_id:"0f2977ac-4f61-4d9c-bf74-ecf8a3ae2172".into(),
+                artifact:Some(make(&b,b_hash))},
+        ];
+        let started=AtomicUsize::new(0);
+        let concurrent=AtomicUsize::new(0);
+        verify_artifacts_bounded(&steps,|artifact,tool|{
+            started.fetch_add(1,Ordering::SeqCst);
+            concurrent.fetch_add(1,Ordering::SeqCst);
+            // Both children can begin only if the verifier actually runs
+            // independent tasks concurrently, not just claims a second lane.
+            for _ in 0..2000{
+                if started.load(Ordering::SeqCst)==2{break;}
+                std::thread::yield_now();
+            }
+            let result=check_artifact(artifact,tool);
+            concurrent.fetch_sub(1,Ordering::SeqCst);
+            result
+        }).unwrap();
+        assert_eq!(started.load(Ordering::SeqCst),2);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn aliased_output_is_not_read_in_parallel_and_tamper_fails_closed(){
+        use std::sync::atomic::{AtomicUsize,Ordering};
+        let root=std::env::temp_dir().join(format!("shuvi-aliased-hash-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let file=root.join("same.blend");
+        fs::write(&file,b"BLENDER stable").unwrap();
+        let (bytes,hash)=file_hash(&file,MAX_ARTIFACT_BYTES).unwrap();
+        let make=||DeliveryStep{step_id:"same".into(),tool:"blender_run_plan".into(),
+            action_id:"e8b36b21-1c6a-459e-9b6f-75dd5692ab81".into(),
+            artifact:Some(DeliveryArtifact{
+                kind:"blender_artifact".into(),path:file.to_str().unwrap().into(),
+                sha256:hash.clone(),bytes,approved_plan_sha256:None})};
+        let calls=AtomicUsize::new(0);
+        verify_artifacts_bounded(&[make(),make()],|a,tool|{
+            assert_eq!(calls.fetch_add(1,Ordering::SeqCst),0_usize.max(
+                calls.load(Ordering::SeqCst).saturating_sub(1)));
+            check_artifact(a,tool)
+        }).unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst),2);
+        fs::write(&file,b"BLENDER tampered").unwrap();
+        assert!(verify_artifacts_bounded(&[make()],check_artifact).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn exact_multi_worker_audit_receipts_can_be_finalized(){
@@ -258,11 +819,80 @@ mod tests{
         fs::write(&p,b"native-artifact").unwrap();
         let (size,hash)=file_hash(&p,MAX_ARTIFACT_BYTES).unwrap();
         let claim=DeliveryArtifact{kind:"blender_artifact".into(),path:p.to_string_lossy().into_owned(),
-            sha256:hash,bytes:size};
+            sha256:hash,bytes:size,approved_plan_sha256:None};
         check_artifact(&claim,"blender_run_plan").unwrap();
         fs::write(&p,b"changed-artifact").unwrap();
         assert!(check_artifact(&claim,"blender_run_plan").is_err());
         let _=fs::remove_file(p);
+    }
+    #[test]
+    fn missing_blender_delivery_artifact_is_filled_from_exact_verified_uuid(){
+        let mut steps=vec![claim("model","blender_run_plan",A),
+            claim("inspect","read_file",B)];
+        let artifact=DeliveryArtifact{kind:"blender_artifact".into(),
+            path:"C:\\\\artifacts\\\\model.blend".into(),
+            sha256:"a".repeat(64),bytes:1234,
+             approved_plan_sha256:None};
+        let mut looked_up=0usize;
+        fill_missing_blender_artifacts(&mut steps,|id|{
+            assert_eq!(id,A);
+            looked_up+=1;
+            Ok(artifact.clone())
+        }).unwrap();
+        assert_eq!(looked_up,1);
+        assert_eq!(steps[0].artifact,Some(artifact));
+        assert!(steps[1].artifact.is_none());
+    }
+    #[test]
+    fn missing_or_wrong_worker_certificate_never_autofills_delivery(){
+        let mut steps=vec![claim("model","blender_run_plan",A)];
+        assert!(fill_missing_blender_artifacts(&mut steps,|_|Err(
+            "Missing certificate".into())).is_err());
+        assert!(steps[0].artifact.is_none());
+        assert!(fill_missing_blender_artifacts(&mut steps,|_|Ok(
+            DeliveryArtifact{kind:"untrusted".into(),path:"x".into(),
+                sha256:"0".repeat(64),bytes:1,approved_plan_sha256:None})).is_err());
+        assert!(steps[0].artifact.is_none());
+    }
+    #[test]
+    fn exact_provenance_autofills_without_replacing_user_supplied_artifact_fields(){
+        let mut steps=vec![claim("model","blender_run_plan",A)];
+        let artifact=DeliveryArtifact{kind:"blender_artifact".into(),
+            path:"C:\\approved\\scene.blend".into(),sha256:"a".repeat(64),
+            bytes:400,approved_plan_sha256:None};
+        let verified=DeliveryArtifact{approved_plan_sha256:Some("b".repeat(64)),
+            ..artifact.clone()};
+        steps[0].artifact=Some(artifact.clone());
+        fill_blender_plan_provenance(&mut steps,|id|{
+            assert_eq!(id,A);
+            Ok(verified.clone())
+        }).unwrap();
+        assert_eq!(steps[0].artifact.as_ref().unwrap().path,artifact.path);
+        assert_eq!(steps[0].artifact.as_ref().unwrap().sha256,artifact.sha256);
+        assert_eq!(steps[0].artifact.as_ref().unwrap().bytes,artifact.bytes);
+        assert_eq!(steps[0].artifact.as_ref().unwrap().approved_plan_sha256,
+            Some("b".repeat(64)));
+        check_structure(&DeliveryReceipt{version:1,objective:"model".into(),
+            revision:1,recorded_at_ms:1,steps}).unwrap();
+    }
+    #[test]
+    fn foreign_output_or_wrong_plan_digest_never_gains_verified_provenance(){
+        let expected=DeliveryArtifact{kind:"blender_artifact".into(),
+            path:"C:\\approved\\scene.blend".into(),sha256:"a".repeat(64),
+            bytes:400,approved_plan_sha256:Some("b".repeat(64))};
+        let mut steps=vec![claim("model","blender_run_plan",A)];
+        steps[0].artifact=Some(DeliveryArtifact{
+            approved_plan_sha256:Some("c".repeat(64)),..expected.clone()});
+        assert!(fill_blender_plan_provenance(&mut steps,|_|Ok(expected.clone())).is_err());
+        steps[0].artifact=Some(DeliveryArtifact{
+            approved_plan_sha256:None,path:"C:\\foreign\\scene.blend".into(),..expected.clone()});
+        assert!(fill_blender_plan_provenance(&mut steps,|_|Ok(expected.clone())).is_err());
+        let mut non_blender=claim("make","read_file",B);
+        non_blender.artifact=Some(DeliveryArtifact{kind:"blender_artifact".into(),
+            path:"C:\\approved\\scene.blend".into(),sha256:"a".repeat(64),
+            bytes:1,approved_plan_sha256:Some("b".repeat(64))});
+        assert!(check_structure(&DeliveryReceipt{version:1,objective:"test".into(),
+            revision:1,recorded_at_ms:1,steps:vec![non_blender]}).is_err());
     }
     #[test]
     fn duplicate_identity_and_missing_artifact_are_rejected(){

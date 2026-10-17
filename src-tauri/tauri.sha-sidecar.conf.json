@@ -1,0 +1,5 @@
+{
+  "bundle": {
+    "externalBin": ["binaries/shuvi-readonly-hash-worker"]
+  }
+}

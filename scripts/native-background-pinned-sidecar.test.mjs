@@ -1,0 +1,52 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
+const read=p=>readFileSync(new URL("../"+p,import.meta.url),"utf8");
+const cargo=read("src-tauri/Cargo.toml");
+const build=read("src-tauri/build.rs");
+const runtime=read("src-tauri/src/native_background_os_workers.rs");
+const admission=read("src-tauri/src/native_background_admission.rs");
+const prepare=read("scripts/prepare-native-sha-sidecar.mjs");
+const installer=read("scripts/build-pinned-sha-installer.mjs");
+const pkg=JSON.parse(read("package.json"));
+const tauri=JSON.parse(read("src-tauri/tauri.sha-sidecar.conf.json"));
+
+test("M58 production installer MUST compile exact SHA worker pin into main executable, never trust unpinned developer run",()=>{
+  assert.match(cargo,/(\[build-dependencies\][\s\S]*sha2\s*=\s*"0\.10")/);
+  assert.match(build,/SHUVI_REQUIRE_PINNED_SHA_SIDECAR/);
+  assert.match(build,/cargo:rustc-env=SHUVI_PINNED_SHA_SIDECAR=/);
+  assert.match(build,/if env::var\("SHUVI_REQUIRE_PINNED_SHA_SIDECAR"\)\.ok\(\)\.as_deref\(\)!=Some\("1"\)/);
+  assert.match(build,/32\*1024\*1024/);
+  assert.match(runtime,/option_env!\("SHUVI_PINNED_SHA_SIDECAR"\)/);
+  assert.match(runtime,/no trusted SHA sidecar pin/);
+  assert.match(runtime,/installed SHA worker digest differs/i);
+  assert.match(installer,/SHUVI_REQUIRE_PINNED_SHA_SIDECAR:"1"/);
+  assert.match(installer,/before=sha\(\)/);
+  assert.match(installer,/if\(sha\(\)!==before/);
+  assert.match(installer,/shell:false/);
+  assert.match(pkg.scripts["build:windows-installer"],/build-pinned-sha-installer\.mjs/);
+  assert.deepEqual(tauri.bundle.externalBin,["binaries/shuvi-readonly-hash-worker"]);
+});
+test("M58 stable fixed filename, Win32 single-link proof, deny-write handle held until admission",()=>{
+  assert.match(runtime,/fn verify_pinned_sidecar_at\(sidecar:&Path,expected:&str\)/);
+  assert.match(runtime,/sidecar\.file_name\(\)!=Some\(std::ffi::OsStr::new\("shuvi-readonly-hash-worker\.exe"\)\)/);
+  assert.match(runtime,/share_mode\(1\)/);
+  assert.match(runtime,/custom_flags\(OPEN_REPARSE_POINT\)/);
+  assert.match(runtime,/admission::require_single_link\(sidecar\)\?/);
+  assert.match(admission,/pub\(super\) fn require_single_link/);
+  assert.match(runtime,/Ok\(PinnedSidecar\{path:sidecar\.to_path_buf\(\),_verified_handle:handle\}\)/);
+  assert.match(runtime,/let executable=trusted_sidecar\(\)\?/);
+  assert.match(runtime,/spawn_admitted_readonly\(\s*root,id,input,expected_sha256,&executable\.path,&args,root\)\?/);
+  assert.match(runtime,/fn m58_fixed_sidecar_hash_pin_accepts_exact_bytes_and_denies_changes/);
+  assert.match(runtime,/fn m58_sidecar_rejects_short_inputs_hardlinks_and_wrong_executable_names/);
+  assert.doesNotMatch(runtime,/Command::new\("powershell"\)|Command::new\("cmd"\)/);
+});
+test("M58 fixed compiled Rust sidecar is copy-hashed and no unverified installer launch is possible",()=>{
+  assert.match(prepare,/--bin","shuvi-readonly-hash-worker"/);
+  assert.match(prepare,/if\(digest\(source\)!==digest\(dest\)\)/);
+  assert.match(installer,/new URL|@tauri-apps/);
+  assert.match(installer,/sha256/);
+  assert.match(installer,/SHUVI_REQUIRE_PINNED_SHA_SIDECAR/);
+  assert.match(installer,/WARNING: SHA pinning is not code signing/);
+  assert.doesNotMatch(installer,/fetch\(|https?:\/\/|shell:true/);
+});

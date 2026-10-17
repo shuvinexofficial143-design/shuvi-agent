@@ -112,6 +112,72 @@ export type ChatResponse = {
   usage: UsageStats | null;
 };
 
+export type NativeResourceClaim = {
+  actionId: string;
+  tool: string;
+  readPaths: string[];
+  writePaths: string[];
+  health: string;
+  approvedPlanSha256: string | null;
+  evidenceVerified: false;
+  safeToAutoRetry: false;
+};
+
+// Read-only health of the separate two-slot Windows SHA lane. Journal
+// "os_running" does not establish current OS liveness or app success.
+export type NativeBackgroundOwnerStatus = {
+  schemaVersion: 1;
+  processLivenessVerified: false;
+  applicationVerified: false;
+  safeToAutoRetry: false;
+  workers: Array<{
+    actionId: string;
+    recordedPhase: "reserved" | "os_running" | "os_exited_unverified" |
+      "os_cancelled_unverified" | "os_timed_out_unverified" |
+      "sha256_verified" | "owner_reviewed_unknown";
+    evidenceHealth: "independent_current_sha_verified" |
+      "sha_artifact_missing_or_changed_owner_review_required" |
+      "journal_receipt_mismatch_owner_review_required" |
+      "work_or_crash_liveness_not_authenticated" |
+      "unverified_os_outcome_requires_owner_review";
+    currentFileRehashed: boolean;
+    safeToAutoRetry: false;
+    stopRequested: boolean;
+  }>;
+};
+
+// M54: durable parent queue state is NOT live OS liveness or current-file proof.
+export type NativeApprovedParentRecoveryView = {
+  parentId: string;
+  recordedPhase: "queued"|"admitted"|"sha256_verified"|"outcome_unknown"|"owner_reconciled_unverified";
+  osAdmissionPhase: string;
+  stopIntentRecorded: boolean;
+  currentSha256Reverified: boolean;
+  ownerReviewRequired: boolean;
+  holdsResource: boolean;
+  recordedTerminalEvidence: boolean;
+  safeToAutoRetry: false;
+  applicationVerified: false;
+  processLivenessVerified: false;
+};
+
+export type NativeApprovedParentQueueStatus = {
+  schemaVersion: 1;
+  applicationVerified: false;
+  processLivenessVerified: false;
+  safeToAutoRetry: false;
+  parents: Array<{
+    parentId: string;
+    recordedPhase: "queued" | "admitted" | "sha256_verified" | "outcome_unknown" | "owner_reconciled_unverified";
+    priority: 0 | 1 | 2;
+    dependsOn: string[];
+    currentFileSha256Verified: false;
+    applicationVerified: false;
+    processLivenessVerified: false;
+    safeToAutoRetry: false;
+  }>;
+};
+
 export type NativeWorkerStatus = {
   schemaVersion: 1;
   observedAtMs: number;
@@ -125,8 +191,17 @@ export type NativeWorkerStatus = {
   recoveryPhase: string | null;
   recoveryTaskId: string | null;
   requiresOwnerReview: boolean;
+  resourceOwnershipHealth: "no_held_output_claims" | "output_resources_still_reserved";
+  resourceHeldCount: number;
+  resourceRetiredRecentCount: number;
+  resourceClaims: NativeResourceClaim[];
   progressHeartbeatVerified: false;
   safeToAutoRetry: false;
+  // Last HMAC-authenticated Python worker evidence (not app success).
+  attestedWorkerStage: "python_active" | "blender_session_attached" |
+    "plan_verified" | "artifact_rehashed" | null;
+  attestedWorkerSequence: number | null;
+  attestedWorkerObservedAtMs: number | null;
   // Durable Rust supervision of THIS process, not Adobe/Blender progress.
   durableJobPhase: "running" | "audit_verified" | "owner_reviewed_unknown" | null;
   durableJobActionId: string | null;
@@ -137,6 +212,27 @@ export type NativeWorkerStatus = {
   supervisorHealth: "not_observed" | "supervisor_start_record_only" | "unattributed_or_interrupted" |
     "supervisor_tick_stale" | "rust_supervisor_observed" | "last_action_audited" |
     "audited_job_conflicts_with_live_lease" | "last_action_reviewed_unknown";
+};
+
+export type NativeHistoricalDeliveryVerification = {
+  firstActionId: string;
+  objective: string;
+  stepCount: number;
+  outputCount: number;
+  filesVerifiedNow: true;
+};
+
+export type NativeCompletedDeliveryHistory = {
+  version: 1;
+  items: Array<{
+    recordedAtMs: number;
+    objective: string;
+    revision: number;
+    stepCount: number;
+    outputCount: number;
+    firstActionId: string;
+    currentlyVerified: false;
+  }>;
 };
 
 export type NativeTaskDelivery = {
