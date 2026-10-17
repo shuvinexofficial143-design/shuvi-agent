@@ -44,6 +44,10 @@ pub struct Job {pub schema_version:u8,pub job_id:String,pub project_guid:String,
     pub output:String,pub preset:Option<String>,pub queue_to_ame:bool,pub request_at_ms:u64,
     pub output_existed_before:bool,pub before:FileObservation,pub bridge_state:String,
     pub encoder_completion_verified:bool,
+    // Original bridge command identity is persisted when its exact accepted
+    // response arrives; it is not a native Adobe jobID or a producer proof.
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub bridge_request_id:Option<String>,
     #[serde(default)]
     media_validation:Option<MediaValidationReceipt>,
     pub observations:Vec<FileObservation>}
@@ -57,7 +61,75 @@ impl Job {
         Ok(Self{schema_version:1,job_id:id,project_guid:project.into(),sequence_guid:sequence.into(),
             output:output.into(),preset:preset.map(str::to_owned),queue_to_ame:queue,request_at_ms:now(),
             output_existed_before:before.exists,before,bridge_state:"pending".into(),
-            encoder_completion_verified:false,media_validation:None,observations:vec![]})
+            encoder_completion_verified:false,bridge_request_id:None,
+            media_validation:None,observations:vec![]})
+    }
+    pub fn native_event_observation(&self,host:Option<&Value>)->Value{
+        // The host UXP only holds a bounded ephemeral event ring. Even a
+        // uniquely observed queued/complete candidate does not prove this
+        // Shuvi job caused the export or that an MP4 is fully rendered.
+        let blank=|reason:&str| json!({
+            "bridge_request_id":self.bridge_request_id,
+            "observational_native_event_bound":false,
+            "native_queue_candidate_observed":false,
+            "native_complete_event_candidate_observed":false,
+            "native_error_or_cancel_observed":false,
+            "native_job_id_candidate":null,
+            "encoder_completion_verified":false,
+            "export_job_output_attribution_verified":false,
+            "final_delivery_ready":false,
+            "retry_safe":false,
+            "reason":reason
+        });
+        if !matches!(self.bridge_state.as_str(),"accepted"|"queued"){
+            return blank("Export job has no confirmed native dispatch acceptance.");
+        }
+        let id=match self.bridge_request_id.as_deref(){
+            Some(id)=>id,None=>return blank("No persisted exact bridge request identity.")
+        };
+        let rows=match host.and_then(|value|value.get("shuviExportObservations"))
+            .and_then(Value::as_array) {
+                Some(rows) if rows.len()<=16=>rows,
+                _=>return blank("No bounded live Premiere UXP export-event observations.")
+            };
+        let matches:Vec<&Value>=rows.iter().filter(|row|
+            row.get("bridgeRequestId").and_then(Value::as_str)==Some(id)
+            &&row.get("output").and_then(Value::as_str)==Some(self.output.as_str())
+        ).collect();
+        if matches.len()!=1{return blank("Exact bridge ID and output event evidence missing or ambiguous.");}
+        let row=matches[0];
+        let valid=row.get("windowComplete").and_then(Value::as_bool)==Some(true)
+            &&row.get("queueCandidateCount").and_then(Value::as_u64)==Some(1)
+            &&row.get("queueCandidateObserved").and_then(Value::as_bool)==Some(true)
+            &&row.get("nativeCorrelation").and_then(Value::as_str)
+                ==Some("exact_output_single_queue_candidate_external_writer_race_unexcluded")
+            &&row.get("encoderCompletionVerified").and_then(Value::as_bool)==Some(false)
+            &&row.get("fileGeneratedByThisShuviRequestVerified").and_then(Value::as_bool)==Some(false)
+            &&row.get("finalDeliveryReady").and_then(Value::as_bool)==Some(false);
+        let native_id=row.get("nativeJobIdCandidate").and_then(Value::as_str)
+            .filter(|s|!s.is_empty()&&s.len()<=160);
+        if !valid||native_id.is_none(){
+            return blank("Unverified, ambiguous or truncated native event candidate.");
+        }
+        let ended=row.get("latestNativeTerminalEvent").and_then(Value::as_str);
+        let complete=ended==Some("complete")
+            &&row.get("nativeCompleteEventCandidateObserved").and_then(Value::as_bool)==Some(true)
+            &&row.get("nativeErrorOrCancelObserved").and_then(Value::as_bool)==Some(false);
+        let failed=matches!(ended,Some("error"|"cancelled"))
+            &&row.get("nativeErrorOrCancelObserved").and_then(Value::as_bool)==Some(true);
+        json!({
+            "bridge_request_id":id,
+            "observational_native_event_bound":true,
+            "native_job_id_candidate":native_id,
+            "native_queue_candidate_observed":true,
+            "native_complete_event_candidate_observed":complete,
+            "native_error_or_cancel_observed":failed,
+            "encoder_completion_verified":false,
+            "export_job_output_attribution_verified":false,
+            "final_delivery_ready":false,
+            "retry_safe":false,
+            "reason":"Matched one transient Adobe native queue event to one Shuvi bridge request ID/output. External writer race, actual encoded bytes and completion are not independently proven."
+        })
     }
     pub fn observe_once(&mut self)->Result<Value,String>{
         self.validate()?;
@@ -106,7 +178,10 @@ impl Job {
             || self.output.is_empty()||self.output.len()>4096||!Path::new(&self.output).is_absolute()
             || self.preset.as_ref().is_some_and(|s|s.len()>4096)
             || !matches!(self.bridge_state.as_str(),"pending"|"accepted"|"queued"|"execution_status_unknown"|"rejected")
-            || self.encoder_completion_verified || self.observations.len()>MAX_OBSERVATIONS {
+            || self.encoder_completion_verified || self.observations.len()>MAX_OBSERVATIONS
+            || self.bridge_request_id.as_ref().is_some_and(|id|
+                id.is_empty()||id.len()>160
+                ||!id.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'||b==b'_')) {
             return Err("Invalid or falsely completed Premiere export job.".into());
         }
         if let Some(receipt)=&self.media_validation {receipt.validate()?;
@@ -151,6 +226,51 @@ pub fn save(path:&Path,jobs:&Jobs)->Result<(),String>{
 
 #[cfg(test)]mod tests{
     use super::*;
+    #[test] fn transient_native_complete_event_is_not_verified_export(){
+        let mut job=Job::new("job-bridge".into(),"P","S","C:/exports/a.mp4",None,true).unwrap();
+        job.bridge_state="queued".into();
+        job.bridge_request_id=Some("bridge-123".into());
+        let observation=json!({"shuviExportObservations":[{
+            "bridgeRequestId":"bridge-123","output":"C:/exports/a.mp4",
+            "windowComplete":true,"queueCandidateCount":1,
+            "queueCandidateObserved":true,"nativeJobIdCandidate":"adobe-456",
+            "nativeCorrelation":"exact_output_single_queue_candidate_external_writer_race_unexcluded",
+            "latestNativeTerminalEvent":"complete","nativeCompleteEventCandidateObserved":true,
+            "nativeErrorOrCancelObserved":false,"encoderCompletionVerified":false,
+            "fileGeneratedByThisShuviRequestVerified":false,"finalDeliveryReady":false
+        }]});
+        job.validate().unwrap();
+        let result=job.native_event_observation(Some(&observation));
+        assert_eq!(result["observational_native_event_bound"],true);
+        assert_eq!(result["native_complete_event_candidate_observed"],true);
+        assert_eq!(result["encoder_completion_verified"],false);
+        assert_eq!(result["export_job_output_attribution_verified"],false);
+        assert_eq!(result["final_delivery_ready"],false);
+        assert_eq!(result["retry_safe"],false);
+        let mut mismatched=observation.clone();
+        mismatched["shuviExportObservations"][0]["output"]=json!("C:/exports/other.mp4");
+        assert_eq!(job.native_event_observation(Some(&mismatched))["observational_native_event_bound"],false);
+        let mut bad=observation.clone();
+        bad["shuviExportObservations"][0]["windowComplete"]=json!(false);
+        assert_eq!(job.native_event_observation(Some(&bad))["observational_native_event_bound"],false);
+        let mut pretended=observation.clone();
+        pretended["shuviExportObservations"][0]["encoderCompletionVerified"]=json!(true);
+        assert_eq!(job.native_event_observation(Some(&pretended))["observational_native_event_bound"],false);
+        job.bridge_state="execution_status_unknown".into();
+        assert_eq!(job.native_event_observation(Some(&observation))["observational_native_event_bound"],false);
+    }
+    #[test] fn legacy_export_jobs_deserialize_and_bridge_identity_is_bounded(){
+        let mut job=Job::new("old".into(),"p","s","C:/out.mp4",None,false).unwrap();
+        let mut payload=serde_json::to_value(&job).unwrap();
+        payload.as_object_mut().unwrap().remove("bridge_request_id");
+        let old:Job=serde_json::from_value(payload).unwrap();
+        assert!(old.bridge_request_id.is_none());
+        job.bridge_request_id=Some("bridge ok".into());
+        assert!(job.validate().is_err());
+        job.bridge_request_id=Some("a".repeat(161));
+        assert!(job.validate().is_err());
+    }
+
     #[test] fn oversized_persisted_jobs_are_rejected_before_decoding() {
         let file=std::env::temp_dir().join(format!("shuvi-oversized-jobs-{}.json",uuid::Uuid::new_v4()));
         let handle=fs::File::create(&file).unwrap();

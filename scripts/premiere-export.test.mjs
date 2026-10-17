@@ -10,8 +10,16 @@ function fixture({ame=true,accepted=true}={}) {
   const manager={isAMEInstalled:ame,exportSequence:async()=>{exports++;return accepted;}};
   const premiere={Project:{getActiveProject:async()=>project},EncoderManager:{getManager:()=>manager},
     Constants:{ExportType:{QUEUE_TO_AME:2,IMMEDIATELY:1}}};
+  // Exercise the actual production helper, not an empty mock that silently
+  // bypasses the exact bridge-ID/queue-event evidence validation.
+  const evidenceModule={exports:{}};
+  vm.runInNewContext(
+    readFileSync(new URL("../integrations/premiere-uxp/encoder-export-evidence.js",import.meta.url),"utf8"),
+    {module:evidenceModule,exports:evidenceModule.exports}
+  );
   const panel={document:{getElementById:()=>null},require:name=>name==="premierepro"?premiere:
-    name==="uxp"?{entrypoints:{setup(){}}}:{},setInterval:()=>0};
+    name==="uxp"?{entrypoints:{setup(){}}}:
+    name==="./encoder-export-evidence.js"?evidenceModule.exports:{},setInterval:()=>0};
   vm.createContext(panel);
   vm.runInContext(readFileSync(new URL("../integrations/premiere-uxp/main.js",import.meta.url),"utf8"),panel);
   const expected={project_guid:"project-A",project_path:"C:/project.prproj",sequence_guid:"sequence-A",clips:[]};
@@ -57,32 +65,37 @@ test("bounded capability registry separates routes, API observation and runtime 
   assert.match(desktop,/no UI fallback is permitted/);
 });
 test("immediate boolean acceptance never claims encoding completion",async()=>{
-  const f=fixture();const result=await f.panel.executeCommand({action:"export_sequence",arguments:f.args});
+  const f=fixture();const result=await f.panel.executeCommand({id:"source-test-export-1",action:"export_sequence",arguments:f.args});
   assert.equal(result.state,"accepted");assert.equal(result.completionVerified,false);assert.equal(result.accepted,true);
+  assert.equal(result.bridgeRequestId,"source-test-export-1");
+  assert.equal(result.exportEventEvidence.encoderCompletionVerified,false);
+  assert.equal(result.exportEventEvidence.finalDeliveryReady,false);
   assert.equal(f.exports,1);
 });
 test("AME acceptance is queued, not rendered",async()=>{
-  const f=fixture();const result=await f.panel.executeCommand({action:"export_sequence",arguments:{...f.args,queueToAme:true}});
+  const f=fixture();const result=await f.panel.executeCommand({id:"source-test-export-1",action:"export_sequence",arguments:{...f.args,queueToAme:true}});
   assert.equal(result.state,"queued");assert.equal(result.completionVerified,false);assert.equal(result.ameAvailable,true);
+  assert.equal(result.bridgeRequestId,"source-test-export-1");
+  assert.equal(result.exportEventEvidence.fileGeneratedByThisShuviRequestVerified,false);
   assert.equal(f.exports,1);
 });
 test("AME unavailable refuses before export",async()=>{
   const f=fixture({ame:false});
-  await assert.rejects(f.panel.executeCommand({action:"export_sequence",arguments:{...f.args,queueToAme:true}}),/not installed/);
+  await assert.rejects(f.panel.executeCommand({id:"source-test-export-1",action:"export_sequence",arguments:{...f.args,queueToAme:true}}),/not installed/);
   assert.equal(f.exports,0);
 });
 test("project and sequence changes reject before export",async()=>{
   const f=fixture();f.project.guid="other";
-  await assert.rejects(f.panel.executeCommand({action:"export_sequence",arguments:f.args}),/project changed/);
+  await assert.rejects(f.panel.executeCommand({id:"source-test-export-1",action:"export_sequence",arguments:f.args}),/project changed/);
   assert.equal(f.exports,0);
   f.project.guid="project-A";f.sequence={guid:"sequence-B",name:"Other"};
-  await assert.rejects(f.panel.executeCommand({action:"export_sequence",arguments:f.args}),/sequence changed/);
+  await assert.rejects(f.panel.executeCommand({id:"source-test-export-1",action:"export_sequence",arguments:f.args}),/sequence changed/);
   assert.equal(f.exports,0);
 });
 test("export requires whole-sequence expectation and rejects native false",async()=>{
   const f=fixture({accepted:false});
-  await assert.rejects(f.panel.executeCommand({action:"export_sequence",arguments:{...f.args,_expected:undefined}}),/requires an exact project/);
-  await assert.rejects(f.panel.exportSequence({...f.args,_expected:{...f.expected,clips:[{kind:"video"}]}}),/requires an exact project/);
-  await assert.rejects(f.panel.executeCommand({action:"export_sequence",arguments:f.args}),/rejected the export request/);
+  await assert.rejects(f.panel.executeCommand({id:"source-test-export-1",action:"export_sequence",arguments:{...f.args,_expected:undefined}}),/requires an exact project/);
+  await assert.rejects(f.panel.exportSequence({...f.args,_expected:{...f.expected,clips:[{kind:"video"}]}},"source-test-export-1"),/requires an exact project/);
+  await assert.rejects(f.panel.executeCommand({id:"source-test-export-1",action:"export_sequence",arguments:f.args}),/rejected the export request/);
   assert.equal(f.exports,1);
 });
