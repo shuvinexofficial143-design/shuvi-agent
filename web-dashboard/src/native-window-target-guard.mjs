@@ -1,4 +1,4 @@
-import {cleanObservedLabel} from "./native-observation-text.mjs";
+import {cleanObservedLabel,exactUiSelector} from "./native-observation-text.mjs";
 // A verified native window read restricts subsequent desktop mutations.
 // Without prior read, trusted Rust window matching still applies.
 const KNOWN_APPS=[
@@ -53,10 +53,8 @@ export function checkObservedMutationTarget(proposal,observed){
  if(!Array.isArray(observed)||!observed.length)
   return {allowed:false,reason:"Window observation missing or invalid; request ui_windows."};
  const title=proposal?.arguments?.window;
- if(typeof title==="string"&&cleanObservedLabel(title,180)!==title.trim())
-  return {allowed:false,reason:"Proposed window title contains hidden or control formatting."};
- if(typeof title!=="string"||!title.trim()||title.length>180)
-  return {allowed:false,reason:"Explicit verified target window required."};
+ if(!exactUiSelector(title))
+  return {allowed:false,reason:"Explicit exact window title required; no trimmed/hidden/control formatting."};
  const exact=observed.filter(x=>x.title.toLocaleLowerCase("en-US")===title.trim().toLocaleLowerCase("en-US"));
  if(exact.some(processConflict))return {allowed:false,reason:"Observed window title conflicts with the reported process application."};
  // Conflicting rows assigning the same handle to different names/processes
@@ -82,14 +80,14 @@ export function checkAmbiguousReadWindow(proposal,observed){
  const target=proposal?.arguments?.window;
  // An explicitly approved full-desktop inspection has separate native consent
  // and must not be mistaken for an observed application capture.
- if(proposal.tool==="inspect_screen"&&typeof target==="string"&&target.trim().toLowerCase()==="desktop")
+ if(proposal.tool==="inspect_screen"&&exactUiSelector(target)&&target.toLowerCase()==="desktop")
   return {allowed:true,reason:"explicit_desktop_capture_requires_native_approval"};
  if(observed.length===0)return {allowed:false,reason:"Window snapshot is stale or invalid; inspect ui_windows first."};
  if(proposal.tool==="inspect_screen"&&(typeof target!=="string"||!target.trim()))
   return {allowed:false,reason:"Screen inspection requires an explicit observed window title."};
- if(typeof target!=="string"||!target.trim())return {allowed:true,reason:"native_lookup_required"};
- if(cleanObservedLabel(target,180)!==target.trim())
-  return {allowed:false,reason:"Read-only window name contains hidden or control formatting."};
+ if(target==null||target==="")return {allowed:true,reason:"native_lookup_required"};
+ if(!exactUiSelector(target))
+  return {allowed:false,reason:"Read-only window name contains hidden/trimmed/control formatting."};
  const matches=observed.filter(x=>typeof x.title==="string"&&
   x.title.toLocaleLowerCase("en-US")===target.trim().toLocaleLowerCase("en-US"));
  if(matches.some(processConflict))return {allowed:false,reason:"Observed window title conflicts with process identity."};

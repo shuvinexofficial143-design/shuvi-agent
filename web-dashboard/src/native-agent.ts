@@ -811,7 +811,7 @@ export function mountNativeAgent(onChange:()=>void):NativeTransport|null {
      }else if((result.tool==="ui_find"||result.tool==="ui_discover")&&current.proposal){
       const prior=pendingUiReadback.get(current.threadId)??null;
       if(prior)pendingUiReadback.set(current.threadId,auditUiReadback(
-       prior,current.proposal,result,observedWindows.get(current.threadId)??null));
+       prior,current.proposal,result,observedWindows.get(current.threadId)??null,Date.now(),current.action.id));
      }
     }
     else {

@@ -1,4 +1,4 @@
-import {cleanObservedLabel} from "./native-observation-text.mjs";
+import {cleanObservedLabel,exactUiSelector} from "./native-observation-text.mjs";
 import {currentObservedWindows} from "./native-window-observation-session.mjs";
 import {normalizedProcessStartTicks} from "./native-window-target-guard.mjs";
 
@@ -11,8 +11,7 @@ const allowedString=(s,max=180)=>typeof s==="string"&&s.length<=max&&s.length>0&
  cleanObservedLabel(s,max)===s.trim() ? s.trim() : "";
 // Model-supplied selectors must be exactly what will be matched.
 // String.trim() can hide newlines, bidi marks and other control formatting.
-const strictRequestedSelector=(s,max=180)=>typeof s==="string"&&s.length>0&&
- s.length<=max&&s===s.trim()&&cleanObservedLabel(s,max)===s;
+const strictRequestedSelector=exactUiSelector;
 
 function findWindow(windows,title){
  if(!strictRequestedSelector(title))return null;

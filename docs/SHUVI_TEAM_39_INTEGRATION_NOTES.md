@@ -743,3 +743,31 @@ Run only with separate owner consent on a disposable desktop/test fixture.
 - Source-level identity checks are not actual Windows UI Automation
   provider acceptance. Dynamic modal/redraw, DPI and Adobe/Blender
   compatibility remain separately owner-authorized live acceptance work.
+
+## Milestone 15 — Independent readback action provenance and shared exact selectors
+
+- A verified window inventory alone must not be treated as a post-mutation
+  readback: `newPendingUiReadback` now records the exact pre-mutation
+  audited `ui_windows` source action id. The production native-agent passes
+  the independently Rust-audited `ui_find`/`ui_discover` action id to the
+  readback validator. For production calls, a different `ui_windows` action
+  with a post-mutation timestamp is mandatory, plus a distinct read action id.
+  Same-identity HWND/PID/OS generation and control RuntimeId/role matching
+  remain mandatory; the read only clears the pending-inspection condition,
+  **never** certifies user-visible edit success.
+- Existing test callers of the pure readback helper may omit the sixth
+  `readActionId` for backwards-compatible fixtures; production supplies it
+  explicitly, and the new tests exercise the stronger provenance contract.
+- A single shared `exactUiSelector` predicate now checks model-authored
+  application, control and automation-id strings without normalization.
+  UI mutation, ui_find/ui_discover, named screenshot and explicit desktop
+  capture all refuse newline/tab/bidi/zero-width/padded identity spoofing.
+  Malformed readback selectors create an un-clearable pending block, not
+  a normalized alternate action.
+- `scripts/shuvi39-independent-readback-provenance.test.mjs` exercises a
+  complete audited window -> discovery -> mutation -> independent window ->
+  readback sequence, stale/injected action ids, clock reversal, changed OS
+  identities and UI selector injection across all three dashboards gates.
+- No new source itself represents actual Windows application execution;
+  no native action approval, lease, journaling, retries, saved user files,
+  application state or cross-team branches changed.

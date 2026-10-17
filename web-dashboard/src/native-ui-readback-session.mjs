@@ -1,13 +1,14 @@
 import {currentObservedWindows} from "./native-window-observation-session.mjs";
 import {observedControlIdentity,parseRuntimeId} from "./native-ui-control-session.mjs";
 import {normalizedProcessStartTicks} from "./native-window-target-guard.mjs";
+import {exactUiSelector} from "./native-observation-text.mjs";
 
 // A native executed action is *not* proof of an intended UI effect.
 // After a mutation, require independently audited, read-only UIA inspection
 // in the same target window before preparing a second UI mutation.
 const MUTATIONS=new Set(["ui_click","ui_set_value","ui_send_keys","ui_toggle","ui_focus","ui_scroll","ui_expand_collapse"]);
 const READS=new Set(["ui_find","ui_discover"]);
-const cleanTitle=t=>typeof t==="string"&&t.length>0&&t.length<=180?t.trim():"";
+const cleanTitle=t=>exactUiSelector(t)?t:"";
 const findUnique=(rows,title)=>rows.filter(w=>w.title.toLocaleLowerCase("en-US")===title.toLocaleLowerCase("en-US"));
 
 export function needsUiReadback(tool){return MUTATIONS.has(tool);}
@@ -15,10 +16,11 @@ export function newPendingUiReadback(actionId,proposal,windowSession,nowMs=Date.
  if(!needsUiReadback(proposal?.tool)||typeof actionId!=="string"||!actionId||
   !Number.isSafeInteger(nowMs)||nowMs<0)return null;
  const title=cleanTitle(proposal?.arguments?.window);
- const controlName=typeof proposal?.arguments?.name==="string"?
-  proposal.arguments.name.trim():"";
- const automationId=typeof proposal?.arguments?.automation_id==="string"?
-  proposal.arguments.automation_id.trim():"";
+ const rawName=proposal?.arguments?.name,rawId=proposal?.arguments?.automation_id;
+ const malformedSelector=(rawName!=null&&rawName!==""&&!exactUiSelector(rawName))||
+  (rawId!=null&&rawId!==""&&!exactUiSelector(rawId));
+ const controlName=exactUiSelector(rawName)?rawName:"";
+ const automationId=exactUiSelector(rawId)?rawId:"";
  // When a prior audited ui_discover established a native RuntimeId,
  // a same-label replacement control must never clear post-action readback.
  const observedIdentity=observedControlIdentity(proposal,controlSnapshot,windowSession,nowMs);
@@ -28,12 +30,14 @@ export function newPendingUiReadback(actionId,proposal,windowSession,nowMs=Date.
  // any control in a later refreshed window inventory.
  // No truthful HWND/PID means do not invent readback evidence.
  const rows=currentObservedWindows(windowSession,nowMs);
- const matching=title?findUnique(rows,title):[];
+ const matching=title&&!malformedSelector?findUnique(rows,title):[];
+ const windowSourceActionId=windowSession?.sourceActionId??null;
  if(matching.length!==1)return Object.freeze({version:1,sourceActionId:actionId,
+  windowSourceActionId,
   title:title||"",hwnd:null,pid:null,processStartTicks:null,controlName,automationId,controlRuntimeId,controlType,
   mutationTool:proposal.tool,expectedExpansion:proposal?.arguments?.action??null,
   observedAtMs:nowMs,readbackRequired:true});
- return Object.freeze({version:1,sourceActionId:actionId,title:matching[0].title,
+ return Object.freeze({version:1,sourceActionId:actionId,windowSourceActionId,title:matching[0].title,
   hwnd:matching[0].hwnd,pid:matching[0].pid,
   processStartTicks:matching[0].processStartTicks??null,
   controlName,automationId,controlRuntimeId,controlType,
@@ -49,8 +53,22 @@ export function checkPendingUiReadback(proposal,pending){
 
 // A window listing does not show control state. This function only clears
 // the "no independent UIA read" condition; it NEVER certifies intended effect.
-export function auditUiReadback(pending,proposal,result,windowSession,nowMs=Date.now()){
+export function auditUiReadback(pending,proposal,result,windowSession,nowMs=Date.now(),readActionId=null){
  if(!pending)return null;
+ // In production the caller provides a separately Rust-audited readActionId.
+ // The previous UIA mutation MUST be followed by a different independently
+ // audited ui_windows invocation and then a new ui_find/ui_discover action.
+ // This is an extra provenance barrier beyond the dashboard invalidation.
+ if(readActionId!==null){
+  if(typeof readActionId!=="string"||!readActionId||readActionId===pending.sourceActionId||
+     typeof pending.windowSourceActionId!=="string"||!pending.windowSourceActionId||
+     !windowSession||windowSession.sourceTool!=="ui_windows"||
+     windowSession.sourceActionId===pending.windowSourceActionId||
+     !Number.isSafeInteger(windowSession.observedAtMs)||
+     windowSession.observedAtMs<pending.observedAtMs||
+     !Number.isSafeInteger(nowMs)||nowMs<windowSession.observedAtMs)
+   return pending;
+ }
  if(!READS.has(proposal?.tool)||result?.tool!==proposal.tool||
   result?.success!==true||(result.exit_code!=null&&result.exit_code!==0))return pending;
  const title=cleanTitle(proposal?.arguments?.window);
