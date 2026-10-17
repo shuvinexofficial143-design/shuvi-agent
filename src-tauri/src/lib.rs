@@ -18889,6 +18889,7 @@ struct NativeBackgroundOwnerWorker{
     evidence_health:String,
     current_file_rehashed:bool,
     safe_to_auto_retry:bool,
+    stop_requested:bool,
 }
 #[tauri::command]
 fn native_background_readonly_status(app:AppHandle)->Result<NativeBackgroundOwnerStatus,String>{
@@ -18909,6 +18910,7 @@ fn native_background_readonly_status(app:AppHandle)->Result<NativeBackgroundOwne
                 evidence_health:item.evidence_health,
                 current_file_rehashed:item.current_file_rehashed,
                 safe_to_auto_retry:false,
+                stop_requested:item.stop_requested,
             }).collect(),
             process_liveness_verified:false,
             application_verified:false,
@@ -19054,6 +19056,19 @@ fn deny_action(
     Ok(())
 }
 
+/// Domain-separated native child identity. All child process approvals are
+/// under the one immutable parent UUID already created by owner's Allow flow.
+#[cfg(windows)]
+fn native_sha_child_uuid(owner_action_id:&str,index:u8)->String{
+    use sha2::Digest;
+    let seed=sha2::Sha256::digest(
+        format!("shuvi-readonly-pair-v1:{}:{}",owner_action_id,index).as_bytes());
+    let mut raw=[0u8;16];
+    raw.copy_from_slice(&seed[..16]);
+    raw[6]=(raw[6]&0x0f)|0x40;
+    raw[8]=(raw[8]&0x3f)|0x80;
+    uuid::Uuid::from_bytes(raw).to_string()
+}
 #[tauri::command]
 fn cancel_running_action(
     action_id: String,
@@ -19098,6 +19113,26 @@ fn cancel_running_action(
             .get(&action_id)
             .cloned();
         match active_tool.as_deref() {
+            Some("verify_readonly_sha_pair") => {
+                // No arbitrary PID or shell kill command: only this already
+                // executing parent UUID can durably request its two exact
+                // child Job Objects to stop. true means REQUESTED, not ended.
+                #[cfg(windows)]
+                {
+                    let root=app.path().app_data_dir()
+                        .map_err(|_|"Background Stop root unavailable.")?;
+                    let first=native_sha_child_uuid(&action_id,0);
+                    let second=native_sha_child_uuid(&action_id,1);
+                    let a=native_scheduler::background_os_workers::request_stop_for_child(&root,&first);
+                    let b=native_scheduler::background_os_workers::request_stop_for_child(&root,&second);
+                    return match (a,b){
+                        (Ok(x),Ok(y))=>Ok(x||y),
+                        _=>Err("Background Stop request could be partial or unavailable; inspect each native OS receipt before assuming termination.".into()),
+                    };
+                }
+                #[cfg(not(windows))]
+                {return Err("Read-only SHA pair Stop requires Windows.".into());}
+            }
             Some("blender_inspect") | Some("blender_run_plan") => {
                 // Only a live, UUID-owned Job Object can accept this request.
                 // The worker itself performs kill-on-close tree termination
@@ -19261,19 +19296,8 @@ async fn execute_action(
         #[cfg(windows)]
         {
             (||->Result<ActionResult,String>{
-                use sha2::Digest;
-                // Sub-worker UUIDs are stable, derived solely from the
-                // owner's already approved native action identity.
-                // Crash/retry of that action cannot mint fresh worker UUIDs.
-                let sub_id=|index:u8|->String{
-                    let seed=sha2::Sha256::digest(
-                        format!("shuvi-readonly-pair-v1:{}:{}",action_id,index).as_bytes());
-                    let mut raw=[0u8;16];
-                    raw.copy_from_slice(&seed[..16]);
-                    raw[6]=(raw[6]&0x0f)|0x40;
-                    raw[8]=(raw[8]&0x3f)|0x80;
-                    uuid::Uuid::from_bytes(raw).to_string()
-                };
+                // Stop and Execute share one deterministic UUID mapping.
+                let sub_id=|index:u8|native_sha_child_uuid(&action_id,index);
                 let owner_ram=||->Result<bool,String>{
                     let status=current_runtime_status(state.inner())?;
                     // Neither isolated child is counted as a normal managed
