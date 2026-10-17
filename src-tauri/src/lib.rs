@@ -18981,12 +18981,28 @@ struct NativeApprovedParentStatus{
     process_liveness_verified:bool,
     safe_to_auto_retry:bool,
 }
+/// M56 restart inspection schema must compile on non-Windows too;
+/// only its Windows implementation can read native OS admissions.
+#[derive(Debug,Serialize)]
+#[serde(rename_all="camelCase")]
+struct NativeParentRecoveryView{
+    parent_id:String,
+    recorded_phase:String,
+    os_admission_phase:String,
+    stop_intent_recorded:bool,
+    current_sha256_reverified:bool,
+    owner_review_required:bool,
+    holds_resource:bool,
+    safe_to_auto_retry:bool,
+    application_verified:bool,
+    process_liveness_verified:bool,
+}
 /// M56 restart inspection is only an evidence reconciliation; it cannot
 /// assert live PID, current app status or release a parent resource lock.
 #[tauri::command]
 fn native_approved_parent_recovery_status(
     app:AppHandle
-)->Result<Vec<native_scheduler::background_os_workers::parent_queue::ParentRecoveryView>,String>{
+)->Result<Vec<NativeParentRecoveryView>,String>{
     #[cfg(windows)]{
         let root=app.path().app_data_dir()
             .map_err(|_|"Parent recovery directory unavailable.")?;
@@ -18994,7 +19010,19 @@ fn native_approved_parent_recovery_status(
             .is_err_and(|e|e.kind()==std::io::ErrorKind::NotFound){
             return Ok(Vec::new());
         }
-        native_scheduler::background_os_workers::parent_queue::recovery_snapshot_at(&root)
+        Ok(native_scheduler::background_os_workers::parent_queue::
+            recovery_snapshot_at(&root)?.into_iter().map(|v|NativeParentRecoveryView{
+                parent_id:v.parent_id,
+                recorded_phase:v.recorded_phase,
+                os_admission_phase:v.os_admission_phase,
+                stop_intent_recorded:v.stop_intent_recorded,
+                current_sha256_reverified:v.current_sha256_reverified,
+                owner_review_required:v.owner_review_required,
+                holds_resource:v.holds_resource,
+                safe_to_auto_retry:false,
+                application_verified:false,
+                process_liveness_verified:false,
+            }).collect())
     }
     #[cfg(not(windows))]{
         let _=app;
