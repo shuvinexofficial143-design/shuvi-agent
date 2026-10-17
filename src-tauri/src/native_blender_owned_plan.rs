@@ -176,7 +176,7 @@ pub(crate) fn execute<'a>(app:&AppHandle,state:&ActionState,
         OsString::from("--worker-progress-file"),progress.pulse_path().as_os_str().to_os_string(),
         OsString::from("--worker-progress-key-file"),progress.key_path().as_os_str().to_os_string(),
         OsString::from("--worker-action-id"),OsString::from(action_id),
-        OsString::from("--worker-plan-sha256"),OsString::from(&expected_plan_sha256)
+        OsString::from("--worker-plan-sha256"),OsString::from(expected_plan_sha256.as_str())
     ];
     if let Some(file)=blend_file{
         args.push(OsString::from("--blend-file"));
