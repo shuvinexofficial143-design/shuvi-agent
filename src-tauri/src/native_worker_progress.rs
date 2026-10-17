@@ -137,6 +137,18 @@ impl ProgressChannel{
         }
         Ok(())
     }
+    /// In-memory stage is returned ONLY after signed HMAC verification.
+    /// Never treat this as Blender application success or OS liveness.
+    pub(crate) fn verified_stage(&self)->Option<(u64,&'static str)>{
+        let name=match self.last_stage{
+            1=>"python_active",
+            2=>"blender_session_attached",
+            3=>"plan_verified",
+            4=>"artifact_rehashed",
+            _=>return None,
+        };
+        Some((self.last_sequence,name))
+    }
     pub(crate) fn require_verified_artifact_ack(&mut self)->Result<(),String>{
         self.observe()?;
         if self.last_stage!=4 {

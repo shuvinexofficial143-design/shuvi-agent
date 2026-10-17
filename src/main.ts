@@ -633,9 +633,13 @@ function nativeWorkerDisplay(): string {
         : host.supervisorHealth==="supervisor_start_record_only"
           ? "Durable job started; awaiting first real Rust supervisor tick"
           : "No independently attributed supervisor heartbeat";
+    const signed=host.attestedWorkerStage
+      ? "; signed Python worker stage: "+host.attestedWorkerStage+
+        " (NOT Blender application proof)"
+      : "";
     return "Host worker: native action active ("+(host.tool ?? "unknown")+
       ", "+Math.floor((host.observedActionAgeMs ?? 0)/1000)+"s observed; "+
-      pulse+"; NOT a progress heartbeat)";
+      pulse+signed+"; NOT a progress heartbeat)";
   }
   if (host.state === "lease_held_unattributed")
     return "Host lease occupied — action identity not independently attributed";
@@ -714,6 +718,13 @@ async function refreshNativeWorkerStatus(): Promise<void> {
     const status=await invoke<NativeWorkerStatus>("native_worker_status");
     if(status.schemaVersion!==1||status.progressHeartbeatVerified!==false
       ||status.safeToAutoRetry!==false||!resourceClaimsValid(status)
+      ||(status.attestedWorkerStage!==null&&![
+          "python_active","blender_session_attached","plan_verified","artifact_rehashed"
+        ].includes(status.attestedWorkerStage))
+      ||(status.attestedWorkerStage!==null&&(
+          !Number.isInteger(status.attestedWorkerSequence)
+          ||status.attestedWorkerSequence===null||status.attestedWorkerSequence<1||status.attestedWorkerSequence>1000000
+        ))
       ||!["not_observed","unattributed_or_interrupted","supervisor_tick_stale",
         "rust_supervisor_observed","supervisor_start_record_only","last_action_audited",
         "audited_job_conflicts_with_live_lease","last_action_reviewed_unknown"].includes(status.supervisorHealth))

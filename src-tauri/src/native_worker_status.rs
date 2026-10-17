@@ -44,6 +44,11 @@ pub(crate) struct NativeWorkerStatus {
     pub resource_held_count:usize,
     pub resource_retired_recent_count:usize,
     pub resource_claims:Vec<crate::native_scheduler::resource_lanes::ResourceClaimObservation>,
+    // Last HMAC-validated worker observation recorded by trusted Rust.
+    // This does NOT attest to Blender's creative result or current liveness.
+    pub attested_worker_stage:Option<String>,
+    pub attested_worker_sequence:Option<u64>,
+    pub attested_worker_observed_at_ms:Option<u64>,
 }
 
 /// Called only *after* acquiring Rust's exclusive native desktop lease.
@@ -131,6 +136,8 @@ pub(crate) fn snapshot(
         resource_ownership_health:"not_observed".into(),
         resource_held_count:0,resource_retired_recent_count:0,
         resource_claims:Vec::new(),
+        attested_worker_stage:None,attested_worker_sequence:None,
+        attested_worker_observed_at_ms:None,
     }
 }
 
@@ -250,6 +257,24 @@ pub(crate) fn attach_resource_ownership(
     status.safe_to_auto_retry=false;
     status
 }
+pub(crate) fn attach_attested_worker_stage(
+    mut status:NativeWorkerStatus,
+    evidence:Option<&crate::native_scheduler::worker_attestation::AttestedStage>
+)->NativeWorkerStatus{
+    if let Some(proof)=evidence{
+        if status.durable_job_action_id.as_deref()==Some(proof.action_id.as_str())
+            &&status.durable_job_tool.as_deref()==Some("blender_run_plan"){
+            status.attested_worker_stage=Some(proof.stage.clone());
+            status.attested_worker_sequence=Some(proof.sequence);
+            status.attested_worker_observed_at_ms=Some(proof.observed_at_ms);
+        }
+    }
+    // An archived HMAC-verified Python-worker stage is NOT fresh
+    // Blender application activity proof, an OS PID check, or retry authority.
+    status.progress_heartbeat_verified=false;
+    status.safe_to_auto_retry=false;
+    status
+}
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -285,6 +310,27 @@ mod tests{
         assert_eq!(report.resource_held_count,1);
         assert!(!report.resource_claims[0].evidence_verified);
         assert!(!report.safe_to_auto_retry);
+    }
+    #[test]
+    fn signed_worker_stage_does_not_manufacture_app_success_or_liveness(){
+        let id=uuid();
+        let job=crate::native_worker_job::NativeJob{
+            version:1,action_id:id.clone(),tool:"blender_run_plan".into(),
+            phase:"running".into(),started_at_ms:1000,updated_at_ms:2000,
+            heartbeat_seq:1,audit_success:None,prior_action_ids:vec![]
+        };
+        let progress=crate::native_scheduler::worker_attestation::AttestedStage{
+            version:1,action_id:id,approved_plan_sha256:"a".repeat(64),
+            sequence:3,stage:"plan_verified".into(),observed_at_ms:1500
+        };
+        let idle=snapshot(false,&HashMap::new(),&HashMap::new(),None,3000);
+        let host=attach_attested_worker_stage(
+            attach_durable_job(idle,Some(&job),3000),Some(&progress));
+        assert_eq!(host.attested_worker_stage.as_deref(),Some("plan_verified"));
+        assert!(!host.progress_heartbeat_verified);
+        assert!(!host.process_app_progress_verified);
+        assert!(!host.safe_to_auto_retry);
+        assert!(host.requires_owner_review);
     }
     #[test]
     fn stopped_on_previous_host_is_a_recovery_case_not_a_verified_process_exit(){

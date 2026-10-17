@@ -1,0 +1,28 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
+const get=file=>readFileSync(new URL("../"+file,import.meta.url),"utf8");
+const scheduler=get("src-tauri/src/native_scheduler.rs");
+const progress=get("src-tauri/src/native_worker_progress.rs");
+const plan=get("src-tauri/src/native_blender_owned_plan.rs");
+const receipt=get("src-tauri/src/native_attested_worker_stage.rs");
+const status=get("src-tauri/src/native_worker_status.rs");
+test("only HMAC-verified worker pulses enter bounded exact-UUID durable Rust journal",()=>{
+ assert.match(scheduler,/mod worker_attestation/);
+ assert.match(progress,/pub\(crate\) fn verified_stage/);
+ assert.match(plan,/progress\.observe\(\)\?/);
+ assert.match(plan,/worker_attestation::record/);
+ assert.ok(plan.indexOf("progress.observe()?")<plan.indexOf("worker_attestation::record("));
+ assert.match(receipt,/job\.action_id!=action/);
+ assert.match(receipt,/job\.phase!="running"/);
+ assert.match(receipt,/record_at\(&path\(app\)\?,AttestedStage/);
+ assert.match(receipt,/durable_stage_advances_only_after_verified_worker_progress/);
+ assert.match(receipt,/corrupted_or_replayed_different_plan_never_proves_stage/);
+});
+test("authenticated Python stages never grant permission, OS liveness or Blender success",()=>{
+ assert.match(status,/fn attach_attested_worker_stage/);
+ assert.match(status,/status\.progress_heartbeat_verified=false/);
+ assert.match(status,/status\.safe_to_auto_retry=false/);
+ assert.match(status,/signed_worker_stage_does_not_manufacture_app_success_or_liveness/);
+ assert.doesNotMatch(receipt,/tauri::command|invoke_handler/);
+});

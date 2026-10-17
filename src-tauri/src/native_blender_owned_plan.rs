@@ -195,8 +195,22 @@ pub(crate) fn execute<'a>(app:&AppHandle,state:&ActionState,
     let mut child=crate::native_scheduler::owned_process::spawn_for_active_action(
         app,lease,action_id,"blender_run_plan",&python,&args,cwd,Duration::from_secs(120))?;
     let tracked=crate::native_scheduler::owned_process::RegisteredOwnedPid::start(state,child.pid())?;
-    let result=child.wait_bounded_with_host_budget_and_progress(
-        state,||progress.observe());
+    let mut persisted_stage=0u8;
+    let result=child.wait_bounded_with_host_budget_and_progress(state,||{
+        progress.observe()?;
+        if let Some((sequence,stage))=progress.verified_stage(){
+            let rank=match stage{
+                "python_active"=>1,"blender_session_attached"=>2,
+                "plan_verified"=>3,"artifact_rehashed"=>4,_=>0,
+            };
+            if rank>persisted_stage{
+                crate::native_scheduler::worker_attestation::record(
+                    app,action_id,&expected_plan_sha256,sequence,stage,crate::now_ms())?;
+                persisted_stage=rank;
+            }
+        }
+        Ok(())
+    });
     // Do not restore native lease until all Job Object descendants are gone.
     let recovered=child.reclaim_terminal_lease()?;
     *slot=Some(recovered);
@@ -208,6 +222,12 @@ pub(crate) fn execute<'a>(app:&AppHandle,state:&ActionState,
     // Actual worker-side ACK is independently authenticated and action-bound.
     // Supervisor ticks and process exit cannot satisfy this check.
     progress.require_verified_artifact_ack()?;
+    // A fast worker can finish between 250 ms monitor polls; persist its
+    // signed final pulse before accepting the actual artifact certificate.
+    if let Some((sequence,stage))=progress.verified_stage(){
+        crate::native_scheduler::worker_attestation::record(
+            app,action_id,&expected_plan_sha256,sequence,stage,crate::now_ms())?;
+    }
     let verified=native_plan_response(&evidence.0,&root,
         Path::new(output_dir),render,expected_operation,expected_steps,
         &expected_plan_sha256)?;

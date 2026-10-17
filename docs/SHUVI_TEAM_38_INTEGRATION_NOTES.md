@@ -216,3 +216,9 @@ Review any adapter calls and potential cross-team shared-file overlap. Keep owne
 - Fixed the previously incomplete `Hold` Rust test fixture to explicitly initialize the backward-compatible optional approved plan digest field. The actual production SHA-256 binding and fail-closed release remain unchanged.
 - Updated the preexisting owner-recovery source contract to the new explicit `certificate.plan_sha256` release argument, and replaced accidentally over-escaped test regex checks with exact, checked JavaScript source-contract string assertions.
 - These corrections target concrete failures in GitHub CI of previous HEAD d4f505918e60; verify all tests against this new immutable commit before marking Rust or frontend success.
+
+## Milestone 34 — durable HMAC-authenticated Blender worker-stage telemetry
+- Existing supervised Python worker HMAC stages (python_active, blender_session_attached, plan_verified, artifact_rehashed) now have a private, bounded Rust-only journal. The supervisor writes a stage only **after** verifying action UUID, complete approved plan SHA256, HMAC, sequence and nonregression. A fast final pulse is also captured on process termination.
+- The evidence journal is restart-readable but cannot be interpreted as live Blender application progress, a real OS process heartbeat, completion/audit success, or permission for automatic replay. Corrupt journal, regressed sequence or changed same-action plan digest fails closed. The existing exclusive GUI/owned process path and 4 GB memory protection are unchanged.
+- Existing native_worker_status can expose the last matching attested stage to the desktop, which shows it explicitly labeled as signed Python worker evidence only. User application live validation remains separate.
+- Rust unit and Node source regression tests cover progression, replay, corruption, wrong UUID/plan, and no fabricated success; CI results must be checked on the exact new HEAD.

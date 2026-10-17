@@ -142,6 +142,11 @@ export type NativeWorkerStatus = {
   resourceClaims: NativeResourceClaim[];
   progressHeartbeatVerified: false;
   safeToAutoRetry: false;
+  // Last HMAC-authenticated Python worker evidence (not app success).
+  attestedWorkerStage: "python_active" | "blender_session_attached" |
+    "plan_verified" | "artifact_rehashed" | null;
+  attestedWorkerSequence: number | null;
+  attestedWorkerObservedAtMs: number | null;
   // Durable Rust supervision of THIS process, not Adobe/Blender progress.
   durableJobPhase: "running" | "audit_verified" | "owner_reviewed_unknown" | null;
   durableJobActionId: string | null;

@@ -18710,17 +18710,21 @@ fn native_worker_status(
     let now=now_ms();
     let os_receipt=native_scheduler::owned_process::process_receipt::read(&app)?;
     let resources=native_scheduler::resource_lanes::snapshot(&app)?;
-    Ok(native_worker_status::attach_resource_ownership(
-        native_worker_status::attach_owned_process_receipt(
-            native_worker_status::attach_durable_job(
-                native_worker_status::snapshot(
-                    leased,&running,&started,recovery.as_ref(),now
+    let last_worker_stage=native_scheduler::worker_attestation::read_for_job(&app,job.as_ref())?;
+    Ok(native_worker_status::attach_attested_worker_stage(
+        native_worker_status::attach_resource_ownership(
+            native_worker_status::attach_owned_process_receipt(
+                native_worker_status::attach_durable_job(
+                    native_worker_status::snapshot(
+                        leased,&running,&started,recovery.as_ref(),now
+                    ),
+                    job.as_ref(),now
                 ),
-                job.as_ref(),now
+                os_receipt.as_ref()
             ),
-            os_receipt.as_ref()
+            resources
         ),
-        resources
+        last_worker_stage.as_ref()
     ))
 }
 
