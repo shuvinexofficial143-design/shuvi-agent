@@ -18944,6 +18944,59 @@ struct NativeBackgroundOwnerWorker{
     safe_to_auto_retry:bool,
     stop_requested:bool,
 }
+// M54 owner-facing parent queue status remains a RECORD projection, never
+// an observation of a live PID, valid current digest, or application success.
+#[derive(Debug,Serialize)]
+#[serde(rename_all="camelCase")]
+struct NativeApprovedParentQueueStatus{
+    schema_version:u32,
+    parents:Vec<NativeApprovedParentStatus>,
+    application_verified:bool,
+    process_liveness_verified:bool,
+    safe_to_auto_retry:bool,
+}
+#[derive(Debug,Serialize)]
+#[serde(rename_all="camelCase")]
+struct NativeApprovedParentStatus{
+    parent_id:String,
+    recorded_phase:String,
+    priority:u8,
+    depends_on:Vec<String>,
+    current_file_sha256_verified:bool,
+    application_verified:bool,
+    process_liveness_verified:bool,
+    safe_to_auto_retry:bool,
+}
+#[tauri::command]
+fn native_approved_parent_queue_status(app:AppHandle)->Result<NativeApprovedParentQueueStatus,String>{
+    #[cfg(windows)]{
+        let root=app.path().app_data_dir()
+            .map_err(|_|"Approved parent status directory unavailable.")?;
+        let items=match fs::symlink_metadata(&root){
+            Err(e) if e.kind()==std::io::ErrorKind::NotFound=>Vec::new(),
+            Err(_)=>return Err("Approved parent directory inaccessible.".into()),
+            Ok(_)=>native_scheduler::background_os_workers::parent_queue::snapshot_at(&root)?,
+        };
+        Ok(NativeApprovedParentQueueStatus{
+            schema_version:1,
+            parents:items.into_iter().map(|parent|NativeApprovedParentStatus{
+                parent_id:parent.parent_id,
+                recorded_phase:parent.phase,
+                priority:parent.priority,
+                depends_on:parent.depends_on,
+                current_file_sha256_verified:false,
+                application_verified:false,
+                process_liveness_verified:false,
+                safe_to_auto_retry:false,
+            }).collect(),
+            application_verified:false,process_liveness_verified:false,safe_to_auto_retry:false,
+        })
+    }
+    #[cfg(not(windows))]{
+        let _=app;
+        Err("Approved background parent status requires Windows.".into())
+    }
+}
 #[tauri::command]
 fn native_background_readonly_status(app:AppHandle)->Result<NativeBackgroundOwnerStatus,String>{
     #[cfg(windows)]
@@ -19905,6 +19958,7 @@ pub fn run() {
             finalize_native_task_delivery,
             native_scheduler_status,
             native_background_readonly_status,
+            native_approved_parent_queue_status,
             review_native_scheduler_failure,
             reconcile_native_worker_job,
             prepare_tool,
