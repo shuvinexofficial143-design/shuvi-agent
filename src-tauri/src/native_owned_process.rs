@@ -469,6 +469,24 @@ mod tests{
     }
     #[cfg(windows)]
     fn slow_args()->Vec<OsString>{fixture_args("worker_fixture_sleep")}
+
+    #[cfg(windows)]
+    #[test]
+    fn missing_authenticated_worker_heartbeat_stops_real_owned_child(){
+        let _serial=TEST_PROCESS_MUTEX.lock().unwrap();
+        let (schedule,journal)=fresh_snapshots();
+        let action=journal.action_id.clone();
+        let mut child=spawn_checked(&schedule,&journal,&action,"blender_run_plan",
+            &fixture_exe(),&slow_args(),&std::env::temp_dir(),
+            Duration::from_secs(10)).unwrap();
+        let real_pid=child.pid();
+        let denied=child.wait_bounded_with_probe_and_progress(
+            ||Ok(false),||Err("unsigned or missing worker heartbeat".into()));
+        assert!(denied.is_err());
+        assert_eq!(child.pid(),real_pid);
+        assert_eq!(child.poll().unwrap().phase,"cancelled");
+        assert_eq!(child.child.active_processes().unwrap(),0);
+    }
     #[cfg(windows)]
     #[test]
     fn observed_pid_and_real_child_exit_do_not_fabricate_app_progress(){

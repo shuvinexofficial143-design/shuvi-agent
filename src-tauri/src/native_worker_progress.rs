@@ -124,7 +124,6 @@ impl ProgressChannel{
             .map_err(|_|"Worker pulse JSON corrupt.")?;
         let stage=self.verify(&pulse)?;
         if pulse.sequence<self.last_sequence||stage<self.last_stage
-            ||(self.last_sequence==0&&stage!=1)
             ||(pulse.sequence==self.last_sequence&&stage!=self.last_stage){
             return Err("Worker heartbeat regressed or replayed a different stage.".into());
         }
