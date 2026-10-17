@@ -850,3 +850,24 @@ Run only with separate owner consent on a disposable desktop/test fixture.
   safety-check ordering and bounded streaming behavior. Existing live
   Windows target capture remains owner-permission gated. UIA mutations,
   scheduler, approvals and unrelated branches are not modified.
+
+## Milestone 19 — Double surface-owner sampling and Windows capture syntax CI
+
+- The original DPI-correct target screenshot already bound HWND/PID and
+  app process creation time, focused only the approved target and checked
+  five representative Win32 surface points before copying visible pixels.
+  A foreign dialog could appear *after* that one sample and *during* the
+  screenshot copy. `Assert-ShuviCaptureSurface` now checks the same
+  owner-bound samples both before **and after** `CopyFromScreen`; a
+  foreign-process overlay refuses the image before saving/exporting it.
+- The established Windows synthetic source CI now **parses** the actual
+  capture PowerShell raw source in `target_window_capture.rs` along
+  with native UIA prepare/execute/readonly scripts. It does NOT execute
+  the capture script, focus a real window, inspect the runner desktop,
+  or claim live Premiere/Blender acceptance.
+- Regression extends `shuvi39-synthetic-windows-uia-smoke.test.mjs`
+  to ensure the sample ownership bracket surrounds CopyFromScreen,
+  and capture script syntax remains part of Windows CI.
+- Representative point sampling is NOT a proof against transparent,
+  mid-copy or 100% pixel-level overlays. Full live acceptance still
+  requires owner permission and manual visual verification.

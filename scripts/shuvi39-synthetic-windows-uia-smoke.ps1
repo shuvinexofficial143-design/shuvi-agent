@@ -24,11 +24,25 @@ $helperMatch=[regex]::Match($rust.Substring($helperAt),'r#"\s*(?<script>.*?)"#',
  [Text.RegularExpressions.RegexOptions]::Singleline)
 if (-not $helperMatch.Success) { throw 'Native helper PowerShell block unavailable.' }
 $helper=$helperMatch.Groups['script'].Value
+# Syntax-parse the REAL capture PowerShell, which must not be executed
+# on CI because it may change foreground focus and capture owner pixels.
+$capturePath = Join-Path $root 'src-tauri\src\target_window_capture.rs'
+if (-not [IO.File]::Exists($capturePath)) { throw 'Target capture source unavailable.' }
+$captureRust = [IO.File]::ReadAllText($capturePath)
+$captureMarker='let script = r#"'
+$captureAt = $captureRust.IndexOf($captureMarker,[StringComparison]::Ordinal)
+if ($captureAt -lt 0) { throw 'Native target capture script not found.' }
+$captureMatch = [regex]::Match($captureRust.Substring($captureAt),
+ 'let script = r#"(?<script>.*?)"#',
+ [Text.RegularExpressions.RegexOptions]::Singleline)
+if (-not $captureMatch.Success) { throw 'Target capture PowerShell raw string unavailable.' }
+$captureScript=$captureMatch.Groups['script'].Value
 $sourcePieces = @(
  @{name='win32_attestation';source=$win32},
  @{name='native_prepare';source=$prepared},
  @{name='native_execution_guard';source=$executor},
- @{name='native_readonly_control_reattestation';source=$helper}
+ @{name='native_readonly_control_reattestation';source=$helper},
+ @{name='native_target_window_capture_syntax_only';source=$captureScript}
 )
 foreach ($item in $sourcePieces){
  $tokens=$null; $parseErrors=$null

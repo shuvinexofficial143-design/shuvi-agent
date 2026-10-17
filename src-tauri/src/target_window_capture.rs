@@ -143,6 +143,7 @@ try {
     # Screen-copy captures visible pixels, including foreign topmost overlays.
     # Check representative interior samples and fail closed if another process
     # sits over the requested HWND (this is not a full occlusion proof).
+    function Assert-ShuviCaptureSurface {
     foreach ($sample in @('0.18,0.18','0.50,0.18','0.50,0.50','0.18,0.82','0.82,0.82')) {
         $fraction = $sample -split ','
         $point = New-Object ShuviTargetCaptureWin32+POINT
@@ -158,10 +159,18 @@ try {
             throw 'Foreign process occludes target. No screenshot sent.'
         }
     }
+    }
+    # Sample visible target ownership both before and after the bitmap copy.
+    # This does not prove every pixel but rejects common popup/overlay races.
+    Assert-ShuviCaptureSurface
     $bitmap = New-Object System.Drawing.Bitmap $width, $height
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
     try {
         $graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, $bounds.Size)
+        # Foreign dialogs may appear between the first occlusion check and
+        # CopyFromScreen. Discard the image before persisting it if samples
+        # now hit a different window owner.
+        Assert-ShuviCaptureSurface
         # Check focus, UIA identity, Win32 process and geometry after copying.
         [uint32]$pidAfterCopy = 0
         [void][ShuviTargetCaptureWin32]::GetWindowThreadProcessId($target, [ref]$pidAfterCopy)

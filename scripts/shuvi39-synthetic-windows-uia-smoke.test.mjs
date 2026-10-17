@@ -14,7 +14,8 @@ test("GitHub Windows Rust workflow runs synthetic PowerShell before Rust verific
 test("Windows runtime smoke extracts original production native script and parses it",()=>{
  for(const marker of ["native_uia_window_guard.rs","WIN32_MUTATION_GUARD",
  "PREPARED_CONTROL_PROBE","NATIVE_CONTROL_EXECUTION_GUARD",
- "readonly_control_reattestation_script",
+ "readonly_control_reattestation_script","target_window_capture.rs",
+ "native_target_window_capture_syntax_only",
  "Management.Automation.Language.Parser","ParseInput",
  "UIAutomationClient","AutomationElement","TogglePattern","ExpandCollapsePattern"])
   assert.ok(source.includes(marker),"missing "+marker);
@@ -33,4 +34,16 @@ test("smoke never manipulates an owner desktop or claims real application accept
  for(const marker of ["production_desktop_tested=$false","adobe_app_tested=$false",
   "provider_ui_automation_tested=$false","mutations_sent=0"])
   assert.ok(source.includes(marker),"honest report missing "+marker);
+});
+
+test("capture PowerShell has two live Win32 surface checks bracketing CopyFromScreen",()=>{
+ const rust=readFileSync(new URL("../src-tauri/src/target_window_capture.rs",import.meta.url),"utf8");
+ const begin=rust.indexOf("function Assert-ShuviCaptureSurface");
+ const before=rust.indexOf("Assert-ShuviCaptureSurface",begin+40);
+ const copy=rust.indexOf("$graphics.CopyFromScreen(",before);
+ const after=rust.indexOf("Assert-ShuviCaptureSurface",copy);
+ const save=rust.indexOf("$bitmap.Save(",after);
+ assert.ok(begin>0&&before>begin&&copy>before&&after>copy&&save>after);
+ assert.match(rust.slice(begin,copy),/WindowFromPoint/);
+ assert.match(rust.slice(begin,copy),/GetWindowThreadProcessId/);
 });
