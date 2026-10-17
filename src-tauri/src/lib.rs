@@ -15032,6 +15032,8 @@ try {{
             let spec=job.request.review.as_ref().filter(|review|review.iterative)
                 .ok_or("Edit job has no iterative review specification.")?;
             let review=premiere_review::load(&premiere_review_path(app,&review_session_id)?)?;
+            job.require_issued_review_session(&phase_id,review.created_at_ms)?;
+            premiere_edit_job::require_unclaimed_review_session_in_store(&path,&job_id,&review_session_id)?;
             if review.created_at_ms<job.created_at_ms || review.project_guid!=job.project_guid
                 || review.sequence_guid!=job.sequence_guid || review.objective!=spec.prompt
                 || review.reference!=spec.reference.clone().unwrap_or_default()
