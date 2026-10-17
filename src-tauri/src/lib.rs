@@ -9779,6 +9779,7 @@ fn write_session_checkpoint(
     checkpoint: SessionCheckpoint,
 ) -> Result<(), String> {
     session_checkpoint_guard::exclusive(&session_checkpoint_path(app)?,||{
+        ensure_unversioned_checkpoint_only(read_session_checkpoint_unlocked(app)?.as_ref())?;
         write_session_checkpoint_unlocked(app,checkpoint)
     })
 }
@@ -9914,6 +9915,7 @@ fn read_session_checkpoint_unlocked(app: &AppHandle) -> Result<Option<SessionChe
 }
 fn remove_session_checkpoint(app: &AppHandle) -> Result<(), String> {
     session_checkpoint_guard::exclusive(&session_checkpoint_path(app)?,||{
+        ensure_unversioned_checkpoint_only(read_session_checkpoint_unlocked(app)?.as_ref())?;
         remove_session_checkpoint_unlocked(app)
     })
 }
@@ -19361,6 +19363,15 @@ fn get_workspace(app: AppHandle) -> Result<Option<String>, String> {
 }
 
 
+// Legacy executable may still invoke unconditional save/clear. An existing
+// checkpoint with a CAS revision nonce belongs to the versioned store, and
+// no legacy process may mutate it even while holding the common OS lock.
+fn ensure_unversioned_checkpoint_only(checkpoint:Option<&SessionCheckpoint>)->Result<(),String>{
+    if checkpoint.is_some_and(|c|c.checkpoint_nonce.is_some()){
+        return Err("Legacy checkpoint mutation refused: use conditional revision CAS.".into());
+    }
+    Ok(())
+}
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all="camelCase")]
 struct NativeCheckpointSnapshot{
@@ -19416,6 +19427,18 @@ fn clear_session_checkpoint_if_revision(
 #[cfg(test)]
 mod native_checkpoint_cas_tests{
     use super::*;
+    #[test]
+    fn legacy_unconditional_writer_cannot_overwrite_or_delete_versioned_checkpoint(){
+        let current=SessionCheckpoint{
+            version:2,updated_at_ms:1,provider:"ollama".into(),model:"test".into(),
+            base_url:None,messages:vec![],orchestration:None,worker_models:None,
+            checkpoint_nonce:Some(Uuid::new_v4().to_string()),
+        };
+        assert!(ensure_unversioned_checkpoint_only(Some(&current)).is_err());
+        let old=SessionCheckpoint{checkpoint_nonce:None,..current};
+        assert!(ensure_unversioned_checkpoint_only(Some(&old)).is_ok());
+        assert!(ensure_unversioned_checkpoint_only(None).is_ok());
+    }
     #[test]
     fn canonical_digest_changes_with_nonce_and_rejects_aba(){
         let mut a=SessionCheckpoint{
