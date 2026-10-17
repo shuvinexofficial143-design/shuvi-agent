@@ -487,6 +487,54 @@ pub(crate) fn recent(app:&AppHandle)->Result<history::DeliveryHistoryView,String
     let _os=receipt_lock::DeliveryReceiptOsLock::take(&receipt_path)?;
     history::read_recent(&receipt_path)
 }
+#[derive(Debug,Clone,serde::Serialize)]
+#[serde(rename_all="camelCase")]
+pub(crate) struct VerifiedHistoricalDelivery{
+    pub first_action_id:String,
+    pub objective:String,
+    pub step_count:usize,
+    pub output_count:usize,
+    // Exact Rust receipts + CURRENT on-disk SHA256 passed this readback.
+    // No Blender visual acceptance, process liveness or retry permission.
+    pub files_verified_now:bool,
+}
+pub(crate) fn verify_historical(app:&AppHandle,first_action_id:&str)
+    ->Result<VerifiedHistoricalDelivery,String>{
+    let _io=IO.lock().map_err(|_|"Native task delivery lock poisoned.")?;
+    let receipt_path=path(app)?;
+    let _os=receipt_lock::DeliveryReceiptOsLock::take(&receipt_path)?;
+    let completed=history::exact_receipt(&receipt_path,first_action_id)?;
+    let root=app.path().app_data_dir()
+        .map_err(|_|"Historical readback pool directory unavailable.")?;
+    fs::create_dir_all(&root)
+        .map_err(|_|"Cannot prepare historical readback pool.")?;
+    // Every action in the ARCHIVED complete task, not merely the first one,
+    // must still have exact successful, executed Rust audit evidence.
+    for step in &completed.steps{
+        let entry=crate::read_action_audit_receipt(app,&step.action_id)?
+            .ok_or("Historical job's exact Rust audit receipt is missing.".to_string())?;
+        if entry.action_id.as_deref()!=Some(step.action_id.as_str())
+            ||entry.tool!=step.tool||entry.event!="executed"||!entry.success{
+            return Err("Historical task cannot be reverified from current exact Rust audits.".into());
+        }
+        if let Some(artifact)=step.artifact.as_ref(){
+            let _slot=global_hash_slots::HashSlot::take(&root)?;
+            check_artifact(artifact,&step.tool)?;
+        }
+    }
+    // Blender artifacts also require the exact UUID-bound worker certificate
+    // and approved-plan provenance, not an arbitrary external file hash.
+    {
+        let _slot=global_hash_slots::HashSlot::take(&root)?;
+        verify_blender_certificates(app,&completed.steps)?;
+    }
+    Ok(VerifiedHistoricalDelivery{
+        first_action_id:first_action_id.into(),objective:completed.objective,
+        step_count:completed.steps.len(),
+        output_count:completed.steps.iter().filter(|s|s.artifact.is_some()).count(),
+        files_verified_now:true,
+    })
+}
 pub(crate) fn read(app:&AppHandle)->Result<Option<DeliveryReceipt>,String>{
     let _io=IO.lock().map_err(|_|"Native task delivery lock poisoned.")?;
     let receipt_path=path(app)?;

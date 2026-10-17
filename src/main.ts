@@ -16,6 +16,7 @@ import type {
   NativeSchedule,
   NativeTaskDelivery,
   NativeCompletedDeliveryHistory,
+  NativeHistoricalDeliveryVerification,
   ToolProposal,
   AuditEntry,
   SessionCheckpoint,
@@ -2172,6 +2173,31 @@ el<HTMLButtonElement>("#loadNativeCompletedDeliveries").addEventListener("click"
       entry.textContent=item.objective+" · "+item.stepCount+" steps, "+
         item.outputCount+" files · "+new Date(item.recordedAtMs).toLocaleString()+
         " · Archived (NOT current artifact verification)";
+      if(typeof item.firstActionId!=="string"||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(item.firstActionId))
+        throw Error("Invalid history UUID");
+      const check=document.createElement("button");
+      check.type="button";
+      check.textContent="Verify files now";
+      const result=document.createElement("small");
+      result.textContent="Not currently verified";
+      check.addEventListener("click",async ()=>{
+        check.disabled=true;
+        result.textContent="Checking exact Rust audits and current file hashes…";
+        try{
+          const validated=await invoke<NativeHistoricalDeliveryVerification>(
+            "native_task_delivery_verify_history",{firstActionId:item.firstActionId});
+          if(!validated||validated.filesVerifiedNow!==true||
+              validated.firstActionId!==item.firstActionId||
+              validated.stepCount!==item.stepCount||
+              validated.outputCount!==item.outputCount)
+            throw Error("Historical readback mismatch");
+          result.textContent="Current audit/file SHA-256 verified; creative quality still untested";
+        }catch{
+          result.textContent="Verification failed or historical evidence unavailable";
+        }finally{check.disabled=false;}
+      });
+      entry.append(check,result);
       list.append(entry);
     }
   }catch{list.textContent="Completed task archive missing/corrupted; no success was assumed.";}

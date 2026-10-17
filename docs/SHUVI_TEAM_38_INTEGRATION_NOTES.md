@@ -299,3 +299,8 @@ Review any adapter calls and potential cross-team shared-file overlap. Keep owne
 
 ### Milestone 43 frontend IPC parity repair
 - Extended the existing explicit UI-native IPC allowlist for read-only `native_task_delivery_history`. Static IPC command matching still refuses unknown or dynamic targets; Rust handler binding remains required.
+
+## Milestone 44 — explicit current-file reinspection of selected completed-task receipts
+- The new `native_task_delivery_verify_history` Tauri command accepts ONLY a canonical first-action UUID already found in bounded durable completed-task receipts. Neither the AI model nor UI can submit arbitrary paths, file hashes, tool names or forged success states. The backend rechecks every exact Rust executed/successful audit in that historical task and every CURRENT bounded external artifact SHA256 under one of the same OS-global two hash worker slots.
+- Blender outputs additionally require their UUID-bound certificate and approved-plan fingerprint revalidation. Any missing/changed audit or file, corrupt archive, OS-slot contention, or wrong UUID fails closed. The result is clearly marked current **audit/file hash verification**, never Windows creative-quality acceptance, OS process liveness, approval or replay.
+- The Completed Tasks UI provides a click-only `Verify files now` control on each archived entry; its default status remains `Not currently verified`. Added direct Rust exact-ID/corrupt-provenance tests, Node command and permissionless-readback wiring contracts and updated explicit IPC allowlist.

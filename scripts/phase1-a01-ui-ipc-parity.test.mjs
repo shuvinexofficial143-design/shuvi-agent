@@ -28,6 +28,7 @@ const uniqueNames=[
   "native_scheduler_status",
   "native_task_delivery_history",
   "native_task_delivery_status",
+  "native_task_delivery_verify_history",
   "native_worker_history",
   "native_worker_status",
   "premiere_bridge_start",

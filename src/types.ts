@@ -159,6 +159,14 @@ export type NativeWorkerStatus = {
     "audited_job_conflicts_with_live_lease" | "last_action_reviewed_unknown";
 };
 
+export type NativeHistoricalDeliveryVerification = {
+  firstActionId: string;
+  objective: string;
+  stepCount: number;
+  outputCount: number;
+  filesVerifiedNow: true;
+};
+
 export type NativeCompletedDeliveryHistory = {
   version: 1;
   items: Array<{

@@ -98,6 +98,30 @@ pub(super) fn archive_predecessor(last:&Path)->Result<(),String>{
     if let Some(prior)=current(last)?{append(&archive_path(last)?,&prior)?;}
     Ok(())
 }
+/// Resolve only the *first* canonical action UUID already in the persisted
+/// archive/last receipt; UI may not supply paths, hashes, tool or timestamps.
+pub(super) fn exact_receipt(last:&Path,id:&str)->Result<DeliveryReceipt,String>{
+    if !super::valid_uuid(id){
+        return Err("Historical verification requires a canonical action UUID.".into());
+    }
+    let archived=read_archive(&archive_path(last)?)?;
+    let previous=archived.items.into_iter()
+        .find(|r|r.steps.first().is_some_and(|s|s.action_id==id));
+    let current=current(last)?
+        .filter(|r|r.steps.first().is_some_and(|s|s.action_id==id));
+    match (previous,current){
+        (Some(old),Some(new))=>{
+            if old.objective!=new.objective||old.revision!=new.revision
+                ||old.steps!=new.steps{
+                return Err("Historical action UUID conflicts with current receipt.".into());
+            }
+            Ok(new)
+        }
+        (Some(old),None)=>Ok(old),
+        (None,Some(new))=>Ok(new),
+        (None,None)=>Err("No such completed native action in bounded receipt history.".into()),
+    }
+}
 pub(super) fn read_recent(last:&Path)->Result<DeliveryHistoryView,String>{
     let mut archived=read_archive(&archive_path(last)?)?.items;
     if let Some(latest)=current(last)?{
@@ -159,6 +183,18 @@ mod tests{
         archive_predecessor(&last).unwrap();
         archive_predecessor(&last).unwrap();
         assert_eq!(read_recent(&last).unwrap().items.len(),1);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn exact_archived_uuid_retrieval_rejects_forged_or_nonexistent_actions(){
+        let root=temp();let last=root.join("native-task-delivery.json");
+        let prior=receipt(A,"First",1000);
+        append(&archive_path(&last).unwrap(),&prior).unwrap();
+        assert_eq!(exact_receipt(&last,A).unwrap().objective,"First");
+        assert!(exact_receipt(&last,B).is_err());
+        assert!(exact_receipt(&last,"../native-task-delivery.json").is_err());
+        super::super::write_at(&last,&receipt(A,"Rewritten",2000)).unwrap();
+        assert!(exact_receipt(&last,A).is_err());
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
