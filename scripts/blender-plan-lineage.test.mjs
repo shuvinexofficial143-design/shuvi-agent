@@ -48,3 +48,21 @@ test("three-stage reviewer never accepts arbitrary generic Blender plans as spec
   assert.match(lineage,/sha.len\(\)!=64/);
   assert.match(lineage,/Duplicate|unique/i);
 });
+
+test("reserved example output names enforce matching typed plan and SHA-pinned input source before dispatch",()=>{
+  assert.ok(lineage.includes("pub(crate) fn reserved_output_policy("));
+  assert.ok(lineage.includes('Some("shuvi41-proof-material-render.png")=>Some("look_render")'));
+  assert.ok(lineage.includes('Some("shuvi41-proof-material.blend")=>Some("look")'));
+  assert.ok(lineage.includes('Some("shuvi41-proof-stage2.blend")=>Some("model2")'));
+  assert.ok(lineage.includes('Some("shuvi41-proof-render.png")=>Some("render")'));
+  assert.ok(lineage.includes('Some("shuvi41-proof-stage1.blend")=>Some("model1")'));
+  assert.ok(lineage.includes("!exact_recipe_shape(plan,stage)"));
+  assert.ok(lineage.includes('if stage=="look_render" && !persistent_session'));
+  assert.ok(session.includes('crate::blender_plan_lineage::reserved_output_policy('));
+  assert.ok(oneOff.includes('crate::blender_plan_lineage::reserved_output_policy('));
+  for(const caseName of [
+    "reserved_outputs_reject_forged_steps_and_wrong_sha_pinned_source",
+    "oneoff_material_png_is_denied_without_persistent_preflight",
+    "generic_unreserved_model_plans_retain_normal_native_approval_flow"
+  ])assert.ok(lineage.includes("fn "+caseName+"("));
+});

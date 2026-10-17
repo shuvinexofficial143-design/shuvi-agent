@@ -128,6 +128,13 @@ pub(crate) fn execute(
     if !script.is_file(){return Err("Fixed Blender plan adapter missing.".into());}
     let input_proof=blender_input_checkpoint::inspect(blend_file,expected_blend_sha256)?;
     let plan_lineage=crate::blender_plan_lineage::derive(plan)?;
+    // One-off adapter must NOT allow a reserved material still: unlike
+    // persistent broker, it has no independent material/camera/light preflight.
+    crate::blender_plan_lineage::reserved_output_policy(
+        plan,&plan_lineage,
+        input_proof.as_ref().map(|x|x.canonical_path.as_str()),
+        allow_render,false
+    )?;
     let plan_bytes=serde_json::to_vec(plan).map_err(|_|"Invalid Blender JSON plan.".to_string())?;
     if plan_bytes.is_empty() || plan_bytes.len()>64*1024{
         return Err("Blender plan exceeds the bounded 64 KiB budget.".into());

@@ -228,6 +228,60 @@ pub(crate) fn receipt_matches(receipt:&Value,stage:&str)->Result<(),String>{
     }
     Ok(())
 }
+/// Native fail-closed dispatch policy for the five example workflow file
+/// names. The matched output *must* come from the exact typed recipe, not an
+/// unrelated plan whose last step writes an identical filename. The one-off
+/// Python adapter has no material preflight; material PNGs therefore require
+/// the persistent broker. No disk or Blender launch happens here.
+pub(crate) fn reserved_output_policy(
+    plan:&Value,lineage:&Value,input_source:Option<&str>,
+    allow_render:bool,persistent_session:bool
+)->Result<(),String>{
+    let steps=plan.get("steps").and_then(Value::as_array)
+        .ok_or("Blender plan must contain typed steps.")?;
+    let mut role=None;
+    for step in steps{
+        let operation=step.pointer("/request/operation").and_then(Value::as_str);
+        if !matches!(operation,Some("file.checkpoint"|"render.execute")){continue;}
+        let filename=step.pointer("/request/payload/name").and_then(Value::as_str);
+        let matched=match filename{
+            Some("shuvi41-proof-stage1.blend")=>Some("model1"),
+            Some("shuvi41-proof-stage2.blend")=>Some("model2"),
+            Some("shuvi41-proof-render.png")=>Some("render"),
+            Some("shuvi41-proof-material.blend")=>Some("look"),
+            Some("shuvi41-proof-material-render.png")=>Some("look_render"),
+            _=>None
+        };
+        if let Some(expected)=matched {
+            if role.is_some(){return Err("Blender reserved output appears multiple times.".into());}
+            role=Some(expected);
+        }
+    }
+    let stage=match role{Some(v)=>v,None=>return Ok(())};
+    if lineage.get("acceptance_stage").and_then(Value::as_str)!=Some(stage)
+        || !exact_recipe_shape(plan,stage){
+        return Err("Blender reserved artifact requires the unchanged typed native recipe.".into());
+    }
+    let source_name=match stage{
+        "render"|"look"=>Some("shuvi41-proof-stage2.blend"),
+        "look_render"=>Some("shuvi41-proof-material.blend"),
+        _=>None
+    };
+    if let Some(expected)=source_name {
+        if input_source.and_then(|p|std::path::Path::new(p).file_name())
+            .and_then(|name|name.to_str())!=Some(expected){
+            return Err("Blender reserved stage requires the exact expected SHA-pinned input checkpoint.".into());
+        }
+    }
+    if matches!(stage,"render"|"look_render") && !allow_render {
+        return Err("Blender reserved PNG stage requires explicit render approval.".into());
+    }
+    if stage=="look_render" && !persistent_session {
+        return Err("Blender material PNG requires the persistent broker's independent scene/material preflight.".into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -344,6 +398,56 @@ mod tests{
         wrong["steps"][0]["request"]["payload"]["samples"]=json!(256);
         assert_eq!(derive(&wrong).unwrap()["acceptance_stage"],"other");
         assert!(receipt_matches(&json!({"approved_plan_lineage":derive(&plan).unwrap()}),"render").is_err());
+    }
+    #[test]
+    fn reserved_outputs_reject_forged_steps_and_wrong_sha_pinned_source(){
+        let rev="c".repeat(64);
+        let sources=[
+            ("model1",None,false),
+            ("model2",None,false),
+            ("render",Some("/approved/shuvi41-proof-stage2.blend"),true),
+            ("look",Some("/approved/shuvi41-proof-stage2.blend"),false),
+            ("look_render",Some("/approved/shuvi41-proof-material.blend"),true),
+        ];
+        for (stage,source,render) in sources {
+            let plan=crate::blender_acceptance_recipe::expected_plan(stage,&rev).unwrap();
+            let lineage=derive(&plan).unwrap();
+            reserved_output_policy(&plan,&lineage,source,render,true).unwrap();
+            let wrong_source=if stage=="look_render"{
+                Some("/approved/shuvi41-proof-stage2.blend")
+            }else{Some("/approved/shuvi41-proof-material.blend")};
+            if matches!(stage,"look"|"render"|"look_render") {
+                assert!(reserved_output_policy(&plan,&lineage,wrong_source,render,true).is_err());
+                assert!(reserved_output_policy(&plan,&lineage,None,render,true).is_err());
+            }
+            if render{
+                assert!(reserved_output_policy(&plan,&lineage,source,false,true).is_err());
+            }
+            let mut forged=plan.clone();
+            let last=forged["steps"].as_array().unwrap().len()-1;
+            forged["steps"][0]["request"]["payload"]["unsafe_extra"]=json!(true);
+            assert!(reserved_output_policy(&forged,&derive(&forged).unwrap(),source,render,true).is_err());
+            let mut changed=plan.clone();
+            changed["steps"][last]["request"]["payload"]["name"]=json!("arbitrary.png");
+            // The unreserved ordinary output cannot impersonate this reserved name.
+            assert_ne!(derive(&changed).unwrap()["acceptance_stage"],stage);
+        }
+    }
+    #[test]
+    fn oneoff_material_png_is_denied_without_persistent_preflight(){
+        let plan=crate::blender_acceptance_recipe::expected_plan("look_render",&"d".repeat(64)).unwrap();
+        let token=derive(&plan).unwrap();
+        let source=Some("/approved/shuvi41-proof-material.blend");
+        assert!(reserved_output_policy(&plan,&token,source,true,false).is_err());
+        reserved_output_policy(&plan,&token,source,true,true).unwrap();
+    }
+    #[test]
+    fn generic_unreserved_model_plans_retain_normal_native_approval_flow(){
+        let plan=json!({"steps":[step("inspect","scene.inspect",json!({}),json!([]))]});
+        let token=derive(&plan).unwrap();
+        assert_eq!(token["acceptance_stage"],"other");
+        reserved_output_policy(&plan,&token,None,false,false).unwrap();
+        reserved_output_policy(&plan,&token,None,false,true).unwrap();
     }
     #[test]
     fn duplicate_steps_malformed_receipts_and_zero_steps_denied(){

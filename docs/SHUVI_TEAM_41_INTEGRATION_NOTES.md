@@ -901,3 +901,35 @@ payload keys/bindings, timeouts, altered material targets, duplicate UUIDs
 and distinct material-render destination, while source Node checks guard
 the exact-template and preview-source contract. This requires no new
 Blender installation, Python launch, GUI interaction or Adobe integration.
+
+## Team-41 — native reserved-output dispatch policy (source-only)
+
+A read-only native gate now prevents accidental or forged reuse of the
+five fixed proof artifact names by a generic typed plan. Before dispatch,
+`blender_plan_lineage::reserved_output_policy` examines every
+`file.checkpoint`/`render.execute` output, not just the last step.
+If any output is a fixed Shuvi-41 proof name, the supplied plan must match
+the **entire exact native generated recipe** and the associated fixed role.
+Duplicate reserved outputs, hidden steps or extra changes are refused.
+
+When the fixed role is `render` or `look`, the selected SHA-verified
+startup input file must be named `shuvi41-proof-stage2.blend`. When the role
+is `look_render`, its SHA-verified source must be the distinct
+`shuvi41-proof-material.blend`. Approval for rendering remains explicit
+and separate. More importantly, `look_render` is denied in the one-off
+Blender launcher altogether, because only the persistent broker has the
+live saved-material-slot + camera + light preflight prior to rendering.
+This prevents a one-off native route from silently omitting that check.
+Ordinary unrelated plans and their filenames keep their normal native
+permissions and are not forced into the example recipe.
+
+Both persistent-session and one-off native execution paths evaluate the
+gate **before contacting the Python/Blender process**. Source-byte checks,
+owner approval, process ownership and independent artifact readback remain
+additional guards; a matching filename by itself proves nothing about a
+user project, successful Blender rendering or visual appearance.
+
+New Rust and Node tests cover all five reserved outputs, arbitrary
+unreserved plans, changed first steps/extra fields, absent or wrong
+source name, missing render permission and one-off bypass attempts.
+No actual app was launched or file in the user workspace changed.

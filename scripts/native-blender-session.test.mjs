@@ -111,3 +111,12 @@ test("persistent broker parses and fixture session protocol passes",{
   assert.equal(run.status,0,run.stderr);
   assert.match(run.stderr,/Ran 19 tests/);
 });
+
+test("persistent Blender predispatch verifies reserved stage source and exact plan before any broker request",()=>{
+  assert.ok(native.includes("crate::blender_plan_lineage::reserved_output_policy("));
+  assert.ok(native.includes("session.source_checkpoint.as_ref().map(|x|x.canonical_path.as_str())"));
+  assert.ok(native.includes("allow_render,true"));
+  const guard=native.indexOf("crate::blender_plan_lineage::reserved_output_policy(");
+  const dispatch=native.indexOf('request(session,state,"run_plan"');
+  assert.ok(guard>0 && dispatch>guard);
+});

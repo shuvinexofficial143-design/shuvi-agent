@@ -98,3 +98,9 @@ test("one-off input source checked before launch, authenticated load and post-pl
   assert.equal(run.status,0,run.stderr);
   assert.match(run.stderr,/Ran 6 tests/);
 });
+
+test("one-off Blender worker refuses reserved material render lacking the persistent scene/material safety preflight",()=>{
+  assert.ok(exec.includes("crate::blender_plan_lineage::reserved_output_policy("));
+  assert.ok(exec.includes("input_proof.as_ref().map(|x|x.canonical_path.as_str())"));
+  assert.ok(exec.includes("allow_render,false"));
+});

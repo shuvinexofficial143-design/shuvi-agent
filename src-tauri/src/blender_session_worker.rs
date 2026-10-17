@@ -515,6 +515,14 @@ pub(crate) fn plan(
         if allow_render && !session.allow_render{
             return Err("Blender plan requests rendering above the approved session policy ceiling.".into());
         }
+        // Strict reserved-role and source-kind policy BEFORE broker command.
+        // The persistent Python broker additionally re-observes live material,
+        // active camera and lighting when the optional material PNG is requested.
+        crate::blender_plan_lineage::reserved_output_policy(
+            plan,&plan_lineage,
+            session.source_checkpoint.as_ref().map(|x|x.canonical_path.as_str()),
+            allow_render,true
+        )?;
         if let Some(ref input)=session.source_checkpoint {
             blender_input_checkpoint::still_current(input)?;
         }
