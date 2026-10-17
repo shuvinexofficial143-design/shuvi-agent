@@ -19,9 +19,15 @@ test('M54 each independent SHA parent requires own exact prepared owner UUID and
 });
 test('M54 separate owner-approved dispatch runs only previously admitted fixed read-only classes',()=>{
   assert.match(rust,/"run_approved_sha_parent_queue" => \{/);
-  assert.match(rust,/if !obj\.is_empty\(\)/);
+  assert.match(rust,/obj\.len\(\)!=2/);
+  assert.match(rust,/first_parent_id/);
+  assert.match(rust,/second_parent_id/);
+  assert.match(rust,/two distinct canonical approved parent UUIDs/);
   assert.match(rust,/ToolAction::RunApprovedShaParentQueue/);
-  assert.match(rust,/parent_queue::run_two_ready_approved\(/);
+  assert.match(rust,/parent_queue::run_exact_approved_pair\(/);
+  assert.match(queue,/fn claim_exact_pair_at\(/);
+  assert.match(queue,/q\.parents\[index\]\.parent_id!=id/);
+  assert.match(queue,/fn m54_pinned_two_parent_claim_is_atomic_and_rejects_any_changed_owner_selection/);
   assert.match(rust,/status\.shuvi_memory_mb\+1024\.0>=HARD_LIMIT_MB/);
   assert.match(rust,/run_approved_sha_parent_queue.*?SEPARATE owner Allow/s);
   assert.match(queue,/fn run_two_ready_approved<F>/);
