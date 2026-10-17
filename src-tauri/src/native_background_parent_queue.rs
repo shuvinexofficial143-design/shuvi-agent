@@ -455,6 +455,97 @@ pub(crate) fn request_exact_parent_stop_at(root:&Path,id:&str)->Result<bool,Stri
         _=>Err("Parent Stop OS identity is mismatched or terminal; owner review required.".into()),
     }
 }
+/// M56 restart recovery is an evidence INVENTORY, never a PID-liveness
+/// oracle, a success receipt, nor permission to release/auto-retry a slot.
+#[derive(Debug,Clone,Serialize)]
+#[serde(rename_all="camelCase")]
+pub(crate) struct ParentRecoveryView{
+    pub parent_id:String,
+    pub recorded_phase:String,
+    pub os_admission_phase:String,
+    pub stop_intent_recorded:bool,
+    pub current_sha256_reverified:bool,
+    pub owner_review_required:bool,
+    pub holds_resource:bool,
+    pub safe_to_auto_retry:bool,
+    pub application_verified:bool,
+    pub process_liveness_verified:bool,
+}
+#[allow(dead_code)]
+pub(crate) fn recovery_snapshot_at(root:&Path)->Result<Vec<ParentRecoveryView>,String>{
+    let file=root_file(root)?;
+    let _local=TX.lock().map_err(|_|"Parent recovery queue lock poisoned.")?;
+    let _os=OsLock::take(&file)?;
+    let queue=load(&file)?;
+    // M46 snapshot independently validates the OS admission record. Its
+    // recorded os_running never authenticates CURRENT process liveness.
+    let os=super::admission::snapshot_detailed_at(root)?;
+    let mut views=Vec::with_capacity(queue.parents.len());
+    for parent in &queue.parents{
+        let child=os.iter().find(|e|e.action_id==parent.parent_id);
+        let identity_ok=child.is_some_and(|e|
+            e.input_path==parent.input_path
+            &&e.expected_sha256==parent.expected_sha256);
+        let os_phase=match child{
+            None=>"no_admission".to_string(),
+            Some(_) if !identity_ok=>"identity_mismatch_owner_review".to_string(),
+            Some(e)=>e.phase.clone(),
+        };
+        let stopped=if child.is_some(){
+            // Malformed/redirected Stop evidence must be an ERROR; never
+            // silently assume a clean shutdown or safe review.
+            super::inspect_stop_intent(root,&parent.parent_id)?
+        }else{false};
+        let current_sha=if parent.phase=="sha256_verified"&&identity_ok
+            &&child.is_some_and(|e|e.phase=="sha256_verified"){
+            let receipt=root.join(format!("native-bg-hash-{}.json",parent.parent_id));
+            super::hash_readback::verify(&receipt,&parent.parent_id,
+                Path::new(&parent.input_path),&parent.expected_sha256).is_ok()
+        }else{false};
+        // Queued parents have no job yet; they are NOT a recovery "success".
+        // Admitted remains held after a crashed host, even without an OS PID.
+        let uncertain=matches!(parent.phase.as_str(),"admitted"|"outcome_unknown");
+        views.push(ParentRecoveryView{
+            parent_id:parent.parent_id.clone(),
+            recorded_phase:parent.phase.clone(),
+            os_admission_phase:os_phase,
+            stop_intent_recorded:stopped,
+            current_sha256_reverified:current_sha,
+            owner_review_required:uncertain
+                ||(parent.phase=="sha256_verified"&&!current_sha)
+                ||(parent.phase=="queued"&&child.is_some()),
+            holds_resource:active(parent),
+            safe_to_auto_retry:false,
+            application_verified:false,
+            process_liveness_verified:false,
+        });
+    }
+    Ok(views)
+}
+/// Explicitly records that an authorized owner reviewed an INDETERMINATE
+/// parent, without unlocking, retrying, reassigning its UUID, or claiming
+/// that an OS worker ended. The caller MUST separately authenticate a
+/// later independently audited read-only inspection and owner confirmation.
+#[allow(dead_code)]
+pub(crate) fn mark_owner_reviewed_uncertain_at(root:&Path,id:&str)->Result<bool,String>{
+    if !super::valid_uuid(id){return Err("Review needs canonical parent UUID.".into());}
+    let file=root_file(root)?;
+    let _local=TX.lock().map_err(|_|"Parent review queue lock poisoned.")?;
+    let _os=OsLock::take(&file)?;
+    let mut q=load(&file)?;
+    let parent=q.parents.iter_mut().find(|x|x.parent_id==id)
+        .ok_or("Owner review parent UUID was never approved.")?;
+    match parent.phase.as_str(){
+        "outcome_unknown"=>return Ok(false), // idempotent; still held
+        "admitted"=>parent.phase="outcome_unknown".into(),
+        "queued"|"sha256_verified"=>return Err(
+            "Owner uncertainty review cannot rewrite queued or SHA-verified parent.".into()),
+        _=>return Err("Invalid parent recovery phase.".into()),
+    }
+    save(&file,&q)?;
+    Ok(true)
+}
+
 /// Read-only durable projection. No query implies current PID liveness.
 #[allow(dead_code)]
 pub(crate) fn snapshot_at(root:&Path)->Result<Vec<Parent>,String>{
@@ -682,6 +773,52 @@ mod tests{
         transition_at(&d,A,None).unwrap();
         assert!(claim_exact_pair_at(&d,[B,A]).is_err());
         assert_eq!(snapshot_at(&d).unwrap()[0].phase,"outcome_unknown");
+        fs::remove_dir_all(d).unwrap();
+    }
+    #[test]
+    fn m56_crash_before_child_admission_is_quarantined_no_automatic_slot_release(){
+        let d=dir();let a=input(&d,"crash-a");let b=input(&d,"crash-b");
+        add(&d,A,&a,0,&[]).unwrap();add(&d,B,&b,0,&[]).unwrap();
+        assert_eq!(claim_next_at(&d).unwrap().unwrap().parent_id,A);
+        let before=recovery_snapshot_at(&d).unwrap();
+        let stale=before.iter().find(|p|p.parent_id==A).unwrap();
+        assert_eq!(stale.os_admission_phase,"no_admission");
+        assert_eq!(stale.recorded_phase,"admitted");
+        assert!(stale.owner_review_required&&stale.holds_resource);
+        assert!(!stale.safe_to_auto_retry&&!stale.process_liveness_verified);
+        assert!(mark_owner_reviewed_uncertain_at(&d,A).unwrap());
+        assert!(!mark_owner_reviewed_uncertain_at(&d,A).unwrap());
+        let after=recovery_snapshot_at(&d).unwrap();
+        assert_eq!(after[0].recorded_phase,"outcome_unknown");
+        assert!(after[0].holds_resource);
+        assert!(after[1].recorded_phase=="queued");
+        assert!(mark_owner_reviewed_uncertain_at(&d,B).is_err());
+        assert!(mark_owner_reviewed_uncertain_at(&d,C).is_err());
+        fs::remove_dir_all(d).unwrap();
+    }
+    #[test]
+    fn m56_two_uncertain_parents_preserve_kernel_capacity_and_claimed_inputs(){
+        let d=dir();let a=input(&d,"a");let b=input(&d,"b");let c=input(&d,"c");
+        add(&d,A,&a,2,&[]).unwrap();add(&d,B,&b,1,&[]).unwrap();
+        add(&d,C,&c,0,&[]).unwrap();
+        claim_exact_pair_at(&d,[A,B]).unwrap();
+        mark_owner_reviewed_uncertain_at(&d,A).unwrap();
+        mark_owner_reviewed_uncertain_at(&d,B).unwrap();
+        let status=recovery_snapshot_at(&d).unwrap();
+        assert_eq!(status.iter().filter(|v|v.holds_resource).count(),2);
+        assert!(status.iter().all(|v|!v.safe_to_auto_retry));
+        assert!(claim_next_at(&d).unwrap().is_none());
+        assert!(claim_exact_pair_at(&d,[A,C]).is_err());
+        fs::remove_dir_all(d).unwrap();
+    }
+    #[test]
+    fn m56_recovery_status_rejects_corrupt_history_before_reporting_any_safe_phase(){
+        let d=dir();let a=input(&d,"input");
+        add(&d,A,&a,0,&[]).unwrap();
+        let file=root_file(&d).unwrap();
+        fs::write(&file,b"{corrupt").unwrap();
+        assert!(recovery_snapshot_at(&d).is_err());
+        assert!(mark_owner_reviewed_uncertain_at(&d,A).is_err());
         fs::remove_dir_all(d).unwrap();
     }
     #[test]
