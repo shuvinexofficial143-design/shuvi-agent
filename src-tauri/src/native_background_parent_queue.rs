@@ -225,6 +225,30 @@ fn ready_index(q:&Queue)->Option<usize>{
         score(a).cmp(&score(b)).then_with(||b.ordinal.cmp(&a.ordinal))
     }).map(|(i,_)|i)
 }
+// Always reverify current dependency bytes before any durable admission.
+fn check_deps(root:&Path,q:&Queue,id:&str,seen:&mut HashSet<String>)
+    ->Result<(),String>{
+    if !seen.insert(id.to_owned()){return Ok(());}
+    let parent=q.parents.iter().find(|p|p.parent_id==id)
+        .ok_or("Parent dependency disappeared.")?;
+    if parent.phase!="sha256_verified"{
+        return Err("Parent dependency is not SHA-verified.".into());
+    }
+    let claim=super::admission::snapshot_detailed_at(root)?
+        .into_iter().find(|x|x.action_id==id)
+        .ok_or("Parent dependency has no authenticated OS record.")?;
+    if claim.phase!="sha256_verified"
+        ||claim.input_path!=parent.input_path
+        ||claim.expected_sha256!=parent.expected_sha256{
+        return Err("Parent dependency OS identity does not match.".into());
+    }
+    let receipt=root.join(format!("native-bg-hash-{id}.json"));
+    super::hash_readback::verify(&receipt,id,Path::new(&parent.input_path),
+        &parent.expected_sha256)?;
+    for dep in &parent.depends_on{check_deps(root,q,dep,seen)?;}
+    Ok(())
+}
+
 #[allow(dead_code)]
 pub(crate) fn claim_next_at(root:&Path)->Result<Option<Parent>,String>{
     let file=root_file(root)?;
@@ -235,28 +259,6 @@ pub(crate) fn claim_next_at(root:&Path)->Result<Option<Parent>,String>{
     // A historical sha256_verified phase is never proof of CURRENT bytes.
     // Verify EVERY transitive prerequisite against the exact OS admission
     // and independently rehash its current input before admitting work.
-    fn check_deps(root:&Path,q:&Queue,id:&str,seen:&mut HashSet<String>)
-        ->Result<(),String>{
-        if !seen.insert(id.to_owned()){return Ok(());}
-        let parent=q.parents.iter().find(|p|p.parent_id==id)
-            .ok_or("Parent dependency disappeared.")?;
-        if parent.phase!="sha256_verified"{
-            return Err("Parent dependency is not SHA-verified.".into());
-        }
-        let claim=super::admission::snapshot_detailed_at(root)?
-            .into_iter().find(|x|x.action_id==id)
-            .ok_or("Parent dependency has no authenticated OS record.")?;
-        if claim.phase!="sha256_verified"
-            ||claim.input_path!=parent.input_path
-            ||claim.expected_sha256!=parent.expected_sha256{
-            return Err("Parent dependency OS identity does not match.".into());
-        }
-        let receipt=root.join(format!("native-bg-hash-{id}.json"));
-        super::hash_readback::verify(&receipt,id,Path::new(&parent.input_path),
-            &parent.expected_sha256)?;
-        for dep in &parent.depends_on{check_deps(root,q,dep,seen)?;}
-        Ok(())
-    }
     let mut seen=HashSet::new();
     for dep in &q.parents[index].depends_on{
         check_deps(root,&q,dep,&mut seen)?;
@@ -320,6 +322,12 @@ pub(crate) fn run_next_approved<F>(root:&Path,mut ram_over_limit:F)
     ->Result<Option<super::VerifiedReadOnlyHash>,String>
 where F:FnMut()->Result<bool,String>{
     let Some(parent)=claim_next_at(root)? else{return Ok(None)};
+    run_claimed_parent(root,&parent,||ram_over_limit()).map(Some)
+}
+// Dispatch a parent ALREADY claimed durably, never mint additional approvals.
+fn run_claimed_parent<F>(root:&Path,parent:&Parent,mut ram_over_limit:F)
+    ->Result<super::VerifiedReadOnlyHash,String>
+where F:FnMut()->Result<bool,String>{
     let outcome=super::run_trusted_sha256_with_guard(
         root,&parent.parent_id,Path::new(&parent.input_path),
         &parent.expected_sha256,||ram_over_limit());
@@ -329,15 +337,69 @@ where F:FnMut()->Result<bool,String>{
                 let _=transition_at(root,&parent.parent_id,None);
                 return Err(e);
             }
-            Ok(Some(proof))
+            Ok(proof)
         },
         Err(e)=>{
-            // Retain UNKNOWN claim even if the OS sidecar did not launch.
-            // Re-admission requires a future separately authorized review.
             transition_at(root,&parent.parent_id,None)?;
             Err(e)
         }
     }
+}
+/// M54: owner approved EXACT two parent IDs. The pinned pair is claimed
+/// as ONE atomic OS-locked journal transaction, or not claimed at all.
+/// A new/reordered/blocked queue fails closed before any OS worker launch.
+fn claim_exact_pair_at(root:&Path,ids:[&str;2])->Result<[Parent;2],String>{
+    if !super::valid_uuid(ids[0])||!super::valid_uuid(ids[1])||ids[0]==ids[1]{
+        return Err("Two distinct canonical owner-approved parent IDs are required.".into());
+    }
+    let file=root_file(root)?;
+    let _local=TX.lock().map_err(|_|"Parent queue lock poisoned.")?;
+    let _os=OsLock::take(&file)?;
+    let mut q=load(&file)?;
+    let mut selected=Vec::with_capacity(2);
+    for id in ids{
+        let index=ready_index(&q)
+            .ok_or("Pinned approved parent is no longer ready or both slots are held.")?;
+        if q.parents[index].parent_id!=id {
+            return Err("Pinned owner-approved parent order changed; prepare approval again.".into());
+        }
+        let mut seen=HashSet::new();
+        for dep in &q.parents[index].depends_on {
+            check_deps(root,&q,dep,&mut seen)?;
+        }
+        q.parents[index].phase="admitted".into();
+        q.dispatch_round=q.dispatch_round.checked_add(1)
+            .ok_or("Exact approved pair dispatch round overflow.")?;
+        selected.push(q.parents[index].clone());
+    }
+    // Exactly two immutable claims, one durable replace. A validation failure
+    // above leaves all parents QUEUED; no partial reserved UUID.
+    save(&file,&q)?;
+    let pair:[Parent;2]=selected.try_into()
+        .map_err(|_|"Exact approved parent pair internal count invalid.")?;
+    Ok(pair)
+}
+/// Executes the exact two separately OWNER-APPROVED parent UUIDs and no others.
+/// Shared host callback must reserve both child 512 MiB limits within 4 GiB.
+#[allow(dead_code)]
+pub(crate) fn run_exact_approved_pair<F>(
+    root:&Path,ids:[&str;2],host_ram_over_limit:&F
+)->[Result<super::VerifiedReadOnlyHash,String>;2]
+where F:Fn()->Result<bool,String>+Sync{
+    let [first,second]=match claim_exact_pair_at(root,ids){
+        Ok(pair)=>pair,
+        Err(e)=>return [Err(e.clone()),Err(e)],
+    };
+    std::thread::scope(|scope|{
+        let a=scope.spawn(||run_claimed_parent(root,&first,||host_ram_over_limit()));
+        let b=scope.spawn(||run_claimed_parent(root,&second,||host_ram_over_limit()));
+        [
+            a.join().unwrap_or_else(|_|Err(
+                "First pinned parent supervisor panicked; claim needs owner review.".into())),
+            b.join().unwrap_or_else(|_|Err(
+                "Second pinned parent supervisor panicked; claim needs owner review.".into()))
+        ]
+    })
 }
 /// M53: dispatch TWO separately owner-approved PARENT UUIDs concurrently.
 /// Enqueue permissions happen per parent before this call; dispatch never
@@ -567,6 +629,41 @@ mod tests{
         assert!(!request_exact_parent_stop_at(&d,A).unwrap());
         assert!(request_exact_parent_stop_at(&d,B).is_err());
         assert_eq!(snapshot_at(&d).unwrap()[0].phase,"admitted");
+        fs::remove_dir_all(d).unwrap();
+    }
+    #[test]
+    fn m54_pinned_two_parent_claim_is_atomic_and_rejects_any_changed_owner_selection(){
+        let d=dir();
+        let a=input(&d,"pinned-a");let b=input(&d,"pinned-b");
+        let c=input(&d,"pinned-c");
+        add(&d,A,&a,0,&[]).unwrap();
+        add(&d,B,&b,2,&[]).unwrap();
+        add(&d,C,&c,1,&[]).unwrap();
+        // Current fairness order: B then C; a stale owner selection must
+        // NOT launch B alone before discovering the second ID mismatch.
+        assert!(claim_exact_pair_at(&d,[B,A]).is_err());
+        assert!(snapshot_at(&d).unwrap().iter().all(|p|p.phase=="queued"));
+        assert!(claim_exact_pair_at(&d,[B,B]).is_err());
+        assert!(claim_exact_pair_at(&d,[A,C]).is_err());
+        let ids=claim_exact_pair_at(&d,[B,C]).unwrap();
+        assert_eq!(ids[0].parent_id,B);
+        assert_eq!(ids[1].parent_id,C);
+        assert_eq!(snapshot_at(&d).unwrap().iter().filter(|p|p.phase=="admitted").count(),2);
+        assert!(claim_exact_pair_at(&d,[B,C]).is_err());
+        fs::remove_dir_all(d).unwrap();
+    }
+    #[test]
+    fn m54_same_input_or_held_unknown_cannot_be_pinned_as_distinct_resources(){
+        let d=dir();
+        let path=input(&d,"shared-source");
+        add(&d,A,&path,2,&[]).unwrap();
+        add(&d,B,&path,1,&[]).unwrap();
+        assert!(claim_exact_pair_at(&d,[A,B]).is_err());
+        assert!(snapshot_at(&d).unwrap().iter().all(|p|p.phase=="queued"));
+        assert_eq!(claim_next_at(&d).unwrap().unwrap().parent_id,A);
+        transition_at(&d,A,None).unwrap();
+        assert!(claim_exact_pair_at(&d,[B,A]).is_err());
+        assert_eq!(snapshot_at(&d).unwrap()[0].phase,"outcome_unknown");
         fs::remove_dir_all(d).unwrap();
     }
     #[test]
