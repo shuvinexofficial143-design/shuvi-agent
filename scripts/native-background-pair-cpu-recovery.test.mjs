@@ -37,7 +37,7 @@ test("two separately authenticated read-only OS workers have individually durabl
 });
 test("read-only restart projections never trust stale SHA files or reclassify OS exit as app success",()=>{
   assert.match(admission,/snapshot_detailed_at/);
-  assert.match(owned,/pub\(super\) fn inspect_readonly_health/);
+  assert.match(owned,/pub\(crate\) fn inspect_readonly_health/);
   assert.match(owned,/hash_readback::verify\(/);
   assert.match(owned,/recorded_phase:claim.phase/);
   assert.match(owned,/current_file_rehashed:reverified/);
