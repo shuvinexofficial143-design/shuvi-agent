@@ -19,7 +19,11 @@ test("both native UIA read paths reattest selected control and window before JSO
   assert.match(arm,/readonly_control_reattestation_script\(\)/);
   assert.match(arm,/\{control_attestation\}/);
   const element=arm.lastIndexOf("Assert-ShuviObservedControl -element");
-  const window=arm.lastIndexOf("Assert-ShuviObservedWindow");
+  // Discovery embeds the exact root check, while named ui_find invokes its
+  // pre-bound {finish_attestation} snippet twice after control lookup.
+  const window=arm.includes("{finish_attestation}")?
+   arm.lastIndexOf("{finish_attestation}"):
+   arm.lastIndexOf("Assert-ShuviObservedWindow");
   const serialized=arm.lastIndexOf("ConvertTo-Json");
   assert.ok(element>0&&window>element&&serialized>window);
  }

@@ -658,3 +658,16 @@ Run only with separate owner consent on a disposable desktop/test fixture.
 - Source tested status must be established only from exact new SHA CI;
   dynamic Windows UIA provider redraw and Adobe/Blender live acceptance
   still need separately owner-authorized disposable-host verification.
+
+### Milestone 12 CI follow-up — native root-source assertion compatibility
+
+- Initial milestone commit c270dd1 had one frontend regression-test failure:
+  the new test looked for a literal final Assert-ShuviObservedWindow in
+  both read paths. ui_find actually inserts a previously constructed
+  {finish_attestation} script at the native PowerShell execution boundary.
+  The assertion now verifies the correct final emitted root attestation
+  for either path, after per-element verification.
+- Native UIA provider state comparisons use an explicitly typed temporary
+  value before comparing enum/bool/scroll state, avoiding ambiguous
+  PowerShell casting syntax. No mutation or permission semantics changed.
+- Do not inherit the earlier 21/21 baseline; verify the exact new SHA.

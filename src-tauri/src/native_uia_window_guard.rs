@@ -213,22 +213,26 @@ function Assert-ShuviObservedControl {
   if ($null -ne $observed.ToggleState) {
     $p=$null
     if (-not $element.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern,[ref]$p)) { throw 'Missing toggle.' }
-    if ([string]([System.Windows.Automation.TogglePattern]$p).Current.ToggleState -cne [string]$observed.ToggleState) { throw 'Toggle changed.' }
+    $now=([System.Windows.Automation.TogglePattern]$p).Current.ToggleState
+    if ([string]$now -cne [string]$observed.ToggleState) { throw 'Toggle changed.' }
   }
   if ($null -ne $observed.ExpandCollapseState) {
     $p=$null
     if (-not $element.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern,[ref]$p)) { throw 'Missing expansion.' }
-    if ([string]([System.Windows.Automation.ExpandCollapsePattern]$p).Current.ExpandCollapseState -cne [string]$observed.ExpandCollapseState) { throw 'Expansion changed.' }
+    $now=([System.Windows.Automation.ExpandCollapsePattern]$p).Current.ExpandCollapseState
+    if ([string]$now -cne [string]$observed.ExpandCollapseState) { throw 'Expansion changed.' }
   }
   if ($null -ne $observed.IsSelected) {
     $p=$null
     if (-not $element.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern,[ref]$p)) { throw 'Missing selection.' }
-    if ([bool]([System.Windows.Automation.SelectionItemPattern]$p).Current.IsSelected -ne [bool]$observed.IsSelected) { throw 'Selection changed.' }
+    $now=([System.Windows.Automation.SelectionItemPattern]$p).Current.IsSelected
+    if ([bool]$now -ne [bool]$observed.IsSelected) { throw 'Selection changed.' }
   }
   if ($null -ne $observed.VerticalScrollPercent) {
     $p=$null
     if (-not $element.TryGetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern,[ref]$p)) { throw 'Missing scroll.' }
-    if ([double]([System.Windows.Automation.ScrollPattern]$p).Current.VerticalScrollPercent -ne [double]$observed.VerticalScrollPercent) { throw 'Scroll changed.' }
+    $now=([System.Windows.Automation.ScrollPattern]$p).Current.VerticalScrollPercent
+    if ([double]$now -ne [double]$observed.VerticalScrollPercent) { throw 'Scroll changed.' }
   }
  } catch {
    throw 'Selected UIA control changed or became inaccessible during read-only inspection. Discard readback.'
