@@ -3,6 +3,7 @@ use serde_json::Value;
 use std::{fs,io::{Read,Write},path::Path};
 
 use crate::premiere_assembly::Assembly;
+use crate::premiere_caption_graphics::Request as CaptionGraphicsRequest;
 use crate::premiere_delivery::{FrameBatch, InterchangeRequest};
 use crate::premiere_finishing::Request as FinishingRequest;
 use crate::premiere_layering::{LayerBatch, TrackOrganization};
@@ -48,6 +49,7 @@ pub struct Request {
     #[serde(default)] pub track_organization:Option<TrackOrganization>,
     #[serde(default)] pub layering:Option<LayerBatch>,
     #[serde(default)] pub finishing:Option<FinishingRequest>,
+    #[serde(default)] pub caption_graphics:Option<CaptionGraphicsRequest>,
     #[serde(default)] pub work_area:Option<WorkArea>,
     #[serde(default)] pub review:Option<ReviewSpec>,
     #[serde(default)] pub frame_delivery:Option<FrameBatch>,
@@ -132,7 +134,7 @@ impl Request {
         }
         if self.media_prep.is_none()&&self.scene_detection.is_none()&&self.transcript_cuts.is_none()
             &&self.transcript_rebuild.is_none()&&self.assembly.is_none()&&self.track_organization.is_none()
-            &&self.layering.is_none()&&self.finishing.is_none()&&self.work_area.is_none()
+            &&self.layering.is_none()&&self.finishing.is_none()&&self.caption_graphics.is_none()&&self.work_area.is_none()
             &&self.review.is_none()&&self.frame_delivery.is_none()&&self.interchange_export.is_none()&&self.export.is_none(){
             return Err("Edit job contains no executable phase.".into());
         }
@@ -164,6 +166,7 @@ impl Request {
         if let Some(value)=&self.track_organization{value.validate()?;}
         if let Some(value)=&self.layering{value.validate()?;}
         if let Some(value)=&self.finishing{value.validate()?;}
+        if let Some(value)=&self.caption_graphics{value.validate()?;}
         if let Some(value)=&self.work_area{value.validate()?;}
         if let Some(value)=&self.review{value.validate()?;}
         if let Some(value)=&self.frame_delivery{value.validate()?;}
@@ -205,6 +208,11 @@ impl Job {
         if request.layering.is_some(){push("layering","premiere_layer_clips");}
         if request.finishing.is_some(){push("finishing","premiere_finish_media_batch");}
         if request.work_area.is_some(){push("work_area","premiere_set_work_area");}
+        if request.caption_graphics.is_some(){
+            push("caption_graphics_plan","premiere_plan_caption_graphics");
+            push("caption_graphics_apply","premiere_apply_caption_graphics");
+            push("caption_project_save","premiere_save_project");
+        }
         if let Some(review)=&request.review{
             push("review",if review.iterative{"premiere_review_session_start"}else{"premiere_review_frames"});
         }
@@ -462,7 +470,7 @@ mod tests{
             schema_version:1,job_type:"custom".into(),talking_head_strategy:None,
             media_prep:None,scene_detection:None,transcript_cuts:None,transcript_rebuild:None,
             assembly:None,track_organization:None,layering:None,finishing:Some(request.clone()),
-            work_area:None,review:None,frame_delivery:None,interchange_export:None,export:None
+            caption_graphics:None,work_area:None,review:None,frame_delivery:None,interchange_export:None,export:None
         },"p",None,"s",1).unwrap();
         let timeline=json!({"truncated":false,"videoTracks":[{"index":0,"items":[{"targetSignature":"sig"}]}],"audioTracks":[]});
         assert_eq!(expectation_for_finishing(&job,&timeline,&request).unwrap().clips[0].signature,"sig");
@@ -499,6 +507,45 @@ mod tests{
             "review":{"seconds":[1,2,3,4,5],"prompt":"Check edit","iterative":true}
         });
         let request:Request=serde_json::from_value(value).unwrap();
+        assert!(request.validate().is_err());
+    }
+    #[test]fn selective_caption_graphics_join_audited_job_before_review_and_export(){
+        let value=json!({
+            "schema_version":1,"job_type":"social_reel",
+            "caption_graphics":{"schema_version":1,
+                "captions":{"schema_version":1,"output":"C:/captions.srt","duration_seconds":30.0,
+                    "cues":[{"start_seconds":1.0,"end_seconds":2.0,"text":"नमस्ते","selected":true}]},
+                "expected_srt_sha256":"a".repeat(64),"mapping":"Captions","revision":1,
+                "video_track":2,"audio_track":0,"static_fields":{}},
+            "review":{"seconds":[1.5],"prompt":"Check caption appearance"},
+            "export":{"output":"C:/out.mp4","overwrite":false}
+        });
+        let request:Request=serde_json::from_value(value).unwrap();
+        let mut job=Job::new("captions".into(),request,"P",Some("C:/edit.prproj"),"S",1).unwrap();
+        assert_eq!(job.phases.iter().map(|p|p.tool.as_str()).collect::<Vec<_>>(),vec![
+            "premiere_plan_caption_graphics","premiere_apply_caption_graphics",
+            "premiere_save_project","premiere_review_frames",
+            "premiere_plan_export","premiere_export_sequence"]);
+        assert!(job.record("caption_graphics_apply","premiere_apply_caption_graphics","bad",true,2).is_err());
+        for (index,id,tool) in [
+            (0,"caption_graphics_plan","premiere_plan_caption_graphics"),
+            (1,"caption_graphics_apply","premiere_apply_caption_graphics"),
+            (2,"caption_project_save","premiere_save_project"),
+        ] {
+            assert_eq!(job.phases[index].id,id);
+            job.record(id,tool,&format!("action{index}"),true,index as u64+2).unwrap();
+        }
+        assert_eq!(job.pending().unwrap().id,"review");
+    }
+    #[test]fn caption_request_rejects_missing_source_selection_without_any_job(){
+        let request:Request=serde_json::from_value(json!({
+            "schema_version":1,"job_type":"social_reel",
+            "caption_graphics":{"schema_version":1,
+                "captions":{"schema_version":1,"output":"C:/captions.srt","duration_seconds":30.0,
+                    "cues":[{"start_seconds":1.0,"end_seconds":2.0,"text":"text","selected":false}]},
+                "expected_srt_sha256":"a".repeat(64),"mapping":"Captions","revision":1,
+                "video_track":2,"audio_track":0,"static_fields":{}}
+        })).unwrap();
         assert!(request.validate().is_err());
     }
     #[test]fn one_primary_delivery_only(){
