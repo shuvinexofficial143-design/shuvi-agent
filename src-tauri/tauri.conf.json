@@ -38,7 +38,6 @@
   },
   "bundle": {
     "active": true,
-    "externalBin": ["binaries/shuvi-readonly-hash-worker"],
     "targets": [
       "nsis"
     ],
