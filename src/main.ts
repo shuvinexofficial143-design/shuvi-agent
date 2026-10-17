@@ -854,7 +854,7 @@ async function refreshNativeApprovedParentQueue():Promise<void>{
   try{
     const result=await invoke<NativeApprovedParentQueueStatus>("native_approved_parent_queue_status");
     const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-    const phases=new Set(["queued","admitted","sha256_verified","outcome_unknown"]);
+    const phases=new Set(["queued","admitted","sha256_verified","outcome_unknown","owner_reconciled_unverified"]);
     if(result.schemaVersion!==1||result.applicationVerified!==false
        ||result.processLivenessVerified!==false||result.safeToAutoRetry!==false
        ||!Array.isArray(result.parents)||result.parents.length>48
@@ -882,6 +882,7 @@ async function refreshNativeApprovedParentQueue():Promise<void>{
         ||typeof item.currentSha256Reverified!=="boolean"
         ||typeof item.ownerReviewRequired!=="boolean"
         ||typeof item.holdsResource!=="boolean"
+        ||typeof item.recordedTerminalEvidence!=="boolean"
         ||item.safeToAutoRetry!==false
         ||item.applicationVerified!==false
         ||item.processLivenessVerified!==false){
@@ -912,6 +913,7 @@ async function refreshNativeApprovedParentQueue():Promise<void>{
         +(evidence?.ownerReviewRequired?" · OWNER REVIEW REQUIRED":"")
         +(evidence?.holdsResource?" · RESOURCE HELD":"")
         +(evidence?.stopIntentRecorded?" · STOP INTENT RECORDED (not termination)":"")
+        +(evidence?.recordedTerminalEvidence?" · HISTORICAL OS TERMINAL RECORDS MATCH (no live PID proof)":"")
         +" · current file SHA "+(evidence?.currentSha256Reverified?"reverified":"NOT established")
         +" · no verified live PID or app completion.";
       row.append(label,small);
@@ -943,6 +945,36 @@ async function refreshNativeApprovedParentQueue():Promise<void>{
           }finally{review.disabled=false;}
         });
         row.append(review);
+      }
+      // M57 owner-confirmed closure is ONLY offered for a previously
+      // reviewed UNKNOWN parent with BOTH recorded OS-terminal evidences.
+      // It does not grant app success or fresh/current PID verification.
+      if(parent.recordedPhase==="outcome_unknown"
+        &&evidence?.recordedTerminalEvidence===true
+        &&evidence.holdsResource===true){
+        const reconcile=document.createElement("button");
+        reconcile.type="button";
+        reconcile.textContent="Review OS terminal for slot reconciliation";
+        reconcile.addEventListener("click",async()=>{
+          const inspected=window.prompt(
+            "Enter UUID of a separate successful OWNER-APPROVED list_processes inspection (after enqueue). Only an exact terminal M46 OS record + matching native Job receipt can release the HELD queue slot.");
+          if(!inspected)return;
+          if(!window.confirm("Reconcile terminal-only OS evidence for parent "+parent.parentId
+            +"? Original UUID remains spent. This does not prove the app succeeded or allow automatic retry."))return;
+          reconcile.disabled=true;
+          try{
+            const changed=await invoke<boolean>("reconcile_native_approved_parent_terminal",{
+              parentId:parent.parentId,inspectionActionId:inspected.trim(),
+              confirmation:"RECONCILE TERMINAL UNKNOWN"
+            });
+            small.textContent=changed
+              ?"Recorded OS-terminal evidence reconciled; no app/SHA success or automatic retry; UUID remains spent."
+              :"Already reconciled; exact parent UUID cannot be replayed.";
+          }catch{
+            small.textContent="OS-terminal reconciliation refused or incomplete; resource remains HELD. No retry.";
+          }finally{reconcile.disabled=false;}
+        });
+        row.append(reconcile);
       }
       // M55: UI merely asks to persist Stop for one exact approved parent.
       // Rust authenticates dispatch action + immutable parent pair + OS claim.
