@@ -24,7 +24,7 @@ test("native read-only SHA pair must be staged through Shuvi's existing owner Al
  assert.match(lib,/ToolAction::VerifyReadOnlyShaPair \{\.\.\} =>\s*Err\("SHA pair requires the existing exact approved native execute_action path/);
 });
 test("approved owner action maps deterministically to two independent UUID/PID SHA workers",()=>{
- assert.match(lib,/format!\("shuvi-readonly-pair-v1:\{\}:\{\}",action_id,index\)/);
+ assert.match(lib,/format!\("shuvi-readonly-pair-v1:\{\}:\{\}",owner_action_id,index\)/);
  assert.match(lib,/raw\[6\]=\(raw\[6\]&0x0f\)\|0x40/);
  assert.match(lib,/raw\[8\]=\(raw\[8\]&0x3f\)\|0x80/);
  assert.match(lib,/run_internal_readonly_pair\(/);
