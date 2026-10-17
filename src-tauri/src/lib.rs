@@ -357,6 +357,7 @@ Transcript rebuild handles explicit interior text removal by creating and insert
 - premiere_insert_verified_mogrt: {"request":{"path":"absolute existing .mogrt path","expected_sha256":"64 hex from premiere_inspect_mogrt_artifact or separately verified AE output","seconds":0,"video_track":0,"audio_track":0}} — approved high-risk insertion with exact project/sequence expectation, checkpoint, SHA256 pre/post proof, native inserted-clip readback and independently persisted .prproj; no auto retry.
 - premiere_insert_mogrt_library: {"library_name":"library","element_name":"template","seconds":0,"video_track":0,"audio_track":0}
 - premiere_import_media: {"paths":["absolute media path 1","absolute media path 2"],"expected_sha256":["64-hex source1","64-hex source2"]} — optional for ordinary files; REQUIRED for approved cross-worker media; hashes strictly align with paths
+- premiere_verify_caption_graphics: {"request":"exact original selected SRT+MOGRT source-bound manifest","receipt":"exact response JSON from earlier separately-approved premiere_apply_caption_graphics"} — READ ONLY independent re-scan of every actual native clip/field/timing including shifted timeline indexes, source SHA256 recheck; does NOT claim project saved/reopened or exported
 - premiere_apply_caption_graphics: {"request":"same exact typed request as premiere_plan_caption_graphics"} — separately approved HIGH risk native MOGRT graphics run, recheck SRT hash + mapping before every insertion, partial results, checkpoint and no automatic retries; no simulated Adobe runtime
 - premiere_plan_caption_graphics: {"request":{"schema_version":1,"captions":{"schema_version":1,"output":"existing exact .srt","duration_seconds":30,"cues":[{"start_seconds":0,"end_seconds":1,"text":"Hello","selected":true}]},"expected_srt_sha256":"64-hex saved file SHA256","mapping":"existing inspected MOGRT mapping","revision":1,"video_track":2,"audio_track":0,"static_fields":{}}} — READ-ONLY exact selected SRT -> existing premiere_batch_graphics parameters; requires separate High-risk batch approval; no caption-track claims
 - premiere_create_selective_srt: {"request":{"schema_version":1,"output":"new absolute .srt","duration_seconds":30,"cues":[{"start_seconds":0,"end_seconds":1,"text":"selected words","selected":true}],"source_transcript_sha256":null}} — owner-approved create-new only, SHA256-verified local subtitle interchange; DOES NOT add Premiere caption-track text
@@ -994,6 +995,7 @@ enum ToolAction {
     PremiereCreateSelectiveSrt {request:premiere_selective_captions::Request},
     PremierePlanCaptionGraphics {request:premiere_caption_graphics::Request},
     PremiereApplyCaptionGraphics {request:premiere_caption_graphics::Request},
+    PremiereVerifyCaptionGraphics {request:premiere_caption_graphics::Request,receipt:Value},
     PremiereReadinessReport,
     PremiereSaveProject,
     AfterEffectsCapabilityReport,
@@ -1890,6 +1892,7 @@ fn parse_tool_proposal(text: &str) -> Option<ToolProposal> {
         | "premiere_create_selective_srt"
         | "premiere_plan_caption_graphics"
         | "premiere_apply_caption_graphics"
+        | "premiere_verify_caption_graphics"
         | "premiere_create_sequence_from_media"
         | "premiere_create_subsequence"
         | "premiere_replace_with_subsequence"
@@ -7181,6 +7184,21 @@ fn stage_tool(
                 "Verify isMulticamClip() first, checkpoint the project, insert through native SequenceEditor, then require exact insertion delta.".into(),
                 RiskLevel::High,
             )
+        }
+        "premiere_verify_caption_graphics" => {
+            let request:premiere_caption_graphics::Request=serde_json::from_value(
+                proposal.arguments.get("request").cloned().ok_or("Original selected caption SRT+graphics manifest is required.")?
+            ).map_err(|e|format!("Invalid exact caption graphics audit manifest: {e}"))?;
+            request.validate()?;
+            let receipt=proposal.arguments.get("receipt").cloned()
+                .ok_or("Previously returned native caption graphics execution receipt is required.")?;
+            if serde_json::to_vec(&receipt).map_err(|e|e.to_string())?.len()>128*1024 {
+                return Err("Caption audit receipt exceeds bounded source evidence.".into());
+            }
+            (ToolAction::PremiereVerifyCaptionGraphics{request,receipt},
+                "Verify native caption graphics independently".into(),
+                "Read-only: require a complete earlier approved native caption graphics receipt, exact saved mapping and SRT SHA, re-inspect each native clip and Essential Graphics parameter, without assuming old clip indexes or claiming saved project/MP4.".into(),
+                RiskLevel::Low)
         }
         "premiere_apply_caption_graphics" => {
             let request:premiere_caption_graphics::Request=serde_json::from_value(
@@ -16791,6 +16809,62 @@ try {{
                 },
                 exit_code: Some(if failures == 0 && results.len() == total { 0 } else { 1 }),
             })
+        }
+        ToolAction::PremiereVerifyCaptionGraphics {request,receipt} => {
+            let expected=premiere_bridge.expected
+                .ok_or("Caption graphics verification requires an exact inspected project/sequence expectation.")?;
+            if expected.sequence_guid.is_none()||!expected.clips.is_empty(){
+                return Err("Caption graphics verification requires one exact project+sequence, no stale clip indexes.".into());
+            }
+            let saved=premiere_graphics::list(&graphics_library_path(app)?)?
+                .into_iter().find(|row|row.mapping.name==request.mapping)
+                .ok_or("Caption MOGRT mapping is no longer available for exact readback.")?;
+            let source=premiere_caption_graphics::plan(&request,&saved)?;
+            let batch:premiere_graphics::Batch=serde_json::from_value(
+                source.get("generated_batch").cloned().ok_or("Missing bounded source-verified caption batch.")?
+            ).map_err(|e|format!("Cannot decode source-bound caption audit batch: {e}"))?;
+            premiere_caption_graphics::validate_audit_receipt(&batch,&receipt,
+                source["source_srt_sha256"].as_str().ok_or("Missing selected SRT SHA256.")?)?;
+            // The new host route is read-only: it scans the video destination
+            // and matches native stable clip identity while allowing INDEX
+            // shifts caused by inserting earlier captions.
+            let audit=premiere_bridge.request("verify_caption_graphics",json!({
+                "mapping":saved.mapping,"items":batch.items,
+                "receipts":receipt["batch"]["items"],
+                "videoTrack":batch.video_track,
+                "_expected":expected
+            }),Duration::from_secs(90)).await?;
+            // Re-read the exact selected SRT after host inspection. Any change
+            // means even a successful host scan cannot bind to this source.
+            let after=premiere_caption_graphics::plan(&request,&saved);
+            let unchanged=after.as_ref().is_ok_and(|next|
+                next.get("source_srt_sha256")==source.get("source_srt_sha256")
+                &&next.get("generated_batch")==source.get("generated_batch"));
+            let checked=audit["native_current_session_caption_values_verified"]==true
+                &&audit["verified_count"].as_u64()==Some(batch.items.len() as u64)
+                &&audit["requested_count"].as_u64()==Some(batch.items.len() as u64)
+                &&audit["readOnly"]==true
+                &&unchanged;
+            let project_disk=expected.project_path.as_deref()
+                .and_then(|path|premiere_project_persistence::fingerprint(path).ok());
+            Ok(ActionResult{success:checked,tool,
+                stdout:json!({
+                    "current_host_caption_graphics_readback_verified":checked,
+                    "source_srt_unchanged_during_readback":unchanged,
+                    "source_srt_sha256":source["source_srt_sha256"],
+                    "mapping_revision":request.revision,
+                    "native_audit":audit,
+                    "project_disk_fingerprint_observed":project_disk,
+                    "project_save_acceptance_verified":false,
+                    "saved_project_caption_semantics_verified":false,
+                    "fresh_session_reopen_verified":false,
+                    "visual_caption_animation_verified":false,
+                    "mp4_export_verified":false,
+                    "read_only":true,
+                    "retry_automatically":false
+                }).to_string(),
+                stderr:if checked{String::new()}else{"Independent caption source/native host readback remains unverified.".into()},
+                exit_code:Some(if checked{0}else{1})})
         }
         ToolAction::PremiereApplyCaptionGraphics {request} => {
             // Reuse the same single-live graphics lease, native checkpoint,
