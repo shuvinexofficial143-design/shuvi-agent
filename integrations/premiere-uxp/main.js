@@ -7337,6 +7337,105 @@ async function insertMappedGraphic(args) {
   return result;
 }
 
+// Read-only independent rescan of previously owner-approved mapped caption
+// graphics. Inserting earlier clips changes sorted clip indexes, so match all
+// stable source/sequence/clip attributes and intentionally ignore ONLY index.
+function stableCaptionClipSignature(signature) {
+  if (typeof signature !== "string" || signature.length > 4096) throw Error("Caption receipt has no bounded native clip signature.");
+  let parts;
+  try { parts = JSON.parse(signature); } catch { throw Error("Malformed native caption clip receipt identity."); }
+  if (!Array.isArray(parts) || parts.length !== 12 ||
+      typeof parts[0] !== "string" || !parts[0] ||
+      typeof parts[2] !== "string" || !parts[2] ||
+      parts[3] !== "video" || !Number.isInteger(parts[4]) ||
+      !Number.isInteger(parts[5]) || parts[5] < 0 ||
+      typeof parts[6] !== "string" || !parts[6] ||
+      typeof parts[7] !== "string" ||
+      parts.slice(8).some(t => typeof t !== "string" || !/^-?\d{1,30}$/.test(t))) {
+    throw Error("Native caption clip signature is incomplete or malformed.");
+  }
+  parts[5] = null;
+  return JSON.stringify(parts);
+}
+async function verifyCaptionGraphics(args) {
+  const {mapping, items, receipts, videoTrack, _expected: expected} = args || {};
+  if (!Array.isArray(items) || items.length < 1 || items.length > 32 ||
+      !Array.isArray(receipts) || receipts.length !== items.length ||
+      !Number.isInteger(videoTrack) || videoTrack < 0 || videoTrack > 128 ||
+      typeof expected?.project_guid !== "string" || !expected.project_guid ||
+      typeof expected?.sequence_guid !== "string" || !expected.sequence_guid ||
+      !Array.isArray(expected?.clips) || expected.clips.length !== 0) {
+    throw Error("Caption audit requires one bounded, exact project/sequence and all applied per-clip receipts.");
+  }
+  for (const item of items) validateGraphicItem(mapping, item);
+  const project = await requireProject();
+  const sequence = await assertExpectedProject(project, expected);
+  if (videoTrack >= await sequence.getVideoTrackCount()) throw Error("Native caption destination video track no longer exists.");
+  const nativeRows = await graphicsTrackSnapshot(project, sequence, videoTrack, "video");
+  const indexed = new Map();
+  for (const row of nativeRows) {
+    const key = stableCaptionClipSignature(row.key);
+    if (!indexed.has(key)) indexed.set(key, []);
+    indexed.get(key).push(row);
+  }
+  const used = new Set(), verified = [];
+  for (let i = 0; i < items.length; i++) {
+    const entry = receipts[i], proof = entry?.result, clip = proof?.expected?.clips;
+    if (entry?.index !== i || proof?.status !== "applied" || proof?.populated !== true ||
+        proof?.uncertain !== false || !Array.isArray(clip) || clip.length !== 1 ||
+        clip[0]?.kind !== "video" || clip[0]?.track !== videoTrack ||
+        proof.expected.project_guid !== expected.project_guid ||
+        proof.expected.sequence_guid !== expected.sequence_guid ||
+        proof.expected.project_path !== (expected.project_path ?? null)) {
+      throw Error("Caption audit refuses missing, partial, stale or unverified original native insertion receipt.");
+    }
+    const key = stableCaptionClipSignature(clip[0].signature);
+    const found = indexed.get(key) || [];
+    if (found.length !== 1 || used.has(key)) {
+      throw Error("Previously inserted caption clip is missing or ambiguously identifiable after timeline changes.");
+    }
+    used.add(key);
+    const row = found[0], item = items[i];
+    const start = item.seconds, end = start + item.duration_seconds;
+    if (!Number.isFinite(start) || !Number.isFinite(end) ||
+        !Number.isFinite(proof.start_seconds) || !Number.isFinite(proof.end_seconds) ||
+        Math.abs(proof.start_seconds - start) > 0.001 ||
+        Math.abs(proof.end_seconds - end) > 0.001 ||
+        Math.abs(row.start.seconds - start) > 0.001 ||
+        Math.abs(row.end.seconds - end) > 0.001) {
+      throw Error("Caption clip timing differs from the original selected SRT or native insertion receipt.");
+    }
+    const inspected = await inspectProperties(row.item);
+    const plan = mappedPlan(mapping, item, inspected);
+    if (!Array.isArray(plan.settings) || plan.skipped.length ||
+        plan.settings.length !== mapping.fields.length || inspected.truncated) {
+      throw Error("Caption MOGRT parameters are incomplete or no longer statically inspectable.");
+    }
+    for (const setting of plan.settings) {
+      const components = inspected.components.filter(c =>
+        c.matchName === setting.component_match_name &&
+        c.displayName === setting.component_display_name);
+      if (components.length !== 1) throw Error("Caption property component became ambiguous.");
+      const parameters = components[0].params.filter(p => p.displayName === setting.param_display_name);
+      if (parameters.length !== 1 || !equivalentStaticEffectValue(setting.value, parameters[0].value)) {
+        throw Error("Native caption graphic field readback differs from the selected text/style mapping.");
+      }
+    }
+    verified.push({source_index:i, original_clip_index:clip[0].clip_index,
+      independently_matched_by_stable_identity:true,
+      matched_start_seconds:row.start.seconds, matched_end_seconds:row.end.seconds,
+      verified_field_count:plan.settings.length});
+  }
+  // A second identity inspection catches project switches during the audit.
+  await assertExpectedProject(await requireProject(), expected);
+  return {schemaVersion:1, readOnly:true, native_current_session_caption_values_verified:true,
+    verified_count:verified.length, requested_count:items.length, items:verified,
+    original_receipt_rechecked:true, native_clip_identity_rechecked:true,
+    timeline_clip_index_may_change:true, project_file_saved_verified:false,
+    cross_session_reopen_verified:false, visual_quality_verified:false,
+    exported_video_verified:false, retrySafe:false};
+}
+
 async function planAudioAutomation(args) {
   if (args.kind !== "audio") throw new Error("Audio automation requires an audio target.");
   const target = await resolveNamedAudioParam(args);
@@ -7594,6 +7693,8 @@ async function dispatchNativeCommand(command) {
       return await projectDiagnostics(command.arguments || {});
     case "inspect_mogrt_properties":
       return await inspectMogrtProperties(command.arguments);
+    case "verify_caption_graphics":
+      return await verifyCaptionGraphics(command.arguments || {});
     case "plan_mogrt_recipe":
       return await planMogrtRecipe(command.arguments);
     case "insert_mapped_graphic":
