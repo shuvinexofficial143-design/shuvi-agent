@@ -76,3 +76,14 @@ test("each Edit Job phase persists its first proposal and rejects stale or reuse
   assert.match(record,/entry\.timestamp_ms>=job\.created_at_ms/);
   assert.match(record,/entry\.tool==pending\.tool/);
 });
+
+test("saved professional Edit Job revalidates canonical phase and receipt state before disk load/save",()=>{
+  assert.match(job,/pub fn validate_state\(&self\)->Result<\(\),String>/);
+  assert.match(job,/let fresh=Self::new\(self\.job_id\.clone\(\),self\.request\.clone\(\)/);
+  assert.match(job,/phase\.id!=canonical\.id \|\| phase\.tool!=canonical\.tool/);
+  assert.match(job,/Edit-job has an approved phase after an incomplete phase/);
+  assert.match(job,/Edit-job action receipt is duplicated or placed on an unexecuted phase/);
+  assert.match(job,/job\.validate_state\(\)\?;/);
+  assert.match(job,/fn persisted_edit_job_ledger_rejects_fabricated_progress/);
+  assert.match(job,/fn persisted_edit_job_fail_and_cancel_have_single_consistent_frontier/);
+});
