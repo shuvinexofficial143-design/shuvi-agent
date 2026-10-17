@@ -626,3 +626,62 @@ not Blender pixel-render tests: the validator does **not** decompress
 zlib/IDAT, examine displayed pixels, certify accurate 3D geometry in the
 render, or assess creative quality. PNG structural validity cannot replace
 the separately approved disposable Windows live acceptance.
+
+
+## Team-41 continuation — native three-stage plan builder (no Blender launch)
+
+The earlier acceptance recipe generator existed only as a standalone Python
+CLI, meaning Shuvi's audited ToolAction workflow had no typed native entry
+point to request it. The new **read-only**
+\`blender_build_acceptance_recipe\` closes this functional usability gap.
+Normal ToolAction parse/dispatch calls the new isolated native module
+\`src-tauri/src/blender_acceptance_recipe.rs\`.
+
+The caller supplies exactly \`stage: model1|model2|render\` and
+\`expected_scene_revision\`, a fresh 64-character lowercase revision
+returned by \`blender_session_inspect\`. Rust refuses unknown stage names
+and malformed revisions. It returns a bounded, copyable **real upstream
+PlanRunner-shaped** JSON plan with per-step unique canonical Request and
+Command UUIDs, explicit typed payloads, and exact prior-result bindings.
+All stages have immutable recipe operation sequences and outputs, so a
+model cannot inject arbitrary Python, shell tools, or a seventh plan step.
+
+- **model1**: construct five-vertex proof mesh, inspect geometry and bind
+  the exact returned object identity and revisions; translate apex +0.25,
+  inspect latest scene and save Stage-1 .blend.
+- **model2**: inspect exact proof mesh in the *same* persistent session,
+  reuse live object/geometry revision, translate apex +0.5, inspect again
+  and save Stage-2 .blend without overwriting Stage-1.
+- **render**: must use a *different owner-approved* Blender session opened
+  with Stage-2's exact expected source SHA; configure 64×64 / 1-sample
+  render, inspect latest scene and write a PNG artifact.
+
+Crucially, every preview is classified and SHA-256 hashed by the **same
+\`blender_plan_lineage::derive\` module** used when an approved Blender plan
+actually runs. If this check says \`acceptance_stage=other\`, the recipe
+builder refuses to provide a mislabeled acceptance plan. The preview
+reports \`action_approved=false\`, \`blender_launch_performed=false\`,
+\`plan_executed=false\`, \`output_artifact_created=false\`,
+\`real_blender_runtime_verified=false\`. Its \`plan_preview_lineage\`
+is a shape/digest hint **not an audit receipt**.
+
+There is no automatic execution step. For each stage, the caller must
+separately request \`blender_session_plan\` using the returned \`plan\`
+and exact current session revision; native Rust user approval, render
+policy, process ownership, SHA/mesh save-reopen proof, and audit checks
+remain in force. Stage-3 also requires fresh
+\`blender_session_start\` with \`allow_render=true\`, Stage-2 file path
+and Stage-2 SHA, approved as an independent action.
+
+Tests: new isolated Rust unit tests check stage classification, generated
+UUID uniqueness across requests, upstream binding source/target paths,
+invalid revision rejection, output filenames, render budgets and strictly
+false execution/approval flags. New attested Node source contract checks
+the four native wiring points, excludes arbitrary process/file execution
+and runs the separate Python plan-only recipe as an independent operation
+shape cross-check. The pre-existing pinned real upstream Python
+PlanRunner contract workflow remains active.
+
+**This is source implementation, not live Blender acceptance.** The
+cross-worker audit corroboration layer and independent on-disk artifact
+checks already built into Team 41 remain unchanged.
