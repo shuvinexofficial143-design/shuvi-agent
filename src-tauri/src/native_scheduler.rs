@@ -4,7 +4,7 @@
 //! the existing owner Allow once / task-scoped read permission.
 use serde::{Deserialize,Serialize};
 use serde_json::Value;
-use std::{collections::{HashMap,HashSet},fs,path::{Path,PathBuf},sync::Mutex};
+use std::{collections::{HashMap,HashSet},fs,fs::OpenOptions,path::{Path,PathBuf},sync::Mutex};
 use tauri::{AppHandle,Manager};
 // Built and unit-tested on Windows CI. Production adapters must present their
 // existing native lease + on-disk UUID journal before launching a child.
@@ -19,6 +19,60 @@ pub(crate) mod resource_lanes;
 const MAX_JOBS:usize=48;
 const MAX_BYTES:usize=32768;
 static LOCK:Mutex<()>=Mutex::new(());
+// Durable DAG mutations are also serialized across DIFFERENT Shuvi instances.
+// A per-process mutex alone cannot prevent two simultaneous UUID-bound starts
+// or a stale terminal audit overwriting another process's scheduler checkpoint.
+struct SchedulerOsLock(fs::File);
+impl SchedulerOsLock{
+    fn take(file:&Path)->Result<Self,String>{
+        let lock=file.with_extension("json.oslock");
+        match fs::symlink_metadata(&lock){
+            Ok(meta) if meta.is_file()&&!meta.file_type().is_symlink()=>{
+                #[cfg(windows)]
+                {
+                    use std::os::windows::fs::MetadataExt;
+                    if meta.file_attributes()&0x400!=0{
+                        return Err("Scheduler OS lock may not be a Windows reparse point.".into());
+                    }
+                }
+            }
+            Ok(_)=>return Err("Scheduler OS lock must be a regular file.".into()),
+            Err(e) if e.kind()==std::io::ErrorKind::NotFound=>{},
+            Err(_)=>return Err("Cannot inspect scheduler OS lock.".into()),
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::{MetadataExt,OpenOptionsExt};
+            const OPEN_REPARSE_POINT:u32=0x0020_0000;
+            let handle=OpenOptions::new().read(true).write(true).create(true)
+                .share_mode(0).custom_flags(OPEN_REPARSE_POINT).open(&lock)
+                .map_err(|_|"Another Shuvi instance holds the scheduler journal.".to_string())?;
+            let meta=handle.metadata()
+                .map_err(|_|"Cannot inspect opened scheduler OS lock.")?;
+            if !meta.is_file()||meta.file_attributes()&0x400!=0{
+                return Err("Scheduler OS lock resolved to a reparse point.".into());
+            }
+            return Ok(Self(handle));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            unsafe extern "C" {fn flock(fd:i32,operation:i32)->i32;}
+            let handle=OpenOptions::new().read(true).write(true).create(true)
+                .open(&lock)
+                .map_err(|_|"Scheduler OS lock unavailable.".to_string())?;
+            if unsafe{flock(handle.as_raw_fd(),2|4)}!=0{
+                return Err("Another Shuvi instance holds the scheduler journal.".into());
+            }
+            return Ok(Self(handle));
+        }
+        #[cfg(not(any(unix,windows)))]
+        {
+            Err("Cross-process native DAG locking unsupported on this OS.".into())
+        }
+    }
+}
+
 
 #[derive(Clone,Debug,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
@@ -343,6 +397,7 @@ fn allowed(s:&Schedule,step_id:&str,tool:&str,id:&str)->Result<(),String>{
 fn preflight_at(file:&Path,graph:Option<&Value>,step:&str,tool:&str,action_id:&str)
     ->Result<(),String>{
     let _guard=LOCK.lock().map_err(|_|"Native scheduler lock poisoned.")?;
+    let _os=SchedulerOsLock::take(file)?;
     let next=merged(read_at(file)?,graph)?;
     allowed(&next,step,tool,action_id)
 }
@@ -353,6 +408,7 @@ pub(crate) fn preflight(app:&AppHandle,graph:Option<&Value>,step:&str,tool:&str,
     // lease heartbeat or a model's reported success.
     {
         let _guard=LOCK.lock().map_err(|_|"Native scheduler lock poisoned.")?;
+        let _os=SchedulerOsLock::take(&file)?;
         let audit=crate::native_worker_job::read(app)?;
         if let Some(schedule)=read_at(&file)? {
             verify_blender_recovery(&schedule,audit.as_ref(),|id|
@@ -367,6 +423,7 @@ pub(crate) fn preflight(app:&AppHandle,graph:Option<&Value>,step:&str,tool:&str,
 }
 fn begin_at(file:&Path,graph:Option<&Value>,step:&str,tool:&str,id:&str)->Result<(),String>{
     let _guard=LOCK.lock().map_err(|_|"Native scheduler lock poisoned.")?;
+    let _os=SchedulerOsLock::take(file)?;
     let mut schedule=merged(read_at(file)?,graph)?;
     allowed(&schedule,step,tool,id)?;
     let job=schedule.jobs.iter_mut().find(|j|j.step_id==step)
@@ -386,6 +443,7 @@ pub(crate) fn begin(app:&AppHandle,graph:Option<&Value>,step:&str,tool:&str,id:&
 }
 fn finish_at(file:&Path,id:&str,tool:&str,success:Option<bool>)->Result<(),String>{
     let _guard=LOCK.lock().map_err(|_|"Native scheduler lock poisoned.")?;
+    let _os=SchedulerOsLock::take(file)?;
     let mut schedule=read_at(file)?.ok_or("Native schedule disappeared before audit.")?;
     let job=schedule.jobs.iter_mut()
         .find(|j|j.action_id.as_deref()==Some(id)&&j.tool==tool)
@@ -405,6 +463,7 @@ pub(crate) fn finish(app:&AppHandle,id:&str,tool:&str,success:Option<bool>)->Res
 /// introduce NEW work; the failed job remains forever non-successful.
 fn review_failed_at(file:&Path,step:&str,failed_action:&str)->Result<(),String>{
     let _guard=LOCK.lock().map_err(|_|"Native scheduler lock poisoned.")?;
+    let _os=SchedulerOsLock::take(file)?;
     let mut schedule=read_at(file)?.ok_or("No failed scheduled task to review.")?;
     if schedule.jobs.iter().any(|j|j.phase=="running"||j.phase=="outcome_unknown"){
         return Err("An unresolved native action cannot be cleared by failure review.".into());
@@ -455,7 +514,9 @@ fn projected_terminal(
 /// Never trusts WebView status or supervisor ticks as successful execution.
 pub(crate) fn verified_status(app:&AppHandle)->Result<Option<Schedule>,String>{
     let _guard=LOCK.lock().map_err(|_|"Native scheduler lock poisoned.")?;
-    let snapshot=read_at(&path(app)?)?;
+    let file=path(app)?;
+    let _os=SchedulerOsLock::take(&file)?;
+    let snapshot=read_at(&file)?;
     if snapshot.as_ref().is_none_or(|s|s.jobs.iter().all(|j|j.phase!="running")){
         return Ok(snapshot);
     }
@@ -471,9 +532,13 @@ pub(crate) fn verified_status(app:&AppHandle)->Result<Option<Schedule>,String>{
     // immediate dispatch, crash-success promotion and final DAG delivery.
     projected_terminal(snapshot,journal.as_ref())
 }
-pub(crate) fn read(app:&AppHandle)->Result<Option<Schedule>,String>{
+fn read_locked_at(file:&Path)->Result<Option<Schedule>,String>{
     let _guard=LOCK.lock().map_err(|_|"Native scheduler lock poisoned.")?;
-    read_at(&path(app)?)
+    let _os=SchedulerOsLock::take(file)?;
+    read_at(file)
+}
+pub(crate) fn read(app:&AppHandle)->Result<Option<Schedule>,String>{
+    read_locked_at(&path(app)?)
 }
 #[cfg(test)]
 mod tests{
@@ -537,6 +602,56 @@ mod tests{
         s.jobs[0].tool="premiere_insert_media".into();
         verify_blender_recovery(&s,Some(&job),|_|
             Err("Not a Blender job".into())).unwrap();
+    }
+    #[test]
+    fn scheduler_kernel_lock_rejects_other_instance_start_audit_review_and_status(){
+        let p=file();
+        let proposed=graph(1);
+        let other=SchedulerOsLock::take(&p).unwrap();
+        assert!(begin_at(&p,Some(&proposed),"capture","blender_inspect",A).is_err());
+        assert!(preflight_at(&p,Some(&proposed),"capture","blender_inspect",A).is_err());
+        assert!(read_locked_at(&p).is_err());
+        assert!(!p.exists());
+        drop(other);
+        let step=proposed["steps"][0]["step_id"].as_str().unwrap();
+        let tool=proposed["steps"][0]["expected_tool"].as_str().unwrap();
+        begin_at(&p,Some(&proposed),step,tool,A).unwrap();
+        let other=SchedulerOsLock::take(&p).unwrap();
+        assert!(finish_at(&p,A,tool,Some(true)).is_err());
+        assert!(review_failed_at(&p,step,A).is_err());
+        drop(other);
+        finish_at(&p,A,tool,Some(true)).unwrap();
+        assert_eq!(read_locked_at(&p).unwrap().unwrap().jobs[0].phase,"audited");
+        cleanup(&p);
+        let _=fs::remove_file(p.with_extension("json.oslock"));
+    }
+    #[test]
+    fn two_instances_cannot_start_the_same_native_dag_step_in_parallel(){
+        use std::sync::{Arc,Barrier};
+        let p=file();let graph=graph(1);
+        let step=graph["steps"][0]["step_id"].as_str().unwrap().to_owned();
+        let tool=graph["steps"][0]["expected_tool"].as_str().unwrap().to_owned();
+        let gate=Arc::new(Barrier::new(3));
+        let a=Arc::clone(&gate);let b=Arc::clone(&gate);
+        let left=p.clone();let right=p.clone();
+        std::thread::scope(|scope|{
+            let first=scope.spawn(||{a.wait();begin_at(&left,Some(&graph),&step,&tool,A)});
+            let second=scope.spawn(||{b.wait();begin_at(&right,Some(&graph),&step,&tool,B)});
+            gate.wait();
+            let x=first.join().unwrap();let y=second.join().unwrap();
+            assert_eq!((x.is_ok() as usize)+(y.is_ok() as usize),1);
+        });
+        let current=read_locked_at(&p).unwrap().unwrap();
+        assert_eq!(current.jobs.iter().filter(|j|j.phase=="running").count(),1);
+        cleanup(&p);
+        let _=fs::remove_file(p.with_extension("json.oslock"));
+    }
+    #[test]
+    fn forged_scheduler_lock_directory_fails_without_creating_a_queue(){
+        let p=file();let lock=p.with_extension("json.oslock");
+        fs::create_dir(&lock).unwrap();
+        assert!(begin_at(&p,Some(&graph(1)),"capture","blender_inspect",A).is_err());
+        assert!(!p.exists());fs::remove_dir(lock).unwrap();
     }
     #[test]
     fn omitted_initial_revision_defaults_to_one_but_invalid_revision_fails(){

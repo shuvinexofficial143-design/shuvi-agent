@@ -254,3 +254,8 @@ Review any adapter calls and potential cross-team shared-file overlap. Keep owne
 
 ### Milestones 36–37 Windows Rust compilation correction
 - Exact Windows compiler E0599 at NativeJob and ProcessReceipt reparse-safe handle validation: explicitly imported `std::os::windows::fs::MetadataExt` alongside `OpenOptionsExt` inside the OS lock's Windows handle branch. Preserve, rather than weaken, the fail-closed file-attribute check. Re-run the exact new commit's Windows Native/Rust CI before asserting successful validation.
+
+## Milestone 38 — cross-process native DAG journal, UUID-exclusive admission
+- Every authoritative DAG transition (`preflight_at`, `begin_at`, `finish_at`, failed-step review, exact audit recovery) and owner-visible verified-status/read now has both a Rust mutex and a fixed **OS-exclusive lock** around the on-disk schedule. Windows uses zero-share reparse-safe handles; Unix uses nonblocking flock.
+- Two independent Shuvi instances can no longer both dispatch the same ready DAG step under separate UUIDs by racing a read-modify-write; file lock contention and a spoofed directory/reparse lock path fail closed, never imply an empty task queue or application success.
+- Added actual Rust thread race tests for simultaneous step start, lock contention through audit/review/status and forged lock path; Node tests inspect real production locks. Existing one-native-GUI-at-a-time and permission requirements remain intact.
