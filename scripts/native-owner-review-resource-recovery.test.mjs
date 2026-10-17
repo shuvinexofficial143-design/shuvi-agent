@@ -17,7 +17,7 @@ test("exact owner-reconciled verified audit can reclaim only rehashed exact reso
  assert.match(reconcile,/release_after_verified_audit\(app,id\)\?/);
  assert.match(resources,/job\.phase!="audit_verified"/);
  assert.match(resources,/native_blender_action_artifact::read_verified\(app,action\)/);
- assert.match(resources,/release_at\(&file,action,&cert\.path\)/);
+ assert.match(resources,/release_at\(&file,action,&cert\.path,cert\.plan_sha256\.as_deref\(\)\)/);
 });
 test("missing OS desktop lease is rejected before output reservation",()=>{
  assert.match(plan,/if slot\.is_none\(\)/);

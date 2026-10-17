@@ -564,7 +564,8 @@ mod tests{
             resources:vec![resource(&root.join("one"),"write")],
             approved_plan_sha256:None};
         let conflicting=Hold{action_id:B.into(),tool:"blender_run_plan".into(),
-            resources:vec![resource(&root.join("one"),"write")]};
+            resources:vec![resource(&root.join("one"),"write")],
+            approved_plan_sha256:None};
         let mut ledger=Ledger{version:1,held:vec![first,conflicting],
             retired_action_ids:vec![]};
         assert!(check(&ledger).is_err());

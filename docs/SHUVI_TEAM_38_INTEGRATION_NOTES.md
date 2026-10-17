@@ -211,3 +211,8 @@ Review any adapter calls and potential cross-team shared-file overlap. Keep owne
 - Strict TypeScript contract validation accepts at most 12 held Blender claims with exactly one output path, UUID format, bounded paths, lowercase SHA256, no forged evidence/safe retry flags and consistent durable count. Failure displays "unavailable", never fake idle.
 - Paths and unknown status strings use DOM textContent only, never innerHTML; no UI control can force-unlock or replay a claim. Every four-second existing worker-status refresh updates the panel without new independent OS calls.
 - Added Node UI wiring/HTML injection/safety tests; Native Rust and UI source CI verification required. Real installed Windows acceptance not yet conducted.
+
+### Milestone 33 CI correction — exact source and Rust test repair
+- Fixed the previously incomplete `Hold` Rust test fixture to explicitly initialize the backward-compatible optional approved plan digest field. The actual production SHA-256 binding and fail-closed release remain unchanged.
+- Updated the preexisting owner-recovery source contract to the new explicit `certificate.plan_sha256` release argument, and replaced accidentally over-escaped test regex checks with exact, checked JavaScript source-contract string assertions.
+- These corrections target concrete failures in GitHub CI of previous HEAD d4f505918e60; verify all tests against this new immutable commit before marking Rust or frontend success.
