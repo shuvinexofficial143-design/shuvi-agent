@@ -25,6 +25,7 @@ import {captureMasterProviderTurnFence,isMasterProviderTurnFenceCurrent} from ".
 import {createMasterProviderSingleFlight} from "./master-provider-single-flight.mjs";
 import {captureMasterPermissionUiFence,isMasterPermissionUiFenceCurrent} from "./master-permission-ui-fence.mjs";
 import {createMasterRemoteReceiptLane} from "./master-remote-receipt-lane.mjs";
+import {captureRemoteInboxOwner,isRemoteInboxOwnerCurrent} from "./master-remote-inbox-owner.mjs";
 import type {AuditedOpeningObservation} from "./master-goal-window-acceptance.mjs";
 import {nativeTaskDeliveryClaims} from "./native-delivery-claims.mjs";
 import type {
@@ -3267,49 +3268,72 @@ async function tickRemoteAgent():Promise<void>{
   if(remotePolling)return;
   remotePolling=true;
   try {
-    // The visible Dashboard can pair/revoke the agent after the hidden
-    // coordinator boots. Re-read native pairing before any remote poll.
     await refreshRemoteAgent();
     if(!remoteAgentEnabled)return;
+    // Snapshot BEFORE native poll; local Stop, Resume, admission or pairing
+    // changes cannot be authorized by a delayed older inbox response.
+    const inboxFence=captureRemoteInboxOwner(
+      activePermissionScope,orchestration.owner_request,remoteTask);
+    const inboxCurrent=()=>isRemoteInboxOwnerCurrent(inboxFence,{
+      scope:activePermissionScope,owner:orchestration.owner_request,
+      task:remoteTask,enabled:remoteAgentEnabled
+    });
+    if(!inboxCurrent())return;
     const inbox=await invoke<RemoteInbox>("remote_agent_poll");
-    if(remoteTask) {
+    if(!inboxCurrent())return;
+    if(remoteTask){
       const t=remoteTask;
       if(inbox.pending.some(p=>p.taskId===t.message.taskId&&p.request==="cancel")){
         if(executingActionId){
-          // Stop is a request, not proof that the OS process has stopped.
           el<HTMLButtonElement>("#stopButton").click();
           remoteStatusLabel("Remote stop requested; native cancellation outcome pending");
         }else{
-          if(pendingAction) {
-            try{await invoke("deny_action",{actionId:pendingAction.id});}catch{ /* fail closed */ }
-            clearChatPermission();
-          }
+          // Invalidate any provider/tool permissions synchronously before
+          // native deny/receipt IPC; an old remote cancel never stops a new task.
+          cancelRequested=true;
+          revokeTaskScope(activePermissionScope);
+          const priorAction=pendingAction?.id??null;
+          if(priorAction)clearChatPermission();
+          if(priorAction)try{await invoke("deny_action",{actionId:priorAction});}
+            catch{/* fail closed */}
+          if(!inboxCurrent())return;
           await closeRemoteTask("stopped");
+          // Remote close clears its pointer; inspect the exact local owner.
+          if(activePermissionScope!==inboxFence?.scope||
+             orchestration.owner_request!==inboxFence?.owner)return;
           await stopAgentForSafety("Remote owner cancelled this task before native execution.");
         }
         return;
       }
       const a=remoteApproval;
-      if(a) {
-        if(Date.now()>=a.expiresAt){
-          try{await invoke("deny_action",{actionId:a.actionId});}catch{ /* fail closed */ }
+      if(a){
+        const expired=Date.now()>=a.expiresAt;
+        const d=expired?null:inbox.decisions.find(x=>
+          x.taskId===t.message.taskId&&x.approvalId===a.id);
+        if(expired||d?.decision==="deny"){
+          cancelRequested=true;
+          revokeTaskScope(activePermissionScope);
+          // Hide old permission before await, not after it returns.
           clearChatPermission();
+          try{await invoke("deny_action",{actionId:a.actionId});}
+          catch{/* fail closed */}
+          if(!inboxCurrent()||remoteApproval!==a)return;
           await closeRemoteTask("stopped");
-          await stopAgentForSafety("Mobile approval expired; no action was run.");
+          if(activePermissionScope!==inboxFence?.scope||
+             orchestration.owner_request!==inboxFence?.owner)return;
+          await stopAgentForSafety(expired
+            ?"Mobile approval expired; no action was run."
+            :"Mobile owner denied the proposed Windows action.");
           return;
         }
-        const d=inbox.decisions.find(x=>x.taskId===t.message.taskId&&x.approvalId===a.id);
-        if(d?.decision==="deny"){
-          try{await invoke("deny_action",{actionId:a.actionId});}catch{ /* fail closed */ }
-          clearChatPermission();
-          await closeRemoteTask("stopped");
-          await stopAgentForSafety("Mobile owner denied the proposed Windows action.");
-        }else if(d?.decision==="approve"){
-          // The cloud server checks task, approval ID, deadline and single use.
-          // Native Rust still checks its own prepared action UUID.
+        if(d?.decision==="approve"){
+          // Server checks task+approval ID+deadline+single use. Rust separately
+          // checks the precise prepared action and current local consent.
           try {
             if(!(await sendRemoteReceipt("running")))return;
-          } catch {await closeRemoteTask("outcome_unknown");return;}
+          }catch{if(inboxCurrent())await closeRemoteTask("outcome_unknown");return;}
+          if(!inboxCurrent()||remoteApproval!==a||
+             pendingAction?.id!==a.actionId||cancelRequested)return;
           remoteApproval=null;
           await executePendingProposal(a.proposal);
         }
@@ -3318,13 +3342,24 @@ async function tickRemoteAgent():Promise<void>{
     }
     if(busy||manualActionRunning||pendingAction||!inbox.messages.length)return;
     const m=inbox.messages[0];
-    // The durable journal must acknowledge admission before any provider
-    // or Windows action; unknown delivery outcomes fail closed.
+    // Admission must be confirmed while the same original local task scope
+    // still owns this poll, otherwise close the old mobile receipt as UNKNOWN.
+    const admissionScope=activePermissionScope;
     remoteTask={message:m,revision:1,status:"received",evidenceActionId:null,hadFailure:false};
+    const admittedTask=remoteTask;
     try {
-      if(!(await sendRemoteReceipt("admitted")))return;
-    } catch {
-      remoteTask=null;remoteStatusLabel("Remote admission unconfirmed; no command executed.");
+      if(!(await sendRemoteReceipt("admitted"))){
+        if(remoteTask===admittedTask)remoteTask=null;
+        return;
+      }
+    }catch{
+      if(remoteTask===admittedTask)remoteTask=null;
+      remoteStatusLabel("Remote admission unconfirmed; no command executed.");
+      return;
+    }
+    if(remoteTask!==admittedTask||activePermissionScope!==admissionScope||
+       busy||manualActionRunning||pendingAction||!remoteAgentEnabled){
+      if(remoteTask===admittedTask)await closeRemoteTask("outcome_unknown");
       return;
     }
     cancelRequested=false;
@@ -3340,5 +3375,4 @@ async function tickRemoteAgent():Promise<void>{
     remoteStatusLabel("Remote transport unavailable; no unverified command executed.");
   }finally{remotePolling=false;}
 }
-
 void boot();
