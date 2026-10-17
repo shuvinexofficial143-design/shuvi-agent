@@ -20,7 +20,7 @@ test("only audited verified certificate releases an exact resource; unknown cras
   assert.match(resources,/job\.phase!="audit_verified"/);
   assert.match(resources,/job\.audit_success!=Some\(true\)/);
   assert.match(resources,/native_blender_action_artifact::read_verified\(app,action\)/);
-  assert.match(resources,/release_at\(&file,action,&cert\.path\)/);
+  assert.match(resources,/release_at\(&file,action,&cert\.path,cert\.plan_sha256\.as_deref\(\)\)/);
   assert.match(resources,/crash_preserves_claim_and_only_matching_certified_artifact_can_release/);
   assert.match(resources,/corrupted_or_orphaned_disk_ownership_cannot_unlock_outputs/);
   assert.doesNotMatch(resources,/tauri::command|invoke_handler/);

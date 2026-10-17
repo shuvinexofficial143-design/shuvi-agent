@@ -76,6 +76,10 @@ struct Hold {
     action_id:String,
     tool:String,
     resources:Vec<Resource>,
+    // Added without changing v1 records: unknown legacy provenance remains
+    // readable, but new launch MUST bind approved complete plan bytes.
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    approved_plan_sha256:Option<String>,
 }
 #[derive(Clone,Debug,Serialize,Deserialize)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
@@ -92,6 +96,10 @@ impl Default for Ledger {
 fn valid_uuid(s:&str)->bool{
     Uuid::parse_str(s).map(|u|u.to_string()==s).unwrap_or(false)
 }
+fn valid_sha256(s:&str)->bool{
+    s.len()==64 && s.bytes().all(|b|
+        b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
 fn check(l:&Ledger)->Result<(),String>{
     if l.version!=1||l.held.len()>MAX_HELD||l.retired_action_ids.len()>MAX_RETIRED{
         return Err("Resource ledger exceeds bounded version or count.".into());
@@ -106,7 +114,8 @@ fn check(l:&Ledger)->Result<(),String>{
         if !valid_uuid(&h.action_id)||!ids.insert(h.action_id.as_str())
             ||h.tool!="blender_run_plan"
             ||h.resources.is_empty()||h.resources.len()>2
-            ||h.resources.iter().filter(|r|r.mode=="write").count()!=1 {
+            ||h.resources.iter().filter(|r|r.mode=="write").count()!=1
+            ||h.approved_plan_sha256.as_deref().is_some_and(|d|!valid_sha256(d)) {
             return Err("Resource claim contains an invalid or duplicate action.".into());
         }
         let mut seen=HashSet::new();
@@ -193,6 +202,13 @@ fn conflicts(a:&[Resource],b:&[Resource])->bool{
         (left.mode=="write"||right.mode=="write")&&overlap(&left.path,&right.path)))
 }
 fn reserve_at(file:&Path,action:&str,resources:Vec<Resource>)->Result<(),String>{
+    reserve_plan_at(file,action,resources,None)
+}
+fn reserve_plan_at(file:&Path,action:&str,resources:Vec<Resource>,
+    plan_sha256:Option<&str>)->Result<(),String>{
+    if plan_sha256.is_some_and(|digest|!valid_sha256(digest)){
+        return Err("Blender reservation requires exact lowercase approved plan SHA-256.".into());
+    }
     let _guard=IO.lock().map_err(|_|"Resource lock poisoned.")?;
     let _cross_process=CrossProcessLedgerLock::take(file)?;
     let mut l=read_at(file)?;
@@ -206,13 +222,15 @@ fn reserve_at(file:&Path,action:&str,resources:Vec<Resource>)->Result<(),String>
     if l.held.iter().any(|h|conflicts(&h.resources,&resources)){
         return Err("Project/output collision: another action retains resource ownership.".into());
     }
-    l.held.push(Hold{action_id:action.into(),tool:"blender_run_plan".into(),resources});
+    l.held.push(Hold{action_id:action.into(),tool:"blender_run_plan".into(),
+        resources,approved_plan_sha256:plan_sha256.map(str::to_string)});
     persist(file,&l)
 }
 /// Production entry: only the existing approved Blender plan under a native
 /// Windows mutation lease calls this. No model-selected background lane/IPC.
 pub(crate) fn reserve_blender_plan(
-    app:&AppHandle,action:&str,project:Option<&str>,output:&str
+    app:&AppHandle,action:&str,project:Option<&str>,output:&str,
+    approved_plan_sha256:&str
 )->Result<(),String>{
     let destination=Path::new(output);
     if !destination.is_absolute()||!destination.is_dir(){
@@ -226,7 +244,7 @@ pub(crate) fn reserve_blender_plan(
         }
         resources.push(Resource{path:canonical(p)?,mode:"read".into()});
     }
-    reserve_at(&path(app)?,action,resources)
+    reserve_plan_at(&path(app)?,action,resources,Some(approved_plan_sha256))
 }
 /// Authenticated, bounded, read-only view of durable output ownership.
 /// Does not rehash files, probe PID, approve work, expire claims or unlock.
@@ -238,6 +256,7 @@ pub(crate) struct ResourceClaimObservation{
     pub read_paths:Vec<String>,
     pub write_paths:Vec<String>,
     pub health:String,
+    pub approved_plan_sha256:Option<String>,
     pub evidence_verified:bool,
     pub safe_to_auto_retry:bool,
 }
@@ -276,7 +295,8 @@ fn snapshot_at(file:&Path,job:Option<&crate::native_worker_job::NativeJob>)
                 .map(|r|r.path.clone()).collect(),
             write_paths:claim.resources.iter().filter(|r|r.mode=="write")
                 .map(|r|r.path.clone()).collect(),
-            health:health.into(),evidence_verified:false,safe_to_auto_retry:false
+            health:health.into(),approved_plan_sha256:claim.approved_plan_sha256.clone(),
+            evidence_verified:false,safe_to_auto_retry:false
         }
     }).collect::<Vec<_>>();
     let health=if held.is_empty(){"no_held_output_claims"}
@@ -290,7 +310,8 @@ pub(crate) fn snapshot(app:&AppHandle)->Result<ResourceSnapshot,String>{
     let job=crate::native_worker_job::read(app)?;
     snapshot_at(&path(app)?,job.as_ref())
 }
-fn release_at(file:&Path,action:&str,artifact_path:&str)->Result<(),String>{
+fn release_at(file:&Path,action:&str,artifact_path:&str,
+    certificate_plan_sha256:Option<&str>)->Result<(),String>{
     let _guard=IO.lock().map_err(|_|"Resource lock poisoned.")?;
     let _cross_process=CrossProcessLedgerLock::take(file)?;
     let mut l=read_at(file)?;
@@ -302,6 +323,11 @@ fn release_at(file:&Path,action:&str,artifact_path:&str)->Result<(),String>{
     };
     if l.held[index].tool!="blender_run_plan"{
         return Err("Foreign tool cannot release the output reservation.".into());
+    }
+    if let Some(expected)=l.held[index].approved_plan_sha256.as_deref(){
+        if certificate_plan_sha256!=Some(expected){
+            return Err("Blender artifact plan SHA-256 differs from reserved approved task.".into());
+        }
     }
     let artifact=Path::new(artifact_path);
     let actual=canonical(artifact)?;
@@ -337,7 +363,7 @@ pub(crate) fn release_after_verified_audit(app:&AppHandle,action:&str)->Result<(
         return Err("Unverified action audit cannot release a resource.".into());
     }
     let cert=crate::native_blender_action_artifact::read_verified(app,action)?;
-    release_at(&file,action,&cert.path)
+    release_at(&file,action,&cert.path,cert.plan_sha256.as_deref())
 }
 #[cfg(test)]
 mod tests{
@@ -439,6 +465,41 @@ mod tests{
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
+    fn approved_plan_hash_is_reserved_before_worker_and_survives_restart(){
+        let (root,file)=temp();
+        let hash="a".repeat(64);
+        let output=root.join("one");
+        let artifact=output.join("accepted.blend");
+        fs::write(&artifact,b"Blender result").unwrap();
+        reserve_plan_at(&file,A,vec![resource(&output,"write")],Some(&hash)).unwrap();
+        let recorded=read_at(&file).unwrap();
+        assert_eq!(recorded.held[0].approved_plan_sha256.as_deref(),Some(hash.as_str()));
+        assert!(release_at(&file,A,artifact.to_str().unwrap(),Some(&"b".repeat(64))).is_err());
+        assert!(release_at(&file,A,artifact.to_str().unwrap(),None).is_err());
+        assert_eq!(read_at(&file).unwrap().held.len(),1);
+        release_at(&file,A,artifact.to_str().unwrap(),Some(&hash)).unwrap();
+        assert_eq!(read_at(&file).unwrap().held.len(),0);
+        assert!(reserve_plan_at(&file,A,vec![resource(&root.join("two"),"write")],
+            Some(&hash)).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn invalid_digest_fails_before_persist_and_legacy_record_does_not_gain_provenance(){
+        let (root,file)=temp();
+        let output=root.join("one");
+        let res=vec![resource(&output,"write")];
+        assert!(reserve_plan_at(&file,A,res.clone(),Some("UPPERCASE")).is_err());
+        assert!(!file.exists());
+        reserve_at(&file,A,res).unwrap();
+        let old=read_at(&file).unwrap();
+        assert_eq!(old.held[0].approved_plan_sha256,None);
+        let mut corrupt=old;
+        corrupt.held[0].approved_plan_sha256=Some("z".repeat(64));
+        fs::write(&file,serde_json::to_vec(&corrupt).unwrap()).unwrap();
+        assert!(read_at(&file).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn disjoint_background_resources_admit_independently_but_outputs_cannot_collide(){
         let (root,file)=temp();
         let one=resource(&root.join("one"),"write");
@@ -477,10 +538,10 @@ mod tests{
         let reloaded=read_at(&file).unwrap();
         assert_eq!(reloaded.held[0].action_id,A);
         assert!(reserve_at(&file,B,vec![resource(&output,"write")]).is_err());
-        assert!(release_at(&file,A,wrong.to_str().unwrap()).is_err());
-        assert!(release_at(&file,B,final_file.to_str().unwrap()).is_ok());
+        assert!(release_at(&file,A,wrong.to_str().unwrap(),None).is_err());
+        assert!(release_at(&file,B,final_file.to_str().unwrap(),None).is_ok());
         assert!(reserve_at(&file,B,vec![resource(&output,"write")]).is_err());
-        release_at(&file,A,final_file.to_str().unwrap()).unwrap();
+        release_at(&file,A,final_file.to_str().unwrap(),None).unwrap();
         reserve_at(&file,B,vec![resource(&output,"write")]).unwrap();
         assert!(reserve_at(&file,A,vec![resource(&root.join("two"),"write")]).is_err());
         fs::remove_dir_all(root).unwrap();
@@ -500,7 +561,8 @@ mod tests{
     fn forged_overlapping_or_replayed_ledger_fails_validation(){
         let (root,file)=temp();
         let first=Hold{action_id:A.into(),tool:"blender_run_plan".into(),
-            resources:vec![resource(&root.join("one"),"write")]};
+            resources:vec![resource(&root.join("one"),"write")],
+            approved_plan_sha256:None};
         let conflicting=Hold{action_id:B.into(),tool:"blender_run_plan".into(),
             resources:vec![resource(&root.join("one"),"write")]};
         let mut ledger=Ledger{version:1,held:vec![first,conflicting],

@@ -199,3 +199,9 @@ Review any adapter calls and potential cross-team shared-file overlap. Keep owne
 - Snapshot uses both IO mutex and OS cross-process ledger lock, and rejects corrupt/missing-with-backup journals; it never rehashes a whole Blender project during UI polling, releases a claim, proves app liveness or authorizes retry.
 - Unknown, orphaned and failed held resources require owner review, while a matching journal success still shows output-held until separately released by the verified-certificate pathway.
 - Rust real-file restart, corruption and cross-process lock tests plus Node native UI status contracts added. Live Windows host acceptance remains unverified.
+
+## Milestone 32 — approved plan provenance bound to prelaunch resource claims
+- Newly scheduled approved Blender plans now persist the SHA-256 of the *exact full approved plan bytes* in their durable exact-action resource hold before OS worker launch. The existing plan worker and artifact certificate already hash the same bytes, so this provides a cross-restart plan-to-output binding without model-selected script/permissions.
+- Releasing the owned output after real Rust audit plus rehashed artifact certificate additionally requires its stored approved-plan digest to match certificate plan SHA-256. Missing/foreign digest cannot free a new-format claimed path even if output filename or exit-code looks plausible.
+- Existing historical v1 resource claims remain readable with optional digest absent but are never mislabeled as plan-provenance verified. Owner-facing resource status now includes optional approved digest, not a forged success flag.
+- Rust disk-restart, wrong plan, legacy compatibility and UUID replay tests plus Node wiring contracts added. Windows app live acceptance still separate.

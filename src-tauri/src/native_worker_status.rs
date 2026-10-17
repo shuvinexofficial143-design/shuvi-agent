@@ -276,6 +276,7 @@ mod tests{
                     action_id:uuid(),tool:"blender_run_plan".into(),
                     read_paths:vec![],write_paths:vec!["C:/output".into()],
                     health:"orphaned_or_previous_action_requires_owner_review".into(),
+                    approved_plan_sha256:None,
                     evidence_verified:false,safe_to_auto_retry:false
                 }]
             });
