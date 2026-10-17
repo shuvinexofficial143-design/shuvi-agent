@@ -64,7 +64,6 @@ pub(crate) fn validate(path:&Path,width:u64,height:u64)->Result<(),String>{
                 || ihdr[8..]!=[8,6,0,0,0] {
                 return Err("Blender PNG IHDR differs from exact non-interlaced RGBA8 output.".into());
             }
-            remaining=0;
             seen_header=true;
         }else{
             if kind==b"IDAT" {
