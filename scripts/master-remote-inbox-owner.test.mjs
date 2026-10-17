@@ -47,7 +47,7 @@ test("all Remote Inbox await paths maintain original mobile owner identity and a
  assert.match(body,/if\(!inboxCurrent\(\)\)return;/);
  assert.match(body,/cancelRequested=true;\s*revokeTaskScope\(activePermissionScope\)/);
  assert.match(body,/if\(!inboxCurrent\(\)\)return;\s*await closeRemoteTask\("stopped"\)/);
- assert.match(body,/remoteApproval!==a\|\|pendingAction\?\.id!==a\.actionId/);
+ assert.match(body,/remoteApproval!==a\|\|\s*pendingAction\?\.id!==a\.actionId/);
  assert.match(body,/const admittedTask=remoteTask;/);
  assert.match(body,/activePermissionScope!==admissionScope/);
  assert.match(body,/closeRemoteTask\("outcome_unknown"\)/);

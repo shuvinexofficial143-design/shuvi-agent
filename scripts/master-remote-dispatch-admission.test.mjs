@@ -4,7 +4,7 @@ import {readFileSync} from "node:fs";
 const ui=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
 test("native mobile admission requires accepted remote receipt before task scope rotation or model request",()=>{
  const snippet=ui.slice(ui.indexOf('remoteTask={message:m,revision:1,status:"received"'),ui.indexOf('remoteStatusLabel("Remote command admitted'));
- const receipt=snippet.indexOf('if(!(await sendRemoteReceipt("admitted")))return;');
+ const receipt=snippet.indexOf('if(!(await sendRemoteReceipt("admitted"))){');
  const rotate=snippet.indexOf("rotatePermissionScope()");
  assert.ok(receipt>=0&&rotate>receipt);
 });

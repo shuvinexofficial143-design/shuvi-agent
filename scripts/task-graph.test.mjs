@@ -472,7 +472,7 @@ test("UI binds exact prepared action before approval or execution", () => {
   assert.ok(autoExecute>boundSave);
   assert.ok(permission>boundSave);
   assert.match(main,/recordToolOutcome\([\s\S]{0,520}actionId,[\s\S]{0,80}receipt/);
-  assert.match(main,/deniedConfirmed \? "denied" : "failure"[\s\S]{0,260}actionId,[\s\S]{0,80}receipt/);
+  assert.match(main,/deniedConfirmed\?"denied":"failure",undefined,false,actionId,receipt/);
   assert.match(main,/taskGraphProgress\(orchestration.task_graph\)/);
   assert.match(main,/row.textContent/);
   assert.match(main,/progress.completed < progress.total/);
