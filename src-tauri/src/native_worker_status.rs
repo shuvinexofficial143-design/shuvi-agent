@@ -264,9 +264,27 @@ pub(crate) fn attach_attested_worker_stage(
     if let Some(proof)=evidence{
         if status.durable_job_action_id.as_deref()==Some(proof.action_id.as_str())
             &&status.durable_job_tool.as_deref()==Some("blender_run_plan"){
-            status.attested_worker_stage=Some(proof.stage.clone());
-            status.attested_worker_sequence=Some(proof.sequence);
-            status.attested_worker_observed_at_ms=Some(proof.observed_at_ms);
+            // Running signed-stage telemetry needs the matching exact UUID
+            // AND the full approved plan SHA256 from the durable output hold.
+            // An audited historical action can legitimately have no held
+            // output after certificate-verified release, but a still-running
+            // Blender action cannot.
+            let held=status.resource_claims.iter()
+                .find(|claim|claim.action_id==proof.action_id);
+            let foreign_plan=held.is_some_and(|claim|
+                claim.approved_plan_sha256.as_deref()
+                    !=Some(proof.approved_plan_sha256.as_str()));
+            let missing_running_claim=held.is_none()
+                &&status.durable_job_phase.as_deref()==Some("running");
+            let future_timestamp=proof.observed_at_ms>status.observed_at_ms;
+            if foreign_plan||missing_running_claim||future_timestamp{
+                status.state="recovery_required".into();
+                status.requires_owner_review=true;
+            }else{
+                status.attested_worker_stage=Some(proof.stage.clone());
+                status.attested_worker_sequence=Some(proof.sequence);
+                status.attested_worker_observed_at_ms=Some(proof.observed_at_ms);
+            }
         }
     }
     // An archived HMAC-verified Python-worker stage is NOT fresh
@@ -324,13 +342,85 @@ mod tests{
             sequence:3,stage:"plan_verified".into(),observed_at_ms:1500
         };
         let idle=snapshot(false,&HashMap::new(),&HashMap::new(),None,3000);
+        let resources=crate::native_scheduler::resource_lanes::ResourceSnapshot{
+            version:1,retired_action_count:0,
+            health:"output_resources_still_reserved".into(),safe_to_auto_retry:false,
+            held:vec![crate::native_scheduler::resource_lanes::ResourceClaimObservation{
+                action_id:job.action_id.clone(),tool:"blender_run_plan".into(),
+                read_paths:vec![],write_paths:vec!["C:/approved-output".into()],
+                health:"worker_journal_running_os_liveness_unverified".into(),
+                approved_plan_sha256:Some("a".repeat(64)),
+                evidence_verified:false,safe_to_auto_retry:false
+            }]
+        };
         let host=attach_attested_worker_stage(
-            attach_durable_job(idle,Some(&job),3000),Some(&progress));
+            attach_resource_ownership(
+                attach_durable_job(idle,Some(&job),3000),resources),
+            Some(&progress));
         assert_eq!(host.attested_worker_stage.as_deref(),Some("plan_verified"));
         assert!(!host.progress_heartbeat_verified);
         assert!(!host.process_app_progress_verified);
         assert!(!host.safe_to_auto_retry);
         assert!(host.requires_owner_review);
+    }
+    #[test]
+    fn wrong_plan_or_missing_running_output_claim_quarantines_attested_stage(){
+        let id=uuid();
+        let job=crate::native_worker_job::NativeJob{
+            version:1,action_id:id.clone(),tool:"blender_run_plan".into(),
+            phase:"running".into(),started_at_ms:1000,updated_at_ms:2000,
+            heartbeat_seq:1,audit_success:None,prior_action_ids:vec![]
+        };
+        let proof=crate::native_scheduler::worker_attestation::AttestedStage{
+            version:1,action_id:id.clone(),approved_plan_sha256:"a".repeat(64),
+            sequence:2,stage:"blender_session_attached".into(),
+            observed_at_ms:1500
+        };
+        let base=attach_durable_job(
+            snapshot(false,&HashMap::new(),&HashMap::new(),None,3000),
+            Some(&job),3000);
+        let missing=attach_attested_worker_stage(base.clone(),Some(&proof));
+        assert_eq!(missing.state,"recovery_required");
+        assert!(missing.attested_worker_stage.is_none());
+        let resource=crate::native_scheduler::resource_lanes::ResourceSnapshot{
+            version:1,retired_action_count:0,safe_to_auto_retry:false,
+            health:"output_resources_still_reserved".into(),
+            held:vec![crate::native_scheduler::resource_lanes::ResourceClaimObservation{
+                action_id:id,tool:"blender_run_plan".into(),
+                read_paths:vec![],write_paths:vec!["C:/output".into()],
+                health:"worker_journal_running_os_liveness_unverified".into(),
+                approved_plan_sha256:Some("b".repeat(64)),
+                evidence_verified:false,safe_to_auto_retry:false
+            }],
+        };
+        let wrong=attach_attested_worker_stage(
+            attach_resource_ownership(base,resource),Some(&proof));
+        assert_eq!(wrong.state,"recovery_required");
+        assert!(wrong.attested_worker_stage.is_none());
+        assert!(wrong.requires_owner_review);
+        assert!(!wrong.safe_to_auto_retry);
+        assert!(!wrong.progress_heartbeat_verified);
+    }
+    #[test]
+    fn last_archived_stage_after_certified_resource_release_remains_informational(){
+        let id=uuid();
+        let job=crate::native_worker_job::NativeJob{
+            version:1,action_id:id.clone(),tool:"blender_run_plan".into(),
+            phase:"audit_verified".into(),started_at_ms:1000,
+            updated_at_ms:2000,heartbeat_seq:1,
+            audit_success:Some(true),prior_action_ids:vec![]
+        };
+        let archived=crate::native_scheduler::worker_attestation::AttestedStage{
+            version:1,action_id:id,approved_plan_sha256:"a".repeat(64),
+            sequence:4,stage:"artifact_rehashed".into(),observed_at_ms:1500
+        };
+        let base=attach_durable_job(
+            snapshot(false,&HashMap::new(),&HashMap::new(),None,3000),
+            Some(&job),3000);
+        let status=attach_attested_worker_stage(base,Some(&archived));
+        assert_eq!(status.attested_worker_stage.as_deref(),Some("artifact_rehashed"));
+        assert!(!status.safe_to_auto_retry);
+        assert!(!status.progress_heartbeat_verified);
     }
     #[test]
     fn stopped_on_previous_host_is_a_recovery_case_not_a_verified_process_exit(){

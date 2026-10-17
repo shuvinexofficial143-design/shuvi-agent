@@ -47,3 +47,12 @@ test("recovery-required worker display keeps last authenticated stage visible wi
  assert.match(view,/no automatic retry/);
  assert.match(frontend,/function resourceClaimsValid/);
 });
+
+test("archived Python stage must match the currently held action and full plan digest",()=>{
+ assert.match(status,/let foreign_plan=held\.is_some_and/);
+ assert.match(status,/claim\.approved_plan_sha256\.as_deref\(\)/);
+ assert.match(status,/missing_running_claim/);
+ assert.match(status,/status\.state="recovery_required"/);
+ assert.match(status,/wrong_plan_or_missing_running_output_claim_quarantines_attested_stage/);
+ assert.match(status,/last_archived_stage_after_certified_resource_release_remains_informational/);
+});
