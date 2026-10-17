@@ -188,7 +188,8 @@ mod tests {
         forged["save"]["projectPath"]=json!("C:/different.prproj");
         assert!(saved_after(&forged,"P",path.to_str().unwrap()).is_err());
         forged=receipt.clone();
-        forged["persistence_evidence"]["before"]=forged["persistence_evidence"]["after"].clone();
+        let duplicate_after=forged["persistence_evidence"]["after"].clone();
+        forged["persistence_evidence"]["before"]=duplicate_after;
         assert!(saved_after(&forged,"P",path.to_str().unwrap()).is_err());
         fs::write(&path,b"later rewrite").unwrap();
         let changed=snapshot(path.to_str().unwrap()).unwrap();
