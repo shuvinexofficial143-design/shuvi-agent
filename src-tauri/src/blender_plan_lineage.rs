@@ -111,6 +111,13 @@ fn valid_stage(steps:&[&Value],ops:&[String])->&'static str{
                 && name(steps[1]).ok()==Some("configured_scene")
                 && checkpoint_binding(steps[2],"configured_scene"){
                 "render"
+            }else if config.get("width").and_then(Value::as_u64)==Some(64)
+                && config.get("height").and_then(Value::as_u64)==Some(64)
+                && config.get("samples").and_then(Value::as_u64)==Some(1)
+                && payload(steps,2).get("name").and_then(Value::as_str)==Some("shuvi41-proof-material-render.png")
+                && name(steps[1]).ok()==Some("configured_scene")
+                && checkpoint_binding(steps[2],"configured_scene"){
+                "look_render"
             }else{"other"}
         },
         _=>"other",
@@ -231,6 +238,19 @@ mod tests{
         stale["steps"][4]["bindings"]=json!([]);
         assert_eq!(derive(&stale).unwrap()["acceptance_stage"],"other");
         assert!(receipt_matches(&json!({"approved_plan_lineage":derive(&plan).unwrap()}),"model2").is_err());
+    }
+    #[test]
+    fn look_render_exact_output_is_distinct_and_fail_closed_on_substitution(){
+        let native=crate::blender_acceptance_recipe::build("look_render",&"a".repeat(64)).unwrap();
+        let plan=native["plan"].clone();
+        assert_eq!(derive(&plan).unwrap()["acceptance_stage"],"look_render");
+        let mut forged=plan.clone();
+        forged["steps"][2]["request"]["payload"]["name"]=json!("arbitrary.png");
+        assert_eq!(derive(&forged).unwrap()["acceptance_stage"],"other");
+        let mut wrong=plan.clone();
+        wrong["steps"][0]["request"]["payload"]["samples"]=json!(256);
+        assert_eq!(derive(&wrong).unwrap()["acceptance_stage"],"other");
+        assert!(receipt_matches(&json!({"approved_plan_lineage":derive(&plan).unwrap()}),"render").is_err());
     }
     #[test]
     fn duplicate_steps_malformed_receipts_and_zero_steps_denied(){

@@ -15,6 +15,7 @@ EXPECTED_OPS = {
                "mesh.translate_vertices", "scene.inspect", "file.checkpoint"],
     "render": ["render.configure", "scene.inspect", "render.execute"],
     "look": ["scene.inspect", "objects.list", "material.create_assign", "scene.inspect", "file.checkpoint"],
+    "look_render": ["render.configure", "scene.inspect", "render.execute"],
 }
 
 
@@ -41,7 +42,7 @@ class AcceptanceRecipeTests(unittest.TestCase):
             self.assertLessEqual(len(recipe["steps"]), 6)
             self.assertLess(len(json.dumps(recipe).encode()), 65536)
             self.assertEqual(recipe["steps"][-1]["request"]["operation"],
-                             "render.execute" if stage == "render" else "file.checkpoint")
+                             "render.execute" if stage in ("render", "look_render") else "file.checkpoint")
 
     def test_request_and_command_ids_distinct_including_across_phases(self):
         steps = [step for stage in EXPECTED_OPS
@@ -168,6 +169,27 @@ class AcceptanceRecipeTests(unittest.TestCase):
         self.assertTrue(message["requires_new_session_loading_verified_stage2"])
         self.assertFalse(message["render_action_approval_required"])
         self.assertEqual(message["output_file"], scenario.LOOK)
+
+    def test_material_render_is_isolated_new_session_render_request(self):
+        steps = scenario.build("look_render", REV)["steps"]
+        self.assertEqual(len(steps), 3)
+        self.assertEqual(steps[0]["request"]["payload"]["width"], 64)
+        self.assertEqual(steps[0]["request"]["payload"]["samples"], 1)
+        self.assertEqual(steps[-1]["request"]["payload"]["name"], scenario.MATERIAL_RENDER)
+        self.assertEqual(steps[-1]["bindings"][0]["source_step"], "configured_scene")
+        self.assertNotEqual(scenario.MATERIAL_RENDER, scenario.STAGE3)
+
+    def test_material_render_cli_requires_distinct_approved_material_source(self):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            self.assertEqual(scenario.main(["--stage", "look_render",
+                                             "--scene-revision", REV]), 0)
+        value = json.loads(stdout.getvalue())
+        self.assertTrue(value["render_action_approval_required"])
+        self.assertTrue(value["requires_new_session_loading_verified_material"])
+        self.assertTrue(value["supplementary_not_three_stage_acceptance"])
+        self.assertFalse(value["requires_new_session_loading_verified_stage2"])
+        self.assertEqual(value["output_file"], scenario.MATERIAL_RENDER)
 
     def test_render_uses_small_cpu_budget_and_fresh_configured_revision(self):
         steps = scenario.build("render", REV)["steps"]

@@ -19,13 +19,14 @@ import json
 import re
 from uuid import uuid4
 
-STAGES = ("model1", "model2", "render", "look")
+STAGES = ("model1", "model2", "render", "look", "look_render")
 REVISION = re.compile(r"[a-f0-9]{64}\Z", re.ASCII)
 MESH_NAME = "Shuvi41ProofMesh"
 STAGE1 = "shuvi41-proof-stage1.blend"
 STAGE2 = "shuvi41-proof-stage2.blend"
 STAGE3 = "shuvi41-proof-render.png"
 LOOK = "shuvi41-proof-material.blend"
+MATERIAL_RENDER = "shuvi41-proof-material-render.png"
 
 
 def step(name: str, operation: str, payload: dict, bindings: list | None = None) -> dict:
@@ -158,7 +159,7 @@ def _look(revision: str) -> list:
     ]
 
 
-def _render(revision: str) -> list:
+def _render(revision: str, filename: str = STAGE3) -> list:
     # Model1 saves an active camera and Model2 adds a key light.
     # This stage loads their checkpoint via a new separately approved session.
     return [
@@ -168,7 +169,7 @@ def _render(revision: str) -> list:
         }),
         step("configured_scene", "scene.inspect", {}),
         step("render", "render.execute", {
-            "name": STAGE3, "expected_scene_revision": "BOUND_FROM_CONFIGURED_SCENE",
+            "name": filename, "expected_scene_revision": "BOUND_FROM_CONFIGURED_SCENE",
         }, [
             bind("configured_scene", ["data", "revision"], ["expected_scene_revision"]),
         ]),
@@ -185,6 +186,7 @@ def build(stage: str, expected_scene_revision: str) -> dict:
         "model2": _model2,
         "render": _render,
         "look": _look,
+        "look_render": lambda revision: _render(revision, MATERIAL_RENDER),
     }[stage](expected_scene_revision)
     assert 1 <= len(steps) <= 6
     return {"timeout_ms": 90000, "steps": steps}
@@ -206,10 +208,12 @@ def main(argv: list[str] | None = None) -> int:
         "stage": args.stage,
         "requires_separate_native_owner_approval": True,
         "must_use_current_session_inspect_revision": True,
-        "render_action_approval_required": args.stage == "render",
-        "output_file": {"model1": STAGE1, "model2": STAGE2, "render": STAGE3, "look": LOOK}[args.stage],
+        "render_action_approval_required": args.stage in ("render", "look_render"),
+        "output_file": {"model1": STAGE1, "model2": STAGE2, "render": STAGE3,
+                        "look": LOOK, "look_render": MATERIAL_RENDER}[args.stage],
         "requires_new_session_loading_verified_stage2": args.stage in ("render", "look"),
-        "supplementary_not_three_stage_acceptance": args.stage == "look",
+        "supplementary_not_three_stage_acceptance": args.stage in ("look", "look_render"),
+        "requires_new_session_loading_verified_material": args.stage == "look_render",
         "plan": plan,
     }, separators=(",", ":")))
     return 0

@@ -820,3 +820,50 @@ controller; they also cover stale or missing targets, failed checkpoint
 delivery, native exact plan provenance, read-only CLI-only generation
 and lack of implicit render/owner approval. This is NOT real bpy or
 Windows/AntCloud execution. Existing three-stage tests remain intact.
+
+## Team-41 — source-attested optional material render (source-only)
+
+The existing fixed native **plan-only** recipe now recognizes the additional
+stage `look_render` with the same bounded 3-step, 64x64, CPU, 1-sample
+typed render sequence as the original `render`, but with a distinct
+`shuvi41-proof-material-render.png` output. The original three-stage
+`model1/model2/render` acceptance chain remains unchanged. This optional
+render is **not** a fourth acceptance receipt, does not reuse its original
+Stage-2 input and is never automatically approved.
+
+**Required owner-approved runtime flow:** After a separately approved `look`
+run successfully saves `shuvi41-proof-material.blend` with independent
+read-only reopen proof and SHA-256 manifest, explicitly open a **new**
+render-capable native owned session on the canonical material checkpoint with
+its exact SHA-256, separately approve `look_render`, and supply the fresh
+session scene revision. No input file or permission is implicitly selected
+by the plan-only preview.
+
+The authenticated Python broker adds a **read-only preflight before any
+render.configure or render.execute** for this *exact optional output name*:
+1. Revalidate the pinned source filename and the entire .blend SHA-256 bytes.
+2. Match loaded scene file and caller revision to live authenticated inspection.
+3. Demand exactly one untruncated named `Shuvi41ProofMesh` with one
+   `Shuvi41ProofCopper` material slot and render visibility.
+4. Resolve the fixed active proof camera by session-local ID plus independent
+   transform/type/lens/clip/readback, and fixed key light type/color/energy/
+   position/visibility, with revision-pinned object pages.
+5. Re-inspect the scene after the pages; any changed revision, missing object,
+   counterfeit material **name**, stale source or missing render permission
+   stops before any mutation. Generic unrelated Blender plans are unchanged.
+
+The upstream read-only object page exposes a **material slot name**, but
+does *not* expose all shader node parameter values. Therefore this preflight
+checks an independently saved named material slot, **not** a full independent
+Principled BSDF color/metallic/roughness shader attestation. Existing look
+assignment reports those parameters at mutation time. The png integrity
+and source hash guards verify structural files, not appearance or image
+quality. No render was executed on live Windows/Blender/AntCloud.
+
+New tests prove real upstream `PlanRunner` can consume this bounded
+look-to-look_render source plan against a deterministic fake controller;
+separate read-only broker tests cover malicious SHA/source changes, missing
+or extra material slots, stale revisions, inactive camera, wrong lamp,
+ambiguous pages and no render approval. The original Stage-2 3-stage
+receipt chain remains isolated. The material-render job must not be
+counted as ordinary three-stage acceptance or real host verification.

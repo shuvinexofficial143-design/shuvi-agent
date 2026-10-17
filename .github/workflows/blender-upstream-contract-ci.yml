@@ -50,6 +50,7 @@ jobs:
           python -B -m unittest discover -s integrations/blender-worker -p 'test_shuvi_blender_acceptance.py' -v
           python -B -m unittest discover -s integrations/blender-worker -p 'test_shuvi_blender_reopen.py' -v
           python -B -m unittest discover -s integrations/blender-worker -p 'test_shuvi_blender_session.py' -v
+          python -B -m unittest discover -s integrations/blender-worker -p 'test_shuvi_blender_material_render.py' -v
           python -B -m unittest discover -s integrations/blender-worker -p 'test_shuvi_blender_plan_input.py' -v
       - name: Confirm no tracked worktree mutations
         shell: bash

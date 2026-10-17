@@ -266,14 +266,14 @@ class ContractController:
 
 class ActualUpstreamPlanRunnerTests(unittest.TestCase):
     def test_actual_upstream_parser_accepts_three_fixed_production_recipes(self):
-        for stage in ("model1", "model2", "render", "look"):
+        for stage in ("model1", "model2", "render", "look", "look_render"):
             native = build(stage, START_REV)
             parsed = Plan.from_dict(native)
             self.assertEqual(parsed.to_dict(), native)
             self.assertLessEqual(len(parsed.steps), 6)
             self.assertEqual(parsed.timeout_ms, 90_000)
             self.assertEqual(parsed.steps[-1].request.operation,
-                             "render.execute" if stage == "render" else "file.checkpoint")
+                             "render.execute" if stage in ("render", "look_render") else "file.checkpoint")
 
     def test_real_plan_runner_resolves_all_bindings_and_preserves_two_stage_geometry(self):
         owner = ContractController()
@@ -360,6 +360,31 @@ class ActualUpstreamPlanRunnerTests(unittest.TestCase):
         self.assertFalse(result.completed)
         self.assertEqual(result.results["assign"].status, Status.FAILED)
         self.assertNotIn("shuvi41-proof-material.blend", seed.saved)
+
+    def test_materialized_png_uses_separate_saved_look_checkpoint(self):
+        worker = ContractController()
+        for stage in ("model1", "model2"):
+            self.assertTrue(PlanRunner(worker).run(Plan.from_dict(build(stage, worker.rev))).completed)
+        look = ContractController(
+            existing=worker.saved["shuvi41-proof-stage2.blend"]["geometry"],
+            revision=digest({"material_source": "stage2"}))
+        self.assertTrue(PlanRunner(look).run(Plan.from_dict(build("look", look.rev))).completed)
+        self.assertIn("shuvi41-proof-material.blend", look.saved)
+        saved = look.saved["shuvi41-proof-material.blend"]
+        rendering = ContractController(
+            existing=saved["geometry"], revision=digest({"render_source": "material"}))
+        self.assertNotEqual(rendering.session, look.session)
+        self.assertEqual(rendering.objects["Shuvi41ProofMesh"]["materials"],
+                         ["Shuvi41ProofCopper"])
+        report = PlanRunner(rendering).run(Plan.from_dict(build("look_render", rendering.rev)))
+        self.assertTrue(report.completed, report.to_dict())
+        self.assertEqual(report.results["render"].status, Status.VERIFIED)
+        self.assertEqual(report.results["render"].data["after"]["path"],
+                         "shuvi41-proof-material-render.png")
+        self.assertEqual(rendering.calls,
+                         ["render.configure", "scene.inspect", "render.execute"])
+        self.assertNotIn("Shuvi41ProofCopper",
+                         worker.saved["shuvi41-proof-stage2.blend"]["geometry"]["Shuvi41ProofMesh"].get("materials", []))
 
     def test_render_does_not_pass_without_verified_camera_and_key_light(self):
         fake = ContractController()

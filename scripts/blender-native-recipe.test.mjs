@@ -64,6 +64,7 @@ test("independent Python plan-only recipe provides the same expected upstream op
     model2:["device.create","objects.list","mesh.inspect","mesh.translate_vertices","scene.inspect","file.checkpoint"],
     render:["render.configure","scene.inspect","render.execute"],
     look:["scene.inspect","objects.list","material.create_assign","scene.inspect","file.checkpoint"],
+    look_render:["render.configure","scene.inspect","render.execute"],
   };
   const [exe,...args]=python;
   for(const [stage,steps] of Object.entries(expected)){
@@ -75,12 +76,18 @@ test("independent Python plan-only recipe provides the same expected upstream op
     const value=JSON.parse(call.stdout);
     assert.equal(value.mode,"PLAN_ONLY_NO_BLENDER_LAUNCH");
     assert.deepEqual(value.plan.steps.map(x=>x.request.operation),steps);
-    assert.equal(value.plan.steps.length,stage==="render"?3:stage==="look"?5:6);
+    assert.equal(value.plan.steps.length,["render","look_render"].includes(stage)?3:stage==="look"?5:6);
     assert.equal(value.requires_separate_native_owner_approval,true);
-    assert.equal(value.render_action_approval_required,stage==="render");
+    assert.equal(value.render_action_approval_required,["render","look_render"].includes(stage));
     if(stage==="look"){
       assert.equal(value.supplementary_not_three_stage_acceptance,true);
       assert.equal(value.requires_new_session_loading_verified_stage2,true);
+    }
+    if(stage==="look_render"){
+      assert.equal(value.supplementary_not_three_stage_acceptance,true);
+      assert.equal(value.requires_new_session_loading_verified_material,true);
+      assert.equal(value.requires_new_session_loading_verified_stage2,false);
+      assert.equal(value.output_file,"shuvi41-proof-material-render.png");
     }
   }
 });

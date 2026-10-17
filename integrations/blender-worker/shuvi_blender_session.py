@@ -70,6 +70,111 @@ def validate(message: object, session_id: str) -> tuple[str, object]:
     return operation, None, False, None
 
 
+MATERIAL_RENDER_NAME = "shuvi41-proof-material-render.png"
+MATERIAL_CHECKPOINT_NAME = "shuvi41-proof-material.blend"
+
+
+def _is_material_render(plan: object) -> bool:
+    """Only the fixed optional material-still output activates this guard."""
+    if not isinstance(plan, dict) or not isinstance(plan.get("steps"), list):
+        return False
+    for step in plan["steps"]:
+        if not isinstance(step, dict):
+            continue
+        request = step.get("request")
+        if (isinstance(request, dict) and request.get("operation") == "render.execute"
+                and isinstance(request.get("payload"), dict)
+                and request["payload"].get("name") == MATERIAL_RENDER_NAME):
+            return True
+    return False
+
+
+def validate_material_render_source(controller, input_checkpoint: dict | None,
+                                    expected_revision: str, allow_render: bool) -> None:
+    """Read-only source/scene/material gate before the first render mutation.
+
+    Exact, source-hashed sample look only. Material SLOT NAME is verified, not
+    internal Principled BSDF shader parameters (upstream page lacks those).
+    """
+    from shuvi_blender_agent.contracts import Request, Status
+    from shuvi_blender_reopen import _proof_camera, _proof_key_light
+
+    if not allow_render:
+        raise ValueError("Material render requires explicit rendering approval")
+    if (not isinstance(input_checkpoint, dict)
+            or input_checkpoint.get("verified_loaded_file_path") is not True
+            or input_checkpoint.get("loaded_file_hash_checked") is not True
+            or not isinstance(input_checkpoint.get("path"), str)
+            or Path(input_checkpoint["path"]).name != MATERIAL_CHECKPOINT_NAME
+            or not isinstance(input_checkpoint.get("sha256"), str)):
+        raise ValueError("Material render must load authenticated material checkpoint")
+    # The source is pinned from the authenticated broker startup. Rehash its
+    # bytes before every optional render to detect changes in long sessions.
+    current_source = inspect_input_source(Path(input_checkpoint["path"]),
+                                          input_checkpoint["sha256"])
+    if current_source != input_checkpoint:
+        raise ValueError("Material checkpoint changed after session startup")
+
+    def read(operation, payload=None):
+        result = controller.execute(Request(operation, payload or {}, timeout_ms=10_000))
+        if result.status != Status.SUCCEEDED or not isinstance(result.data, dict):
+            raise ValueError("Material render preflight readback failed")
+        return result.data
+
+    scene = read("scene.inspect")
+    session, revision = scene.get("session_id"), scene.get("revision")
+    if (not isinstance(session, str) or not session
+            or revision != expected_revision or
+            not isinstance(scene.get("file"), str)
+            or Path(scene["file"]).resolve(strict=True)
+               != Path(input_checkpoint["path"]).resolve(strict=True)):
+        raise ValueError("Material render session or source scene is stale")
+    camera_id = scene.get("camera_id")
+    if not isinstance(camera_id, str) or not camera_id.startswith(session + ":"):
+        raise ValueError("Material render has no authenticated active camera")
+
+    expected = (
+        ("Shuvi41ProofMesh", "MESH"),
+        ("Shuvi41ProofCamera", "CAMERA"),
+        ("Shuvi41ProofKey", "LIGHT"),
+    )
+    found = {}
+    for name, kind in expected:
+        page = read("objects.list", {
+            "offset": 0, "limit": 5, "name_prefix": name,
+            "object_type": kind, "expected_revision": revision,
+        })
+        items = page.get("items")
+        if (page.get("session_id") != session or page.get("revision") != revision
+                or page.get("offset") != 0 or page.get("total") != 1
+                or page.get("next_offset") is not None or
+                not isinstance(items, list) or len(items) != 1):
+            raise ValueError("Material render named object proof missing or ambiguous")
+        obj = items[0]
+        if (not isinstance(obj, dict) or obj.get("name") != name
+                or obj.get("type") != kind or obj.get("details_truncated") is not False
+                or not isinstance(obj.get("object_id"), str)
+                or not obj["object_id"].startswith(session + ":")):
+            raise ValueError("Material render object identity proof invalid")
+        found[kind] = obj
+
+    mesh = found["MESH"]
+    if (mesh.get("materials") != ["Shuvi41ProofCopper"]
+            or mesh.get("material_slot_count") != 1
+            or not isinstance(mesh.get("visibility"), dict)
+            or mesh["visibility"].get("hide_render") is not False):
+        raise ValueError("Material render requires one persisted copper material slot")
+    if not _proof_camera(found["CAMERA"], found["CAMERA"]["object_id"] == camera_id):
+        raise ValueError("Material render proof camera missing or inactive")
+    if not _proof_key_light(found["LIGHT"]):
+        raise ValueError("Material render proof key light missing")
+
+    final = read("scene.inspect")
+    if (final.get("revision") != revision or final.get("session_id") != session
+            or final.get("camera_id") != camera_id):
+        raise ValueError("Material render scene changed during preflight")
+
+
 def checked_plan(controller, json_plan, output_dir: Path, blender_exe: Path,
                  allow_render: bool, expected_scene_revision: str):
     from shuvi_blender_agent.contracts import Status
@@ -247,6 +352,10 @@ def serve(argv: list[str] | None = None) -> int:
                 if operation == "run_plan":
                     if request_allow_render and not args.allow_render:
                         raise ValueError("Action-level render approval exceeds session ceiling")
+                    if _is_material_render(payload):
+                        validate_material_render_source(
+                            controller, source_before, expected_revision, request_allow_render
+                        )
                     result = checked_plan(controller, payload, args.output_dir,
                                           args.blender_exe, request_allow_render, expected_revision)
                     protocol({"version": 1, "session_id": session_id, **result})

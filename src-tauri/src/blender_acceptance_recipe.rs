@@ -10,6 +10,7 @@ const STAGE1:&str="shuvi41-proof-stage1.blend";
 const STAGE2:&str="shuvi41-proof-stage2.blend";
 const RENDER:&str="shuvi41-proof-render.png";
 const LOOK:&str="shuvi41-proof-material.blend";
+const MATERIAL_RENDER:&str="shuvi41-proof-material-render.png";
 
 fn binding(source:&str,source_path:Value,target_path:Value)->Value{
     json!({"source_step":source,"source_path":source_path,"target_path":target_path})
@@ -113,14 +114,14 @@ fn look()->Vec<Value>{
         }),vec![binding("post_look_scene",json!(["data","revision"]),json!(["expected_scene_revision"]))]),
     ]
 }
-fn render(rev:&str)->Vec<Value>{
+fn render(rev:&str,filename:&str)->Vec<Value>{
     vec![
         step("configure","render.configure",json!({
             "width":64,"height":64,"samples":1,"expected_scene_revision":rev,
         }),vec![]),
         step("configured_scene","scene.inspect",json!({}),vec![]),
         step("render","render.execute",json!({
-            "name":RENDER,"expected_scene_revision":"BOUND_FROM_CONFIGURED_SCENE",
+            "name":filename,"expected_scene_revision":"BOUND_FROM_CONFIGURED_SCENE",
         }),vec![
             binding("configured_scene",json!(["data","revision"]),json!(["expected_scene_revision"]))
         ]),
@@ -138,9 +139,10 @@ pub(crate) fn build(stage:&str,revision:&str)->Result<Value,String>{
     let (steps,output,requires_render)=match stage{
         "model1"=>(model1(revision),STAGE1,false),
         "model2"=>(model2(revision),STAGE2,false),
-        "render"=>(render(revision),RENDER,true),
+        "render"=>(render(revision,RENDER),RENDER,true),
+        "look_render"=>(render(revision,MATERIAL_RENDER),MATERIAL_RENDER,true),
         "look"=>(look(),LOOK,false),
-        _=>return Err("Native Blender recipe only accepts model1, model2, look or render.".into()),
+        _=>return Err("Native Blender recipe only accepts model1, model2, look, render or look_render.".into()),
     };
     let plan=json!({"timeout_ms":90_000,"steps":steps});
     if serde_json::to_vec(&plan).map_err(|_|"Cannot serialize typed Blender recipe.")?.len()>65536{
@@ -164,7 +166,8 @@ pub(crate) fn build(stage:&str,revision:&str)->Result<Value,String>{
         "must_use_current_session_inspect_revision":true,
         "requires_separate_native_owner_approval":true,
         "requires_new_session_loading_verified_stage2":requires_render || stage=="look",
-        "supplementary_not_three_stage_acceptance":stage=="look",
+        "supplementary_not_three_stage_acceptance":stage=="look" || stage=="look_render",
+        "requires_new_session_loading_verified_material":stage=="look_render",
         "action_approved":false,
         "blender_launch_performed":false,
         "plan_executed":false,
@@ -184,6 +187,7 @@ mod tests{
             ("model2",6,"file.checkpoint",false),
             ("render",3,"render.execute",true),
             ("look",5,"file.checkpoint",false),
+            ("look_render",3,"render.execute",true),
         ]{
             let r=build(stage,&"a".repeat(64)).unwrap();
             assert_eq!(r["mode"],"PLAN_ONLY_NO_BLENDER_LAUNCH");
@@ -195,15 +199,16 @@ mod tests{
             assert_eq!(r["plan_executed"],false);
             assert_eq!(r["real_blender_runtime_verified"],false);
             assert_eq!(r["requires_separate_native_owner_approval"],true);
-            assert_eq!(r["requires_new_session_loading_verified_stage2"],render || stage=="look");
-            assert_eq!(r["supplementary_not_three_stage_acceptance"],stage=="look");
+            assert_eq!(r["requires_new_session_loading_verified_stage2"],stage=="render" || stage=="look");
+            assert_eq!(r["requires_new_session_loading_verified_material"],stage=="look_render");
+            assert_eq!(r["supplementary_not_three_stage_acceptance"],stage=="look" || stage=="look_render");
         }
     }
     #[test]
     fn fresh_action_and_request_ids_never_repeat_within_or_across_plans(){
         let mut ids=HashSet::new();
         for _ in 0..3{
-            for stage in ["model1","model2","render","look"]{
+            for stage in ["model1","model2","render","look","look_render"]{
                 let recipe=build(stage,&"b".repeat(64)).unwrap();
                 for step in recipe["plan"]["steps"].as_array().unwrap(){
                     for key in ["request_id","command_id"]{
@@ -217,7 +222,7 @@ mod tests{
     }
     #[test]
     fn result_bindings_reference_prior_steps_with_valid_destinations(){
-        for stage in ["model1","model2","render","look"]{
+        for stage in ["model1","model2","render","look","look_render"]{
             let recipe=build(stage,&"c".repeat(64)).unwrap();
             let mut seen=HashSet::new();
             for step in recipe["plan"]["steps"].as_array().unwrap(){
@@ -264,6 +269,19 @@ mod tests{
         assert_eq!(recipe["action_approved"],false);
         assert!(crate::blender_plan_lineage::receipt_matches(
             &json!({"approved_plan_lineage":recipe["plan_preview_lineage"]}),"look").is_err());
+    }
+    #[test]
+    fn material_render_is_distinct_from_original_three_stage_acceptance(){
+        let r=build("look_render",&"e".repeat(64)).unwrap();
+        assert_eq!(r["plan_preview_lineage"]["acceptance_stage"],"look_render");
+        assert_eq!(r["requires_new_session_loading_verified_material"],true);
+        assert_eq!(r["requires_new_session_loading_verified_stage2"],false);
+        assert_eq!(r["render_action_approval_required"],true);
+        assert_eq!(r["plan"]["steps"][2]["request"]["payload"]["name"],MATERIAL_RENDER);
+        assert_eq!(r["plan"]["steps"][0]["request"]["payload"]["samples"],1);
+        assert_eq!(r["plan"]["steps"][2]["bindings"][0]["source_step"],"configured_scene");
+        assert!(crate::blender_plan_lineage::receipt_matches(
+            &json!({"approved_plan_lineage":r["plan_preview_lineage"]}),"render").is_err());
     }
     #[test]
     fn acceptance_modeling_plan_contains_expected_mesh_edit_and_stage_files(){
