@@ -39,6 +39,9 @@ test("remote edit cannot finish immediately after an unreviewed pointer drag",()
   const main=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
   assert.match(main,/const needsDragReview = orchestration.last_tool === "pointer_drag"/);
   assert.match(main,/await saveActiveCheckpoint\(\)/);
-  assert.match(main,/!needsDragReview &&/);
+  assert.match(main,/if \(needsDragReview\) \{/);
+  const model=main.slice(main.indexOf("async function runAgentStep"),main.indexOf('el<HTMLButtonElement>("#resumeTask")'));
+  assert.match(model,/if\(remoteTask&&!staleModelRequest\(\)\)await closeRemoteTask\("outcome_unknown"\)/);
+  assert.doesNotMatch(model,/closeRemoteTask\(\s*remoteTask\.evidenceActionId/);
   assert.match(main,/visual result has not been verified/);
 });

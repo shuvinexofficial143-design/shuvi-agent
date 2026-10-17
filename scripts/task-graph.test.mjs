@@ -461,10 +461,10 @@ test("UI binds exact prepared action before approval or execution", () => {
   const main=readFileSync(new URL("../src/main.ts",import.meta.url),"utf8");
   const stage=main.slice(main.indexOf("async function stageProposal"),main.indexOf("function clearChatPermission"));
   assert.ok(stage.indexOf("evaluateProposal")<stage.indexOf('"prepare_tool"'));
-  assert.ok(stage.indexOf("recordProposalStart")<stage.indexOf('"save_session_checkpoint"'));
+  assert.ok(stage.indexOf("recordProposalStart")<stage.indexOf("await guardedSaveNativeCheckpoint(true)",stage.indexOf("bindPreparedAction")));
   const prepare=stage.indexOf('"prepare_tool"');
   const bind=stage.indexOf("bindPreparedAction");
-  const boundSave=stage.indexOf('"save_session_checkpoint"',prepare);
+  const boundSave=stage.indexOf("await guardedSaveNativeCheckpoint(true)",bind);
   const autoExecute=stage.indexOf("executePendingProposal(proposal,rustGrantId)",prepare);
   const permission=stage.indexOf("renderChatPermission(proposal, step)",prepare);
   assert.ok(prepare>=0 && bind>prepare);

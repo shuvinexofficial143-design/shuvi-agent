@@ -78,7 +78,7 @@ test("model-call reservations are finite, counted before dispatch and never sile
 
 test("runtime persists the model request BEFORE a paid chat and validates restored counts",()=>{
  const reserve=main.indexOf("const reservation = reserveTaskModelRequest(orchestration)");
- const persist=main.indexOf('await invoke("save_session_checkpoint", { checkpoint: currentCheckpoint() });',reserve);
+ const persist=main.indexOf('await guardedSaveNativeCheckpoint(true)',reserve);
  const dispatch=main.indexOf('const response = await invoke<ChatResponse>("chat", {',persist);
  assert.ok(reserve>=0 && persist>reserve && dispatch>persist);
  assert.match(main.slice(reserve,dispatch),/orchestration = reservation.state/);

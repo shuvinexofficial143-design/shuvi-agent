@@ -318,3 +318,7 @@ More importantly, after the owner explicitly agrees to resume a **non-stopped ta
 ## Exact CI fix — serialized recovery TypeScript callback narrowing (17 October 2026)
 
 `0a2a7c6` Web Dashboard CI caught `TS2339`: an async callback writes the typed `SessionCheckpoint|null` local after a task-checkpoint-lane await, but TypeScript narrowed its enclosing variable to the initial `null` as if it never changes. Explicitly preserve the `SessionCheckpoint|null` union at the callback handoff before checking `messages`, `updated_at_ms`, `orchestration` and `provider`. No native IPC ordering, proof assertion, or safety policy changed.
+
+## Full Frontend regression reconciliation (17 October 2026)
+
+Previous source-only frontend failures resulted from now-obsolete direct save_session_checkpoint and generic remote "succeeded" assertions. Ten existing suites retain their coverage but assert the stronger real source: guardedSaveNativeCheckpoint(true) native disk readback before prepare/approval and a paid model call, a strict final Rust/owner-goal verifier rather than superficial audited task count, stale pointer-drag unknown outcomes, and the exact Resume handler source ordering. The new Resume test no longer incorrectly matches an earlier unrelated #reviewNativeJob element reference. No production tool permissions or fail-closed checks were relaxed; a complete exact-head GitHub CI result is required before declaring these changes verified.
