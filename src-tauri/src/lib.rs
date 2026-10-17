@@ -14792,6 +14792,41 @@ try {{
                     (json!({"request":request,"expected":job.project_expectation()}),
                         "Set the explicit active-sequence work area through AD after current project/sequence identity validation.".to_string())
                 }
+                "caption_graphics_plan" | "caption_graphics_apply" => {
+                    let request=job.request.caption_graphics.clone()
+                        .ok_or("Edit job has no selected caption SRT/MOGRT binding.")?;
+                    // No native edits occur here. The proposal is only emitted
+                    // after matching the selected SRT's exact saved bytes,
+                    // selected cue timings and current MOGRT mapping revision.
+                    let mappings=premiere_graphics::list(&graphics_library_path(app)?)?;
+                    let saved=mappings.iter().find(|m|m.mapping.name==request.mapping)
+                        .ok_or("Edit job caption MOGRT mapping is unavailable.")?;
+                    let planned=premiere_caption_graphics::plan(&request,saved)?;
+                    if phase.id=="caption_graphics_apply" {
+                        // Repeat host identity and target-track occupancy ahead
+                        // of the separately approved High-risk insert tool.
+                        let timeline=premiere_bridge.request(
+                            "inspect_timeline",json!({}),Duration::from_secs(20)).await?;
+                        let batch:premiere_graphics::Batch=serde_json::from_value(
+                            planned["generated_batch"].clone()
+                        ).map_err(|e|format!("Invalid source-bound caption edit-job batch: {e}"))?;
+                        premiere_caption_graphics::preflight_timeline(
+                            &batch,&timeline,&job.project_guid,
+                            job.project_path.as_deref(),&job.sequence_guid)?;
+                    }
+                    (json!({"request":request,"expected":job.project_expectation()}),
+                        if phase.id=="caption_graphics_apply" {
+                            "Separately approve the exact hash-bound caption MOGRT insertion on currently unoccupied native tracks. Previous read-only planning is NOT an insert approval; no automatic retry/rollback. Save the edited project in the next separate phase.".to_string()
+                        } else {
+                            "Inspect the existing selected-caption SRT, exact saved MOGRT fields and generated native graphics batch without mutating Premiere.".to_string()
+                        })
+                }
+                "caption_project_save" => {
+                    // Only the existing project-save tool owns the checkpoint
+                    // and independent disk persistence receipt.
+                    (json!({}),
+                        "Save the completed caption graphics on disk using the existing separately approved Premiere project-save action; do not infer cross-session project/reopen or MP4 export success.".to_string())
+                }
                 "review" => {
                     let review=job.request.review.clone().ok_or("Edit job review payload is missing.")?;
                     if review.iterative {
