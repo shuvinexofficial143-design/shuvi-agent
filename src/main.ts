@@ -2375,6 +2375,11 @@ async function runAgentStep(): Promise<void> {
   const requestGraph = orchestration.task_graph;
   const requestOwner = orchestration.owner_request;
   const requestRemote=remoteTask;
+  // Terminal callbacks may intentionally revoke the old scope and retire its
+  // mobile task. Identity (not consent) must still be rechecked after awaits.
+  const responseCleanupOwnerCurrent=()=>requestScope===activePermissionScope&&
+    orchestration.task_graph===requestGraph&&
+    orchestration.owner_request===requestOwner&&!cancelRequested;
   let providerTurnFence:ReturnType<typeof captureMasterProviderTurnFence>=null;
   const staleModelRequest = () => requestScope !== activePermissionScope ||
     remoteTask!==requestRemote ||
@@ -2588,7 +2593,10 @@ async function runAgentStep(): Promise<void> {
     // A native action receipt is not original user-goal acceptance. Only the
     // strict final Rust/goal verifier in continueAfterOutcome may mark the
     // remote task succeeded; this generic provider turn cannot.
-    if(remoteTask&&!staleModelRequest())await closeRemoteTask("outcome_unknown");
+    if(remoteTask&&!staleModelRequest()){
+      if(!(await closeRemoteTask("outcome_unknown")))return;
+    }
+    if(!responseCleanupOwnerCurrent()||remoteTask!==null)return;
     setBusy(false);
   } catch {
     if (staleModelRequest()) return;
@@ -2601,7 +2609,11 @@ async function runAgentStep(): Promise<void> {
     messages.push({ role: "assistant", content: caution });
     renderMessages();
     await saveActiveCheckpoint();
-    if(remoteTask)await closeRemoteTask("outcome_unknown");
+    if(!responseCleanupOwnerCurrent())return;
+    if(remoteTask){
+      if(!(await closeRemoteTask("outcome_unknown")))return;
+    }
+    if(!responseCleanupOwnerCurrent()||remoteTask!==null)return;
     setBusy(false);
   }
   } finally {
