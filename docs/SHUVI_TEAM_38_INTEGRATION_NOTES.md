@@ -291,3 +291,8 @@ Review any adapter calls and potential cross-team shared-file overlap. Keep owne
 
 ### Milestone 42 CI contract correction
 - Updated the old SHA-budget source assertion to check `verify_with_pool` and exact Blender certificate verification both occur BEFORE the new kernel-serialized `publish_at`, instead of expecting removed bare `write_at` call. The production verified publish path remains unchanged.
+
+## Milestone 43 — completed native delivery history retained across tasks
+- The last completed task retains its existing receipt and verified readback; **before** the next accepted final delivery replaces it, the previous full receipt is stored in `native-task-delivery-history.json` (24 prior receipts, 1 MiB bounded). The existing kernel OS-exclusive last-receipt lock protects archive publication and reads across Shuvi instances. Duplicate UUID/changed provenance, corrupt files and incomplete backup states fail closed. No old worker action is replayed.
+- A new read-only Tauri history command and on-demand desktop `Completed tasks` viewer show newest-first metadata plus the current last receipt. `currentlyVerified=false` is fixed intentionally: an archived receipt is NOT a fresh SHA/OS/application proof. Existing `Verify last delivered task` continues to check current file bytes and Rust audits.
+- Rust actual-filesystem history retention/replay/corruption tests and Node Rust→Tauri→UI integration contracts accompany this milestone. A crash after last receipt publish but before its archival still leaves the last receipt visible; the next finalization archives it before replacing.

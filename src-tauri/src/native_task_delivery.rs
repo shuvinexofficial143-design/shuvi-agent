@@ -14,6 +14,8 @@ static IO:Mutex<()>=Mutex::new(());
 mod global_hash_slots;
 #[path = "native_delivery_receipt_lock.rs"]
 mod receipt_lock;
+#[path = "native_delivery_history.rs"]
+pub(crate) mod history;
 
 #[derive(Debug,Clone,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
@@ -474,7 +476,16 @@ pub(crate) fn finalize(app:&AppHandle,steps:Vec<DeliveryStep>)->Result<DeliveryR
         ||latest.jobs!=schedule.jobs{
         return Err("Native scheduler changed during delivery verification; no stale receipt published.".into());
     }
+    // Persist the previous completed task before replacing the last receipt.
+    // The same OS-exclusive receipt lock surrounds archive+publication.
+    history::archive_predecessor(&receipt_path)?;
     publish_at(&receipt_path,&receipt)
+}
+pub(crate) fn recent(app:&AppHandle)->Result<history::DeliveryHistoryView,String>{
+    let _io=IO.lock().map_err(|_|"Native task delivery lock poisoned.")?;
+    let receipt_path=path(app)?;
+    let _os=receipt_lock::DeliveryReceiptOsLock::take(&receipt_path)?;
+    history::read_recent(&receipt_path)
 }
 pub(crate) fn read(app:&AppHandle)->Result<Option<DeliveryReceipt>,String>{
     let _io=IO.lock().map_err(|_|"Native task delivery lock poisoned.")?;

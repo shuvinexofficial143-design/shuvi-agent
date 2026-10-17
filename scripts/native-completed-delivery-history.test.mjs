@@ -1,0 +1,30 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
+const get=p=>readFileSync(new URL("../"+p,import.meta.url),"utf8");
+const history=get("src-tauri/src/native_delivery_history.rs");
+const delivery=get("src-tauri/src/native_task_delivery.rs");
+const lib=get("src-tauri/src/lib.rs");
+const ui=get("src/main.ts"),types=get("src/types.ts");
+test("older completed-task receipts remain bounded durable exact-UUID archival records",()=>{
+ assert.match(delivery,/mod history/);
+ assert.match(delivery,/history::archive_predecessor\(&receipt_path\)\?/);
+ assert.ok(delivery.indexOf("history::archive_predecessor(&receipt_path)")<delivery.indexOf("publish_at(&receipt_path,&receipt)"));
+ assert.match(delivery,/pub\(crate\) fn recent\(app:&AppHandle\)/);
+ assert.match(history,/MAX_PAST:usize=24/);
+ assert.match(history,/MAX_ARCHIVE_BYTES:usize=1_048_576/);
+ assert.match(history,/previous_deliveries_survive_replacing_last_task/);
+ assert.match(history,/last_receipt_survives_crash_gap_and_archival_replay/);
+ assert.match(history,/conflicting_uuid_or_corrupt_archive_never_becomes_empty/);
+});
+test("desktop can inspect bounded archival metadata without claiming fresh output success",()=>{
+ assert.match(lib,/fn native_task_delivery_history\(/);
+ assert.match(lib,/native_task_delivery::recent\(&app\)/);
+ assert.match(lib,/native_task_delivery_history,/);
+ assert.match(types,/export type NativeCompletedDeliveryHistory/);
+ assert.match(ui,/id="nativeCompletedDeliveries"/);
+ assert.match(ui,/id="loadNativeCompletedDeliveries"/);
+ assert.match(ui,/invoke<NativeCompletedDeliveryHistory>\("native_task_delivery_history"\)/);
+ assert.match(ui,/currentlyVerified!==false/);
+ assert.match(ui,/Archived \(NOT current artifact verification\)/);
+});

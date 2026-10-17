@@ -15,6 +15,7 @@ import type {
   NativeJobHistory,
   NativeSchedule,
   NativeTaskDelivery,
+  NativeCompletedDeliveryHistory,
   ToolProposal,
   AuditEntry,
   SessionCheckpoint,
@@ -156,6 +157,11 @@ root.innerHTML = `
       <small id="nativeSchedulerSummary" class="ram-children">Native scheduler: not yet checked</small>
       <button id="checkNativeTaskDelivery" type="button">Verify last delivered task</button>
       <small id="nativeDeliverySummary" class="ram-children">Previous delivery: not yet checked</small>
+      <details id="nativeCompletedDeliveries" class="ram-children">
+        <summary>Completed tasks (archived, not currently verified)</summary>
+        <button id="loadNativeCompletedDeliveries" type="button">Show completed tasks</button>
+        <div id="nativeCompletedDeliveriesList">Archive not yet inspected.</div>
+      </details>
       <button id="reviewFailedSchedulerStep" class="hidden" type="button">Review failed scheduled action</button>
       <small id="reviewFailedSchedulerHint" class="ram-children hidden"></small>
       <details id="nativeResourceClaims" class="ram-children">
@@ -2144,6 +2150,31 @@ el<HTMLButtonElement>("#reviewFailedSchedulerStep").addEventListener("click", as
     button.disabled=false;
     await refreshNativeSchedule();
   }
+});
+
+el<HTMLButtonElement>("#loadNativeCompletedDeliveries").addEventListener("click",async ()=>{
+  const list=el<HTMLElement>("#nativeCompletedDeliveriesList");
+  list.textContent="Reading archived tasks…";
+  try{
+    const record=await invoke<NativeCompletedDeliveryHistory>("native_task_delivery_history");
+    if(record.version!==1||!Array.isArray(record.items)||record.items.length>25)
+      throw Error("Invalid native delivery archive");
+    list.replaceChildren();
+    if(!record.items.length){list.textContent="No completed native deliveries.";return;}
+    for(const item of record.items){
+      if(!item||item.currentlyVerified!==false||typeof item.objective!=="string"
+          ||item.objective.length>160||!Number.isSafeInteger(item.recordedAtMs)
+          ||item.recordedAtMs<1||!Number.isInteger(item.stepCount)||item.stepCount<1
+          ||item.stepCount>48||!Number.isInteger(item.outputCount)
+          ||item.outputCount<0||item.outputCount>item.stepCount)
+        throw Error("Malformed native history item");
+      const entry=document.createElement("div");
+      entry.textContent=item.objective+" · "+item.stepCount+" steps, "+
+        item.outputCount+" files · "+new Date(item.recordedAtMs).toLocaleString()+
+        " · Archived (NOT current artifact verification)";
+      list.append(entry);
+    }
+  }catch{list.textContent="Completed task archive missing/corrupted; no success was assumed.";}
 });
 
 el<HTMLButtonElement>("#checkNativeTaskDelivery").addEventListener("click",async ()=>{

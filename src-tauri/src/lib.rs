@@ -18818,6 +18818,10 @@ fn native_task_delivery_status(app:AppHandle)->Result<Option<native_task_deliver
     native_task_delivery::read(&app)
 }
 #[tauri::command]
+fn native_task_delivery_history(app:AppHandle)->Result<native_task_delivery::history::DeliveryHistoryView,String>{
+    native_task_delivery::recent(&app)
+}
+#[tauri::command]
 fn native_scheduler_status(app:AppHandle)->Result<Option<native_scheduler::Schedule>,String>{
     native_scheduler::verified_status(&app)
 }
@@ -19591,6 +19595,7 @@ pub fn run() {
             native_worker_status,
             native_worker_history,
             native_task_delivery_status,
+            native_task_delivery_history,
             finalize_native_task_delivery,
             native_scheduler_status,
             review_native_scheduler_failure,
