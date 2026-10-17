@@ -20082,6 +20082,62 @@ mod task_graph_transport_tests {
         assert!(!matches!("task_step_completed","executed"|"failed"|"denied"));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn m54_parent_enrollment_requires_exact_fields_and_preserves_prepared_uuid(){
+        let state=ActionState::default();
+        let input=std::env::temp_dir().join("shuvi-m54-owner-sha-input.bin")
+            .display().to_string();
+        let valid=json!({
+            "input_path":input,"expected_sha256":"a".repeat(64),
+            "priority":1,"depends_on":[]
+        });
+        let proposal=|arguments:Value|ToolProposal{
+            tool:"queue_readonly_sha_parent".into(),arguments,
+            reason:Some("Explicit owner approval to enqueue only".into()),
+            plan:None,task_graph:None,task_step_id:None,task_recovery:None,
+        };
+        let approved=stage_tool(proposal(valid.clone()),None,&state).unwrap();
+        assert!(matches!(approved.risk,RiskLevel::Medium));
+        let ledger=state.pending.lock().unwrap();
+        let staged=ledger.get(&approved.id).expect("exact prepared UUID must persist");
+        assert_eq!(staged.tool,"queue_readonly_sha_parent");
+        assert!(matches!(&staged.action,
+            ToolAction::QueueReadOnlyShaParent{priority:1,depends_on,..} if depends_on.is_empty()));
+        drop(ledger);
+        let mut extra=valid.clone();
+        extra["executable"]=json!("C:/windows/system32/cmd.exe");
+        assert!(stage_tool(proposal(extra),None,&state).is_err());
+        let mut bad_priority=valid.clone();
+        bad_priority["priority"]=json!(3);
+        assert!(stage_tool(proposal(bad_priority),None,&state).is_err());
+        let mut bad_hash=valid.clone();
+        bad_hash["expected_sha256"]=json!("A".repeat(64));
+        assert!(stage_tool(proposal(bad_hash),None,&state).is_err());
+        let mut missing=valid.clone();
+        missing.as_object_mut().unwrap().remove("depends_on");
+        assert!(stage_tool(proposal(missing),None,&state).is_err());
+        assert_eq!(state.pending.lock().unwrap().len(),1);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn m54_parent_dispatch_preparation_never_launches_without_separate_allow(){
+        let state=ActionState::default();
+        let make=|arguments:Value|ToolProposal{
+            tool:"run_approved_sha_parent_queue".into(),arguments,
+            reason:Some("Explicit owner dispatch permission".into()),
+            plan:None,task_graph:None,task_step_id:None,task_recovery:None,
+        };
+        let prepared=stage_tool(make(json!({})),None,&state).unwrap();
+        assert!(matches!(prepared.risk,RiskLevel::Medium));
+        let ledger=state.pending.lock().unwrap();
+        assert!(matches!(&ledger.get(&prepared.id).unwrap().action,
+            ToolAction::RunApprovedShaParentQueue));
+        drop(ledger);
+        assert!(stage_tool(make(json!({"pid":42})),None,&state).is_err());
+        assert!(stage_tool(make(json!({"command":"calc.exe"})),None,&state).is_err());
+        assert_eq!(state.pending.lock().unwrap().len(),1);
+    }
     #[test]
     fn discarded_legacy_description_does_not_erase_graph_restrictions() {
         let text = json!({"tool":"read_file","arguments":{"path":"C:/a.txt"},
