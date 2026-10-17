@@ -106,7 +106,7 @@ test("native desktop finalization refuses ANY unsupported original goal before s
  const start=ui.indexOf("const finalOutcome=assessMasterFinalOutcome(");
  const guard=ui.indexOf("if(!finalOutcome.verified){",start);
  const finish=ui.indexOf("const completed=taskGraphProgress(orchestration.task_graph)",guard);
- const remote=ui.indexOf('await closeRemoteTask(remoteTask.evidenceActionId',finish);
+ const remote=ui.indexOf('if(!(await closeRemoteTask(terminalStatus)))return;',finish);
  assert.ok(start>0&&guard>start&&finish>guard&&remote>finish);
  assert.match(ui,/await stopAgentForSafety\(summarizeMasterMissingProof\(finalOutcome\)\)/);
  assert.match(ui,/if\(goalAcceptance.requiresIndependentAcceptance&&!openingAcceptance.verified\)/);

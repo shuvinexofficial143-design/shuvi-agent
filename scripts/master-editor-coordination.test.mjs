@@ -61,7 +61,8 @@ test("mobile editing completion requires an audited finished task graph",()=>{
   assert.doesNotMatch(provider,/closeRemoteTask\("succeeded"\)/);
   assert.match(terminal,/const finalOutcome=assessMasterFinalOutcome\(/);
   assert.match(terminal,/if\(!finalOutcome\.verified\)\{/);
-  assert.match(terminal,/closeRemoteTask\(remoteTask\.evidenceActionId/);
+  assert.match(terminal,/if\(!\(await closeRemoteTask\(terminalStatus\)\)\)return;/);
+  assert.match(terminal,/const terminalStillOwned=\(\)=>activePermissionScope===continuationScope/);
 });
 
 test("native UI routes through the existing permission-first chat, not a fake worker executor",()=>{
