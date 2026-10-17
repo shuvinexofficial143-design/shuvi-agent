@@ -1,0 +1,42 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+const rust=readFileSync(new URL('../src-tauri/src/lib.rs',import.meta.url),'utf8');
+const queue=readFileSync(new URL('../src-tauri/src/native_background_parent_queue.rs',import.meta.url),'utf8');
+const admission=readFileSync(new URL('../src-tauri/src/native_background_admission.rs',import.meta.url),'utf8');
+const ui=readFileSync(new URL('../src/main.ts',import.meta.url),'utf8');
+const types=readFileSync(new URL('../src/types.ts',import.meta.url),'utf8');
+test('M54 each independent SHA parent requires own exact prepared owner UUID and typed enrollment',()=>{
+  assert.match(rust,/"queue_readonly_sha_parent" => \{/);
+  assert.match(rust,/ToolAction::QueueReadOnlyShaParent\{/);
+  assert.match(rust,/let exact=proposal\.arguments\.as_object\(\)/);
+  assert.match(rust,/exact\.len\(\)!=4/);
+  assert.match(rust,/RiskLevel::Medium/);
+  assert.match(rust,/id:&action_id,input:Path::new\(input_path\)/);
+  assert.match(rust,/parent_queue::enqueue_approved_at\(/);
+  assert.match(queue,/super::admission::checked_input\(requested\.input\)/);
+  assert.match(admission,/pub\(super\) fn checked_input/);
+});
+test('M54 separate owner-approved dispatch runs only previously admitted fixed read-only classes',()=>{
+  assert.match(rust,/"run_approved_sha_parent_queue" => \{/);
+  assert.match(rust,/if !obj\.is_empty\(\)/);
+  assert.match(rust,/ToolAction::RunApprovedShaParentQueue/);
+  assert.match(rust,/parent_queue::run_two_ready_approved\(/);
+  assert.match(rust,/status\.shuvi_memory_mb\+1024\.0>=HARD_LIMIT_MB/);
+  assert.match(rust,/run_approved_sha_parent_queue.*?separate owner Allow/s);
+  assert.match(queue,/fn run_two_ready_approved<F>/);
+  assert.match(queue,/p\.task_class!="read_only_sha256"/);
+  assert.match(rust,/Background parent queue operations require exact owner-approved native execute_action/);
+  assert.doesNotMatch(queue,/Command::new|taskkill|TerminateProcess/);
+});
+test('M54 read-only UI status neither grants permission nor asserts app success, PID liveness, fresh digest',()=>{
+  assert.match(rust,/fn native_approved_parent_queue_status\(/);
+  assert.match(rust,/native_approved_parent_queue_status,\n/);
+  assert.match(ui,/invoke<NativeApprovedParentQueueStatus>\("native_approved_parent_queue_status"\)/);
+  assert.match(ui,/currentFileSha256Verified!==false/);
+  assert.match(ui,/processLivenessVerified!==false/);
+  assert.match(ui,/\.textContent="Parent "/);
+  assert.match(types,/export type NativeApprovedParentQueueStatus/);
+  assert.match(rust,/current_file_sha256_verified:false/);
+  assert.match(rust,/application_verified:false/);
+});
