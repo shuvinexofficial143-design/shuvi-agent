@@ -58,7 +58,8 @@ fn check_structure(v:&DeliveryReceipt)->Result<(),String>{
         if let Some(artifact)=&step.artifact {
             if !matches!(step.tool.as_str(),
                     "blender_run_plan"|"motion_graphics_accept_final_remotion"|
-                    "motion_graphics_plan_premiere_insertion")
+                    "motion_graphics_plan_premiere_insertion"|
+                    "premiere_create_project")
                 ||artifact.bytes==0||artifact.bytes>MAX_ARTIFACT_BYTES
                 ||artifact.path.len()>4096||artifact.path.chars().any(char::is_control)
                 ||artifact.sha256.len()!=64
@@ -68,6 +69,7 @@ fn check_structure(v:&DeliveryReceipt)->Result<(),String>{
             let expected_kind=match step.tool.as_str(){
                 "blender_run_plan"=>"blender_artifact",
                 "motion_graphics_accept_final_remotion"=>"accepted_remotion",
+                "premiere_create_project"=>"premiere_project",
                 _=>"premiere_insertion_plan"
             };
             if artifact.kind!=expected_kind {
@@ -75,7 +77,7 @@ fn check_structure(v:&DeliveryReceipt)->Result<(),String>{
             }
         } else if matches!(step.tool.as_str(),
             "blender_run_plan"|"motion_graphics_accept_final_remotion"|
-            "motion_graphics_plan_premiere_insertion") {
+            "motion_graphics_plan_premiere_insertion"|"premiere_create_project") {
             return Err("A native render/model action cannot be delivered without its file receipt.".into());
         }
     }
@@ -122,6 +124,8 @@ fn check_artifact(a:&DeliveryArtifact,tool:&str)->Result<(),String>{
             return Err("Accepted Remotion output must be a video.".into()),
         "motion_graphics_plan_premiere_insertion" if !matches!(ext.as_str(),"mp4"|"mov"|"webm")=>
             return Err("Premiere insertion output must be the accepted video path.".into()),
+        "premiere_create_project" if ext!="prproj"=>
+            return Err("Premiere native project delivery requires a .prproj file.".into()),
         _=>{}
     }
     let (size,hash)=file_hash(p,MAX_ARTIFACT_BYTES)?;
@@ -263,6 +267,49 @@ mod tests{
         fs::write(&p,b"changed-artifact").unwrap();
         assert!(check_artifact(&claim,"blender_run_plan").is_err());
         let _=fs::remove_file(p);
+    }
+    #[test]
+    fn premiere_project_proof_requires_create_action_and_correct_artifact_kind(){
+        let path=std::env::temp_dir().join(format!("shuvi-project-{}.prproj",uuid::Uuid::new_v4()));
+        fs::write(&path,b"mock-premiere-bytes-for-cryptographic-verification").unwrap();
+        let (bytes,sha256)=file_hash(&path,MAX_ARTIFACT_BYTES).unwrap();
+        let project=DeliveryArtifact{
+            kind:"premiere_project".into(),
+            path:path.to_string_lossy().into_owned(),bytes,sha256
+        };
+        let step=DeliveryStep{step_id:"create".into(),tool:"premiere_create_project".into(),
+            action_id:A.into(),artifact:Some(project.clone())};
+        let valid=DeliveryReceipt{version:1,objective:"Build".into(),
+            revision:1,recorded_at_ms:1,steps:vec![step.clone()]};
+        check_structure(&valid).unwrap();
+        let schedule=mock(vec![("create","premiere_create_project",A)]);
+        verify(&schedule,&valid.steps,|id|Ok(audit(id,"premiere_create_project"))).unwrap();
+        // Do not allow a .prproj claim under an unrelated tool or a foreign audit.
+        let wrong_tool=DeliveryReceipt{steps:vec![DeliveryStep{
+            tool:"ui_windows".into(),..step.clone()}],..valid.clone()};
+        assert!(check_structure(&wrong_tool).is_err());
+        let wrong_kind=DeliveryReceipt{steps:vec![DeliveryStep{
+            artifact:Some(DeliveryArtifact{kind:"blender_artifact".into(),..project.clone()}),
+            ..step.clone()}],..valid.clone()};
+        assert!(check_structure(&wrong_kind).is_err());
+        let no_file=DeliveryReceipt{steps:vec![DeliveryStep{
+            artifact:None,..step.clone()}],..valid.clone()};
+        assert!(check_structure(&no_file).is_err());
+        assert!(verify(&schedule,&valid.steps,|_|Ok(audit(B,"premiere_create_project"))).is_err());
+        // File mutation after the first read makes the trusted SHA mismatch.
+        fs::write(&path,b"post-proof-tampering").unwrap();
+        assert!(check_artifact(&project,"premiere_create_project").is_err());
+        let _=fs::remove_file(path);
+    }
+    #[test]
+    fn premiere_project_is_not_a_video_or_a_blender_artifact(){
+        let path=std::env::temp_dir().join(format!("shuvi-forged-{}.mp4",uuid::Uuid::new_v4()));
+        fs::write(&path,b"fake-project").unwrap();
+        let (bytes,sha256)=file_hash(&path,MAX_ARTIFACT_BYTES).unwrap();
+        let claim=DeliveryArtifact{kind:"premiere_project".into(),
+            path:path.to_string_lossy().into_owned(),bytes,sha256};
+        assert!(check_artifact(&claim,"premiere_create_project").is_err());
+        let _=fs::remove_file(path);
     }
     #[test]
     fn duplicate_identity_and_missing_artifact_are_rejected(){
