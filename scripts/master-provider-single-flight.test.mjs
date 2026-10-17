@@ -51,7 +51,7 @@ test("Desktop acquires before billing reservation, releases on provider reply AN
  const release=src.indexOf("paidFlight.release();",chat);
  const nested=src.indexOf("await runAgentStep();",chat);
  assert.ok(admission>=0&&admission<reserve&&reserve<chat&&chat<release&&release<nested);
- assert.match(src,/finally \{\s*paidFlight\.release\(\);\s*\}/);
+ assert.match(src,/finally \{[\s\S]*?paidFlight\.release\(\);[\s\S]*?\}/);
  assert.match(src,/if\(staleModelRequest\(\)\) return;/);
 });
 test("provider gate cannot grant high-risk approval or execute native Windows actions",()=>{

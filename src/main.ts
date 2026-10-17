@@ -1266,12 +1266,22 @@ async function stopAgentForSafety(reason: string): Promise<void> {
   if (remoteTask) await closeRemoteTask("stopped");
   if(activePermissionScope!==stoppedScope)return;
   orchestration = { ...orchestration, recovery_mode: "stopped", stop_reason: reason.slice(0, 800) };
-  if (orchestration.task_graph) await recordOrchestrationAudit("task_graph_stopped", reason.slice(0, 1200));
+  const stopGraph=orchestration.task_graph,stopOwner=orchestration.owner_request;
+  const stopStillCurrent=()=>activePermissionScope===stoppedScope&&
+    orchestration.task_graph===stopGraph&&orchestration.owner_request===stopOwner;
+  if (orchestration.task_graph) {
+    await recordOrchestrationAudit("task_graph_stopped", reason.slice(0, 1200));
+    if(!stopStillCurrent())return;
+  }
   renderOrchestrationStatus();
   await recordOrchestrationAudit("orchestration_stopped", reason, orchestration.last_tool);
+  if(!stopStillCurrent())return;
   messages.push({ role: "assistant", content: reason });
   renderMessages();
   await saveActiveCheckpoint();
+  // Saving a stopped checkpoint can race task rotation. Never clear the new
+  // task's Busy state from the old safety-stop callback after its last await.
+  if(!stopStillCurrent())return;
   setBusy(false);
 }
 
