@@ -199,6 +199,96 @@ pub(super) fn spawn_admitted_readonly(
 pub(super) fn read_admissions(root:&Path)->Result<Vec<(String,String)>,String>{
     admission::snapshot_at(root)
 }
+/// Non-mutating snapshot: a recorded OS exit or stored sha256_verified
+/// is not durable proof that a file has remained unchanged since that audit.
+#[derive(Clone,Debug,PartialEq,Eq)]
+pub(super) struct ReadOnlyWorkerHealth{
+    pub action_id:String,
+    pub recorded_phase:String,
+    pub evidence_health:String,
+    pub current_file_rehashed:bool,
+    pub safe_to_auto_retry:bool,
+}
+fn inspect_receipt(root:&Path,id:&str)->Result<Option<Receipt>,String>{
+    let path=receipt_path(root,id);
+    match fs::symlink_metadata(&path){
+        Ok(meta) if meta.is_file()&&!meta.file_type().is_symlink()
+            && meta.file_attributes()&0x400==0=>{},
+        Ok(_)=>return Err("Background OS receipt redirected or forged.".into()),
+        Err(e) if e.kind()==std::io::ErrorKind::NotFound=>{
+            if path.with_extension("json.bak").exists()||path.with_extension("json.tmp").exists(){
+                return Err("Background OS receipt interrupted and needs owner review.".into());
+            }
+            return Ok(None);
+        },
+        Err(_)=>return Err("Cannot inspect background OS receipt.".into()),
+    }
+    if path.with_extension("json.tmp").exists(){
+        return Err("Interrupted background OS receipt publication needs owner review.".into());
+    }
+    let bytes=crate::read_file_bytes_bounded(&path,MAX_RECEIPT_BYTES,"background OS receipt")?;
+    let value:Receipt=serde_json::from_slice(&bytes)
+        .map_err(|_|"Background OS receipt malformed.")?;
+    valid_receipt(&value)?;
+    if value.action_id!=id {
+        return Err("Background OS receipt belongs to another UUID.".into());
+    }
+    Ok(Some(value))
+}
+/// Never updates journals, frees held inputs, or retries interrupted children.
+/// If a source changes AFTER a successful hash, status detects drift by
+/// independently re-reading CURRENT file bytes; caller must NOT cache this
+/// status as permanent acceptance of the source.
+#[allow(dead_code)]
+pub(super) fn inspect_readonly_health(root:&Path)->Result<Vec<ReadOnlyWorkerHealth>,String>{
+    regular_root(root)?;
+    let claims=admission::snapshot_detailed_at(root)?;
+    let mut observed=Vec::with_capacity(claims.len());
+    for claim in claims{
+        let receipt=inspect_receipt(root,&claim.action_id)?;
+        let coherent=match receipt.as_ref(){
+            None=>claim.phase=="reserved",
+            Some(r) if claim.phase=="reserved"=>
+                r.phase=="launch_pending"&&r.pid.is_none(),
+            Some(r) if claim.phase=="os_running"=>
+                r.phase=="os_running"&&r.pid==claim.pid,
+            Some(r) if claim.phase=="sha256_verified"=>
+                r.phase=="os_exited_unverified"&&r.pid==claim.pid
+                    &&r.exit_code==Some(0)&&claim.exit_code==Some(0),
+            Some(r) if claim.phase=="os_exited_unverified"
+                ||claim.phase=="os_cancelled_unverified"
+                ||claim.phase=="os_timed_out_unverified"=>
+                r.phase==claim.phase&&r.pid==claim.pid
+                    &&r.exit_code==claim.exit_code,
+            Some(_) if claim.phase=="owner_reviewed_unknown"=>true,
+            _=>false,
+        };
+        let (health,reverified)=if !coherent{
+            ("journal_receipt_mismatch_owner_review_required",false)
+        }else if claim.phase=="sha256_verified"{
+            let result=result_path_for_inspection(root,&claim.action_id);
+            match hash_readback::verify(
+                &result,&claim.action_id,Path::new(&claim.input_path),
+                &claim.expected_sha256){
+                Ok(_)=>("independent_current_sha_verified",true),
+                Err(_)=>("sha_artifact_missing_or_changed_owner_review_required",false)
+            }
+        }else if claim.phase=="reserved"||claim.phase=="os_running"{
+            ("work_or_crash_liveness_not_authenticated",false)
+        }else{
+            ("unverified_os_outcome_requires_owner_review",false)
+        };
+        observed.push(ReadOnlyWorkerHealth{
+            action_id:claim.action_id,recorded_phase:claim.phase,
+            evidence_health:health.into(),current_file_rehashed:reverified,
+            safe_to_auto_retry:false,
+        });
+    }
+    Ok(observed)
+}
+fn result_path_for_inspection(root:&Path,id:&str)->PathBuf{
+    root.join(format!("native-bg-hash-{id}.json"))
+}
 /// Only a trusted internal adapter with an already validated owner-approved
 /// read-only action is permitted to call this. This is intentionally NOT a
 /// Tauri command, and no AI-provided program/argument is accepted.
@@ -540,6 +630,51 @@ mod tests{
         // successful without independent rehash and a durable terminal.
         assert!(read_admissions(&dir).unwrap().iter()
             .all(|(_,phase)|phase!="sha256_verified"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn read_only_snapshot_never_promotes_crash_pending_or_claims_process_liveness(){
+        let dir=root();let f=dir.join("input.bin");
+        fs::write(&f,b"fixture").unwrap();
+        admission::reserve_at(&dir,A,&f,&"a".repeat(64)).unwrap();
+        let status=inspect_readonly_health(&dir).unwrap();
+        assert_eq!(status.len(),1);
+        assert_eq!(status[0].recorded_phase,"reserved");
+        assert!(!status[0].current_file_rehashed);
+        assert!(!status[0].safe_to_auto_retry);
+        create_intent(&receipt_path(&dir,A),A).unwrap();
+        assert_eq!(inspect_readonly_health(&dir).unwrap()[0].evidence_health,
+            "work_or_crash_liveness_not_authenticated");
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn cross_checked_terminal_sha_snapshot_rehashes_current_bytes_and_flags_tamper(){
+        use sha2::{Digest,Sha256};
+        let dir=root();let f=dir.join("input.bin");
+        fs::write(&f,b"version-one").unwrap();
+        let digest=format!("{:x}",Sha256::digest(b"version-one"));
+        admission::reserve_at(&dir,A,&f,&digest).unwrap();
+        admission::started_at(&dir,A,445).unwrap();
+        admission::terminal_at(&dir,A,445,"os_exited_unverified",0).unwrap();
+        admission::verified_sha_at(&dir,A,445).unwrap();
+        create_intent(&receipt_path(&dir,A),A).unwrap();
+        let running=Receipt{version:1,action_id:A.into(),
+            class:"read_only_native_verifier".into(),phase:"os_running".into(),
+            pid:Some(445),exit_code:None,app_verified:false};
+        publish(&receipt_path(&dir,A),&running).unwrap();
+        let done=Receipt{phase:"os_exited_unverified".into(),
+            exit_code:Some(0),..running};
+        publish(&receipt_path(&dir,A),&done).unwrap();
+        fs::write(result_path_for_inspection(&dir,A),serde_json::json!({
+            "version":1,"actionId":A,"inputSha256":digest,"inputBytes":11,
+            "source":"owned_windows_sha256_sidecar"
+        }).to_string()).unwrap();
+        assert!(inspect_readonly_health(&dir).unwrap()[0].current_file_rehashed);
+        fs::write(&f,b"version-two").unwrap();
+        let stale=inspect_readonly_health(&dir).unwrap();
+        assert!(!stale[0].current_file_rehashed);
+        assert!(stale[0].evidence_health.contains("owner_review_required"));
+        assert!(!stale[0].safe_to_auto_retry);
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]
