@@ -17,6 +17,7 @@ from uuid import uuid4
 from shuvi_blender_agent.contracts import Request, Result, Status
 from shuvi_blender_agent.errors import AgentError
 from shuvi_blender_agent.mesh import CreateMesh, TranslateVertices
+from shuvi_blender_agent.appearance import CreateDevice
 from shuvi_blender_agent.models import PageQuery
 from shuvi_blender_agent.plans import Plan, PlanRunner
 from shuvi_blender_agent.rendering import FileAction, RenderConfig
@@ -27,7 +28,7 @@ START_REV = "a" * 64
 VALID_OPERATIONS = {
     "mesh.create", "mesh.inspect", "mesh.translate_vertices",
     "objects.list", "scene.inspect", "file.checkpoint",
-    "render.configure", "render.execute",
+    "render.configure", "render.execute", "device.create",
 }
 
 
@@ -51,6 +52,9 @@ class ContractController:
         self.calls = []
         self.saved = {}
         self.render_ready = False
+        self.active_camera = next((n for n, o in self.objects.items()
+                                   if o.get("type") == "CAMERA" and o.get("settings", {}).get("make_active")), None)
+        self.key_light = next((n for n, o in self.objects.items() if o.get("type") == "LIGHT"), None)
         self.checked_operations = []
 
     def capabilities(self, *, timeout_ms):
@@ -65,7 +69,9 @@ class ContractController:
 
     def validate_payload(self, request):
         op, value = request.operation, request.payload
-        if op == "mesh.create":
+        if op == "device.create":
+            CreateDevice.parse(value)
+        elif op == "mesh.create":
             CreateMesh.parse(value)
         elif op == "mesh.translate_vertices":
             TranslateVertices.parse(value)
@@ -106,7 +112,30 @@ class ContractController:
                 "revision": self.rev,
                 "file": "",
                 "object_count": len(self.objects),
+                "camera_id": self.active_camera,
+                "object_counts_by_type": {kind: sum(o.get("type") == kind for o in self.objects.values())
+                                          for kind in ("MESH", "CAMERA", "LIGHT")},
             })
+        if op == "device.create":
+            if payload["expected_scene_revision"] != self.rev:
+                return self._result_failure(request, "stale device scene revision")
+            if payload["name"] in self.objects:
+                return self._result_failure(request, "duplicate device name")
+            kind = payload["kind"]
+            ident = self.session + ":" + str(uuid4())
+            self.objects[payload["name"]] = {
+                "object_id": ident, "name": payload["name"], "type": "MESH",
+                "revision": digest({"identity": ident, "name": payload["name"]}),
+                "type": "CAMERA" if kind == "CAMERA" else "LIGHT",
+                "settings": copy.deepcopy(payload["settings"]),
+                "transform": copy.deepcopy(payload["transform"]),
+            }
+            if kind == "CAMERA" and payload["settings"]["make_active"]:
+                self.active_camera = payload["name"]
+            if kind != "CAMERA":
+                self.key_light = payload["name"]
+            self._advance("device create")
+            return self._result(request, {"after": copy.deepcopy(self.objects[payload["name"]])}, verified=True)
         if op == "mesh.create":
             if payload["expected_scene_revision"] != self.rev:
                 return self._result_failure(request, "stale create scene revision")
@@ -132,9 +161,8 @@ class ContractController:
                 {k: obj[k] for k in ("object_id", "name", "revision")}
                 for obj in sorted(self.objects.values(), key=lambda v: v["name"])
                 if obj["name"].startswith(payload.get("name_prefix", ""))
+                and (payload.get("object_type") is None or obj.get("type") == payload["object_type"])
             ]
-            if "object_type" in payload and payload["object_type"] != "MESH":
-                items = []
             return self._result(request, {"items": items, "total": len(items),
                                           "offset": payload.get("offset", 0),
                                           "revision": self.rev})
@@ -177,7 +205,7 @@ class ContractController:
             self.saved[payload["name"]] = {
                 "geometry": copy.deepcopy(self.objects),
                 "mesh_fingerprint": digest({
-                    name: obj["geometry"] for name, obj in self.objects.items()
+                    name: obj["geometry"] for name, obj in self.objects.items() if obj.get("type") == "MESH"
                 }),
                 "scene_revision": self.rev,
             }
@@ -200,6 +228,8 @@ class ContractController:
                 return self._result_failure(request, "stale render scene")
             if not self.render_ready:
                 return self._result_failure(request, "render was not configured")
+            if not self.active_camera or not self.key_light:
+                return self._result_failure(request, "render requires saved approved camera and key light")
             return self._result(request, {"after": {
                 "path": payload["name"], "format": "PNG",
                 "width": 64, "height": 64,
@@ -227,7 +257,7 @@ class ActualUpstreamPlanRunnerTests(unittest.TestCase):
         owner = ContractController()
         first = PlanRunner(owner).run(Plan.from_dict(build("model1", owner.rev)))
         self.assertTrue(first.completed, first.to_dict())
-        self.assertEqual(len(first.results), 5)
+        self.assertEqual(len(first.results), 6)
         self.assertTrue(all(r.status != Status.FAILED for r in first.results.values()))
         self.assertEqual(first.results["checkpoint"].status, Status.VERIFIED)
         original = owner.saved["shuvi41-proof-stage1.blend"]["mesh_fingerprint"]
@@ -236,12 +266,14 @@ class ActualUpstreamPlanRunnerTests(unittest.TestCase):
 
         second = PlanRunner(owner).run(Plan.from_dict(build("model2", owner.rev)))
         self.assertTrue(second.completed, second.to_dict())
-        self.assertEqual(len(second.results), 5)
+        self.assertEqual(len(second.results), 6)
         self.assertEqual(second.results["checkpoint"].status, Status.VERIFIED)
         revised = owner.saved["shuvi41-proof-stage2.blend"]["mesh_fingerprint"]
         self.assertNotEqual(original, revised)
         self.assertAlmostEqual(owner.objects["Shuvi41ProofMesh"]["geometry"]["vertices"][4][2], 1.95)
-        self.assertEqual(len(owner.objects), 1)
+        self.assertEqual(len(owner.objects), 3)
+        self.assertEqual(owner.active_camera, "Shuvi41ProofCamera")
+        self.assertEqual(owner.key_light, "Shuvi41ProofKey")
         self.assertEqual(owner.calls.count("mesh.translate_vertices"), 2)
 
         # New process/session in the real runtime. Here a fresh mocked
@@ -255,8 +287,34 @@ class ActualUpstreamPlanRunnerTests(unittest.TestCase):
         self.assertTrue(third.completed, third.to_dict())
         self.assertEqual(third.results["render"].status, Status.VERIFIED)
         self.assertTrue(fresh.render_ready)
+        self.assertEqual(fresh.active_camera, "Shuvi41ProofCamera")
+        self.assertEqual(fresh.key_light, "Shuvi41ProofKey")
         self.assertEqual(fresh.calls, ["render.configure", "scene.inspect", "render.execute"])
         self.assertEqual(fresh.objects["Shuvi41ProofMesh"]["geometry"]["vertices"][4][2], 1.95)
+
+    def test_render_does_not_pass_without_verified_camera_and_key_light(self):
+        fake = ContractController()
+        result = PlanRunner(fake).run(Plan.from_dict(build("render", fake.rev)))
+        self.assertFalse(result.completed)
+        self.assertEqual(result.results["render"].status, Status.FAILED)
+        self.assertIsNone(fake.active_camera)
+        self.assertIsNone(fake.key_light)
+
+    def test_camera_setup_failure_after_mesh_edit_never_saves_checkpoint(self):
+        fake = ContractController()
+        original = fake.execute
+
+        def fail_camera(request):
+            if request.operation == "device.create":
+                return fake._result_failure(request, "camera creation failed")
+            return original(request)
+
+        fake.execute = fail_camera
+        report = PlanRunner(fake).run(Plan.from_dict(build("model1", fake.rev)))
+        self.assertFalse(report.completed)
+        self.assertEqual(report.results["camera"].status, Status.FAILED)
+        self.assertEqual(report.unexecuted_steps, ("post_camera_scene", "checkpoint"))
+        self.assertEqual(fake.saved, {})
 
     def test_real_runner_does_not_run_following_commands_after_stale_first_step(self):
         ctrl = ContractController()
@@ -265,13 +323,13 @@ class ActualUpstreamPlanRunnerTests(unittest.TestCase):
         self.assertFalse(report.completed)
         self.assertEqual(report.results["create"].status, Status.FAILED)
         self.assertEqual(report.unexecuted_steps,
-                         ("mesh_read", "shape", "post_edit_scene", "checkpoint"))
+                         ("shape", "post_edit_scene", "camera", "post_camera_scene", "checkpoint"))
         self.assertEqual(ctrl.calls, ["mesh.create"])
         self.assertEqual(ctrl.saved, {})
 
     def test_real_parser_rejects_unknown_bindings_and_duplicate_requests(self):
         bad = build("model1", START_REV)
-        bad["steps"][2]["bindings"][0]["source_step"] = "future_not_yet_run"
+        bad["steps"][1]["bindings"][0]["source_step"] = "future_not_yet_run"
         with self.assertRaises(AgentError):
             Plan.from_dict(bad)
         duplicate = build("model1", START_REV)
@@ -288,6 +346,14 @@ class ActualUpstreamPlanRunnerTests(unittest.TestCase):
         bad["geometry"]["faces"][0] = [0, 0, 1]
         with self.assertRaises(AgentError):
             CreateMesh.parse(bad)
+        camera = build("model1", START_REV)["steps"][3]["request"]["payload"]
+        self.assertTrue(CreateDevice.parse(camera).settings["make_active"])
+        invalid_camera = copy.deepcopy(camera)
+        invalid_camera["settings"]["clip_end"] = 0.05
+        with self.assertRaises(AgentError):
+            CreateDevice.parse(invalid_camera)
+        lamp = build("model2", START_REV)["steps"][0]["request"]["payload"]
+        self.assertEqual(CreateDevice.parse(lamp).settings["energy"], 950.0)
         config = build("render", START_REV)["steps"][0]["request"]["payload"]
         self.assertEqual(RenderConfig.parse(config).samples, 1)
         config["samples"] = 17
@@ -338,7 +404,7 @@ class ActualUpstreamPlanRunnerTests(unittest.TestCase):
         report = PlanRunner(ctrl).run(Plan.from_dict(build("model1", START_REV)))
         self.assertFalse(report.completed)
         self.assertEqual(report.results["shape"].status, Status.FAILED)
-        self.assertEqual(report.unexecuted_steps, ("post_edit_scene", "checkpoint"))
+        self.assertEqual(report.unexecuted_steps, ("post_edit_scene", "camera", "post_camera_scene", "checkpoint"))
         self.assertEqual(ctrl.saved, {})
 
     def test_upstream_preflight_rejects_unknown_operation_before_dispatch(self):
