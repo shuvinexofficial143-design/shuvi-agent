@@ -8364,6 +8364,12 @@ fn stage_tool(
         _ => return Err("Unsupported tool.".into()),
     };
 
+    // Preserve a digest of the exact approved Premiere arguments in the
+    // existing action-detail audit channel, without logging large payloads.
+    let detail=if tool.starts_with("premiere_") {
+        let hash=premiere_edit_job::proposal_arguments_sha256(&proposal.arguments)?;
+        format!("premiere_args_sha256={hash} | {detail}")
+    } else {detail};
     let id = Uuid::new_v4().to_string();
 
     let prepared_at_ms = now_ms();
@@ -8433,8 +8439,15 @@ fn audit_safe_action_detail(tool: &str, detail: &str) -> String {
         "launch_app" => "Application command-line arguments omitted from persistent audit.".into(),
         "open_url" | "browser_start" | "browser_navigate" =>
             "Browser URL omitted from persistent audit.".into(),
-        "inspect_screen" | "premiere_inspect_frame" | "premiere_review_frames" =>
-            "Vision prompt omitted from persistent audit.".into(),
+        "premiere_inspect_frame" | "premiere_review_frames" => {
+            // Omit the private prompt but retain the exact SHA-only phase key.
+            let prefix=detail.split(" | ").next().unwrap_or("");
+            if prefix.strip_prefix("premiere_args_sha256=").is_some_and(|hash|
+                hash.len()==64 && hash.bytes().all(|b|b.is_ascii_hexdigit())) {
+                format!("{prefix} | Vision prompt omitted from persistent audit.")
+            } else {"Vision prompt omitted from persistent audit.".into()}
+        },
+        "inspect_screen" => "Vision prompt omitted from persistent audit.".into(),
         _ => detail.chars().take(4_000).collect(),
     }
 }
@@ -14875,6 +14888,7 @@ try {{
             // Persist the phase proposal before returning it; no Adobe mutation occurs.
             // Only post-proposal receipts may advance this exact edit-job phase.
             job.issue_proposal(&phase.id,now_ms())?;
+            job.bind_proposal_arguments(&phase.id,&arguments)?;
             premiere_edit_job::save(&path,&job)?;
             let iterative_review=phase.id=="review" && phase.tool=="premiere_review_session_start";
             let after_execution=if iterative_review {
@@ -14929,6 +14943,7 @@ try {{
                 )
                 .ok_or("No matching typed action audit receipt for this edit-job phase.")?;
             job.require_issued_action_receipt(&phase_id,&action_id,receipt.timestamp_ms)?;
+            job.require_bound_action_arguments(&phase_id,&receipt.detail)?;
             premiere_edit_job::require_unclaimed_action_in_store(&path,&job_id,&action_id)?;
             let success=receipt.event=="executed"&&receipt.success;
             job.record(&phase_id,&receipt.tool,&action_id,success,now_ms())?;
@@ -14945,7 +14960,7 @@ try {{
                     "job_status":job.status,
                     "next_tool":if job.status=="running"{Some("premiere_edit_job_next")}else{None},
                     "export_completion_verified":false,
-                    "audit_payload_binding":"tool/action receipt plus live project/sequence and downstream stale guards; audit entry does not cryptographically hash the full phase arguments"
+                    "audit_payload_binding":"SHA-256 digest of the full proposed JSON argument payload is compared with the staged/executed Premiere action audit, in addition to tool/phase/time/project and sibling-job replay checks. Local audit is not tamper-proof and Adobe runtime is unverified."
                 }).to_string(),
                 stderr:String::new(),
                 exit_code:Some(if success{0}else{1})
