@@ -17,6 +17,8 @@ use serde::{Serialize,Deserialize};
 mod contained;
 #[path = "native_background_admission.rs"]
 mod admission;
+#[path = "native_background_hash_readback.rs"]
+mod hash_readback;
 use contained::OwnedChild;
 
 const MAX_BACKGROUND_WORKERS:usize=2;
@@ -197,6 +199,70 @@ pub(super) fn spawn_admitted_readonly(
 pub(super) fn read_admissions(root:&Path)->Result<Vec<(String,String)>,String>{
     admission::snapshot_at(root)
 }
+/// Only a trusted internal adapter with an already validated owner-approved
+/// read-only action is permitted to call this. This is intentionally NOT a
+/// Tauri command, and no AI-provided program/argument is accepted.
+#[derive(Clone,Debug,PartialEq,Eq)]
+pub(super) struct VerifiedReadOnlyHash{
+    pub action_id:String,
+    pub sha256:String,
+    pub bytes:u64,
+    pub os_pid:u32,
+}
+/// Fixed-purpose sidecar is located NEXT TO the installed desktop binary.
+/// Never resolve a model-chosen executable, PATH search or shell command.
+/// Build/package configuration must ship it explicitly; if not installed,
+/// this entrypoint fails BEFORE reservation and no work is performed.
+fn trusted_sidecar()->Result<PathBuf,String>{
+    let exe=std::env::current_exe()
+        .map_err(|_|"Cannot identify installed Shuvi process.")?;
+    let dir=exe.parent().ok_or("Installed Shuvi executable has no directory.")?;
+    let exe=dir.join("shuvi-readonly-hash-worker.exe");
+    let m=fs::symlink_metadata(&exe)
+        .map_err(|_|"Signed/pinned internal SHA sidecar not installed.")?;
+    if !m.is_file()||m.file_type().is_symlink()||m.file_attributes()&0x400!=0 {
+        return Err("Read-only SHA worker executable path redirected.".into());
+    }
+    Ok(exe)
+}
+fn result_path(root:&Path,id:&str)->Result<PathBuf,String>{
+    if !valid_uuid(id){return Err("Read-only SHA result UUID is malformed.".into());}
+    regular_root(root)?;
+    let path=root.join(format!("native-bg-hash-{id}.json"));
+    match fs::symlink_metadata(&path){
+        Ok(_)=>Err("Prior/foreign SHA worker evidence exists; do not overwrite.".into()),
+        Err(e) if e.kind()==std::io::ErrorKind::NotFound=>Ok(path),
+        Err(_)=>Err("Cannot inspect SHA result path.".into()),
+    }
+}
+#[allow(dead_code)]
+pub(super) fn run_trusted_sha256_with_guard<F>(
+    root:&Path,id:&str,input:&Path,expected_sha256:&str,mut host_ram_over_limit:F
+)->Result<VerifiedReadOnlyHash,String>
+where F:FnMut()->Result<bool,String>{
+    let executable=trusted_sidecar()?;
+    let output=result_path(root,id)?;
+    let args:Vec<OsString>=vec![
+        "--shuvi-readonly-sha256".into(),
+        id.into(),input.as_os_str().to_os_string(),
+        expected_sha256.into(),output.as_os_str().to_os_string(),
+    ];
+    // Persist durable admission BEFORE launch. Any failure after this point
+    // retains the UUID/input and requires explicit owner reconciliation.
+    let mut worker=spawn_admitted_readonly(
+        root,id,input,expected_sha256,&executable,&args,root)?;
+    let pid=worker.child.id();
+    let exit_code=worker.wait_with_host_guard(||host_ram_over_limit())?;
+    if exit_code!=0{
+        return Err("Owned read-only SHA worker exited nonzero; no verification committed.".into());
+    }
+    // Completely separate host rehash is indispensable: OS exit zero and
+    // JSON emitted by the worker alone must never certify application work.
+    let bytes=hash_readback::verify(&output,id,input,expected_sha256)?;
+    Ok(VerifiedReadOnlyHash{
+        action_id:id.into(),sha256:expected_sha256.into(),bytes,os_pid:pid,
+    })
+}
 #[allow(dead_code)]
 impl BackgroundOwned{
     fn finish(&mut self,phase:&str,code:i32)->Result<(),String>{
@@ -372,6 +438,30 @@ mod tests{
         assert!(spawn_admitted_readonly(&dir,A,&input,&"a".repeat(64),
             &exe,&[],&std::env::temp_dir()).is_err());
         fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn prior_result_path_or_foreign_directory_cannot_be_overwritten(){
+        let d=root();
+        let r=result_path(&d,A).unwrap();
+        fs::write(&r,b"old output").unwrap();
+        assert!(result_path(&d,A).is_err());
+        fs::remove_file(&r).unwrap();
+        fs::create_dir(&r).unwrap();
+        assert!(result_path(&d,A).is_err());
+        assert!(result_path(&d,"not-a-uuid").is_err());
+        fs::remove_dir_all(d).unwrap();
+    }
+    #[test]
+    fn missing_installed_sidecar_cannot_reserve_a_native_readonly_uuid(){
+        let d=root();let file=d.join("input.bin");
+        fs::write(&file,b"read-only fixture").unwrap();
+        // The trust boundary intentionally requires an installed sidecar
+        // beside the running binary. Tests cannot fabricate a signed one.
+        // The malformed UUID check is deterministic even if a user happened
+        // to install the sidecar alongside the test executable.
+        assert!(run_trusted_sha256_with_guard(&d,"bad-id",&file,&"a".repeat(64),||Ok(false)).is_err());
+        assert!(read_admissions(&d).unwrap().is_empty());
+        fs::remove_dir_all(d).unwrap();
     }
     #[test]
     fn unknown_launch_intent_survives_restart_and_never_reuses_uuid(){
