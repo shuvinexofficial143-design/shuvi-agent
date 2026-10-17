@@ -930,8 +930,13 @@ async function loadRecoveryCheckpoint(): Promise<void> {
     readingGraph===orchestration.task_graph&&
     readingOwner===orchestration.owner_request;
   try {
-    const loaded=await invoke<SessionCheckpoint | null>("load_session_checkpoint");
-    if(!stillReading())return;
+    // An old native read must not overtake this WebView's queued durable
+    // write or clear. Queue the read under the same original task scope.
+    let loaded:SessionCheckpoint|null=null;
+    const accepted=await taskCheckpointLane.enqueue(stillReading,async()=>{
+      loaded=await invoke<SessionCheckpoint|null>("load_session_checkpoint");
+    });
+    if(!accepted||!stillReading())return;
     savedCheckpoint=loaded;
 
     if (!savedCheckpoint || savedCheckpoint.messages.length === 0) {
@@ -2491,6 +2496,31 @@ el<HTMLButtonElement>("#resumeTask").addEventListener("click", async () => {
   )) return;
   // Even a saved STOPPED task may have been discarded/replaced while the
   // owner reviewed it. Never resurrect the older checkpoint after rotation.
+  if(savedCheckpoint!==checkpoint||busy)return;
+  if(restored.recovery_mode!=="stopped"){
+    // Owner approval alone is not proof that the saved history is still on
+    // disk. Inspect the exact persisted task just before paid resume.
+    let onDisk:SessionCheckpoint|null=null;
+    try{
+      const accepted=await taskCheckpointLane.enqueue(
+        ()=>savedCheckpoint===checkpoint&&!busy,
+        async()=>{onDisk=await invoke<SessionCheckpoint|null>("load_session_checkpoint");}
+      );
+      if(!accepted||savedCheckpoint!==checkpoint||busy)return;
+      const readback=assessNativeCheckpointReadback(checkpoint,onDisk);
+      if(!readback.verified){
+        resumeSummary.textContent="Resume blocked: saved native task changed or is unreadable. "+
+          "Inspect the current Rust checkpoint; no paid model or action was dispatched.";
+        return;
+      }
+    }catch{
+      if(savedCheckpoint!==checkpoint||busy)return;
+      resumeSummary.textContent="Resume blocked: exact native checkpoint readback unavailable; "+
+        "no paid model or action dispatched.";
+      return;
+    }
+  }
+  // Stopped checkpoints remain inspection-only and never reauthorize tools.
   if(savedCheckpoint!==checkpoint||busy)return;
   savedCheckpoint = null;
   resumeBanner.classList.add("hidden");
