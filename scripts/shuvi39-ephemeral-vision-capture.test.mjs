@@ -7,7 +7,7 @@ const stage=lib.slice(lib.indexOf("ToolAction::InspectScreen { prompt, provider,
  lib.indexOf("ToolAction::ListProcesses => {",lib.indexOf("ToolAction::InspectScreen { prompt, provider, window } => {")));
 test("vision model and prompt preflight happen before ANY screenshot capture",()=>{
  const pre=stage.indexOf("preflight_inspect_screen_vision(&provider, &prompt).await?");
- const desktop=stage.indexOf("capture_screen_png()?");
+ const desktop=stage.indexOf("capture_vision_desktop_png()?");
  const app=stage.indexOf("target_window_capture::capture_window_png(&window,capture_target.as_ref())?");
  assert.ok(pre>=0&&desktop>pre&&app>pre);
  const logic=lib.slice(lib.indexOf("async fn preflight_inspect_screen_vision("),

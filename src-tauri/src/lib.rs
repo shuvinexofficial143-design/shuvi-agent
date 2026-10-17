@@ -8602,6 +8602,20 @@ fn prune_screenshot_dir(dir: &Path, keep_existing: usize) -> Result<(), String> 
 }
 
 fn capture_screen_png() -> Result<std::path::PathBuf, String> {
+    capture_screen_png_with_mode(false)
+}
+
+// Explicit desktop vision has one-time consent but no desire to persist
+// a screenshot. Use vision-*.png from the beginning, not a screen-* rename
+// after capturing sensitive pixels.
+fn capture_vision_desktop_png() -> Result<std::path::PathBuf, String> {
+    // A crashed earlier vision request may have left an ephemeral PNG.
+    // Never remove deliberately saved screen-* screenshots.
+    let _ = target_window_capture::scavenge_old_vision_capture_files();
+    capture_screen_png_with_mode(true)
+}
+
+fn capture_screen_png_with_mode(ephemeral: bool) -> Result<std::path::PathBuf, String> {
     #[cfg(target_os = "windows")]
     {
         let dir = std::env::temp_dir().join("Shuvi").join("screenshots");
@@ -8610,8 +8624,14 @@ fn capture_screen_png() -> Result<std::path::PathBuf, String> {
 
         // Keep room for the screenshot being created. Cleanup is deliberately
         // scoped to Shuvi-owned screen-*.png files in this one temp directory.
-        let _ = prune_screenshot_dir(&dir, MAX_SCREENSHOT_FILES.saturating_sub(1));
-        let path = dir.join(format!("screen-{}-{}.png", now_ms(), Uuid::new_v4()));
+        if !ephemeral {
+            let _ = prune_screenshot_dir(&dir, MAX_SCREENSHOT_FILES.saturating_sub(1));
+        }
+        let path = dir.join(if ephemeral {
+            format!("vision-{}-{}.png", now_ms(), Uuid::new_v4())
+        } else {
+            format!("screen-{}-{}.png", now_ms(), Uuid::new_v4())
+        });
         let ps_path = path.to_string_lossy().replace("'", "''");
 
         let script = format!(
@@ -10731,7 +10751,7 @@ Write-Output 'SHUVI_WHATSAPP_DESKTOP_LAUNCH_REQUESTED'
             // The consent UI (Shuvi) may be foreground while the owner presses Allow once.
             // For app tasks capture the explicit observed target, NEVER the arbitrary foreground.
             let (path, observed_target) = if window.eq_ignore_ascii_case("desktop") {
-                (capture_screen_png()?, "Entire desktop (explicit selection)".to_string())
+                (capture_vision_desktop_png()?, "Entire desktop (explicit selection)".to_string())
             } else {
                 target_window_capture::capture_window_png(&window,capture_target.as_ref())?
             };

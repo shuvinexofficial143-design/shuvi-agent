@@ -22,6 +22,14 @@ use uuid::Uuid;
 const STALE_VISION_CAPTURE_AGE: std::time::Duration =
     std::time::Duration::from_secs(15 * 60);
 
+// Reuse the *same* scoped stale-vision cleanup for desktop vision and
+// app-window vision. Do not touch saved manual screen-*.png output.
+pub(super) fn scavenge_old_vision_capture_files() -> Result<usize, String> {
+    let directory = std::env::temp_dir().join("Shuvi").join("screenshots");
+    if !directory.exists() { return Ok(0); }
+    prune_stale_vision_captures(&directory)
+}
+
 fn prune_stale_vision_captures(dir: &Path) -> Result<usize, String> {
     let now = std::time::SystemTime::now();
     let mut removed = 0;

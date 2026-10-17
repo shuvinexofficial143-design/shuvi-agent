@@ -1145,3 +1145,31 @@ Run only with separate owner consent on a disposable desktop/test fixture.
 - Windows/Rust tests cover old-versus-recent temporary images and saved
   manual screenshots. Source tests assert exact filename separation,
   restricted directory traversal and age boundary.
+
+## Milestone 30 — Full-desktop Vision cannot inherit manual saved-image retention
+
+- The prior `inspect_screen(window=desktop)` path called the same
+  `capture_screen_png()` helper as the explicit user `capture_screen`
+  command. It created `screen-*.png` files indistinguishable from
+  user-intentionally-saved images: a crash left sensitive desktop
+  pixels that the vision-asset orphan scavenger could never safely
+  delete. It also ran the manual screenshot quota pruner for a one-off
+  vision request.
+- Manual `capture_screen()` now calls an internal desktop capture mode
+  with `ephemeral=false`, preserving existing `screen-*.png` filenames,
+  saved-file results, quota cleanup and Windows PNG safety checks.
+  Explicit `inspect_screen(window=desktop)` calls a distinct
+  `capture_vision_desktop_png()` wrapper with `ephemeral=true`:
+  creates `vision-*.png` **from the outset**, skips all manual quota
+  pruning, and uses the previously-tested 15-minute stale-`vision`
+  cleanup. Both share exactly the same bounded bitmap, error cleanup
+  and CRC/container verifier; no weaker duplicate capture path.
+- The already-existing Rust `EphemeralVisionCapture` still reads/
+  revalidates the image into a 12 MiB memory buffer, proves file
+  unlink before provider upload, and emits no disk path in the result.
+  No change to app-window identity, permissions, native scheduler
+  or the selected paid vision provider.
+- Added `scripts/shuvi39-desktop-vision-temporary-isolation.test.mjs`
+  plus updated the preflight regression to require the correct
+  ephemeral desktop-vision entry point. CI test results distinguish
+  source-tested behavior from unperformed desktop live acceptance.
