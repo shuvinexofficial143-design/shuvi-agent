@@ -12,11 +12,11 @@ test("an old final delivery cannot clear a newly rotated task checkpoint after R
  assert.ok(block.indexOf("await revokeNativeTaskReads(finishedTaskId)") <
    block.indexOf("if(activePermissionScope!==clearingScope"));
  assert.ok(block.indexOf("if(activePermissionScope!==clearingScope") <
-   block.indexOf('invoke("clear_session_checkpoint")'));
+   block.indexOf('guardedClearNativeCheckpoint(clearingScope,clearingGraph,clearingOwner)'));
 });
 test("stale pre-stage checkpoint failure never stops a newly admitted owner task",()=>{
  const block=segment("async function stageProposal", "async function executePendingProposal");
- const start=block.indexOf('await invoke("save_session_checkpoint", { checkpoint: currentCheckpoint() })');
+ const start=block.indexOf('await guardedSaveNativeCheckpoint()');
  const catchAt=block.indexOf('if(staleStage())return;',start);
  const stop=block.indexOf("Could not save task progress before staging the action.",catchAt);
  assert.ok(start>=0&&catchAt>start&&stop>catchAt);
@@ -41,5 +41,5 @@ test("nothing relaxes native approval, signed Rust action receipt or source proo
  assert.match(ui,/const actionOwnership=captureNativeActionOwnership/);
  assert.match(ui,/const preflight=assessNativeFinalizationPreflight\(/);
  assert.match(ui,/const receipt = await readActionAuditReceipt\(actionId\)/);
- assert.match(ui,/!nativeActionCurrent\(postOutcomeOwnership\)/);
+ assert.match(ui,/!isNativeActionOwnershipCurrent\(postOutcomeOwnership,/);
 });

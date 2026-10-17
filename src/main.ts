@@ -19,6 +19,7 @@ import {assessPremiereProjectDeliveryContract} from "./master-project-delivery-c
 import {assessNativeFinalizationPreflight} from "./master-finalization-preflight.mjs";
 import {captureNativeProjectProofFence,isNativeProjectProofFenceCurrent} from "./master-project-proof-fence.mjs";
 import {captureNativeActionOwnership,isNativeActionOwnershipCurrent} from "./master-native-action-ownership.mjs";
+import {createTaskCheckpointLane} from "./master-task-checkpoint-lane.mjs";
 import type {AuditedOpeningObservation} from "./master-goal-window-acceptance.mjs";
 import {nativeTaskDeliveryClaims} from "./native-delivery-claims.mjs";
 import type {
@@ -852,9 +853,35 @@ function renderOrchestrationStatus(): void {
     `Agent ${Math.min(orchestration.next_step, orchestration.max_steps)}/${orchestration.max_steps}${coding}${mode} · ${nativeWorkerDisplay()}`;
 }
 
+// Serialize every native checkpoint save AND clear from this WebView, never
+// letting a delayed older task clear/overwrite a newer task's snapshot.
+const taskCheckpointLane=createTaskCheckpointLane();
+async function guardedSaveNativeCheckpoint():Promise<boolean>{
+  const scope=activePermissionScope;
+  const graph=orchestration.task_graph;
+  const owner=orchestration.owner_request;
+  // Snapshot BEFORE queueing. Do not read mutable NEW task fields in an
+  // older queued Rust checkpoint operation.
+  const checkpoint=structuredClone(currentCheckpoint());
+  return taskCheckpointLane.enqueue(
+    ()=>activePermissionScope===scope&&
+      orchestration.task_graph===graph&&orchestration.owner_request===owner,
+    ()=>invoke("save_session_checkpoint",{checkpoint})
+  );
+}
+async function guardedClearNativeCheckpoint(
+  scope:typeof activePermissionScope,graph:typeof orchestration.task_graph,
+  owner:string|null
+):Promise<boolean>{
+  return taskCheckpointLane.enqueue(
+    ()=>activePermissionScope===scope&&
+      orchestration.task_graph===graph&&orchestration.owner_request===owner,
+    ()=>invoke("clear_session_checkpoint")
+  );
+}
 async function saveActiveCheckpoint(): Promise<void> {
   try {
-    await invoke("save_session_checkpoint", { checkpoint: currentCheckpoint() });
+    await guardedSaveNativeCheckpoint();
   } catch {
     // Recovery is best-effort and must never block the active task.
   }
@@ -874,7 +901,7 @@ async function clearActiveCheckpoint(): Promise<void> {
      orchestration.task_graph!==clearingGraph||
      orchestration.owner_request!==clearingOwner)return;
   try {
-    await invoke("clear_session_checkpoint");
+    await guardedClearNativeCheckpoint(clearingScope,clearingGraph,clearingOwner);
   } catch {
     // Best-effort cleanup only. Native conditional-write/delete is separate.
   }
@@ -1222,7 +1249,7 @@ async function persistRequiredContinuationCheckpoint(
   stillCurrent:()=>boolean=()=>true
 ): Promise<boolean> {
   try {
-    await invoke("save_session_checkpoint", { checkpoint: currentCheckpoint() });
+    if(!(await guardedSaveNativeCheckpoint()))return false;
     return stillCurrent();
   } catch {
     // A failed old checkpoint must not stop a newly rotated user task.
@@ -1492,7 +1519,7 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
   // Persist the in-flight receipt before permission staging/execution. Failure closes the graph path.
   if (orchestration.task_graph) {
     try {
-      await invoke("save_session_checkpoint", { checkpoint: currentCheckpoint() });
+      if(!(await guardedSaveNativeCheckpoint()))return;
     } catch {
       if(staleStage())return;
       await stopAgentForSafety("Could not save task progress before staging the action. A new instruction or safe resume is required.");
@@ -1554,7 +1581,10 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
     // showing approval UI or auto-executing a session-scoped low-risk action.
     if (orchestration.task_graph && proposal.task_step_id != null) {
       try {
-        await invoke("save_session_checkpoint", { checkpoint: currentCheckpoint() });
+        if(!(await guardedSaveNativeCheckpoint())){
+          await denyStaleAction(preparedId);
+          return;
+        }
       } catch {
         if(staleStage()){
           // Deny only the OLD prepared action UUID. Never clear/stop the
@@ -2237,7 +2267,7 @@ async function runAgentStep(): Promise<void> {
   orchestration = reservation.state;
   // A12: if the durable reservation cannot be saved, do NOT call the provider.
   try {
-    await invoke("save_session_checkpoint", { checkpoint: currentCheckpoint() });
+    if(!(await guardedSaveNativeCheckpoint()))return;
   } catch {
     if(staleModelRequest())return;
     await stopAgentForSafety("Shuvi could not persist its model-request reservation. No AI provider request was sent.");
