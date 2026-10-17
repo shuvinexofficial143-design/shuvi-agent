@@ -141,6 +141,54 @@ fn check_artifact(a:&DeliveryArtifact,tool:&str)->Result<(),String>{
     }
     Ok(())
 }
+/// Bounded background workers for independently readable, already-audited
+/// output files. These do NOT execute a model tool, start a process, mutate
+/// the desktop, or claim task success. At most TWO Rust threads read file
+/// hashes in one batch, each capped by MAX_ARTIFACT_BYTES and 64 KiB RAM buffer.
+/// Multiple receipts referring to one physical file are checked serially.
+fn verify_artifacts_bounded<F>(steps:&[DeliveryStep],verifier:F)->Result<(),String>
+where F:Fn(&DeliveryArtifact,&str)->Result<(),String>+Sync{
+    let mut artifacts=Vec::new();
+    for step in steps{
+        if let Some(artifact)=step.artifact.as_ref(){
+            artifacts.push((artifact,step.tool.as_str()));
+        }
+    }
+    let mut remaining=artifacts.as_slice();
+    while !remaining.is_empty(){
+        if remaining.len()==1{
+            verifier(remaining[0].0,remaining[0].1)?;
+            break;
+        }
+        let first=remaining[0];
+        let second=remaining[1];
+        // Canonicalize before parallel read admission. Missing file, folder
+        // or other invalid path fails closed in check_artifact.
+        let first_path=fs::canonicalize(&first.0.path)
+            .map_err(|_|"First independent output path unavailable.".to_string())?;
+        let second_path=fs::canonicalize(&second.0.path)
+            .map_err(|_|"Second independent output path unavailable.".to_string())?;
+        if first_path==second_path{
+            verifier(first.0,first.1)?;
+            verifier(second.0,second.1)?;
+        }else{
+            std::thread::scope(|scope|{
+                let left=scope.spawn(||verifier(first.0,first.1));
+                let right=scope.spawn(||verifier(second.0,second.1));
+                // ALWAYS join both, even if one detects tampering, so no
+                // verification thread outlives the audit or delivery lock.
+                let a=left.join()
+                    .map_err(|_|"First bounded verification worker panicked.".to_string());
+                let b=right.join()
+                    .map_err(|_|"Second bounded verification worker panicked.".to_string());
+                a??;b??;
+                Ok::<(),String>(())
+            })?;
+        }
+        remaining=&remaining[2..];
+    }
+    Ok(())
+}
 fn verify<F>(schedule:&crate::native_scheduler::Schedule,steps:&[DeliveryStep],
     mut audit:F)->Result<(),String>
 where F:FnMut(&str)->Result<crate::AuditEntry,String>{
@@ -163,10 +211,9 @@ where F:FnMut(&str)->Result<crate::AuditEntry,String>{
         }
         receipts.push(entry);
     }
-    // Only after all action receipts match, re-read every external artifact.
-    for step in steps{
-        if let Some(a)=&step.artifact{check_artifact(a,&step.tool)?;}
-    }
+    // Only after all exact UUID/tool audit receipts match, verify independently
+    // readable artifacts with a strictly bounded read-only Rust worker pool.
+    verify_artifacts_bounded(steps,check_artifact)?;
     Ok(())
 }
 fn write_at(path:&Path,receipt:&DeliveryReceipt)->Result<(),String>{
@@ -329,6 +376,70 @@ mod tests{
     fn audit(step:&str,tool:&str)->crate::AuditEntry{
         crate::AuditEntry{timestamp_ms:1,event:"executed".into(),tool:tool.into(),
             detail:step.into(),success:true,action_id:Some(step.into())}
+    }
+    #[test]
+    fn independent_artifacts_use_two_bounded_read_only_verification_threads(){
+        use std::sync::atomic::{AtomicUsize,Ordering};
+        let root=std::env::temp_dir().join(format!("shuvi-parallel-hash-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let a=root.join("one.blend");let b=root.join("two.blend");
+        fs::write(&a,b"BLENDER first certificate").unwrap();
+        fs::write(&b,b"BLENDER second certificate").unwrap();
+        let a_hash=file_hash(&a,MAX_ARTIFACT_BYTES).unwrap();
+        let b_hash=file_hash(&b,MAX_ARTIFACT_BYTES).unwrap();
+        let make=|path:&Path,record:(u64,String)|DeliveryArtifact{
+            kind:"blender_artifact".into(),path:path.to_str().unwrap().into(),
+            bytes:record.0,sha256:record.1,approved_plan_sha256:None
+        };
+        let steps=vec![
+            DeliveryStep{step_id:"one".into(),tool:"blender_run_plan".into(),
+                action_id:"e8b36b21-1c6a-459e-9b6f-75dd5692ab81".into(),
+                artifact:Some(make(&a,a_hash))},
+            DeliveryStep{step_id:"two".into(),tool:"blender_run_plan".into(),
+                action_id:"0f2977ac-4f61-4d9c-bf74-ecf8a3ae2172".into(),
+                artifact:Some(make(&b,b_hash))},
+        ];
+        let started=AtomicUsize::new(0);
+        let concurrent=AtomicUsize::new(0);
+        verify_artifacts_bounded(&steps,|artifact,tool|{
+            started.fetch_add(1,Ordering::SeqCst);
+            concurrent.fetch_add(1,Ordering::SeqCst);
+            // Both children can begin only if the verifier actually runs
+            // independent tasks concurrently, not just claims a second lane.
+            for _ in 0..2000{
+                if started.load(Ordering::SeqCst)==2{break;}
+                std::thread::yield_now();
+            }
+            let result=check_artifact(artifact,tool);
+            concurrent.fetch_sub(1,Ordering::SeqCst);
+            result
+        }).unwrap();
+        assert_eq!(started.load(Ordering::SeqCst),2);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn aliased_output_is_not_read_in_parallel_and_tamper_fails_closed(){
+        use std::sync::atomic::{AtomicUsize,Ordering};
+        let root=std::env::temp_dir().join(format!("shuvi-aliased-hash-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let file=root.join("same.blend");
+        fs::write(&file,b"BLENDER stable").unwrap();
+        let (bytes,hash)=file_hash(&file,MAX_ARTIFACT_BYTES).unwrap();
+        let make=||DeliveryStep{step_id:"same".into(),tool:"blender_run_plan".into(),
+            action_id:"e8b36b21-1c6a-459e-9b6f-75dd5692ab81".into(),
+            artifact:Some(DeliveryArtifact{
+                kind:"blender_artifact".into(),path:file.to_str().unwrap().into(),
+                sha256:hash.clone(),bytes,approved_plan_sha256:None})};
+        let calls=AtomicUsize::new(0);
+        verify_artifacts_bounded(&[make(),make()],|a,tool|{
+            assert_eq!(calls.fetch_add(1,Ordering::SeqCst),0_usize.max(
+                calls.load(Ordering::SeqCst).saturating_sub(1)));
+            check_artifact(a,tool)
+        }).unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst),2);
+        fs::write(&file,b"BLENDER tampered").unwrap();
+        assert!(verify_artifacts_bounded(&[make()],check_artifact).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn exact_multi_worker_audit_receipts_can_be_finalized(){
