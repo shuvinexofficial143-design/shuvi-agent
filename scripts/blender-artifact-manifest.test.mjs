@@ -76,3 +76,16 @@ test("materialized render delivery includes source-SHA-bound preflight, but reve
     "historical_material_evidence_is_non_authoritative_and_fail_closed"
   ])assert.ok(rust.includes("fn "+caseName+"("));
 });
+
+test("saved optional copper .blend requires independently reopened slot and camera/light evidence in native handoff",()=>{
+  for(const token of [
+    "let material_look= saved",
+    'proof.and_then(|p|p.get("proof_copper_material_verified"))',
+    '"material_look_checkpoint_verified":material_look',
+    '"proof_copper_material_verified":if material_look {Value::Bool(true)}else{Value::Null}',
+    '"shader_parameters_independently_verified":if material_look {Value::Bool(false)}else{Value::Null}',
+    '"material_look_reopened_again_by_this_review":false',
+    "copper_look_handoff_requires_independent_reopened_material_camera_and_light",
+    "stage2_checkpoint_is_not_mistaken_for_optional_look_proof"
+  ])assert.ok(rust.includes(token),token);
+});

@@ -117,6 +117,38 @@ class ProofController(FakeController):
         return super().execute(request)
 
 
+class CopperProofController(ProofController):
+    """Material-look fixed mesh with real bounded paged geometry readback."""
+    def __init__(self, saved, *, session="session-A", material="Shuvi41ProofCopper",
+                 slots=1, hidden=False, energy=950.0):
+        super().__init__(saved, session=session, energy=energy)
+        self.obj["name"] = "Shuvi41ProofMesh"
+        self.obj["materials"] = [material] if slots == 1 else [material, "ExtraSlot"]
+        self.obj["material_slot_count"] = slots
+        self.obj["visibility"] = {"hide_render": hidden}
+
+    def execute(self, request):
+        if request.operation == "mesh.inspect":
+            self.geometry_read = True
+            vertices = [
+                [0., 0., 0.], [1., 0., 0.], [1., 1., 0.], [0., 1., 0.],
+                [0., 0., 1.], [1., 0., 1.], [1., 1., 1.], [0., 1., 1.],
+            ]
+            faces = [
+                [0, 1, 2], [0, 2, 3], [4, 5, 6],
+                [4, 6, 7], [0, 1, 5], [0, 5, 4],
+            ]
+            payload = {"vertices": vertices, "faces": faces}
+            return DummyResult({
+                **payload,
+                "geometry_revision": hashlib.sha256(json.dumps(
+                    payload, sort_keys=True, separators=(",", ":"), allow_nan=False
+                ).encode()).hexdigest(),
+                "object_id": self.obj["object_id"], "name": self.obj["name"],
+            })
+        return super().execute(request)
+
+
 class ReopenTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -133,6 +165,85 @@ class ReopenTests(unittest.TestCase):
         self.patch_contracts.start()
         self.addCleanup(self.patch_contracts.stop)
 
+
+    def test_material_look_independently_observes_single_copper_slot_across_sessions(self):
+        material = self.file.with_name("shuvi41-proof-material.blend")
+        material.write_bytes(b"BLENDER-v430")
+        writer = capture_scene(CopperProofController(material), material)
+        reader = capture_scene(CopperProofController(material, session="session-B"), material)
+        self.assertEqual(writer, reader)
+        self.assertTrue(writer["proof_copper_material_verified"])
+        self.assertEqual(writer["mesh_count"], 1)
+        self.assertEqual(writer["total_vertices"], 8)
+        self.assertEqual(writer["total_faces"], 6)
+        self.assertTrue(writer["proof_camera_verified"])
+        self.assertTrue(writer["proof_key_light_verified"])
+
+    def test_copper_slot_missing_ambiguous_hidden_or_wrong_material_fails_proof(self):
+        material = self.file.with_name("shuvi41-proof-material.blend")
+        material.write_bytes(b"BLENDER-v430")
+        for params in [
+            {"material": "Unrelated"},
+            {"slots": 2},
+            {"hidden": True},
+        ]:
+            with self.subTest(params=params):
+                evidence = capture_scene(CopperProofController(material, **params), material)
+                self.assertFalse(evidence["proof_copper_material_verified"])
+        # Ordinary three-stage scenes are not retroactively forced to have
+        # the supplementary copper-look proof.
+        ordinary = capture_scene(ProofController(self.file), self.file)
+        self.assertFalse(ordinary["proof_copper_material_verified"])
+
+    def test_material_checkpoint_requires_new_read_only_process_with_copper(self):
+        material = self.file.with_name("shuvi41-proof-material.blend")
+        material.write_bytes(b"BLENDER-v430")
+        original = capture_scene(CopperProofController(material), material)
+        fake = {
+            "shuvi_blender_agent.process": types.ModuleType("shuvi_blender_agent.process"),
+            "shuvi_blender_agent.safety": types.ModuleType("shuvi_blender_agent.safety"),
+            "shuvi_blender_agent.client": types.ModuleType("shuvi_blender_agent.client"),
+        }
+        calls = []
+        class SafetyPolicy:
+            def __init__(self):
+                self.allow_mutations = False
+                self.allow_file_writes = False
+        class LaunchConfig:
+            def __init__(self, **kwargs):
+                calls.append(kwargs)
+        class Session:
+            client = "read-only-stub"
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                return None
+        class Provider:
+            options = {}
+            def __call__(self, _):
+                return CopperProofController(material, session="session-B", **self.options)
+        provider = Provider()
+        fake["shuvi_blender_agent.process"].LaunchConfig = LaunchConfig
+        fake["shuvi_blender_agent.process"].launch = lambda _cfg: Session()
+        fake["shuvi_blender_agent.safety"].SafetyPolicy = SafetyPolicy
+        fake["shuvi_blender_agent.client"].BlenderController = provider
+        with patch.dict(sys.modules, fake):
+            proof = reopen_checkpoint(Path("/dummy/blender"), material, original)
+            self.assertTrue(proof["proof_copper_material_verified"])
+            self.assertFalse(proof["shader_parameters_independently_verified"])
+            self.assertTrue(proof["read_only"])
+            self.assertFalse(calls[0]["policy"].allow_mutations)
+            for options in ({"material": "Wrong"}, {"slots": 2}, {"hidden": True},
+                            {"energy": 250.0}):
+                provider.options = options
+                with self.subTest(options=options):
+                    with self.assertRaisesRegex(ValueError, "differs|copper material/look"):
+                        reopen_checkpoint(Path("/dummy/blender"), material, original)
+            provider.options = {"material": "Wrong"}
+            unverified_original = capture_scene(
+                CopperProofController(material, material="Wrong"), material)
+            with self.assertRaisesRegex(ValueError, "copper material/look"):
+                reopen_checkpoint(Path("/dummy/blender"), material, unverified_original)
 
     def test_real_shape_camera_light_claims_survive_fresh_session(self):
         writer = capture_scene(ProofController(self.file), self.file)

@@ -104,6 +104,8 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
     active_camera_name = None
     proof_camera_verified = False
     proof_key_light_verified = False
+    proof_copper_meshes_seen = 0
+    proof_copper_material_verified_count = 0
     objects = []
     mesh_count = 0
     total_vertices = 0
@@ -173,6 +175,13 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
                 stable["geometry_sha256"] = digest
                 stable["vertex_count"] = len(vertices)
                 stable["face_count"] = len(faces)
+                if item["name"] == "Shuvi41ProofMesh":
+                    proof_copper_meshes_seen += 1
+                    if (item["materials"] == ["Shuvi41ProofCopper"]
+                            and item["material_slot_count"] == 1
+                            and item["visibility"].get("hide_render") is False
+                            and len(vertices) >= 5 and len(faces) >= 5):
+                        proof_copper_material_verified_count += 1
             objects.append(stable)
         offset += len(items)
         next_offset = page.get("next_offset")
@@ -185,6 +194,11 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
 
     if active_id is not None and active_camera_name is None:
         raise ValueError("Blender active camera is absent from paged objects")
+
+    proof_copper_material_verified = (
+        proof_copper_meshes_seen == 1
+        and proof_copper_material_verified_count == 1
+    )
 
     # Geometry readback may take multiple calls. Ensure all pages and mesh
     # snapshots belong to one unchanged source revision, not a mixed scene.
@@ -211,7 +225,8 @@ def capture_scene(controller, expected_path: Path, *, require_saved_file: bool =
             "total_vertices": total_vertices, "total_faces": total_faces,
             "active_camera_name": active_camera_name,
             "proof_camera_verified": proof_camera_verified,
-            "proof_key_light_verified": proof_key_light_verified}
+            "proof_key_light_verified": proof_key_light_verified,
+            "proof_copper_material_verified": proof_copper_material_verified}
 
 
 def reopen_checkpoint(blender_exe: Path, saved: Path, original: dict) -> dict:
@@ -229,6 +244,13 @@ def reopen_checkpoint(blender_exe: Path, saved: Path, original: dict) -> dict:
         reopened = capture_scene(BlenderController(session.client), saved)
     if reopened != original:
         raise ValueError("Saved Blender checkpoint content differs after independent reopen")
+    if saved.name == "shuvi41-proof-material.blend":
+        if (original.get("proof_copper_material_verified") is not True
+                or reopened.get("proof_copper_material_verified") is not True
+                or reopened.get("proof_camera_verified") is not True
+                or reopened.get("proof_key_light_verified") is not True
+                or reopened.get("active_camera_name") != "Shuvi41ProofCamera"):
+            raise ValueError("Saved copper material/look, proof camera or light missing after independent reopen")
     return {"verified": True, "fingerprint": reopened["fingerprint"],
             "mesh_fingerprint": reopened["mesh_fingerprint"],
             "object_count": reopened["object_count"], "read_only": True,
@@ -236,4 +258,6 @@ def reopen_checkpoint(blender_exe: Path, saved: Path, original: dict) -> dict:
             "total_vertices": reopened["total_vertices"], "total_faces": reopened["total_faces"],
             "active_camera_name": reopened["active_camera_name"],
             "proof_camera_verified": reopened["proof_camera_verified"],
-            "proof_key_light_verified": reopened["proof_key_light_verified"]}
+            "proof_key_light_verified": reopened["proof_key_light_verified"],
+            "proof_copper_material_verified": reopened["proof_copper_material_verified"],
+            "shader_parameters_independently_verified": False}

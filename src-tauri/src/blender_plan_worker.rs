@@ -22,6 +22,17 @@ pub(crate) fn verify_output(output:&Value,root:&Path)->Result<(),String>{
     match (kind,canonical.extension().and_then(|s|s.to_str()).map(|s|s.to_ascii_lowercase()).as_deref()) {
         ("BLEND",Some("blend"))=>{
             let proof=output.get("checkpoint_reopen").ok_or("Independent Blender checkpoint reopen proof missing.")?;
+            // The supplementary copper-look checkpoint requires independent
+            // persisted material-slot verification, not just a valid .blend
+            // header and the writer's earlier mutation acknowledgement.
+            if canonical.file_name().and_then(|v|v.to_str())==Some("shuvi41-proof-material.blend")
+                && (proof.get("proof_copper_material_verified").and_then(Value::as_bool)!=Some(true)
+                    ||proof.get("proof_camera_verified").and_then(Value::as_bool)!=Some(true)
+                    ||proof.get("proof_key_light_verified").and_then(Value::as_bool)!=Some(true)
+                    ||proof.get("active_camera_name").and_then(Value::as_str)!=Some("Shuvi41ProofCamera")
+                    ||proof.get("shader_parameters_independently_verified").and_then(Value::as_bool)!=Some(false)){
+                return Err("Saved material .blend lacks independent reopened copper slot and active camera/light proof.".into());
+            }
             let fingerprint=proof.get("fingerprint").and_then(Value::as_str)
                 .ok_or("Blender reopen scene fingerprint missing.")?;
             let mesh_fingerprint=proof.get("mesh_fingerprint").and_then(Value::as_str)

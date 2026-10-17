@@ -1006,3 +1006,41 @@ absolute paths and an uncanonicalized temp path on Windows. The material
 SHA/path production gate remains strict; the regression fixtures now use
 canonical source paths and platform-native absolute temporary paths.
 No real host data or live Blender/Adobe processes are involved.
+
+## Team-41 — independently reopened Copper Look checkpoint (source only)
+
+The `look` optional material step no longer rests solely on the upstream
+`material.create_assign` success receipt or a generic independently reopened
+scene hash. After saving `shuvi41-proof-material.blend`, both the writer and
+a **different authenticated read-only Blender reopen session** now traverse
+the bounded full object pages and mesh topology. The supplementary copper
+proof is true only if there is **exactly one** named `Shuvi41ProofMesh` MESH,
+with precisely one saved material slot named `Shuvi41ProofCopper`,
+render visibility enabled and at least five vertices and five faces. Its
+writer and reader scene/geometry fingerprints must match. The reopened
+look checkpoint must also contain the exact active `Shuvi41ProofCamera`
+and `Shuvi41ProofKey` verified by their concrete transforms and native
+device properties.
+
+A new read-only persisted-material flag is included in the reopen
+receipt. Native `blender_plan_worker::verify_output` and the manifest
+builder **deny delivery** of this specific look checkpoint if the
+reopen receipt is missing copper-slot/camera/light evidence, or falsely
+claims all shader node parameters were independently verified.
+Downstream `blender_verify_artifact_manifest` checks the current file
+bytes and validates that the historical proof is conservative; it explicitly
+states it has **not run Blender reopen again**.
+
+Other normal Blender model stages and unrelated user materials are **not**
+forced to use the example Copper names. This is a named supplementary
+look proof, not a replacement or added fourth stage in the original
+`model1/model2/render` acceptance chain. Material **slot presence** is
+verified independently, but Principled BSDF metallic/roughness/base-color
+shader node values still are not independently read from upstream pages;
+keep that distinction in the owner-facing UI.
+
+Python fake-backed checks reject missing/wrong/duplicated material slots,
+hidden objects, mismatched camera/light and changed reopened mesh state.
+Native Rust tests prove the same fail-closed policy survives manifest
+creation/reverification and that ordinary old .blend artifacts remain
+compatible. There is **no live Blender run or user-workspace mutation**.

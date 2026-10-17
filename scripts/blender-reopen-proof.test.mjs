@@ -55,5 +55,20 @@ test("new Python reopen helper parses and fake-session regressions pass",
     "-s","integrations/blender-worker","-p","test_shuvi_blender_reopen.py"],
     {cwd:root,timeout:30000,encoding:"utf8"});
   assert.equal(result.status,0,result.stderr);
-  assert.match(result.stderr,/Ran 13 tests/);
+  assert.match(result.stderr,/Ran 16 tests/);
+});
+
+test("independent material look reopen proves one persisted copper slot with active camera/light, not shader nodes",()=>{
+  const helperSource=readFileSync(helper,"utf8");
+  for(const evidence of [
+    "proof_copper_material_verified_count",
+    "proof_copper_meshes_seen == 1",
+    'item["materials"] == ["Shuvi41ProofCopper"]',
+    'item["material_slot_count"] == 1',
+    'saved.name == "shuvi41-proof-material.blend"',
+    'reopened.get("proof_copper_material_verified") is not True',
+    '"shader_parameters_independently_verified": False',
+  ])assert.ok(helperSource.includes(evidence),evidence);
+  assert.ok(rust.includes('proof.get("proof_copper_material_verified")'));
+  assert.ok(rust.includes('proof.get("shader_parameters_independently_verified")'));
 });
