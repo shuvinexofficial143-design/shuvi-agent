@@ -8618,26 +8618,42 @@ fn capture_screen_png() -> Result<std::path::PathBuf, String> {
             r#"Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 $bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
+# Reject enormous virtual desktops before allocating unmanaged bitmap RAM.
+if ($bounds.Width -le 0 -or $bounds.Height -le 0 -or
+    ([int64]$bounds.Width * [int64]$bounds.Height) -gt 36864000) {{
+    throw 'Desktop screenshot exceeds bounded 36.9-megapixel bitmap budget.'
+}}
 $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
 $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-$graphics.CopyFromScreen($bounds.Left, $bounds.Top, 0, 0, $bounds.Size)
-$bitmap.Save('{ps_path}', [System.Drawing.Imaging.ImageFormat]::Png)
-$graphics.Dispose()
-$bitmap.Dispose()"#
+try {{
+    $graphics.CopyFromScreen($bounds.Left, $bounds.Top, 0, 0, $bounds.Size)
+    $bitmap.Save('{ps_path}', [System.Drawing.Imaging.ImageFormat]::Png)
+}} finally {{
+    $graphics.Dispose()
+    $bitmap.Dispose()
+}}"#
         );
 
         // Screen capture is UIA-like host work: reuse the bounded 30-second
         // child helper instead of an unbounded blocking PowerShell output wait.
-        let output = run_hidden_powershell(&script)
-            .map_err(|error| format!("Could not capture screen: {error}"))?;
-
+        let output = match run_hidden_powershell(&script) {
+            Ok(output) => output,
+            Err(error) => {
+                let _ = fs::remove_file(&path);
+                return Err(format!("Could not capture screen: {error}"));
+            }
+        };
         if !output.status.success() || !path.exists() {
+            let _ = fs::remove_file(&path);
             return Err(format!(
                 "Screen capture failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             ));
         }
-
+        if let Err(error)=target_window_capture::verify_unbound_desktop_png(&path) {
+            let _ = fs::remove_file(&path);
+            return Err(format!("Desktop screenshot discarded: {error}"));
+        }
         return Ok(path);
     }
 

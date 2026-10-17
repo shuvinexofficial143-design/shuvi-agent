@@ -1076,3 +1076,29 @@ Run only with separate owner consent on a disposable desktop/test fixture.
 - Unit tests exercise successful verified removal, repeated discard,
   failure unwinding and missing-path behavior. Frontend source contract
   verifies cleanup is awaited/completed before emitting action success.
+
+## Milestone 27 — Bounded, validated explicit full-desktop screenshots
+
+- The existing manual `capture_screen` / owner-approved
+  `inspect_screen(window=desktop)` used System.Drawing.Bitmap for the
+  entire virtual monitor desktop without the 36,864,000-pixel raw bitmap
+  ceiling applied to target-window captures. Wide multi-monitor systems
+  could allocate excessive unmanaged memory before bounded AI reads.
+  The PowerShell capture now checks positive desktop dimensions and the
+  36.9-megapixel limit **before** bitmap allocation.
+- The desktop capture wraps CopyFromScreen and Bitmap.Save in
+  `try/finally` so Graphics/Bitmap handles are released on exceptions.
+  PowerShell launch failure and an unsuccessful helper delete any partial
+  PNG they may have left.
+- Before exposing a desktop PNG path even to the manual screenshot tool,
+  Rust verifies the PNG signature/dimensions, maximum decoded pixel count,
+  bounded encoded length and **all chunk CRCs and final IEND**, reusing
+  the existing streaming target-PNG verifier. Corrupt/partial files are
+  unlinked before the action returns an error.
+- `scripts/shuvi39-desktop-capture-integrity.test.mjs` and Rust
+  synthetic PNG fixtures test the resource guard, cleanup and return
+  ordering. This preserves the **manual** screenshot's saved-file output
+  but `inspect_screen` still uses Milestone 26's ephemeral disposal.
+- No global desktop or Windows host was actually captured in CI, nor is
+  PNG CRC a guarantee against actual screen overlays or decompression
+  bombs; it validates bounded PNG container integrity only.

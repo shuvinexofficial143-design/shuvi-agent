@@ -6,7 +6,7 @@
 // or the target is ambiguous, fail closed and never send a different app image.
 use super::{now_ms, prune_screenshot_dir, ps_single_quote, run_hidden_powershell, ui_root_script, MAX_SCREENSHOT_FILES};
 use serde_json::Value;
-use std::{fs, io::Read, path::PathBuf};
+use std::{fs, io::Read, path::{Path, PathBuf}};
 
 // Bounding the PNG on disk also bounds screenshot integrity verification
 // without allocating a second full-resolution bitmap in Shuvi's process.
@@ -518,6 +518,25 @@ fn verify_png_structure(mut reader: impl Read, bytes: u64) -> Result<(), String>
     Err("Screenshot missing final PNG IEND; no image sent.".into())
 }
 
+// Explicit desktop captures have no app-specific HWND identity, but they
+// still must be bounded and structurally trustworthy before being retained
+// for manual viewing or used by AI. This is a PNG container/CRC check, not
+// proof of live Windows pixel content or zlib decompression.
+pub(super) fn verify_unbound_desktop_png(path: &Path) -> Result<(), String> {
+    let bytes = fs::metadata(path)
+        .map_err(|e| format!("Desktop screenshot missing; no image sent: {e}"))?.len();
+    let mut header=[0_u8;24];
+    fs::File::open(path).and_then(|mut file| file.read_exact(&mut header))
+        .map_err(|e| format!("Desktop screenshot PNG header unreadable: {e}"))?;
+    let (width,height)=png_dimensions(&header)?;
+    if u64::from(width).checked_mul(u64::from(height))
+        .is_none_or(|pixels| pixels > MAX_CAPTURE_PIXELS) {
+        return Err("Desktop screenshot exceeds raw bitmap pixel budget.".into());
+    }
+    verify_png_structure(fs::File::open(path)
+        .map_err(|e| format!("Desktop screenshot unreadable: {e}"))?,bytes)
+}
+
 fn verify_capture_receipt(receipt: &Value, png: &[u8], bytes: u64) -> Result<String, String> {
     let title = receipt.get("Title").and_then(Value::as_str)
         .filter(|s| !s.trim().is_empty() && s.len() <= 512 && !s.chars().any(char::is_control))
@@ -555,7 +574,7 @@ fn verify_capture_receipt(receipt: &Value, png: &[u8], bytes: u64) -> Result<Str
 #[cfg(test)]
 mod tests {
     use super::{png_crc_update, png_dimensions, verify_capture_receipt, verify_png_structure,
-                parse_prepared_capture, expired_capture_binding};
+                parse_prepared_capture, expired_capture_binding, verify_unbound_desktop_png};
     use std::io::Cursor;
     use serde_json::json;
 
@@ -643,6 +662,21 @@ mod tests {
         assert!(!expired_capture_binding(1000,900000,None));
     }
 
+    #[test]
+    fn desktop_png_verification_rejects_corruption_and_accepts_bounded_container() {
+        let path=std::env::temp_dir().join(format!(
+            "shuvi39-desktop-png-fixture-{}-{}.png",
+            std::process::id(), uuid::Uuid::new_v4()));
+        let valid=sample_png();
+        std::fs::write(&path,&valid).unwrap();
+        assert!(verify_unbound_desktop_png(&path).is_ok());
+        let mut corrupt=valid.clone();
+        corrupt[45] ^= 0x20;
+        std::fs::write(&path,&corrupt).unwrap();
+        assert!(verify_unbound_desktop_png(&path).is_err());
+        std::fs::remove_file(&path).unwrap();
+        assert!(verify_unbound_desktop_png(&path).is_err());
+    }
     fn png_header(width: u32, height: u32) -> [u8; 24] {
         let mut bytes = [0_u8; 24];
         bytes[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
