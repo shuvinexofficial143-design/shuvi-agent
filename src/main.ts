@@ -26,6 +26,7 @@ import {createMasterProviderSingleFlight} from "./master-provider-single-flight.
 import {captureMasterPermissionUiFence,isMasterPermissionUiFenceCurrent} from "./master-permission-ui-fence.mjs";
 import {createMasterRemoteReceiptLane} from "./master-remote-receipt-lane.mjs";
 import {captureRemoteInboxOwner,isRemoteInboxOwnerCurrent} from "./master-remote-inbox-owner.mjs";
+import {createMasterNativeSingleFlight} from "./master-native-single-flight.mjs";
 import type {AuditedOpeningObservation} from "./master-goal-window-acceptance.mjs";
 import {nativeTaskDeliveryClaims} from "./native-delivery-claims.mjs";
 import type {
@@ -1783,10 +1784,16 @@ function clearExecutingAction(actionId: string): void {
   if (executingCancellation?.actionId === actionId) executingCancellation = null;
 }
 
+const masterNativeSingleFlight=createMasterNativeSingleFlight();
 async function executePendingProposal(proposal: ToolProposal, rustGrantId:string|null=null): Promise<void> {
   if (!pendingAction || cancelRequested) return;
 
   const actionId = pendingAction.id;
+  // Begin native single-flight admission BEFORE the first Rust await.
+  // It survives Stop/rotation until this exact uncertain native IPC settles.
+  const nativeFlight=masterNativeSingleFlight.acquire(activePermissionScope,actionId);
+  if(!nativeFlight)return;
+  try {
   if (!taskDeadlineAllows(orchestration.task_expires_at_ms) || orchestration.next_step > orchestration.max_steps) {
     try { await invoke("deny_action", { actionId }); } catch { /* conservative halt */ }
     clearChatPermission();
@@ -2065,6 +2072,9 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
     await continueAfterOutcome();
   } finally {
     clearExecutingAction(actionId);
+  }
+  } finally {
+    nativeFlight.release();
   }
 }
 function renderChatPermission(proposal: ToolProposal, step: number): void {
