@@ -861,14 +861,22 @@ async function saveActiveCheckpoint(): Promise<void> {
 }
 
 async function clearActiveCheckpoint(): Promise<void> {
-  const finishedTaskId=activePermissionScope.taskId;
-  revokeTaskScope(activePermissionScope);
+  const clearingScope=activePermissionScope;
+  const clearingGraph=orchestration.task_graph;
+  const clearingOwner=orchestration.owner_request;
+  const finishedTaskId=clearingScope.taskId;
+  revokeTaskScope(clearingScope);
   nativeReadGrantIds.clear();
   await revokeNativeTaskReads(finishedTaskId);
+  // The previous task's Rust grant revoke can finish after task rotation.
+  // Never intentionally delete a NEW task's durable recovery checkpoint.
+  if(activePermissionScope!==clearingScope||
+     orchestration.task_graph!==clearingGraph||
+     orchestration.owner_request!==clearingOwner)return;
   try {
     await invoke("clear_session_checkpoint");
   } catch {
-    // Best-effort cleanup only.
+    // Best-effort cleanup only. Native conditional-write/delete is separate.
   }
 }
 
@@ -1486,6 +1494,7 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
     try {
       await invoke("save_session_checkpoint", { checkpoint: currentCheckpoint() });
     } catch {
+      if(staleStage())return;
       await stopAgentForSafety("Could not save task progress before staging the action. A new instruction or safe resume is required.");
       return;
     }
@@ -1547,6 +1556,12 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
       try {
         await invoke("save_session_checkpoint", { checkpoint: currentCheckpoint() });
       } catch {
+        if(staleStage()){
+          // Deny only the OLD prepared action UUID. Never clear/stop the
+          // replacement task's pending action after a delayed save error.
+          await denyStaleAction(preparedId);
+          return;
+        }
         try { await invoke("deny_action", { actionId: preparedId }); } catch { /* best effort */ }
         pendingAction = null;
         pendingChatProposal = null;
