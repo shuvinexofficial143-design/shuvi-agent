@@ -53,6 +53,10 @@ jobs:
           }
       - name: Rust verification with attestation
         run: npm run verify:rust
+      - name: Build exact read-only SHA sidecar binary
+        run: cargo build --manifest-path src-tauri/Cargo.toml --locked --bin shuvi-readonly-hash-worker
+      - name: Execute real Windows SHA worker and tamper-rejection fixtures
+        run: node scripts/check-native-sha-sidecar.mjs
       - name: Upload Rust attestation
         if: always()
         uses: actions/upload-artifact@v4
