@@ -226,3 +226,6 @@ Review any adapter calls and potential cross-team shared-file overlap. Keep owne
 ### Milestone 34 source-check compatibility correction
 - Updated the existing Blender host-memory watchdog source regression to recognize the bounded FnMut monitor body that first verifies the signed worker pulse and only then persists a stage. Original PID registration, 4 GiB guard, OS-owned Stop semantics remain checked.
 - Narrowed optional worker sequence with a runtime typeof guard before integer/range comparisons in TypeScript; reject malformed signed-worker telemetry rather than silently allowing unverified values.
+
+### Milestone 34 restart UI completeness
+- Read-only worker status now displays the last *signed Python worker* stage in the `recovery_required` and `owner_reviewed_unknown` view as well as during an in-flight job. Its label explicitly says it is not Blender app success or OS liveness and never authorizes retry. This closes the gap where evidence was durable in Rust but invisible after app restart.

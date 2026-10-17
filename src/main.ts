@@ -621,10 +621,14 @@ function currentCheckpoint(): SessionCheckpoint {
 function nativeWorkerDisplay(): string {
   if (nativeHostStatusUnavailable || !nativeHostStatus) return "Host worker: unavailable (do not infer idle)";
   const host = nativeHostStatus;
+  const signed=host.attestedWorkerStage
+    ? "; last signed Python worker stage: "+host.attestedWorkerStage+
+      " (NOT Blender success or OS liveness)"
+    : "";
   if (host.requiresOwnerReview || host.state === "recovery_required")
-    return "Host worker: RECOVERY REQUIRED — inspect native action and durable job journal; no automatic retry";
+    return "Host worker: RECOVERY REQUIRED — inspect native action and durable job journal; no automatic retry"+signed;
   if (host.durableJobPhase === "owner_reviewed_unknown")
-    return "Host worker: last interrupted action reviewed as UNKNOWN; never marked successful or retried";
+    return "Host worker: last interrupted action reviewed as UNKNOWN; never marked successful or retried"+signed;
   if (host.state === "native_action_in_flight") {
     const pulse=host.supervisorHealth==="rust_supervisor_observed"
       ? "Rust supervisor check-in "+Math.floor((host.supervisorHeartbeatAgeMs??0)/1000)+"s ago"
@@ -633,10 +637,6 @@ function nativeWorkerDisplay(): string {
         : host.supervisorHealth==="supervisor_start_record_only"
           ? "Durable job started; awaiting first real Rust supervisor tick"
           : "No independently attributed supervisor heartbeat";
-    const signed=host.attestedWorkerStage
-      ? "; signed Python worker stage: "+host.attestedWorkerStage+
-        " (NOT Blender application proof)"
-      : "";
     return "Host worker: native action active ("+(host.tool ?? "unknown")+
       ", "+Math.floor((host.observedActionAgeMs ?? 0)/1000)+"s observed; "+
       pulse+signed+"; NOT a progress heartbeat)";

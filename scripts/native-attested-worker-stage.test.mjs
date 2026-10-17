@@ -26,3 +26,13 @@ test("authenticated Python stages never grant permission, OS liveness or Blender
  assert.match(status,/signed_worker_stage_does_not_manufacture_app_success_or_liveness/);
  assert.doesNotMatch(receipt,/tauri::command|invoke_handler/);
 });
+
+test("recovery-required worker display keeps last authenticated stage visible without claiming app success",()=>{
+ const frontend=get("src/main.ts");
+ const view=frontend.slice(frontend.indexOf("function nativeWorkerDisplay()"),frontend.indexOf("async function refreshNativeWorkerStatus()"));
+ assert.match(view,/RECOVERY REQUIRED/);
+ assert.match(view,/last signed Python worker stage/);
+ assert.match(view,/NOT Blender success or OS liveness/);
+ assert.match(view,/no automatic retry/);
+ assert.match(frontend,/function resourceClaimsValid/);
+});
