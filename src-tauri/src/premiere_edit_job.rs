@@ -369,11 +369,32 @@ impl Job {
         Ok(())
     }
 
+    /// A completed iterative review may only come from a session created
+    /// after the specific review-phase proposal, not merely after Job::new.
+    pub fn require_issued_review_session(&self,phase_id:&str,review_created_at_ms:u64)->Result<(),String>{
+        if self.status!="running" {return Err("Edit job is not running.".into());}
+        let phase=self.pending().ok_or("Edit job has no pending phase.")?;
+        if phase.id!=phase_id || phase.tool!="premiere_review_session_start" {
+            return Err("Review session is not for the pending iterative phase.".into());
+        }
+        let issued=phase.proposal_issued_at_ms
+            .ok_or("Run premiere_edit_job_next before creating a review session.")?;
+        if phase.proposal_arguments_sha256.is_none() || review_created_at_ms<issued
+            || review_created_at_ms<self.created_at_ms || review_created_at_ms==0 {
+            return Err("Completed review session predates the exact bound editing phase proposal.".into());
+        }
+        Ok(())
+    }
+
     pub fn record_review(&mut self,phase_id:&str,review_session_id:&str,now_ms:u64)->Result<(),String>{
         if self.status!="running"{return Err("Edit job is not running.".into());}
         let expected=self.pending().ok_or("Edit job has no pending phase.")?;
         if expected.id!=phase_id || expected.tool!="premiere_review_session_start" {
             return Err("Completed review evidence does not match the next iterative review phase.".into());
+        }
+        // Even typed internal recording cannot bypass the phase proposal gate.
+        if expected.proposal_issued_at_ms.is_none() || expected.proposal_arguments_sha256.is_none(){
+            return Err("Iterative review requires an issued bound phase before completion.".into());
         }
         if review_session_id.is_empty()||review_session_id.len()>80 {
             return Err("Invalid bounded review session ID.".into());
@@ -584,10 +605,14 @@ pub fn expectation_for_scene(job:&Job,timeline:&Value,request:&SceneDetectionReq
 /// Restrict the scan to this application's edit-job store; a damaged or
 /// interrupted sibling record blocks receipt advancement for owner recovery.
 /// The caller owns the existing native execution lease during this scan/save.
-pub fn require_unclaimed_action_in_store(
-    current_path:&Path,job_id:&str,action_id:&str
-)->Result<(),String>{
-    if action_id.is_empty() {return Err("Missing action receipt ID.".into());}
+/// Fail-closed sibling scan shared by typed action and completed review evidence.
+/// The caller owns Shuvi's existing native execution lease while checking
+/// and persisting the job, so no second local phase can claim the same receipt.
+fn require_unclaimed_evidence_in_store<F>(
+    current_path:&Path,job_id:&str,evidence_id:&str,already_used:F
+)->Result<(),String>
+where F:Fn(&Job,&str)->bool {
+    if evidence_id.is_empty(){return Err("Missing edit-job evidence identity.".into());}
     let folder=current_path.parent().ok_or("Edit-job state has no parent folder.")?;
     let mut visited=0usize;
     for entry in fs::read_dir(folder).map_err(|e|e.to_string())? {
@@ -615,11 +640,25 @@ pub fn require_unclaimed_action_in_store(
         if other.job_id==job_id {
             return Err("Edit-job store has a duplicate canonical job identity.".into());
         }
-        if other.phases.iter().any(|phase|phase.action_id.as_deref()==Some(action_id)) {
-            return Err("The supplied approved action ID was already recorded by another Premiere edit job.".into());
+        if already_used(&other,evidence_id) {
+            return Err("Approved edit-job action or completed review session was already consumed by another job.".into());
         }
     }
     Ok(())
+}
+
+pub fn require_unclaimed_action_in_store(
+    current_path:&Path,job_id:&str,action_id:&str
+)->Result<(),String>{
+    require_unclaimed_evidence_in_store(current_path,job_id,action_id,|other,action_id|
+        other.phases.iter().any(|phase|phase.action_id.as_deref()==Some(action_id)))
+}
+
+pub fn require_unclaimed_review_session_in_store(
+    current_path:&Path,job_id:&str,review_session_id:&str
+)->Result<(),String>{
+    require_unclaimed_evidence_in_store(current_path,job_id,review_session_id,|other,review_session_id|
+        other.phases.iter().any(|phase|phase.review_session_id.as_deref()==Some(review_session_id)))
 }
 
 pub fn save(path:&Path,job:&Job)->Result<(),String>{
@@ -714,7 +753,9 @@ mod tests{
         let mut job=Job::new("job".into(),request,"p",Some("C:/test.prproj"),"s",1).unwrap();
         assert_eq!(job.phases[0].tool,"premiere_review_session_start");
         assert!(job.record("review","premiere_review_session_start","action",true,2).is_err());
-        job.record_review("review","review-session",2).unwrap();
+        job.issue_proposal("review",2).unwrap();
+        job.bind_proposal_arguments("review",&json!({"objective":"Check framing","sample_times":[1,5]})).unwrap();
+        job.record_review("review","review-session",3).unwrap();
         assert_eq!(job.status,"complete");
         assert_eq!(job.phases[0].review_session_id.as_deref(),Some("review-session"));
     }
@@ -914,6 +955,47 @@ mod tests{
         assert!(bad.validate_state().is_err());
         bad=job.clone();bad.phases[0].proposal_arguments_sha256=Some("not-a-sha".into());
         assert!(bad.validate_state().is_err());
+    }
+    #[test]fn iterative_review_only_accepts_new_sessions_after_issued_phase(){
+        let request:Request=serde_json::from_value(json!({
+            "schema_version":1,"job_type":"corporate",
+            "review":{"seconds":[1.0],"prompt":"Final grounded review","iterative":true}
+        })).unwrap();
+        let mut job=Job::new("review-timing".into(),request,"P",None,"S",100).unwrap();
+        assert!(job.require_issued_review_session("review",105).is_err());
+        job.issue_proposal("review",110).unwrap();
+        assert!(job.require_issued_review_session("review",111).is_err());
+        job.bind_proposal_arguments("review",&json!({"objective":"Final grounded review","sample_times":[1.0]})).unwrap();
+        assert!(job.require_issued_review_session("review",109).is_err());
+        assert!(job.require_issued_review_session("review",110).is_ok());
+        assert!(job.require_issued_review_session("review",115).is_ok());
+        assert!(job.require_issued_review_session("other",115).is_err());
+        job.record_review("review","new-session",116).unwrap();
+        assert_eq!(job.status,"complete");
+        assert!(job.validate_state().is_ok());
+    }
+    #[test]fn completed_iterative_review_session_cannot_be_reused_by_another_job(){
+        let folder=std::env::temp_dir().join(format!("shuvi40-review-reuse-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&folder).unwrap();
+        let req:Request=serde_json::from_value(json!({
+            "schema_version":1,"job_type":"corporate",
+            "review":{"seconds":[1.0],"prompt":"Review","iterative":true}
+        })).unwrap();
+        let id_a=uuid::Uuid::new_v4().to_string();
+        let id_b=uuid::Uuid::new_v4().to_string();
+        let path_a=folder.join(format!("{id_a}.json"));
+        let path_b=folder.join(format!("{id_b}.json"));
+        let mut a=Job::new(id_a.clone(),req.clone(),"P",None,"S",100).unwrap();
+        a.issue_proposal("review",101).unwrap();
+        a.bind_proposal_arguments("review",&json!({})).unwrap();
+        a.record_review("review","review-session-a",102).unwrap();
+        save(&path_a,&a).unwrap();
+        save(&path_b,&Job::new(id_b.clone(),req,"P",None,"S",100).unwrap()).unwrap();
+        assert!(require_unclaimed_review_session_in_store(&path_b,&id_b,"review-session-a").is_err());
+        assert!(require_unclaimed_review_session_in_store(&path_b,&id_b,"review-session-new").is_ok());
+        fs::write(&path_a,b"{corrupt").unwrap();
+        assert!(require_unclaimed_review_session_in_store(&path_b,&id_b,"review-session-new").is_err());
+        fs::remove_dir_all(folder).unwrap();
     }
     #[test]fn one_primary_delivery_only(){
         let value=json!({
