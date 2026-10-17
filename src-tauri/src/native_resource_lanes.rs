@@ -246,6 +246,30 @@ pub(crate) fn reserve_blender_plan(
     }
     reserve_plan_at(&path(app)?,action,resources,Some(approved_plan_sha256))
 }
+/// Authentication gate for worker-stage persistence: only a resource
+/// reserved before the approved Blender OS launch, with EXACT action UUID
+/// and full plan SHA256, can emit a new durable stage. No mutation/release.
+pub(crate) fn require_active_plan_claim(
+    app:&AppHandle,action:&str,approved_plan_sha256:&str
+)->Result<(),String>{
+    let _guard=IO.lock().map_err(|_|"Resource proof lock poisoned.")?;
+    let file=path(app)?;
+    let _os=CrossProcessLedgerLock::take(&file)?;
+    require_plan_at(&file,action,approved_plan_sha256)
+}
+fn require_plan_at(file:&Path,action:&str,approved_plan_sha256:&str)
+    ->Result<(),String>{
+    if !valid_uuid(action)||!valid_sha256(approved_plan_sha256){
+        return Err("Worker stage claim has malformed exact action/plan identity.".into());
+    }
+    let l=read_at(file)?;
+    if !l.held.iter().any(|h|h.action_id==action
+        &&h.tool=="blender_run_plan"
+        &&h.approved_plan_sha256.as_deref()==Some(approved_plan_sha256)){
+        return Err("Worker stage has no matching approved held output claim.".into());
+    }
+    Ok(())
+}
 /// Authenticated, bounded, read-only view of durable output ownership.
 /// Does not rehash files, probe PID, approve work, expire claims or unlock.
 #[derive(Clone,Debug,Serialize,PartialEq,Eq)]
@@ -419,6 +443,27 @@ mod tests{
             assert_eq!(count,1);
         });
         assert_eq!(read_at(&file).unwrap().held.len(),1);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn attested_worker_stage_requires_exact_held_action_and_plan_provenance(){
+        let (root,file)=temp();
+        let correct="a".repeat(64);
+        let foreign="b".repeat(64);
+        reserve_plan_at(&file,A,vec![resource(&root.join("one"),"write")],
+            Some(&correct)).unwrap();
+        assert!(require_plan_at(&file,A,&correct).is_ok());
+        assert!(require_plan_at(&file,B,&correct).is_err());
+        assert!(require_plan_at(&file,A,&foreign).is_err());
+        assert!(require_plan_at(&file,A,"invalid").is_err());
+        assert!(require_plan_at(&file,A,&correct.to_uppercase()).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn legacy_claim_without_plan_digest_cannot_authorize_new_stage_evidence(){
+        let (root,file)=temp();
+        reserve_at(&file,A,vec![resource(&root.join("one"),"write")]).unwrap();
+        assert!(require_plan_at(&file,A,&"a".repeat(64)).is_err());
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

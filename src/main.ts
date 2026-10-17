@@ -622,8 +622,8 @@ function nativeWorkerDisplay(): string {
   if (nativeHostStatusUnavailable || !nativeHostStatus) return "Host worker: unavailable (do not infer idle)";
   const host = nativeHostStatus;
   const signed=host.attestedWorkerStage
-    ? "; last signed Python worker stage: "+host.attestedWorkerStage+
-      " (NOT Blender success or OS liveness)"
+    ? "; archived Rust-recorded HMAC-checked Python stage: "+host.attestedWorkerStage+
+      " (NOT fresh HMAC proof, Blender success or OS liveness)"
     : "";
   if (host.requiresOwnerReview || host.state === "recovery_required")
     return "Host worker: RECOVERY REQUIRED — inspect native action and durable job journal; no automatic retry"+signed;

@@ -229,3 +229,9 @@ Review any adapter calls and potential cross-team shared-file overlap. Keep owne
 
 ### Milestone 34 restart UI completeness
 - Read-only worker status now displays the last *signed Python worker* stage in the `recovery_required` and `owner_reviewed_unknown` view as well as during an in-flight job. Its label explicitly says it is not Blender app success or OS liveness and never authorizes retry. This closes the gap where evidence was durable in Rust but invisible after app restart.
+
+## Milestone 35 — cross-instance signed-stage journal isolation and exact-plan ownership gate
+- Every durable Python-stage write now verifies the *current* exact action UUID, running Rust NativeJob, and a matching prelaunch, cross-process-locked held output claim with the same full approved-plan SHA256; a legacy/foreign/missing plan cannot create new stage evidence.
+- Stage journal reads and writes acquire both the in-process Rust mutex and a fixed OS-backed lock: Win32 share-mode-zero file handle or Unix nonblocking flock. Corrupt lock paths and conflicting Shuvi instances fail closed. No TTL/force-unlock.
+- Same-action stage sequence/timestamp regressions and same-sequence altered timestamp are rejected; unchanged duplicate readback remains idempotent. The archived journal is explicitly labeled as **Rust-recorded HMAC-checked evidence, not a freshly re-authenticated HMAC**, Blender progress, success, or OS liveness.
+- Added real filesystem Rust tests for OS-lock contention, replay/backdating and the plan-claim gate; extended frontend source safety contracts. Existing Windows OS/GUI single-lane lease remains exclusive.

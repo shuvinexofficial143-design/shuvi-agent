@@ -3,11 +3,57 @@
 //! The launch supervisor holds the private HMAC key; only verified stage
 //! transitions are admitted by this journal's production writer.
 use serde::{Deserialize,Serialize};
-use std::{fs,path::{Path,PathBuf},sync::Mutex};
+use std::{fs,fs::OpenOptions,path::{Path,PathBuf},sync::Mutex};
 use tauri::{AppHandle,Manager};
 
 const MAX_BYTES:usize=1024;
 static WRITE_LOCK:Mutex<()>=Mutex::new(());
+// The Rust mutex is process-local. A second Windows Shuvi instance may read
+// this stage journal concurrently; take the *same fixed kernel-backed lock*
+// on both writes and status reads to avoid torn or stale read/modify/write.
+struct StageOsLock(fs::File);
+impl StageOsLock{
+    fn take(file:&Path)->Result<Self,String>{
+        let lock=file.with_extension("json.oslock");
+        if let Ok(meta)=fs::symlink_metadata(&lock){
+            if !meta.is_file()||meta.file_type().is_symlink(){
+                return Err("Stage OS lock must not be a symlink or directory.".into());
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::MetadataExt;
+                if meta.file_attributes()&0x400!=0{
+                    return Err("Stage OS lock cannot be a reparse point.".into());
+                }
+            }
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            let f=OpenOptions::new().read(true).write(true).create(true)
+                .share_mode(0).open(&lock)
+                .map_err(|_|"Another Shuvi instance owns the worker stage journal.".to_string())?;
+            return Ok(Self(f));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            unsafe extern "C"{fn flock(fd:i32,operation:i32)->i32;}
+            let f=OpenOptions::new().read(true).write(true).create(true)
+                .open(&lock)
+                .map_err(|_|"Stage OS lock cannot be opened.".to_string())?;
+            if unsafe{flock(f.as_raw_fd(),2|4)}!=0{
+                return Err("Another Shuvi instance owns the worker stage journal.".into());
+            }
+            return Ok(Self(f));
+        }
+        #[cfg(not(any(unix,windows)))]
+        {
+            Err("Cross-process worker stage synchronization unavailable.".into())
+        }
+    }
+}
+
 
 #[derive(Clone,Debug,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
@@ -72,16 +118,18 @@ fn read_at(file:&Path)->Result<Option<AttestedStage>,String>{
 }
 fn record_at(file:&Path,next:AttestedStage)->Result<(),String>{
     let _guard=WRITE_LOCK.lock().map_err(|_|"Signed stage journal lock poisoned.")?;
+    let _os=StageOsLock::take(file)?;
     valid(&next)?;
     if let Some(previous)=read_at(file)?{
         if previous.action_id==next.action_id {
             if previous.approved_plan_sha256!=next.approved_plan_sha256
                 ||next.sequence<previous.sequence
+                ||next.observed_at_ms<previous.observed_at_ms
                 ||rank(&next.stage)<rank(&previous.stage){
                 return Err("Authenticated worker stage regressed or plan changed.".into());
             }
             if previous.sequence==next.sequence{
-                if previous.stage==next.stage{return Ok(());}
+                if previous==next{return Ok(());}
                 return Err("Replayed worker stage sequence changed its meaning.".into());
             }
         }
@@ -103,16 +151,28 @@ pub(crate) fn record(
         ||now<job.started_at_ms{
         return Err("Signed worker stage does not belong to current native action.".into());
     }
+    // The existing native journal alone does NOT authorize evidence.
+    // Require exact prelaunch, kernel-serialized resource claim and full
+    // approved plan provenance to match before recording any signed stage.
+    crate::native_scheduler::resource_lanes::require_active_plan_claim(
+        app,action,plan_sha256)?;
     record_at(&path(app)?,AttestedStage{
         version:1,action_id:action.into(),approved_plan_sha256:plan_sha256.into(),
         sequence,stage:stage.into(),observed_at_ms:now
     })
 }
+/// Serialized, read-only observation. A file on disk is NOT an independently
+/// rechecked HMAC and must not be represented as fresh cryptographic proof.
+fn read_locked_at(file:&Path)->Result<Option<AttestedStage>,String>{
+    let _guard=WRITE_LOCK.lock().map_err(|_|"Signed stage read lock poisoned.")?;
+    let _os=StageOsLock::take(file)?;
+    read_at(file)
+}
 /// Returning a persisted stage is NOT a live HMAC challenge-response. Never
 /// infer that the app is still running, successful or safe to auto-retry.
 pub(crate) fn read_for_job(app:&AppHandle,job:Option<&crate::native_worker_job::NativeJob>)
     ->Result<Option<AttestedStage>,String>{
-    let result=read_at(&path(app)?)?;
+    let result=read_locked_at(&path(app)?)?;
     Ok(result.filter(|e|job.is_some_and(|j|
         j.action_id==e.action_id&&j.tool=="blender_run_plan")))
 }
@@ -131,6 +191,31 @@ mod tests{
             version:1,action_id:action.into(),approved_plan_sha256:"a".repeat(64),
             stage:stage.into(),sequence:seq,observed_at_ms:1000+seq
         }
+    }
+    #[test]
+    fn stage_os_lock_serializes_status_reads_and_cross_instance_writes(){
+        let root=directory();let file=root.join("attested.json");
+        let os=StageOsLock::take(&file).unwrap();
+        assert!(record_at(&file,data(A,"python_active",1)).is_err());
+        assert!(read_locked_at(&file).is_err());
+        drop(os);
+        record_at(&file,data(A,"python_active",1)).unwrap();
+        assert_eq!(read_locked_at(&file).unwrap().unwrap().stage,"python_active");
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn stage_sequence_cannot_replay_changed_timestamp_or_backdated_evidence(){
+        let root=directory();let file=root.join("attested.json");
+        let first=data(A,"python_active",1);
+        record_at(&file,first.clone()).unwrap();
+        let mut replay=first.clone();
+        replay.observed_at_ms+=1;
+        assert!(record_at(&file,replay).is_err());
+        let mut newer=data(A,"blender_session_attached",2);
+        newer.observed_at_ms=first.observed_at_ms-1;
+        assert!(record_at(&file,newer).is_err());
+        assert_eq!(read_locked_at(&file).unwrap(),Some(first));
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn durable_stage_advances_only_after_verified_worker_progress(){
