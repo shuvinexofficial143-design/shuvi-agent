@@ -22,6 +22,7 @@ import {captureNativeActionOwnership,isNativeActionOwnershipCurrent} from "./mas
 import {createTaskCheckpointLane} from "./master-task-checkpoint-lane.mjs";
 import {assessNativeCheckpointReadback} from "./master-task-checkpoint-readback.mjs";
 import {captureMasterProviderTurnFence,isMasterProviderTurnFenceCurrent} from "./master-provider-turn-fence.mjs";
+import {createMasterRemoteReceiptLane} from "./master-remote-receipt-lane.mjs";
 import type {AuditedOpeningObservation} from "./master-goal-window-acceptance.mjs";
 import {nativeTaskDeliveryClaims} from "./native-delivery-claims.mjs";
 import type {
@@ -1290,11 +1291,13 @@ async function continueAfterOutcome(): Promise<void> {
   const continuationScope=activePermissionScope;
   const continuationGraph=orchestration.task_graph;
   const continuationOwner=orchestration.owner_request;
+  const continuationRemote=remoteTask;
   const continuationCurrent=()=>continuationScope===activePermissionScope&&
     !continuationScope.revoked&&!cancelRequested&&
     orchestration.recovery_mode!=="stopped"&&
     orchestration.task_graph===continuationGraph&&
-    orchestration.owner_request===continuationOwner;
+    orchestration.owner_request===continuationOwner&&
+    remoteTask===continuationRemote;
   renderOrchestrationStatus();
   if (!await persistRequiredContinuationCheckpoint(continuationCurrent)) return;
   if(!continuationCurrent())return;
@@ -1528,8 +1531,9 @@ async function stageProposal(proposal: ToolProposal, route: TaskModelRoute): Pro
   // Ownership token + exact state identity prevent a slow native prepare reply
   // from staging a different task after Stop, Resume, or a new instruction.
   const stagingScope = activePermissionScope;
+  const stagingRemote=remoteTask;
   let stagingState = orchestration;
-  const staleStage = () => stagingWasInvalidated(
+  const staleStage = () => remoteTask!==stagingRemote||stagingWasInvalidated(
     stagingScope, activePermissionScope, stagingState, orchestration, cancelRequested
   );
   const denyStaleAction = async (id: unknown): Promise<void> => {
@@ -1767,12 +1771,13 @@ async function executePendingProposal(proposal: ToolProposal, rustGrantId:string
     return;
   }
   const permissionTaskId=activePermissionScope.taskId;
+  const actionRemoteTask=remoteTask;
   // Every native action, not only Premiere projects, requires an exact live
   // owner-task lease across execute, audit and cancellation IPC awaits.
   const actionOwnership=captureNativeActionOwnership(activePermissionScope,
     orchestration.task_graph,orchestration.owner_request,actionId);
   const nativeActionCurrent=(ownership:ReturnType<typeof captureNativeActionOwnership>)=>
-    isNativeActionOwnershipCurrent(ownership,{
+    remoteTask===actionRemoteTask&&isNativeActionOwnershipCurrent(ownership,{
       scope:activePermissionScope,graph:orchestration.task_graph,
       ownerRequest:orchestration.owner_request,actionId,
       cancelRequested,recoveryMode:orchestration.recovery_mode
@@ -2226,8 +2231,10 @@ async function runAgentStep(): Promise<void> {
   const requestScope = activePermissionScope;
   const requestGraph = orchestration.task_graph;
   const requestOwner = orchestration.owner_request;
+  const requestRemote=remoteTask;
   let providerTurnFence:ReturnType<typeof captureMasterProviderTurnFence>=null;
   const staleModelRequest = () => requestScope !== activePermissionScope ||
+    remoteTask!==requestRemote ||
     requestScope.revoked || cancelRequested ||
     orchestration.recovery_mode === "stopped" ||
     orchestration.task_graph!==requestGraph ||
@@ -3150,19 +3157,26 @@ function remoteReceipt(status:string,task:RemoteActiveTask,extras:Record<string,
    revision:task.revision+1,occurredAt:Date.now(),status,...extras
   };
 }
-async function sendRemoteReceipt(status:string,extras:Record<string,unknown>={}):Promise<void>{
-  if(!remoteTask)throw Error("No remote task");
-  const receipt=remoteReceipt(status,remoteTask,extras);
-  await invoke("remote_agent_receipt",{receipt});
-  remoteTask.revision=receipt.revision;
-  remoteTask.status=status;
+const remoteReceiptLane=createMasterRemoteReceiptLane();
+async function sendRemoteReceipt(status:string,extras:Record<string,unknown>={}):Promise<boolean>{
+  const exactTask=remoteTask;
+  if(!exactTask)throw Error("No remote task");
+  return remoteReceiptLane.publish(exactTask,
+    task=>remoteTask===task,
+    revision=>invoke("remote_agent_receipt",{
+      receipt:{...remoteReceipt(status,exactTask,extras),revision}
+    }),status);
 }
 async function closeRemoteTask(status:"succeeded"|"failed"|"stopped"|"outcome_unknown"):Promise<void>{
-  if(!remoteTask)return;
-  const extras= status==="succeeded" && remoteTask.evidenceActionId
-    ? {evidence:{kind:"native_audit",id:remoteTask.evidenceActionId}} : {};
+  const closingTask=remoteTask;
+  if(!closingTask)return;
+  const extras= status==="succeeded" && closingTask.evidenceActionId
+    ? {evidence:{kind:"native_audit",id:closingTask.evidenceActionId}} : {};
   try {await sendRemoteReceipt(status,extras);}
   catch {remoteStatusLabel("Task outcome was not accepted by server; do not retry blindly.");}
+  // Older remote close receipt may return after the next inbox task begins.
+  // Do not clear its status, approval, or revision on an old close response.
+  if(remoteTask!==closingTask)return;
   remoteTask=null;
   remoteApproval=null;
 }
