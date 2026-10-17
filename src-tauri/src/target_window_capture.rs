@@ -30,7 +30,25 @@ pub(super) fn scavenge_old_vision_capture_files() -> Result<usize, String> {
     prune_stale_vision_captures(&directory)
 }
 
+// Never allow a stale-capture cleanup or a new private vision screenshot
+// to traverse a user-repointed Shuvi/screenshots symlink or junction. Only
+// the two controlled descendants of std::env::temp_dir() are inspected;
+// no arbitrary path canonicalization or recursive deletion is performed.
+pub(super) fn validate_vision_capture_directory(dir: &Path) -> Result<(), String> {
+    let managed = dir.parent()
+        .ok_or_else(|| "Vision screenshot directory has no managed parent.".to_string())?;
+    for path in [managed,dir] {
+        let meta = fs::symlink_metadata(path)
+            .map_err(|e| format!("Vision screenshot directory not verified: {e}"))?;
+        if meta.file_type().is_symlink() || !meta.is_dir() {
+            return Err("Vision screenshot directory is a redirect or not a real directory. No screenshot written.".into());
+        }
+    }
+    Ok(())
+}
+
 fn prune_stale_vision_captures(dir: &Path) -> Result<usize, String> {
+    validate_vision_capture_directory(dir)?;
     let now = std::time::SystemTime::now();
     let mut removed = 0;
     let entries = fs::read_dir(dir)
@@ -157,6 +175,7 @@ pub(super) fn capture_window_png(
     let dir = std::env::temp_dir().join("Shuvi").join("screenshots");
     fs::create_dir_all(&dir)
         .map_err(|error| format!("Could not create screenshot directory: {error}"))?;
+    validate_vision_capture_directory(&dir)?;
     // Best-effort cleanup of orphaned *ephemeral* vision captures from
     // interrupted earlier runs. Never touch deliberately saved screen-*.png.
     let _ = prune_stale_vision_captures(&dir);
@@ -783,6 +802,37 @@ mod tests {
         assert!(verify_unbound_desktop_png(&path).is_err());
         std::fs::remove_file(&path).unwrap();
         assert!(verify_unbound_desktop_png(&path).is_err());
+    }
+    #[test]
+    fn vision_directory_accepts_real_managed_folder() {
+        let temp = std::env::temp_dir().join(format!("shuvi39-vision-dir-{}",uuid::Uuid::new_v4()));
+        let managed = temp.join("Shuvi");
+        let screenshots = managed.join("screenshots");
+        std::fs::create_dir_all(&screenshots).unwrap();
+        assert!(super::validate_vision_capture_directory(&screenshots).is_ok());
+        std::fs::remove_dir_all(&temp).unwrap();
+    }
+    #[test]
+    fn vision_directory_rejects_file_instead_of_folder() {
+        let temp = std::env::temp_dir().join(format!("shuvi39-vision-file-{}",uuid::Uuid::new_v4()));
+        let managed = temp.join("Shuvi");
+        std::fs::create_dir_all(&managed).unwrap();
+        let fake = managed.join("screenshots");
+        std::fs::write(&fake,b"not a directory").unwrap();
+        assert!(super::validate_vision_capture_directory(&fake).is_err());
+        std::fs::remove_dir_all(&temp).unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn vision_directory_rejects_managed_folder_symlink_on_unix() {
+        use std::os::unix::fs::symlink;
+        let temp = std::env::temp_dir().join(format!("shuvi39-vision-link-{}",uuid::Uuid::new_v4()));
+        let actual = temp.join("actual");
+        std::fs::create_dir_all(actual.join("screenshots")).unwrap();
+        symlink(&actual,temp.join("Shuvi")).unwrap();
+        let redirected=temp.join("Shuvi").join("screenshots");
+        assert!(super::validate_vision_capture_directory(&redirected).is_err());
+        std::fs::remove_dir_all(&temp).unwrap();
     }
     fn png_header(width: u32, height: u32) -> [u8; 24] {
         let mut bytes = [0_u8; 24];

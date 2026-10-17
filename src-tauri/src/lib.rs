@@ -8621,6 +8621,9 @@ fn capture_screen_png_with_mode(ephemeral: bool) -> Result<std::path::PathBuf, S
         let dir = std::env::temp_dir().join("Shuvi").join("screenshots");
         fs::create_dir_all(&dir)
             .map_err(|error| format!("Could not create screenshot folder: {error}"))?;
+        if ephemeral {
+            target_window_capture::validate_vision_capture_directory(&dir)?;
+        }
 
         // Keep room for the screenshot being created. Cleanup is deliberately
         // scoped to Shuvi-owned screen-*.png files in this one temp directory.

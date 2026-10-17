@@ -1173,3 +1173,27 @@ Run only with separate owner consent on a disposable desktop/test fixture.
   plus updated the preflight regression to require the correct
   ephemeral desktop-vision entry point. CI test results distinguish
   source-tested behavior from unperformed desktop live acceptance.
+
+## Milestone 31 — Refuse symlinked/junctioned temporary Vision directories
+
+- A managed screenshot-directory name alone is not a security boundary:
+  a compromised or accidentally redirected `Shuvi/screenshots` path
+  could be a directory symlink or Windows reparse/junction target.
+  Orphan cleanup could otherwise delete similarly named `vision-*.png`
+  files outside Shuvi's controlled temporary tree, while a vision capture
+  could write sensitive pixels to a redirected location.
+- `validate_vision_capture_directory` now uses *non-following*
+  `fs::symlink_metadata` on the managed `Shuvi` parent and
+  `screenshots` directory. Reject symlinks or non-directory entries
+  before stale cleanup and **before constructing a new ephemeral
+  screenshot path**. Both owner-approved app-window vision and
+  explicitly approved full-desktop vision are guarded. Deliberately
+  saved manual `capture_screen` keeps its existing behavior.
+- The stale scavenger independently enforces the same guard in case it
+  is called without an immediately following capture. No recursive
+  filesystem deletion, manual image pruning or arbitrary directory
+  traversal was introduced.
+- Node source tests plus Rust real-directory, non-directory and
+  Unix symlink test fixtures validate the guard. This does not prevent
+  every possible concurrent filesystem replacement race or securely
+  erase deleted pixels; Windows local live acceptance remains separate.
