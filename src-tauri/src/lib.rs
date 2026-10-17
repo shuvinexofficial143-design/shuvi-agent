@@ -647,6 +647,11 @@ struct ProviderContext {
 enum ToolAction {
     ListDirectory { path: String },
     ReadFile { path: String },
+    // Two independently audited native SHA readers under one exact approved action.
+    VerifyReadOnlyShaPair {
+        first_path: String, first_sha256: String,
+        second_path: String, second_sha256: String,
+    },
     WriteFile { path: String, content: String },
     CreateDirectory { path: String },
     LaunchApp { program: String, args: Vec<String> },
@@ -3186,6 +3191,36 @@ fn stage_tool(
                 path,
                 RiskLevel::Low,
             )
+        }
+        "verify_readonly_sha_pair" => {
+            // The existing prepare/Allow/execute action UUID is the ONLY
+            // authorization gate. Each proposed path + expected digest is
+            // displayed to the owner before any OS child may be created.
+            let exact = proposal.arguments.as_object()
+                .ok_or("Read-only SHA pair requires four named fields.")?;
+            if exact.len()!=4
+                || !["first_path","first_sha256","second_path","second_sha256"]
+                    .iter().all(|name|exact.contains_key(*name)){
+                return Err("SHA pair must provide exactly two paths and two digests.".into());
+            }
+            let first_path=absolute_path(arg_string(&proposal.arguments,"first_path")?)?;
+            let second_path=absolute_path(arg_string(&proposal.arguments,"second_path")?)?;
+            let first_sha256=arg_string(&proposal.arguments,"first_sha256")?;
+            let second_sha256=arg_string(&proposal.arguments,"second_sha256")?;
+            let sha_ok=|s:&str|s.len()==64&&s.bytes().all(|b|
+                b.is_ascii_digit()||(b'a'..=b'f').contains(&b));
+            if !sha_ok(&first_sha256)||!sha_ok(&second_sha256)
+                ||first_path.eq_ignore_ascii_case(&second_path){
+                return Err("Two distinct canonical file paths and lowercase SHA-256 digests are required.".into());
+            }
+            let info=format!(
+                "Read-only SHA-256 pair: {} (SHA {}) AND {} (SHA {}) | two capped OS processes; independent native readback",
+                first_path,first_sha256,second_path,second_sha256
+            );
+            (ToolAction::VerifyReadOnlyShaPair{
+                first_path,first_sha256,second_path,second_sha256
+            },"Verify two files in isolated read-only SHA workers".into(),
+                info,RiskLevel::Medium)
         }
         "write_file" => {
             let path = absolute_path(arg_string(&proposal.arguments, "path")?)?;
@@ -10092,6 +10127,10 @@ async fn execute_tool_with_action_id(
                 exit_code: Some(0),
             })
         }
+        // Never run the background process through the generic dispatch
+        // function (which may be used outside a prepared owner's action).
+        ToolAction::VerifyReadOnlyShaPair {..} =>
+            Err("SHA pair requires the existing exact approved native execute_action path.".into()),
         ToolAction::WriteFile { path, content } => {
             let target = Path::new(&path);
             let mut recovery_backup: Option<std::path::PathBuf> = None;
@@ -19161,7 +19200,80 @@ async fn execute_action(
     // Only a previously approved DAG step may opt into the new PID-owned
     // Blender read-only worker. Existing standalone/manual Blender inspection
     // and every other tool retain their current adapter behavior.
-    let execution=if scheduled_step.is_some(){
+    let execution=if let ToolAction::VerifyReadOnlyShaPair{
+        first_path,first_sha256,second_path,second_sha256
+    }=&action.action {
+        #[cfg(windows)]
+        {
+            (||->Result<ActionResult,String>{
+                use sha2::Digest;
+                // Sub-worker UUIDs are stable, derived solely from the
+                // owner's already approved native action identity.
+                // Crash/retry of that action cannot mint fresh worker UUIDs.
+                let sub_id=|index:u8|->String{
+                    let seed=sha2::Sha256::digest(
+                        format!("shuvi-readonly-pair-v1:{}:{}",action_id,index).as_bytes());
+                    let mut raw=[0u8;16];
+                    raw.copy_from_slice(&seed[..16]);
+                    raw[6]=(raw[6]&0x0f)|0x40;
+                    raw[8]=(raw[8]&0x3f)|0x80;
+                    uuid::Uuid::from_bytes(raw).to_string()
+                };
+                let owner_ram=||->Result<bool,String>{
+                    let status=current_runtime_status(state.inner())?;
+                    // Neither isolated child is counted as a normal managed
+                    // GUI process, so reserve BOTH 512 MiB job ceilings in
+                    // the combined 4 GiB ceiling before/while running.
+                    Ok(status.shuvi_memory_mb+1024.0>=HARD_LIMIT_MB)
+                };
+                let root=app.path().app_data_dir()
+                    .map_err(|_|"Native read-only admission storage unavailable.")?;
+                fs::create_dir_all(&root)
+                    .map_err(|_|"Cannot create native read-only admission directory.")?;
+                if owner_ram()?{
+                    return Err("Two reserved 512 MiB SHA workers exceed the 4 GiB Shuvi RAM ceiling.".into());
+                }
+                let left_id=sub_id(0);
+                let right_id=sub_id(1);
+                let [left,right]=native_scheduler::background_os_workers::run_internal_readonly_pair(
+                    &root,[
+                        native_scheduler::background_os_workers::PreparedReadOnlySha{
+                            action_id:&left_id,input:Path::new(first_path),
+                            expected_sha256:first_sha256
+                        },
+                        native_scheduler::background_os_workers::PreparedReadOnlySha{
+                            action_id:&right_id,input:Path::new(second_path),
+                            expected_sha256:second_sha256
+                        }
+                    ],&owner_ram
+                );
+                // Both independent file-handle readbacks must pass. One
+                // successful result NEVER upgrades its failed sibling.
+                let verified_left=left?;
+                let verified_right=right?;
+                let stdout=serde_json::to_string(&json!({
+                    "readOnlySha256Verified":true,
+                    "ownerActionId":action_id,
+                    "children":[
+                        {"actionId":verified_left.action_id,"pid":verified_left.os_pid,
+                            "sha256":verified_left.sha256,"bytes":verified_left.bytes},
+                        {"actionId":verified_right.action_id,"pid":verified_right.os_pid,
+                            "sha256":verified_right.sha256,"bytes":verified_right.bytes}
+                    ],
+                    "applicationVerified":false,
+                    "desktopMutated":false
+                })).map_err(|_|"Unable to serialize native SHA verification.")?;
+                Ok(ActionResult{
+                    success:true,tool:tool.clone(),stdout,
+                    stderr:String::new(),exit_code:Some(0)
+                })
+            })()
+        }
+        #[cfg(not(windows))]
+        {
+            Err("Independent read-only SHA OS workers require Windows.".into())
+        }
+    } else if scheduled_step.is_some(){
         if let ToolAction::BlenderInspect {python_exe,blender_exe,blend_file,operation}=&action.action {
             native_blender_owned_adapter::inspect(
                 &app,state.inner(),&mut native_slot,&action_id,
