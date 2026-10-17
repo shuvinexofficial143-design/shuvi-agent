@@ -10,7 +10,7 @@ const journal=read("src-tauri/src/native_background_admission.rs");
 test("native owner status is read-only, schema-bound, and obtains real locked worker journal and independent SHA rehash",()=>{
  assert.match(lib,/fn native_background_readonly_status\(app:AppHandle\)->Result<NativeBackgroundOwnerStatus,String>/);
  assert.match(lib,/native_scheduler::background_os_workers::inspect_readonly_health\(&root\)\?/);
- assert.match(lib,/native_background_readonly_status,\s*review_native_scheduler_failure/);
+ assert.match(lib,/native_background_readonly_status,\\s*native_approved_parent_queue_status,\\s*review_native_scheduler_failure/);
  assert.match(lib,/process_liveness_verified:false/);
  assert.match(lib,/application_verified:false/);
  assert.match(lib,/safe_to_auto_retry:false/);
