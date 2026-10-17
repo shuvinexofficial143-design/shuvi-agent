@@ -492,13 +492,20 @@ test("user stop finalizes a pending prepared graph action before resume", () => 
   const stopStart=main.indexOf('el<HTMLButtonElement>("#stopButton").addEventListener');
   const stop=main.slice(stopStart,main.indexOf("document.querySelectorAll<HTMLButtonElement>",stopStart));
   assert.match(main,/let pendingChatProposal: ToolProposal \| null = null/);
-  assert.match(stop,/pendingAction && pendingChatProposal/);
-  assert.match(stop,/const proposal = pendingChatProposal/);
-  assert.ok(stop.indexOf('"deny_action"') < stop.indexOf("recordToolOutcome"));
+  assert.match(stop,/const stoppingPending=pendingAction;/);
+  assert.match(stop,/const stoppingProposal=pendingChatProposal;/);
+  assert.match(stop,/if\(stoppingPending\)clearChatPermission\(\);/);
+  const retire=stop.indexOf("if(stoppingPending)clearChatPermission()");
+  const revoke=stop.indexOf("await revokeNativeTaskReads(stoppingReadTaskId)");
+  const deny=stop.indexOf('"deny_action"');
+  const update=stop.indexOf("recordToolOutcome");
+  const audit=stop.indexOf("await auditGraphOutcome(stoppingProposal)");
+  const saved=stop.indexOf("await saveActiveCheckpoint()");
+  const stopped=stop.indexOf('await stopAgentForSafety("Owner stopped this prepared Windows action.")');
+  assert.ok(retire>=0&&revoke>retire&&deny>revoke&&update>deny&&audit>update&&saved>audit&&stopped>saved);
   assert.match(stop,/denied \? "denied" : "failure"/);
-  assert.match(stop,/undefined,\s+false,\s+actionId/);
-  assert.ok(stop.indexOf("recordToolOutcome") < stop.indexOf("saveActiveCheckpoint"));
-  assert.ok(stop.indexOf("saveActiveCheckpoint") < stop.indexOf("runAgentStep"));
+  assert.match(stop,/undefined,\s*false,\s*actionId/);
+  assert.doesNotMatch(stop,/await runAgentStep\(\)/);
 });
 
 test("stopped checkpoint cannot be revived by an interrupted receipt", () => {
