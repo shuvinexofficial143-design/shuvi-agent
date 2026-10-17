@@ -10,7 +10,7 @@ const source=readFileSync(py,"utf8");
 const broker=readFileSync(new URL("../integrations/blender-worker/shuvi_blender_session.py",import.meta.url),"utf8");
 
 test("model acceptance has a fixed typed workflow without any unsafe Blender launch",()=>{
-  for(const op of ["mesh.create","mesh.inspect","mesh.translate_vertices",
+  for(const op of ["mesh.create","mesh.inspect","mesh.translate_vertices","device.create",
     "objects.list","scene.inspect","file.checkpoint","render.configure","render.execute"]){
     assert.ok(source.includes('"'+op+'"'),op);
   }
