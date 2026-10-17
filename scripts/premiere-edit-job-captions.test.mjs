@@ -119,3 +119,16 @@ test("approved Premiere edit-job proposal arguments are SHA-bound to the execute
   assert.match(host,/premiere_args_sha256=\{hash\}/);
   assert.match(host,/Vision prompt omitted from persistent audit/);
 });
+
+test("completed iterative review must postdate issued edit-job phase and cannot replay across saved jobs",()=>{
+  assert.match(job,/pub fn require_issued_review_session\(/);
+  assert.match(job,/pub fn require_unclaimed_review_session_in_store\(/);
+  assert.match(job,/fn iterative_review_only_accepts_new_sessions_after_issued_phase/);
+  assert.match(job,/fn completed_iterative_review_session_cannot_be_reused_by_another_job/);
+  const record=route('ToolAction::PremiereEditJobRecordReview {job_id,phase_id,review_session_id} => {',
+    'ToolAction::PremiereEditSessionStart {request} => {');
+  assert.match(record,/job\.require_issued_review_session\(&phase_id,review\.created_at_ms\)\?;/);
+  assert.match(record,/premiere_edit_job::require_unclaimed_review_session_in_store\(&path,&job_id,&review_session_id\)\?;/);
+  assert.ok(record.indexOf('require_unclaimed_review_session_in_store')<record.indexOf('job.record_review('));
+  assert.match(record,/premiere_review::completion_summary\(&review\)/);
+});
