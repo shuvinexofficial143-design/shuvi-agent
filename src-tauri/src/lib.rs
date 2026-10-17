@@ -5,6 +5,7 @@ mod target_window_capture;
 mod remote_agent;
 mod blender_worker;
 mod blender_plan_worker;
+mod blender_png_integrity;
 mod blender_session_worker;
 mod blender_artifact_manifest;
 mod blender_input_checkpoint;
